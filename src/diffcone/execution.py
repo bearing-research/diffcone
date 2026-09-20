@@ -453,7 +453,10 @@ def coverage_validation(
     return CoverageValidation(hits, changed_ids, run.log)
 
 
-OutcomeCache = dict[str, dict[str, str]]  # commit sha -> per-test outcomes
+# (commit sha, ran under coverage) -> per-test outcomes. Outcomes measured
+# under the coverage tracer are only comparable with each other: tests that
+# depend on recursion depth or timing can flip under sys.settrace.
+OutcomeCache = dict[tuple[str, bool], dict[str, str]]
 
 
 def validate_pytest(
@@ -476,14 +479,19 @@ def validate_pytest(
     }
     cache = outcome_cache if outcome_cache is not None else {}
     base_log = ""
-    if plan.base.kind == KIND_COMMIT and plan.base.commit in cache:
-        base_outcomes = cache[plan.base.commit]
+    base_key = (plan.base.commit, coverage)
+    if plan.base.kind == KIND_COMMIT and base_key in cache:
+        base_outcomes = cache[base_key]
     else:
+        # Same instrumentation on both sides: with --coverage the base suite
+        # also runs under the tracer (its database is simply not read).
         with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
-            with _run_full_pytest(base_dir, command, source_roots=plan.source_roots) as base_run:
+            with _run_full_pytest(
+                base_dir, command, coverage=coverage, source_roots=plan.source_roots
+            ) as base_run:
                 base_outcomes, base_log = base_run.outcomes, base_run.log
         if plan.base.kind == KIND_COMMIT:
-            cache[plan.base.commit] = base_outcomes
+            cache[base_key] = base_outcomes
     cov: CoverageValidation | None = None
     with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
         with _run_full_pytest(
@@ -493,7 +501,7 @@ def validate_pytest(
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
     if plan.head.kind == KIND_COMMIT:
-        cache[plan.head.commit] = head_outcomes
+        cache[(plan.head.commit, coverage)] = head_outcomes
     known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(

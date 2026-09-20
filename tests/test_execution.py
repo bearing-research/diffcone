@@ -612,7 +612,8 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
     # outcomes, so it is not assumed equal to c2) and c4 (head, coverage).
     suite_runs = [c for c in calls if "-m" in c and "pytest" in c and "-v" in c]
     assert len(suite_runs) == 4
-    assert sum(1 for c in suite_runs if "--cov-context=test" in c) == 2
+    # Symmetric instrumentation: every run is under coverage when requested.
+    assert sum(1 for c in suite_runs if "--cov-context=test" in c) == 4
 
     code = main(
         [
@@ -768,3 +769,25 @@ def test_parsers_cope_with_spaces_pipes_and_brackets_in_parameter_ids():
     }
     context = "tests/test_o.py::test_choice[choices4-[TEXT: a|b]]|run"
     assert fold_nodeid(context.rsplit("|", 1)[0]) == "tests/test_o.py::test_choice"
+
+
+def test_coverage_validation_instruments_both_snapshots(repo, monkeypatch):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    argvs: list[list[str]] = []
+    real_run = execution.subprocess.run
+
+    def capturing(argv, **kwargs):
+        if "pytest" in argv:
+            argvs.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(execution.subprocess, "run", capturing)
+    cache: execution.OutcomeCache = {}
+    validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True, outcome_cache=cache)
+    assert [("--cov-context=test" in a) for a in argvs] == [True, True]
+    assert set(cache) == {(base, True), (head, True)}
+    # A plain validation does not reuse coverage-mode outcomes.
+    validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=False, outcome_cache=cache)
+    assert (base, False) in cache and len(argvs) == 4

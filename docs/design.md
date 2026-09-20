@@ -378,7 +378,11 @@ from the `run` and `validate` commands after a plan exists.
   tests that ran at base and no longer exist at head are reported as
   removed, not missed (there is nothing to select). This is a necessary, not sufficient, check: behaviour changes
   that keep the same outcome are not visible to it.
-* `validate --coverage` makes the single head run also record
+* `validate --coverage` runs *both* suites under the coverage tracer so
+  their outcomes are comparable (a recursion-depth or timing-sensitive test
+  can flip under `sys.settrace`; comparing an uninstrumented base with an
+  instrumented head produced false misses on structlog), and makes the head
+  run also record
   `--cov=. --cov-context=test` into a temporary coverage database (the
   project's own `addopts` stay in force, so the same tests are collected)
   with a minimal coverage config of its own (a project's `source`/`omit`
