@@ -121,7 +121,7 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | e26945d | fix: PytestRemovedIn10Warning | 3 / 516 | 99 % | 100 % | 67 % |
 | d8e321a | Use built-in product | 34 / 516 | 93 % | 100 % | 100 % |
-| 73393f3 | Better bankruptcy | 49 / 517 | 91 % | 100 % | 85 % |
+| 73393f3 | Better bankruptcy | 48 / 517 | 91 % | 100 % | 87 % |
 
 Totals: 1 outcome change, 0 missed; recall 100 % (77 of 77); precision
 92 %; mean savings 95 %.
@@ -235,14 +235,14 @@ and 1 490 tests really do execute the changed method. A corpus over six
 such pairs would take about 50 minutes serially; `corpus` has no parallel
 mode yet.
 
-## diffcone itself (113 tests)
+## diffcone itself (115 tests)
 
-Last five commits at the time of writing (one docs commit skipped):
-6 outcome changes, 0 missed; recall 100 % (172 of 172); precision 87 %;
-mean savings 41 %. The two commits that changed the indexer selected
-76 of 82 and 79 of 84 tests at 96 % precision, since nearly every test
-indexes code; the two that changed only the execution module selected
-20 of 86 and 22 of 87.
+Last six commits at the time of writing (three docs commits skipped):
+4 outcome changes, 0 missed; recall 100 % (310 of 310); precision 97 %;
+mean savings 6 %. All three validated commits changed the indexer, which
+nearly every test exercises, so they selected 105 of 112, 106 of 113 and
+108 of 115 tests; an earlier run over commits that changed only the
+execution module selected 20 of 86 and 22 of 87.
 
 ## How the numbers moved
 
@@ -330,10 +330,11 @@ From the first pytest-mock run (savings 19 % → 0 % → 64 %):
    order bug that ignored function-local literal assignments placed before
    their loop was fixed.
 
-## Re-measurements without number changes
+## Re-measurements
 
-Selection-rule changes that were re-run on every corpus and moved no
-number (recall, precision and savings identical to the tables above):
+Selection-rule changes re-run on every measurement in this file. Recall
+stayed at 100 % in each; where a number moved, the affected table above has
+been re-stated from the re-run:
 
 * override-aware dispatch for `self`/`cls` lookups, including mixin and
   class-attribute overrides (commits 4722191 and its review follow-up);
@@ -345,8 +346,12 @@ number (recall, precision and savings identical to the tables above):
   (recall 93 %), which is what drove the follow-ups;
 * prefix-bounded dynamic names (commit 042f611): toolz, click, pytest-mock
   and attrs unchanged (attrs' lazy loader had already stopped being a seed
-  once module-level variables became symbols); structlog moved from 94 %
-  to 95 % savings and 91 % to 92 % precision.
+  once module-level variables became symbols); the pytest pair re-validated
+  identically (3 485 of 3 486 selected, 1 490 of 1 490 affected, 43 %
+  precision); structlog moved from 94 % to 95 % savings and 91 % to 92 %
+  precision (its "Better bankruptcy" row went from 49 to 48 selected; the
+  table above is from the re-run); the diffcone-itself section above was
+  re-measured over its last six commits.
 
 ## Not yet exercised
 
