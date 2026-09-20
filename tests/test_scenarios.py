@@ -1298,3 +1298,47 @@ def test_module_constant_change_reaches_only_its_users(repo):
         "pkg.ib": ("body_changed", "dependencies_changed"),
     }
     assert selected(plan3) == {"t::test_ib", "b.time_ib"}
+
+
+def test_in_place_mutation_of_a_module_registry_reaches_its_users(repo):
+    base = repo.commit(
+        {
+            "pkg/reg.py": (
+                "REGISTRY = {}\n"
+                "OTHER = {}\n\n"
+                "REGISTRY['a'] = 1\n"
+                "if True:\n    OTHER['x'] = 1\n\n\n"
+                "def lookup(k):\n    return REGISTRY[k]\n\n\n"
+                "def other(k):\n    return OTHER[k]\n"
+            ),
+            "tests/test_reg.py": (
+                "from pkg.reg import lookup, other\n\n\n"
+                "def test_lookup():\n    assert lookup('a') == 1\n\n\n"
+                "def test_other():\n    assert other('x') == 1\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/reg.py": (
+                "REGISTRY = {}\n"
+                "OTHER = {}\n\n"
+                "REGISTRY['a'] = 1\n"
+                "REGISTRY['b'] = 2\n"
+                "if True:\n    OTHER['x'] = 1\n\n\n"
+                "def lookup(k):\n    return REGISTRY[k]\n\n\n"
+                "def other(k):\n    return OTHER[k]\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_lookup", "tests.test_reg.test_lookup"),
+        py_target("t::test_other", "tests.test_reg.test_other"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {
+        "pkg.reg": ("body_changed",),
+        "pkg.reg.REGISTRY": ("body_changed",),
+    }
+    assert selected(plan) == {"t::test_lookup"}
+    assert unselected(plan) == {"t::test_other"}

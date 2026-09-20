@@ -77,7 +77,7 @@ whitespace, comments and positions never matter.
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
-| variable | the right-hand side | (none) |
+| variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`) | (none) |
 | module | top-level statements excluding definitions, imports and variable symbols | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
 The docstring is excluded from every body hash and hashed on its own:

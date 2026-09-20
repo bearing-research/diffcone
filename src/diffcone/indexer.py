@@ -674,6 +674,21 @@ class Indexer:
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
+        # Module-level statements that mention a variable may mutate it in place
+        # (``REGISTRY[k] = v``, ``NAMES.append(x)``, ``CONFIG.update(...)``), so
+        # they are part of that variable's body, not only of the module's.
+        mutators: dict[str, list[ast.stmt]] = defaultdict(list)
+        variable_ids = {id(s) for s in variable_stmts.values()}
+        for stmt in body:
+            if isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
+                continue
+            if id(stmt) in variable_ids:
+                continue
+            mentioned = {
+                n.id for n in ast.walk(stmt) if isinstance(n, ast.Name) and n.id in variable_stmts
+            }
+            for name in mentioned:
+                mutators[name].append(stmt)
         for name, stmt in variable_stmts.items():
             if name in scope.members:
                 continue  # also a def/class: Python's last binding wins; stay conservative
@@ -686,7 +701,7 @@ class Indexer:
                 name=name,
                 path=scope.path,
                 lineno=stmt.lineno,
-                body_hash=hash_nodes([value]),
+                body_hash=hash_nodes([value, *mutators.get(name, [])]),
                 definition_hash="",
                 container=scope.name,
                 line_ranges=((stmt.lineno, _end_line(stmt)),),
