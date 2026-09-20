@@ -578,10 +578,16 @@ class _ParamDynamic:
 
 
 class Indexer:
-    def __init__(self, snapshot: Snapshot) -> None:
+    def __init__(self, snapshot: Snapshot, hash_cache=None) -> None:
         self.snapshot = snapshot
         self.index = SourceIndex(snapshot=snapshot.info)
         self.index.errors.extend(snapshot.errors)
+        # Optional content-keyed cache of per-symbol hashes (diffcone.cache.HashCache).
+        self.hash_cache = hash_cache
+        self._hash_memo: dict[str, list[str]] | None = None
+        self._hash_memo_key: str | None = None
+        self._hash_memo_new: dict[str, list[str]] = {}
+        self._hash_memo_dirty = False
         self.scopes: dict[str, ModuleScope] = {}
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()
@@ -595,6 +601,34 @@ class Indexer:
         self.param_dynamics: list[_ParamDynamic] = []
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
+
+    def _symbol_hashes(self, symbol_id: str, compute) -> tuple[str, str, str]:
+        """(body, definition, docstring) hashes for ``symbol_id`` in the module
+        being indexed, from the hash cache when its file is unchanged."""
+        if self._hash_memo is not None:
+            cached = self._hash_memo.get(symbol_id)
+            if cached is not None and len(cached) == 3:
+                self._hash_memo_new[symbol_id] = cached
+                return cached[0], cached[1], cached[2]
+        hashes = compute()
+        self._hash_memo_new[symbol_id] = list(hashes)
+        self._hash_memo_dirty = True
+        return hashes
+
+    def _begin_hash_memo(self, path: str) -> None:
+        self._hash_memo = None
+        self._hash_memo_key = None
+        self._hash_memo_new = {}
+        self._hash_memo_dirty = False
+        if self.hash_cache is not None:
+            self._hash_memo_key = self.hash_cache.content_key(self.snapshot.files[path])
+            self._hash_memo = self.hash_cache.load(self._hash_memo_key)
+
+    def _end_hash_memo(self) -> None:
+        if self.hash_cache is not None and self._hash_memo_key is not None:
+            if self._hash_memo is None or self._hash_memo_dirty:
+                self.hash_cache.store(self._hash_memo_key, self._hash_memo_new)
+        self._hash_memo = None
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -712,6 +746,17 @@ class Indexer:
         imports = tuple(sorted(_canonical_imports(scope)))
         body = _split_docstring(scope.tree.body)[1]
         variable_stmts = _variable_statements(scope, body)
+        self._begin_hash_memo(scope.path)
+        module_body_hash, _, module_doc_hash = self._symbol_hashes(
+            scope.name,
+            lambda: (
+                hash_scope_body(
+                    [s for s in body if s not in variable_stmts.values()], strip_imports=True
+                ),
+                "",
+                _docstring_hash([scope.tree.body]),
+            ),
+        )
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -720,10 +765,8 @@ class Indexer:
                 name=scope.name.rsplit(".", 1)[-1],
                 path=scope.path,
                 lineno=1,
-                body_hash=hash_scope_body(
-                    [s for s in body if s not in variable_stmts.values()], strip_imports=True
-                ),
-                docstring_hash=_docstring_hash([scope.tree.body]),
+                body_hash=module_body_hash,
+                docstring_hash=module_doc_hash,
                 definition_hash=_digest("\n".join(imports)),
                 container=None,
                 line_ranges=((1, _end_line(scope.tree)),),
@@ -758,7 +801,14 @@ class Indexer:
                 name=name,
                 path=scope.path,
                 lineno=stmt.lineno,
-                body_hash=hash_nodes([value, *mutators.get(name, [])]),
+                body_hash=self._symbol_hashes(
+                    symbol_id,
+                    lambda value=value, name=name: (
+                        hash_nodes([value, *mutators.get(name, [])]),
+                        "",
+                        "",
+                    ),
+                )[0],
                 definition_hash="",
                 container=scope.name,
                 line_ranges=tuple(
@@ -769,6 +819,7 @@ class Indexer:
                 scope.variables[name] = symbol_id
                 scope.variable_stmts[name] = stmt
                 self.index.edges.add(Edge(symbol_id, scope.name, DEFINED_IN))
+        self._end_hash_memo()
 
     def _register_imports(
         self,
@@ -824,12 +875,25 @@ class Indexer:
                         if isinstance(s, DEF_NODES)
                     }
                 )
-                definition_parts: list[ast.AST] = []
-                for n in nodes:
-                    definition_parts += list(n.bases) + list(n.keywords) + list(n.decorator_list)
-                definition_hash = _digest(
-                    hash_nodes(definition_parts) + "|" + ",".join(member_names)
-                )
+
+                def class_hashes(nodes=nodes, member_names=member_names):
+                    definition_parts: list[ast.AST] = []
+                    for n in nodes:
+                        definition_parts += (
+                            list(n.bases) + list(n.keywords) + list(n.decorator_list)
+                        )
+                    return (
+                        _digest(
+                            "\n".join(
+                                hash_scope_body(_split_docstring(n.body)[1], strip_imports=False)
+                                for n in nodes
+                            )
+                        ),
+                        _digest(hash_nodes(definition_parts) + "|" + ",".join(member_names)),
+                        _docstring_hash([n.body for n in nodes]),
+                    )
+
+                body_hash, definition_hash, doc_hash = self._symbol_hashes(symbol_id, class_hashes)
                 symbol = Symbol(
                     id=symbol_id,
                     kind=CLASS,
@@ -837,16 +901,11 @@ class Indexer:
                     name=name,
                     path=scope.path,
                     lineno=first.lineno,
-                    body_hash=_digest(
-                        "\n".join(
-                            hash_scope_body(_split_docstring(n.body)[1], strip_imports=False)
-                            for n in nodes
-                        )
-                    ),
+                    body_hash=body_hash,
                     definition_hash=definition_hash,
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
-                    docstring_hash=_docstring_hash([n.body for n in nodes]),
+                    docstring_hash=doc_hash,
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -864,14 +923,28 @@ class Indexer:
             else:
                 nodes = funcs[name]
                 first = nodes[0]
-                definition_parts = []
-                for n in nodes:
-                    definition_parts.append(n.args)
-                    definition_parts += list(n.decorator_list)
-                    if n.returns is not None:
-                        definition_parts.append(n.returns)
-                definition_hash = _digest(
-                    hash_nodes(definition_parts) + "|" + ",".join(type(n).__name__ for n in nodes)
+
+                def function_hashes(nodes=nodes):
+                    definition_parts: list[ast.AST] = []
+                    for n in nodes:
+                        definition_parts.append(n.args)
+                        definition_parts += list(n.decorator_list)
+                        if n.returns is not None:
+                            definition_parts.append(n.returns)
+                    return (
+                        _digest(
+                            "\n".join(hash_nodes(list(_split_docstring(n.body)[1])) for n in nodes)
+                        ),
+                        _digest(
+                            hash_nodes(definition_parts)
+                            + "|"
+                            + ",".join(type(n).__name__ for n in nodes)
+                        ),
+                        _docstring_hash([n.body for n in nodes]),
+                    )
+
+                body_hash, definition_hash, doc_hash = self._symbol_hashes(
+                    symbol_id, function_hashes
                 )
                 symbol = Symbol(
                     id=symbol_id,
@@ -880,10 +953,8 @@ class Indexer:
                     name=name,
                     path=scope.path,
                     lineno=first.lineno,
-                    body_hash=_digest(
-                        "\n".join(hash_nodes(list(_split_docstring(n.body)[1])) for n in nodes)
-                    ),
-                    docstring_hash=_docstring_hash([n.body for n in nodes]),
+                    body_hash=body_hash,
+                    docstring_hash=doc_hash,
                     definition_hash=definition_hash,
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
@@ -1799,5 +1870,5 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.indexer._module_import_edge(self.source, module)
 
 
-def build_index(snapshot: Snapshot) -> SourceIndex:
-    return Indexer(snapshot).build()
+def build_index(snapshot: Snapshot, hash_cache=None) -> SourceIndex:
+    return Indexer(snapshot, hash_cache=hash_cache).build()

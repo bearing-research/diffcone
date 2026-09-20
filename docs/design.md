@@ -316,7 +316,11 @@ optimisation only: a hit must yield a byte-identical plan to a miss (tests
 compare the reports and assert git is not read on a hit), writes are
 atomic, write failures are silent, and `--no-cache` / `--cache-dir` control
 it. `INDEX_FORMAT` is bumped whenever the indexer's output for the same
-input can change.
+input can change. Alongside it, a per-file hash cache (`hashes/<sha256 of
+format, fingerprint and file content>.json`) stores every symbol's body,
+definition and docstring hashes, which are pure functions of the file's
+text and the dominant first-pass cost; it applies to every snapshot kind,
+so a warm `WORKTREE` plan re-hashes only the files that changed.
 
 Cost on click (75 files, 555 tests): a cold `plan --head WORKTREE` is
 1.45 s wall, a warm one 0.75 s (0.66 s in-process), of which indexing the

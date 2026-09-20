@@ -127,3 +127,33 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
     assert cache_mod.INDEX_FORMAT == 3
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
+
+
+def test_hash_cache_is_invisible_and_hits_on_unchanged_files(repo, tmp_path):
+    from diffcone.cache import HashCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS + "\n\nX = 1\n\n\nclass K:\n    def m(self):\n        return X\n",
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    snap = read_snapshot(repo.path, base, ["."])
+    plain = build_index(snap)
+    hc = HashCache(tmp_path / "c")
+    first = build_index(snap, hash_cache=hc)
+    assert index_to_dict(first) == index_to_dict(plain)
+    assert hc.hits == 0 and hc.misses == 3
+    second = build_index(snap, hash_cache=hc)
+    assert index_to_dict(second) == index_to_dict(plain)
+    assert hc.hits == 3
+    # A changed file misses and recomputes; unchanged files still hit.
+    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a") + "\n\nX = 2\n")
+    wt = read_snapshot(repo.path, "WORKTREE", ["."])
+    hc2 = HashCache(tmp_path / "c")
+    cached = build_index(wt, hash_cache=hc2)
+    assert index_to_dict(cached) == index_to_dict(build_index(wt))
+    assert (hc2.hits, hc2.misses) == (2, 1)

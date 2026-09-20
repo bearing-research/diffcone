@@ -536,7 +536,7 @@ def _index_snapshot(
                 cached = replace(cached, snapshot=replace(cached.snapshot, revision=revision))
                 return cached, None
     snapshot = read_snapshot(repo_path, revision, roots, with_config=with_config)
-    index = build_index(snapshot)
+    index = build_index(snapshot, hash_cache=cache.hashes if cache is not None else None)
     if cache is not None and snapshot.info.committed:
         cache.store(index, roots)
     return index, snapshot

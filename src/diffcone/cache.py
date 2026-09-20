@@ -92,11 +92,57 @@ def index_from_dict(data: dict) -> SourceIndex:
     )
 
 
+class HashCache:
+    """Per-file symbol hashes keyed by the file's content: body, definition
+    and docstring hashes are pure functions of the source text, and computing
+    them (``ast.dump`` of every body) is the dominant cost of the indexer's
+    first pass. Used for every snapshot kind, including the working tree."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory / "hashes"
+        self.hits = 0
+        self.misses = 0
+
+    def _path(self, content_key: str) -> Path:
+        return self.directory / f"{content_key}.json"
+
+    @staticmethod
+    def content_key(content: bytes) -> str:
+        h = hashlib.sha256()
+        h.update(f"{INDEX_FORMAT}:{INDEXER_FINGERPRINT}:".encode())
+        h.update(content)
+        return h.hexdigest()
+
+    def load(self, content_key: str) -> dict[str, list[str]] | None:
+        try:
+            data = json.loads(self._path(content_key).read_text("utf-8"))
+        except (OSError, ValueError):
+            self.misses += 1
+            return None
+        if not isinstance(data, dict):
+            self.misses += 1
+            return None
+        self.hits += 1
+        return data
+
+    def store(self, content_key: str, hashes: dict[str, list[str]]) -> None:
+        path = self._path(content_key)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(hashes, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+
 class IndexCache:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.hits = 0
         self.misses = 0
+        self.hashes = HashCache(directory)
 
     def _path(self, commit: str, source_roots: list[str]) -> Path:
         return self.directory / "index" / f"{index_key(commit, source_roots)}.json"
