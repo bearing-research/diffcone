@@ -141,6 +141,7 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         "python_functions": DEFAULT_PYTHON_FUNCTIONS,
         "testpaths": (),
         "entry_point_plugins": (),  # pytest11 entry points defined by the project itself
+        "addopts_plugins": (),  # ``-p name`` entries in addopts
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
@@ -176,6 +177,7 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
                 values = _split(section[key])
                 if values:
                     config[key] = values
+        config["addopts_plugins"] = tuple(_addopts_plugins(_split(section.get("addopts", ""))))
     config["entry_point_plugins"] = tuple(_entry_point_plugins(files))
     return config
 
@@ -205,6 +207,22 @@ def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
 
 
 BUILTIN_PLUGINS = frozenset({"pytester", "pytest", "_pytest"})
+
+
+def _addopts_plugins(addopts: tuple[str, ...]) -> list[str]:
+    """Plugins loaded early through ``-p name`` / ``-pname`` in addopts
+    (``-p no:name`` disables one and is ignored)."""
+    names: list[str] = []
+    tokens = list(addopts)
+    for i, token in enumerate(tokens):
+        name = None
+        if token == "-p" and i + 1 < len(tokens):
+            name = tokens[i + 1]
+        elif token.startswith("-p") and len(token) > 2 and not token.startswith("--"):
+            name = token[2:]
+        if name and not name.startswith("no:") and name not in names:
+            names.append(name)
+    return names
 
 
 def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
@@ -651,7 +669,11 @@ def discover_pytest(
     ) -> list[ModuleFacts]:
         found: list[ModuleFacts] = []
         for name in declared:
-            if name.split(".")[0] in BUILTIN_PLUGINS:
+            # pytest's own plugins are builtin unless this repository *is*
+            # pytest and ships them under _pytest.
+            if name not in index.modules and f"_pytest.{name}" in index.modules:
+                name = f"_pytest.{name}"
+            if name.split(".")[0] in BUILTIN_PLUGINS and name not in index.modules:
                 continue
             facts = module_facts(name)
             if facts is None:
@@ -672,6 +694,8 @@ def discover_pytest(
         global_plugins.extend(
             plugin_facts(list(config["entry_point_plugins"]), "pyproject/setup.cfg", "pytest11")
         )
+    if config["addopts_plugins"]:
+        global_plugins.extend(plugin_facts(list(config["addopts_plugins"]), "addopts", "-p"))
     for path in sorted(conftest_paths):
         facts = facts_by_path.get(path)
         if facts is not None and facts.plugins:

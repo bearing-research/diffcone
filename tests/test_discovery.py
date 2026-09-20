@@ -801,3 +801,27 @@ def test_pytest9_native_toml_table(repo):
     result = run_discovery(repo, rev, "pytest")
     assert result.config["source"] == "pyproject.toml [tool.pytest]"
     assert set(by_id(result)) == {"qa/check_a.py::test_a"}
+
+
+def test_addopts_p_plugins_are_resolved_including_pytest_internal_names(repo):
+    rev = repo.commit(
+        {
+            "pyproject.toml": (
+                "[tool.pytest.ini_options]\n"
+                'addopts = ["-rfEX", "-p", "pytester", "-pmyplug", '
+                '"-p", "no:cacheprovider", "-p", "xdist"]\n'
+            ),
+            "src/_pytest/__init__.py": "",
+            "src/_pytest/pytester.py": (
+                "import pytest\n\n\n@pytest.fixture\ndef linecomp():\n    return 1\n"
+            ),
+            "src/myplug.py": "import pytest\n\n\n@pytest.fixture\ndef mine():\n    return 2\n",
+            "tests/test_x.py": "def test_a(linecomp, mine):\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest", roots=["src", "tests"])
+    assert result.config["addopts_plugins"] == ["pytester", "myplug", "xdist"]
+    deps = set(by_id(result)["tests/test_x.py::test_a"].lifecycle_dependencies)
+    assert {"_pytest.pytester.linecomp", "myplug.mine"} <= deps
+    assert not any(d.startswith("fixture:") for d in deps)
+    assert [(n.kind, "xdist" in n.detail) for n in result.notes] == [("plugin_out_of_scope", True)]

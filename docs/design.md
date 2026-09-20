@@ -356,7 +356,10 @@ then enclosing classes), module fixtures, `conftest.py` from the test's
 directory outward, then plugin modules: those named in `pytest_plugins`
 (conftest declarations are global) and the project's own `pytest11` entry
 points from `pyproject.toml` (`[project.entry-points]` or
-`[tool.poetry.plugins]`) or `setup.cfg`, following one level of
+`[tool.poetry.plugins]`) or `setup.cfg`, and modules loaded with `-p name`
+in `addopts` (a pytest-internal name such as `pytester` resolves to
+`_pytest.<name>` when that module is in scope, as in pytest's own
+repository), following one level of
 `from ... import` re-exports so a plugin package's `__init__` exposes the
 fixtures and hooks it imports (matched on the original name; a fixture keeps
 its own name under an alias). Hooks defined in or imported into those
