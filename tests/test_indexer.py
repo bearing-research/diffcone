@@ -687,3 +687,32 @@ def test_module_level_variables_are_symbols():
     assert ("pkg._make.attrib", "references", "") not in edges(idx, "pkg")
     # Module-level from-imports of a variable are imports_name edges to it.
     assert ("pkg.config.LIMIT", "imports_name", "") in edges(idx, "pkg.user")
+
+
+def test_defaults_resolve_in_the_enclosing_scope_and_alias_variables():
+    idx = index(
+        {
+            "m.py": (
+                "INFO = {'a': 1}\n"
+                "REG = {}\n"
+                "REG['seed'] = 0\n\n"
+                "def helper():\n    pass\n\n"
+                "def build(info=INFO, reg=REG, fn=helper):\n"
+                "    for k in info:\n        reg[k] = info[k]\n"
+                "    reg.update({})\n"
+                "    info = {}  # rebinding the parameter is not a mutation of INFO\n"
+                "    return fn\n\n"
+                "def annotated(x: 'helper') -> helper:\n    return x\n"
+            )
+        }
+    )
+    build = edges(idx, "m.build")
+    assert ("m.INFO", "references", "") in build
+    assert ("m.REG", "references", "") in build
+    assert ("m.helper", "references", "") in build
+    assert ("m.build", "references", "mutated_by") in edges(idx, "m.REG")
+    assert ("m.build", "references", "mutated_by") not in edges(idx, "m.INFO")
+    assert not [u for u in idx.unresolved if u.symbol == "m.build"]
+    assert ("m.helper", "references", "") in edges(idx, "m.annotated")
+    # Module-level mutation lines belong to the variable for coverage.
+    assert idx.symbols["m.REG"].line_ranges == ((2, 2), (3, 3))

@@ -77,7 +77,7 @@ whitespace, comments and positions never matter.
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
-| variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`) | (none) |
+| variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | (none) |
 | module | top-level statements excluding definitions, imports and variable symbols | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
 The docstring is excluded from every body hash and hashed on its own:
@@ -112,7 +112,12 @@ A name or dotted chain `a.b.c` is resolved from its base:
    class; `self.m` resolves through the class's MRO (below).
 2. A function-local import alias.
 3. A binding of the current scope (parameter, assignment, `except ... as`,
-   `with ... as`, nested def name, function-local import) → **local**;
+   `with ... as`, nested def name, function-local import) → **local**,
+   except a parameter whose default is a module-level variable, which
+   aliases that variable for reads and in-place mutations
+   (`def build(registry=REGISTRY): registry[k] = v`). Decorators, defaults
+   and annotations are resolved in the enclosing scope, where the
+   function's own parameters do not exist yet;
    `local.attr` becomes an unresolved attribute reference bounded by `attr`.
    Nested functions, lambdas and comprehensions are separate scopes: a
    comprehension variable or an inner function's parameter never shadows a

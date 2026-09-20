@@ -216,6 +216,9 @@ class Scope:
     # The enclosing function's own parameters (only in that function's scope,
     # not in nested scopes): name -> positional index or None for keyword-only.
     params: dict[str, int | None] = field(default_factory=dict)
+    # Parameters whose default is a module-level variable alias that variable:
+    # reads and in-place mutations through the parameter belong to it.
+    param_aliases: dict[str, str] = field(default_factory=dict)
 
     def string_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
         """Every string ``expr`` may evaluate to, or None when unbounded."""
@@ -704,7 +707,9 @@ class Indexer:
                 body_hash=hash_nodes([value, *mutators.get(name, [])]),
                 definition_hash="",
                 container=scope.name,
-                line_ranges=((stmt.lineno, _end_line(stmt)),),
+                line_ranges=tuple(
+                    (s.lineno, _end_line(s)) for s in (stmt, *mutators.get(name, []))
+                ),
             )
             if self._add_symbol(symbol):
                 scope.variables[name] = symbol_id
@@ -1077,12 +1082,41 @@ class Indexer:
                 stars: list[str] = []
                 self._register_imports(scope, inner, fscope.local_imports, stars)
                 self._import_edges(symbol_id, scope, inner, local=True)
-        collector = _ReferenceCollector(self, symbol_id, fscope)
-        collector.visit(node.args)
+        # Decorators, defaults and annotations evaluate where the ``def``
+        # statement runs, so the function's own parameters must not shadow
+        # them (``def f(info=info)`` refers to the module-level ``info``).
+        outer_scope = Scope(
+            module=scope,
+            locals=set(class_scope.bindings) if class_scope is not None else set(),
+            literal_names=dict(scope.literal_names),
+        )
+        outer = _ReferenceCollector(self, symbol_id, outer_scope, skip_defs=True)
         for dec in node.decorator_list:
-            collector.visit(dec)
+            outer.visit(dec)
+        all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
+        for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
+            if arg.annotation is not None:
+                outer.visit(arg.annotation)
         if node.returns is not None:
-            collector.visit(node.returns)
+            outer.visit(node.returns)
+        for name, default in zip(
+            positional[len(positional) - n_defaults :] + [a.arg for a in node.args.kwonlyargs],
+            list(node.args.defaults) + list(node.args.kw_defaults),
+            strict=True,
+        ):
+            if default is None:
+                continue
+            outer.visit(default)
+            target = (
+                self.resolve_chain(parts, outer_scope)
+                if (parts := _flatten_chain(default))
+                else None
+            )
+            if isinstance(target, Resolved) and not target.detail:
+                aliased = self.index.symbols.get(target.symbol)
+                if aliased is not None and aliased.kind == VARIABLE:
+                    fscope.param_aliases[name] = aliased.id
+        collector = _ReferenceCollector(self, symbol_id, fscope)
         for stmt in node.body:
             collector.visit(stmt)
 
@@ -1136,6 +1170,8 @@ class Indexer:
         if name in scope.local_imports:
             return self._import_binding_node(scope.local_imports[name])
         if name in scope.locals:
+            if name in scope.param_aliases:
+                return Resolved(scope.param_aliases[name])
             return Local()
         found = self._lookup_in_module(scope.module, name, set())
         if found is not None:
@@ -1377,6 +1413,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self_class=None if outer.self_name in bound else outer.self_class,
             literal_names=literal_names,
             params={},  # a nested scope's names are not the enclosing function's parameters
+            param_aliases={k: v for k, v in outer.param_aliases.items() if k not in bound},
         )
         return outer
 
@@ -1532,10 +1569,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         base = expr
         while isinstance(base, (ast.Subscript, ast.Attribute)):
             base = base.value
-        if not isinstance(base, ast.Name) or base is expr and base.id in self.scope.locals:
+        if not isinstance(base, ast.Name):
             return
-        if base.id in self.scope.locals:
+        if base.id in self.scope.locals and base.id not in self.scope.param_aliases:
             return
+        if base is expr and base.id in self.scope.locals:
+            return  # rebinding a parameter is not a mutation of its default
         node = self.indexer.resolve_chain([base.id], self.scope)
         if isinstance(node, Resolved) and not node.detail:
             symbol = self.indexer.index.symbols.get(node.symbol)
