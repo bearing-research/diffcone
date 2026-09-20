@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -463,7 +464,9 @@ def test_read_coverage_contexts_handles_arcs_and_relative_paths(tmp_path):
         cov.save()
     finally:
         os.chdir(old)
-    contexts = read_coverage_contexts(db, root)
+    outside: set[str] = set()
+    contexts = read_coverage_contexts(db, root, outside)
+    assert outside == set()
     assert set(contexts) == {"tests/test_m.py::test_f"}
     assert {1, 2, 3} <= contexts["tests/test_m.py::test_f"]["mod.py"]
 
@@ -708,3 +711,44 @@ def test_decorators_belong_to_the_decorated_definition(repo):
     symbols = repo.plan(base, base, []).head_index.symbols
     assert symbols["m.f"].line_ranges == ((4, 7),)
     assert symbols["m.C"].line_ranges == ((10, 13),)
+
+
+def test_validation_runs_with_checkout_source_roots_on_pythonpath(repo, monkeypatch, tmp_path):
+    """A src layout: an installed copy elsewhere must not shadow the checkout."""
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\npythonpath = src\n",
+            "src/pkg/__init__.py": "",
+            "src/pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    head = repo.commit({"src/pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], source_roots=["src", "tests"], discover_runners=["pytest"])
+    seen_env: list[dict] = []
+    real_run = execution.subprocess.run
+
+    def capturing_run(argv, **kwargs):
+        if "pytest" in argv:
+            seen_env.append(dict(kwargs.get("env") or {}))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(execution.subprocess, "run", capturing_run)
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.ok and v.coverage.recall == 1.0
+    assert len(seen_env) == 2
+    for env in seen_env:
+        first, second = env["PYTHONPATH"].split(os.pathsep)[:2]
+        assert first.endswith("/src") and second.endswith("/tests")
+
+
+def test_shadowed_files_detects_installed_copies(repo):
+    base = repo.commit(
+        {"src/pkg/__init__.py": "", "src/pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS}
+    )
+    plan = repo.plan(base, base, [], source_roots=["src", "tests"])
+    outside = {"/site-packages/pkg/ops.py", "/elsewhere/src/pkg/__init__.py", "/unrelated/x.py"}
+    assert execution.shadowed_files(plan, outside) == [
+        ("/elsewhere/src/pkg/__init__.py", "src/pkg/__init__.py"),
+        ("/site-packages/pkg/ops.py", "src/pkg/ops.py"),
+    ]

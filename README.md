@@ -91,6 +91,10 @@ parent-to-commit pair in the range (first-parent order, commits without
 `.py` changes skipped by default) and aggregates outcome misses, coverage
 recall/precision and mean selection savings. Each commit's suite runs once.
 
+Pass the source roots that hold the package (for a `src` layout,
+`--source-root src --source-root tests`): validation puts them first on
+`PYTHONPATH` so the checkout's code, not an installed copy, is what runs.
+
 `validate` runs the full pytest suite at both snapshots (commits are checked
 out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
 every test whose pass/fail outcome changed but was not selected. With

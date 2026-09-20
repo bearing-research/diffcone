@@ -367,7 +367,12 @@ from the `run` and `validate` commands after a plan exists.
   and parses the per-test outcome lines, folding parameter cases into their
   function and keeping the worst outcome. Commits are checked out into
   temporary detached worktrees that are removed afterwards; `WORKTREE` runs
-  in the repository; `INDEX` is not supported. Every test whose outcome
+  in the repository; `INDEX` is not supported. Each run gets the checkout's
+  source roots first on `PYTHONPATH`, so the checkout's code wins over an
+  installed (editable) copy of the project; with a `src` layout the working
+  directory alone would not achieve that and the suite would silently test
+  the installed revision. With `--coverage` this is verified: a measured
+  file outside the checkout that shadows a checkout file is an error. Every test whose outcome
   differs between the snapshots must be selected; otherwise it is reported
   as missed and the command exits 1. New tests count as outcome changes;
   tests that ran at base and no longer exist at head are reported as

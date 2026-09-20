@@ -233,9 +233,25 @@ class _SuiteRun:
     coverage_db: Path | None = None
 
 
+def _checkout_env(cwd: Path, source_roots: list[str]) -> dict[str, str]:
+    """Environment that makes the checkout's own code win over an installed
+    (typically editable) copy of the project: its source roots go first on
+    PYTHONPATH. With a ``src`` layout the current directory alone would not
+    do it, and the suite would silently test the installed code."""
+    env = dict(os.environ)
+    roots = []
+    for root in source_roots:
+        candidate = (cwd / root).resolve() if root not in ("", ".") else cwd.resolve()
+        if candidate.is_dir() and str(candidate) not in roots:
+            roots.append(str(candidate))
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join([*roots, *([existing] if existing else [])])
+    return env
+
+
 @contextmanager
 def _run_full_pytest(
-    cwd: Path, command: str | None, *, coverage: bool = False
+    cwd: Path, command: str | None, *, coverage: bool = False, source_roots: list[str] = ()
 ) -> Iterator[_SuiteRun]:
     """Run the whole suite once with ``-v``; with ``coverage`` the same run
     also records per-test coverage contexts into a temporary database that
@@ -249,7 +265,7 @@ def _run_full_pytest(
         "-rN",
     ]
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
-        env = dict(os.environ)
+        env = _checkout_env(cwd, list(source_roots))
         db: Path | None = None
         if coverage:
             db = Path(tmp) / ".coverage"
@@ -293,9 +309,12 @@ def _numbits_to_lines(blob: bytes) -> list[int]:
     return lines
 
 
-def read_coverage_contexts(db_path: Path, root: Path) -> dict[str, dict[str, set[int]]]:
+def read_coverage_contexts(
+    db_path: Path, root: Path, outside: set[str] | None = None
+) -> dict[str, dict[str, set[int]]]:
     """Per pytest node id (parameter cases and setup/run/teardown phases
-    folded), the executed lines per checkout-relative file.
+    folded), the executed lines per checkout-relative file. Measured files
+    that lie outside the checkout are collected into ``outside`` when given.
 
     Reads both the ``line_bits`` table (line coverage) and the ``arc`` table
     (branch coverage, which coverage.py uses *instead* when ``branch = True``
@@ -312,6 +331,8 @@ def read_coverage_contexts(db_path: Path, root: Path) -> dict[str, dict[str, set
         try:
             return str(p.resolve().relative_to(root))
         except ValueError:
+            if outside is not None:
+                outside.add(str(p))
             return None
 
     con = sqlite3.connect(db_path)
@@ -374,11 +395,43 @@ def _line_owner_index(plan: Plan) -> tuple[dict[str, dict[int, set[str]]], tuple
     return index, tuple(sorted(changed_ids))
 
 
+def shadowed_files(plan: Plan, outside: set[str]) -> list[tuple[str, str]]:
+    """Measured files outside the checkout that have the same source-root-
+    relative path as a file inside it: the suite imported an installed copy
+    of the project instead of the checkout."""
+    suffixes: dict[str, str] = {}
+    for symbol in plan.head_index.symbols.values():
+        rel = symbol.path
+        suffixes["/" + rel] = rel
+        for root in plan.source_roots:
+            root = root.strip("/")
+            if root and root != "." and rel.startswith(root + "/"):
+                suffixes["/" + rel[len(root) + 1 :]] = rel
+    found: list[tuple[str, str]] = []
+    for path in sorted(outside):
+        for suffix, rel in suffixes.items():
+            if path.endswith(suffix):
+                found.append((path, rel))
+                break
+    return found
+
+
 def coverage_validation(
     plan: Plan, run: _SuiteRun, head_dir: Path, selected: set[str]
 ) -> CoverageValidation:
     assert run.coverage_db is not None
-    contexts = read_coverage_contexts(run.coverage_db, head_dir)
+    outside: set[str] = set()
+    contexts = read_coverage_contexts(run.coverage_db, head_dir, outside)
+    shadowing = shadowed_files(plan, outside)
+    if shadowing:
+        listing = "\n".join(f"  {path}  (shadows {rel})" for path, rel in shadowing[:5])
+        raise GitError(
+            "the suite imported project code from outside the checkout, so the validation "
+            "would test the wrong revision:\n"
+            f"{listing}\nPut the checkout's source roots first on PYTHONPATH (diffcone does "
+            "this for --source-root entries; pass the roots that hold the package) or run "
+            "against an environment without an installed copy of the project."
+        )
     if not contexts:
         raise GitError(
             "coverage validation recorded no per-test contexts: the head suite collected no "
@@ -424,13 +477,15 @@ def validate_pytest(
         base_outcomes = cache[plan.base.commit]
     else:
         with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
-            with _run_full_pytest(base_dir, command) as base_run:
+            with _run_full_pytest(base_dir, command, source_roots=plan.source_roots) as base_run:
                 base_outcomes, base_log = base_run.outcomes, base_run.log
         if plan.base.kind == KIND_COMMIT:
             cache[plan.base.commit] = base_outcomes
     cov: CoverageValidation | None = None
     with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
-        with _run_full_pytest(head_dir, command, coverage=coverage) as head_run:
+        with _run_full_pytest(
+            head_dir, command, coverage=coverage, source_roots=plan.source_roots
+        ) as head_run:
             head_outcomes, head_log = head_run.outcomes, head_run.log
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
