@@ -207,9 +207,11 @@ The JSON report (`schema_version: 2`) contains:
   get edges to the module, but a body change in a module's init code does not
   by itself invalidate every function defined in it or every importer.
   Declare the module as a lifecycle dependency when it should.
-* **Dynamic reflection is always-on.** A function using `eval`, `exec`,
-  `globals()`, `vars()`, `__import__`, or `getattr`/`import_module` with a
-  non-literal name is treated as affected by *any* change in the repository.
+* **Dynamic reflection is bounded by imports, dynamic imports are not.** A
+  function using `eval`, `exec`, `globals()`, `vars()` or `getattr` with an
+  unbounded name is treated as affected by any change in a module its own
+  module imports (transitively); `__import__` or `import_module` with an
+  unbounded name is affected by any change anywhere.
 * No caching; every run re-indexes both revisions.
 
 ## Development

@@ -1016,3 +1016,102 @@ def test_adding_an_import_binding_is_not_structural(repo):
     assert changes(plan2)["tests.test_tools"] == ("definition_changed", "dependencies_changed")
     assert {"t::test_a", "t::test_b"} <= selected(plan2)
     assert "b.time_a" in unselected(plan2)
+
+
+def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
+    base = repo.commit(
+        {
+            "pkg/tools.py": "def a():\n    return 1\n\n\ndef c():\n    return 3\n",
+            "tests/test_tools.py": (
+                "from pkg.tools import (\n    a,\n)\n\n\ndef test_a():\n    assert a() == 1\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "tests/test_tools.py": (
+                "from pkg.tools import (\n    a,\n    c,\n)\n\n\n"
+                "def test_a():\n    assert a() == 1\n\n\n"
+                "def test_c():\n    assert c() == 3\n"
+            )
+        }
+    )
+    # Discovery lists the test module as a lifecycle dependency of each test.
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    module_dep = next(
+        d for d in plan.decisions if d.target.runner_id == "tests/test_tools.py::test_a"
+    )
+    assert "tests.test_tools" in module_dep.target.lifecycle_dependencies
+    assert changes(plan) == {
+        "tests.test_tools": ("imports_added", "dependencies_added"),
+        "tests.test_tools.test_c": ("added",),
+    }
+    assert selected(plan) == {"tests/test_tools.py::test_c"}
+    assert unselected(plan) == {"tests/test_tools.py::test_a"}
+
+    # A module *body* change (pytestmark) still reaches every test through it.
+    head2 = repo.commit(
+        {
+            "tests/test_tools.py": (
+                "import pytest\nfrom pkg.tools import (\n    a,\n)\n\n"
+                "pytestmark = pytest.mark.slow\n\n\n"
+                "def test_a():\n    assert a() == 1\n"
+            )
+        }
+    )
+    plan2 = repo.plan(base, head2, [], discover_runners=["pytest"])
+    assert selected(plan2) == {"tests/test_tools.py::test_a"}
+    assert [s.kind for s in reason(plan2, "tests/test_tools.py::test_a").path] == ["lifecycle"]
+
+
+def test_dynamic_references_are_bounded_by_the_import_closure(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/core.py": "def f():\n    return 1\n",
+            "pkg/other.py": "def g():\n    return 2\n",
+            "tests/test_exec.py": (
+                "from pkg import core\n\n\n"
+                "def make(body):\n    d = {}\n    exec(f'def fn():\\n    {body}', globals(), d)\n"
+                "    return d['fn']\n\n\n"
+                "def test_made():\n    assert make('return core.f()')() == 1\n"
+            ),
+            "tests/test_import.py": (
+                "import importlib\n\n\n"
+                "def test_dyn(name='pkg.other'):\n    assert importlib.import_module(name)\n"
+            ),
+            "tests/test_other.py": (
+                "from pkg.other import g\n\n\ndef test_g():\n    assert g() == 2\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_made", "tests.test_exec.test_made"),
+        py_target("t::test_dyn", "tests.test_import.test_dyn"),
+        py_target("t::test_g", "tests.test_other.test_g"),
+    ]
+    # A change in pkg.other: not importable from test_exec's module -> exec is
+    # not affected; the dynamic import is always affected; test_g resolves.
+    head = repo.commit({"pkg/other.py": "def g():\n    return 3\n"})
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_dyn", "t::test_g"}
+    assert unselected(plan) == {"t::test_made"}
+    # A change in pkg.core, which test_exec imports: exec is affected.
+    head2 = repo.commit(
+        {"pkg/other.py": "def g():\n    return 2\n", "pkg/core.py": "def f():\n    return 11\n"}
+    )
+    plan2 = repo.plan(base, head2, targets)
+    assert selected(plan2) == {"t::test_made", "t::test_dyn"}
+    assert rules(plan2, "t::test_made") == {"dynamic_reference"}
+    # A tests-only change elsewhere reaches neither dynamic user.
+    head3 = repo.commit(
+        {
+            "pkg/core.py": "def f():\n    return 1\n",
+            "pkg/other.py": "def g():\n    return 2\n",
+            "tests/test_other.py": (
+                "from pkg.other import g\n\n\ndef test_g():\n    assert g() == 2 or True\n"
+            ),
+        }
+    )
+    plan3 = repo.plan(base, head3, targets)
+    assert selected(plan3) == {"t::test_g", "t::test_dyn"}

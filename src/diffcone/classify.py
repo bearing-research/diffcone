@@ -22,6 +22,11 @@ DEPENDENCIES_ADDED = "dependencies_added"  # edges were only added
 # addition carries its own dependencies_changed.
 STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED})
 
+# Changes that are reported but carry no impact of their own: nothing an
+# existing dependent can observe differs (a member whose resolution moved
+# because of the addition carries its own dependencies_changed).
+NON_IMPACT = frozenset({IMPORTS_ADDED, DEPENDENCIES_ADDED})
+
 
 @dataclass(frozen=True, order=True)
 class SymbolChange:
@@ -30,6 +35,10 @@ class SymbolChange:
     changes: tuple[str, ...]
     base: Symbol | None
     head: Symbol | None
+
+    @property
+    def carries_impact(self) -> bool:
+        return not set(self.changes) <= NON_IMPACT
 
     @property
     def structural(self) -> bool:

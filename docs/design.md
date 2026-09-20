@@ -180,6 +180,13 @@ identity and reports:
 | `dependencies_added` | outgoing edges were only added (a new import binding, a new call); non-structural |
 | `imports_added` | a module gained import bindings and lost none; non-structural |
 
+A symbol whose only changes are `imports_added` and/or `dependencies_added`
+is reported but seeds no impact: nothing an existing dependent can observe
+differs, and a member whose own resolution moved because of the addition
+carries its own `dependencies_changed`. In practice this means adding a
+name to a test module's import list no longer selects every test that lists
+the module as a lifecycle dependency.
+
 Symbols of a module that failed to parse in one revision are skipped rather
 than reported as added/deleted; the analysis error fallback covers them.
 
@@ -237,11 +244,14 @@ Unknown is never treated as unaffected:
   reached through class references instead). The report lists each
   unresolved reference with the matches that actually carry impact
   (`matched_affected_symbols`).
-* **Dynamic references.** A symbol containing a dynamic reference is treated
-  as affected whenever anything at all changed (rule `dynamic_reference`).
-  This is deliberately always-on: a helper using `vars(o)` is selected on
-  every non-empty change set. Narrowing it (per-package seeds, ignore rules)
-  is roadmap work; a project-defined function named `vars` or `getattr` is
+* **Dynamic references.** A symbol containing a dynamic attribute access,
+  `eval`, `exec`, `globals()` or `vars()` is treated as affected whenever an
+  impact-carrying change lies in a module its own module can reach through
+  imports (the module itself and its transitive import closure, over both
+  revisions), since that is what its globals can name (rule
+  `dynamic_reference`). A dynamic *import* (`__import__`,
+  `importlib.import_module` with an unbounded name) can reach anything and
+  stays always-on. A project-defined function named `vars` or `getattr` is
   not mistaken for the builtin.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,

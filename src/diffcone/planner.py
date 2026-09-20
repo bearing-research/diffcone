@@ -277,9 +277,12 @@ def plan_from_indexes(
             graph.add(Edge(_name_node(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
+    unbounded_dynamic: set[str] = set()  # dynamic *imports*: reach anything
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
+            if "import" in ref.detail:
+                unbounded_dynamic.add(ref.symbol)
         elif ref.name in symbols_by_name and not _is_dunder(ref.name):
             graph.add(
                 Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
@@ -317,13 +320,21 @@ def plan_from_indexes(
     mode: dict[str, int] = {}
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None] = {}
     queue: deque[str] = deque()
-    for change in changes:
+    impacting = [c for c in changes if c.carries_impact]
+    for change in impacting:
         mode[change.id] = STRUCTURAL if change.structural else BEHAVIOR
         via[change.id] = None
         queue.append(change.id)
-    if changes:
+    # A dynamic reference (eval/exec/getattr with an unbounded name) can reach
+    # whatever its module's globals can reach: the module itself and every
+    # module it imports, transitively. A dynamic *import* can reach anything.
+    if impacting:
+        changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
+        reach = _ImportReach(base, head)
         for symbol in sorted(dynamic_symbols):
-            if symbol not in mode:
+            if symbol in mode:
+                continue
+            if symbol in unbounded_dynamic or reach.closure_of(symbol) & changed_modules:
                 mode[symbol] = BEHAVIOR
                 via[symbol] = None
                 queue.append(symbol)
@@ -412,6 +423,39 @@ def plan_from_indexes(
     )
 
 
+class _ImportReach:
+    """Transitive import closure of modules, over both revisions."""
+
+    def __init__(self, base: SourceIndex, head: SourceIndex) -> None:
+        self.module_of: dict[str, str] = {}
+        self.imports_of: dict[str, set[str]] = defaultdict(set)
+        for index in (base, head):
+            for symbol in index.symbols.values():
+                self.module_of[symbol.id] = symbol.module
+        for index in (base, head):
+            for edge in index.edges:
+                if edge.kind == IMPORTS and edge.target in self.module_of:
+                    source_module = self.module_of.get(edge.source)
+                    if source_module is not None:
+                        self.imports_of[source_module].add(edge.target)
+        self._closures: dict[str, set[str]] = {}
+
+    def closure_of(self, symbol_id: str) -> set[str]:
+        module = self.module_of.get(symbol_id)
+        if module is None:
+            return set()
+        if module not in self._closures:
+            seen = {module}
+            stack = [module]
+            while stack:
+                for target in self.imports_of.get(stack.pop(), ()):
+                    if target not in seen:
+                        seen.add(target)
+                        stack.append(target)
+            self._closures[module] = seen
+        return self._closures[module]
+
+
 def _name_node(name: str) -> str:
     return f"name:{name}"
 
@@ -462,7 +506,8 @@ def _explain(
     return Reason(
         RULE_DYNAMIC_REFERENCE,
         f"{current} uses a dynamic import/attribute access ({', '.join(revs)}); "
-        "its dependencies cannot be bounded statically",
+        "a change is reachable from its module's imports, so its dependencies cannot be "
+        "bounded statically",
         tuple(steps),
         None,
         (),
