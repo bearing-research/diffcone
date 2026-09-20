@@ -94,6 +94,41 @@ The squash commit is wide because `click.core.Option` changed structurally
 every test that defines an option; 78 % of those tests do execute changed
 lines, so the width is mostly real.
 
+## structlog (hynek/structlog, 517 tests, `src` layout, async tests)
+
+Last eight commits at the time of measurement; three touch Python, the
+other five (docs, CI, sponsors) are skipped. Suite runtime about 1.5
+seconds; uses `--import-mode=importlib`, pytest-asyncio, time-machine and
+pytest-randomly (disabled through the command so outcomes are comparable
+between snapshots). Discovery resolved every fixture with no notes.
+Reproduce with:
+
+```bash
+git clone --depth 120 https://github.com/hynek/structlog.git
+cd structlog && uv venv .venv && uv pip install -p .venv/bin/python -e . \
+  pytest pytest-cov pytest-asyncio pytest-randomly simplejson time-machine
+diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
+  --source-root src --source-root tests \
+  --command ".venv/bin/python -m pytest -p no:randomly" --coverage --max 8
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| e26945d | fix: PytestRemovedIn10Warning | 3 / 516 | 99 % | 100 % | 67 % |
+| d8e321a | Use built-in product | 34 / 516 | 93 % | 100 % | 100 % |
+| 73393f3 | Better bankruptcy | 49 / 517 | 91 % | 100 % | 85 % |
+
+Totals: 1 outcome change, 0 missed; recall 100 % (77 of 77); precision
+91 %; mean savings 94 %.
+
+The first structlog run reported two outcome misses for
+`tests/test_tracebacks.py::test_recursive`, which passed at base and
+failed at head on two unrelated commits. The test depends on recursion
+depth and fails under the coverage tracer; the base suite had run
+uninstrumented while the head suite ran under coverage. Both suites now
+run under the tracer when `--coverage` is requested (lesson recorded
+below).
+
 ## diffcone itself (87 tests)
 
 Last five commits at the time of writing (one docs commit skipped):
@@ -141,7 +176,15 @@ recall was measured against the wrong code, see item 2):
 4. Parameter ids containing spaces and pipes (`[TEXT: a|b]`) broke the
    node id parsers.
 
+From the first structlog run:
+
+1. With `--coverage`, the base suite ran uninstrumented and the head suite
+   under the tracer; a recursion-depth test flipped, producing false
+   outcome misses. Both suites now run under the same instrumentation and
+   the corpus outcome cache is keyed by mode.
+
 ## Not yet exercised
 
 Suites that take minutes (per-test coverage cost at scale), plugin-provided
-fixtures (`--assume-external-fixture`), async suites, and monorepos.
+fixtures such as `mocker` (`--assume-external-fixture`; structlog's async
+tests needed none), and monorepos.
