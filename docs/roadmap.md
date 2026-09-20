@@ -49,6 +49,7 @@ Static discovery covers the common layout. Remaining gaps, roughly by value:
 * `validate` for ASV.
 * Coverage validation at base as well as head (a test that executed a
   deleted symbol at base).
-* Run `corpus` on public repositories and publish the numbers.
+* Extend [evaluation.md](evaluation.md) to more repositories (larger
+  suites, src layouts, plugin-heavy fixtures) and track the numbers over time.
 * Persistent cache of per-commit indexes once correctness is established.
 * A corpus of real-world before/after commits as regression data.

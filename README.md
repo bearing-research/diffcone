@@ -179,6 +179,9 @@ The JSON report (`schema_version: 2`) contains:
 
 `--format text` prints the same information as a readable summary.
 
+Measured results on real repositories, with reproduction steps, are in
+[docs/evaluation.md](docs/evaluation.md).
+
 ## Limitations
 
 * **Uncommitted analysis is explicit.** A `WORKTREE` or `INDEX` snapshot is
