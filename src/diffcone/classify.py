@@ -1,0 +1,72 @@
+"""Change classifier: compares two source indexes symbol by symbol."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from diffcone.model import DEFINED_IN, SourceIndex, Symbol
+
+ADDED = "added"
+DELETED = "deleted"
+BODY_CHANGED = "body_changed"
+DEFINITION_CHANGED = "definition_changed"
+DEPENDENCIES_CHANGED = "dependencies_changed"
+
+# Changes that invalidate everything defined inside the symbol (and, for
+# deletions, everything that imports it), not just direct references.
+STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED})
+
+
+@dataclass(frozen=True, order=True)
+class SymbolChange:
+    id: str
+    kind: str
+    changes: tuple[str, ...]
+    base: Symbol | None
+    head: Symbol | None
+
+    @property
+    def structural(self) -> bool:
+        return bool(STRUCTURAL & set(self.changes))
+
+
+def _dependency_signature(index: SourceIndex, symbol_id: str) -> frozenset[tuple[str, str, str]]:
+    return frozenset(
+        (e.kind, e.target, e.detail)
+        for e in index.edges
+        if e.source == symbol_id and e.kind != DEFINED_IN
+    )
+
+
+def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
+    """Return every symbol that differs between the two revisions.
+
+    Symbols whose module failed to parse in one revision are skipped: their
+    status is unknown, and the planner handles that through the analysis
+    error fallback instead of inventing additions or deletions.
+    """
+    changes: list[SymbolChange] = []
+    for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
+        b = base.symbols.get(symbol_id)
+        h = head.symbols.get(symbol_id)
+        module = (b or h).module  # type: ignore[union-attr]
+        if b is None and module in base.failed_modules:
+            continue
+        if h is None and module in head.failed_modules:
+            continue
+        if b is None:
+            changes.append(SymbolChange(symbol_id, h.kind, (ADDED,), None, h))  # type: ignore[union-attr]
+            continue
+        if h is None:
+            changes.append(SymbolChange(symbol_id, b.kind, (DELETED,), b, None))
+            continue
+        kinds: list[str] = []
+        if b.body_hash != h.body_hash:
+            kinds.append(BODY_CHANGED)
+        if b.kind != h.kind or b.definition_hash != h.definition_hash:
+            kinds.append(DEFINITION_CHANGED)
+        if _dependency_signature(base, symbol_id) != _dependency_signature(head, symbol_id):
+            kinds.append(DEPENDENCIES_CHANGED)
+        if kinds:
+            changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))
+    return changes

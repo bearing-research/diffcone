@@ -6,20 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Diffcone is a static-first, function-level change-impact engine for Python. It maps changes in application code to affected tests and benchmarks (pytest and ASV are the first runner integrations).
 
-**There is no code yet.** The repository contains only the license (MIT, Bearing Research), a stub README, and `docs/diffcone_coding_agent_handoff.md`, which is the authoritative spec for the first milestone. Read that document in full before implementing anything; the rules below summarize it but do not replace it.
+Milestone 1 (`diffcone plan` over two committed revisions with a target manifest) is implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `AGENTS.md` holds the scope boundaries. Stdlib only, no runtime dependencies.
 
-## Tooling
-
-Use Python and `uv`. Keep dependencies modest. Once a `pyproject.toml` exists, the expected workflow is:
+## Commands
 
 ```bash
-uv sync                      # install
-uv run diffcone plan --base <rev> --head <rev> --targets <manifest> --format json
-uv run pytest                # all tests
-uv run pytest tests/test_x.py::test_name   # single test
+uv sync
+uv run diffcone plan --repo . --base <rev> --head <rev> --targets targets.json \
+    --source-root src --source-root tests --format json|text
+uv run pytest                                   # all tests
+uv run pytest tests/test_scenarios.py -k alias  # one scenario
+uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
-Do not document commands in README or here that are not actually wired up.
+Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan.
+
+## Code layout
+
+- `src/diffcone/snapshot.py` reads files from git objects (`ls-tree` + `cat-file --batch`); never touches the working tree.
+- `src/diffcone/indexer.py` parses modules, assigns symbol identities, hashes bodies/definitions, resolves references into `Edge`s and records `UnresolvedReference`s. This is where the supported subset lives.
+- `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
+- `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
+- `src/diffcone/report.py` renders JSON (`schema_version` 1) and text.
+- `tests/conftest.py` provides `FixtureRepo` (throwaway git repo built from dicts); `tests/helpers.py` has assertion helpers. Do not put helper functions starting with `pytest_` in conftest; pytest treats them as hooks.
 
 ## First milestone: `diffcone plan`
 
@@ -41,7 +50,7 @@ Git snapshot reader
 - No persistent caching until correctness is established.
 - JSON report must distinguish: analyzed snapshots and scope, changed symbols, selected targets, unselected targets, dependency explanations, unresolved relationships, fallback decisions, analysis errors.
 
-## Non-negotiable analysis rules
+## Non-negotiable analysis rules (see docs/design.md for the precise propagation table)
 
 - **Analyze both revisions.** Deleted functions, removed calls, and changed aliases must stay in consideration even if absent from the head graph.
 - **Stable symbol identity.** Identity is the qualified symbol (module + function/method), never source location. Inserting blank lines above a function must not change its identity or count as a body change.
