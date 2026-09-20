@@ -247,6 +247,13 @@ def _run_full_pytest(
             # same tests as a plain run; only the coverage options are added.
             argv += ["--cov=.", "--cov-context=test", "--cov-report="]
             env["COVERAGE_FILE"] = str(db)
+            # coverage.py 7.x defaults to the sys.monitoring core on Python
+            # 3.12+, which disables a line after its first hit: with per-test
+            # contexts only the *first* test to run a line gets credit for it.
+            # coverage avoids that core only for contexts set in its own config,
+            # not for pytest-cov's switch_context(), so force the C tracer (it
+            # falls back to the pure-Python tracer when unavailable).
+            env.setdefault("COVERAGE_CORE", "ctrace")
         proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
         log = proc.stdout + proc.stderr
         if coverage and not (db and db.exists()):

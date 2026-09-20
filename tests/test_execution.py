@@ -493,3 +493,32 @@ def test_validation_status_label_names_the_failing_check():
     assert "validation (pytest): MISSED (outcome, coverage)" in execution.validation_to_text(v)
     v.coverage = None
     assert "validation (pytest): MISSED (outcome)" in execution.validation_to_text(v)
+
+
+def test_coverage_credits_every_test_that_runs_a_line(repo):
+    """Two tests execute the same changed function; both must be attributed.
+
+    With coverage.py's default sys.monitoring core a line is disabled after
+    its first hit, so only the first test would be credited.
+    """
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": MOD,
+            "ext/__init__.py": "",
+            "ext/bridge.py": "from pkg.ops import add\n\n\ndef via():\n    return add(1, 1)\n",
+            "tests/test_first.py": (
+                "from ext.bridge import via\n\n\ndef test_first():\n    assert via()\n"
+            ),
+            "tests/test_second.py": (
+                "from ext.bridge import via\n\n\ndef test_second():\n    assert via()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], source_roots=["pkg", "tests"], discover_runners=["pytest"])
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert [h.runner_id for h in v.coverage.missed] == [
+        "tests/test_first.py::test_first",
+        "tests/test_second.py::test_second",
+    ]

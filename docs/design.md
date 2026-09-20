@@ -360,7 +360,11 @@ from the `run` and `validate` commands after a plan exists.
   to succeed; precision (dynamically affected among selected) is reported,
   not enforced, because conservative selection is by design. Lines executed
   at import/collection time carry no test context and are ignored; a run
-  that records no contexts at all is an error, never an OK.
+  that records no contexts at all is an error, never an OK. The run sets
+  `COVERAGE_CORE=ctrace` unless already set: coverage.py's default
+  `sys.monitoring` core disables a line after its first execution, which
+  silently credits only the first test to run each line and makes
+  per-test contexts unusable.
 
 ## Known gaps (by design)
 
