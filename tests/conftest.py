@@ -9,4 +9,4 @@ from diffcone.testing import FixtureRepo
 
 @pytest.fixture
 def repo(tmp_path: Path) -> FixtureRepo:
-    return FixtureRepo(tmp_path / "repo")
+    return FixtureRepo(tmp_path / "repo", check_cache=True)

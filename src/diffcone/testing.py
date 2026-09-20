@@ -31,11 +31,20 @@ GIT_ENV = {
 
 
 class FixtureRepo:
-    """A throwaway git repository built from dicts of file contents."""
+    """A throwaway git repository built from dicts of file contents.
 
-    def __init__(self, path: Path) -> None:
+    With ``check_cache`` (diffcone's own suite turns it on) every ``plan``
+    call is also planned through a cold and a warm cache in ``cache_dir``
+    (default: ``.fixture-cache`` beside the repository) and the reports are
+    asserted equal, which triples its cost."""
+
+    def __init__(
+        self, path: Path, *, check_cache: bool = False, cache_dir: Path | None = None
+    ) -> None:
         self.path = Path(path)
         self.path.mkdir(parents=True, exist_ok=True)
+        self.check_cache = check_cache
+        self.cache_dir = Path(cache_dir) if cache_dir else self.path.parent / ".fixture-cache"
         self.git("init", "-q", "-b", "main")
 
     def try_git(self, *args: str) -> subprocess.CompletedProcess[str]:
@@ -78,7 +87,7 @@ class FixtureRepo:
             else Manifest(list(targets))  # type: ignore[arg-type]
         )
         result = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
-        if "cache" not in kwargs:
+        if self.check_cache and "cache" not in kwargs:
             self._check_cache_invisible(result, base, head, manifest, source_roots, kwargs)
         return result
 
@@ -87,7 +96,7 @@ class FixtureRepo:
         facts and resolution computed and stored) and one served warm (every
         module's facts and resolution loaded, whole-index entries removed so
         the module cache is what answers) must equal the uncached plan."""
-        directory = self.path.parent / ".fixture-cache"
+        directory = self.cache_dir
         shutil.rmtree(directory, ignore_errors=True)
         expected = json.dumps(to_dict(result), sort_keys=True)
         for warm in (False, True):

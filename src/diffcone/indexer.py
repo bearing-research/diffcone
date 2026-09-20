@@ -28,7 +28,7 @@ import copy
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 from diffcone.model import (
     CLASS,
@@ -708,7 +708,7 @@ def _facts_to_dict(
         "literal_names": {
             k: (list(v) if v is not None else None) for k, v in scope.literal_names.items()
         },
-        "symbols": [asdict(s) for s in symbols],
+        "symbols": [dict(vars(s)) for s in symbols],  # flat and frozen: no deep copy needed
         "classes": [
             {
                 "id": c.id,
@@ -760,9 +760,6 @@ class Indexer:
         self._collided = False
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
-        # Cache counters (modules whose facts / resolution had to be computed).
-        self.modules_indexed = 0
-        self.modules_resolved = 0
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -806,19 +803,21 @@ class Indexer:
         for module in sorted(self.scopes):
             scope = self.scopes[module]
             record = facts[module]
-            if record is not None and any(s["id"] in self.index.symbols for s in record["symbols"]):
-                # Collides with an earlier module (an error either way): index
-                # it afresh so the errors come out exactly as without a cache.
-                record = None
+            if record is not None:
+                # A record whose symbols collide with an earlier module's (an
+                # error either way) is not applied, so the errors come out
+                # exactly as without a cache; a malformed record is a miss.
+                try:
+                    applied = self._apply_facts(scope, record)
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    applied = False
+                if applied:
+                    continue
                 scope.tree = self._parse(scope.path, module)
                 if scope.tree is None:  # pragma: no cover - same content parsed before
                     del self.scopes[module]
                     self.index.modules.discard(module)
                     continue
-            if record is not None:
-                self._apply_facts(scope, record)
-                continue
-            self.modules_indexed += 1
             self._added_symbols, self._added_classes, self._collided = [], [], False
             self.out = _Output()
             try:
@@ -838,18 +837,17 @@ class Indexer:
         self._bases_final = True  # MROs may be memoised from here on
         self._build_descendants()
         fingerprint = self._environment_fingerprint() if cache is not None else ""
-        resolved_keys = {
-            m: f"{s.cache_key}-{fingerprint}" for m, s in self.scopes.items() if s.cache_key
-        }
-        loaded = cache.load_resolved(list(resolved_keys.values())) if cache is not None else {}
+        loaded = cache.load_resolved(list(keys.values()), fingerprint) if cache else {}
         for module in sorted(self.scopes):
             scope = self.scopes[module]
-            key = resolved_keys.get(module)
-            data = loaded.get(key) if key is not None else None
-            if data is not None:
-                out = _output_from_dict(data, self.scopes)
-            else:
-                self.modules_resolved += 1
+            key = scope.cache_key
+            out: _Output | None = None
+            if key is not None and key in loaded:
+                try:
+                    out = _output_from_dict(loaded[key], self.scopes)
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    out = None  # malformed record: resolve as on a miss
+            if out is None:
                 if scope.tree is None:
                     self._load_tree(scope)
                 self.out = _Output()
@@ -862,7 +860,7 @@ class Indexer:
             self._global.merge(out)
         self._resolve_param_dynamics()
         if cache is not None and (new_facts or new_resolved):
-            cache.store({**new_facts, **new_resolved})
+            cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
 
     def _parse(self, path: str, module: str) -> ast.Module | None:
@@ -881,33 +879,48 @@ class Indexer:
         if tree is None:  # pragma: no cover - the same content parsed before
             tree = ast.Module(body=[], type_ignores=[])
         scope.tree = tree
-        _, _, variable_stmts = self._module_statements(scope)
+        _, _, variable_stmts = self._module_statements(scope, register_imports=False)
         scope.variable_stmts = {n: s for n, s in variable_stmts.items() if n in scope.variables}
 
-    def _apply_facts(self, scope: ModuleScope, record: dict) -> None:
-        scope.imports = {k: ImportBinding(m, a) for k, (m, a) in record["imports"].items()}
-        scope.star_imports = list(record["star_imports"])
-        scope.bindings = set(record["bindings"])
-        scope.members = dict(record["members"])
-        scope.variables = dict(record["variables"])
-        scope.literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
-        scope.env_digest = record["env"]
+    def _apply_facts(self, scope: ModuleScope, record: dict) -> bool:
+        """Install a cached facts record. Everything is built before anything
+        is stored, so a malformed record (which raises) or one whose symbols
+        collide with an earlier module's (returns False) leaves no trace."""
+        imports = {k: ImportBinding(m, a) for k, (m, a) in record["imports"].items()}
+        star_imports = list(record["star_imports"])
+        bindings = set(record["bindings"])
+        members = dict(record["members"])
+        variables = dict(record["variables"])
+        literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
+        env_digest = str(record["env"])
+        symbols: list[Symbol] = []
         for data in record["symbols"]:
             data = dict(data)
             data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
             data["imports"] = tuple(data["imports"])
-            self._add_symbol(Symbol(**data))
+            symbols.append(Symbol(**data))
+        classes: dict[str, ClassScope] = {}
         for data in record["classes"]:
-            enclosing = self.class_scopes[data["enclosing"]] if data["enclosing"] else None
-            self.class_scopes[data["id"]] = ClassScope(
-                id=data["id"],
+            enclosing = classes[data["enclosing"]] if data["enclosing"] else None
+            classes[data["id"]] = ClassScope(
+                id=str(data["id"]),
                 module=scope,
                 enclosing=enclosing,
                 members=dict(data["members"]),
                 bindings=set(data["bindings"]),
                 base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
             )
-        self.out.edges.update(Edge(*e) for e in record["edges"])
+        edges = {Edge(*e) for e in record["edges"]}
+        if any(s.id in self.index.symbols for s in symbols):
+            return False
+        scope.imports, scope.star_imports, scope.bindings = imports, star_imports, bindings
+        scope.members, scope.variables, scope.literal_names = members, variables, literal_names
+        scope.env_digest = env_digest
+        for symbol in symbols:
+            self._add_symbol(symbol)
+        self.class_scopes.update(classes)
+        self.out.edges |= edges
+        return True
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other
@@ -987,14 +1000,15 @@ class Indexer:
         return True
 
     def _module_statements(
-        self, scope: ModuleScope
+        self, scope: ModuleScope, *, register_imports: bool
     ) -> tuple[list[ast.stmt], list[ast.stmt], dict[str, ast.stmt]]:
         """(all scope statements, body without docstring, variable statements)
-        of a parsed module; fills the import table and statement list."""
+        of a parsed module; records the import statements and, unless the
+        import table was served by the cache, fills it."""
         assert scope.tree is not None
         stmts = list(iter_scope_statements(scope.tree.body))
         scope.import_nodes = [s for s in stmts if isinstance(s, (ast.Import, ast.ImportFrom))]
-        if not scope.imports and not scope.star_imports:
+        if register_imports:
             for node in scope.import_nodes:
                 self._register_imports(scope, node, scope.imports, scope.star_imports)
         body = _split_docstring(scope.tree.body)[1]
@@ -1002,7 +1016,7 @@ class Indexer:
 
     def _index_module(self, scope: ModuleScope) -> None:
         assert scope.tree is not None
-        stmts, body, variable_stmts = self._module_statements(scope)
+        stmts, body, variable_stmts = self._module_statements(scope, register_imports=True)
         for stmt in stmts:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)

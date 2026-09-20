@@ -214,3 +214,83 @@ def test_worktree_plan_reresolves_one_module_after_a_body_edit(repo, tmp_path):
     assert cache.modules.facts_hits == 3 and cache.modules.resolved_hits == 3
     uncached = repo.plan(base, "WORKTREE", targets)
     assert _plans_equal(result, uncached)
+
+
+def test_module_cache_treats_malformed_records_as_misses(repo, tmp_path):
+    import sqlite3
+
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    snap = read_snapshot(repo.path, base, ["."])
+    plain = build_index(snap)
+    mc = ModuleCache(tmp_path / "c")
+    build_index(snap, module_cache=mc)
+    with sqlite3.connect(mc.path) as conn:
+        # One facts record missing keys, one resolution record naming an
+        # unknown module, one row that is not JSON at all.
+        key = ModuleCache.key("pkg.ops", "pkg/ops.py", OPS.encode())
+        conn.execute("UPDATE records SET data = '{}' WHERE key = ? AND fingerprint = ''", [key])
+        conn.execute(
+            "UPDATE records SET data = ? WHERE key != ? AND fingerprint != ''",
+            [json.dumps({"edges": [], "param_dynamics": [[0, 0, 0, 0, {"module": "?"}, 0]]}), key],
+        )
+        conn.execute("UPDATE records SET data = 'nope' WHERE key = ? AND fingerprint != ''", [key])
+    mc = ModuleCache(tmp_path / "c")
+    assert index_to_dict(build_index(snap, module_cache=mc)) == index_to_dict(plain)
+    with sqlite3.connect(mc.path) as conn:  # every bad row was replaced by a good one
+        rows = conn.execute("SELECT data FROM records").fetchall()
+    assert len(rows) == 6
+    assert all(set(json.loads(d)) >= {"edges"} for (d,) in rows)
+
+
+def test_module_cache_keeps_one_resolution_per_file_and_serves_read_only(repo, tmp_path):
+    import os
+    import sqlite3
+
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    mc = ModuleCache(tmp_path / "c")
+    build_index(read_snapshot(repo.path, "WORKTREE", ["."]), module_cache=mc)
+    # Three environment-changing edits of one file: every module is resolved
+    # again each time, but only the latest fingerprint's rows survive.
+    for n in range(3):
+        (repo.path / "pkg/ops.py").write_text(OPS + f"\n\nX{n} = {n}\n")
+        build_index(read_snapshot(repo.path, "WORKTREE", ["."]), module_cache=mc)
+    with sqlite3.connect(mc.path) as conn:
+        facts = conn.execute("SELECT COUNT(*) FROM records WHERE fingerprint = ''").fetchone()[0]
+        resolved = conn.execute("SELECT COUNT(*) FROM records WHERE fingerprint != ''").fetchone()
+        key = ModuleCache.key("pkg", "pkg/__init__.py", b"")
+        per_file = conn.execute("SELECT COUNT(*) FROM records WHERE key = ?", [key]).fetchone()
+    assert facts == 3 + 3  # unchanged modules once, ops.py per content
+    assert resolved[0] <= facts and per_file[0] == 2  # facts + the latest resolution only
+    if os.geteuid() == 0:  # pragma: no cover - root ignores permission bits
+        return
+    wt = read_snapshot(repo.path, "WORKTREE", ["."])
+    plain = index_to_dict(build_index(wt))
+    for p in (mc.path, mc.path.parent):
+        os.chmod(p, 0o555 if p.is_dir() else 0o444)
+    try:
+        mc = ModuleCache(tmp_path / "c")
+        assert index_to_dict(build_index(wt, module_cache=mc)) == plain
+        assert (mc.facts_hits, mc.resolved_hits) == (3, 3)
+        (repo.path / "pkg/ops.py").write_text(OPS + "\n\nY = 9\n")  # content never seen
+        wt = read_snapshot(repo.path, "WORKTREE", ["."])
+        mc = ModuleCache(tmp_path / "c")
+        assert index_to_dict(build_index(wt, module_cache=mc)) == index_to_dict(build_index(wt))
+        assert mc.facts_misses == 1  # computed, and the failed store is silent
+    finally:
+        for p in (mc.path.parent, mc.path):
+            os.chmod(p, 0o755 if p.is_dir() else 0o644)
+
+
+def test_index_cache_removes_the_legacy_hash_directory(tmp_path):
+    (tmp_path / "c" / "hashes").mkdir(parents=True)
+    (tmp_path / "c" / "hashes" / "x.json").write_text("{}")
+    IndexCache(tmp_path / "c")
+    assert not (tmp_path / "c" / "hashes").exists()

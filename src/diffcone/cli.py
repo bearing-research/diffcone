@@ -66,11 +66,10 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-cache",
         action="store_true",
-        help="do not read or write the per-commit index cache (<repo>/.diffcone/cache)",
+        help="do not read or write the cache (<repo>/.diffcone/cache): whole indexes of "
+        "committed snapshots and per-module results, which also serve WORKTREE and INDEX",
     )
-    p.add_argument(
-        "--cache-dir", help="where to keep the index cache (default: <repo>/.diffcone/cache)"
-    )
+    p.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
 
 
 def build_parser() -> argparse.ArgumentParser:

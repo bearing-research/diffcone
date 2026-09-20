@@ -357,8 +357,13 @@ indexer unit test builds its index plain, through a cold cache and through
 a warm one and compares them; every scenario fixture plans uncached, cold
 and warm (with the whole-index entries removed so the module cache is what
 answers) and compares the reports; a test asserts that a one-line body
-edit re-parses and re-resolves exactly one module. There is no eviction
-yet; the file grows with every distinct file content seen.
+edit re-parses and re-resolves exactly one module. A malformed record is
+treated as a miss (a facts record is fully built before it is installed).
+Facts rows are kept for every distinct file content seen; resolution rows
+only for the latest fingerprint each file was resolved against, so the
+file is bounded by the number of distinct file contents. Reads open the
+database read-only, so a cache directory that cannot be written still
+serves hits.
 
 Cost, warm `plan --base HEAD --head WORKTREE --discover pytest` wall time
 through the installed entry point (about 0.1 s of it is interpreter
