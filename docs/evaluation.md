@@ -124,7 +124,7 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 | 73393f3 | Better bankruptcy | 49 / 517 | 91 % | 100 % | 85 % |
 
 Totals: 1 outcome change, 0 missed; recall 100 % (77 of 77); precision
-91 %; mean savings 94 %.
+92 %; mean savings 95 %.
 
 The first structlog run reported two outcome misses for
 `tests/test_tracebacks.py::test_recursive`, which passed at base and
@@ -342,7 +342,11 @@ number (recall, precision and savings identical to the tables above):
   pytest-mock unchanged; click moved from 65 % to 66 % savings and 77 % to
   80 % precision and its table above is from the re-run. Between the first
   and last of those commits toolz temporarily lost one affected test
-  (recall 93 %), which is what drove the follow-ups.
+  (recall 93 %), which is what drove the follow-ups;
+* prefix-bounded dynamic names (commit 042f611): toolz, click, pytest-mock
+  and attrs unchanged (attrs' lazy loader had already stopped being a seed
+  once module-level variables became symbols); structlog moved from 94 %
+  to 95 % savings and 91 % to 92 % precision.
 
 ## Not yet exercised
 
