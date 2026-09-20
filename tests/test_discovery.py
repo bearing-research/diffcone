@@ -921,3 +921,44 @@ def test_cli_no_well_known_fixtures(repo, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["selected_targets"][0]["conservative"] is True
     assert report["discovery"][0]["notes"][0]["kind"] == "unresolved_fixture"
+
+
+def test_class_level_mock_patch_injects_into_every_test_method(repo):
+    rev = repo.commit(
+        {
+            "tests/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef db():\n    return {}\n",
+            "tests/test_cls.py": (
+                "from unittest import mock\n\n\n"
+                "@mock.patch('os.getcwd')\n"
+                "class Base:\n"
+                # Patched by Base's decorator and again by TestPatched's (mock
+                # appends to the same function's patchings): two injected.
+                "    def test_inherited(self, m, m2, db):\n        pass\n\n"
+                "    def helper(self, db):\n        pass\n\n\n"
+                "@mock.patch.object(dict, 'get')\n"
+                "class TestPatched(Base):\n"
+                "    def test_plain(self, m1, m2, db):\n        pass\n\n"
+                "    @mock.patch('os.sep', '/')\n"
+                "    @mock.patch('os.name')\n"
+                "    def test_stacked(self, m_name, m1, m2, db):\n        pass\n\n"
+                "    def test_underscore(self, _, _2):\n        pass\n\n\n"
+                "class TestUnpatched:\n"
+                "    def test_needs(self, db):\n        pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    targets = by_id(result)
+    deps = {k: set(v.lifecycle_dependencies) for k, v in targets.items()}
+    for node in (
+        "TestPatched::test_plain",
+        "TestPatched::test_stacked",
+        "TestPatched::test_inherited",
+    ):
+        assert "tests.conftest.db" in deps[f"tests/test_cls.py::{node}"], node
+        assert not any(d.startswith("fixture:") for d in deps[f"tests/test_cls.py::{node}"]), node
+    assert not any(
+        d.startswith("fixture:") for d in deps["tests/test_cls.py::TestPatched::test_underscore"]
+    )
+    assert "tests.conftest.db" in deps["tests/test_cls.py::TestUnpatched::test_needs"]
+    assert [n.kind for n in result.notes] == []

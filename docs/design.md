@@ -416,7 +416,10 @@ Fixtures are functions decorated with a dotted name ending in `fixture` or
 arguments are honoured.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
-`patch.object` decorators (unless `new` is given), arguments supplied by
+`patch.object` decorators (unless `new` is given) on the function or, for
+`test*` methods, on its class and in-module bases (each such class
+decorator injects one more argument, as `unittest.mock` patches every
+`test*` attribute at class definition), arguments supplied by
 hypothesis `@given` (keyword strategies by name, positional strategies
 filling the last parameters), and names supplied by
 `@pytest.mark.parametrize` on the function, class, enclosing classes or

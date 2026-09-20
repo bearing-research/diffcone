@@ -19,7 +19,8 @@ Lifecycle dependencies attached to each test:
 
 * fixtures requested by parameter name (excluding parameters with defaults,
   ``parametrize`` argnames unless ``indirect``, and arguments injected by
-  ``mock.patch`` decorators), by ``@pytest.mark.usefixtures`` on the
+  ``mock.patch`` decorators on the function or, for ``test*`` methods, on
+  its class and in-module base classes), by ``@pytest.mark.usefixtures`` on the
   function, class (including enclosing classes) or module (``pytestmark``),
   and transitively by other fixtures, resolved in pytest's order: class and
   its in-module bases, module, nearest ``conftest.py`` outward, then
@@ -566,13 +567,18 @@ def _plugins_from_body(body: list[ast.stmt]) -> list[str]:
 
 
 def _fixture_requests(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, is_method: bool, marks: Marks = NO_MARKS
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    is_method: bool,
+    marks: Marks = NO_MARKS,
+    class_injected: int = 0,
 ) -> tuple[str, ...]:
     """Parameter names pytest would look up as fixtures.
 
     Mirrors ``getfuncargnames``: drops ``self``, parameters with defaults,
-    arguments injected by ``mock.patch`` decorators, and names supplied by
-    ``parametrize`` unless they are marked ``indirect``.
+    arguments injected by ``mock.patch`` decorators (``class_injected`` of
+    them by decorators on the enclosing class and its bases, which
+    ``unittest.mock`` applies to every ``test*`` method), and names supplied
+    by ``parametrize`` unless they are marked ``indirect``.
     """
     args = node.args
     positional = args.posonlyargs + args.args
@@ -582,6 +588,8 @@ def _fixture_requests(
     if is_method and required:
         required = required[1:]
     injected = _injected_patch_count(node.decorator_list)
+    if node.name.startswith("test"):
+        injected += class_injected
     if injected:
         required = required[injected:]
     skip = set(marks.parametrized - marks.indirect)
@@ -1015,6 +1023,11 @@ def _collect_module_tests(
         class_ids = prefix_ids + [b_id for _, b_id in reversed(bases)] + [class_id]
         class_marks = inherited + _marks_from_expressions(cls.decorator_list)
         class_marks = class_marks + _marks_from_pytestmark(cls.body)
+        # ``@patch`` on a class (or on a base, whose patched methods are
+        # inherited and patched again) injects into every ``test*`` method.
+        class_injected = _injected_patch_count(cls.decorator_list) + sum(
+            _injected_patch_count(owner.decorator_list) for owner, _ in bases
+        )
         # Methods: own definitions win over inherited ones.
         methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
         for owner, owner_id in reversed(bases):
@@ -1034,7 +1047,8 @@ def _collect_module_tests(
             if not (_matches(functions, name) or (unittest_style and name.startswith("test"))):
                 continue
             marks = class_marks + _marks_from_expressions(func.decorator_list)
-            requests = list(_fixture_requests(func, True, marks)) + list(marks.usefixtures)
+            requests = list(_fixture_requests(func, True, marks, class_injected))
+            requests += list(marks.usefixtures)
             add(f"{nodeid}::{name}", f"{owner_id}.{name}", class_ids, requests, extra)
         for inner in scope_classes(cls.body):
             walk_class(inner, prefix_ids + [class_id], nodeid, class_marks)
