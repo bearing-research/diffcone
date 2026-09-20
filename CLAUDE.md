@@ -63,7 +63,7 @@ Git snapshot reader
 
 - **Analyze both revisions.** Deleted functions, removed calls, and changed aliases must stay in consideration even if absent from the head graph.
 - **Stable symbol identity.** Identity is the qualified symbol (module + function/method), never source location. Inserting blank lines above a function must not change its identity or count as a body change.
-- **Body changes vs. broader changes.** Class structure and class bodies, decorators, defaults, import statements, and other definition-time changes invalidate every member (structural). Module body changes reach only members and importers that reference module state, plus targets that declare the module as a lifecycle dependency. This trade-off is documented in `docs/design.md`; do not silently move it in either direction.
+- **Body changes vs. broader changes.** Class structure and class bodies, decorators, defaults, removed or redirected imports/dependencies, and other definition-time changes invalidate every member (structural); pure additions of imports or dependencies are not structural. Module body changes reach only members and importers that reference module state, plus targets that declare the module as a lifecycle dependency. This trade-off is documented in `docs/design.md`; do not silently move it in either direction.
 - **Unknown != unaffected.** Unresolved relationships are represented explicitly. When impact cannot be bounded, select all supplied targets and report the fallback rule.
 - **New or changed targets are always selected**, even with no dependency edges.
 - **Every selection reason maps to a real dependency edge or an explicit fallback rule.** Never fabricate call paths.

@@ -5,16 +5,21 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from diffcone.model import CLASS, DEFINED_IN, SourceIndex, Symbol
+from diffcone.model import CLASS, DEFINED_IN, MODULE, SourceIndex, Symbol
 
 ADDED = "added"
 DELETED = "deleted"
 BODY_CHANGED = "body_changed"
 DEFINITION_CHANGED = "definition_changed"
-DEPENDENCIES_CHANGED = "dependencies_changed"
+IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
+DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
+DEPENDENCIES_ADDED = "dependencies_added"  # edges were only added
 
 # Changes that invalidate everything defined inside the symbol (and, for
 # deletions, everything that imports it), not just direct references.
+# Pure additions (a new import binding, a new dependency edge) cannot break
+# an existing member: a member whose own resolution changed because of the
+# addition carries its own dependencies_changed.
 STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED})
 
 
@@ -76,10 +81,17 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         kinds: list[str] = []
         if b.body_hash != h.body_hash:
             kinds.append(BODY_CHANGED)
-        if b.kind != h.kind or b.definition_hash != h.definition_hash:
+        if b.kind != h.kind:
             kinds.append(DEFINITION_CHANGED)
-        if base_deps.get(symbol_id, empty) != head_deps.get(symbol_id, empty):
-            kinds.append(DEPENDENCIES_CHANGED)
+        elif b.definition_hash != h.definition_hash:
+            if b.kind == MODULE and set(b.imports) <= set(h.imports):
+                kinds.append(IMPORTS_ADDED)
+            else:
+                kinds.append(DEFINITION_CHANGED)
+        before = base_deps.get(symbol_id, empty)
+        after = head_deps.get(symbol_id, empty)
+        if before != after:
+            kinds.append(DEPENDENCIES_ADDED if before <= after else DEPENDENCIES_CHANGED)
         if kinds:
             changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))
     return changes

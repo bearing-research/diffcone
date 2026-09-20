@@ -198,9 +198,10 @@ The JSON report (`schema_version: 2`) contains:
   reported as unresolved and matched conservatively by name against every
   known function, method or class of that name, so impact reaches them
   whenever any such symbol is affected.
-* **Import-statement changes invalidate the whole importing module**, and
-  any change to a class body (attributes, member list, bases, decorators)
-  invalidates every method of that class. This is conservative by design.
+* **Removing or redirecting an import invalidates the whole importing
+  module** (adding one does not), and any change to a class body
+  (attributes, member list, bases, decorators) invalidates every method of
+  that class. This is conservative by design.
 * **Module-level side effects are only partially tracked.** A module's
   top-level statements are hashed, and functions that use module-level state
   get edges to the module, but a body change in a module's init code does not

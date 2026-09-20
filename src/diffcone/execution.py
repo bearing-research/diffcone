@@ -245,7 +245,12 @@ def _run_full_pytest(
             db = Path(tmp) / ".coverage"
             # The project's own addopts stay in force so this run collects the
             # same tests as a plain run; only the coverage options are added.
-            argv += ["--cov=.", "--cov-context=test", "--cov-report="]
+            # The project's coverage config is replaced: its ``source``/``omit``
+            # (typically excluding tests) would blind attribution, and
+            # ``parallel``/``branch`` change the database layout.
+            rc = Path(tmp) / "coveragerc"
+            rc.write_text("[run]\nbranch = false\nparallel = false\nrelative_files = false\n")
+            argv += ["--cov=.", "--cov-context=test", "--cov-report=", f"--cov-config={rc}"]
             env["COVERAGE_FILE"] = str(db)
             # coverage.py 7.x defaults to the sys.monitoring core on Python
             # 3.12+, which disables a line after its first hit: with per-test

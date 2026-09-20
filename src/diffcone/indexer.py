@@ -455,6 +455,7 @@ class Indexer:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
+        imports = tuple(sorted(_canonical_imports(scope)))
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -464,9 +465,10 @@ class Indexer:
                 path=scope.path,
                 lineno=1,
                 body_hash=hash_scope_body(scope.tree.body, strip_imports=True),
-                definition_hash=hash_nodes(scope.import_nodes),
+                definition_hash=_digest("\n".join(imports)),
                 container=None,
                 line_ranges=((1, _end_line(scope.tree)),),
+                imports=imports,
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
@@ -927,6 +929,22 @@ class Indexer:
             self.index.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):
             self.index.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
+
+
+def _canonical_imports(scope: ModuleScope) -> set[str]:
+    """One string per imported binding, independent of statement grouping or
+    order: adding a name to ``from m import (a, b)`` adds one entry."""
+    out: set[str] = set()
+    for node in scope.import_nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                out.add(f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else ""))
+        elif isinstance(node, ast.ImportFrom):
+            base = _absolute_module(scope, node.module, node.level)
+            for alias in node.names:
+                entry = f"from {base} import {alias.name}"
+                out.add(entry + (f" as {alias.asname}" if alias.asname else ""))
+    return out
 
 
 def _end_line(node: ast.AST) -> int:

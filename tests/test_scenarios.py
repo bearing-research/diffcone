@@ -954,3 +954,65 @@ def test_constructor_changes_reach_callers_and_dunders_are_not_name_matched(repo
     ]
     assert r.path[1].detail == "constructor"
     assert not r.conservative
+
+
+def test_adding_an_import_binding_is_not_structural(repo):
+    base = repo.commit(
+        {
+            "pkg/tools.py": (
+                "def a():\n    return 1\n\n\ndef b():\n    return 2\n\n\ndef c():\n    return 3\n"
+            ),
+            "tests/test_tools.py": (
+                "from pkg.tools import (\n    a,\n    b,\n)\n\n\n"
+                "class Helper:\n    def items(self):\n        return []\n\n\n"
+                "def test_a():\n    assert a() == 1\n\n\n"
+                "def test_b():\n    assert b() == 2\n"
+            ),
+            "tests/test_other.py": "def test_items(d):\n    return d.items()\n",
+            "benchmarks/bench.py": "from pkg.tools import a\n\n\ndef time_a():\n    a()\n",
+        }
+    )
+    # Add ``c`` to the multi-line import and a test using it.
+    head = repo.commit(
+        {
+            "tests/test_tools.py": (
+                "from pkg.tools import (\n    a,\n    b,\n    c,\n)\n\n\n"
+                "class Helper:\n    def items(self):\n        return []\n\n\n"
+                "def test_a():\n    assert a() == 1\n\n\n"
+                "def test_b():\n    assert b() == 2\n\n\n"
+                "def test_c():\n    assert c() == 3\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_a", "tests.test_tools.test_a"),
+        py_target("t::test_b", "tests.test_tools.test_b"),
+        py_target("t::test_c", "tests.test_tools.test_c"),
+        py_target("t::test_items", "tests.test_other.test_items"),
+        asv_target("b.time_a", "benchmarks.bench.time_a"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {
+        "tests.test_tools": ("imports_added", "dependencies_added"),
+        "tests.test_tools.test_c": ("added",),
+    }
+    assert selected(plan) == {"t::test_c"}
+    # Neither the sibling tests nor ``d.items()`` (name-matching Helper.items,
+    # which is no longer invalidated) are dragged in.
+    assert unselected(plan) == {"t::test_a", "t::test_b", "t::test_items", "b.time_a"}
+
+    # Removing an import binding stays structural: every test in the module.
+    head2 = repo.commit(
+        {
+            "tests/test_tools.py": (
+                "from pkg.tools import (\n    a,\n)\n\n\n"
+                "class Helper:\n    def items(self):\n        return []\n\n\n"
+                "def test_a():\n    assert a() == 1\n\n\n"
+                "def test_b():\n    assert b() == 2\n"
+            )
+        }
+    )
+    plan2 = repo.plan(base, head2, targets[:2] + targets[3:])
+    assert changes(plan2)["tests.test_tools"] == ("definition_changed", "dependencies_changed")
+    assert {"t::test_a", "t::test_b"} <= selected(plan2)
+    assert "b.time_a" in unselected(plan2)

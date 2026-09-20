@@ -411,32 +411,61 @@ def test_coverage_attributes_lines_to_the_innermost_symbol(repo):
     assert hit.selected and v2.ok
 
 
-@pytest.mark.parametrize(
-    "coveragerc",
-    [
-        "[run]\nbranch = True\n",
-        "[run]\nrelative_files = True\n",
-        "[run]\nbranch = True\nrelative_files = True\n",
-    ],
-)
-def test_coverage_honours_branch_and_relative_files_config(repo, coveragerc):
+def test_coverage_ignores_project_coverage_config(repo):
+    """A project's own coverage config (source/omit excluding tests, branch,
+    parallel) must not blind attribution."""
     base = repo.commit(
         {
-            ".coveragerc": coveragerc,
+            ".coveragerc": "[run]\nsource = pkg\nomit = tests/*\nbranch = True\nparallel = True\n",
             "pkg/__init__.py": "",
             "pkg/ops.py": MOD,
-            "ext/__init__.py": "",
-            "ext/bridge.py": "from pkg.ops import add\n\n\ndef via():\n    return add(1, 1)\n",
-            "tests/test_bridge.py": (
-                "from ext.bridge import via\n\n\ndef test_via():\n    assert via() >= 2\n"
-            ),
+            "tests/test_ops.py": TEST_MOD,
         }
     )
-    head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "a + b + 0")})
-    plan = repo.plan(base, head, [], source_roots=["pkg", "tests"], discover_runners=["pytest"])
+    head = repo.commit({"tests/test_ops.py": TEST_MOD.replace("== 3", "== 2 + 1")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
-    assert [h.runner_id for h in v.coverage.missed] == ["tests/test_bridge.py::test_via"]
-    assert not v.ok
+    assert v.coverage.changed_symbols == ("tests.test_ops.test_add",)
+    assert [(h.runner_id, h.selected) for h in v.coverage.affected] == [
+        ("tests/test_ops.py::test_add", True)
+    ]
+    assert v.ok
+
+
+def test_read_coverage_contexts_handles_arcs_and_relative_paths(tmp_path):
+    """Branch coverage stores arcs instead of lines, and relative_files
+    stores checkout-relative paths; both must be readable."""
+    import importlib.util
+
+    import coverage
+
+    from diffcone.execution import read_coverage_contexts
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "mod.py").write_text("def f(x):\n    if x:\n        return 1\n    return 2\n")
+    db = tmp_path / ".cov"
+    cov = coverage.Coverage(data_file=str(db), branch=True, config_file=False)
+    cov.set_option("run:relative_files", True)
+    cov.set_option("run:core", "ctrace")
+    import os
+
+    old = os.getcwd()
+    os.chdir(root)
+    try:
+        cov.start()
+        cov.switch_context("tests/test_m.py::test_f[1]|run")
+        spec = importlib.util.spec_from_file_location("mod", root / "mod.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.f(True)
+        cov.stop()
+        cov.save()
+    finally:
+        os.chdir(old)
+    contexts = read_coverage_contexts(db, root)
+    assert set(contexts) == {"tests/test_m.py::test_f"}
+    assert {1, 2, 3} <= contexts["tests/test_m.py::test_f"]["mod.py"]
 
 
 def test_coverage_with_no_contexts_is_an_error_not_ok(repo):

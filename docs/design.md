@@ -76,11 +76,12 @@ whitespace, comments and positions never matter.
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
-| module | top-level statements excluding definitions and imports | import statements |
+| module | top-level statements excluding definitions and imports | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
 Consequences: a docstring edit is a body change (conservative); adding or
-removing a method is a class definition change; changing any import statement
-is a module definition change. Definitions nested inside `if`/`try`/`with`
+removing a method is a class definition change; removing or redirecting an
+import binding is a module definition change, while *adding* one is the
+non-structural `imports_added`. Definitions nested inside `if`/`try`/`with`
 blocks are still symbols and are excluded from their scope's body hash.
 
 ## Dependency edges
@@ -175,7 +176,9 @@ identity and reports:
 | `added` / `deleted` | present in only one revision |
 | `body_changed` | `body_hash` differs |
 | `definition_changed` | kind or `definition_hash` differs |
-| `dependencies_changed` | the symbol's outgoing non-containment edges differ (a call was redirected, an alias now points elsewhere, an import stopped resolving) |
+| `dependencies_changed` | an outgoing non-containment edge was removed or redirected (a call was redirected, an alias now points elsewhere, an import stopped resolving) |
+| `dependencies_added` | outgoing edges were only added (a new import binding, a new call); non-structural |
+| `imports_added` | a module gained import bindings and lost none; non-structural |
 
 Symbols of a module that failed to parse in one revision are skipped rather
 than reported as added/deleted; the analysis error fallback covers them.
@@ -190,9 +193,12 @@ Each changed symbol seeds a backward search. A node carries impact in one of
 two modes:
 
 * **behaviour**: the symbol's runtime behaviour may differ;
-* **structural**: the symbol was added/deleted, its definition or
-  dependencies changed, or (for classes) its body changed; this invalidates
-  everything defined inside it. Class bodies are structural because
+* **structural**: the symbol was added/deleted, its definition changed,
+  a dependency was removed or redirected, or (for classes) its body changed;
+  this invalidates everything defined inside it. Pure additions (an import
+  binding, a dependency edge) are not structural: they cannot break an
+  existing member, and a member whose own resolution changed because of them
+  carries its own `dependencies_changed`. Class bodies are structural because
   class-level attributes such as ASV `params`, pytest marks, or registries
   shape how every method runs without being referenced textually. Module
   bodies are not: making every constant edit invalidate a whole module and
@@ -352,9 +358,11 @@ from the `run` and `validate` commands after a plan exists.
 * `validate --coverage` makes the single head run also record
   `--cov=. --cov-context=test` into a temporary coverage database (the
   project's own `addopts` stay in force, so the same tests are collected)
-  and reads it directly: both the `line_bits` and `arc` tables (branch
-  coverage stores arcs instead of lines), paths resolved against the
-  checkout so `relative_files` works, contexts folded to the test function.
+  with a minimal coverage config of its own (a project's `source`/`omit`
+  usually exclude the tests, which would make added tests unattributable;
+  `branch`/`parallel` change the database layout) and reads it directly:
+  both the `line_bits` and `arc` tables, paths resolved against the
+  checkout, contexts folded to the test function.
   A test is *dynamically affected* when it executed a line owned by a
   changed head symbol. Ownership mirrors the planner's rules: a function or
   method owns its lines; a module or class owns only the lines outside its

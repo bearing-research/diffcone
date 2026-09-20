@@ -43,6 +43,9 @@ class Symbol:
     # identity); used by coverage-based validation to map executed lines back
     # to symbols.
     line_ranges: tuple[tuple[int, int], ...] = ()
+    # Modules only: canonical import bindings ("import a as b", "from m import n"),
+    # sorted. Lets the classifier tell additions from removals/redirections.
+    imports: tuple[str, ...] = ()
 
     def covers_line(self, line: int) -> bool:
         return any(start <= line <= end for start, end in self.line_ranges)
