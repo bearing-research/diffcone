@@ -1,18 +1,33 @@
 # Evaluation on real repositories
 
 Numbers produced by `diffcone corpus --coverage`, which replays a commit
-range, plans each parent-to-commit pair, runs the full pytest suite at both
-snapshots and checks the plan against (a) tests whose outcome changed and
-(b) tests that executed a changed symbol under per-test coverage. Recall is
-the share of dynamically affected tests that were selected and must be 100 %;
-precision is the share of selected tests that were dynamically affected;
-savings is the share of tests *not* selected.
+range: for each parent-to-commit pair it plans, runs the full pytest suite
+at both snapshots, and checks the plan against (a) tests whose pass/fail
+outcome changed and (b) tests that executed changed code under per-test
+coverage. Re-run these whenever selection rules change; the numbers below
+were produced by the rules at the commit that last touched this file.
 
-## toolz (pytoolz/toolz, 193 tests)
+Definitions, exactly as `CorpusReport` computes them:
 
-Six most recent commits touching Python at the time of measurement
-(September 2026), suite runtime about half a second, discovery clean (no
-notes). Reproduce with:
+* **affected**: a test that executed a line owned by a changed head symbol
+  whose change carries impact (additive-only changes do not count);
+* **recall** = affected tests that were selected / affected tests, pooled
+  over the validated commits; it must be 100 % for the run to pass;
+* **precision** = affected tests that were selected / selected tests *that
+  ran under coverage*, pooled over the validated commits. The denominator
+  excludes selected targets the suite did not run (deselected by the
+  project's own `addopts`, skipped by markers), which is why a row can show
+  11 selected and 80 % precision;
+* **savings** = 1 − selected / targets, per commit; the total is the mean
+  over validated commits.
+
+`--max N` keeps the last N commits of the range *before* commits without
+`.py` changes are skipped, so a run may show fewer validated rows than N.
+
+## toolz (pytoolz/toolz, 193 tests, flat layout)
+
+Last six commits at the time of measurement (all touch Python), suite
+runtime about half a second, discovery clean (no notes). Reproduce with:
 
 ```bash
 git clone --depth 80 https://github.com/pytoolz/toolz.git
@@ -30,31 +45,31 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 | d2eba03 | Fix interpose([]) raising StopIteration | 22 / 193 | 89 % | 100 % | 9 % |
 | 451af60 | Add pysentry-pre-commit | 0 / 193 | 100 % | n/a | n/a |
 
-Totals: 7 outcome changes, 0 missed; coverage recall 100 % (15 of 15);
-mean savings 87 %.
+Totals: 7 outcome changes, 0 missed; recall 100 % (15 of 15); precision
+10 %; mean savings 87 %.
 
-What the low-precision rows are:
+Why the low-precision rows are low:
 
 * **Import-time changes are invisible to coverage.** d287360 adds entries
-  to a module-level signature registry; those lines run at import, which
-  carries no test context, so coverage credits no test even though the 19
-  tests selected through module-attribute references genuinely observe the
-  change. 55ce42d is the same shape. Precision is understated there by
-  construction, not over-selected by the planner.
-* **A dynamic `exec` helper.** `toolz/tests/test_inspect_args.py::make_func`
-  builds functions with `exec` and the module imports all of toolz, so its
-  import closure is the whole package; its ~10 tests are selected on every
+  to a module-level signature registry and 55ce42d touches module-level
+  code; those lines run at import, which carries no test context, so
+  coverage credits no test although the tests selected through
+  module-attribute references genuinely observe the change. Precision is
+  understated there by construction.
+* **A dynamic `exec` helper.** `tests/test_inspect_args.py::make_func`
+  builds functions with `exec`, and its module imports all of toolz, so its
+  import closure is the whole package: about 10 tests are selected on every
   production change. `_signatures.create_signature_registry` uses
   `import_module` with a runtime name (unbounded by design) and costs
   another 5.
-* a1e25cb changed a class structurally (`Compose` gained members), which
-  invalidates every `Compose` method; 8 tests execute `Compose` at all.
+* a1e25cb changed `Compose` structurally (new members), which invalidates
+  every `Compose` method; only 8 tests execute `Compose` at all.
 
 ## click (pallets/click, 555 tests, `src` layout)
 
-Six most recent commits (three touch Python; the other three are docs and
-release commits and are skipped). Suite runtime about five seconds.
-Discovery resolved every fixture (the conftest `runner` fixture chain) with
+Last six commits at the time of measurement; three touch Python, the other
+three (docs and release commits) are skipped. Suite runtime about five
+seconds. Discovery resolved every fixture (the conftest `runner` chain) with
 no notes. Reproduce with:
 
 ```bash
@@ -71,58 +86,62 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 | e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
 | 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 540 / 555 | 3 % | 100 % | 78 % |
 
-Totals: 54 outcome changes, 0 missed; coverage recall 100 % (444 of 444);
-precision 77 %; mean savings 65 %.
+Totals: 54 outcome changes, 0 missed; recall 100 % (444 of 444); precision
+77 %; mean savings 65 %.
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
 every test that defines an option; 78 % of those tests do execute changed
 lines, so the width is mostly real.
 
-What the first click run taught, in order:
+## diffcone itself (87 tests)
 
-1. **`getattr` with a parameter as the name.** One helper,
-   `click._compat._is_compat_stream_attr`, does `getattr(stream, attr)`
-   with `attr` a parameter and was an always-on dynamic seed reachable from
-   every test (427 of 464 selections). Its two call sites pass `"encoding"`
-   and `"errors"`; call-site literals are now propagated into such
-   parameters.
-2. **Editable installs shadow `src` layouts.** The validation runs imported
-   the editable-installed clone instead of the temporary checkout, so
-   outcomes were measured against the wrong revision and coverage attributed
-   nothing to the package. toolz's flat layout had hidden this because the
-   working directory wins there. Validation now puts the checkout's source
-   roots first on `PYTHONPATH` and fails when measured files outside the
-   checkout shadow files inside it.
-3. **Removed tests are not misses**, and additive-only module changes are
-   not coverage ground truth.
-4. **Parameter ids with spaces and pipes** (`[TEXT: a|b]`) broke the node
-   id parsers.
+Last five commits at the time of writing (one docs commit skipped):
+6 outcome changes, 0 missed; recall 100 % (172 of 172); precision 87 %;
+mean savings 41 %. The two commits that changed the indexer selected
+76 of 82 and 79 of 84 tests at 96 % precision, since nearly every test
+indexes code; the two that changed only the execution module selected
+20 of 86 and 22 of 87.
 
-Mean savings before and after: 10 % → 65 %, with recall at 100 % once the
-runs measured the right code.
+## How the numbers moved
 
-## diffcone itself (81 tests)
+Every planner or indexer change below came from a concrete path in a
+corpus report, and each was re-measured on the same commits.
 
-Last three commits at the time of writing: 6 outcome changes, 0 missed;
-coverage recall 100 % (186 of 186), precision 95 %, mean savings 17 %
-(the commits changed the indexer and planner, which nearly every test
-exercises).
+From the first toolz run (mean savings 73 % → 80 % → 87 %, recall 100 %
+throughout):
 
-## How these numbers moved
-
-Three planner/indexer changes came out of the first toolz run, each driven
-by a concrete path in the report:
-
-1. `getattr(x, name)` with `name` drawn from a literal tuple was treated as
-   an unbounded dynamic reference (an always-on seed); it is now expanded
-   over the literal candidates.
+1. `getattr(x, name)` with `name` drawn from a literal tuple was an
+   unbounded dynamic reference (an always-on seed); it is now expanded over
+   the literal candidates.
 2. Adding a name to a module's import list marked the module structural,
    invalidating every test that lists the module as a lifecycle dependency
-   and, through the module's helper class, name-matching 61 tests elsewhere;
-   pure additions now carry no impact.
+   and, through the module's helper class, name-matching 61 tests
+   elsewhere; pure additions now carry no impact.
 3. Dynamic references were affected by any change anywhere; they are now
    bounded by their module's import closure (dynamic imports excepted).
 
-Mean savings on the same six toolz commits: 73 % → 80 % → 87 %; recall
-stayed at 100 % throughout.
+From the first click run (mean savings 10 % → 65 %; the first run's
+recall was measured against the wrong code, see item 2):
+
+1. `click._compat._is_compat_stream_attr` does `getattr(stream, attr)`
+   with `attr` a parameter and was an always-on seed reachable from every
+   test: on commit e1fd594 it accounted for 427 of the 464 selections. Its
+   two call sites pass `"encoding"` and `"errors"`; call-site literals are
+   now propagated into such parameters.
+2. The validation runs imported the editable-installed clone instead of
+   the temporary checkout: with a `src` layout the working directory does
+   not put the package on `sys.path`, so the installed copy won, outcomes
+   were measured against the wrong revision and coverage attributed nothing
+   to the package. toolz's flat layout had hidden this. Validation now puts
+   the checkout's source roots first on `PYTHONPATH` and fails when
+   measured files outside the checkout shadow files inside it.
+3. Removed tests are reported as removed, not as outcome misses, and
+   additive-only module changes are not coverage ground truth.
+4. Parameter ids containing spaces and pipes (`[TEXT: a|b]`) broke the
+   node id parsers.
+
+## Not yet exercised
+
+Suites that take minutes (per-test coverage cost at scale), plugin-provided
+fixtures (`--assume-external-fixture`), async suites, and monorepos.
