@@ -481,19 +481,22 @@ from the `run` and `validate` commands after a plan exists.
   per-test contexts unusable.
 
 * `corpus` drives `validate` over a commit range with a shared outcome
-  cache (each committed snapshot's suite runs once; coverage runs are per
-  pair). With `--jobs N` pairs are validated in parallel threads, each in
-  its own temporary worktrees and coverage database. The outcome cache is
-  shared: a snapshot another job has already produced is reused, but a
-  pair whose base is still being produced by another job runs it itself
-  rather than wait (waiting would serialise a linear history), so
-  `--jobs` trades up to one extra suite run per pair for wall time. The
-  report is identical to the serial one. Suites that write to shared
-  locations (a hard-coded temp path) can interfere, so the default is 1, records per-commit selection, savings, outcome and coverage
-  results, and reports micro-averaged recall and precision plus mean
-  savings. Commits that touch no `.py` file are skipped unless requested,
-  since the planner cannot see them and their outcome changes would only
-  ever be misses of the static approach itself.
+  cache (each committed snapshot's suite runs once when serial; coverage
+  runs are per pair), records per-commit selection, savings, outcome and
+  coverage results, and reports micro-averaged recall and precision plus
+  mean savings. Commits that touch no `.py` file are skipped unless
+  requested, since the planner cannot see them and their outcome changes
+  would only ever be misses of the static approach itself.
+* `corpus --jobs N` validates pairs in parallel threads, each in its own
+  temporary worktrees and coverage database. The outcome cache is shared
+  with a no-wait policy: a snapshot another job has already produced is
+  reused, otherwise the job runs it itself and offers the result. Nobody
+  waits on another job, because in a linear history each pair's base is
+  the previous pair's head and waiting would serialise the corpus; the
+  price is at most one extra suite run per pair. The report is identical
+  to the serial one, and any exception (Ctrl-C included) cancels the pairs
+  that have not started. Suites that write to shared locations (a
+  hard-coded temp path) can interfere, so the default is 1.
 
 ## Known gaps (by design)
 

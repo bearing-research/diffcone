@@ -814,36 +814,89 @@ def test_setup_command_runs_in_each_checkout(repo):
         validate_pytest(plan, repo=repo.path, command=PYTEST, setup_command="exit 3")
 
 
-def test_corpus_jobs_matches_serial_and_runs_each_suite_once(repo, monkeypatch):
+def test_corpus_jobs_matches_serial_and_overlaps_suites(repo, monkeypatch):
     c1 = repo.commit(
         {"pkg/__init__.py": "", "pkg/ops.py": OPS, "data.txt": "3\n", "tests/test_ops.py": TEST_OPS}
     )
-    c2 = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
-    c3 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
-    c4 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "a + b + 0")})
+    for body in ("b * a", "b + a", "a + b + 0", "a * b * 1"):
+        repo.commit(
+            {
+                "pkg/ops.py": OPS.replace("a + b", body)
+                if "+" in body
+                else OPS.replace("a * b", body)
+            }
+        )
+    c5 = repo.git("rev-parse", "HEAD")
     make = lambda b, h: repo.plan(b, h, [], discover_runners=["pytest"])  # noqa: E731
-    calls: list[list[str]] = []
+    spans: list[tuple[float, float]] = []
     real_run = execution.subprocess.run
     lock = execution.threading.Lock()
 
-    def counting(argv, **kwargs):
-        if "pytest" in argv:
-            with lock:
-                calls.append(list(argv))
-        return real_run(argv, **kwargs)
+    def timed(argv, **kwargs):
+        if "pytest" not in argv:
+            return real_run(argv, **kwargs)
+        import time
 
-    monkeypatch.setattr(execution.subprocess, "run", counting)
+        start = time.perf_counter()
+        # Pad each suite so overlaps are measurable on a fast fixture.
+        result = real_run(argv, **kwargs)
+        time.sleep(0.3)
+        with lock:
+            spans.append((start, time.perf_counter()))
+        return result
+
+    monkeypatch.setattr(execution.subprocess, "run", timed)
     serial = execution.corpus_validation(
-        repo.path, f"{c1}..{c4}", make, command=PYTEST, coverage=True
+        repo.path, f"{c1}..{c5}", make, command=PYTEST, coverage=True
     )
-    serial_calls = len(calls)
-    calls.clear()
+    serial_runs = len(spans)
+    spans.clear()
     parallel = execution.corpus_validation(
-        repo.path, f"{c1}..{c4}", make, command=PYTEST, coverage=True, jobs=3
+        repo.path, f"{c1}..{c5}", make, command=PYTEST, coverage=True, jobs=2
     )
     assert execution.corpus_to_dict(parallel) == execution.corpus_to_dict(serial)
-    assert [e.commit for e in parallel.entries] == [c2, c3, c4]  # order preserved
-    # Serial: four distinct snapshots, each suite once. Parallel: a pair whose
-    # base another job is still producing runs it itself (never more than one
-    # extra run per pair), because waiting would serialise the whole chain.
-    assert serial_calls == 4 and 4 <= len(calls) <= 6
+    # Serial: five distinct snapshots, each once. Two jobs over four pairs:
+    # workers take second pairs, so at most one extra run per pair...
+    assert serial_runs == 5 and 5 <= len(spans) <= 9
+    # ...and suites genuinely overlap instead of serialising on the cache.
+    ordered = sorted(spans)
+    overlaps = sum(1 for a, b in zip(ordered, ordered[1:], strict=False) if b[0] < a[1])
+    assert overlaps >= 1
+
+
+def test_corpus_jobs_aborts_queued_pairs_on_unexpected_errors(repo):
+    c1 = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    c2 = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
+    c3 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    c4 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "a + b + 0")})
+    planned: list[str] = []
+
+    def make(b, h):
+        planned.append(h)
+        if h == c2:
+            raise RuntimeError("boom")
+        return repo.plan(b, h, [], discover_runners=["pytest"])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        execution.corpus_validation(repo.path, f"{c1}..{c4}", make, command=PYTEST, jobs=1)
+    assert planned == [c2] and c3 not in planned  # serial: stops at the first error
+    planned.clear()
+    with pytest.raises(RuntimeError, match="boom"):
+        execution.corpus_validation(repo.path, f"{c1}..{c4}", make, command=PYTEST, jobs=2)
+    assert c4 not in planned or len(planned) <= 3  # queued pairs were cancelled
+
+
+def test_corpus_progress_reports_skipped_commits(repo):
+    c1 = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    c2 = repo.commit({"README.md": "docs\n"})
+    c3 = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
+    assert c3 != c2
+    seen: list[tuple[str, bool]] = []
+    execution.corpus_validation(
+        repo.path,
+        f"{c1}..{c3}",
+        lambda b, h: repo.plan(b, h, [], discover_runners=["pytest"]),
+        command=PYTEST,
+        progress=lambda e: seen.append((e.commit, e.skipped is not None)),
+    )
+    assert seen == [(c2, True), (c3, False)]

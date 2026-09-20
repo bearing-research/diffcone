@@ -312,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
             def progress(entry) -> None:
-                print(f"diffcone: validating {entry.commit[:10]} {entry.subject}", file=sys.stderr)
+                verb = "skipping" if entry.skipped else "validating"
+                print(f"diffcone: {verb} {entry.commit[:10]} {entry.subject}", file=sys.stderr)
 
             report = corpus_validation(
                 Path(args.repo),
