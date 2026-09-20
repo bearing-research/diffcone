@@ -50,6 +50,58 @@ What the low-precision rows are:
 * a1e25cb changed a class structurally (`Compose` gained members), which
   invalidates every `Compose` method; 8 tests execute `Compose` at all.
 
+## click (pallets/click, 555 tests, `src` layout)
+
+Six most recent commits (three touch Python; the other three are docs and
+release commits and are skipped). Suite runtime about five seconds.
+Discovery resolved every fixture (the conftest `runner` fixture chain) with
+no notes. Reproduce with:
+
+```bash
+git clone --depth 120 https://github.com/pallets/click.git
+cd click && uv venv .venv && uv pip install -p .venv/bin/python -e . pytest pytest-cov
+diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
+  --source-root src --source-root tests \
+  --command ".venv/bin/python -m pytest" --coverage --max 6
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| 2103e15 | Forward all user's parameters set in `PAGER` | 34 / 537 | 94 % | 100 % | 62 % |
+| e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
+| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 540 / 555 | 3 % | 100 % | 78 % |
+
+Totals: 54 outcome changes, 0 missed; coverage recall 100 % (444 of 444);
+precision 77 %; mean savings 65 %.
+
+The squash commit is wide because `click.core.Option` changed structurally
+(a method was added), which invalidates every `Option` method and hence
+every test that defines an option; 78 % of those tests do execute changed
+lines, so the width is mostly real.
+
+What the first click run taught, in order:
+
+1. **`getattr` with a parameter as the name.** One helper,
+   `click._compat._is_compat_stream_attr`, does `getattr(stream, attr)`
+   with `attr` a parameter and was an always-on dynamic seed reachable from
+   every test (427 of 464 selections). Its two call sites pass `"encoding"`
+   and `"errors"`; call-site literals are now propagated into such
+   parameters.
+2. **Editable installs shadow `src` layouts.** The validation runs imported
+   the editable-installed clone instead of the temporary checkout, so
+   outcomes were measured against the wrong revision and coverage attributed
+   nothing to the package. toolz's flat layout had hidden this because the
+   working directory wins there. Validation now puts the checkout's source
+   roots first on `PYTHONPATH` and fails when measured files outside the
+   checkout shadow files inside it.
+3. **Removed tests are not misses**, and additive-only module changes are
+   not coverage ground truth.
+4. **Parameter ids with spaces and pipes** (`[TEXT: a|b]`) broke the node
+   id parsers.
+
+Mean savings before and after: 10 % → 65 %, with recall at 100 % once the
+runs measured the right code.
+
 ## diffcone itself (81 tests)
 
 Last three commits at the time of writing: 6 outcome changes, 0 missed;
