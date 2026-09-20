@@ -567,3 +567,31 @@ def test_dict_items_only_bound_for_pair_targets():
     )
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.single"}
     assert {u.name for u in idx.unresolved if u.symbol == "m.keys"} == {"a"}
+
+
+def test_receiver_lookups_record_in_scope_overrides():
+    idx = index(
+        {
+            "m.py": (
+                "class Base:\n"
+                "    def run(self):\n        return self.step(), Base.step(self), super().step()\n"
+                "    def step(self):\n        return 0\n\n"
+                "class Sub(Base):\n"
+                "    def step(self):\n        return 1\n\n"
+                "class Other(Base):\n    pass\n\n"
+                "class Deep(Sub):\n"
+                "    def step(self):\n        return 2\n\n"
+                "def f(b):\n    return b.step()\n"
+            )
+        }
+    )
+    run = edges(idx, "m.Base.run")
+    assert ("m.Base.step", "references", "") in run
+    assert ("m.Sub.step", "references", "override") in run
+    assert ("m.Deep.step", "references", "override") in run
+    assert not any(t.startswith("m.Other") for t, _, _ in run)
+    # Explicit class access and super() do not dispatch: only one override
+    # pair exists, from the ``self.step()`` call.
+    assert sum(1 for _, _, d in run if d == "override") == 2
+    # An unknown receiver stays name-bounded, not dispatched.
+    assert {u.name for u in idx.unresolved if u.symbol == "m.f"} == {"step"}

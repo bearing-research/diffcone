@@ -11,34 +11,7 @@ states the mechanism, the trade-off and what "done" means, so the
 implementation can be checked against it and the corpus can measure it.
 Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
-## 1. Override-aware dispatch
-
-**Problem.** `self.m()` inside `Base` resolves to `Base.m` through the MRO.
-When a subclass overrides `m`, a test that exercises the subclass reaches
-the override at runtime, but statically the call site only points at
-`Base.m`; a change to `Sub.m` reaches the test only if something references
-`Sub.m` directly or by name. Today that is covered by conservative name
-matching (`self.m` on an unknown receiver), but a *resolved* `self.m` is
-precise and therefore blind to overrides.
-
-**Mechanism.** When a reference `self.m` / `cls.m` resolves to `C.m` through
-the MRO, also add `references` edges (detail `override`) to every in-scope
-class that (a) has `C` in its MRO and (b) defines `m` itself. Subclasses are
-known after the base-resolution pass (invert `ClassScope.bases`). External
-subclasses cannot be seen; that is the existing name-bounded gap and stays
-documented.
-
-**Trade-off.** Widens selection for frameworks with many subclasses (a
-template-method base with 50 overrides makes every base caller depend on
-all 50). Precision on click/structlog will show whether the widening is
-acceptable; if not, scope it to overrides in the same package as the base.
-
-**Done when.** A scenario where a test drives `Sub()` through a `Base`
-method that calls `self.m()` is selected when only `Sub.m` changes, without
-name matching (`reason.rule == "dependency"`); the four corpora keep 100 %
-recall and precision moves by less than 5 points.
-
-## 2. Incremental re-indexing
+## 1. Incremental re-indexing
 
 **Problem.** Every plan re-parses and re-resolves both snapshots. On click
 (~90 files) a plan takes a few seconds; on a monorepo it will take minutes,
@@ -69,7 +42,7 @@ the bottleneck.
 edit runs in under one second, and a test proves that a plan produced from
 cache equals the uncached plan on every scenario fixture.
 
-## 3. Evaluation at scale and breadth
+## 2. Evaluation at scale and breadth
 
 Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
@@ -91,7 +64,7 @@ the run shows (this is how every improvement so far was found).
   suite under coverage (already done for outcome symmetry) and reading its
   database closes that gap.
 
-## 4. Discovery completeness
+## 3. Discovery completeness
 
 * pytest: `request.getfixturevalue("name")` with a literal, names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
@@ -105,7 +78,7 @@ the run shows (this is how every improvement so far was found).
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 5. Resolution breadth
+## 4. Resolution breadth
 
 * Instance-attribute tracking: `self.attr = Callable` in `__init__` so
   `self.attr()` resolves; today it is name-bounded.

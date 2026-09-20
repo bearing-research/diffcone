@@ -139,7 +139,12 @@ dynamic (`Generic[T]`, `namedtuple(...)`) or unknown marks the class
 incomplete: a lookup that passes such a class before finding a hit records
 the edge *and* a name-bounded unresolved reference, since an override in
 the unknown part of the hierarchy could win. `super().m` inside a method
-resolves `m` starting after the enclosing class in its MRO. Referencing a
+resolves `m` starting after the enclosing class in its MRO. A lookup on
+`self`/`cls` dispatches at runtime, so besides the MRO hit it also records
+`references` edges (detail `override`) to every in-scope subclass that
+defines the attribute itself: a change to `Sub.step` reaches callers of
+`Base.run` that invoke `self.step()`. Explicit `Base.step` and
+`super().step` do not dispatch and get no override edges. Referencing a
 class (`Foo(...)`, subclassing) also adds an edge to the `__init__` found
 through its MRO, so constructor changes reach callers. A step that cannot
 be taken yields an unresolved attribute reference bounded by the attribute
@@ -429,9 +434,9 @@ from the `run` and `validate` commands after a plan exists.
 
 ## Known gaps (by design)
 
-* Dynamic dispatch: `self.m()` resolves to the definition found in the
-  enclosing class's MRO, not to overrides in subclasses; a call through an
-  unknown receiver stays name-bounded. The MRO is an approximation of C3
+* Dynamic dispatch: `self.m()` resolves to the MRO definition plus in-scope
+  overrides; overrides in classes outside the source roots cannot be seen,
+  and a call through an unknown receiver stays name-bounded. The MRO is an approximation of C3
   and ignores metaclasses and `__getattr__`.
 * Module init side effects: a body change in module init does not invalidate
   the module's own members or importers that do not reference its state.

@@ -1115,3 +1115,57 @@ def test_dynamic_references_are_bounded_by_the_import_closure(repo):
     )
     plan3 = repo.plan(base, head3, targets)
     assert selected(plan3) == {"t::test_g", "t::test_dyn"}
+
+
+def test_override_change_reaches_callers_of_the_base_template(repo):
+    base = repo.commit(
+        {
+            "pkg/engine.py": (
+                "class Base:\n"
+                "    def run(self):\n        return self.step() + 1\n\n"
+                "    def step(self):\n        return 0\n\n\n"
+                "class Sub(Base):\n"
+                "    def step(self):\n        return 10\n\n\n"
+                "class Other(Base):\n"
+                "    def extra(self):\n        return 5\n"
+            ),
+            "tests/test_engine.py": (
+                "from pkg.engine import Sub, Other\n\n\n"
+                "def test_sub():\n    assert Sub().run() == 11\n\n\n"
+                "def test_other():\n    assert Other().run() == 1\n\n\n"
+                "def test_other_extra():\n    assert Other().extra() == 5\n"
+            ),
+            "benchmarks/bench.py": (
+                "from pkg.engine import Sub\n\n\ndef time_sub():\n    Sub().run()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/engine.py": (
+                "class Base:\n"
+                "    def run(self):\n        return self.step() + 1\n\n"
+                "    def step(self):\n        return 0\n\n\n"
+                "class Sub(Base):\n"
+                "    def step(self):\n        return 20\n\n\n"
+                "class Other(Base):\n"
+                "    def extra(self):\n        return 5\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_sub", "tests.test_engine.test_sub"),
+        py_target("t::test_other", "tests.test_engine.test_other"),
+        py_target("t::test_other_extra", "tests.test_engine.test_other_extra"),
+        asv_target("b.time_sub", "benchmarks.bench.time_sub"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.engine.Sub.step": ("body_changed",)}
+    # Sub().run() is a call-result access (name-bounded on ``run``), so the
+    # test reaches Base.run conservatively; from there the resolved override
+    # edge Base.run -> Sub.step is a real dependency, not a guess.
+    assert selected(plan) == {"t::test_sub", "b.time_sub", "t::test_other"}
+    assert unselected(plan) == {"t::test_other_extra"}
+    r = reason(plan, "t::test_sub", "unresolved_name_match")
+    assert path_ids(r)[-2:] == ["pkg.engine.Base.run", "pkg.engine.Sub.step"]
+    assert r.path[-1].detail == "override"

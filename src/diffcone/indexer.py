@@ -187,6 +187,11 @@ class Resolved:
     # the real target may be an override we cannot see, so the name stays
     # bounded (an unresolved attribute record is kept alongside the edge).
     uncertain_attr: str = ""
+    # The node is ``self``/``cls`` of the enclosing method: attribute lookups
+    # on it dispatch at runtime, so in-scope overrides are recorded too.
+    receiver: bool = False
+    # Override methods to record alongside the resolved one (see lookup_in_class).
+    overrides: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -483,6 +488,7 @@ class Indexer:
         self.escapes: set[str] = set()
         self.func_params: dict[str, _FuncParams] = {}
         self.param_dynamics: list[_ParamDynamic] = []
+        self._subclasses: dict[str, set[str]] | None = None  # built once bases are final
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -800,25 +806,57 @@ class Indexer:
             cscope.mro = result
         return result
 
-    def lookup_in_class(self, class_id: str, attr: str, *, skip_self: bool = False) -> Node:
+    def lookup_in_class(
+        self, class_id: str, attr: str, *, skip_self: bool = False, dispatch: bool = False
+    ) -> Node:
         """Resolve ``attr`` on a class through its in-scope MRO.
 
         A hit found after a class whose bases are not all known is marked
         uncertain: an override in the unknown part of the hierarchy could
         win, so the edge is recorded together with a name-bounded unresolved
         reference. Not found anywhere yields the unresolved reference alone.
+
+        With ``dispatch`` (a lookup on ``self``/``cls``) the receiver may be
+        an instance of any in-scope subclass, so every subclass that defines
+        ``attr`` itself is returned as an override to record as well.
         """
         uncertain = False
         for cid in self._mro(class_id)[1 if skip_self else 0 :]:
             cscope = self.class_scopes[cid]
             if attr in cscope.members:
-                return Resolved(cscope.members[attr], uncertain_attr=attr if uncertain else "")
+                return Resolved(
+                    cscope.members[attr],
+                    uncertain_attr=attr if uncertain else "",
+                    overrides=self._overrides_of(class_id, attr) if dispatch else (),
+                )
             if attr in cscope.bindings:
                 detail = f"attribute:{attr}"
                 return Resolved(cid, detail=detail, uncertain_attr=attr if uncertain else "")
             if not cscope.complete:
                 uncertain = True
         return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+
+    def _overrides_of(self, class_id: str, attr: str) -> tuple[str, ...]:
+        """Methods named ``attr`` defined by in-scope subclasses of ``class_id``."""
+        if self._subclasses is None:
+            subclasses: dict[str, set[str]] = defaultdict(set)
+            for cscope in self.class_scopes.values():
+                for base in cscope.bases:
+                    subclasses[base].add(cscope.id)
+            self._subclasses = subclasses
+        found: list[str] = []
+        seen = {class_id}
+        stack = [class_id]
+        while stack:
+            for sub in sorted(self._subclasses.get(stack.pop(), ())):
+                if sub in seen:
+                    continue
+                seen.add(sub)
+                stack.append(sub)
+                member = self.class_scopes[sub].members.get(attr)
+                if member is not None and self.index.symbols[member].kind == METHOD:
+                    found.append(member)
+        return tuple(found)
 
     # -- pass 2 ---------------------------------------------------------------
 
@@ -967,7 +1005,7 @@ class Indexer:
 
     def _lookup_base(self, name: str, scope: Scope) -> Node:
         if scope.self_name is not None and name == scope.self_name and scope.self_class:
-            return Resolved(scope.self_class)
+            return Resolved(scope.self_class, receiver=True)
         if name in scope.local_imports:
             return self._import_binding_node(scope.local_imports[name])
         if name in scope.locals:
@@ -1046,7 +1084,7 @@ class Indexer:
             if symbol is None:
                 return node
             if symbol.kind == CLASS:
-                return self.lookup_in_class(symbol.id, attr)
+                return self.lookup_in_class(symbol.id, attr, dispatch=node.receiver)
             if symbol.kind == MODULE:
                 return self._step(ModuleNode(symbol.id), attr)
             return node  # attribute on a function object
@@ -1077,6 +1115,9 @@ class Indexer:
                 self.index.unresolved.add(
                     UnresolvedReference(source, UNRESOLVED_ATTRIBUTE, node.uncertain_attr, chain)
                 )
+            for override in node.overrides:
+                if override != source:
+                    self.index.edges.add(Edge(source, override, kind, "override"))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 init = self.lookup_in_class(node.symbol, "__init__")
