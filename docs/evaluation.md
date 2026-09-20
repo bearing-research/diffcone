@@ -231,9 +231,35 @@ diffcone validate --repo . --base HEAD~1 --head HEAD --discover pytest \
 Nearly everything is selected because pytest dispatches hooks by name
 through pluggy and `pytester` runs a full inner session from within tests:
 statically every `hook.pytest_*` call name-matches every implementation,
-and 1 490 tests really do execute the changed method. A corpus over six
-such pairs would take about 50 minutes serially; `corpus` has no parallel
-mode yet.
+and 1 490 tests really do execute the changed method.
+
+A six-pair corpus (last eight commits, two skipped) with `--jobs 4`:
+
+```bash
+diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
+  --source-root src --source-root testing \
+  --command ".venv/bin/python -m pytest" \
+  --setup-command "cp $PWD/src/_pytest/_version.py src/_pytest/_version.py" \
+  --coverage --max 8 --jobs 4
+```
+
+| metric | value |
+|---|---|
+| wall time | 21 min 32 s (about 50 min serially) |
+| outcome changes | 17, 0 missed |
+| tests that executed a changed symbol | 4 960 |
+| recall | 100 % |
+| precision (pooled) | 24 %, per commit 0 % to 53 % |
+| selected | every test on every commit |
+
+Selection is total on every commit, including three whose changes are
+confined to the test tree or remove dead code, because the `pytester` and
+hook chains reach every test from any change in `_pytest` or
+`testing/conftest.py`. This is the documented cost of hook-style
+dispatch, not a defect the corpus revealed; it makes pytest a recall
+benchmark rather than a savings one. The `--jobs` done-when asked for
+under 20 minutes; 21.5 is the honest number on this machine with
+coverage runs competing for CPU.
 
 ## diffcone itself (115 tests)
 
