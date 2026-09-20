@@ -11,23 +11,7 @@ states the mechanism, the trade-off and what "done" means, so the
 implementation can be checked against it and the corpus can measure it.
 Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
-## 1. Prefix-bounded dynamic names
-
-**Problem.** `importlib.import_module(f"attr.{name}")` in attrs' lazy
-`__getattr__` is an unbounded dynamic import, so it is an always-on seed
-that every `attr.<x>` reference reaches (433 of 667 on commit 5aa76a4).
-
-**Mechanism.** A string built as an f-string, `%`/`format` or `+` with a
-literal prefix bounds the candidates to in-scope modules (for imports) or
-attribute names (for `getattr`) with that prefix. `import_module` over a
-prefix expands to `imports` edges to every matching in-scope module, which
-propagate only deletions, replacing the always-on seed.
-
-**Done when.** A unit test shows `import_module(f"pkg.{n}")` yields
-`imports` edges to every `pkg.*` module and no dynamic record, and commit
-5aa76a4 on attrs stops selecting through `_make_getattr`.
-
-## 2. Per-module resolution cache
+## 1. Per-module resolution cache
 
 **Status.** The per-commit index cache shipped (design.md, "Index cache"):
 a warm `plan --head WORKTREE` on click is 0.75 s, of which about 0.5 s is
@@ -60,7 +44,7 @@ re-resolves exactly one module (observable through cache counters), plans
 are byte-identical with and without the cache on every scenario fixture,
 and a synthetic 2 000-file tree plans warm in under one second.
 
-## 3. Evaluation at scale and breadth
+## 2. Evaluation at scale and breadth
 
 Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
@@ -90,7 +74,7 @@ the run shows (this is how every improvement so far was found).
   suite under coverage (already done for outcome symmetry) and reading its
   database closes that gap.
 
-## 4. Discovery completeness
+## 3. Discovery completeness
 
 * pytest: `request.getfixturevalue("name")` with a literal, names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
@@ -104,7 +88,7 @@ the run shows (this is how every improvement so far was found).
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 5. Resolution breadth
+## 4. Resolution breadth
 
 * Instance-attribute tracking: `self.attr = Callable` in `__init__` so
   `self.attr()` resolves; today it is name-bounded.

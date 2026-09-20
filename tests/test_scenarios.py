@@ -1405,3 +1405,32 @@ def test_readers_depend_on_functions_that_mutate_a_variable(repo):
         "pkg.reg.INFO",
     ]
     assert r.path[3].detail == "mutated_by"
+
+
+def test_lazy_loader_with_prefixed_import_is_not_an_always_on_seed(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": (
+                "import importlib\n\n"
+                "_LAZY = {'validators'}\n\n\n"
+                "def __getattr__(name):\n"
+                "    if name in _LAZY:\n        return importlib.import_module(f'pkg.{name}')\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "pkg/validators.py": "def ne(v):\n    return v\n",
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_pkg.py": (
+                "import pkg\nfrom pkg.other import helper\n\n\n"
+                "def test_lazy():\n    assert pkg.validators.ne(1) == 1\n\n\n"
+                "def test_helper():\n    assert helper() == 1\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/other.py": "def helper():\n    return 2\n"})
+    targets = [
+        py_target("t::test_lazy", "tests.test_pkg.test_lazy"),
+        py_target("t::test_helper", "tests.test_pkg.test_helper"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_helper"}
+    assert not [u for u in plan.unresolved if u.kind == "dynamic"]

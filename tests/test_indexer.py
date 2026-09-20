@@ -716,3 +716,42 @@ def test_defaults_resolve_in_the_enclosing_scope_and_alias_variables():
     assert ("m.helper", "references", "") in edges(idx, "m.annotated")
     # Module-level mutation lines belong to the variable for coverage.
     assert idx.symbols["m.REG"].line_ranges == ((2, 2), (3, 3))
+
+
+def test_prefix_bounded_dynamic_names():
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "def pytest_one():\n    pass\n\n\ndef other():\n    pass\n",
+            "pkg/b.py": "def pytest_two():\n    pass\n",
+            "pkg/lazy.py": (
+                "import importlib\nfrom pkg import a\n\n\n"
+                "def fstring(name):\n    return importlib.import_module(f'pkg.{name}')\n\n\n"
+                "def concat(name):\n    return importlib.import_module('pkg.' + name)\n\n\n"
+                "def percent(name):\n    return importlib.import_module('pkg.%s' % name)\n\n\n"
+                "def fmt(name):\n    return importlib.import_module('pkg.{}'.format(name))\n\n\n"
+                "def external(name):\n    return importlib.import_module(f'os.{name}')\n\n\n"
+                "def unbounded(name):\n    return importlib.import_module(f'{name}.x')\n\n\n"
+                "def hooks(name):\n    return getattr(a, f'pytest_{name}')\n\n\n"
+                "def hooks_unknown(obj, name):\n    return getattr(obj, f'pytest_{name}')\n\n\n"
+                "def const():\n    return importlib.import_module(f'pkg.a')\n"
+            ),
+        }
+    )
+    dyn = {u.symbol for u in idx.unresolved if u.kind == "dynamic"}
+    assert dyn == {"pkg.lazy.unbounded"}
+    for fn in ("fstring", "concat", "percent", "fmt"):
+        assert {
+            ("pkg.a", "imports", ""),
+            ("pkg.b", "imports", ""),
+            ("pkg", "imports", ""),
+        } <= edges(idx, f"pkg.lazy.{fn}"), fn
+    assert "os.*" in {x.module for x in idx.external if x.symbol == "pkg.lazy.external"}
+    assert ("pkg.a.pytest_one", "references", "") in edges(idx, "pkg.lazy.hooks")
+    assert ("pkg.a.other", "references", "") not in edges(idx, "pkg.lazy.hooks")
+    assert {u.name for u in idx.unresolved if u.symbol == "pkg.lazy.hooks"} == {"pytest_two"}
+    assert {u.name for u in idx.unresolved if u.symbol == "pkg.lazy.hooks_unknown"} == {
+        "pytest_one",
+        "pytest_two",
+    }
+    assert ("pkg.a", "imports", "") in edges(idx, "pkg.lazy.const")

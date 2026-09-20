@@ -184,8 +184,13 @@ D.items()` target), a variable assigned
 only such values (in the function or at module level), or a `for` variable
 iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
-resolved like `x.<candidate>` or an import. When the name is one of the
-enclosing function's parameters, the literal strings that every resolved
+resolved like `x.<candidate>` or an import. A string built at runtime with a
+literal prefix (`f"attr.{name}"`, `"attr." + name`, `"attr.%s" % name`,
+`"attr.{}".format(name)`) bounds the candidates to what carries that
+prefix: `import_module` expands to `imports` edges to every in-scope module
+under it (a prefix matching no in-scope module is an external reference),
+and `getattr` to every in-scope symbol name starting with it. When the name
+is one of the enclosing function's parameters, the literal strings that every resolved
 call site passes for it (positionally, by keyword, or via the parameter's
 default) are used instead, so `def _attr(stream, attr): getattr(stream,
 attr)` called as `_attr(s, "encoding")` and `_attr(s, "errors")` is bounded

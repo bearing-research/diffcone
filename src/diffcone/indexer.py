@@ -291,9 +291,39 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
     return resolve_relative_module(scope_module.name, scope_module.is_package, module, level)
 
 
+def _string_prefix(expr: ast.expr) -> str | None:
+    """The literal prefix of a string built at runtime: an f-string starting
+    with text, ``"pkg." + name``, ``"pkg.%s" % name`` or ``"pkg.{}".format(name)``.
+    None when the string does not start with a literal."""
+    if isinstance(expr, ast.JoinedStr):
+        if expr.values and isinstance(expr.values[0], ast.Constant):
+            return str(expr.values[0].value) or None
+        return None
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        left = _literal_strings(expr.left)
+        if left is not None and len(left) == 1:
+            return left[0] or None
+        return _string_prefix(expr.left)
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
+        if isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str):
+            return expr.left.value.split("%", 1)[0] or None
+        return None
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr == "format"
+        and isinstance(expr.func.value, ast.Constant)
+        and isinstance(expr.func.value.value, str)
+    ):
+        return expr.func.value.value.split("{", 1)[0] or None
+    return None
+
+
 def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return (expr.value,)
+    if isinstance(expr, ast.JoinedStr) and all(isinstance(v, ast.Constant) for v in expr.values):
+        return ("".join(str(v.value) for v in expr.values),)  # type: ignore[attr-defined]
     if isinstance(expr, ast.Dict):
         # Iterating a dict yields its keys; only all-literal string keys count.
         keys: list[str] = []
@@ -838,6 +868,13 @@ class Indexer:
                     continue
                 members[name] = symbol_id
                 self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+
+    def modules_with_prefix(self, prefix: str) -> tuple[str, ...]:
+        return tuple(sorted(m for m in self.scopes if m.startswith(prefix)))
+
+    def symbol_names_with_prefix(self, prefix: str) -> tuple[str, ...]:
+        names = {s.name for s in self.index.symbols.values() if s.name.startswith(prefix)}
+        return tuple(sorted(names))
 
     # -- inheritance ----------------------------------------------------------
 
@@ -1698,9 +1735,16 @@ class _ReferenceCollector(ast.NodeVisitor):
         names = self.scope.string_candidates(node.args[1])
         base = _flatten_chain(node.args[0])
         if names is None:
-            if not self._param_dynamic(node.args[1], "getattr", base, "getattr(<non-literal>)"):
+            prefix = _string_prefix(node.args[1])
+            if prefix is not None:
+                # ``getattr(obj, f"pytest_{name}")``: every in-scope attribute
+                # name with that prefix is a candidate, nothing else.
+                names = self.indexer.symbol_names_with_prefix(prefix)
+            elif not self._param_dynamic(node.args[1], "getattr", base, "getattr(<non-literal>)"):
                 self._dynamic("getattr(<non-literal>)")
-            return
+                return
+            else:
+                return
         for name in names:
             if base is None:
                 # Unknown receiver, known attribute name: bounded like ``obj.name``.
@@ -1716,6 +1760,15 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not node.args:
             return
         names = self.scope.string_candidates(node.args[0])
+        if names is None:
+            prefix = _string_prefix(node.args[0])
+            if prefix is not None and not prefix.startswith("."):
+                # ``import_module(f"attr.{name}")``: every in-scope module under
+                # the prefix may be imported; nothing outside it can be.
+                names = self.indexer.modules_with_prefix(prefix)
+                if not names:
+                    self.indexer.index.external.add(ExternalReference(self.source, prefix + "*"))
+                    return
         if names is None or any(n.startswith(".") for n in names):
             if names is not None or not self._param_dynamic(
                 node.args[0], "import", None, f"{name}(<non-literal>)"
