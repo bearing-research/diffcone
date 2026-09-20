@@ -28,8 +28,8 @@ Static discovery covers the common layout. Remaining gaps, roughly by value:
 
 ## 3. Broader resolution
 
-* Inheritance-aware method resolution (MRO within source roots) and
-  `super()`.
+* Override-aware dispatch: when `Base.m()` is called through `self`, also
+  consider in-scope subclasses that override `m` (conservative widening).
 * Class-attribute and instance-attribute assignment tracking for
   `self.attr = Callable`.
 * Finer import-change classification so adding an import does not invalidate

@@ -102,7 +102,7 @@ blocks are still symbols and are excluded from their scope's body hash.
 A name or dotted chain `a.b.c` is resolved from its base:
 
 1. `self`/`cls` (the first parameter of a non-static method) → the enclosing
-   class; `self.m` resolves to `Class.m` if the class itself defines it.
+   class; `self.m` resolves through the class's MRO (below).
 2. A function-local import alias.
 3. A binding of the current scope (parameter, assignment, `except ... as`,
    `with ... as`, nested def name, function-local import) → **local**;
@@ -126,7 +126,13 @@ A name or dotted chain `a.b.c` is resolved from its base:
 
 Attribute steps walk from module to submodule, module member, module
 variable or star-imported name; from class to method, nested class or class
-variable. A step that cannot be taken yields an unresolved attribute
+variable, searching the class and then its bases in MRO order. Bases are
+resolved in module scope to in-scope classes; the linearisation is
+depth-first left-to-right keeping the last occurrence of a repeated base,
+which matches C3 for ordinary hierarchies. A base that is external, dynamic
+(`Generic[T]`, `namedtuple(...)`) or unknown simply ends the known chain.
+`super().m` inside a method resolves `m` starting after the enclosing class
+in its MRO. A step that cannot be taken yields an unresolved attribute
 reference bounded by the attribute name. Once a chain reaches a function or
 an opaque variable it stops there. An attribute whose base is not a name
 chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
@@ -200,10 +206,13 @@ lifecycle dependency).
 Unknown is never treated as unaffected:
 
 * **Name-bounded unresolved references.** For every unresolved bare name or
-  attribute `NAME` in a symbol, and every changed symbol whose short name is
-  `NAME`, the planner adds an `unresolved_name_match` edge. `obj.save()` is
-  therefore affected when *any* `save` changes. The report lists each
-  unresolved reference with its matches.
+  attribute `NAME` in a symbol, and every known function, method or class
+  in either revision whose short name is `NAME`, the planner adds an
+  `unresolved_name_match` edge. Impact then flows through those edges like
+  any other: `obj.save()` is affected when *any* `save` changes, and also
+  when any `save` calls something that changed. The report lists each
+  unresolved reference with the matches that actually carry impact
+  (`matched_affected_symbols`).
 * **Dynamic references.** A symbol containing a dynamic reference is treated
   as affected whenever anything at all changed (rule `dynamic_reference`).
   This is deliberately always-on: a helper using `vars(o)` is selected on
@@ -307,7 +316,10 @@ classes, a `benchmark_dir` outside the source roots (targets get
 
 ## Known gaps (by design)
 
-* Inheritance: `self.m` where `m` is inherited is unresolved (name-bounded).
+* Dynamic dispatch: `self.m()` resolves to the definition found in the
+  enclosing class's MRO, not to overrides in subclasses; a call through an
+  unknown receiver stays name-bounded. The MRO is an approximation of C3
+  and ignores metaclasses and `__getattr__`.
 * Module init side effects: a body change in module init does not invalidate
   the module's own members or importers that do not reference its state.
   Use a module lifecycle dependency where that matters.

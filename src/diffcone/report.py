@@ -9,7 +9,9 @@ from typing import Any
 from diffcone.model import SnapshotInfo
 from diffcone.planner import Decision, Plan, Reason
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = (
+    2  # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
+)
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
@@ -18,12 +20,13 @@ SCOPE_DESCRIPTION = {
         "direct name and attribute references resolvable through module-level "
         "definitions, import aliases, star imports within source roots, or self/cls",
         "absolute and relative imports within source roots",
+        "class attribute lookup through the in-scope MRO, including super()",
         "importlib.import_module / getattr with literal arguments",
         "transitive dependencies",
         "manifest-declared entry and lifecycle dependencies",
     ],
     "not_resolved": [
-        "type inference, dynamic dispatch, inheritance lookup",
+        "type inference and dynamic dispatch on receivers of unknown type",
         "instance attributes and arbitrary object.method() calls (name-bounded fallback)",
         "dynamic imports / getattr / eval with non-literal arguments (dynamic fallback)",
         "pytest fixture or ASV setup discovery (must be declared in the manifest)",
@@ -120,7 +123,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
                 "name": u.name,
                 "detail": u.detail,
                 "revisions": list(u.revisions),
-                "matched_changed_symbols": list(u.matched_changed_symbols),
+                "matched_affected_symbols": list(u.matched_affected_symbols),
             }
             for u in plan.unresolved
         ],
@@ -190,17 +193,17 @@ def to_text(plan: Plan) -> str:
         lines.append(f"  {d.target.runner}: {d.target.runner_id}")
     if not unselected:
         lines.append("  (none)")
-    matched = [u for u in plan.unresolved if u.matched_changed_symbols]
+    matched = [u for u in plan.unresolved if u.matched_affected_symbols]
     dynamic = [u for u in plan.unresolved if u.kind == "dynamic"]
     lines.append("")
     lines.append(
         f"unresolved relationships: {len(plan.unresolved)} "
-        f"({len(matched)} matching a changed symbol, {len(dynamic)} dynamic)"
+        f"({len(matched)} matching an affected symbol, {len(dynamic)} dynamic)"
     )
     for u in matched:
         lines.append(
             f"  {u.symbol}: {u.kind} {u.detail!r} may refer to "
-            f"{', '.join(u.matched_changed_symbols)}"
+            f"{', '.join(u.matched_affected_symbols)}"
         )
     for u in dynamic:
         lines.append(f"  {u.symbol}: dynamic {u.detail}")

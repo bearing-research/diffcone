@@ -134,7 +134,7 @@ JSON:
 
 ### Report
 
-The JSON report (`schema_version: 1`) contains:
+The JSON report (`schema_version: 2`) contains:
 
 | Section | Contents |
 |---|---|
@@ -162,9 +162,11 @@ The JSON report (`schema_version: 1`) contains:
 * **Narrow, documented resolution subset** (see
   [docs/design.md](docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source
-  roots, or `self`/`cls`. No type inference, dynamic dispatch, inheritance
-  lookup or instance attributes. Those references are reported as unresolved
-  and matched conservatively by name against changed symbols.
+  roots, or `self`/`cls`, with class attributes looked up through the
+  in-scope MRO (including `super()`). No type inference, no dynamic dispatch
+  on receivers of unknown type, no instance attributes. Those references are
+  reported as unresolved and matched conservatively by name against changed
+  symbols.
 * **Import-statement changes invalidate the whole importing module**, and
   any change to a class body (attributes, member list, bases, decorators)
   invalidates every method of that class. This is conservative by design.

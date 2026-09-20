@@ -254,3 +254,69 @@ def test_module_collector_skips_nested_definitions():
     assert edges(idx, "m") == set()
     assert not [u for u in idx.unresolved if u.symbol == "m"]
     assert ("m.a", "references", "") in edges(idx, "m.c")
+
+
+def test_inherited_attributes_resolve_through_mro():
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/base.py": (
+                "class Root:\n"
+                "    LIMIT = 1\n"
+                "    def root_m(self):\n        pass\n"
+                "    def shared(self):\n        pass\n\n"
+                "class Left(Root):\n"
+                "    def shared(self):\n        pass\n\n"
+                "class Right(Root):\n"
+                "    def right_m(self):\n        pass\n"
+            ),
+            "pkg/sub.py": (
+                "from pkg.base import Left, Right\n"
+                "from external import Mixin\n\n"
+                "class Child(Left, Right):\n"
+                "    def m(self):\n"
+                "        return (self.root_m(), self.shared(), self.right_m(),\n"
+                "                self.LIMIT, self.nope)\n"
+                "    def s(self):\n        return super().shared(), super().m()\n"
+                "    @classmethod\n    def c(cls):\n        return cls.right_m\n\n"
+                "class Mixed(Mixin, Left):\n"
+                "    def m(self):\n        return self.shared(), self.from_mixin()\n\n"
+                "class Loop(Loop):\n"
+                "    def m(self):\n        return self.x\n\n"
+                "def f():\n    return Child.root_m, Child().right_m()\n"
+            ),
+        }
+    )
+    assert edges(idx, "pkg.sub.Child.m") == {
+        ("pkg.sub.Child", "defined_in", ""),
+        ("pkg.base.Root.root_m", "references", ""),
+        ("pkg.base.Left.shared", "references", ""),  # Left precedes Root in the MRO
+        ("pkg.base.Right.right_m", "references", ""),
+        ("pkg.base.Root", "references", "attribute:LIMIT"),
+    }
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.sub.Child.m"} == {
+        ("attribute", "nope")
+    }
+    # super(): next definition after Child; super().m() has no next definition.
+    assert edges(idx, "pkg.sub.Child.s") == {
+        ("pkg.sub.Child", "defined_in", ""),
+        ("pkg.base.Left.shared", "references", ""),
+    }
+    assert {
+        (u.kind, u.name, u.detail) for u in idx.unresolved if u.symbol == "pkg.sub.Child.s"
+    } == {("attribute", "m", "super().m")}
+    assert ("pkg.base.Right.right_m", "references", "") in edges(idx, "pkg.sub.Child.c")
+    # An external base ends the known chain; unknown names stay name-bounded.
+    assert ("pkg.base.Left.shared", "references", "") in edges(idx, "pkg.sub.Mixed.m")
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.sub.Mixed.m"} == {
+        ("attribute", "from_mixin")
+    }
+    # Self-inheritance does not recurse forever.
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.sub.Loop.m"} == {
+        ("attribute", "x")
+    }
+    # Class-level and call-result access use the same lookup.
+    assert {
+        ("pkg.base.Root.root_m", "references", ""),
+        ("pkg.sub.Child", "references", ""),
+    } <= edges(idx, "pkg.sub.f")

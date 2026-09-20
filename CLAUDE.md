@@ -31,7 +31,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/indexer.py` parses modules, assigns symbol identities, hashes bodies/definitions, resolves references into `Edge`s and records `UnresolvedReference`s. This is where the supported subset lives.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
-- `src/diffcone/report.py` renders JSON (`schema_version` 1) and text.
+- `src/diffcone/report.py` renders JSON (`schema_version` 2) and text.
 - `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.
 - `src/diffcone/testing.py` is the public scenario-test toolkit: `FixtureRepo` (throwaway git repo built from dicts, `commit`/`plan`/`git`/`try_git`), target constructors and plan assertion helpers. Tests import from `diffcone.testing`, never from other test files; `tests/conftest.py` only defines the `repo` fixture.
 

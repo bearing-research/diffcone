@@ -40,12 +40,14 @@ from diffcone.model import (
     IMPORTS,
     IMPORTS_NAME,
     LIFECYCLE,
+    MODULE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
     AnalysisError,
     Edge,
     SnapshotInfo,
     SourceIndex,
+    UnresolvedReference,
 )
 from diffcone.snapshot import read_snapshot
 
@@ -116,7 +118,7 @@ class UnresolvedRecord:
     name: str
     detail: str
     revisions: tuple[str, ...]
-    matched_changed_symbols: tuple[str, ...]
+    matched_affected_symbols: tuple[str, ...]
 
 
 @dataclass
@@ -256,27 +258,27 @@ def plan_from_indexes(
     for edge, revs in _union(base.edges, head.edges).items():
         graph.add(edge, revs)
 
-    # Conservative edges from unresolved references whose name matches a
-    # changed symbol. Dynamic references are handled as pseudo-seeds below.
-    unresolved_records: list[UnresolvedRecord] = []
-    changed_by_name: dict[str, list[SymbolChange]] = defaultdict(list)
-    for change in changes:
-        short = (change.head or change.base).name  # type: ignore[union-attr]
-        changed_by_name[short].append(change)
+    # Conservative edges from unresolved references: ``obj.run()`` may be any
+    # known ``run`` (function, method or class) in either revision, so it gets
+    # an edge to each of them and impact flows through the graph as usual;
+    # matching only *changed* symbols would miss a ``run`` that is unchanged
+    # but calls something that changed. Dynamic references are pseudo-seeds.
+    symbols_by_name: dict[str, list[str]] = defaultdict(list)
+    for symbol_id in sorted(known_symbols):
+        symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
+        if symbol.kind != MODULE:
+            symbols_by_name[symbol.name].append(symbol_id)
+    pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...], tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
-            unresolved_records.append(
-                UnresolvedRecord(ref.symbol, ref.kind, ref.name, ref.detail, revs, ())
-            )
+            pending_unresolved.append((ref, revs, ()))
             continue
-        matches = tuple(c.id for c in changed_by_name.get(ref.name, ()) if c.id != ref.symbol)
+        matches = tuple(s for s in symbols_by_name.get(ref.name, ()) if s != ref.symbol)
         for match in matches:
             graph.add(Edge(ref.symbol, match, UNRESOLVED_NAME_MATCH, ref.detail), revs)
-        unresolved_records.append(
-            UnresolvedRecord(ref.symbol, ref.kind, ref.name, ref.detail, revs, matches)
-        )
+        pending_unresolved.append((ref, revs, matches))
 
     # Targets join the graph as nodes with explicit dependency edges.
     for target in targets:
@@ -329,6 +331,18 @@ def plan_from_indexes(
             mode[source] = new_mode
             via[source] = (edge, revs, node)
             queue.append(source)
+
+    unresolved_records = [
+        UnresolvedRecord(
+            ref.symbol,
+            ref.kind,
+            ref.name,
+            ref.detail,
+            revs,
+            tuple(m for m in matches if m in mode),  # matches that actually carry impact
+        )
+        for ref, revs, matches in pending_unresolved
+    ]
 
     if errors:
         fallbacks.append(

@@ -13,8 +13,11 @@ Supported subset (see docs/design.md):
 * ``import``/``from ... import`` (absolute and relative) within source roots;
 * ``importlib.import_module`` / ``getattr`` with literal arguments.
 
-Deliberately unsupported: type inference, dynamic dispatch, inheritance
-lookup, instance attributes, decorators that rewrite call targets.
+* attribute lookup on classes through their in-scope MRO (``self.m`` for an
+  inherited ``m``, ``Sub.m``, ``super().m``).
+
+Deliberately unsupported: type inference, dynamic dispatch on unknown
+receivers, instance attributes, decorators that rewrite call targets.
 """
 
 from __future__ import annotations
@@ -126,8 +129,13 @@ class ImportBinding:
 @dataclass
 class ClassScope:
     id: str
+    module: ModuleScope | None = None
     members: dict[str, str] = field(default_factory=dict)  # name -> symbol id
     bindings: set[str] = field(default_factory=set)
+    base_exprs: list[ast.expr] = field(default_factory=list)
+    bases: list[str] = field(default_factory=list)  # in-scope base class ids, in order
+    complete: bool = True  # False when some base is external/unresolved
+    mro: list[str] | None = None
 
 
 @dataclass
@@ -333,6 +341,8 @@ class Indexer:
                 self._module_prefixes.add(".".join(parts[:i]))
         for module in sorted(self.scopes):
             self._index_module(self.scopes[module])
+        for class_id in sorted(self.class_scopes):
+            self._resolve_bases(self.class_scopes[class_id])
         for module in sorted(self.scopes):
             self._resolve_module(self.scopes[module])
         return self.index
@@ -453,7 +463,9 @@ class Indexer:
                     continue
                 members[name] = symbol_id
                 self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
-                cscope = ClassScope(id=symbol_id)
+                cscope = ClassScope(id=symbol_id, module=scope)
+                for n in nodes:
+                    cscope.base_exprs.extend(n.bases)
                 self.class_scopes[symbol_id] = cscope
                 for n in nodes:
                     for stmt in iter_scope_statements(n.body):
@@ -487,6 +499,59 @@ class Indexer:
                     continue
                 members[name] = symbol_id
                 self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+
+    # -- inheritance ----------------------------------------------------------
+
+    def _resolve_bases(self, cscope: ClassScope) -> None:
+        """Resolve a class's base expressions to in-scope class ids (module scope)."""
+        assert cscope.module is not None
+        scope = Scope(module=cscope.module)
+        for expr in cscope.base_exprs:
+            parts = _flatten_chain(expr)
+            node = self.resolve_chain(parts, scope) if parts else None
+            if (
+                isinstance(node, Resolved)
+                and not node.detail
+                and node.symbol in self.class_scopes
+                and node.symbol != cscope.id
+            ):
+                cscope.bases.append(node.symbol)
+            else:
+                cscope.complete = False  # external, dynamic (``Generic[T]``) or unknown
+
+    def _mro(self, class_id: str) -> list[str]:
+        """Linearisation over in-scope classes: depth-first, left to right,
+        keeping the last occurrence of a repeated base (C3 for the common
+        cases; documented as an approximation)."""
+        cscope = self.class_scopes[class_id]
+        if cscope.mro is not None:
+            return cscope.mro
+        cscope.mro = [class_id]  # guards against inheritance cycles
+        order: list[str] = [class_id]
+        for base in cscope.bases:
+            order.extend(self._mro(base))
+        seen: set[str] = set()
+        linear: list[str] = []
+        for cid in reversed(order):
+            if cid not in seen:
+                seen.add(cid)
+                linear.append(cid)
+        cscope.mro = list(reversed(linear))
+        return cscope.mro
+
+    def lookup_in_class(self, class_id: str, attr: str, *, skip_self: bool = False) -> Node:
+        """Resolve ``attr`` on a class through its in-scope MRO.
+
+        Not found anywhere known (including when a base is external) yields a
+        name-bounded unresolved attribute, never a guess.
+        """
+        for cid in self._mro(class_id)[1 if skip_self else 0 :]:
+            cscope = self.class_scopes[cid]
+            if attr in cscope.members:
+                return Resolved(cscope.members[attr])
+            if attr in cscope.bindings:
+                return Resolved(cid, detail=f"attribute:{attr}")
+        return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
 
     # -- pass 2 ---------------------------------------------------------------
 
@@ -688,12 +753,7 @@ class Indexer:
             if symbol is None:
                 return node
             if symbol.kind == CLASS:
-                cscope = self.class_scopes[symbol.id]
-                if attr in cscope.members:
-                    return Resolved(cscope.members[attr])
-                if attr in cscope.bindings:
-                    return Resolved(symbol.id, detail=f"attribute:{attr}")
-                return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+                return self.lookup_in_class(symbol.id, attr)
             if symbol.kind == MODULE:
                 return self._step(ModuleNode(symbol.id), attr)
             return node  # attribute on a function object
@@ -865,12 +925,26 @@ class _ReferenceCollector(ast.NodeVisitor):
         if parts is not None:
             self._resolve(parts)
             return
+        if self._is_zero_arg_super(node.value) and self.scope.self_class is not None:
+            # ``super().m``: next definition of ``m`` in the enclosing class's MRO.
+            target = self.indexer.lookup_in_class(self.scope.self_class, node.attr, skip_self=True)
+            self.indexer._record(self.source, target, chain=f"super().{node.attr}")
+            return
         # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
         # unknown, but the attribute name still bounds what it may refer to.
         self.indexer.index.unresolved.add(
             UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
         )
         self.generic_visit(node)
+
+    def _is_zero_arg_super(self, node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "super"
+            and not node.args
+            and not self._is_shadowed("super")
+        )
 
     def visit_Import(self, node: ast.Import) -> None:
         return  # handled by Indexer._import_edges

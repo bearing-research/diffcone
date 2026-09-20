@@ -194,7 +194,7 @@ def test_imported_function_referenced_through_alias(repo):
         assert r.changed_symbol == "pkg.helpers.compute"
         assert not r.conservative, runner_id
     # The alias relationship is resolved, not guessed.
-    assert not [u for u in plan.unresolved if u.matched_changed_symbols]
+    assert not [u for u in plan.unresolved if u.matched_affected_symbols]
 
 
 def test_shared_setup_function_changes(repo):
@@ -470,9 +470,9 @@ def test_unresolvable_relationship_broadens_selection(repo):
         "pkg.service.plugin",
     ]
 
-    matched = {u.symbol: u for u in plan.unresolved if u.matched_changed_symbols}
+    matched = {u.symbol: u for u in plan.unresolved if u.matched_affected_symbols}
     assert set(matched) == {"pkg.service.persist"}
-    assert matched["pkg.service.persist"].matched_changed_symbols == ("pkg.models.Model.save",)
+    assert matched["pkg.service.persist"].matched_affected_symbols == ("pkg.models.Model.save",)
     assert matched["pkg.service.persist"].revisions == ("base", "head")
     dynamic = [u for u in plan.unresolved if u.kind == "dynamic"]
     assert [u.symbol for u in dynamic] == ["pkg.service.plugin"]
@@ -798,3 +798,101 @@ def test_multiple_source_roots_src_layout(repo):
     assert selected(plan) == {"tests/test_calc.py::test_add", "bench_calc.TimeCalc.time_add"}
     assert unselected(plan) == {"tests/test_calc.py::test_mul"}
     assert plan.fallbacks == []
+
+
+def test_inherited_method_change_reaches_subclass_consumers(repo):
+    base = repo.commit(
+        {
+            "pkg/base.py": (
+                "class Base:\n"
+                "    def encode(self, x):\n        return x\n\n"
+                "    def decode(self, x):\n        return x\n"
+            ),
+            "pkg/json_codec.py": (
+                "from pkg.base import Base\n\n\n"
+                "class JsonCodec(Base):\n"
+                "    def roundtrip(self, x):\n        return self.decode(self.encode(x))\n\n"
+                "    def decode(self, x):\n        return super().decode(x)\n\n\n"
+                "class Other(Base):\n"
+                "    def only_decode(self, x):\n        return self.decode(x)\n"
+            ),
+            "tests/test_codec.py": (
+                "from pkg.json_codec import JsonCodec, Other\n\n\n"
+                "def test_roundtrip():\n    assert JsonCodec().roundtrip(1) == 1\n\n\n"
+                "def test_class_attr():\n    assert JsonCodec.encode\n\n\n"
+                "def test_other():\n    assert Other().only_decode(1) == 1\n"
+            ),
+            "benchmarks/bench.py": (
+                "from pkg.json_codec import JsonCodec, Other\n\n\n"
+                "class Suite:\n"
+                "    def setup(self):\n        self.c = JsonCodec()\n\n"
+                "    def time_roundtrip(self):\n        self.c.roundtrip(1)\n\n\n"
+                "def time_other():\n    Other().only_decode(1)\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/base.py": (
+                "class Base:\n"
+                "    def encode(self, x):\n        return [x]\n\n"
+                "    def decode(self, x):\n        return x\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_roundtrip", "tests.test_codec.test_roundtrip"),
+        py_target("t::test_class_attr", "tests.test_codec.test_class_attr"),
+        py_target("t::test_other", "tests.test_codec.test_other"),
+        asv_target(
+            "b.Suite.time_roundtrip",
+            "benchmarks.bench.Suite.time_roundtrip",
+            "benchmarks.bench.Suite.setup",
+        ),
+        asv_target("b.time_other", "benchmarks.bench.time_other"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.base.Base.encode": ("body_changed",)}
+    assert selected(plan) == {
+        "t::test_roundtrip",
+        "t::test_class_attr",
+        "b.Suite.time_roundtrip",
+    }
+    assert unselected(plan) == {"t::test_other", "b.time_other"}
+    r = reason(plan, "t::test_class_attr")
+    assert not r.conservative
+    assert path_ids(r) == [
+        "target:pytest:t::test_class_attr",
+        "tests.test_codec.test_class_attr",
+        "pkg.base.Base.encode",
+    ]
+    # ``JsonCodec().roundtrip`` is a call-result access, hence conservative,
+    # but roundtrip -> self.encode -> Base.encode is a resolved path.
+    r = reason(plan, "t::test_roundtrip", "unresolved_name_match")
+    assert path_ids(r)[-2:] == ["pkg.json_codec.JsonCodec.roundtrip", "pkg.base.Base.encode"]
+    assert r.path[-1].kind == "references"
+    # The ASV benchmark reaches it through self.c (instance attribute, name-bounded).
+    assert "b.Suite.time_roundtrip" in selected(plan)
+
+    # Changing the overriding decode in JsonCodec must not select Other's consumers.
+    head2 = repo.commit(
+        {
+            "pkg/base.py": (  # restore: head2 must differ from base only in JsonCodec.decode
+                "class Base:\n"
+                "    def encode(self, x):\n        return x\n\n"
+                "    def decode(self, x):\n        return x\n"
+            ),
+            "pkg/json_codec.py": (
+                "from pkg.base import Base\n\n\n"
+                "class JsonCodec(Base):\n"
+                "    def roundtrip(self, x):\n        return self.decode(self.encode(x))\n\n"
+                "    def decode(self, x):\n        return super().decode(x) or x\n\n\n"
+                "class Other(Base):\n"
+                "    def only_decode(self, x):\n        return self.decode(x)\n"
+            ),
+        }
+    )
+    plan2 = repo.plan(base, head2, targets)
+    assert changes(plan2) == {"pkg.json_codec.JsonCodec.decode": ("body_changed",)}
+    assert "t::test_other" in unselected(plan2) and "b.time_other" in unselected(plan2)
+    assert "t::test_roundtrip" in selected(plan2)
