@@ -344,6 +344,15 @@ from the `run` and `validate` commands after a plan exists.
   as missed and the command exits 1. New or deleted tests count as outcome
   changes. This is a necessary, not sufficient, check: behaviour changes
   that keep the same outcome are not visible to it.
+* `validate --coverage` additionally runs the head suite with
+  `--cov=. --cov-context=test` into a temporary coverage database and reads
+  it directly (sqlite `line_bits` numbits, contexts folded to the test
+  function). A test is *dynamically affected* when it executed a line inside
+  a changed head symbol (`line_ranges` on `Symbol`; deleted symbols have no
+  head lines). Recall is caught / dynamically affected and must be 100 % for
+  the command to succeed; precision (dynamically affected among selected) is
+  reported, not enforced, because conservative selection is by design. Lines
+  executed at import/collection time carry no test context and are ignored.
 
 ## Known gaps (by design)
 

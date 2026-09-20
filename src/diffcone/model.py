@@ -39,6 +39,13 @@ class Symbol:
     body_hash: str
     definition_hash: str
     container: str | None
+    # Source line spans of every definition of this symbol (metadata, not
+    # identity); used by coverage-based validation to map executed lines back
+    # to symbols.
+    line_ranges: tuple[tuple[int, int], ...] = ()
+
+    def covers_line(self, line: int) -> bool:
+        return any(start <= line <= end for start, end in self.line_ranges)
 
 
 @dataclass(frozen=True, order=True)

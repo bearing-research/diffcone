@@ -88,10 +88,12 @@ uv run diffcone validate --base main --head HEAD --discover pytest --command "uv
 
 `validate` runs the full pytest suite at both snapshots (commits are checked
 out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
-every test whose pass/fail outcome changed but was not selected. It exits 1
-on a miss. It is deliberately only outcome-based: a behaviour change that
-keeps the same outcome is invisible to it; coverage-based validation is on
-the roadmap.
+every test whose pass/fail outcome changed but was not selected. With
+`--coverage` it also runs the head suite under pytest-cov with per-test
+contexts (pytest-cov must be installed in the environment that runs the
+suite) and requires every test that *executed* a changed symbol to have been
+selected, reporting recall and precision against that dynamic ground truth.
+It exits 1 on any miss.
 
 ### Static discovery
 

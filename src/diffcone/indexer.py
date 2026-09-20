@@ -391,6 +391,7 @@ class Indexer:
                 body_hash=hash_scope_body(scope.tree.body, strip_imports=True),
                 definition_hash=hash_nodes(scope.import_nodes),
                 container=None,
+                line_ranges=((1, _end_line(scope.tree)),),
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
@@ -467,6 +468,7 @@ class Indexer:
                     ),
                     definition_hash=definition_hash,
                     container=container_id,
+                    line_ranges=tuple((n.lineno, _end_line(n)) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -503,6 +505,7 @@ class Indexer:
                     body_hash=_digest("\n".join(hash_nodes(list(n.body)) for n in nodes)),
                     definition_hash=definition_hash,
                     container=container_id,
+                    line_ranges=tuple((n.lineno, _end_line(n)) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -845,6 +848,14 @@ class Indexer:
             self.index.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):
             self.index.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
+
+
+def _end_line(node: ast.AST) -> int:
+    end = getattr(node, "end_lineno", None)
+    if end is not None:
+        return end
+    last = max((getattr(n, "end_lineno", 0) or 0 for n in ast.walk(node)), default=0)
+    return last or getattr(node, "lineno", 1)
 
 
 def _chain_text(expr: ast.expr) -> str:

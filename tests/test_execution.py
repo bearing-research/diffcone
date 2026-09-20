@@ -235,3 +235,121 @@ def test_validate_catches_and_misses(repo, capsys):
     assert code == 0
     assert "validation (pytest): OK" in out
     assert "caught tests/test_ops.py::test_add: PASSED -> FAILED" in out
+
+
+def test_validate_with_coverage_measures_recall(repo, capsys):
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\npythonpath = src\n",
+            "src/pkg/__init__.py": "",
+            "src/pkg/ops.py": OPS,
+            "src/pkg/util.py": "def helper():\n    return 1\n",
+            # Outside the source roots: statically invisible, dynamically executed.
+            "ext/__init__.py": "",
+            "ext/bridge.py": (
+                "from pkg.util import helper\n\n\ndef via_bridge():\n    return helper()\n"
+            ),
+            "tests/test_ops.py": TEST_OPS,
+            "tests/test_bridge.py": (
+                "from ext.bridge import via_bridge\n\n\n"
+                "def test_bridge():\n    assert via_bridge() >= 1\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "src/pkg/ops.py": OPS.replace("a * b", "b * a"),  # same outcome, different body
+            "src/pkg/util.py": "def helper():\n    return 2\n",  # same outcome via >= 1
+        }
+    )
+    roots = ["src", "tests"]
+    plan = repo.plan(base, head, [], source_roots=roots, discover_runners=["pytest"])
+    # Static view: test_mul reaches mul; test_bridge cannot reach helper.
+    assert {d.target.runner_id for d in plan.decisions if d.selected} == {
+        "tests/test_ops.py::test_mul"
+    }
+
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.missed == []  # no outcome changed at all...
+    assert v.coverage is not None
+    assert v.coverage.changed_symbols == ("pkg.ops.mul", "pkg.util.helper")
+    assert [(h.runner_id, h.selected, h.executed_changed) for h in v.coverage.affected] == [
+        ("tests/test_bridge.py::test_bridge", False, ("pkg.util.helper",)),
+        ("tests/test_ops.py::test_mul", True, ("pkg.ops.mul",)),
+    ]
+    assert [h.runner_id for h in v.coverage.missed] == ["tests/test_bridge.py::test_bridge"]
+    assert v.coverage.recall == 0.5 and v.coverage.precision == 1.0
+    assert not v.ok  # ...but coverage shows a miss
+
+    code = main(
+        [
+            "validate",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--source-root",
+            "src",
+            "--source-root",
+            "tests",
+            "--command",
+            PYTEST,
+            "--coverage",
+            "--format",
+            "json",
+        ]
+    )
+    data = json.loads(capsys.readouterr().out)
+    assert code == 1
+    assert data["coverage"]["counts"] == {
+        "tests": 3,
+        "executed_a_changed_symbol": 2,
+        "caught": 1,
+        "missed": 1,
+    }
+    assert data["coverage"]["missed"] == [
+        {"runner_id": "tests/test_bridge.py::test_bridge", "executed": ["pkg.util.helper"]}
+    ]
+
+    # Text output names the miss and the ratios.
+    code = main(
+        [
+            "validate",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--source-root",
+            "src",
+            "--source-root",
+            "tests",
+            "--command",
+            PYTEST,
+            "--coverage",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "recall 50% (caught 1, missed 1), precision 100%" in out
+    assert "MISSED tests/test_bridge.py::test_bridge: executed pkg.util.helper" in out
+
+
+def test_symbols_carry_line_ranges(repo):
+    base = repo.commit(
+        {"m.py": "def f():\n    return 1\n\n\nclass C:\n    def m(self):\n        pass\n"}
+    )
+    plan = repo.plan(base, base, [])
+    symbols = plan.head_index.symbols
+    assert symbols["m.f"].line_ranges == ((1, 2),)
+    assert symbols["m.C"].line_ranges == ((5, 7),)
+    assert symbols["m.C.m"].line_ranges == ((6, 7),)
+    assert symbols["m"].line_ranges == ((1, 7),)
+    assert symbols["m.C.m"].covers_line(7) and not symbols["m.C.m"].covers_line(2)

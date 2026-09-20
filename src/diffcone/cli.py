@@ -129,6 +129,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="runner_command",
         help='pytest command line (default: "python -m pytest")',
     )
+    v.add_argument(
+        "--coverage",
+        action="store_true",
+        help="also run the head suite under pytest-cov with per-test contexts and require "
+        "every test that executed a changed symbol to be selected (reports recall/precision)",
+    )
     _add_common(v)
     v.add_argument("--format", choices=("json", "text"), default="text")
 
@@ -209,7 +215,9 @@ def main(argv: list[str] | None = None) -> int:
             return outcome.returncode or 0
         if args.command == "validate":
             result = build_plan()
-            validation = validate_pytest(result, repo=Path(args.repo), command=args.runner_command)
+            validation = validate_pytest(
+                result, repo=Path(args.repo), command=args.runner_command, coverage=args.coverage
+            )
             text = (
                 json.dumps(validation_to_dict(validation), indent=2) + "\n"
                 if args.format == "json"

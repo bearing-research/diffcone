@@ -46,10 +46,9 @@ Static discovery covers the common layout. Remaining gaps, roughly by value:
 
 ## 4. Validation depth
 
-* Coverage-based validation: run the head suite with per-test coverage
-  contexts (pytest-cov) and treat "executed a changed function" as ground
-  truth, measuring precision and recall of the static plan rather than
-  only outcome changes.
 * `validate` for ASV.
+* Coverage validation at base as well as head (a test that executed a
+  deleted symbol at base), and a corpus report aggregating recall/precision
+  across many commits.
 * Persistent cache of per-commit indexes once correctness is established.
 * A corpus of real-world before/after commits as regression data.
