@@ -210,15 +210,39 @@ class Scope:
     locals: set[str] = field(default_factory=set)
     self_name: str | None = None
     self_class: str | None = None
-    # Function-level ``name = "lit"`` / ``for name in ("a", "b")`` bindings:
-    # the string values a name may hold, or None when any binding is not literal.
-    literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    # Function-level ``name = "lit"`` / ``for name in ("a", "b")`` bindings
+    # (the string values a name may hold, or None when a binding is not
+    # literal) are computed lazily: collecting them walks the whole function,
+    # and only functions with a dynamic-name call ever ask. ``literal_node`` is
+    # the scope's own body to collect from, ``literal_parent`` the enclosing
+    # scope whose bindings are inherited minus ``literal_bound``, and
+    # ``literal_extra`` explicit bindings (comprehension variables).
+    literal_node: ast.AST | None = None
+    literal_parent: Scope | None = None
+    literal_bound: frozenset[str] = frozenset()
+    literal_extra: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    _literal_cache: dict[str, tuple[str, ...] | None] | None = field(default=None, repr=False)
     # The enclosing function's own parameters (only in that function's scope,
     # not in nested scopes): name -> positional index or None for keyword-only.
     params: dict[str, int | None] = field(default_factory=dict)
     # Parameters whose default is a module-level variable alias that variable:
     # reads and in-place mutations through the parameter belong to it.
     param_aliases: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def literal_names(self) -> dict[str, tuple[str, ...] | None]:
+        if self._literal_cache is None:
+            names: dict[str, tuple[str, ...] | None] = {}
+            if self.literal_parent is not None:
+                parent = self.literal_parent.literal_names
+                names = {k: v for k, v in parent.items() if k not in self.literal_bound}
+            if self.literal_node is not None:
+                names.update(
+                    _collect_literal_bindings(self.literal_node, self.module.literal_names)
+                )
+            names.update(self.literal_extra)
+            self._literal_cache = names
+        return self._literal_cache
 
     def string_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
         """Every string ``expr`` may evaluate to, or None when unbounded."""
@@ -1084,11 +1108,7 @@ class Indexer:
         symbol_id: str,
         class_scope: ClassScope | None,
     ) -> None:
-        fscope = Scope(
-            module=scope,
-            locals=_LocalBindings().collect(node),
-            literal_names=_collect_literal_bindings(node, scope.literal_names),
-        )
+        fscope = Scope(module=scope, locals=_LocalBindings().collect(node), literal_node=node)
         bound_method = class_scope is not None and not _is_staticmethod(node)
         if bound_method:
             params = node.args.posonlyargs + node.args.args
@@ -1125,7 +1145,6 @@ class Indexer:
         outer_scope = Scope(
             module=scope,
             locals=set(class_scope.bindings) if class_scope is not None else set(),
-            literal_names=dict(scope.literal_names),
         )
         outer = _ReferenceCollector(self, symbol_id, outer_scope, skip_defs=True)
         for dec in node.decorator_list:
@@ -1437,18 +1456,22 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.skip_defs = skip_defs
 
     def _push(
-        self, bound: set[str], literals: dict[str, tuple[str, ...] | None] | None = None
+        self,
+        bound: set[str],
+        literals: dict[str, tuple[str, ...] | None] | None = None,
+        node: ast.AST | None = None,
     ) -> Scope:
         outer = self.scope
-        literal_names = {k: v for k, v in outer.literal_names.items() if k not in bound}
-        literal_names.update(literals or {})
         self.scope = Scope(
             module=outer.module,
             local_imports=outer.local_imports,
             locals=outer.locals | bound,
             self_name=None if outer.self_name in bound else outer.self_name,
             self_class=None if outer.self_name in bound else outer.self_class,
-            literal_names=literal_names,
+            literal_node=node,
+            literal_parent=outer,
+            literal_bound=frozenset(bound),
+            literal_extra=dict(literals or {}),
             params={},  # a nested scope's names are not the enclosing function's parameters
             param_aliases={k: v for k, v in outer.param_aliases.items() if k not in bound},
         )
@@ -1469,10 +1492,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.visit(dec)
         for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
             self.visit(default)
-        outer = self._push(
-            _LocalBindings().collect(node),
-            _collect_literal_bindings(node, self.scope.module.literal_names),
-        )
+        outer = self._push(_LocalBindings().collect(node), node=node)
         try:
             for arg in ast.walk(node.args):
                 if isinstance(arg, ast.arg) and arg.annotation is not None:
