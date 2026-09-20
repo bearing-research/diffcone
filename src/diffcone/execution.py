@@ -64,6 +64,22 @@ def build_command(
     raise ValueError(f"unknown runner {runner!r}")
 
 
+def resolve_command(command: str | None, repo: Path) -> str | None:
+    """Make a relative executable path in ``command`` (``.venv/bin/python``)
+    absolute, against the current directory and then the repository, so
+    the command still works from a temporary worktree."""
+    if command is None:
+        return None
+    argv = shlex.split(command)
+    if not argv or os.path.isabs(argv[0]) or os.sep not in argv[0]:
+        return command
+    for base in (Path.cwd(), repo):
+        candidate = base / argv[0]
+        if candidate.exists():
+            return shlex.join([str(candidate.resolve()), *argv[1:]])
+    return command
+
+
 @dataclass
 class RunResult:
     runner: str
@@ -306,7 +322,13 @@ def _run_full_pytest(
             # not for pytest-cov's switch_context(), so force the C tracer (it
             # falls back to the pure-Python tracer when unavailable).
             env.setdefault("COVERAGE_CORE", "ctrace")
-        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
+        try:
+            proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
+        except OSError as exc:
+            raise GitError(
+                f"cannot run {argv[0]!r}: {exc}; a relative path in --command is resolved "
+                "against the current directory and the repository"
+            ) from exc
         log = proc.stdout + proc.stderr
         if coverage and not (db and db.exists()):
             raise GitError(
@@ -522,6 +544,7 @@ def validate_pytest(
     a committed snapshot's outcomes instead of running its suite again."""
     if plan.head.kind == KIND_WORKTREE and plan.base.kind == KIND_WORKTREE:
         raise GitError("validate needs at least one committed snapshot")
+    command = resolve_command(command, repo)
     selected = {
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }

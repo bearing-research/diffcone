@@ -66,7 +66,24 @@ definitions with the same name in one scope (overloads, property setters,
 conditional definitions) are one symbol whose hashes cover all of them.
 
 Source roots are mapped to module names with the longest matching root
-winning; `pkg/__init__.py` is module `pkg`.
+winning; `pkg/__init__.py` is module `pkg`. Two files that map to the same
+module name are an analysis error (the second is skipped and the plan is
+degraded), which is the condition under which one pytest session would
+fail with an import file mismatch too.
+
+**Monorepos.** One plan models one pytest session: pass the source roots
+of every package that session imports plus the test tree it collects. A
+repository whose packages each carry a `tests/` tree run as separate
+sessions (opentelemetry-python: `tox -e test-opentelemetry-sdk` runs
+`opentelemetry-sdk/tests` alone) is planned once per session, for example
+`--source-root opentelemetry-api/src --source-root opentelemetry-sdk/src
+--source-root tests/opentelemetry-test-utils/src --source-root
+opentelemetry-sdk/tests`; planning the API and SDK test trees together
+collides on `trace.test_globals` and `context` and degrades exactly as
+pytest would. A repository that runs one session over several packages
+(hatch: `src`, `backend/src`, `tests`) is one plan. Cross-package imports
+resolve like any other in-scope import because module names are global
+across roots.
 
 ## Hashes
 
@@ -507,7 +524,10 @@ from the `run` and `validate` commands after a plan exists.
   source roots first on `PYTHONPATH`, so the checkout's code wins over an
   installed (editable) copy of the project; with a `src` layout the working
   directory alone would not achieve that and the suite would silently test
-  the installed revision. With `--coverage` this is verified: a measured
+  the installed revision. A relative executable in `--command`
+  (`.venv/bin/python`) is resolved against the current directory and then
+  the repository before the suites run in their temporary worktrees, and a
+  missing executable is a plain error. With `--coverage` this is verified: a measured
   file outside the checkout that shadows a checkout file is an error. Every test whose outcome
   differs between the snapshots must be selected; otherwise it is reported
   as missed and the command exits 1. New tests count as outcome changes;

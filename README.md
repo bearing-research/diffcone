@@ -100,6 +100,14 @@ recall/precision and mean selection savings. Each commit's suite runs once.
 Pass the source roots that hold the package (for a `src` layout,
 `--source-root src --source-root tests`): validation puts them first on
 `PYTHONPATH` so the checkout's code, not an installed copy, is what runs.
+A relative interpreter path in `--command` (`.venv/bin/python -m pytest`)
+is resolved against the current directory and then the repository, since
+the suites run in temporary worktrees.
+In a monorepo, one plan is one pytest session: pass every package root
+that session imports plus the test tree it collects, and plan once per
+session when packages carry their own `tests/` trees (two files mapping to
+the same module name are reported as an analysis error, as pytest would
+report an import mismatch).
 
 `validate` runs the full pytest suite at both snapshots (commits are checked
 out into temporary `git worktree`s, `WORKTREE` runs in place) and reports

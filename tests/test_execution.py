@@ -900,3 +900,19 @@ def test_corpus_progress_reports_skipped_commits(repo):
         progress=lambda e: seen.append((e.commit, e.skipped is not None)),
     )
     assert seen == [(c2, True), (c3, False)]
+
+
+def test_validate_resolves_a_relative_command_against_the_repo(repo, monkeypatch):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    runner = repo.path / "run-pytest.sh"
+    runner.write_text(f'#!/bin/sh\nexec {sys.executable} -m pytest "$@"\n')
+    runner.chmod(0o755)
+    plan = repo.plan(
+        base, head, [py_target("tests/test_ops.py::test_add", "tests.test_ops.test_add")]
+    )
+    monkeypatch.chdir(repo.path.parent)  # not the repository: the path is resolved through it
+    v = validate_pytest(plan, repo=repo.path, command="./run-pytest.sh")
+    assert v.missed == []
+    with pytest.raises(GitError, match="cannot run './missing.sh'"):
+        validate_pytest(plan, repo=repo.path, command="./missing.sh")
