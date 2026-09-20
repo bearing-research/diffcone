@@ -155,7 +155,8 @@ contain; those are symbols with their own edges.
 `getattr(x, name)` and `importlib.import_module(name)` are expanded over
 every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
-directly, via `.keys()` or as the key of `.items()`), a variable assigned
+directly, via `.keys()`, or as the first name of a `for key, value in
+D.items()` target), a variable assigned
 only such values (in the function or at module level), or a `for` variable
 iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
@@ -322,10 +323,12 @@ Resolution order is class fixtures (the class, then its in-module bases,
 then enclosing classes), module fixtures, `conftest.py` from the test's
 directory outward, then plugin modules: those named in `pytest_plugins`
 (conftest declarations are global) and the project's own `pytest11` entry
-points from `pyproject.toml` or `setup.cfg`, following one level of
+points from `pyproject.toml` (`[project.entry-points]` or
+`[tool.poetry.plugins]`) or `setup.cfg`, following one level of
 `from ... import` re-exports so a plugin package's `__init__` exposes the
-fixtures it imports. Hooks defined in those plugin modules are lifecycle
-dependencies of every test. Nearest scope wins; a fixture that requests its
+fixtures and hooks it imports (matched on the original name; a fixture keeps
+its own name under an alias). Hooks defined in or imported into those
+plugin modules are lifecycle dependencies of every test. Nearest scope wins; a fixture that requests its
 own name (`def db(db)`) resolves to the next definition outward; requests
 are resolved transitively along the same chain; autouse fixtures anywhere
 on the chain apply.

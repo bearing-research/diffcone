@@ -678,7 +678,9 @@ def test_entry_point_plugin_fixtures_and_hooks_are_resolved(repo):
     targets = by_id(result)
     a = targets["tests/test_x.py::test_a"]
     assert "myplug.plugin.mocker" in a.lifecycle_dependencies
-    assert "myplug.plugin.pytest_configure" in a.lifecycle_dependencies
+    # The hook is defined in the submodule but not imported into the entry
+    # module, so pytest never registers it.
+    assert "myplug.plugin.pytest_configure" not in a.lifecycle_dependencies
     assert not any(d.startswith("fixture:") for d in a.lifecycle_dependencies)
     # ``hidden`` is not re-exported by the package, so pytest would not see it.
     b = targets["tests/test_x.py::test_b"]
@@ -721,3 +723,30 @@ def test_assignment_style_fixtures(repo):
     assert "tests.conftest._mocker" in b.lifecycle_dependencies
     assert not any(d.startswith("fixture:") for d in b.lifecycle_dependencies)
     assert result.notes == []
+
+
+def test_entry_point_reexports_use_original_names_and_filter_hooks(repo):
+    rev = repo.commit(
+        {
+            "pyproject.toml": '[tool.poetry.plugins."pytest11"]\nmyplug = "myplug"\n',
+            "src/myplug/__init__.py": (
+                "try:\n    from myplug.plugin import mocker as m, pytest_configure\n"
+                "except ImportError:\n    pass\n"
+                "from myplug.plugin import mocker as m2\n"
+            ),
+            "src/myplug/plugin.py": (
+                "import pytest\n\n\n"
+                "@pytest.fixture\ndef mocker():\n    return 1\n\n\n"
+                "def pytest_configure(config):\n    pass\n\n\n"
+                "def pytest_unconfigure(config):\n    pass\n"
+            ),
+            "tests/test_x.py": "def test_a(mocker):\n    assert mocker\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest", roots=["src", "tests"])
+    assert result.config["entry_point_plugins"] == ["myplug"]
+    deps = set(by_id(result)["tests/test_x.py::test_a"].lifecycle_dependencies)
+    assert "myplug.plugin.mocker" in deps  # aliased import still registers ``mocker``
+    assert "myplug.plugin.pytest_configure" in deps  # imported hook
+    assert "myplug.plugin.pytest_unconfigure" not in deps  # not imported: not registered
+    assert not any(d.startswith("fixture:") for d in deps)

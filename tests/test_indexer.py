@@ -551,3 +551,19 @@ def test_literal_bindings_follow_source_order():
         "assert_any_call",
         "items",  # ``wrappers.items`` on a local is itself a bounded attribute
     }
+
+
+def test_dict_items_only_bound_for_pair_targets():
+    idx = index(
+        {
+            "m.py": (
+                "D = {'a': 1}\n\n"
+                "def single(mod):\n"
+                "    for pair in D.items():\n        getattr(mod, pair)\n\n"
+                "def keys(mod):\n"
+                "    for k in D.keys():\n        getattr(mod, k)\n"
+            )
+        }
+    )
+    assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.single"}
+    assert {u.name for u in idx.unresolved if u.symbol == "m.keys"} == {"a"}

@@ -64,6 +64,7 @@ from diffcone.discovery.common import (
     scope_functions,
     string_literals,
 )
+from diffcone.indexer import iter_scope_statements, resolve_relative_module
 from diffcone.model import SourceIndex
 from diffcone.snapshot import Snapshot
 
@@ -187,6 +188,9 @@ def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
         entries = data.get("project", {}).get("entry-points", {}).get("pytest11", {})
         if isinstance(entries, dict):
             modules += [str(v).split(":", 1)[0].strip() for v in entries.values()]
+        poetry = data.get("tool", {}).get("poetry", {}).get("plugins", {}).get("pytest11", {})
+        if isinstance(poetry, dict):
+            modules += [str(v).split(":", 1)[0].strip() for v in poetry.values()]
     if "setup.cfg" in files:
         section = _ini_section(files["setup.cfg"], "options.entry_points") or {}
         for line in str(section.get("pytest11", "")).splitlines():
@@ -200,16 +204,9 @@ BUILTIN_PLUGINS = frozenset({"pytester", "pytest", "_pytest"})
 
 def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
     """Absolute module of a ``from ... import`` statement in ``parsed``."""
-    if node.level == 0:
-        return node.module or ""
-    parts = parsed.module.split(".")
-    if not parsed.path.endswith("__init__.py"):
-        parts = parts[:-1]
-    drop = node.level - 1
-    if drop:
-        parts = parts[: len(parts) - drop] if drop <= len(parts) else []
-    base = ".".join(parts)
-    return f"{base}.{node.module}" if node.module and base else (node.module or base)
+    return resolve_relative_module(
+        parsed.module, parsed.path.endswith("__init__.py"), node.module, node.level
+    )
 
 
 def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
@@ -551,6 +548,45 @@ def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
     return False
 
 
+def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
+    """Fixtures and hooks a plugin module exposes by importing them from
+    submodules (``from .plugin import mocker``): pytest registers whatever the
+    entry module's namespace holds, so follow one level of ``from`` imports,
+    merged per submodule. Names are matched on what is imported (the original
+    name, not an alias: a fixture keeps its own name); a hook counts only when
+    it is imported too."""
+    imported: dict[str, set[str] | None] = {}  # submodule -> names, None for *
+    for stmt in iter_scope_statements(facts.parsed.tree.body):
+        if not isinstance(stmt, ast.ImportFrom):
+            continue
+        base = _absolute_module(facts.parsed, stmt)
+        if not base:
+            continue
+        names = {a.name for a in stmt.names}
+        if "*" in names:
+            imported[base] = None
+        elif imported.get(base, set()) is not None:
+            imported.setdefault(base, set()).update(names)
+    out: list[ModuleFacts] = []
+    for base, names in imported.items():
+        sub = module_facts(base)
+        if sub is None or sub is facts:
+            continue
+        if names is None:
+            out.append(sub)
+            continue
+        visible = ModuleFacts(parsed=sub.parsed)
+        visible.fixtures = {
+            n: f
+            for n, f in sub.fixtures.items()
+            if n in names or f.symbol.rsplit(".", 1)[-1] in names
+        }
+        visible.hooks = [h for h in sub.hooks if h.rsplit(".", 1)[-1] in names]
+        if visible.fixtures or visible.hooks:
+            out.append(visible)
+    return out
+
+
 def discover_pytest(
     snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
 ) -> DiscoveryResult:
@@ -605,25 +641,7 @@ def discover_pytest(
                 )
                 continue
             found.append(facts)
-            # A plugin package usually re-exports its fixtures from submodules
-            # (``from .plugin import mocker``); pytest registers whatever the
-            # entry module's namespace holds, so follow one level of imports.
-            for stmt in facts.parsed.tree.body:
-                if isinstance(stmt, ast.ImportFrom):
-                    base = _absolute_module(facts.parsed, stmt)
-                    sub = module_facts(base) if base else None
-                    if sub is not None and sub is not facts:
-                        names = {a.asname or a.name for a in stmt.names}
-                        if "*" not in names:
-                            visible = ModuleFacts(parsed=sub.parsed, hooks=sub.hooks)
-                            visible.fixtures = {
-                                n: f
-                                for n, f in sub.fixtures.items()
-                                if f.symbol.rsplit(".", 1)[-1] in names or n in names
-                            }
-                            found.append(visible)
-                        else:
-                            found.append(sub)
+            found.extend(_reexported_facts(facts, module_facts))
         return found
 
     global_plugins: list[ModuleFacts] = []

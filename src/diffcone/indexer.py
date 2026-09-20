@@ -213,11 +213,14 @@ class Local:
 Node = Resolved | ModuleNode | External | Unresolved | Local | None
 
 
-def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) -> str:
+def resolve_relative_module(current: str, is_package: bool, module: str | None, level: int) -> str:
+    """Absolute module named by ``from <'.' * level><module> import ...`` as
+    written inside ``current`` (a package's ``__init__`` counts as the
+    package itself)."""
     if level == 0:
         return module or ""
-    parts = scope_module.name.split(".") if scope_module.name else []
-    if not scope_module.is_package:
+    parts = current.split(".") if current else []
+    if not is_package:
         parts = parts[:-1]
     drop = level - 1
     if drop:
@@ -226,6 +229,10 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
     if module:
         return f"{base}.{module}" if base else module
     return base
+
+
+def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) -> str:
+    return resolve_relative_module(scope_module.name, scope_module.is_package, module, level)
 
 
 def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
@@ -262,15 +269,21 @@ def _string_candidates(
         if expr.id in local_literals:
             return local_literals[expr.id]
         return module_literals.get(expr.id)
-    # ``D.keys()`` / ``D.items()`` / ``tuple(D)`` over a literal-keyed dict.
-    if (
+    # ``D.keys()`` over a literal-keyed dict yields its keys. (``D.items()``
+    # yields pairs and is handled only for ``for key, value in`` targets.)
+    if _is_dict_method_call(expr, "keys"):
+        return _string_candidates(expr.func.value, local_literals, module_literals)  # type: ignore[attr-defined]
+    return None
+
+
+def _is_dict_method_call(expr: ast.expr, method: str) -> bool:
+    return (
         isinstance(expr, ast.Call)
         and not expr.args
+        and not expr.keywords
         and isinstance(expr.func, ast.Attribute)
-        and expr.func.attr in ("keys", "items")
-    ):
-        return _string_candidates(expr.func.value, local_literals, module_literals)
-    return None
+        and expr.func.attr == method
+    )
 
 
 def _collect_literal_bindings(
@@ -307,19 +320,12 @@ def _collect_literal_bindings(
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Tuple):
             # ``for key, value in D.items()``: the key is bounded, the value is not.
             elts = n.target.elts
-            is_items = (
-                isinstance(n.iter, ast.Call)
-                and isinstance(n.iter.func, ast.Attribute)
-                and n.iter.func.attr == "items"
-            )
+            keys = None
+            if _is_dict_method_call(n.iter, "items") and len(elts) == 2:
+                keys = _string_candidates(n.iter.func.value, found, module_literals)  # type: ignore[attr-defined]
             for i, elt in enumerate(elts):
                 if isinstance(elt, ast.Name):
-                    values = (
-                        _string_candidates(n.iter, found, module_literals)
-                        if is_items and i == 0 and len(elts) == 2
-                        else None
-                    )
-                    bind(elt.id, values)
+                    bind(elt.id, keys if i == 0 else None)
         elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
             if n.id not in found:
                 found[n.id] = None
