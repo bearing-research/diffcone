@@ -395,6 +395,30 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             facts.hooks.append(symbol)
         elif func.name in MODULE_SETUP_FUNCTIONS:
             facts.setup_functions.append(symbol)
+    # ``mocker = pytest.fixture(scope="function")(_mocker)``: a fixture made by
+    # calling the decorator on an in-module function and binding the result.
+    functions = {f.name: f for f in scope_functions(body)}
+    for name, value in scope_assignments(body):
+        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Call):
+            continue
+        parts, call = decorator_chain(value.func)
+        if not parts or parts[-1] not in ("fixture", "yield_fixture") or len(value.args) != 1:
+            continue
+        target = value.args[0]
+        if not (isinstance(target, ast.Name) and target.id in functions):
+            continue
+        func = functions[target.id]
+        explicit = keyword_value(call, "name")
+        fixture_name = (
+            explicit.value
+            if isinstance(explicit, ast.Constant) and isinstance(explicit.value, str)
+            else name
+        )
+        autouse_node = keyword_value(call, "autouse")
+        autouse = isinstance(autouse_node, ast.Constant) and bool(autouse_node.value)
+        facts.fixtures[fixture_name] = Fixture(
+            fixture_name, f"{parsed.module}.{func.name}", autouse, _fixture_requests(func, False)
+        )
     for cls in scope_classes(body):
         _collect_class_fixtures(facts, cls, f"{parsed.module}.{cls.name}")
     facts.plugins = _plugins_from_body(body)

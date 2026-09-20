@@ -307,7 +307,9 @@ method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.
 
 Fixtures are functions decorated with a dotted name ending in `fixture` or
-`yield_fixture`; `name=` and `autouse=True` keyword arguments are honoured.
+`yield_fixture`, or module-level bindings of the form
+`name = pytest.fixture(...)(function)`; `name=` and `autouse=True` keyword
+arguments are honoured.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
 `patch.object` decorators (unless `new` is given), and names supplied by

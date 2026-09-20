@@ -655,7 +655,9 @@ def test_snapshot_reads_config_only_on_request(repo):
 
 def test_entry_point_plugin_fixtures_and_hooks_are_resolved(repo):
     files = {
-        "pyproject.toml": '[project]\nname = "x"\n[project.entry-points.pytest11]\nmyplug = "myplug"\n',
+        "pyproject.toml": (
+            '[project]\nname = "x"\n[project.entry-points.pytest11]\nmyplug = "myplug"\n'
+        ),
         "src/myplug/__init__.py": "from myplug.plugin import mocker, helper\n",
         "src/myplug/plugin.py": (
             "import pytest\n\n\n"
@@ -695,3 +697,27 @@ def test_entry_point_plugin_fixtures_and_hooks_are_resolved(repo):
     assert (
         "myplug.plugin.hidden" in by_id(result2)["tests/test_x.py::test_b"].lifecycle_dependencies
     )
+
+
+def test_assignment_style_fixtures(repo):
+    rev = repo.commit(
+        {
+            "tests/conftest.py": (
+                "import pytest\n\n\n"
+                "def _mocker(pytestconfig):\n    return 1\n\n\n"
+                "mocker = pytest.fixture()(_mocker)\n"
+                "class_mocker = pytest.fixture(scope='class')(_mocker)\n"
+                "named = pytest.fixture(name='alias')(_mocker)\n"
+            ),
+            "tests/test_x.py": (
+                "def test_a(mocker):\n    pass\n\n\ndef test_b(class_mocker, alias):\n    pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    targets = by_id(result)
+    assert "tests.conftest._mocker" in targets["tests/test_x.py::test_a"].lifecycle_dependencies
+    b = targets["tests/test_x.py::test_b"]
+    assert "tests.conftest._mocker" in b.lifecycle_dependencies
+    assert not any(d.startswith("fixture:") for d in b.lifecycle_dependencies)
+    assert result.notes == []
