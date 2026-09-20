@@ -86,8 +86,10 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 | e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
 | 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 540 / 555 | 3 % | 100 % | 78 % |
 
-Totals: 54 outcome changes, 0 missed; recall 100 % (444 of 444); precision
-77 %; mean savings 65 %.
+Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
+80 %; mean savings 66 % (after module-level variables became symbols; the
+per-commit rows above are from the earlier run and moved by at most one
+point).
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
@@ -153,6 +155,77 @@ selects the whole suite; this commit changed one `MockerFixture` method and
 the 25 selected tests are those that reach `MockerFixture` through the
 fixture or by name.
 
+## attrs (python-attrs/attrs, 667 tests, `src` layout, hypothesis)
+
+Last 40 commits; 16 touch Python, the rest are docs, CI and typing-example
+commits. Suite runtime about six seconds. Uses pytest 9's native
+`[tool.pytest]` table and hypothesis `@given`. Discovery is clean once both
+are understood (see lessons). Reproduce with:
+
+```bash
+git clone --depth 150 https://github.com/python-attrs/attrs.git
+cd attrs && uv venv .venv && uv pip install -p .venv/bin/python -e . \
+  pytest pytest-cov cloudpickle hypothesis pympler
+diffcone corpus --repo . --range HEAD~120..HEAD --discover pytest \
+  --source-root src --source-root tests \
+  --command ".venv/bin/python -m pytest" --coverage --max 40
+```
+
+Totals: 26 outcome changes, 0 missed; recall 100 % (1 869 of 1 869);
+precision 53 %; mean savings 67 %. Selected rows (the 16 validated commits;
+docs-only and typing-example commits select nothing):
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| 6851ab5 | Defer imports on the cold import path | 655 / 655 | 0 % | 100 % | 83 % |
+| 97f8d17 | Fix ClassVar forward reference detection | 551 / 656 | 16 % | 100 % | 15 % |
+| 4b5b295 | Make on_setattr hooks accept generators | 555 / 667 | 17 % | 100 % | 62 % |
+| 5aa76a4 | Add `ne` validator | 23 / 667 | 97 % | 100 % | 22 % |
+| 9b98a73 | Drop Python 3.9 | 666 / 666 | 0 % | 100 % | 83 % |
+| 3e01de4 | docs: fix markup (removes a `from . import` binding) | 551 / 666 | 17 % | 100 % | 1 % |
+| f53fc54 | Stop evolve dunders from being modified | 551 / 667 | 17 % | 100 % | 63 % |
+| 9 others | docs, typing examples, changelog | 0 | 100 % | n/a | n/a |
+
+The remaining wide rows share one cause: `attr/__init__.py` is a hub whose
+import list changed (3e01de4 removes a `from . import` binding, which is
+structural by rule), or the change is in `_make.py`, which every attrs
+class definition runs through.
+
+## pytest (pytest-dev/pytest, 2 841 discovered tests, 4 538 collected, `src` layout)
+
+The multi-minute suite: 2 min 18 s serial for a plain run. Loads its own
+`pytester` plugin through `addopts = ["-p", "pytester"]`, collects extra
+files through `python_files = ["testing/python/*.py"]`, and needs a
+build-generated `_version.py` in every checkout. One parent-to-commit pair
+("Warn when writing or closing a cache file fails", which changed
+`Cache.set`) validated with coverage:
+
+```bash
+git clone --depth 200 https://github.com/pytest-dev/pytest.git
+cd pytest && uv venv .venv && uv pip install -p .venv/bin/python -e . \
+  attrs hypothesis requests xmlschema mock setuptools argcomplete pygments pytest-cov
+diffcone validate --repo . --base HEAD~1 --head HEAD --discover pytest \
+  --source-root src --source-root testing \
+  --command ".venv/bin/python -m pytest" \
+  --setup-command "cp $PWD/src/_pytest/_version.py src/_pytest/_version.py" --coverage
+```
+
+| metric | value |
+|---|---|
+| wall time for the pair (two suites under coverage) | 8 min 14 s |
+| outcome changes | 1, caught |
+| tests that executed a changed symbol | 1 490 of 3 436 |
+| recall | 100 % |
+| precision | 43 % |
+| selected | 3 485 of 3 486 |
+
+Nearly everything is selected because pytest dispatches hooks by name
+through pluggy and `pytester` runs a full inner session from within tests:
+statically every `hook.pytest_*` call name-matches every implementation,
+and 1 490 tests really do execute the changed method. A corpus over six
+such pairs would take about 50 minutes serially; `corpus` has no parallel
+mode yet.
+
 ## diffcone itself (87 tests)
 
 Last five commits at the time of writing (one docs commit skipped):
@@ -200,6 +273,31 @@ recall was measured against the wrong code, see item 2):
 4. Parameter ids containing spaces and pipes (`[TEXT: a|b]`) broke the
    node id parsers.
 
+From the attrs and pytest runs (attrs mean savings 38 % → 61 % → 67 %):
+
+1. attrs uses pytest 9's native `[tool.pytest]` table, which discovery did
+   not read; hypothesis `@given` arguments (keyword by name, positional
+   filling the last parameters) were taken for fixture requests.
+2. Docstring edits on hub functions selected ~580 of 656 tests; docstrings
+   are now hashed separately and a docstring-only edit carries no impact.
+3. A one-set edit in `attr/__init__.py` reached 417 tests because every
+   module-level binding was folded into the module symbol; simple
+   `NAME = expr` bindings are now symbols of their own. That change first
+   *lost* recall on toolz (a registry mutated in place at module level,
+   then a registry filled inside a function from another variable, then a
+   function whose parameter defaults were the variables): a variable's
+   hash and coverage lines now include its module-level mutation
+   statements, readers of a variable depend on the functions that mutate
+   it, defaults resolve in the enclosing scope, and a parameter defaulting
+   to a variable aliases it.
+4. Changing how hashes are computed without bumping the cache format made
+   a cached base index disagree with a fresh head index, producing phantom
+   changed symbols; the cache key now fingerprints the indexer's source.
+5. pytest's own suite: `-p pytester` in `addopts` was not honoured,
+   `python_files` entries with a directory were matched against the
+   basename (645 tests invisible, 356 reported as misses), and a fresh
+   checkout lacks the generated `_version.py` (`--setup-command`).
+
 From the first structlog run:
 
 1. With `--coverage`, the base suite ran uninstrumented and the head suite
@@ -233,6 +331,7 @@ number (recall, precision and savings identical to the tables above):
 
 ## Not yet exercised
 
-Suites that take minutes (per-test coverage cost at scale), fixtures from
+A full corpus on a multi-minute suite (one pytest pair is measured above;
+`corpus` would need parallel worktrees to be practical), fixtures from
 *installed third-party* plugins (`--assume-external-fixture`; none of the
-four repositories needed it), and monorepos.
+six repositories needed it), and monorepos.
