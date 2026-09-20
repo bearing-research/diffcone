@@ -49,18 +49,6 @@ and a synthetic 2 000-file tree plans warm in under one second.
 Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
 
-* **A multi-minute suite, as a corpus (`corpus --jobs N`).** One pytest
-  pair is measured: 8 min for two coverage runs of a 2 min 18 s suite, so
-  a six-pair corpus is about 50 min serially.
-  *Mechanism:* run pairs in parallel, each in its own pair of temporary
-  worktrees, sharing the outcome cache through a lock; the per-commit
-  suite-once property holds only within a job, so `--jobs` trades some
-  repeated base runs for wall time.
-  *Trade-off:* N worktrees of disk and N concurrent coverage databases;
-  suites that write to shared locations (a global `.pytest_cache`, a
-  hard-coded temp dir) can interfere, so `--jobs` defaults to 1.
-  *Done when:* a six-pair pytest corpus with `--jobs 4` finishes in under
-  20 min with results identical to the serial run.
 * **Third-party plugin fixtures.** None of the six repositories requested a
   fixture from an *installed* plugin. Find one that uses `mocker`,
   `httpx_mock`, `freezer` or `anyio_backend` and measure how much

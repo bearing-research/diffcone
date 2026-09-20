@@ -186,6 +186,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--max", type=int, dest="max_commits", help="only the last N commits of the range"
     )
+    c.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="validate this many pairs in parallel, each in its own temporary worktrees "
+        "(default 1; suites that write to shared locations can interfere)",
+    )
     _add_common(c)
     c.add_argument("--format", choices=("json", "text"), default="text")
 
@@ -317,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_commits=args.max_commits,
                 progress=progress,
                 setup_command=args.setup_command,
+                jobs=max(1, args.jobs),
             )
             text = (
                 json.dumps(corpus_to_dict(report), indent=2) + "\n"

@@ -784,7 +784,7 @@ def test_coverage_validation_instruments_both_snapshots(repo, monkeypatch):
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(execution.subprocess, "run", capturing)
-    cache: execution.OutcomeCache = {}
+    cache = execution.OutcomeCache()
     validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True, outcome_cache=cache)
     assert [("--cov-context=test" in a) for a in argvs] == [True, True]
     assert set(cache) == {(base, True), (head, True)}
@@ -812,3 +812,38 @@ def test_setup_command_runs_in_each_checkout(repo):
     assert {o.head for o in v.outcomes} == {"PASSED"} and v.ok  # the suite ran at both snapshots
     with pytest.raises(GitError, match="setup command failed"):
         validate_pytest(plan, repo=repo.path, command=PYTEST, setup_command="exit 3")
+
+
+def test_corpus_jobs_matches_serial_and_runs_each_suite_once(repo, monkeypatch):
+    c1 = repo.commit(
+        {"pkg/__init__.py": "", "pkg/ops.py": OPS, "data.txt": "3\n", "tests/test_ops.py": TEST_OPS}
+    )
+    c2 = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
+    c3 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    c4 = repo.commit({"pkg/ops.py": OPS.replace("a + b", "a + b + 0")})
+    make = lambda b, h: repo.plan(b, h, [], discover_runners=["pytest"])  # noqa: E731
+    calls: list[list[str]] = []
+    real_run = execution.subprocess.run
+    lock = execution.threading.Lock()
+
+    def counting(argv, **kwargs):
+        if "pytest" in argv:
+            with lock:
+                calls.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(execution.subprocess, "run", counting)
+    serial = execution.corpus_validation(
+        repo.path, f"{c1}..{c4}", make, command=PYTEST, coverage=True
+    )
+    serial_calls = len(calls)
+    calls.clear()
+    parallel = execution.corpus_validation(
+        repo.path, f"{c1}..{c4}", make, command=PYTEST, coverage=True, jobs=3
+    )
+    assert execution.corpus_to_dict(parallel) == execution.corpus_to_dict(serial)
+    assert [e.commit for e in parallel.entries] == [c2, c3, c4]  # order preserved
+    # Serial: four distinct snapshots, each suite once. Parallel: a pair whose
+    # base another job is still producing runs it itself (never more than one
+    # extra run per pair), because waiting would serialise the whole chain.
+    assert serial_calls == 4 and 4 <= len(calls) <= 6

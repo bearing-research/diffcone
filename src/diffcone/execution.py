@@ -24,8 +24,10 @@ import shlex
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from collections import defaultdict
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -469,10 +471,65 @@ def coverage_validation(
     return CoverageValidation(hits, changed_ids, run.log)
 
 
-# (commit sha, ran under coverage) -> per-test outcomes. Outcomes measured
-# under the coverage tracer are only comparable with each other: tests that
-# depend on recursion depth or timing can flip under sys.settrace.
-OutcomeCache = dict[tuple[str, bool], dict[str, str]]
+class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
+    """(commit sha, ran under coverage) -> per-test outcomes.
+
+    Outcomes measured under the coverage tracer are only comparable with
+    each other (tests that depend on recursion depth or timing can flip under
+    ``sys.settrace``), hence the flag in the key. Safe to share between
+    parallel corpus jobs: ``get_or_run`` runs a snapshot's suite once and
+    makes concurrent requesters wait for that result instead of repeating it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = threading.Lock()
+        self._pending: dict[tuple[str, bool], threading.Event] = {}
+
+    def get_or_run(self, key: tuple[str, bool], run) -> dict[str, str]:
+        with self._lock:
+            if key in self:
+                return self[key]
+            event = self._pending.get(key)
+            if event is None:
+                event = self._pending[key] = threading.Event()
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            event.wait()
+            with self._lock:
+                if key in self:
+                    return self[key]
+            return run()  # the owner failed; run it ourselves
+        try:
+            value = run()
+            with self._lock:
+                self[key] = value
+            return value
+        finally:
+            with self._lock:
+                self._pending.pop(key, None)
+            event.set()
+
+    def try_begin(self, key: tuple[str, bool]):
+        """Announce that the caller will produce ``key`` (a head run that must
+        happen anyway, for its coverage database). Returns a ``publish``
+        callable, or None when the value exists or someone else is producing
+        it, in which case the caller simply runs without publishing."""
+        with self._lock:
+            if key in self or key in self._pending:
+                return None
+            event = self._pending[key] = threading.Event()
+
+        def publish(value: dict[str, str] | None) -> None:
+            with self._lock:
+                if value is not None:
+                    self[key] = value
+                self._pending.pop(key, None)
+            event.set()
+
+        return publish
 
 
 def validate_pytest(
@@ -494,31 +551,43 @@ def validate_pytest(
     selected = {
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }
-    cache = outcome_cache if outcome_cache is not None else {}
-    base_log = ""
+    cache = outcome_cache if outcome_cache is not None else OutcomeCache()
     base_key = (plan.base.commit, coverage)
-    if plan.base.kind == KIND_COMMIT and base_key in cache:
-        base_outcomes = cache[base_key]
-    else:
+    logs: dict[str, str] = {"base": ""}
+
+    def run_base() -> dict[str, str]:
         # Same instrumentation on both sides: with --coverage the base suite
         # also runs under the tracer (its database is simply not read).
         with _Checkout(repo, plan.base.kind, plan.base.commit, setup_command) as base_dir:
             with _run_full_pytest(
                 base_dir, command, coverage=coverage, source_roots=plan.source_roots
             ) as base_run:
-                base_outcomes, base_log = base_run.outcomes, base_run.log
-        if plan.base.kind == KIND_COMMIT:
-            cache[base_key] = base_outcomes
+                logs["base"] = base_run.log
+                return base_run.outcomes
+
+    if plan.base.kind == KIND_COMMIT:
+        base_outcomes = cache.get_or_run(base_key, run_base)
+    else:
+        base_outcomes = run_base()
+    base_log = logs["base"]
     cov: CoverageValidation | None = None
-    with _Checkout(repo, plan.head.kind, plan.head.commit, setup_command) as head_dir:
-        with _run_full_pytest(
-            head_dir, command, coverage=coverage, source_roots=plan.source_roots
-        ) as head_run:
-            head_outcomes, head_log = head_run.outcomes, head_run.log
-            if coverage:
-                cov = coverage_validation(plan, head_run, head_dir, selected)
-    if plan.head.kind == KIND_COMMIT:
-        cache[(plan.head.commit, coverage)] = head_outcomes
+    head_key = (plan.head.commit, coverage)
+    publish = cache.try_begin(head_key) if plan.head.kind == KIND_COMMIT else None
+    head_log = ""
+    try:
+        with _Checkout(repo, plan.head.kind, plan.head.commit, setup_command) as head_dir:
+            with _run_full_pytest(
+                head_dir, command, coverage=coverage, source_roots=plan.source_roots
+            ) as head_run:
+                head_outcomes, head_log = head_run.outcomes, head_run.log
+                if coverage:
+                    cov = coverage_validation(plan, head_run, head_dir, selected)
+    except BaseException:
+        if publish is not None:
+            publish(None)
+        raise
+    if publish is not None:
+        publish(head_outcomes)
     known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
@@ -747,6 +816,7 @@ def corpus_validation(
     max_commits: int | None = None,
     progress=None,
     setup_command: str | None = None,
+    jobs: int = 1,
 ) -> CorpusReport:
     """Plan and validate every ``parent -> commit`` pair in ``revision_range``.
 
@@ -755,20 +825,24 @@ def corpus_validation(
     the shared outcome cache; coverage runs are per pair.
     """
     report = CorpusReport(str(repo), revision_range, coverage)
-    cache: OutcomeCache = {}
+    cache = OutcomeCache()
     commits = _commits_in_range(repo, revision_range)
     if max_commits is not None:
         commits = commits[-max_commits:]
+    entries: list[CorpusEntry] = []
     for commit, parent, subject in commits:
         entry = CorpusEntry(commit, parent, subject)
         report.entries.append(entry)
-        if progress:
-            progress(entry)
         if only_python_changes and not _touches_python(repo, parent, commit):
             entry.skipped = "no .py files changed"
-            continue
+        else:
+            entries.append(entry)
+
+    def validate_entry(entry: CorpusEntry) -> None:
+        if progress:
+            progress(entry)
         try:
-            plan = make_plan(parent, commit)
+            plan = make_plan(entry.parent, entry.commit)
             entry.changed_symbols = len(plan.changes)
             entry.targets = sum(1 for d in plan.decisions if d.target.runner == "pytest")
             entry.selected = sum(
@@ -785,6 +859,16 @@ def corpus_validation(
             )
         except GitError as exc:
             entry.error = str(exc)
+
+    if jobs <= 1:
+        for entry in entries:
+            validate_entry(entry)
+    else:
+        # Pairs are independent: each validates in its own temporary worktrees
+        # and coverage database; only the outcome cache is shared, and it
+        # serialises repeated snapshots so every suite still runs once.
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(validate_entry, entries))
     return report
 
 
