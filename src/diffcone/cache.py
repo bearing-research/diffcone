@@ -33,12 +33,26 @@ from diffcone.model import (
 INDEX_FORMAT = 3  # 3: module-level variables are symbols
 
 
+def _indexer_fingerprint() -> str:
+    """Hash of the modules that determine an index's content, so any change
+    to them invalidates cached indexes without anyone remembering to bump
+    INDEX_FORMAT (a stale base index once produced phantom changed symbols)."""
+    here = Path(__file__).parent
+    h = hashlib.sha256()
+    for name in ("model.py", "snapshot.py", "indexer.py"):
+        h.update((here / name).read_bytes())
+    return h.hexdigest()[:16]
+
+
+INDEXER_FINGERPRINT = _indexer_fingerprint()
+
+
 def default_cache_dir(repo: Path) -> Path:
     return repo / ".diffcone" / "cache"
 
 
 def index_key(commit: str, source_roots: list[str]) -> str:
-    material = json.dumps([INDEX_FORMAT, commit, sorted(source_roots)])
+    material = json.dumps([INDEX_FORMAT, INDEXER_FINGERPRINT, commit, sorted(source_roots)])
     return hashlib.sha256(material.encode()).hexdigest()
 
 

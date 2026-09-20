@@ -1503,8 +1503,79 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         return
 
+    # Methods that mutate a container in place: a call of one on a variable
+    # makes the caller a writer of that variable.
+    MUTATING_METHODS = frozenset(
+        {
+            "append",
+            "extend",
+            "insert",
+            "pop",
+            "popitem",
+            "remove",
+            "clear",
+            "update",
+            "setdefault",
+            "add",
+            "discard",
+            "sort",
+            "reverse",
+            "__setitem__",
+            "__delitem__",
+        }
+    )
+
+    def _mutation_target(self, expr: ast.expr) -> None:
+        """Record ``source`` as a writer when ``expr`` (an assignment target or
+        a receiver of a mutating call) is a subscript/attribute of a variable
+        symbol, or the variable itself under ``global``."""
+        base = expr
+        while isinstance(base, (ast.Subscript, ast.Attribute)):
+            base = base.value
+        if not isinstance(base, ast.Name) or base is expr and base.id in self.scope.locals:
+            return
+        if base.id in self.scope.locals:
+            return
+        node = self.indexer.resolve_chain([base.id], self.scope)
+        if isinstance(node, Resolved) and not node.detail:
+            symbol = self.indexer.index.symbols.get(node.symbol)
+            if symbol is None or symbol.kind != VARIABLE or symbol.id == self.source:
+                return
+            if self.skip_defs and symbol.module == self.scope.module.name:
+                return  # a module's own top-level mutations are part of the variable's hash
+            self.indexer.index.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            for sub in ast.walk(target):
+                if isinstance(sub, (ast.Subscript, ast.Attribute)):
+                    self._mutation_target(sub)
+                elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                    self._mutation_target(sub)  # rebinding a ``global`` variable
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._mutation_target(node.target)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._mutation_target(node.target)
+        self.generic_visit(node)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self._mutation_target(target)
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
         parts = _flatten_chain(node.func)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in self.MUTATING_METHODS
+            and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute))
+        ):
+            self._mutation_target(node.func.value)
         if parts is not None:
             name = ".".join(parts)
             if len(parts) == 1 and parts[0] in DYNAMIC_CALLS and not self._is_shadowed(name):

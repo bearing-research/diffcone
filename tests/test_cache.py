@@ -126,3 +126,4 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
     assert cache_mod.INDEX_FORMAT == 3
+    assert len(cache_mod.INDEXER_FINGERPRINT) == 16

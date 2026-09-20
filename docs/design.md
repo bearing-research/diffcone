@@ -96,6 +96,7 @@ blocks are still symbols and are excluded from their scope's body hash.
 | Kind | Source → target | Produced by |
 |---|---|---|
 | `references` | function/class/module → symbol | resolved name or attribute chain; `detail` is `attribute:NAME` when the reference resolves to a module- or class-level variable (the module/class symbol stands in for it) or `module` when a module object itself is referenced |
+| `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, so readers of the variable depend on its writers |
 | `defined_in` | member → container | every class, function and method |
 | `imports` | module or function → module | `import m`, `from m import sub`, `importlib.import_module("m")` |
 | `imports_name` | module → symbol | module-level `from m import name` |

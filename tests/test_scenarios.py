@@ -1342,3 +1342,66 @@ def test_in_place_mutation_of_a_module_registry_reaches_its_users(repo):
     }
     assert selected(plan) == {"t::test_lookup"}
     assert unselected(plan) == {"t::test_other"}
+
+
+def test_readers_depend_on_functions_that_mutate_a_variable(repo):
+    base = repo.commit(
+        {
+            "pkg/reg.py": (
+                "INFO = {'a': 1}\n"
+                "REGISTRY = {}\n"
+                "NAMES = []\n\n\n"
+                "def build():\n"
+                "    for k, v in INFO.items():\n        REGISTRY[k] = v\n"
+                "    NAMES.append('x')\n\n\n"
+                "build()\n\n\n"
+                "def lookup(k):\n    return REGISTRY[k]\n\n\n"
+                "def names():\n    return list(NAMES)\n\n\n"
+                "def reader_only():\n    return REGISTRY.get('zzz')\n"
+            ),
+            "tests/test_reg.py": (
+                "from pkg.reg import lookup, names, reader_only\n\n\n"
+                "def test_lookup():\n    assert lookup('a') == 1\n\n\n"
+                "def test_names():\n    assert names() == ['x']\n\n\n"
+                "def test_reader():\n    assert reader_only() is None\n"
+            ),
+        }
+    )
+    # Only INFO (read by the writer of REGISTRY) changes.
+    head = repo.commit(
+        {
+            "pkg/reg.py": (
+                "INFO = {'a': 1, 'b': 2}\n"
+                "REGISTRY = {}\n"
+                "NAMES = []\n\n\n"
+                "def build():\n"
+                "    for k, v in INFO.items():\n        REGISTRY[k] = v\n"
+                "    NAMES.append('x')\n\n\n"
+                "build()\n\n\n"
+                "def lookup(k):\n    return REGISTRY[k]\n\n\n"
+                "def names():\n    return list(NAMES)\n\n\n"
+                "def reader_only():\n    return REGISTRY.get('zzz')\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_lookup", "tests.test_reg.test_lookup"),
+        py_target("t::test_names", "tests.test_reg.test_names"),
+        py_target("t::test_reader", "tests.test_reg.test_reader"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.reg.INFO": ("body_changed",)}
+    # REGISTRY readers reach INFO through build(); NAMES readers do too (the
+    # writer is shared); ``.get`` is a read, so reader_only is only affected
+    # through REGISTRY's writer as well.
+    assert selected(plan) == {"t::test_lookup", "t::test_names", "t::test_reader"}
+    r = reason(plan, "t::test_lookup")
+    assert path_ids(r) == [
+        "target:pytest:t::test_lookup",
+        "tests.test_reg.test_lookup",
+        "pkg.reg.lookup",
+        "pkg.reg.REGISTRY",
+        "pkg.reg.build",
+        "pkg.reg.INFO",
+    ]
+    assert r.path[3].detail == "mutated_by"
