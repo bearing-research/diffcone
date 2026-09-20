@@ -18,6 +18,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.execution import (
     corpus_to_dict,
@@ -62,6 +63,14 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         help="pytest fixture provided by an installed plugin; not reported as unresolved",
     )
     p.add_argument("--output", "-o", help="write the result to this file instead of stdout")
+    p.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="do not read or write the per-commit index cache (<repo>/.diffcone/cache)",
+    )
+    p.add_argument(
+        "--cache-dir", help="where to keep the index cache (default: <repo>/.diffcone/cache)"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -204,6 +213,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     options = DiscoveryOptions(external_fixtures=frozenset(args.external_fixtures))
 
+    cache = None
+    if not args.no_cache:
+        cache = IndexCache(
+            Path(args.cache_dir) if args.cache_dir else default_cache_dir(Path(args.repo))
+        )
+
     def build_plan():
         if not args.targets and not args.discover:
             parser.error(f"{args.command} requires --targets and/or --discover")
@@ -216,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             source_roots=args.source_roots,
             discover_runners=args.discover or (),
             discovery_options=options,
+            cache=cache,
         )
 
     try:
@@ -272,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                     source_roots=args.source_roots,
                     discover_runners=args.discover or (),
                     discovery_options=options,
+                    cache=cache,
                 )
 
             def progress(entry) -> None:

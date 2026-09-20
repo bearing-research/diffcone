@@ -26,10 +26,11 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TypeVar
 
+from diffcone.cache import IndexCache
 from diffcone.classify import DELETED, SymbolChange, classify
 from diffcone.discovery import DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
@@ -49,7 +50,7 @@ from diffcone.model import (
     SourceIndex,
     UnresolvedReference,
 )
-from diffcone.snapshot import read_snapshot
+from diffcone.snapshot import INDEX, WORKTREE, GitError, Snapshot, read_snapshot, resolve_commit
 
 BEHAVIOR = 1
 STRUCTURAL = 2
@@ -514,6 +515,33 @@ def _explain(
     )
 
 
+def _index_snapshot(
+    repo_path: Path,
+    revision: str,
+    roots: list[str],
+    *,
+    with_config: bool,
+    cache: IndexCache | None,
+) -> tuple[SourceIndex, Snapshot | None]:
+    """Index a snapshot, serving committed snapshots from the cache. Returns
+    the snapshot too when it had to be read (discovery needs its files)."""
+    if cache is not None and revision not in (WORKTREE, INDEX) and not with_config:
+        try:
+            commit = resolve_commit(repo_path, revision)
+        except GitError:
+            commit = None
+        if commit is not None:
+            cached = cache.load(commit, roots)
+            if cached is not None:
+                cached = replace(cached, snapshot=replace(cached.snapshot, revision=revision))
+                return cached, None
+    snapshot = read_snapshot(repo_path, revision, roots, with_config=with_config)
+    index = build_index(snapshot)
+    if cache is not None and snapshot.info.committed:
+        cache.store(index, roots)
+    return index, snapshot
+
+
 def plan(
     repo: str | Path,
     base: str,
@@ -522,6 +550,7 @@ def plan(
     source_roots: list[str] | None = None,
     discover_runners: Iterable[str] = (),
     discovery_options: DiscoveryOptions | None = None,
+    cache: IndexCache | None = None,
 ) -> Plan:
     """Analyse two committed revisions and produce a selection plan.
 
@@ -533,10 +562,15 @@ def plan(
     repo_path = Path(repo)
     manifest_roots = manifest.source_roots if manifest is not None else None
     roots = list(source_roots or manifest_roots or ["."])
-    base_index = build_index(read_snapshot(repo_path, base, roots))
     runners = list(discover_runners)
-    head_snapshot = read_snapshot(repo_path, head, roots, with_config=bool(runners))
-    head_index = build_index(head_snapshot)
+    base_index, _ = _index_snapshot(repo_path, base, roots, with_config=False, cache=cache)
+    # The head snapshot's files are needed for discovery, so it is only served
+    # from cache when nothing is discovered.
+    head_index, head_snapshot = _index_snapshot(
+        repo_path, head, roots, with_config=bool(runners), cache=cache
+    )
+    if runners and head_snapshot is None:  # pragma: no cover - guarded above
+        raise GitError("discovery needs the head snapshot's files")
     discovered = [
         discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
     ]
