@@ -51,7 +51,9 @@ in `tests/test_scenarios.py` that:
   them, not just that the command succeeds.
 
 Update `docs/design.md` when resolution or propagation rules change, and keep
-`README.md` honest about what is implemented versus planned.
+`README.md` honest about what is implemented versus planned. New work starts
+as a design sketch in `docs/roadmap.md` (mechanism, trade-off, done-when);
+re-run the corpora in `docs/evaluation.md` when selection rules change.
 
 ## Commands
 
