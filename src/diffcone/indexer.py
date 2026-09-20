@@ -129,13 +129,16 @@ class ImportBinding:
 @dataclass
 class ClassScope:
     id: str
-    module: ModuleScope | None = None
+    module: ModuleScope
+    enclosing: ClassScope | None = None  # the class this one is nested in, if any
     members: dict[str, str] = field(default_factory=dict)  # name -> symbol id
     bindings: set[str] = field(default_factory=set)
     base_exprs: list[ast.expr] = field(default_factory=list)
     bases: list[str] = field(default_factory=list)  # in-scope base class ids, in order
-    complete: bool = True  # False when some base is external/unresolved
+    complete: bool = True  # False when some base is external/dynamic/unresolved
+    bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
+    in_mro: bool = False  # cycle guard while linearising
 
 
 @dataclass
@@ -167,6 +170,10 @@ class Scope:
 class Resolved:
     symbol: str
     detail: str = ""
+    # Set when the hit was found *after* an external/unknown base in an MRO:
+    # the real target may be an override we cannot see, so the name stays
+    # bounded (an unresolved attribute record is kept alongside the edge).
+    uncertain_attr: str = ""
 
 
 @dataclass(frozen=True)
@@ -311,6 +318,7 @@ class Indexer:
         self.scopes: dict[str, ModuleScope] = {}
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()
+        self._bases_final = False
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -342,7 +350,8 @@ class Indexer:
         for module in sorted(self.scopes):
             self._index_module(self.scopes[module])
         for class_id in sorted(self.class_scopes):
-            self._resolve_bases(self.class_scopes[class_id])
+            self._ensure_bases(class_id)
+        self._bases_final = True  # MROs may be memoised from here on
         for module in sorted(self.scopes):
             self._resolve_module(self.scopes[module])
         return self.index
@@ -463,7 +472,7 @@ class Indexer:
                     continue
                 members[name] = symbol_id
                 self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
-                cscope = ClassScope(id=symbol_id, module=scope)
+                cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 for n in nodes:
                     cscope.base_exprs.extend(n.bases)
                 self.class_scopes[symbol_id] = cscope
@@ -502,55 +511,92 @@ class Indexer:
 
     # -- inheritance ----------------------------------------------------------
 
-    def _resolve_bases(self, cscope: ClassScope) -> None:
-        """Resolve a class's base expressions to in-scope class ids (module scope)."""
-        assert cscope.module is not None
-        scope = Scope(module=cscope.module)
+    def _ensure_bases(self, class_id: str) -> None:
+        """Resolve a class's bases on demand (a dotted base such as
+        ``Zed.Inner`` may need another class's MRO first)."""
+        cscope = self.class_scopes[class_id]
+        if cscope.bases_state:
+            return
+        cscope.bases_state = 1
         for expr in cscope.base_exprs:
-            parts = _flatten_chain(expr)
-            node = self.resolve_chain(parts, scope) if parts else None
+            node = self._resolve_base_expr(expr, cscope)
+            self._record(cscope.id, node, chain=_chain_text(expr))
             if (
                 isinstance(node, Resolved)
                 and not node.detail
+                and not node.uncertain_attr
                 and node.symbol in self.class_scopes
                 and node.symbol != cscope.id
             ):
                 cscope.bases.append(node.symbol)
             else:
                 cscope.complete = False  # external, dynamic (``Generic[T]``) or unknown
+        cscope.bases_state = 2
+
+    def _resolve_base_expr(self, expr: ast.expr, cscope: ClassScope) -> Node:
+        """A base name is looked up in the enclosing class body (for nested
+        classes) and then in the module, as Python does when the class
+        statement executes."""
+        parts = _flatten_chain(expr)
+        if parts is None:
+            return None  # ``Generic[T]``, ``namedtuple(...)``: the collector visits it
+        enclosing = cscope.enclosing
+        if enclosing is not None and parts[0] in enclosing.members:
+            node: Node = Resolved(enclosing.members[parts[0]])
+            for attr in parts[1:]:
+                node = self._step(node, attr)
+            return node
+        if enclosing is not None and parts[0] in enclosing.bindings:
+            return Resolved(enclosing.id, detail=f"attribute:{parts[0]}")
+        return self.resolve_chain(parts, Scope(module=cscope.module))
 
     def _mro(self, class_id: str) -> list[str]:
-        """Linearisation over in-scope classes: depth-first, left to right,
-        keeping the last occurrence of a repeated base (C3 for the common
-        cases; documented as an approximation)."""
+        """Linearisation over in-scope classes: the class, then its bases
+        depth-first left to right keeping the last occurrence of a repeated
+        base (C3 for ordinary hierarchies; documented as an approximation).
+        Memoised only once every class's bases are resolved."""
         cscope = self.class_scopes[class_id]
         if cscope.mro is not None:
             return cscope.mro
-        cscope.mro = [class_id]  # guards against inheritance cycles
-        order: list[str] = [class_id]
-        for base in cscope.bases:
-            order.extend(self._mro(base))
-        seen: set[str] = set()
-        linear: list[str] = []
+        self._ensure_bases(class_id)
+        if cscope.in_mro:
+            return [class_id]  # inheritance cycle: stop here
+        cscope.in_mro = True
+        try:
+            order: list[str] = []
+            for base in cscope.bases:
+                order.extend(self._mro(base))
+        finally:
+            cscope.in_mro = False
+        seen: set[str] = {class_id}
+        tail: list[str] = []
         for cid in reversed(order):
             if cid not in seen:
                 seen.add(cid)
-                linear.append(cid)
-        cscope.mro = list(reversed(linear))
-        return cscope.mro
+                tail.append(cid)
+        result = [class_id, *reversed(tail)]
+        if self._bases_final:
+            cscope.mro = result
+        return result
 
     def lookup_in_class(self, class_id: str, attr: str, *, skip_self: bool = False) -> Node:
         """Resolve ``attr`` on a class through its in-scope MRO.
 
-        Not found anywhere known (including when a base is external) yields a
-        name-bounded unresolved attribute, never a guess.
+        A hit found after a class whose bases are not all known is marked
+        uncertain: an override in the unknown part of the hierarchy could
+        win, so the edge is recorded together with a name-bounded unresolved
+        reference. Not found anywhere yields the unresolved reference alone.
         """
+        uncertain = False
         for cid in self._mro(class_id)[1 if skip_self else 0 :]:
             cscope = self.class_scopes[cid]
             if attr in cscope.members:
-                return Resolved(cscope.members[attr])
+                return Resolved(cscope.members[attr], uncertain_attr=attr if uncertain else "")
             if attr in cscope.bindings:
-                return Resolved(cid, detail=f"attribute:{attr}")
+                detail = f"attribute:{attr}"
+                return Resolved(cid, detail=detail, uncertain_attr=attr if uncertain else "")
+            if not cscope.complete:
+                uncertain = True
         return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
 
     # -- pass 2 ---------------------------------------------------------------
@@ -588,7 +634,10 @@ class Indexer:
                 cscope = self.class_scopes[symbol_id]
                 class_level = Scope(module=scope, locals=set(cscope.bindings))
                 collector = _ReferenceCollector(self, symbol_id, class_level, skip_defs=True)
-                for expr in list(stmt.bases) + list(stmt.keywords) + list(stmt.decorator_list):
+                # Name-chain bases were resolved (and recorded) by _ensure_bases;
+                # only dynamic base expressions still need their references collected.
+                dynamic_bases = [b for b in stmt.bases if _flatten_chain(b) is None]
+                for expr in dynamic_bases + list(stmt.keywords) + list(stmt.decorator_list):
                     collector.visit(expr)
                 for inner in stmt.body:
                     if not isinstance(inner, DEF_NODES):
@@ -780,6 +829,15 @@ class Indexer:
         if isinstance(node, Resolved):
             if node.symbol != source:
                 self.index.edges.add(Edge(source, node.symbol, kind, node.detail))
+            if node.uncertain_attr:
+                self.index.unresolved.add(
+                    UnresolvedReference(source, UNRESOLVED_ATTRIBUTE, node.uncertain_attr, chain)
+                )
+            if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
+                # Using a class (``Foo(...)``, subclassing) runs its constructor.
+                init = self.lookup_in_class(node.symbol, "__init__")
+                if isinstance(init, Resolved) and init.symbol != source:
+                    self.index.edges.add(Edge(source, init.symbol, REFERENCES, "constructor"))
         elif isinstance(node, ModuleNode):
             if node.module in self.scopes and node.module != source:
                 self.index.edges.add(Edge(source, node.module, kind, "module"))
@@ -787,6 +845,11 @@ class Indexer:
             self.index.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):
             self.index.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
+
+
+def _chain_text(expr: ast.expr) -> str:
+    parts = _flatten_chain(expr)
+    return ".".join(parts) if parts else "<expr>"
 
 
 def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

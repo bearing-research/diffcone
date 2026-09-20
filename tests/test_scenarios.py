@@ -896,3 +896,61 @@ def test_inherited_method_change_reaches_subclass_consumers(repo):
     assert changes(plan2) == {"pkg.json_codec.JsonCodec.decode": ("body_changed",)}
     assert "t::test_other" in unselected(plan2) and "b.time_other" in unselected(plan2)
     assert "t::test_roundtrip" in selected(plan2)
+
+
+def test_constructor_changes_reach_callers_and_dunders_are_not_name_matched(repo):
+    base = repo.commit(
+        {
+            "pkg/models.py": (
+                "from external import Thing\n\n\n"
+                "class Model(Thing):\n"
+                "    def __init__(self):\n        super().__init__()\n\n\n"
+                "class Widget:\n"
+                "    def __init__(self):\n        self.size = helper()\n\n\n"
+                "def helper():\n    return 1\n"
+            ),
+            "tests/test_models.py": (
+                "from pkg.models import Model, Widget\n\n\n"
+                "def test_model():\n    assert Model()\n\n\n"
+                "def test_widget():\n    assert Widget().size == 1\n"
+            ),
+            "benchmarks/bench.py": (
+                "from pkg.models import Model, Widget\n\n\n"
+                "def time_model():\n    Model()\n\n\n"
+                "def time_widget():\n    Widget()\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_model", "tests.test_models.test_model"),
+        py_target("t::test_widget", "tests.test_models.test_widget"),
+        asv_target("b.time_model", "benchmarks.bench.time_model"),
+        asv_target("b.time_widget", "benchmarks.bench.time_widget"),
+    ]
+    # A change inside Widget's constructor chain reaches Widget's callers only:
+    # Model.__init__ must not be dragged in by name-matching ``__init__``.
+    head = repo.commit(
+        {
+            "pkg/models.py": (
+                "from external import Thing\n\n\n"
+                "class Model(Thing):\n"
+                "    def __init__(self):\n        super().__init__()\n\n\n"
+                "class Widget:\n"
+                "    def __init__(self):\n        self.size = helper()\n\n\n"
+                "def helper():\n    return 2\n"
+            )
+        }
+    )
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.models.helper": ("body_changed",)}
+    assert selected(plan) == {"t::test_widget", "b.time_widget"}
+    assert unselected(plan) == {"t::test_model", "b.time_model"}
+    r = reason(plan, "b.time_widget")
+    assert path_ids(r) == [
+        "target:asv:b.time_widget",
+        "benchmarks.bench.time_widget",
+        "pkg.models.Widget.__init__",
+        "pkg.models.helper",
+    ]
+    assert r.path[1].detail == "constructor"
+    assert not r.conservative

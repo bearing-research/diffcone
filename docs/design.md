@@ -126,14 +126,23 @@ A name or dotted chain `a.b.c` is resolved from its base:
 
 Attribute steps walk from module to submodule, module member, module
 variable or star-imported name; from class to method, nested class or class
-variable, searching the class and then its bases in MRO order. Bases are
-resolved in module scope to in-scope classes; the linearisation is
-depth-first left-to-right keeping the last occurrence of a repeated base,
-which matches C3 for ordinary hierarchies. A base that is external, dynamic
-(`Generic[T]`, `namedtuple(...)`) or unknown simply ends the known chain.
-`super().m` inside a method resolves `m` starting after the enclosing class
-in its MRO. A step that cannot be taken yields an unresolved attribute
-reference bounded by the attribute name. Once a chain reaches a function or
+variable, searching the class and then its bases in MRO order. Base names
+are resolved where the class statement executes: the enclosing class body
+for a nested class, then the module. Bases are resolved on demand (a dotted
+base such as `Zed.Inner` may need another class's MRO first) and MROs are
+memoised only once every class's bases are known. The linearisation is the
+class followed by its bases depth-first left-to-right keeping the last
+occurrence of a repeated base, which matches C3 for ordinary hierarchies;
+inheritance cycles stop at the repeated class. A base that is external,
+dynamic (`Generic[T]`, `namedtuple(...)`) or unknown marks the class
+incomplete: a lookup that passes such a class before finding a hit records
+the edge *and* a name-bounded unresolved reference, since an override in
+the unknown part of the hierarchy could win. `super().m` inside a method
+resolves `m` starting after the enclosing class in its MRO. Referencing a
+class (`Foo(...)`, subclassing) also adds an edge to the `__init__` found
+through its MRO, so constructor changes reach callers. A step that cannot
+be taken yields an unresolved attribute reference bounded by the attribute
+name. Once a chain reaches a function or
 an opaque variable it stops there. An attribute whose base is not a name
 chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
 attribute reference for `run` and the base expression is analysed on its
@@ -208,9 +217,13 @@ Unknown is never treated as unaffected:
 * **Name-bounded unresolved references.** For every unresolved bare name or
   attribute `NAME` in a symbol, and every known function, method or class
   in either revision whose short name is `NAME`, the planner adds an
-  `unresolved_name_match` edge. Impact then flows through those edges like
-  any other: `obj.save()` is affected when *any* `save` changes, and also
-  when any `save` calls something that changed. The report lists each
+  `unresolved_name_match` edge through a per-name pseudo-node (so the edge
+  count is linear, and the pseudo-node is collapsed out of reported paths).
+  Impact then flows through those edges like any other: `obj.save()` is
+  affected when *any* `save` changes, and also when any `save` calls
+  something that changed. Dunder names are excluded from matching: they
+  exist on nearly every class and would bound nothing (constructors are
+  reached through class references instead). The report lists each
   unresolved reference with the matches that actually carry impact
   (`matched_affected_symbols`).
 * **Dynamic references.** A symbol containing a dynamic reference is treated

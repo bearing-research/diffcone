@@ -165,8 +165,9 @@ The JSON report (`schema_version: 2`) contains:
   roots, or `self`/`cls`, with class attributes looked up through the
   in-scope MRO (including `super()`). No type inference, no dynamic dispatch
   on receivers of unknown type, no instance attributes. Those references are
-  reported as unresolved and matched conservatively by name against changed
-  symbols.
+  reported as unresolved and matched conservatively by name against every
+  known function, method or class of that name, so impact reaches them
+  whenever any such symbol is affected.
 * **Import-statement changes invalidate the whole importing module**, and
   any change to a class body (attributes, member list, bases, decorators)
   invalidates every method of that class. This is conservative by design.

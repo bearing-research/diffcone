@@ -306,10 +306,12 @@ def test_inherited_attributes_resolve_through_mro():
         (u.kind, u.name, u.detail) for u in idx.unresolved if u.symbol == "pkg.sub.Child.s"
     } == {("attribute", "m", "super().m")}
     assert ("pkg.base.Right.right_m", "references", "") in edges(idx, "pkg.sub.Child.c")
-    # An external base ends the known chain; unknown names stay name-bounded.
+    # An external base precedes Left: the hit is recorded but stays name-bounded,
+    # because Mixin could override ``shared``; unknown names are name-bounded only.
     assert ("pkg.base.Left.shared", "references", "") in edges(idx, "pkg.sub.Mixed.m")
     assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.sub.Mixed.m"} == {
-        ("attribute", "from_mixin")
+        ("attribute", "from_mixin"),
+        ("attribute", "shared"),
     }
     # Self-inheritance does not recurse forever.
     assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.sub.Loop.m"} == {
@@ -320,3 +322,96 @@ def test_inherited_attributes_resolve_through_mro():
         ("pkg.base.Root.root_m", "references", ""),
         ("pkg.sub.Child", "references", ""),
     } <= edges(idx, "pkg.sub.f")
+
+
+def test_mro_is_independent_of_class_id_order():
+    # ``Alpha`` sorts before ``Zed``: resolving its dotted base must not freeze
+    # Zed's MRO before Zed's own bases are known.
+    idx = index(
+        {
+            "m.py": (
+                "class Base:\n"
+                "    class Inherited:\n        def im(self):\n            pass\n"
+                "    def x(self):\n        pass\n\n"
+                "class Zed(Base):\n"
+                "    class Inner:\n        def inner_m(self):\n            pass\n"
+                "    def f(self):\n        return self.x()\n\n"
+                "class Alpha(Zed.Inner):\n"
+                "    def g(self):\n        return self.inner_m()\n\n"
+                "class Beta(Zed.Inherited):\n"
+                "    def h(self):\n        return self.im()\n"
+            )
+        }
+    )
+    assert ("m.Base.x", "references", "") in edges(idx, "m.Zed.f")
+    assert ("m.Zed.Inner.inner_m", "references", "") in edges(idx, "m.Alpha.g")
+    assert ("m.Base.Inherited.im", "references", "") in edges(idx, "m.Beta.h")
+    assert ("m.Base.Inherited", "references", "") in edges(idx, "m.Beta")
+    assert not [u for u in idx.unresolved if u.symbol in ("m.Zed.f", "m.Alpha.g", "m.Beta.h")]
+
+
+def test_nested_class_bases_use_the_enclosing_class_body():
+    idx = index(
+        {
+            "m.py": (
+                "class Base:\n    def m(self):\n        pass\n\n"
+                "class Outer:\n"
+                "    Alias = 3\n"
+                "    class Base:\n        def other(self):\n            pass\n"
+                "    class Sub(Base):\n"
+                "        def f(self):\n            return self.m(), self.other()\n"
+                "    class Sub2(Alias):\n"
+                "        def g(self):\n            return self.m()\n"
+            )
+        }
+    )
+    assert ("m.Outer.Base", "references", "") in edges(idx, "m.Outer.Sub")
+    assert ("m.Base", "references", "") not in edges(idx, "m.Outer.Sub")
+    assert ("m.Outer.Base.other", "references", "") in edges(idx, "m.Outer.Sub.f")
+    assert ("m.Base.m", "references", "") not in edges(idx, "m.Outer.Sub.f")
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.Outer.Sub.f"} == {
+        ("attribute", "m")
+    }
+    # A class-level binding as base: unknown class, reference kept, lookup bounded.
+    assert ("m.Outer", "references", "attribute:Alias") in edges(idx, "m.Outer.Sub2")
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.Outer.Sub2.g"} == {
+        ("attribute", "m")
+    }
+
+
+def test_inheritance_cycle_keeps_self_first():
+    idx = index(
+        {
+            "m.py": (
+                "class A:\n    def m(self):\n        pass\n\n"
+                "class B(A):\n"
+                "    def m(self):\n        pass\n"
+                "    def g(self):\n        return super().m(), self.m()\n\n"
+                "class A(B):\n    pass\n"
+            )
+        }
+    )
+    assert edges(idx, "m.B.g") >= {
+        ("m.A.m", "references", ""),  # super().m -> next after B
+        ("m.B.m", "references", ""),  # self.m -> B's own
+    }
+
+
+def test_class_reference_reaches_the_constructor():
+    idx = index(
+        {
+            "m.py": (
+                "class Base:\n    def __init__(self):\n        pass\n\n"
+                "class Foo(Base):\n    pass\n\n"
+                "class Bar:\n    def __init__(self):\n        pass\n\n"
+                "def f():\n    return Foo(), Bar()\n"
+            )
+        }
+    )
+    assert edges(idx, "m.f") >= {
+        ("m.Foo", "references", ""),
+        ("m.Base.__init__", "references", "constructor"),
+        ("m.Bar", "references", ""),
+        ("m.Bar.__init__", "references", "constructor"),
+    }
+    assert ("m.Base.__init__", "references", "constructor") in edges(idx, "m.Foo")

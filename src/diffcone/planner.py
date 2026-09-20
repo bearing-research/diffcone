@@ -259,26 +259,32 @@ def plan_from_indexes(
         graph.add(edge, revs)
 
     # Conservative edges from unresolved references: ``obj.run()`` may be any
-    # known ``run`` (function, method or class) in either revision, so it gets
-    # an edge to each of them and impact flows through the graph as usual;
-    # matching only *changed* symbols would miss a ``run`` that is unchanged
-    # but calls something that changed. Dynamic references are pseudo-seeds.
+    # known ``run`` (function, method or class) in either revision, and
+    # impact flows through the graph as usual (matching only *changed*
+    # symbols would miss a ``run`` that is unchanged but calls something that
+    # changed). Each name gets one pseudo-node ``name:<n>`` so the edge count
+    # is linear in references plus symbols. Dunder names (``__init__``,
+    # ``__eq__``) are excluded: they exist on nearly every class and bound
+    # nothing; constructors are reached through explicit class references.
+    # Dynamic references are pseudo-seeds.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
-        if symbol.kind != MODULE:
+        if symbol.kind != MODULE and not _is_dunder(symbol.name):
             symbols_by_name[symbol.name].append(symbol_id)
-    pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...], tuple[str, ...]]] = []
+    for name, symbols in symbols_by_name.items():
+        for symbol_id in symbols:
+            graph.add(Edge(_name_node(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
+    pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
-            pending_unresolved.append((ref, revs, ()))
-            continue
-        matches = tuple(s for s in symbols_by_name.get(ref.name, ()) if s != ref.symbol)
-        for match in matches:
-            graph.add(Edge(ref.symbol, match, UNRESOLVED_NAME_MATCH, ref.detail), revs)
-        pending_unresolved.append((ref, revs, matches))
+        elif ref.name in symbols_by_name and not _is_dunder(ref.name):
+            graph.add(
+                Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
+            )
+        pending_unresolved.append((ref, revs))
 
     # Targets join the graph as nodes with explicit dependency edges.
     for target in targets:
@@ -332,6 +338,9 @@ def plan_from_indexes(
             via[source] = (edge, revs, node)
             queue.append(source)
 
+    affected_by_name = {
+        name: tuple(s for s in symbols if s in mode) for name, symbols in symbols_by_name.items()
+    }
     unresolved_records = [
         UnresolvedRecord(
             ref.symbol,
@@ -339,9 +348,11 @@ def plan_from_indexes(
             ref.name,
             ref.detail,
             revs,
-            tuple(m for m in matches if m in mode),  # matches that actually carry impact
+            tuple(s for s in affected_by_name.get(ref.name, ()) if s != ref.symbol)
+            if ref.kind != UNRESOLVED_DYNAMIC
+            else (),
         )
-        for ref, revs, matches in pending_unresolved
+        for ref, revs in pending_unresolved
     ]
 
     if errors:
@@ -401,6 +412,18 @@ def plan_from_indexes(
     )
 
 
+def _name_node(name: str) -> str:
+    return f"name:{name}"
+
+
+def _is_name_node(node_id: str) -> bool:
+    return node_id.startswith("name:")
+
+
+def _is_dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
 def _explain(
     node: str,
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None],
@@ -410,14 +433,25 @@ def _explain(
     steps: list[Step] = []
     current = node
     rule = RULE_DEPENDENCY
+    pending: tuple[str, str, tuple[str, ...]] | None = None  # (source, detail, revs)
     while True:
         link = via[current]
         if link is None:
             break
         edge, revs, nxt = link
-        steps.append(Step(edge.source, edge.target, edge.kind, edge.detail, revs))
         if edge.kind == UNRESOLVED_NAME_MATCH:
             rule = RULE_UNRESOLVED_NAME_MATCH
+            if _is_name_node(edge.target):
+                pending = (edge.source, edge.detail, revs)  # collapse the pseudo-node
+                current = nxt
+                continue
+            if pending is not None:
+                source, detail, revs = pending
+                steps.append(Step(source, edge.target, UNRESOLVED_NAME_MATCH, detail, revs))
+                pending = None
+                current = nxt
+                continue
+        steps.append(Step(edge.source, edge.target, edge.kind, edge.detail, revs))
         current = nxt
     change = change_by_id.get(current)
     if change is not None:
