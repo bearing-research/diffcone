@@ -223,6 +223,14 @@ From the first pytest-mock run (savings 19 % → 0 % → 64 %):
    order bug that ignored function-local literal assignments placed before
    their loop was fixed.
 
+## Re-measurements without number changes
+
+Selection-rule changes that were re-run on all four corpora and moved no
+number (recall, precision and savings identical to the tables above):
+
+* override-aware dispatch for `self`/`cls` lookups, including mixin and
+  class-attribute overrides (commits 4722191 and its review follow-up).
+
 ## Not yet exercised
 
 Suites that take minutes (per-test coverage cost at scale), fixtures from

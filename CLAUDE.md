@@ -68,7 +68,7 @@ Git snapshot reader
 - **New or changed targets are always selected**, even with no dependency edges.
 - **Every selection reason maps to a real dependency edge or an explicit fallback rule.** Never fabricate call paths.
 - **An analysis error must not become a successful empty selection.**
-- Method identity and method-call resolution are separate: recognizing `Class.method` as a symbol does not mean `obj.method()` calls are resolved. No type inference, dynamic dispatch, branch- or argument-sensitive analysis, runtime tracing, or ML ranking. Unsupported constructs stay visible in the output.
+- Method identity and method-call resolution are separate: recognizing `Class.method` as a symbol does not mean `obj.method()` calls are resolved. Dispatch is modelled only for `self`/`cls` receivers, as the MRO hit plus in-scope overrides; there is no type inference, no dispatch on receivers of unknown type, no branch- or argument-sensitive analysis, runtime tracing, or ML ranking. Unsupported constructs stay visible in the output.
 
 Supported subset: module-level functions and methods; direct statically resolvable calls/references; ordinary imports and imported-name aliases within configured source roots; transitive dependencies; manifest-declared target and lifecycle dependencies.
 

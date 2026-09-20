@@ -141,10 +141,14 @@ the edge *and* a name-bounded unresolved reference, since an override in
 the unknown part of the hierarchy could win. `super().m` inside a method
 resolves `m` starting after the enclosing class in its MRO. A lookup on
 `self`/`cls` dispatches at runtime, so besides the MRO hit it also records
-`references` edges (detail `override`) to every in-scope subclass that
-defines the attribute itself: a change to `Sub.step` reaches callers of
-`Base.run` that invoke `self.step()`. Explicit `Base.step` and
-`super().step` do not dispatch and get no override edges. Referencing a
+`references` edges (detail `override`, or `override:attribute:NAME` for a
+class-attribute rebinding) to whatever the attribute resolves to on each
+in-scope descendant when that differs from the base hit: a method the
+descendant defines, one it inherits from a mixin outside the base's
+hierarchy, or a rebinding. A change to `Sub.step` (or `Mixin.step`) reaches
+callers of `Base.run` that invoke `self.step()`. Override methods share the
+dispatched call's site and escape status for literal propagation. Explicit
+`Base.step` and `super().step` do not dispatch and get no override edges. Referencing a
 class (`Foo(...)`, subclassing) also adds an edge to the `__init__` found
 through its MRO, so constructor changes reach callers. A step that cannot
 be taken yields an unresolved attribute reference bounded by the attribute

@@ -190,8 +190,10 @@ class Resolved:
     # The node is ``self``/``cls`` of the enclosing method: attribute lookups
     # on it dispatch at runtime, so in-scope overrides are recorded too.
     receiver: bool = False
-    # Override methods to record alongside the resolved one (see lookup_in_class).
-    overrides: tuple[str, ...] = ()
+    # Overrides to record alongside the resolved hit (see lookup_in_class):
+    # (symbol id, detail) pairs; detail is "" for a method, "attribute:NAME"
+    # for a class-attribute rebinding.
+    overrides: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -488,7 +490,8 @@ class Indexer:
         self.escapes: set[str] = set()
         self.func_params: dict[str, _FuncParams] = {}
         self.param_dynamics: list[_ParamDynamic] = []
-        self._subclasses: dict[str, set[str]] | None = None  # built once bases are final
+        # Transitive in-scope descendants per class, built once bases are final.
+        self._descendants: dict[str, tuple[str, ...]] = {}
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -522,6 +525,7 @@ class Indexer:
         for class_id in sorted(self.class_scopes):
             self._ensure_bases(class_id)
         self._bases_final = True  # MROs may be memoised from here on
+        self._build_descendants()
         for module in sorted(self.scopes):
             self._resolve_module(self.scopes[module])
         self._resolve_param_dynamics()
@@ -823,39 +827,58 @@ class Indexer:
         uncertain = False
         for cid in self._mro(class_id)[1 if skip_self else 0 :]:
             cscope = self.class_scopes[cid]
+            hit: Resolved | None = None
             if attr in cscope.members:
-                return Resolved(
-                    cscope.members[attr],
-                    uncertain_attr=attr if uncertain else "",
-                    overrides=self._overrides_of(class_id, attr) if dispatch else (),
+                hit = Resolved(cscope.members[attr], uncertain_attr=attr if uncertain else "")
+            elif attr in cscope.bindings:
+                hit = Resolved(
+                    cid, detail=f"attribute:{attr}", uncertain_attr=attr if uncertain else ""
                 )
-            if attr in cscope.bindings:
-                detail = f"attribute:{attr}"
-                return Resolved(cid, detail=detail, uncertain_attr=attr if uncertain else "")
+            if hit is not None:
+                if dispatch:
+                    hit = Resolved(
+                        hit.symbol,
+                        hit.detail,
+                        hit.uncertain_attr,
+                        overrides=self._overrides_of(class_id, attr, (hit.symbol, hit.detail)),
+                    )
+                return hit
             if not cscope.complete:
                 uncertain = True
         return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
 
-    def _overrides_of(self, class_id: str, attr: str) -> tuple[str, ...]:
-        """Methods named ``attr`` defined by in-scope subclasses of ``class_id``."""
-        if self._subclasses is None:
-            subclasses: dict[str, set[str]] = defaultdict(set)
-            for cscope in self.class_scopes.values():
-                for base in cscope.bases:
-                    subclasses[base].add(cscope.id)
-            self._subclasses = subclasses
-        found: list[str] = []
-        seen = {class_id}
-        stack = [class_id]
-        while stack:
-            for sub in sorted(self._subclasses.get(stack.pop(), ())):
-                if sub in seen:
-                    continue
-                seen.add(sub)
-                stack.append(sub)
-                member = self.class_scopes[sub].members.get(attr)
-                if member is not None and self.index.symbols[member].kind == METHOD:
-                    found.append(member)
+    def _build_descendants(self) -> None:
+        subclasses: dict[str, set[str]] = defaultdict(set)
+        for cscope in self.class_scopes.values():
+            for base in cscope.bases:
+                subclasses[base].add(cscope.id)
+        for class_id in self.class_scopes:
+            seen = {class_id}
+            order: list[str] = []
+            stack = [class_id]
+            while stack:
+                for sub in sorted(subclasses.get(stack.pop(), ())):
+                    if sub not in seen:
+                        seen.add(sub)
+                        order.append(sub)
+                        stack.append(sub)
+            self._descendants[class_id] = tuple(order)
+
+    def _overrides_of(
+        self, class_id: str, attr: str, base_hit: tuple[str, str]
+    ) -> tuple[tuple[str, str], ...]:
+        """What ``attr`` resolves to on each in-scope descendant of
+        ``class_id`` when that differs from the base hit: a method defined by
+        the descendant, one it inherits from a mixin outside the base's
+        hierarchy, or a class-attribute rebinding."""
+        assert self._bases_final, "overrides need every class's bases resolved"
+        found: list[tuple[str, str]] = []
+        for sub in self._descendants.get(class_id, ()):
+            hit = self.lookup_in_class(sub, attr)
+            if isinstance(hit, Resolved):
+                pair = (hit.symbol, hit.detail)
+                if pair != base_hit and pair not in found:
+                    found.append(pair)
         return tuple(found)
 
     # -- pass 2 ---------------------------------------------------------------
@@ -1115,9 +1138,10 @@ class Indexer:
                 self.index.unresolved.add(
                     UnresolvedReference(source, UNRESOLVED_ATTRIBUTE, node.uncertain_attr, chain)
                 )
-            for override in node.overrides:
-                if override != source:
-                    self.index.edges.add(Edge(source, override, kind, "override"))
+            for symbol_id, detail in node.overrides:
+                if symbol_id != source:
+                    label = f"override:{detail}" if detail else "override"
+                    self.index.edges.add(Edge(source, symbol_id, kind, label))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 init = self.lookup_in_class(node.symbol, "__init__")
@@ -1380,18 +1404,21 @@ class _ReferenceCollector(ast.NodeVisitor):
                 and parts[0] != self.scope.self_name  # self/cls also resolve to the class
             )
             receiver_bound = not base_is_class
-        self.indexer.call_sites[symbol.id].append(
-            _CallSite(
-                positional=[self.scope.string_candidates(a) for a in node.args],
-                keywords={
-                    k.arg: self.scope.string_candidates(k.value)
-                    for k in node.keywords
-                    if k.arg is not None
-                },
-                unbounded=unbounded,
-                receiver_bound=receiver_bound,
-            )
+        site = _CallSite(
+            positional=[self.scope.string_candidates(a) for a in node.args],
+            keywords={
+                k.arg: self.scope.string_candidates(k.value)
+                for k in node.keywords
+                if k.arg is not None
+            },
+            unbounded=unbounded,
+            receiver_bound=receiver_bound,
         )
+        self.indexer.call_sites[symbol.id].append(site)
+        # A dispatched call may land on any override: they share the call site.
+        for override_id, detail in target.overrides:
+            if not detail:
+                self.indexer.call_sites[override_id].append(site)
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be
@@ -1403,6 +1430,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             symbol = self.indexer.index.symbols.get(target.symbol)
             if symbol is not None and symbol.kind in (FUNCTION, METHOD):
                 self.indexer.escapes.add(symbol.id)
+                for override_id, detail in target.overrides:
+                    if not detail:
+                        self.indexer.escapes.add(override_id)
 
     def _param_dynamic(
         self, expr: ast.expr, kind: str, base: list[str] | None, detail: str

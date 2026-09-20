@@ -201,8 +201,9 @@ Measured results on real repositories, with reproduction steps, are in
   [docs/design.md](docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source
   roots, or `self`/`cls`, with class attributes looked up through the
-  in-scope MRO (including `super()`). No type inference, no dynamic dispatch
-  on receivers of unknown type, no instance attributes. Those references are
+  in-scope MRO (including `super()`) and `self`/`cls` calls dispatching to
+  in-scope overrides. No type inference, no dispatch on receivers of unknown
+  type, no instance attributes. Those references are
   reported as unresolved and matched conservatively by name against every
   known function, method or class of that name, so impact reaches them
   whenever any such symbol is affected.

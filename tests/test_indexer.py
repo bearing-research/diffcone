@@ -595,3 +595,44 @@ def test_receiver_lookups_record_in_scope_overrides():
     assert sum(1 for _, _, d in run if d == "override") == 2
     # An unknown receiver stays name-bounded, not dispatched.
     assert {u.name for u in idx.unresolved if u.symbol == "m.f"} == {"step"}
+
+
+def test_overrides_include_mixins_and_class_attribute_rebindings():
+    idx = index(
+        {
+            "m.py": (
+                "class Mixin:\n    def step(self):\n        return 'mixin'\n\n"
+                "class Base:\n"
+                "    hook = None\n"
+                "    def run(self):\n        return self.step(), self.hook\n"
+                "    def step(self):\n        return 0\n\n"
+                "class ViaMixin(Mixin, Base):\n    pass\n\n"
+                "class HookMethod(Base):\n    def hook(self):\n        return 1\n\n"
+                "class Rebound(Base):\n    step = Mixin.step\n\n"
+                "class Plain(Base):\n    pass\n"
+            )
+        }
+    )
+    run = edges(idx, "m.Base.run")
+    assert ("m.Mixin.step", "references", "override") in run  # inherited from a mixin
+    assert ("m.HookMethod.hook", "references", "override") in run  # attribute -> method
+    assert ("m.Rebound", "references", "override:attribute:step") in run  # rebinding
+    assert not any(t.startswith("m.Plain") for t, _, _ in run)
+
+
+def test_dispatched_call_sites_reach_overrides():
+    idx = index(
+        {
+            "m.py": (
+                "class Base:\n"
+                "    def run(self, mode):\n        return self.step(mode)\n"
+                "    def step(self, name):\n        return name\n\n"
+                "class Sub(Base):\n"
+                "    def step(self, name):\n        return getattr(self, name)\n\n"
+                "def direct():\n    return Sub().step('a')\n"
+            )
+        }
+    )
+    # Sub.step's getattr is reached through Base.run's unbounded ``mode`` as
+    # well as the literal direct call, so it must stay dynamic.
+    assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.Sub.step"}
