@@ -6,14 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Diffcone is a static-first, function-level change-impact engine for Python. It maps changes in application code to affected tests and benchmarks (pytest and ASV are the first runner integrations).
 
-Milestone 1 (`diffcone plan` over two committed revisions with a target manifest) is implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `AGENTS.md` holds the scope boundaries. Stdlib only, no runtime dependencies.
+Milestone 1 (`diffcone plan` over two committed revisions with a target manifest) and milestone 2 (static pytest/ASV discovery) are implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `AGENTS.md` holds the scope boundaries. Stdlib only, no runtime dependencies.
 
 ## Commands
 
 ```bash
 uv sync
-uv run diffcone plan --repo . --base <rev> --head <rev> --targets targets.json \
+uv run diffcone plan --repo . --base <rev> --head <rev> \
+    --discover pytest --discover asv [--targets targets.json] \
     --source-root src --source-root . --format json|text
+uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests && uv run ruff format --check src tests
@@ -30,13 +32,14 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
 - `src/diffcone/report.py` renders JSON (`schema_version` 1) and text.
+- `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.
 - `tests/conftest.py` provides `FixtureRepo` (throwaway git repo built from dicts); `tests/helpers.py` has assertion helpers. Do not put helper functions starting with `pytest_` in conftest; pytest treats them as hooks.
 
-## First milestone: `diffcone plan`
+## What `diffcone plan` is
 
-The deliverable is an **explainable selection plan**. The command does not execute or deselect targets, does not run project code, and does not modify the working tree. It compares **two explicit committed git revisions** only; output and docs must not imply uncommitted changes were analyzed.
+The deliverable is an **explainable selection plan**. The command does not execute or deselect targets, does not run project code (discovery included), and does not modify the working tree. It compares **two explicit committed git revisions** only; output and docs must not imply uncommitted changes were analyzed.
 
-Targets come from a temporary explicit manifest (`runner`, `runner_id`, `entry_symbol`, `lifecycle_dependencies`). ASV setup functions and pytest fixtures are both expressed as lifecycle dependencies on the target. Do not implement real pytest/ASV discovery in this milestone, and do not pretend naming conventions do.
+Targets are manifest records (`runner`, `runner_id`, `entry_symbol`, `lifecycle_dependencies`), hand-written or produced by static discovery. ASV setup functions and pytest fixtures are both expressed as lifecycle dependencies on the target. Discovery must document exactly which collection rules it reproduces and report, not guess, everything else; unknown fixtures become `fixture:<name>` so the planner selects conservatively.
 
 ## Architecture (keep these layers separate)
 

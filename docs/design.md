@@ -1,4 +1,4 @@
-# Diffcone design (milestone 1)
+# Diffcone design
 
 This document describes what the current implementation does. Planned work
 lives in [roadmap.md](roadmap.md).
@@ -11,10 +11,14 @@ Git snapshot reader        diffcone/snapshot.py
   -> Change classifier     diffcone/classify.py
   -> Impact planner        diffcone/planner.py
   -> Reports               diffcone/report.py    (JSON and text)
+
+Static discovery           diffcone/discovery/   (head snapshot -> manifest targets)
 ```
 
 Each stage exchanges plain dataclasses (`diffcone/model.py`). The planner
-does not import pytest or ASV; targets are opaque manifest records.
+does not import pytest or ASV; targets are opaque records produced by the
+manifest, by discovery, or both (a manifest entry overrides a discovered
+target with the same runner and id).
 
 ### Snapshot reader
 
@@ -203,7 +207,65 @@ Files, symbols, edges and adjacency lists are sorted; the search is a
 breadth-first traversal over sorted neighbours. Two runs on the same inputs
 produce byte-identical reports.
 
-## Known gaps (by design, this milestone)
+## Static discovery
+
+Discovery runs on the head snapshot only (targets that exist to run), reads
+runner configuration files from the repository root (`pytest.ini`,
+`pyproject.toml`, `tox.ini`, `setup.cfg`, `asv.conf.json`) and never imports
+project code. Each runner module reproduces a documented subset of its
+collection rules and emits notes for what it cannot handle. Every produced
+target is validated against the index; a target whose entry symbol is not
+indexed carries a `missing_symbol` note and falls into the planner's
+`entry_symbol_unresolved` fallback.
+
+### pytest
+
+Collected: files matching `python_files` under the source roots (restricted
+to `testpaths` if set); module-level functions matching `python_functions`;
+methods of classes matching `python_classes` that have no `__init__`, nested
+test classes; methods whose name starts with `test` in classes with a base
+ending in `TestCase`. Node ids follow pytest (`path::Class::method`);
+parameter cases are not enumerated.
+
+Fixtures are functions decorated with a dotted name ending in `fixture` or
+`yield_fixture`; `name=` and `autouse=True` keyword arguments are honoured.
+Requests come from parameter names (minus `self` and `request`),
+`@pytest.mark.usefixtures(...)` on the function or class, and a module- or
+class-level `pytestmark`. Resolution order is class fixtures (innermost
+first), module fixtures, `conftest.py` from the test's directory outward,
+then modules named in `pytest_plugins` (conftest declarations are global).
+Nearest scope wins; fixture requests are resolved transitively along the
+same chain; autouse fixtures anywhere on the chain apply.
+
+Lifecycle dependencies of a test: the resolved fixture symbols, the test
+module, every conftest module on the chain and its `pytest_*` hook
+functions, `setup_module`/`teardown_module`/`setup_function`/
+`teardown_function` if present, and the class's xunit/unittest
+setup/teardown methods if present. Unknown fixtures become `fixture:<name>`
+unless declared external (`--assume-external-fixture`) or a pytest builtin.
+
+Not modelled: fixture parametrisation and `indirect`, dynamic
+`request.getfixturevalue`, fixture visibility rules of `pytest_plugins`
+declared outside the root conftest (accepted anyway), plugin-provided
+fixtures, doctests, and `conftest.py` files outside the source roots.
+
+### ASV
+
+Collected: `.py` files under `benchmark_dir` (default `benchmarks`) whose
+path components do not start with an underscore; functions and methods of
+non-underscore classes named with `time_`, `timeraw_`, `mem_`, `peakmem_` or
+`track_`. Benchmark ids are `<module relative to benchmark_dir>.<Class>.<method>`.
+
+Lifecycle dependencies: the module, module-level `setup`/`setup_cache`/
+`teardown`, and the class's `setup`/`setup_cache`/`teardown`. Class
+attributes (`params`, `timeout`, ...) reach every method through the
+structural class-body rule; module attributes through the module dependency.
+
+Not modelled: `params` expansion, benchmark methods inherited from base
+classes, a `benchmark_dir` outside the source roots (targets get
+`missing_symbol` notes).
+
+## Known gaps (by design)
 
 * Inheritance: `self.m` where `m` is inherited is unresolved (name-bounded).
 * Module init side effects: a body change in module init does not invalidate

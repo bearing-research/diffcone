@@ -54,13 +54,14 @@ class FixtureRepo:
         head: str,
         targets: list[Target] | list[dict],
         source_roots: list[str] | None = None,
+        **kwargs,
     ) -> Plan:
         manifest = (
             parse_manifest(targets)
             if targets and isinstance(targets[0], dict)
             else Manifest(list(targets))  # type: ignore[arg-type]
         )
-        return plan(self.path, base, head, manifest, source_roots=source_roots)
+        return plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
 
     def write_manifest(self, targets: list[dict], name: str = "targets.json") -> Path:
         path = self.path.parent / name

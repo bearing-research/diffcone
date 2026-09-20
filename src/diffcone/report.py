@@ -120,6 +120,15 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         "analysis_errors": [
             {"revision": e.revision, "path": e.path, "message": e.message} for e in plan.errors
         ],
+        "discovery": [
+            {
+                "runner": d.runner,
+                "targets": len(d.targets),
+                "config": d.config,
+                "notes": [{"kind": n.kind, "detail": n.detail} for n in d.notes],
+            }
+            for d in plan.discovery
+        ],
     }
 
 
@@ -196,4 +205,9 @@ def to_text(plan: Plan) -> str:
         lines.append(f"analysis errors ({len(plan.errors)}):")
         for e in plan.errors:
             lines.append(f"  {e.revision}:{e.path}: {e.message}")
+    for d in plan.discovery:
+        lines.append("")
+        lines.append(f"discovery ({d.runner}): {len(d.targets)} target(s), {len(d.notes)} note(s)")
+        for n in d.notes:
+            lines.append(f"  {n.kind}: {n.detail}")
     return "\n".join(lines) + "\n"

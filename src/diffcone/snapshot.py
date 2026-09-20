@@ -15,12 +15,17 @@ class GitError(Exception):
     """Raised when git cannot supply the requested snapshot."""
 
 
+CONFIG_FILES = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", "asv.conf.json")
+
+
 @dataclass
 class Snapshot:
     revision: str
     commit: str
     source_roots: list[str]
     files: dict[str, bytes] = field(default_factory=dict)  # repo-relative path -> content
+    # Root-level runner configuration files, when present (see CONFIG_FILES).
+    config_files: dict[str, bytes] = field(default_factory=dict)
 
 
 def _git(repo: Path, args: list[str], stdin: bytes | None = None) -> bytes:
@@ -84,14 +89,22 @@ def read_files(repo: Path, commit: str, paths: list[str]) -> dict[str, bytes]:
     return files
 
 
+def list_root_files(repo: Path, commit: str) -> set[str]:
+    out = _git(repo, ["ls-tree", "--name-only", "-z", commit])
+    return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
+
+
 def read_snapshot(repo: Path, revision: str, source_roots: list[str]) -> Snapshot:
     commit = resolve_commit(repo, revision)
     paths = list_python_files(repo, commit, source_roots)
+    root = list_root_files(repo, commit)
+    config_paths = [name for name in CONFIG_FILES if name in root]
     return Snapshot(
         revision=revision,
         commit=commit,
         source_roots=list(source_roots),
         files=read_files(repo, commit, paths),
+        config_files=read_files(repo, commit, config_paths),
     )
 
 

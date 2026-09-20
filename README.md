@@ -5,15 +5,16 @@ It maps changes in application code to the tests and benchmarks that can
 observe them, and explains every selection with a concrete dependency path or
 an explicit fallback rule.
 
-**Status: early prototype.** The first milestone (`diffcone plan`) is
-implemented and covered by acceptance scenarios; it produces a selection
-*plan* and does not run or deselect anything. See [Limitations](#limitations)
-and [docs/roadmap.md](docs/roadmap.md) before relying on it.
+**Status: early prototype.** `diffcone plan` (milestone 1) and static
+pytest/ASV target discovery (milestone 2) are implemented and covered by
+acceptance scenarios. The tool produces a selection *plan* and does not run
+or deselect anything. See [Limitations](#limitations) and
+[docs/roadmap.md](docs/roadmap.md) before relying on it.
 
 ## What it does
 
-Given two **committed** git revisions and a manifest of runnable targets,
-`diffcone plan`:
+Given two **committed** git revisions and a set of runnable targets (from a
+manifest, from static discovery, or both), `diffcone plan`:
 
 1. reads both source snapshots straight from git (no checkout, no execution);
 2. indexes modules, classes, functions and methods with stable identities and
@@ -26,7 +27,8 @@ Given two **committed** git revisions and a manifest of runnable targets,
 
 Runner-independence is built in: pytest tests and ASV benchmarks are just
 targets with a runner label, an entry symbol and declared lifecycle
-dependencies (fixtures, `setup` methods).
+dependencies (fixtures, `setup` methods). Runner knowledge lives only in the
+discovery modules that produce those targets.
 
 ## Install and run
 
@@ -38,9 +40,19 @@ uv run diffcone plan \
   --repo . \
   --base main \
   --head HEAD \
-  --targets targets.json \
+  --discover pytest --discover asv \
   --source-root src --source-root . \
   --format json          # or: text
+```
+
+`--discover RUNNER` statically discovers targets in the head revision.
+`--targets manifest.json` supplies them explicitly; both can be combined, and
+a manifest entry overrides a discovered target with the same id. To inspect
+or edit what discovery finds, emit a manifest first:
+
+```bash
+uv run diffcone discover --repo . --rev HEAD --discover pytest --discover asv \
+  --source-root src --source-root . -o targets.json
 ```
 
 Source roots decide module names: a file is named relative to the **longest**
@@ -52,10 +64,36 @@ root that contains it. With `--source-root src --source-root .`, the file
 Exit codes: `0` plan produced; `1` plan produced but analysis errors forced a
 select-everything fallback; `2` no plan (bad revision, bad manifest).
 
+### Static discovery
+
+Discovery never imports or runs project code; it reproduces a documented
+subset of each runner's collection rules from the AST and reports what it
+cannot resolve.
+
+**pytest** ([details](docs/design.md#pytest)): `python_files`,
+`python_classes`, `python_functions` and `testpaths` from `pytest.ini`,
+`pyproject.toml`, `tox.ini` or `setup.cfg`; test functions, `Test*` classes
+(without `__init__`), nested classes and `unittest.TestCase` methods. Each
+test's lifecycle dependencies are its fixtures (by parameter, by
+`usefixtures`, transitively, resolved class > module > nearest `conftest.py`
+outward > `pytest_plugins` modules in the source roots), autouse fixtures,
+xunit setup functions, its module, every `conftest.py` on its path and their
+`pytest_*` hooks. A fixture that is neither found nor a pytest builtin
+becomes the dependency `fixture:<name>`, which the planner cannot resolve, so
+the test is selected conservatively; pass `--assume-external-fixture NAME`
+for fixtures that installed plugins provide (`mocker`, `httpx_mock`, ...).
+
+**ASV** ([details](docs/design.md#asv)): `benchmark_dir` from
+`asv.conf.json`; `time_`/`timeraw_`/`mem_`/`peakmem_`/`track_` functions and
+methods; lifecycle dependencies are the class and module `setup`,
+`setup_cache` and `teardown` plus the module itself. Class attributes such
+as `params` reach benchmarks through the class body.
+
 ### Target manifest
 
-The manifest is a temporary integration boundary so the engine can be
-validated before real pytest/ASV discovery exists. It is JSON:
+The manifest is the interchange format between discovery and the planner,
+and the way to hand-author targets for runners without discovery. It is
+JSON:
 
 ```json
 {
@@ -109,7 +147,11 @@ The JSON report (`schema_version: 1`) contains:
 
 * **Committed snapshots only.** Uncommitted working-tree changes are never
   read; the report says so explicitly.
-* **Targets come from the manifest.** No pytest or ASV discovery yet.
+* **Discovery is static and partial.** Fixture parametrisation, `indirect`,
+  `request.getfixturevalue`, fixtures from installed plugins, inherited
+  benchmark methods and ASV `params` expansion are not modelled; see
+  `docs/design.md` for the exact subset. Unknown fixtures are reported and
+  selected conservatively.
 * **Narrow, documented resolution subset** (see
   [docs/design.md](docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source
@@ -139,9 +181,10 @@ uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
 `tests/test_scenarios.py` holds the acceptance scenarios from the handoff
-document; each builds a small git repository with before/after commits and
-asserts exact target sets and reasons. See [AGENTS.md](AGENTS.md) for the
-rules that apply when changing selection behaviour.
+document and `tests/test_discovery.py` the discovery rules; each builds a
+small git repository with before/after commits and asserts exact target sets
+and reasons. See [AGENTS.md](AGENTS.md) for the rules that apply when
+changing selection behaviour.
 
 ## License
 

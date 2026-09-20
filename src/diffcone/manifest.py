@@ -91,6 +91,24 @@ def parse_manifest(data: Any) -> Manifest:
     return Manifest(targets=targets, source_roots=source_roots)
 
 
+def manifest_to_dict(
+    targets: list[Target], source_roots: list[str] | None = None
+) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    if source_roots:
+        data["source_roots"] = list(source_roots)
+    data["targets"] = [
+        {
+            "runner": t.runner,
+            "runner_id": t.runner_id,
+            "entry_symbol": t.entry_symbol,
+            "lifecycle_dependencies": list(t.lifecycle_dependencies),
+        }
+        for t in sorted(targets)
+    ]
+    return data
+
+
 def load_manifest(path: str | Path) -> Manifest:
     try:
         data = json.loads(Path(path).read_text("utf-8"))

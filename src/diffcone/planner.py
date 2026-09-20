@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from diffcone.classify import DELETED, SymbolChange, classify
+from diffcone.discovery import DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
@@ -132,6 +133,8 @@ class Plan:
     errors: list[AnalysisError]
     base_index: SourceIndex = field(repr=False, default=None)  # type: ignore[assignment]
     head_index: SourceIndex = field(repr=False, default=None)  # type: ignore[assignment]
+    discovery: list[DiscoveryResult] = field(default_factory=list)
+    targets: list[Target] = field(default_factory=list)
 
     @property
     def selected(self) -> list[Decision]:
@@ -196,14 +199,29 @@ def _propagate(edge: Edge, target_mode: int, target_change: SymbolChange | None)
 # --------------------------------------------------------------------------- planning
 
 
+def merge_targets(manifest: Manifest | None, discovered: list[DiscoveryResult]) -> list[Target]:
+    """Manifest targets win over discovered ones with the same runner and id."""
+    merged: dict[tuple[str, str], Target] = {}
+    for result in discovered:
+        for target in result.targets:
+            merged.setdefault((target.runner, target.runner_id), target)
+    if manifest is not None:
+        for target in manifest.targets:
+            merged[(target.runner, target.runner_id)] = target
+    return sorted(merged.values())
+
+
 def plan_from_indexes(
     base: SourceIndex,
     head: SourceIndex,
-    manifest: Manifest,
+    manifest: Manifest | None,
     *,
     repo: str = "",
     source_roots: list[str] | None = None,
+    discovered: list[DiscoveryResult] | None = None,
 ) -> Plan:
+    discovered = list(discovered or [])
+    targets = merge_targets(manifest, discovered)
     changes = classify(base, head)
     change_by_id = {c.id: c for c in changes}
     known_symbols = set(base.symbols) | set(head.symbols)
@@ -237,7 +255,7 @@ def plan_from_indexes(
         )
 
     # Targets join the graph as nodes with explicit dependency edges.
-    for target in manifest.targets:
+    for target in targets:
         if target.entry_symbol in known_symbols:
             graph.add(Edge(target.node_id, target.entry_symbol, ENTRY), ("manifest",))
         else:
@@ -306,7 +324,7 @@ def plan_from_indexes(
             global_fallbacks.append(fb)
 
     decisions: list[Decision] = []
-    for target in sorted(manifest.targets):
+    for target in targets:
         reasons: list[Reason] = []
         if target.node_id in mode:
             reasons.append(_explain(target.node_id, via, change_by_id, dynamic_symbols))
@@ -344,6 +362,8 @@ def plan_from_indexes(
         errors=errors,
         base_index=base,
         head_index=head,
+        discovery=discovered,
+        targets=targets,
     )
 
 
@@ -385,17 +405,32 @@ def plan(
     repo: str | Path,
     base: str,
     head: str,
-    manifest: Manifest,
+    manifest: Manifest | None = None,
     source_roots: list[str] | None = None,
+    discover_runners: Iterable[str] = (),
+    discovery_options: DiscoveryOptions | None = None,
 ) -> Plan:
     """Analyse two committed revisions and produce a selection plan.
 
-    Only committed snapshots are compared; the working tree is never read.
+    Targets come from the manifest, from static discovery of the head
+    snapshot for each runner in ``discover_runners``, or both. Only committed
+    snapshots are compared; the working tree is never read.
     """
     repo_path = Path(repo)
-    roots = list(source_roots or manifest.source_roots or ["."])
+    manifest_roots = manifest.source_roots if manifest is not None else None
+    roots = list(source_roots or manifest_roots or ["."])
     base_index = build_index(read_snapshot(repo_path, base, roots))
-    head_index = build_index(read_snapshot(repo_path, head, roots))
+    head_snapshot = read_snapshot(repo_path, head, roots)
+    head_index = build_index(head_snapshot)
+    discovered = [
+        discover(runner, head_snapshot, head_index, discovery_options)
+        for runner in discover_runners
+    ]
     return plan_from_indexes(
-        base_index, head_index, manifest, repo=str(repo_path), source_roots=roots
+        base_index,
+        head_index,
+        manifest,
+        repo=str(repo_path),
+        source_roots=roots,
+        discovered=discovered,
     )

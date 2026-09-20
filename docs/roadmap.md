@@ -1,19 +1,23 @@
 # Roadmap
 
-Implemented today: `diffcone plan` over two committed revisions with a
-manifest of targets (see [design.md](design.md)). Everything below is planned,
-in rough order.
+Implemented today: `diffcone plan` over two committed revisions, with
+targets from a manifest and/or static pytest and ASV discovery (see
+[design.md](design.md)). Everything below is planned, in rough order.
 
-## 1. Real runner discovery
+## 1. Discovery completeness
 
-* **pytest**: discover test functions, methods and their fixture graph
-  (including `conftest.py` layering, autouse and parametrised fixtures) and
-  emit manifest targets with lifecycle dependencies automatically. Likely as
-  a pytest plugin that runs collection only.
-* **ASV**: read benchmark suites, `setup`/`setup_cache`/`teardown` and
-  `params`, and emit targets.
-* Keep the manifest as the interchange format so the engine stays
-  runner-independent and discovery can be tested in isolation.
+Static discovery covers the common layout. Remaining gaps, roughly by value:
+
+* pytest: fixture parametrisation and `indirect`, `request.getfixturevalue`
+  with literal names, `conftest.py` outside the source roots, doctests,
+  a curated list of well-known plugin fixtures so `--assume-external-fixture`
+  is rarely needed.
+* ASV: benchmark methods inherited from base classes, `params` expansion as
+  parameter cases, benchmark directories outside the source roots.
+* An optional collection-based validator (`pytest --collect-only` via a
+  plugin) to measure static discovery against real collection on a corpus;
+  it would execute project code, so it stays opt-in and separate from
+  planning.
 
 ## 2. Working-tree analysis
 

@@ -1,0 +1,59 @@
+"""Static runner discovery.
+
+Discovery turns a head snapshot into manifest targets without importing or
+executing project code. Each runner module documents the subset of its
+runner's collection rules that it reproduces; anything outside that subset
+surfaces as a note or as an unresolved lifecycle dependency, which the
+planner treats conservatively.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from diffcone.manifest import Target
+from diffcone.model import SourceIndex
+from diffcone.snapshot import Snapshot
+
+RUNNERS = ("pytest", "asv")
+
+
+@dataclass(frozen=True, order=True)
+class DiscoveryNote:
+    runner: str
+    kind: str
+    detail: str
+
+
+@dataclass
+class DiscoveryOptions:
+    # Fixture names supplied by installed plugins (pytest-mock's ``mocker``,
+    # etc.) that should not be treated as unresolved.
+    external_fixtures: frozenset[str] = frozenset()
+
+
+@dataclass
+class DiscoveryResult:
+    runner: str
+    targets: list[Target] = field(default_factory=list)
+    notes: list[DiscoveryNote] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+def discover(
+    runner: str,
+    snapshot: Snapshot,
+    index: SourceIndex,
+    options: DiscoveryOptions | None = None,
+) -> DiscoveryResult:
+    options = options or DiscoveryOptions()
+    if runner == "pytest":
+        from diffcone.discovery.pytest_static import discover_pytest
+
+        return discover_pytest(snapshot, index, options)
+    if runner == "asv":
+        from diffcone.discovery.asv_static import discover_asv
+
+        return discover_asv(snapshot, index, options)
+    raise ValueError(f"unknown runner {runner!r}; expected one of {', '.join(RUNNERS)}")
