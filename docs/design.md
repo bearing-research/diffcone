@@ -151,10 +151,15 @@ own, so `Foo` still gets a reference edge.
 Module and class bodies are analysed without entering the definitions they
 contain; those are symbols with their own edges.
 
-`getattr(x, "lit")` is resolved like `x.lit`; `getattr` with a non-literal
-name, `eval`, `exec`, `__import__`, `globals()`, `vars()` and
-`importlib.import_module(<non-literal>)` mark the enclosing symbol as having
-a **dynamic** reference.
+`getattr(x, name)` and `importlib.import_module(name)` are expanded over
+every string `name` may hold when that is bounded: a string literal, a
+tuple/list/set of literals, a variable assigned only such values (in the
+function or at module level), or a `for` variable iterating over one
+(`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
+resolved like `x.<candidate>` or an import. Only when the name is unbounded
+do `getattr`, `eval`, `exec`, `__import__`, `globals()`, `vars()` and
+`import_module` mark the enclosing symbol as having a **dynamic**
+reference.
 
 Method identity and method-call resolution are separate: `Model.save` is a
 symbol, but `obj.save()` on an untyped `obj` is an unresolved attribute

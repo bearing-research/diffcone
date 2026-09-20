@@ -415,3 +415,45 @@ def test_class_reference_reaches_the_constructor():
         ("m.Bar.__init__", "references", "constructor"),
     }
     assert ("m.Base.__init__", "references", "constructor") in edges(idx, "m.Foo")
+
+
+def test_getattr_and_import_module_with_bounded_names():
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "def target():\n    pass\n\n\ndef other():\n    pass\n",
+            "pkg/b.py": (
+                "import importlib\nimport pkg.a\n\n"
+                "NAMES = ('target', 'other')\n"
+                "MODS = ['pkg.a']\n\n"
+                "def loop(stmt):\n"
+                "    for attr in ('body', 'orelse'):\n"
+                "        getattr(stmt, attr, None)\n\n"
+                "def const():\n"
+                "    name = 'target'\n"
+                "    return getattr(pkg.a, name)\n\n"
+                "def module_level():\n"
+                "    return [getattr(pkg.a, n) for n in NAMES]\n\n"
+                "def mods():\n"
+                "    for m in MODS:\n"
+                "        importlib.import_module(m)\n\n"
+                "def unbounded(name):\n"
+                "    return getattr(pkg.a, name)\n\n"
+                "def rebound():\n"
+                "    name = 'target'\n"
+                "    name = compute()\n"
+                "    return getattr(pkg.a, name)\n"
+            ),
+        }
+    )
+    dyn = {u.symbol for u in idx.unresolved if u.kind == "dynamic"}
+    assert dyn == {"pkg.b.unbounded", "pkg.b.rebound"}
+    assert {(u.kind, u.name) for u in idx.unresolved if u.symbol == "pkg.b.loop"} == {
+        ("attribute", "body"),
+        ("attribute", "orelse"),
+    }
+    assert ("pkg.a.target", "references", "") in edges(idx, "pkg.b.const")
+    assert {("pkg.a.target", "references", ""), ("pkg.a.other", "references", "")} <= edges(
+        idx, "pkg.b.module_level"
+    )
+    assert ("pkg.a", "imports", "") in edges(idx, "pkg.b.mods")

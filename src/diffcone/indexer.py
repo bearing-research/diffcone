@@ -152,6 +152,8 @@ class ModuleScope:
     bindings: set[str] = field(default_factory=set)
     members: dict[str, str] = field(default_factory=dict)
     import_nodes: list[ast.stmt] = field(default_factory=list)
+    # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
+    literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,6 +163,13 @@ class Scope:
     locals: set[str] = field(default_factory=set)
     self_name: str | None = None
     self_class: str | None = None
+    # Function-level ``name = "lit"`` / ``for name in ("a", "b")`` bindings:
+    # the string values a name may hold, or None when any binding is not literal.
+    literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+
+    def string_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
+        """Every string ``expr`` may evaluate to, or None when unbounded."""
+        return _string_candidates(expr, self.literal_names, self.module.literal_names)
 
 
 # Resolution results ---------------------------------------------------------
@@ -213,6 +222,71 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
     if module:
         return f"{base}.{module}" if base else module
     return base
+
+
+def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return (expr.value,)
+    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+        out: list[str] = []
+        for elt in expr.elts:
+            values = _literal_strings(elt)
+            if values is None:
+                return None
+            out.extend(values)
+        return tuple(out)
+    return None
+
+
+def _string_candidates(
+    expr: ast.expr,
+    local_literals: dict[str, tuple[str, ...] | None],
+    module_literals: dict[str, tuple[str, ...] | None],
+) -> tuple[str, ...] | None:
+    direct = _literal_strings(expr)
+    if direct is not None:
+        return direct
+    if isinstance(expr, ast.Name):
+        if expr.id in local_literals:
+            return local_literals[expr.id]
+        return module_literals.get(expr.id)
+    return None
+
+
+def _collect_literal_bindings(
+    node: ast.AST, module_literals: dict[str, tuple[str, ...] | None]
+) -> dict[str, tuple[str, ...] | None]:
+    """Names bound in ``node``'s scope to string literals, tuples of them, or
+    loop variables over such tuples. A name with any other binding maps to
+    None (unbounded); nested scopes are not entered."""
+    found: dict[str, tuple[str, ...] | None] = {}
+
+    def bind(name: str, values: tuple[str, ...] | None) -> None:
+        if name in found and found[name] is not None and values is not None:
+            found[name] = tuple(dict.fromkeys(found[name] + values))
+        else:
+            found[name] = None if (name in found and found[name] is None) else values
+
+    stack: list[ast.AST] = list(ast.iter_child_nodes(node))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, NESTED_SCOPES):
+            continue
+        if isinstance(n, ast.Assign):
+            values = _string_candidates(n.value, found, module_literals)
+            for target in n.targets:
+                if isinstance(target, ast.Name):
+                    bind(target.id, values)
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            if isinstance(n.target, ast.Name):
+                bind(n.target.id, _string_candidates(n.value, found, module_literals))
+        elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
+            bind(n.target.id, _string_candidates(n.iter, found, module_literals))
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            if n.id not in found:
+                found[n.id] = None
+        stack.extend(ast.iter_child_nodes(n))
+    return found
 
 
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
@@ -380,6 +454,7 @@ class Indexer:
         for stmt in stmts:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)
+        scope.literal_names = _collect_literal_bindings(scope.tree, {})
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -659,7 +734,11 @@ class Indexer:
         symbol_id: str,
         class_scope: ClassScope | None,
     ) -> None:
-        fscope = Scope(module=scope, locals=_LocalBindings().collect(node))
+        fscope = Scope(
+            module=scope,
+            locals=_LocalBindings().collect(node),
+            literal_names=_collect_literal_bindings(node, scope.literal_names),
+        )
         if class_scope is not None and not _is_staticmethod(node):
             params = node.args.posonlyargs + node.args.args
             if params:
@@ -899,14 +978,19 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.scope = scope
         self.skip_defs = skip_defs
 
-    def _push(self, bound: set[str]) -> Scope:
+    def _push(
+        self, bound: set[str], literals: dict[str, tuple[str, ...] | None] | None = None
+    ) -> Scope:
         outer = self.scope
+        literal_names = {k: v for k, v in outer.literal_names.items() if k not in bound}
+        literal_names.update(literals or {})
         self.scope = Scope(
             module=outer.module,
             local_imports=outer.local_imports,
             locals=outer.locals | bound,
             self_name=None if outer.self_name in bound else outer.self_name,
             self_class=None if outer.self_name in bound else outer.self_class,
+            literal_names=literal_names,
         )
         return outer
 
@@ -925,7 +1009,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.visit(dec)
         for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
             self.visit(default)
-        outer = self._push(_LocalBindings().collect(node))
+        outer = self._push(
+            _LocalBindings().collect(node),
+            _collect_literal_bindings(node, self.scope.module.literal_names),
+        )
         try:
             for arg in ast.walk(node.args):
                 if isinstance(arg, ast.arg) and arg.annotation is not None:
@@ -963,9 +1050,12 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _visit_comprehension(self, node: ast.AST) -> None:
         generators = node.generators  # type: ignore[attr-defined]
         bound: set[str] = set()
+        literals: dict[str, tuple[str, ...] | None] = {}
         for gen in generators:
             bound |= _collect_store_names(gen.target)
-        outer = self._push(bound)
+            if isinstance(gen.target, ast.Name):
+                literals[gen.target.id] = self.scope.string_candidates(gen.iter)
+        outer = self._push(bound, literals)
         try:
             for gen in generators:
                 self.visit(gen.iter)
@@ -1040,29 +1130,31 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _getattr(self, node: ast.Call) -> None:
         if len(node.args) < 2:
             return
-        attr = node.args[1]
-        if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)):
+        names = self.scope.string_candidates(node.args[1])
+        if names is None:
             self._dynamic("getattr(<non-literal>)")
             return
         base = _flatten_chain(node.args[0])
-        if base is None:
-            self.indexer.index.unresolved.add(
-                UnresolvedReference(
-                    self.source, UNRESOLVED_ATTRIBUTE, attr.value, f"getattr(..., {attr.value!r})"
+        for name in names:
+            if base is None:
+                # Unknown receiver, known attribute name: bounded like ``obj.name``.
+                self.indexer.index.unresolved.add(
+                    UnresolvedReference(
+                        self.source, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
+                    )
                 )
-            )
-            return
-        self._resolve(base + [attr.value])
+            else:
+                self._resolve(base + [name])
 
     def _import_module(self, node: ast.Call, name: str) -> None:
         if not node.args:
             return
-        arg = node.args[0]
-        literal = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
-        if literal and not arg.value.startswith("."):
-            self.indexer._module_import_edge(self.source, arg.value)
-        else:
+        names = self.scope.string_candidates(node.args[0])
+        if names is None or any(n.startswith(".") for n in names):
             self._dynamic(f"{name}(<non-literal>)")
+            return
+        for module in names:
+            self.indexer._module_import_edge(self.source, module)
 
 
 def build_index(snapshot: Snapshot) -> SourceIndex:
