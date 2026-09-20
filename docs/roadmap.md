@@ -36,10 +36,6 @@ the run shows (this is how every improvement so far was found).
 * **A monorepo** with several packages under one root and tests per
   package: exercises multiple source roots, cross-package imports and
   `conftest.py` layering across packages.
-* **Coverage validation at base** as well as head: a test that executed a
-  symbol *deleted* in head has no head lines to attribute; running the base
-  suite under coverage (already done for outcome symmetry) and reading its
-  database closes that gap.
 
 ## 2. Discovery completeness
 

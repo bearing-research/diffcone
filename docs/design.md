@@ -546,9 +546,15 @@ from the `run` and `validate` commands after a plan exists.
   `branch`/`parallel` change the database layout) and reads it directly:
   both the `line_bits` and `arc` tables, paths resolved against the
   checkout, contexts folded to the test function.
+  The base run's database is kept as well (in a corpus, per commit
+  alongside its cached outcomes) and read with the line ranges of the
+  changed symbols *as they were at base*, so a test that executed a symbol
+  deleted or moved in head is attributed too; a test that no longer exists
+  at head is `removed`, not affected, since nothing could select it.
   A test is *dynamically affected* when it executed a line owned by a
-  changed head symbol whose change carries impact (additive-only changes
-  are not ground truth: nothing executed behaves differently). Ownership
+  changed symbol, at either side, whose change carries impact
+  (additive-only changes are not ground truth: nothing executed behaves
+  differently). Ownership
   mirrors the planner's rules: a function or method owns its lines
   including its decorators; a module or class owns only the lines outside
   its members unless its change is structural, in which case all its lines

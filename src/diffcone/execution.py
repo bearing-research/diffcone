@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -405,23 +406,26 @@ def read_coverage_contexts(
     return result
 
 
-def _line_owner_index(plan: Plan) -> tuple[dict[str, dict[int, set[str]]], tuple[str, ...]]:
-    """``{path: {line: changed symbol ids}}`` for the changed head symbols.
+def _line_owner_index(
+    plan: Plan, side: str = "head"
+) -> tuple[dict[str, dict[int, set[str]]], tuple[str, ...]]:
+    """``{path: {line: changed symbol ids}}`` for the changed symbols as they
+    are at ``side`` (a deleted symbol has lines at base only).
 
     A container (module or class) owns only the lines outside its members'
     definitions, mirroring how the planner treats body changes; when its
     change is structural (which invalidates every member) all its lines
     count, mirroring the ``defined_in`` propagation rule.
     """
-    head = plan.head_index
+    index_ = plan.head_index if side == "head" else plan.base_index
     members_of: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    for symbol in head.symbols.values():
+    for symbol in index_.symbols.values():
         if symbol.container is not None:
             members_of[symbol.container].extend(symbol.line_ranges)
     index: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
     changed_ids: list[str] = []
     for change in plan.changes:
-        symbol = change.head
+        symbol = change.head if side == "head" else change.base
         # Additive-only changes carry no impact for the planner and mean no
         # behaviour change for the code executed, so they are not ground truth.
         if symbol is None or not symbol.line_ranges or not change.carries_impact:
@@ -460,11 +464,13 @@ def shadowed_files(plan: Plan, outside: set[str]) -> list[tuple[str, str]]:
 
 
 def coverage_validation(
-    plan: Plan, run: _SuiteRun, head_dir: Path, selected: set[str]
+    plan: Plan, run: _SuiteRun, checkout: Path, selected: set[str], side: str = "head"
 ) -> CoverageValidation:
+    """Attribute one suite run's per-test coverage to the changed symbols as
+    they are at ``side`` of the plan."""
     assert run.coverage_db is not None
     outside: set[str] = set()
-    contexts = read_coverage_contexts(run.coverage_db, head_dir, outside)
+    contexts = read_coverage_contexts(run.coverage_db, checkout, outside)
     shadowing = shadowed_files(plan, outside)
     if shadowing:
         listing = "\n".join(f"  {path}  (shadows {rel})" for path, rel in shadowing[:5])
@@ -477,10 +483,10 @@ def coverage_validation(
         )
     if not contexts:
         raise GitError(
-            "coverage validation recorded no per-test contexts: the head suite collected no "
-            f"tests under coverage (exit code {run.returncode})\n{run.log[-2000:]}"
+            f"coverage validation recorded no per-test contexts: the {side} suite collected "
+            f"no tests under coverage (exit code {run.returncode})\n{run.log[-2000:]}"
         )
-    owners, changed_ids = _line_owner_index(plan)
+    owners, changed_ids = _line_owner_index(plan, side)
     hits: list[CoverageHit] = []
     for nodeid in sorted(contexts):
         executed: set[str] = set()
@@ -493,8 +499,38 @@ def coverage_validation(
     return CoverageValidation(hits, changed_ids, run.log)
 
 
+def merge_coverage(
+    head: CoverageValidation, base: CoverageValidation | None, head_tests: set[str]
+) -> CoverageValidation:
+    """One record per test with the changed symbols it executed at either
+    side. A test that no longer exists at head is ``removed`` in the outcome
+    comparison and nothing could select it, so its base-side hits are
+    dropped rather than counted as misses."""
+    if base is None:
+        return head
+    hits = {h.runner_id: h for h in head.hits}
+    for hit in base.hits:
+        if hit.runner_id not in hits and hit.runner_id not in head_tests:
+            continue
+        existing = hits.get(hit.runner_id)
+        executed = set(hit.executed_changed) | set(existing.executed_changed if existing else ())
+        hits[hit.runner_id] = CoverageHit(
+            hit.runner_id,
+            existing.selected if existing else hit.selected,
+            tuple(sorted(executed)),
+        )
+    return CoverageValidation(
+        [hits[k] for k in sorted(hits)],
+        tuple(sorted(set(head.changed_symbols) | set(base.changed_symbols))),
+        head.log,
+    )
+
+
 class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
-    """(commit sha, ran under coverage) -> per-test outcomes.
+    """(commit sha, ran under coverage) -> per-test outcomes, plus the
+    coverage database of every snapshot that ran under coverage (copied into
+    a temporary directory that lives until ``close``), so a base that is not
+    run again can still be attributed for a later pair.
 
     Outcomes measured under the coverage tracer are only comparable with
     each other (tests that depend on recursion depth or timing can flip under
@@ -510,6 +546,31 @@ class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.Lock()
+        self._databases: dict[tuple[str, bool], tuple[Path, Path]] = {}  # key -> (db, checkout)
+        self._directory: tempfile.TemporaryDirectory | None = None
+
+    def keep_coverage(self, key: tuple[str, bool], db: Path, checkout: Path) -> None:
+        """Copy a run's coverage database so it outlives its worktree
+        (``checkout`` is remembered to resolve the paths it recorded)."""
+        with self._lock:
+            if key in self._databases:
+                return
+            if self._directory is None:
+                self._directory = tempfile.TemporaryDirectory(prefix="diffcone-basecov-")
+            copy = Path(self._directory.name) / f"{key[0]}-{int(key[1])}.coverage"
+            shutil.copyfile(db, copy)
+            self._databases[key] = (copy, checkout)
+
+    def coverage_of(self, key: tuple[str, bool]) -> tuple[Path, Path] | None:
+        with self._lock:
+            return self._databases.get(key)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._directory is not None:
+                self._directory.cleanup()
+                self._directory = None
+            self._databases.clear()
 
     def lookup(self, key: tuple[str, bool]) -> dict[str, str] | None:
         with self._lock:
@@ -549,18 +610,37 @@ def validate_pytest(
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }
     cache = outcome_cache if outcome_cache is not None else OutcomeCache()
+    try:
+        return _validate_pytest(plan, repo, command, coverage, cache, setup_command, selected)
+    finally:
+        if outcome_cache is None:
+            cache.close()
+
+
+def _validate_pytest(
+    plan: Plan,
+    repo: Path,
+    command: str | None,
+    coverage: bool,
+    cache: OutcomeCache,
+    setup_command: str | None,
+    selected: set[str],
+) -> Validation:
     base_key = (plan.base.commit, coverage)
     base_log = ""
 
     def run_base() -> dict[str, str]:
         # Same instrumentation on both sides: with --coverage the base suite
-        # also runs under the tracer (its database is simply not read).
+        # also runs under the tracer, and its database is kept so tests that
+        # executed a symbol deleted in head can be attributed too.
         nonlocal base_log
         with _Checkout(repo, plan.base.kind, plan.base.commit, setup_command) as base_dir:
             with _run_full_pytest(
                 base_dir, command, coverage=coverage, source_roots=plan.source_roots
             ) as base_run:
                 base_log = base_run.log
+                if coverage and base_run.coverage_db is not None:
+                    cache.keep_coverage(base_key, base_run.coverage_db, base_dir)
                 return base_run.outcomes
 
     if plan.base.kind == KIND_COMMIT:
@@ -577,8 +657,21 @@ def validate_pytest(
             head_outcomes, head_log = head_run.outcomes, head_run.log
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
+                if head_run.coverage_db is not None and plan.head.kind == KIND_COMMIT:
+                    cache.keep_coverage(
+                        (plan.head.commit, coverage), head_run.coverage_db, head_dir
+                    )
     if plan.head.kind == KIND_COMMIT:
         cache.offer((plan.head.commit, coverage), head_outcomes)
+    if cov is not None:
+        kept = cache.coverage_of(base_key)
+        base_cov: CoverageValidation | None = None
+        if kept is not None:
+            db, base_checkout = kept
+            base_run = _SuiteRun(base_outcomes, base_log, 0, db)
+            base_cov = coverage_validation(plan, base_run, base_checkout, selected, side="base")
+        head_tests = {fold_nodeid(n) for n in head_outcomes}
+        cov = merge_coverage(cov, base_cov, head_tests)
     known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
@@ -853,23 +946,27 @@ def corpus_validation(
         except GitError as exc:
             entry.error = str(exc)
 
-    if jobs <= 1:
-        for entry in entries:
-            validate_entry(entry)
-    else:
-        # Pairs are independent: each validates in its own temporary worktrees
-        # and coverage database; the outcome cache is shared with a no-wait
-        # policy (see OutcomeCache). Any exception, including Ctrl-C, cancels
-        # the pairs that have not started instead of letting them run on.
-        pool = ThreadPoolExecutor(max_workers=jobs)
-        try:
-            futures = [pool.submit(validate_entry, entry) for entry in entries]
-            for future in futures:
-                future.result()
-        except BaseException:
-            pool.shutdown(wait=False, cancel_futures=True)
-            raise
-        pool.shutdown(wait=True)
+    try:
+        if jobs <= 1:
+            for entry in entries:
+                validate_entry(entry)
+        else:
+            # Pairs are independent: each validates in its own temporary
+            # worktrees and coverage database; the outcome cache is shared with
+            # a no-wait policy (see OutcomeCache). Any exception, including
+            # Ctrl-C, cancels the pairs that have not started instead of
+            # letting them run on.
+            pool = ThreadPoolExecutor(max_workers=jobs)
+            try:
+                futures = [pool.submit(validate_entry, entry) for entry in entries]
+                for future in futures:
+                    future.result()
+            except BaseException:
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            pool.shutdown(wait=True)
+    finally:
+        cache.close()  # the kept coverage databases
     return report
 
 

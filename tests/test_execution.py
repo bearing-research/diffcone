@@ -916,3 +916,45 @@ def test_validate_resolves_a_relative_command_against_the_repo(repo, monkeypatch
     assert v.missed == []
     with pytest.raises(GitError, match="cannot run './missing.sh'"):
         validate_pytest(plan, repo=repo.path, command="./missing.sh")
+
+
+def test_coverage_attributes_symbols_deleted_in_head_from_the_base_run(repo):
+    """A test that executed a function deleted in head has no head lines to
+    attribute; the base run's coverage supplies them. A test deleted with it
+    is removed, not missed."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS + "\n\ndef old(a):\n    return a\n",
+            "tests/test_ops.py": (
+                "from pkg import ops\n\n\n"
+                "def test_old():\n    assert ops.old(1) == 1\n\n\n"
+                "def test_gone():\n    assert ops.old(2) == 2\n\n\n"
+                "def test_add():\n    assert ops.add(1, 2) == 3\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": (
+                "from pkg import ops\n\n\n"
+                "def test_old():\n    assert ops.mul(1, 1) == 1\n\n\n"
+                "def test_add():\n    assert ops.add(1, 2) == 3\n"
+            ),
+        }
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.ok
+    assert v.coverage is not None
+    assert "pkg.ops.old" in v.coverage.changed_symbols
+    affected = {h.runner_id: h for h in v.coverage.affected}
+    assert affected["tests/test_ops.py::test_old"].executed_changed == (
+        "pkg.ops.old",
+        "tests.test_ops.test_old",
+    )
+    assert affected["tests/test_ops.py::test_old"].selected
+    assert "tests/test_ops.py::test_gone" not in affected  # removed at head
+    assert [o.runner_id for o in v.removed] == ["tests/test_ops.py::test_gone"]
+    assert "tests/test_ops.py::test_add" not in affected
