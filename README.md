@@ -48,6 +48,11 @@ uv run diffcone plan \
   --format json          # or: text
 ```
 
+Committed snapshots are indexed once and cached under `.diffcone/cache/`
+(add it to `.gitignore`; `--no-cache` and `--cache-dir` control it), so the
+developer loop `--base main --head WORKTREE` re-indexes only the working
+tree.
+
 `--base` and `--head` accept any git revision, `INDEX` (staged content) or
 `WORKTREE` (files on disk, tracked or untracked, ignored files excluded).
 The report names the kind of each snapshot and flags uncommitted analysis,

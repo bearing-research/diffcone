@@ -11,36 +11,38 @@ states the mechanism, the trade-off and what "done" means, so the
 implementation can be checked against it and the corpus can measure it.
 Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
-## 1. Incremental re-indexing
+## 1. Per-module resolution cache
 
-**Problem.** Every plan re-parses and re-resolves both snapshots. On click
-(~90 files) a plan takes a few seconds; on a monorepo it will take minutes,
-and the inner loop (`--head WORKTREE` after each edit) needs sub-second.
+**Status.** The per-commit index cache shipped (design.md, "Index cache"):
+a warm `plan --head WORKTREE` on click is 0.75 s, of which about 0.5 s is
+indexing the working tree from scratch. That is under the one-second goal
+for click; a monorepo will not be.
 
-**Mechanism.** Two layers, both keyed by content so they can never be stale:
+**Mechanism.** Split indexing into cacheable per-module stages:
 
-* *Per-file parse cache*: `(blob sha or file content hash, indexer
-  version) -> per-module facts` (symbols with hashes and line ranges,
-  import table, literal names, unresolved references *before* cross-module
-  resolution). Resolution is cross-module and stays a full pass, but it is
-  cheap compared to parsing.
-* *Per-snapshot index cache*: `(commit sha, source roots, indexer version)
-  -> SourceIndex`, stored as JSON under `.diffcone/cache/`; a WORKTREE
-  snapshot is never cached whole (its key would have to be the hash of
-  every file), only its files hit the parse cache.
+* *pass 1 per file*, keyed by `(content hash, index format)`: symbols with
+  hashes and line ranges, import table, bindings, literal names, class
+  scopes. A pure function of the file.
+* *global fingerprint*: the sorted module names plus every symbol id and
+  class member list, computed from the pass-1 outputs (mostly cache hits).
+  A body edit does not change it; adding or renaming a symbol does.
+* *pass 2 per module*, keyed by `(content hash, fingerprint)`: edges,
+  unresolved and external references, call sites, escapes and parameter
+  dynamics contributed by that module. Only modules whose file or whose
+  fingerprint changed are re-parsed and re-resolved; the rest load their
+  pass-2 output without an AST. Parameter-dynamic expansion and override
+  edges need cross-module state (call sites, descendants), so they stay a
+  final full pass over the merged outputs.
 
-The cache is an optimisation only: a cache miss must produce a
-byte-identical plan to a cache hit, and `--no-cache` must exist.
+**Trade-off.** Serialising pass-2 state that today lives on `Scope` objects
+(local imports, literal names, parameters) for deferred parameter-dynamic
+expansion is the intricate part; if it proves fragile, cache pass 1 only
+and keep pass 2 full, which still removes parsing and hashing.
 
-**Trade-off.** Cross-module resolution must be re-run whenever any file
-changes, because a new symbol can change how an unchanged file's names
-resolve. Caching resolution per module keyed on the *set of all module
-names and their member names* is the next step if resolution itself becomes
-the bottleneck.
-
-**Done when.** A second `plan --head WORKTREE` on click after a one-line
-edit runs in under one second, and a test proves that a plan produced from
-cache equals the uncached plan on every scenario fixture.
+**Done when.** A second `plan --head WORKTREE` after a one-line body edit
+re-resolves exactly one module (observable through cache counters), plans
+are byte-identical with and without the cache on every scenario fixture,
+and a synthetic 2 000-file tree plans warm in under one second.
 
 ## 2. Evaluation at scale and breadth
 

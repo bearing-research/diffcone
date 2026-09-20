@@ -283,6 +283,26 @@ Every reason in the report carries either a full edge path ending at a
 changed symbol (with its change kinds) or the name of the fallback rule.
 Reasons produced by any of the above rules are flagged `conservative`.
 
+## Index cache
+
+A committed snapshot's `SourceIndex` is a pure function of the commit, the
+source roots and the index format, so `diffcone/cache.py` stores it as JSON
+under `<repo>/.diffcone/cache/index/<sha256(format, commit, roots)>.json`
+and serves it on later plans. `WORKTREE` and `INDEX` snapshots are never
+cached whole (nothing identifies their content), and a head snapshot that
+discovery needs files for is read rather than served. The cache is an
+optimisation only: a hit must yield a byte-identical plan to a miss (tests
+compare the reports and assert git is not read on a hit), writes are
+atomic, write failures are silent, and `--no-cache` / `--cache-dir` control
+it. `INDEX_FORMAT` is bumped whenever the indexer's output for the same
+input can change.
+
+Cost on click (75 files, 555 tests): a cold `plan --head WORKTREE` is
+1.45 s wall, a warm one 0.75 s (0.66 s in-process), of which indexing the
+working tree is about 0.5 s. Parsing is cheap; resolution and hashing
+dominate, so the next step when this matters again is a per-module
+resolution cache (roadmap).
+
 ## Determinism
 
 Files, symbols, edges and adjacency lists are sorted; the search is a
