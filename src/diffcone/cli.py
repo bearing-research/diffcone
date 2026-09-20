@@ -20,6 +20,9 @@ from pathlib import Path
 
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.execution import (
+    corpus_to_dict,
+    corpus_to_text,
+    corpus_validation,
     run_selected,
     validate_pytest,
     validation_to_dict,
@@ -138,6 +141,36 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(v)
     v.add_argument("--format", choices=("json", "text"), default="text")
 
+    c = sub.add_parser(
+        "corpus",
+        help="validate the plan for every commit in a range and aggregate recall/precision",
+        description=(
+            "Replay history: for each commit in A..B (first-parent order) plan parent -> "
+            "commit and validate it like `validate`, then aggregate outcome misses, "
+            "coverage recall/precision and selection savings. Each commit's suite runs "
+            "once; coverage runs are per pair. Commits touching no .py file are skipped "
+            "unless --all-commits is given."
+        ),
+    )
+    c.add_argument(
+        "--range", required=True, dest="revision_range", help="git range, e.g. main~20..main"
+    )
+    c.add_argument("--targets", help="path to a JSON target manifest")
+    c.add_argument(
+        "--command",
+        dest="runner_command",
+        help='pytest command line (default: "python -m pytest")',
+    )
+    c.add_argument("--coverage", action="store_true", help="also measure coverage recall/precision")
+    c.add_argument(
+        "--all-commits", action="store_true", help="validate commits without .py changes too"
+    )
+    c.add_argument(
+        "--max", type=int, dest="max_commits", help="only the last N commits of the range"
+    )
+    _add_common(c)
+    c.add_argument("--format", choices=("json", "text"), default="text")
+
     d = sub.add_parser(
         "discover",
         help="statically discover targets in a snapshot and emit a manifest",
@@ -225,6 +258,42 @@ def main(argv: list[str] | None = None) -> int:
             )
             code = _write(text, args.output)
             return code if code else (0 if validation.ok else 1)
+        if args.command == "corpus":
+            if not args.targets and not args.discover:
+                parser.error("corpus requires --targets and/or --discover")
+            manifest = load_manifest(args.targets) if args.targets else None
+
+            def make_plan(base: str, head: str):
+                return plan(
+                    Path(args.repo),
+                    base,
+                    head,
+                    manifest,
+                    source_roots=args.source_roots,
+                    discover_runners=args.discover or (),
+                    discovery_options=options,
+                )
+
+            def progress(entry) -> None:
+                print(f"diffcone: validating {entry.commit[:10]} {entry.subject}", file=sys.stderr)
+
+            report = corpus_validation(
+                Path(args.repo),
+                args.revision_range,
+                make_plan,
+                command=args.runner_command,
+                coverage=args.coverage,
+                only_python_changes=not args.all_commits,
+                max_commits=args.max_commits,
+                progress=progress,
+            )
+            text = (
+                json.dumps(corpus_to_dict(report), indent=2) + "\n"
+                if args.format == "json"
+                else corpus_to_text(report)
+            )
+            code = _write(text, args.output)
+            return code if code else (0 if report.ok else 1)
         if args.command == "discover":
             runners = args.discover or list(RUNNERS)
             roots = args.source_roots or ["."]

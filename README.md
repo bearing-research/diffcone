@@ -86,6 +86,11 @@ uv run diffcone run --base main --head HEAD --discover asv --runner asv --dry-ru
 uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest"
 ```
 
+`corpus --range A..B` replays history: it plans and validates every
+parent-to-commit pair in the range (first-parent order, commits without
+`.py` changes skipped by default) and aggregates outcome misses, coverage
+recall/precision and mean selection savings. Each commit's suite runs once.
+
 `validate` runs the full pytest suite at both snapshots (commits are checked
 out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
 every test whose pass/fail outcome changed but was not selected. With

@@ -380,27 +380,45 @@ def coverage_validation(
     return CoverageValidation(hits, changed_ids, run.log)
 
 
+OutcomeCache = dict[str, dict[str, str]]  # commit sha -> per-test outcomes
+
+
 def validate_pytest(
-    plan: Plan, *, repo: Path, command: str | None = None, coverage: bool = False
+    plan: Plan,
+    *,
+    repo: Path,
+    command: str | None = None,
+    coverage: bool = False,
+    outcome_cache: OutcomeCache | None = None,
 ) -> Validation:
     """Run the full suite at base and head and compare outcome changes with
     the plan's pytest selection; with ``coverage`` the head run also records
     per-test coverage and every test that executed a changed symbol must be
-    selected."""
+    selected. ``outcome_cache`` lets consecutive validations (a corpus) reuse
+    a committed snapshot's outcomes instead of running its suite again."""
     if plan.head.kind == KIND_WORKTREE and plan.base.kind == KIND_WORKTREE:
         raise GitError("validate needs at least one committed snapshot")
     selected = {
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }
-    with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
-        with _run_full_pytest(base_dir, command) as base_run:
-            base_outcomes, base_log = base_run.outcomes, base_run.log
+    cache = outcome_cache if outcome_cache is not None else {}
+    base_log = ""
+    if plan.base.kind == KIND_COMMIT and plan.base.commit in cache:
+        base_outcomes = cache[plan.base.commit]
+    else:
+        with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
+            with _run_full_pytest(base_dir, command) as base_run:
+                base_outcomes, base_log = base_run.outcomes, base_run.log
+        if plan.base.kind == KIND_COMMIT:
+            cache[plan.base.commit] = base_outcomes
     cov: CoverageValidation | None = None
     with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
         with _run_full_pytest(head_dir, command, coverage=coverage) as head_run:
             head_outcomes, head_log = head_run.outcomes, head_run.log
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
+    if plan.head.kind == KIND_COMMIT:
+        cache[plan.head.commit] = head_outcomes
     known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
@@ -504,4 +522,249 @@ def validation_to_text(v: Validation) -> str:
         )
         for h in c.missed:
             lines.append(f"  MISSED {h.runner_id}: executed {', '.join(h.executed_changed)}")
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- corpus
+
+
+@dataclass
+class CorpusEntry:
+    commit: str
+    parent: str
+    subject: str
+    skipped: str | None = None  # reason, when no validation ran
+    error: str | None = None
+    changed_symbols: int = 0
+    targets: int = 0
+    selected: int = 0
+    degraded: bool = False
+    validation: Validation | None = None
+
+    @property
+    def savings(self) -> float | None:
+        return 1 - self.selected / self.targets if self.targets else None
+
+
+@dataclass
+class CorpusReport:
+    repo: str
+    revision_range: str
+    coverage: bool
+    entries: list[CorpusEntry] = field(default_factory=list)
+
+    @property
+    def validated(self) -> list[CorpusEntry]:
+        return [e for e in self.entries if e.validation is not None]
+
+    def _sum(self, pick) -> int:
+        return sum(pick(e.validation) for e in self.validated)
+
+    @property
+    def outcome_changed(self) -> int:
+        return self._sum(lambda v: sum(1 for o in v.outcomes if o.changed))
+
+    @property
+    def outcome_missed(self) -> int:
+        return self._sum(lambda v: len(v.missed))
+
+    @property
+    def coverage_affected(self) -> int:
+        return self._sum(lambda v: len(v.coverage.affected) if v.coverage else 0)
+
+    @property
+    def coverage_caught(self) -> int:
+        return self._sum(lambda v: len(v.coverage.caught) if v.coverage else 0)
+
+    @property
+    def coverage_selected(self) -> int:
+        return self._sum(
+            lambda v: sum(1 for h in v.coverage.hits if h.selected) if v.coverage else 0
+        )
+
+    @property
+    def recall(self) -> float | None:
+        return self.coverage_caught / self.coverage_affected if self.coverage_affected else None
+
+    @property
+    def precision(self) -> float | None:
+        return self.coverage_caught / self.coverage_selected if self.coverage_selected else None
+
+    @property
+    def mean_savings(self) -> float | None:
+        values = [e.savings for e in self.validated if e.savings is not None]
+        return sum(values) / len(values) if values else None
+
+    @property
+    def ok(self) -> bool:
+        return all(e.validation.ok for e in self.validated) and not any(
+            e.error for e in self.entries
+        )
+
+
+def _commits_in_range(repo: Path, revision_range: str) -> list[tuple[str, str, str]]:
+    """(commit, first parent, subject) for each commit in ``A..B``, oldest first."""
+    out = _git(
+        repo,
+        [
+            "rev-list",
+            "--reverse",
+            "--first-parent",
+            "--format=%H %P%x00%s",
+            "--no-commit-header",
+            revision_range,
+        ],
+    )
+    entries: list[tuple[str, str, str]] = []
+    for line in out.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        ids, _, subject = line.partition("\0")
+        parts = ids.split()
+        if len(parts) < 2:
+            continue  # a root commit has no parent to compare against
+        entries.append((parts[0], parts[1], subject.strip()))
+    return entries
+
+
+def _touches_python(repo: Path, parent: str, commit: str) -> bool:
+    out = _git(repo, ["diff", "--name-only", parent, commit])
+    return any(line.endswith(".py") for line in out.decode("utf-8", "replace").splitlines())
+
+
+def corpus_validation(
+    repo: Path,
+    revision_range: str,
+    make_plan,
+    *,
+    command: str | None = None,
+    coverage: bool = False,
+    only_python_changes: bool = True,
+    max_commits: int | None = None,
+    progress=None,
+) -> CorpusReport:
+    """Plan and validate every ``parent -> commit`` pair in ``revision_range``.
+
+    ``make_plan(base, head)`` builds the plan (the CLI binds discovery,
+    manifest and source roots into it). Suites run once per commit thanks to
+    the shared outcome cache; coverage runs are per pair.
+    """
+    report = CorpusReport(str(repo), revision_range, coverage)
+    cache: OutcomeCache = {}
+    commits = _commits_in_range(repo, revision_range)
+    if max_commits is not None:
+        commits = commits[-max_commits:]
+    for commit, parent, subject in commits:
+        entry = CorpusEntry(commit, parent, subject)
+        report.entries.append(entry)
+        if progress:
+            progress(entry)
+        if only_python_changes and not _touches_python(repo, parent, commit):
+            entry.skipped = "no .py files changed"
+            continue
+        try:
+            plan = make_plan(parent, commit)
+            entry.changed_symbols = len(plan.changes)
+            entry.targets = sum(1 for d in plan.decisions if d.target.runner == "pytest")
+            entry.selected = sum(
+                1 for d in plan.decisions if d.selected and d.target.runner == "pytest"
+            )
+            entry.degraded = plan.degraded
+            entry.validation = validate_pytest(
+                plan, repo=repo, command=command, coverage=coverage, outcome_cache=cache
+            )
+        except GitError as exc:
+            entry.error = str(exc)
+    return report
+
+
+def corpus_to_dict(report: CorpusReport) -> dict:
+    def entry(e: CorpusEntry) -> dict:
+        d: dict = {
+            "commit": e.commit,
+            "parent": e.parent,
+            "subject": e.subject,
+            "skipped": e.skipped,
+            "error": e.error,
+            "changed_symbols": e.changed_symbols,
+            "targets": e.targets,
+            "selected": e.selected,
+            "savings": e.savings,
+            "degraded": e.degraded,
+        }
+        if e.validation is not None:
+            v = validation_to_dict(e.validation)
+            d["ok"] = v["ok"]
+            d["outcome"] = v["counts"]
+            d["coverage"] = v["coverage"] and {
+                k: v["coverage"][k] for k in ("counts", "recall", "precision", "missed")
+            }
+            d["missed"] = v["missed"]
+        return d
+
+    return {
+        "repo": report.repo,
+        "range": report.revision_range,
+        "coverage": report.coverage,
+        "ok": report.ok,
+        "totals": {
+            "commits": len(report.entries),
+            "validated": len(report.validated),
+            "skipped": sum(1 for e in report.entries if e.skipped),
+            "errors": sum(1 for e in report.entries if e.error),
+            "outcome_changed": report.outcome_changed,
+            "outcome_missed": report.outcome_missed,
+            "coverage_affected": report.coverage_affected,
+            "coverage_caught": report.coverage_caught,
+            "recall": report.recall,
+            "precision": report.precision,
+            "mean_savings": report.mean_savings,
+        },
+        "entries": [entry(e) for e in report.entries],
+    }
+
+
+def corpus_to_text(report: CorpusReport) -> str:
+    def pct(x: float | None) -> str:
+        return "n/a" if x is None else f"{x:.0%}"
+
+    lines = [
+        f"corpus {report.revision_range}: {len(report.validated)} validated, "
+        f"{sum(1 for e in report.entries if e.skipped)} skipped, "
+        f"{sum(1 for e in report.entries if e.error)} error(s); "
+        f"{'OK' if report.ok else 'MISSES'}",
+        f"  outcome changes: {report.outcome_changed} (missed {report.outcome_missed}); "
+        f"mean savings {pct(report.mean_savings)}",
+    ]
+    if report.coverage:
+        lines.append(
+            f"  coverage: recall {pct(report.recall)} ({report.coverage_caught} of "
+            f"{report.coverage_affected}), precision {pct(report.precision)}"
+        )
+    for e in report.entries:
+        short = e.commit[:10]
+        if e.skipped:
+            lines.append(f"  {short} skipped: {e.skipped}  {e.subject}")
+        elif e.error:
+            lines.append(f"  {short} ERROR: {e.error.splitlines()[0]}  {e.subject}")
+        else:
+            v = e.validation
+            assert v is not None
+            status = "ok" if v.ok else "MISSED"
+            cov = ""
+            if v.coverage is not None:
+                cov = f", recall {pct(v.coverage.recall)}, precision {pct(v.coverage.precision)}"
+            lines.append(
+                f"  {short} {status}: {e.selected}/{e.targets} selected "
+                f"(savings {pct(e.savings)}), outcome misses {len(v.missed)}{cov}"
+                f"{' [degraded]' if e.degraded else ''}  {e.subject}"
+            )
+            for o in v.missed:
+                lines.append(f"      MISSED outcome {o.runner_id}: {o.base} -> {o.head}")
+            if v.coverage is not None:
+                for h in v.coverage.missed:
+                    lines.append(
+                        f"      MISSED coverage {h.runner_id}: executed "
+                        f"{', '.join(h.executed_changed)}"
+                    )
     return "\n".join(lines) + "\n"

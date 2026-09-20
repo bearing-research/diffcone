@@ -522,3 +522,102 @@ def test_coverage_credits_every_test_that_runs_a_line(repo):
         "tests/test_first.py::test_first",
         "tests/test_second.py::test_second",
     ]
+
+
+def test_corpus_replays_history_and_aggregates(repo, capsys):
+    c1 = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "data.txt": "3\n",
+            "tests/test_ops.py": TEST_OPS,
+            "tests/test_data.py": (
+                "from pathlib import Path\n\n\n"
+                "def test_data():\n"
+                "    data = Path(__file__).parent.parent / 'data.txt'\n"
+                "    assert data.read_text() == '3\\n'\n"
+            ),
+        }
+    )
+    c2 = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})  # visible, same outcome
+    c3 = repo.commit({"README.md": "docs only\n"})  # skipped
+    c4 = repo.commit({"data.txt": "4\n", "pkg/ops.py": OPS.replace("b * a", "b * a + 0")})  # miss
+    calls: list[list[str]] = []
+    real_run = execution.subprocess.run
+
+    def counting_run(argv, **kwargs):
+        calls.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    import pytest as _pytest
+
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(execution.subprocess, "run", counting_run)
+    try:
+        report = execution.corpus_validation(
+            repo.path,
+            f"{c1}..{c4}",
+            lambda b, h: repo.plan(b, h, [], discover_runners=["pytest"]),
+            command=PYTEST,
+            coverage=True,
+        )
+    finally:
+        mp.undo()
+    assert [(e.commit, e.skipped is not None, e.error) for e in report.entries] == [
+        (c2, False, None),
+        (c3, True, None),
+        (c4, False, None),
+    ]
+    e2, _, e4 = report.entries
+    assert e2.validation.ok and e2.selected == 1 and e2.targets == 3
+    assert e2.validation.coverage.recall == 1.0
+    assert not e4.validation.ok
+    assert [o.runner_id for o in e4.validation.missed] == ["tests/test_data.py::test_data"]
+    assert report.outcome_missed == 1 and report.recall == 1.0 and not report.ok
+    assert report.mean_savings == pytest.approx(2 / 3)
+    # c2's suite ran once (as head of pair 1, cached as base of pair 2).
+    suite_runs = [c for c in calls if "-m" in c and "pytest" in c and "-v" in c]
+    assert len(suite_runs) == 3  # c1, c2 (with coverage), c4 (with coverage)
+
+    code = main(
+        [
+            "corpus",
+            "--repo",
+            str(repo.path),
+            "--range",
+            f"{c1}..{c4}",
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST,
+            "--format",
+            "json",
+        ]
+    )
+    out, err = capsys.readouterr()
+    data = json.loads(out)
+    assert code == 1
+    assert data["totals"]["validated"] == 2 and data["totals"]["skipped"] == 1
+    assert data["totals"]["outcome_missed"] == 1 and data["totals"]["coverage_affected"] == 0
+    assert "validating" in err
+
+    code = main(
+        [
+            "corpus",
+            "--repo",
+            str(repo.path),
+            "--range",
+            f"{c1}..{c2}",
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST,
+            "--coverage",
+            "--max",
+            "1",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "corpus" in out and "1 validated" in out and "OK" in out
+    assert "recall 100%" in out

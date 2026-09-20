@@ -17,7 +17,8 @@ uv run diffcone plan --repo . --base <rev> --head <rev> \
     --source-root src --source-root . --format json|text
 uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
 uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" [--dry-run] -- -x
-uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest"
+uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest" [--coverage]
+uv run diffcone corpus --range main~10..main --discover pytest --command "uv run pytest" --coverage
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests && uv run ruff format --check src tests

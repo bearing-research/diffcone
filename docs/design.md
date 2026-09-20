@@ -366,6 +366,14 @@ from the `run` and `validate` commands after a plan exists.
   silently credits only the first test to run each line and makes
   per-test contexts unusable.
 
+* `corpus` drives `validate` over a commit range with a shared outcome
+  cache (each committed snapshot's suite runs once; coverage runs are per
+  pair), records per-commit selection, savings, outcome and coverage
+  results, and reports micro-averaged recall and precision plus mean
+  savings. Commits that touch no `.py` file are skipped unless requested,
+  since the planner cannot see them and their outcome changes would only
+  ever be misses of the static approach itself.
+
 ## Known gaps (by design)
 
 * Dynamic dispatch: `self.m()` resolves to the definition found in the
