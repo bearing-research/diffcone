@@ -791,3 +791,24 @@ def test_coverage_validation_instruments_both_snapshots(repo, monkeypatch):
     # A plain validation does not reuse coverage-mode outcomes.
     validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=False, outcome_cache=cache)
     assert (base, False) in cache and len(argvs) == 4
+
+
+def test_setup_command_runs_in_each_checkout(repo):
+    base = repo.commit(
+        {
+            ".gitignore": "pkg/_version.py\n",
+            "pkg/__init__.py": "from pkg._version import version\n",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    # Without the generated file the suite cannot import the package at all.
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST)
+    assert all(o.base is None and o.head is None for o in v.outcomes)
+    setup = "printf 'version = \"0.0\"\\n' > pkg/_version.py"
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, setup_command=setup)
+    assert {o.head for o in v.outcomes} == {"PASSED"} and v.ok  # the suite ran at both snapshots
+    with pytest.raises(GitError, match="setup command failed"):
+        validate_pytest(plan, repo=repo.path, command=PYTEST, setup_command="exit 3")

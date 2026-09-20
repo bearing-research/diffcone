@@ -14,6 +14,7 @@ DEFINITION_CHANGED = "definition_changed"
 IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
 DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
 DEPENDENCIES_ADDED = "dependencies_added"  # edges were only added
+DOCSTRING_CHANGED = "docstring_changed"  # only the docstring differs
 
 # Changes that invalidate everything defined inside the symbol (and, for
 # deletions, everything that imports it), not just direct references.
@@ -25,7 +26,7 @@ STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED
 # Changes that are reported but carry no impact of their own: nothing an
 # existing dependent can observe differs (a member whose resolution moved
 # because of the addition carries its own dependencies_changed).
-NON_IMPACT = frozenset({IMPORTS_ADDED, DEPENDENCIES_ADDED})
+NON_IMPACT = frozenset({IMPORTS_ADDED, DEPENDENCIES_ADDED, DOCSTRING_CHANGED})
 
 
 @dataclass(frozen=True, order=True)
@@ -90,6 +91,8 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         kinds: list[str] = []
         if b.body_hash != h.body_hash:
             kinds.append(BODY_CHANGED)
+        elif b.docstring_hash != h.docstring_hash:
+            kinds.append(DOCSTRING_CHANGED)
         if b.kind != h.kind:
             kinds.append(DEFINITION_CHANGED)
         elif b.definition_hash != h.definition_hash:

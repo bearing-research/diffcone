@@ -78,7 +78,10 @@ whitespace, comments and positions never matter.
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
 | module | top-level statements excluding definitions and imports | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
-Consequences: a docstring edit is a body change (conservative); adding or
+The docstring is excluded from every body hash and hashed on its own:
+a docstring-only edit is reported as `docstring_changed` and carries no
+impact (docstrings do not change behaviour; doctests, which would, are not
+modelled). Consequences: adding or
 removing a method is a class definition change; removing or redirecting an
 import binding is a module definition change, while *adding* one is the
 non-structural `imports_added`. Definitions nested inside `if`/`try`/`with`
@@ -198,9 +201,10 @@ identity and reports:
 | `dependencies_changed` | an outgoing non-containment edge was removed or redirected (a call was redirected, an alias now points elsewhere, an import stopped resolving) |
 | `dependencies_added` | outgoing edges were only added (a new import binding, a new call); non-structural |
 | `imports_added` | a module gained import bindings and lost none; non-structural |
+| `docstring_changed` | only the docstring differs; non-structural, no impact |
 
-A symbol whose only changes are `imports_added` and/or `dependencies_added`
-is reported but seeds no impact: nothing an existing dependent can observe
+A symbol whose only changes are `imports_added`, `dependencies_added`
+and/or `docstring_changed` is reported but seeds no impact: nothing an existing dependent can observe
 differs, and a member whose own resolution moved because of the addition
 carries its own `dependencies_changed`. In practice this means adding a
 name to a test module's import list no longer selects every test that lists
@@ -413,7 +417,9 @@ from the `run` and `validate` commands after a plan exists.
   and parses the per-test outcome lines, folding parameter cases into their
   function and keeping the worst outcome. Commits are checked out into
   temporary detached worktrees that are removed afterwards; `WORKTREE` runs
-  in the repository; `INDEX` is not supported. Each run gets the checkout's
+  in the repository; `INDEX` is not supported. `--setup-command` runs a
+  shell command inside each checkout before its suite, for build-generated
+  git-ignored files a fresh checkout lacks (pytest's own `_version.py`). Each run gets the checkout's
   source roots first on `PYTHONPATH`, so the checkout's code wins over an
   installed (editable) copy of the project; with a `src` layout the working
   directory alone would not achieve that and the suite would silently test

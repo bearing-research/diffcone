@@ -30,7 +30,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 1
+INDEX_FORMAT = 2  # 2: docstring_hash on symbols
 
 
 def default_cache_dir(repo: Path) -> Path:

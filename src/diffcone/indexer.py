@@ -105,6 +105,23 @@ def _contains_definition_or_import(stmt: ast.stmt, strip_imports: bool) -> bool:
     return False
 
 
+def _split_docstring(stmts: list[ast.stmt]) -> tuple[str, list[ast.stmt]]:
+    """(docstring text, statements without it) for a module/class/function body."""
+    if (
+        stmts
+        and isinstance(stmts[0], ast.Expr)
+        and isinstance(stmts[0].value, ast.Constant)
+        and isinstance(stmts[0].value.value, str)
+    ):
+        return stmts[0].value.value, stmts[1:]
+    return "", stmts
+
+
+def _docstring_hash(bodies: list[list[ast.stmt]]) -> str:
+    docs = [_split_docstring(b)[0] for b in bodies]
+    return _digest("\n".join(docs)) if any(docs) else ""
+
+
 def hash_scope_body(stmts: list[ast.stmt], strip_imports: bool) -> str:
     """Hash a scope's statements with nested definitions (and optionally
     imports) removed. Only statements that actually contain one are copied
@@ -639,7 +656,8 @@ class Indexer:
                 name=scope.name.rsplit(".", 1)[-1],
                 path=scope.path,
                 lineno=1,
-                body_hash=hash_scope_body(scope.tree.body, strip_imports=True),
+                body_hash=hash_scope_body(_split_docstring(scope.tree.body)[1], strip_imports=True),
+                docstring_hash=_docstring_hash([scope.tree.body]),
                 definition_hash=_digest("\n".join(imports)),
                 container=None,
                 line_ranges=((1, _end_line(scope.tree)),),
@@ -716,11 +734,15 @@ class Indexer:
                     path=scope.path,
                     lineno=first.lineno,
                     body_hash=_digest(
-                        "\n".join(hash_scope_body(n.body, strip_imports=False) for n in nodes)
+                        "\n".join(
+                            hash_scope_body(_split_docstring(n.body)[1], strip_imports=False)
+                            for n in nodes
+                        )
                     ),
                     definition_hash=definition_hash,
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
+                    docstring_hash=_docstring_hash([n.body for n in nodes]),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -754,7 +776,10 @@ class Indexer:
                     name=name,
                     path=scope.path,
                     lineno=first.lineno,
-                    body_hash=_digest("\n".join(hash_nodes(list(n.body)) for n in nodes)),
+                    body_hash=_digest(
+                        "\n".join(hash_nodes(list(_split_docstring(n.body)[1])) for n in nodes)
+                    ),
+                    docstring_hash=_docstring_hash([n.body for n in nodes]),
                     definition_hash=definition_hash,
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),

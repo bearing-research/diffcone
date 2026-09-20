@@ -46,6 +46,9 @@ class Symbol:
     # Modules only: canonical import bindings ("import a as b", "from m import n"),
     # sorted. Lets the classifier tell additions from removals/redirections.
     imports: tuple[str, ...] = ()
+    # Hash of the docstring alone; body_hash excludes it. A docstring-only edit
+    # is reported as docstring_changed and carries no impact.
+    docstring_hash: str = ""
 
     def covers_line(self, line: int) -> bool:
         return any(start <= line <= end for start, end in self.line_ranges)

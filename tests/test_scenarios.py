@@ -1169,3 +1169,67 @@ def test_override_change_reaches_callers_of_the_base_template(repo):
     r = reason(plan, "t::test_sub", "unresolved_name_match")
     assert path_ids(r)[-2:] == ["pkg.engine.Base.run", "pkg.engine.Sub.step"]
     assert r.path[-1].detail == "override"
+
+
+def test_docstring_only_changes_carry_no_impact(repo):
+    base = repo.commit(
+        {
+            "pkg/core.py": (
+                '"""Core module."""\n\n\n'
+                "def hub(x):\n"
+                '    """Old doc."""\n'
+                "    return x\n\n\n"
+                "class K:\n"
+                '    """Class doc."""\n\n'
+                "    def m(self):\n        return 1\n"
+            ),
+            "tests/test_core.py": (
+                "from pkg.core import hub, K\n\n\n"
+                "def test_hub():\n    assert hub(1) == 1\n\n\n"
+                "def test_k():\n    assert K().m() == 1\n"
+            ),
+            "benchmarks/bench.py": "from pkg.core import hub\n\n\ndef time_hub():\n    hub(1)\n",
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/core.py": (
+                '"""Core module, documented better."""\n\n\n'
+                "def hub(x):\n"
+                '    """New, longer doc."""\n'
+                "    return x\n\n\n"
+                "class K:\n"
+                '    """Class doc, edited."""\n\n'
+                "    def m(self):\n        return 1\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_hub", "tests.test_core.test_hub"),
+        py_target("t::test_k", "tests.test_core.test_k"),
+        asv_target("b.time_hub", "benchmarks.bench.time_hub"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {
+        "pkg.core": ("docstring_changed",),
+        "pkg.core.hub": ("docstring_changed",),
+        "pkg.core.K": ("docstring_changed",),
+    }
+    assert selected(plan) == set()
+    # A real body change next to a docstring change is still a body change.
+    head2 = repo.commit(
+        {
+            "pkg/core.py": (
+                '"""Core module."""\n\n\n'
+                "def hub(x):\n"
+                '    """Old doc."""\n'
+                "    return x + 0\n\n\n"
+                "class K:\n"
+                '    """Class doc."""\n\n'
+                "    def m(self):\n        return 1\n"
+            )
+        }
+    )
+    plan2 = repo.plan(base, head2, targets)
+    assert changes(plan2) == {"pkg.core.hub": ("body_changed",)}
+    assert selected(plan2) == {"t::test_hub", "b.time_hub"}

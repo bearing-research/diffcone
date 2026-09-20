@@ -147,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also run the head suite under pytest-cov with per-test contexts and require "
         "every test that executed a changed symbol to be selected (reports recall/precision)",
     )
+    v.add_argument(
+        "--setup-command",
+        help="shell command run inside each temporary checkout before its suite (recreate "
+        "build-generated files such as a setuptools-scm _version.py)",
+    )
     _add_common(v)
     v.add_argument("--format", choices=("json", "text"), default="text")
 
@@ -171,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
         help='pytest command line (default: "python -m pytest")',
     )
     c.add_argument("--coverage", action="store_true", help="also measure coverage recall/precision")
+    c.add_argument(
+        "--setup-command",
+        help="shell command run inside each temporary checkout before its suite",
+    )
     c.add_argument(
         "--all-commits", action="store_true", help="validate commits without .py changes too"
     )
@@ -265,7 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "validate":
             result = build_plan()
             validation = validate_pytest(
-                result, repo=Path(args.repo), command=args.runner_command, coverage=args.coverage
+                result,
+                repo=Path(args.repo),
+                command=args.runner_command,
+                coverage=args.coverage,
+                setup_command=args.setup_command,
             )
             text = (
                 json.dumps(validation_to_dict(validation), indent=2) + "\n"
@@ -303,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
                 only_python_changes=not args.all_commits,
                 max_commits=args.max_commits,
                 progress=progress,
+                setup_command=args.setup_command,
             )
             text = (
                 json.dumps(corpus_to_dict(report), indent=2) + "\n"

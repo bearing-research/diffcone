@@ -203,9 +203,12 @@ class _Checkout:
     """A directory holding a snapshot: a temporary detached worktree for a
     commit, or the repository itself for WORKTREE."""
 
-    def __init__(self, repo: Path, kind: str, commit: str) -> None:
+    def __init__(
+        self, repo: Path, kind: str, commit: str, setup_command: str | None = None
+    ) -> None:
         self.repo = repo
         self.kind = kind
+        self.setup_command = setup_command
         self.commit = commit
         self.path = repo
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
@@ -217,6 +220,19 @@ class _Checkout:
             _git(self.repo, ["worktree", "add", "--detach", "-q", str(self.path), self.commit])
         elif self.kind != KIND_WORKTREE:
             raise GitError("validate supports commit and WORKTREE snapshots, not INDEX")
+        if self.setup_command:
+            # Build-generated, git-ignored files (a setuptools-scm _version.py,
+            # compiled extensions) are absent from a fresh checkout; the user's
+            # setup command recreates what the suite needs.
+            proc = subprocess.run(
+                self.setup_command, shell=True, cwd=self.path, capture_output=True, text=True
+            )
+            if proc.returncode != 0:
+                self.__exit__()
+                raise GitError(
+                    f"setup command failed in checkout of {self.commit[:12]} "
+                    f"(exit {proc.returncode}):\n{(proc.stdout + proc.stderr)[-2000:]}"
+                )
         return self.path
 
     def __exit__(self, *exc: object) -> None:
@@ -466,6 +482,7 @@ def validate_pytest(
     command: str | None = None,
     coverage: bool = False,
     outcome_cache: OutcomeCache | None = None,
+    setup_command: str | None = None,
 ) -> Validation:
     """Run the full suite at base and head and compare outcome changes with
     the plan's pytest selection; with ``coverage`` the head run also records
@@ -485,7 +502,7 @@ def validate_pytest(
     else:
         # Same instrumentation on both sides: with --coverage the base suite
         # also runs under the tracer (its database is simply not read).
-        with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
+        with _Checkout(repo, plan.base.kind, plan.base.commit, setup_command) as base_dir:
             with _run_full_pytest(
                 base_dir, command, coverage=coverage, source_roots=plan.source_roots
             ) as base_run:
@@ -493,7 +510,7 @@ def validate_pytest(
         if plan.base.kind == KIND_COMMIT:
             cache[base_key] = base_outcomes
     cov: CoverageValidation | None = None
-    with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
+    with _Checkout(repo, plan.head.kind, plan.head.commit, setup_command) as head_dir:
         with _run_full_pytest(
             head_dir, command, coverage=coverage, source_roots=plan.source_roots
         ) as head_run:
@@ -729,6 +746,7 @@ def corpus_validation(
     only_python_changes: bool = True,
     max_commits: int | None = None,
     progress=None,
+    setup_command: str | None = None,
 ) -> CorpusReport:
     """Plan and validate every ``parent -> commit`` pair in ``revision_range``.
 
@@ -758,7 +776,12 @@ def corpus_validation(
             )
             entry.degraded = plan.degraded
             entry.validation = validate_pytest(
-                plan, repo=repo, command=command, coverage=coverage, outcome_cache=cache
+                plan,
+                repo=repo,
+                command=command,
+                coverage=coverage,
+                outcome_cache=cache,
+                setup_command=setup_command,
             )
         except GitError as exc:
             entry.error = str(exc)
