@@ -7,7 +7,7 @@ sets and the rules/paths behind them.
 
 from __future__ import annotations
 
-from helpers import (
+from diffcone.testing import (
     asv_target,
     changes,
     path_ids,

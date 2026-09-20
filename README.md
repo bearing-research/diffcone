@@ -189,8 +189,9 @@ uv run ruff check src tests && uv run ruff format --check src tests
 
 `tests/test_scenarios.py` holds the acceptance scenarios from the handoff
 document and `tests/test_discovery.py` the discovery rules; each builds a
-small git repository with before/after commits and asserts exact target sets
-and reasons. See [AGENTS.md](AGENTS.md) for the rules that apply when
+small git repository with before/after commits (via `diffcone.testing`,
+which is public so integrators can write the same kind of scenarios) and
+asserts exact target sets and reasons. See [AGENTS.md](AGENTS.md) for the rules that apply when
 changing selection behaviour.
 
 ## License

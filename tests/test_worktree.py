@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 
-from conftest import GIT_ENV
-from helpers import py_target, reason, selected, unselected
-
 from diffcone.cli import main
 from diffcone.report import to_dict, to_text
 from diffcone.snapshot import read_snapshot
+from diffcone.testing import py_target, reason, selected, unselected
 
 OPS = "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
 TEST_OPS = (
@@ -269,10 +267,7 @@ def test_unmerged_index_degrades_instead_of_failing(repo):
     repo.commit({"pkg/m.py": "def f():\n    return 1\n"})
     repo.git("checkout", "-q", "main")
     repo.commit({"pkg/m.py": "def f():\n    return 2\n"})
-    proc = __import__("subprocess").run(
-        ["git", "merge", "other"], cwd=repo.path, capture_output=True, env=GIT_ENV
-    )
-    assert proc.returncode != 0  # conflict expected
+    assert repo.try_git("merge", "other").returncode != 0  # conflict expected
 
     index_plan = repo.plan(base, "INDEX", [py_target("t::test_f", "tests.test_m.test_f")])
     assert index_plan.degraded

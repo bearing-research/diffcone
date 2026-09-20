@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 
-from helpers import asv_target, py_target, reason, selected, unselected
-
 from diffcone.cli import main
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
+from diffcone.testing import asv_target, py_target, reason, selected, unselected
 
 
 def run_discovery(repo, rev, runner, roots=None, **opts):
