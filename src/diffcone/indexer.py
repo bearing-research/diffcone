@@ -96,9 +96,33 @@ def hash_nodes(nodes: list[ast.AST]) -> str:
     return _digest("\n".join(_dump(n) for n in nodes))
 
 
+def _contains_definition_or_import(stmt: ast.stmt, strip_imports: bool) -> bool:
+    for node in ast.walk(stmt):
+        if isinstance(node, DEF_NODES):
+            return True
+        if strip_imports and isinstance(node, (ast.Import, ast.ImportFrom)):
+            return True
+    return False
+
+
 def hash_scope_body(stmts: list[ast.stmt], strip_imports: bool) -> str:
-    stripped = [_StripDefs(strip_imports).visit(copy.deepcopy(s)) for s in stmts]
-    return hash_nodes([s for s in stripped if s is not None])
+    """Hash a scope's statements with nested definitions (and optionally
+    imports) removed. Only statements that actually contain one are copied
+    and stripped; the rest are dumped as they are, which avoids a deep copy
+    of every statement (the dominant cost of indexing)."""
+    kept: list[ast.AST] = []
+    for stmt in stmts:
+        if isinstance(stmt, DEF_NODES) or (
+            strip_imports and isinstance(stmt, (ast.Import, ast.ImportFrom))
+        ):
+            continue
+        if _contains_definition_or_import(stmt, strip_imports):
+            stripped = _StripDefs(strip_imports).visit(copy.deepcopy(stmt))
+            if stripped is not None:
+                kept.append(stripped)
+        else:
+            kept.append(stmt)
+    return hash_nodes(kept)
 
 
 def iter_scope_statements(body: list[ast.stmt]):
