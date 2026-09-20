@@ -70,12 +70,32 @@ class AnalysisError:
     message: str
 
 
-@dataclass
-class SourceIndex:
+KIND_COMMIT = "commit"
+KIND_INDEX = "index"
+KIND_WORKTREE = "worktree"
+
+
+@dataclass(frozen=True)
+class SnapshotInfo:
+    """What a snapshot is: carried unchanged from the reader to the report."""
+
     revision: str
     commit: str
-    kind: str = "commit"  # "commit" | "index" | "worktree"
+    kind: str = KIND_COMMIT
     description: str = ""
+
+    @property
+    def committed(self) -> bool:
+        return self.kind == KIND_COMMIT
+
+    @property
+    def is_worktree(self) -> bool:
+        return self.kind == KIND_WORKTREE
+
+
+@dataclass
+class SourceIndex:
+    snapshot: SnapshotInfo
     modules: set[str] = field(default_factory=set)
     symbols: dict[str, Symbol] = field(default_factory=dict)
     edges: set[Edge] = field(default_factory=set)
@@ -84,3 +104,11 @@ class SourceIndex:
     errors: list[AnalysisError] = field(default_factory=list)
     # Modules that failed to parse; their symbols are unknown in this revision.
     failed_modules: set[str] = field(default_factory=set)
+
+    @property
+    def revision(self) -> str:
+        return self.snapshot.revision
+
+    @property
+    def commit(self) -> str:
+        return self.snapshot.commit

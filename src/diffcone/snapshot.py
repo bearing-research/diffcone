@@ -18,6 +18,14 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone.model import (
+    KIND_COMMIT,
+    KIND_INDEX,
+    KIND_WORKTREE,
+    AnalysisError,
+    SnapshotInfo,
+)
+
 
 class GitError(Exception):
     """Raised when git cannot supply the requested snapshot."""
@@ -27,27 +35,33 @@ CONFIG_FILES = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", "asv.con
 
 WORKTREE = "WORKTREE"
 INDEX = "INDEX"
-SPECIAL_REVISIONS = (WORKTREE, INDEX)
-
-KIND_COMMIT = "commit"
-KIND_INDEX = "index"
-KIND_WORKTREE = "worktree"
 
 
 @dataclass
 class Snapshot:
-    revision: str
-    commit: str
+    info: SnapshotInfo
     source_roots: list[str]
     files: dict[str, bytes] = field(default_factory=dict)  # repo-relative path -> content
     # Root-level runner configuration files, when present (see CONFIG_FILES).
     config_files: dict[str, bytes] = field(default_factory=dict)
-    kind: str = KIND_COMMIT
-    description: str = ""
+    # Problems reading the snapshot itself (e.g. unmerged index entries).
+    errors: list[AnalysisError] = field(default_factory=list)
 
     @property
-    def committed(self) -> bool:
-        return self.kind == KIND_COMMIT
+    def revision(self) -> str:
+        return self.info.revision
+
+    @property
+    def commit(self) -> str:
+        return self.info.commit
+
+    @property
+    def kind(self) -> str:
+        return self.info.kind
+
+    @property
+    def description(self) -> str:
+        return self.info.description
 
 
 def _git(repo: Path, args: list[str], stdin: bytes | None = None) -> bytes:
@@ -91,9 +105,13 @@ def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[
     return sorted(p for p in paths if p.endswith(".py"))
 
 
-def read_files(repo: Path, commit: str, paths: list[str]) -> dict[str, bytes]:
+def read_files(
+    repo: Path, commit: str, paths: list[str], *, label: str | None = None
+) -> dict[str, bytes]:
+    """Read blobs ``<commit>:<path>``; ``commit=""`` reads the index (``:path``)."""
     if not paths:
         return {}
+    label = label or commit
     request = "".join(f"{commit}:{p}\n" for p in paths).encode("utf-8", "surrogateescape")
     out = _git(repo, ["cat-file", "--batch"], stdin=request)
     files: dict[str, bytes] = {}
@@ -104,7 +122,7 @@ def read_files(repo: Path, commit: str, paths: list[str]) -> dict[str, bytes]:
         pos = newline + 1
         parts = header.split()
         if len(parts) < 3 or parts[-1] == "missing":
-            raise GitError(f"cannot read {path} at {commit}: {header}")
+            raise GitError(f"cannot read {path} at {label}: {header}")
         size = int(parts[2])
         files[path] = out[pos : pos + size]
         pos += size + 1  # trailing newline after each object
@@ -123,9 +141,26 @@ def _pathspec(source_roots: list[str]) -> list[str]:
     return ["--", *[r for r in roots if r]]
 
 
-def _ls_files(repo: Path, args: list[str], source_roots: list[str]) -> list[str]:
-    out = _git(repo, ["ls-files", "-z", *args, *_pathspec(source_roots)])
-    return sorted({p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p})
+# ``git ls-files -t`` tags: H cached, S skip-worktree (sparse checkout), M unmerged,
+# ? untracked (with --others).
+TAG_CACHED, TAG_SKIP_WORKTREE, TAG_UNMERGED, TAG_OTHER = "H", "S", "M", "?"
+
+
+def _ls_files_tagged(repo: Path, args: list[str], source_roots: list[str]) -> list[tuple[str, str]]:
+    out = _git(repo, ["ls-files", "-z", "-t", *args, *_pathspec(source_roots)])
+    entries: set[tuple[str, str]] = set()
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        tag, _, path = record.decode("utf-8", "surrogateescape").partition(" ")
+        entries.add((tag, path))
+    return sorted(entries, key=lambda e: (e[1], e[0]))
+
+
+def _staged_config_files(repo: Path) -> dict[str, bytes]:
+    out = _git(repo, ["ls-files", "-z", "--cached", "--", *CONFIG_FILES])
+    names = [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
+    return read_files(repo, "", names, label=INDEX)
 
 
 def read_commit_snapshot(
@@ -138,50 +173,79 @@ def read_commit_snapshot(
         root = list_root_files(repo, commit)
         config_files = read_files(repo, commit, [n for n in CONFIG_FILES if n in root])
     return Snapshot(
-        revision=revision,
-        commit=commit,
+        info=SnapshotInfo(
+            revision=revision,
+            commit=commit,
+            kind=KIND_COMMIT,
+            description=f"commit {commit[:12]} ({revision})",
+        ),
         source_roots=list(source_roots),
         files=read_files(repo, commit, paths),
         config_files=config_files,
-        kind=KIND_COMMIT,
-        description=f"commit {commit[:12]} ({revision})",
     )
 
 
 def read_index_snapshot(
     repo: Path, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
-    """The staged content of tracked files (git's index)."""
+    """The staged content of tracked files (git's index).
+
+    Unmerged paths (a merge in progress) have no stage-0 blob; they are
+    recorded as analysis errors so the plan degrades instead of failing.
+    """
     head = resolve_commit(repo, "HEAD")
-    paths = [p for p in _ls_files(repo, ["--cached"], source_roots) if p.endswith(".py")]
-    config_files: dict[str, bytes] = {}
-    if with_config:
-        staged_root = set(_ls_files(repo, ["--cached"], ["."]))
-        config_files = read_files(repo, "", [n for n in CONFIG_FILES if n in staged_root])
+    errors: list[AnalysisError] = []
+    paths: list[str] = []
+    for tag, path in _ls_files_tagged(repo, ["--cached"], source_roots):
+        if not path.endswith(".py"):
+            continue
+        if tag == TAG_UNMERGED:
+            if path not in paths and not any(e.path == path for e in errors):
+                errors.append(
+                    AnalysisError(
+                        INDEX, path, "unmerged in the index (merge in progress); no staged content"
+                    )
+                )
+        elif path not in paths:
+            paths.append(path)
+    paths = [p for p in paths if not any(e.path == p for e in errors)]
+    config_files = _staged_config_files(repo) if with_config else {}
     return Snapshot(
-        revision=INDEX,
-        commit=head,
+        info=SnapshotInfo(
+            revision=INDEX,
+            commit=head,
+            kind=KIND_INDEX,
+            description=f"git index (staged content) on top of commit {head[:12]}; uncommitted",
+        ),
         source_roots=list(source_roots),
-        files=read_files(repo, "", paths),
+        files=read_files(repo, "", paths, label=INDEX),
         config_files=config_files,
-        kind=KIND_INDEX,
-        description=f"git index (staged content) on top of commit {head[:12]}; uncommitted",
+        errors=errors,
     )
 
 
 def read_worktree_snapshot(
     repo: Path, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
-    """Files on disk: tracked and untracked, minus ignored ones."""
+    """Files on disk: tracked and untracked, minus ignored ones.
+
+    Skip-worktree entries (sparse checkouts) are not on disk by design and
+    are read from the index instead of being treated as deletions.
+    """
     head = resolve_commit(repo, "HEAD")
-    listed = _ls_files(repo, ["--cached", "--others", "--exclude-standard"], source_roots)
+    listed = _ls_files_tagged(repo, ["--cached", "--others", "--exclude-standard"], source_roots)
     files: dict[str, bytes] = {}
-    for path in listed:
-        if not path.endswith(".py"):
+    from_index: list[str] = []
+    for tag, path in listed:
+        if not path.endswith(".py") or path in files or path in from_index:
             continue
         full = repo / path
-        if full.is_file():  # tracked files deleted on disk are absent from the snapshot
+        if full.is_file():
             files[path] = full.read_bytes()
+        elif tag == TAG_SKIP_WORKTREE:
+            from_index.append(path)
+        # otherwise: a tracked file deleted on disk is absent from the snapshot
+    files.update(read_files(repo, "", from_index, label=INDEX))
     config_files: dict[str, bytes] = {}
     if with_config:
         for name in CONFIG_FILES:
@@ -189,16 +253,18 @@ def read_worktree_snapshot(
             if full.is_file():
                 config_files[name] = full.read_bytes()
     return Snapshot(
-        revision=WORKTREE,
-        commit=head,
+        info=SnapshotInfo(
+            revision=WORKTREE,
+            commit=head,
+            kind=KIND_WORKTREE,
+            description=(
+                "working tree (tracked and untracked files, ignored files excluded) on top of "
+                f"commit {head[:12]}; uncommitted"
+            ),
+        ),
         source_roots=list(source_roots),
         files=files,
         config_files=config_files,
-        kind=KIND_WORKTREE,
-        description=(
-            f"working tree (tracked and untracked files, ignored files excluded) on top of "
-            f"commit {head[:12]}; uncommitted"
-        ),
     )
 
 

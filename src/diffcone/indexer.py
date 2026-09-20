@@ -298,12 +298,8 @@ class _LocalBindings(ast.NodeVisitor):
 class Indexer:
     def __init__(self, snapshot: Snapshot) -> None:
         self.snapshot = snapshot
-        self.index = SourceIndex(
-            revision=snapshot.revision,
-            commit=snapshot.commit,
-            kind=snapshot.kind,
-            description=snapshot.description,
-        )
+        self.index = SourceIndex(snapshot=snapshot.info)
+        self.index.errors.extend(snapshot.errors)
         self.scopes: dict[str, ModuleScope] = {}
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()

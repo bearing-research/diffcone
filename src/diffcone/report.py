@@ -6,13 +6,13 @@ import json
 from dataclasses import asdict
 from typing import Any
 
+from diffcone.model import SnapshotInfo
 from diffcone.planner import Decision, Plan, Reason
 
 SCHEMA_VERSION = 1
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
-    "analyzed": "two committed snapshots; the working tree is not analyzed",
     "resolved": [
         "module-level functions, methods and classes as symbols",
         "direct name and attribute references resolvable through module-level "
@@ -52,12 +52,13 @@ def _target_dict(decision: Decision) -> dict[str, Any]:
     }
 
 
-def _snapshot_dict(index: Any) -> dict[str, Any]:
+def snapshot_to_dict(info: SnapshotInfo) -> dict[str, Any]:
     return {
-        "revision": index.revision,
-        "commit": index.commit,
-        "kind": index.kind,
-        "description": index.description,
+        "revision": info.revision,
+        "commit": info.commit,
+        "kind": info.kind,
+        "uncommitted": not info.committed,
+        "description": info.description,
     }
 
 
@@ -69,13 +70,12 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         "status": "degraded" if plan.degraded else "complete",
         "analysis": {
             "repo": plan.repo,
-            "base": _snapshot_dict(plan.base_index),
-            "head": _snapshot_dict(plan.head_index),
+            "base": snapshot_to_dict(plan.base),
+            "head": snapshot_to_dict(plan.head),
             "source_roots": plan.source_roots,
-            "working_tree_analyzed": plan.head_index.kind == "worktree"
-            or plan.base_index.kind == "worktree",
+            "working_tree_analyzed": plan.working_tree_analyzed,
             "uncommitted_analyzed": plan.uncommitted_analyzed,
-            "scope": SCOPE_DESCRIPTION,
+            "scope": SCOPE_DESCRIPTION | {"analyzed": plan.scope_statement},
             "counts": {
                 "modules_base": len(plan.base_index.modules),
                 "modules_head": len(plan.head_index.modules),
@@ -158,17 +158,11 @@ def _format_path(reason: Reason) -> str:
 
 def to_text(plan: Plan) -> str:
     lines: list[str] = []
-    lines.append(
-        f"diffcone plan: {plan.base_revision} ({plan.base_commit[:12]}) -> "
-        f"{plan.head_revision} ({plan.head_commit[:12]})"
-    )
+    lines.append(f"diffcone plan: {plan.base.revision} -> {plan.head.revision}")
     lines.append(f"source roots: {', '.join(plan.source_roots)}")
-    lines.append(f"base: {plan.base_index.description}")
-    lines.append(f"head: {plan.head_index.description}")
-    if plan.uncommitted_analyzed:
-        lines.append("scope: UNCOMMITTED state was analyzed (see base/head above)")
-    else:
-        lines.append("scope: committed snapshots only; the working tree was not analyzed")
+    lines.append(f"base: {plan.base.description}")
+    lines.append(f"head: {plan.head.description}")
+    lines.append(f"scope: {plan.scope_statement}")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
     lines.append("")
     lines.append(f"changed symbols ({len(plan.changes)}):")

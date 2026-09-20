@@ -138,7 +138,7 @@ The JSON report (`schema_version: 1`) contains:
 
 | Section | Contents |
 |---|---|
-| `analysis` | revisions/commits, source roots, `working_tree_analyzed: false`, the supported scope, counts |
+| `analysis` | both snapshots (`revision`, `commit`, `kind`, `uncommitted`, `description`), source roots, `working_tree_analyzed` / `uncommitted_analyzed`, the supported scope with a one-sentence `analyzed` statement, counts |
 | `changed_symbols` | every symbol that differs, with its change kinds |
 | `selected_targets` | targets to run, the rules that selected them, whether any rule is conservative |
 | `unselected_targets` | targets with no path to a change |

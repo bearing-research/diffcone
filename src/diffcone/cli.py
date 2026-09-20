@@ -17,7 +17,7 @@ from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
 from diffcone.planner import plan
-from diffcone.report import to_json, to_text
+from diffcone.report import snapshot_to_dict, to_json, to_text
 from diffcone.snapshot import GitError, read_snapshot
 
 
@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "plan",
-        help="produce a selection plan for two committed revisions",
+        help="produce a selection plan between two snapshots (revisions, INDEX or WORKTREE)",
         description=(
             "Compare two snapshots and report which targets are affected. A snapshot is a "
             "git revision, INDEX (staged content) or WORKTREE (files on disk). The report "
@@ -80,10 +80,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser(
         "discover",
-        help="statically discover targets at a revision and emit a manifest",
+        help="statically discover targets in a snapshot and emit a manifest",
         description=(
-            "Discover pytest tests and/or ASV benchmarks in a committed revision without "
-            "importing them, and print a target manifest (JSON) for `diffcone plan --targets`."
+            "Discover pytest tests and/or ASV benchmarks in a snapshot (a git revision, INDEX "
+            "or WORKTREE) without importing them, and print a target manifest (JSON) for "
+            "`diffcone plan --targets`. The output states which snapshot kind was read."
         ),
     )
     d.add_argument(
@@ -134,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
             results = [discover(r, snapshot, index, options) for r in runners]
             data = manifest_to_dict([t for r in results for t in r.targets], roots)
             data["discovery"] = {
-                "revision": args.rev,
+                "snapshot": snapshot_to_dict(snapshot.info),
+                "revision": snapshot.revision,
                 "commit": snapshot.commit,
                 "runners": [
                     {

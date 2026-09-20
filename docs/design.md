@@ -32,11 +32,20 @@ kinds, and the kind travels with the index into the report:
 | `WORKTREE` | `worktree` | files on disk: tracked and untracked (`git ls-files --cached --others --exclude-standard`), ignored files excluded, tracked files deleted on disk absent |
 
 `INDEX` and `WORKTREE` record `HEAD` as their commit and carry a description
-that says "uncommitted". The report exposes `analysis.<side>.kind` and
-`uncommitted_analyzed`; the text report prints both descriptions and a
-prominent scope line. Runner configuration for discovery is read from the
-same snapshot (staged or on-disk files respectively). Unknown revisions are
-fatal (exit 2).
+that says "uncommitted". A frozen `SnapshotInfo` (revision, commit, kind,
+description) travels unchanged from the reader through the index to the
+report, which exposes it as `analysis.<side>`, plus `working_tree_analyzed`,
+`uncommitted_analyzed` and a derived `scope.analyzed` sentence; the text
+report prints both descriptions and the same sentence. Runner configuration
+for discovery is read from the same snapshot (staged or on-disk files
+respectively). Unknown revisions are fatal (exit 2).
+
+Edge cases: skip-worktree entries (sparse checkouts) are not on disk by
+design, so `WORKTREE` reads them from the index instead of reporting
+deletions; paths that are unmerged during a merge have no staged content, so
+`INDEX` records an analysis error for each (the plan degrades and selects
+everything), while `WORKTREE` sees the conflict markers as a parse error
+with the same effect.
 
 ## Symbol identity
 

@@ -44,6 +44,7 @@ from diffcone.model import (
     UNRESOLVED_NAME_MATCH,
     AnalysisError,
     Edge,
+    SnapshotInfo,
     SourceIndex,
 )
 from diffcone.snapshot import read_snapshot
@@ -121,10 +122,6 @@ class UnresolvedRecord:
 @dataclass
 class Plan:
     repo: str
-    base_revision: str
-    base_commit: str
-    head_revision: str
-    head_commit: str
     source_roots: list[str]
     changes: list[SymbolChange]
     decisions: list[Decision]
@@ -149,9 +146,31 @@ class Plan:
         return bool(self.errors)
 
     @property
+    def base(self) -> SnapshotInfo:
+        return self.base_index.snapshot
+
+    @property
+    def head(self) -> SnapshotInfo:
+        return self.head_index.snapshot
+
+    @property
     def uncommitted_analyzed(self) -> bool:
         """True when either snapshot is the index or the working tree."""
-        return any(i.kind != "commit" for i in (self.base_index, self.head_index))
+        return not (self.base.committed and self.head.committed)
+
+    @property
+    def working_tree_analyzed(self) -> bool:
+        return self.base.is_worktree or self.head.is_worktree
+
+    @property
+    def scope_statement(self) -> str:
+        """One sentence saying exactly what was analysed."""
+        if not self.uncommitted_analyzed:
+            return "two committed snapshots; the working tree was not analyzed"
+        sides = [
+            name for name, info in (("base", self.base), ("head", self.head)) if not info.committed
+        ]
+        return f"UNCOMMITTED state was analyzed as {' and '.join(sides)}; see base/head"
 
 
 # --------------------------------------------------------------------------- graph
@@ -355,10 +374,6 @@ def plan_from_indexes(
 
     return Plan(
         repo=repo,
-        base_revision=base.revision,
-        base_commit=base.commit,
-        head_revision=head.revision,
-        head_commit=head.commit,
         source_roots=list(source_roots or []),
         changes=changes,
         decisions=decisions,
@@ -418,8 +433,9 @@ def plan(
     """Analyse two committed revisions and produce a selection plan.
 
     Targets come from the manifest, from static discovery of the head
-    snapshot for each runner in ``discover_runners``, or both. Only committed
-    snapshots are compared; the working tree is never read.
+    snapshot for each runner in ``discover_runners``, or both. ``base`` and
+    ``head`` are git revisions, ``INDEX`` or ``WORKTREE``; the plan records
+    which kind each one was.
     """
     repo_path = Path(repo)
     manifest_roots = manifest.source_roots if manifest is not None else None

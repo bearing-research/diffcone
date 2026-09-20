@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from diffcone.indexer import build_index
-from diffcone.model import Edge
+from diffcone.model import Edge, SnapshotInfo
 from diffcone.snapshot import Snapshot, module_name_for
 
 
 def index(files: dict[str, str], roots: list[str] | None = None):
     snap = Snapshot(
-        revision="x",
-        commit="x",
+        info=SnapshotInfo(revision="x", commit="x"),
         source_roots=roots or ["."],
         files={k: v.encode() for k, v in files.items()},
     )

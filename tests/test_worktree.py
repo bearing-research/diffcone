@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from conftest import GIT_ENV
 from helpers import py_target, reason, selected, unselected
 
 from diffcone.cli import main
@@ -115,13 +116,15 @@ def test_plan_against_worktree_and_index(repo):
         "revision": "WORKTREE",
         "commit": base,
         "kind": "worktree",
-        "description": plan.head_index.description,
+        "uncommitted": True,
+        "description": plan.head.description,
     }
+    assert report["analysis"]["scope"]["analyzed"].startswith("UNCOMMITTED state was analyzed")
     assert report["analysis"]["base"]["kind"] == "commit"
     assert report["analysis"]["working_tree_analyzed"] is True
     assert report["analysis"]["uncommitted_analyzed"] is True
     text = to_text(plan)
-    assert "scope: UNCOMMITTED state was analyzed" in text
+    assert "scope: UNCOMMITTED state was analyzed as head" in text
     assert "head: working tree" in text
 
     index_plan = repo.plan(base, "INDEX", targets)
@@ -179,3 +182,109 @@ def test_cli_worktree_with_discovery(repo, capsys):
     assert code == 0
     assert data["discovery"]["revision"] == "WORKTREE"
     assert "tests/test_new.py::test_new" in {t["runner_id"] for t in data["targets"]}
+
+
+# --- regression tests added after code review ------------------------------
+
+
+def test_uncommitted_base_snapshot(repo):
+    base = dirty_repo(repo)
+    targets = [
+        py_target("t::test_add", "tests.test_ops.test_add"),
+        py_target("t::test_new", "tests.test_new.test_new"),
+    ]
+    # Inverted direction: the working tree is the base, HEAD is the head.
+    plan = repo.plan("WORKTREE", base, targets)
+    assert plan.base.kind == "worktree" and plan.head.kind == "commit"
+    assert plan.uncommitted_analyzed and plan.working_tree_analyzed
+    assert {
+        c.id: c.changes for c in plan.changes if c.id.startswith(("pkg.gone", "tests.test_new"))
+    } == {
+        "pkg.gone": ("added",),
+        "pkg.gone.gone": ("added",),
+        "tests.test_new": ("deleted",),
+        "tests.test_new.test_new": ("deleted",),
+    }
+    assert selected(plan) == {"t::test_add", "t::test_new"}
+    report = to_dict(plan)
+    assert report["analysis"]["base"]["kind"] == "worktree"
+    assert report["analysis"]["working_tree_analyzed"] is True
+    assert report["analysis"]["scope"]["analyzed"] == (
+        "UNCOMMITTED state was analyzed as base; see base/head"
+    )
+    assert "scope: UNCOMMITTED state was analyzed as base" in to_text(plan)
+
+    both = repo.plan("INDEX", "WORKTREE", targets)
+    assert to_dict(both)["analysis"]["scope"]["analyzed"] == (
+        "UNCOMMITTED state was analyzed as base and head; see base/head"
+    )
+    assert to_dict(both)["analysis"]["working_tree_analyzed"] is True
+
+
+def test_cli_discover_index_reports_snapshot_kind(repo, capsys):
+    dirty_repo(repo)
+    code = main(["discover", "--repo", str(repo.path), "--rev", "INDEX", "--discover", "pytest"])
+    data = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert data["discovery"]["snapshot"]["kind"] == "index"
+    assert data["discovery"]["snapshot"]["uncommitted"] is True
+    assert "staged content" in data["discovery"]["snapshot"]["description"]
+    # The staged pytest.ini (no python_files override) is the config source.
+    assert data["discovery"]["runners"][0]["config"]["source"] == "pytest.ini"
+    assert data["discovery"]["runners"][0]["config"]["python_files"] == ["test_*.py", "*_test.py"]
+    ids = {t["runner_id"] for t in data["targets"]}
+    assert "tests/test_new.py::test_new" not in ids  # untracked: not in the index
+    assert "tests/test_gone.py::test_gone" in ids  # deleted on disk, still staged
+
+
+def test_skip_worktree_entries_are_read_from_the_index(repo):
+    base = repo.commit(
+        {
+            "pkg/sparse.py": "def sparse():\n    return 1\n",
+            "pkg/ops.py": OPS,
+            "tests/test_sparse.py": (
+                "from pkg.sparse import sparse\n\n\ndef test_sparse():\n    assert sparse() == 1\n"
+            ),
+        }
+    )
+    # Simulate a sparse checkout: the file is tracked but absent from disk.
+    repo.git("update-index", "--skip-worktree", "pkg/sparse.py")
+    (repo.path / "pkg/sparse.py").unlink()
+    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a"))
+
+    snap = read_snapshot(repo.path, "WORKTREE", ["."])
+    assert snap.files["pkg/sparse.py"] == b"def sparse():\n    return 1\n"
+    assert b"b + a" in snap.files["pkg/ops.py"]
+
+    plan = repo.plan(
+        base, "WORKTREE", [py_target("t::test_sparse", "tests.test_sparse.test_sparse")]
+    )
+    assert {c.id for c in plan.changes} == {"pkg.ops.add"}
+    assert unselected(plan) == {"t::test_sparse"}
+
+
+def test_unmerged_index_degrades_instead_of_failing(repo):
+    base = repo.commit({"pkg/m.py": "def f():\n    return 0\n", "tests/test_m.py": TEST_M})
+    repo.git("checkout", "-q", "-b", "other")
+    repo.commit({"pkg/m.py": "def f():\n    return 1\n"})
+    repo.git("checkout", "-q", "main")
+    repo.commit({"pkg/m.py": "def f():\n    return 2\n"})
+    proc = __import__("subprocess").run(
+        ["git", "merge", "other"], cwd=repo.path, capture_output=True, env=GIT_ENV
+    )
+    assert proc.returncode != 0  # conflict expected
+
+    index_plan = repo.plan(base, "INDEX", [py_target("t::test_f", "tests.test_m.test_f")])
+    assert index_plan.degraded
+    assert [(e.revision, e.path) for e in index_plan.errors] == [("INDEX", "pkg/m.py")]
+    assert "unmerged" in index_plan.errors[0].message
+    assert selected(index_plan) == {"t::test_f"}
+    assert to_dict(index_plan)["status"] == "degraded"
+
+    # The working tree holds conflict markers: a parse error, also degraded.
+    wt_plan = repo.plan(base, "WORKTREE", [py_target("t::test_f", "tests.test_m.test_f")])
+    assert wt_plan.degraded
+    assert [e.path for e in wt_plan.errors] == ["pkg/m.py"]
+
+
+TEST_M = "from pkg.m import f\n\n\ndef test_f():\n    assert f() >= 0\n"
