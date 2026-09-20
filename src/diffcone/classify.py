@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
-from diffcone.model import DEFINED_IN, SourceIndex, Symbol
+from diffcone.model import CLASS, DEFINED_IN, SourceIndex, Symbol
 
 ADDED = "added"
 DELETED = "deleted"
@@ -27,15 +28,24 @@ class SymbolChange:
 
     @property
     def structural(self) -> bool:
-        return bool(STRUCTURAL & set(self.changes))
+        """Whether the change invalidates every member of the symbol.
+
+        Class bodies count: class-level attributes (ASV ``params``, pytest
+        marks, registries) shape how every method runs even when no method
+        references them textually. Module bodies do not; members that use
+        module state carry their own edges (see docs/design.md).
+        """
+        if STRUCTURAL & set(self.changes):
+            return True
+        return self.kind == CLASS and BODY_CHANGED in self.changes
 
 
-def _dependency_signature(index: SourceIndex, symbol_id: str) -> frozenset[tuple[str, str, str]]:
-    return frozenset(
-        (e.kind, e.target, e.detail)
-        for e in index.edges
-        if e.source == symbol_id and e.kind != DEFINED_IN
-    )
+def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str, str, str]]]:
+    grouped: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    for e in index.edges:
+        if e.kind != DEFINED_IN:
+            grouped[e.source].add((e.kind, e.target, e.detail))
+    return {source: frozenset(sig) for source, sig in grouped.items()}
 
 
 def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
@@ -46,6 +56,9 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     error fallback instead of inventing additions or deletions.
     """
     changes: list[SymbolChange] = []
+    base_deps = _dependency_signatures(base)
+    head_deps = _dependency_signatures(head)
+    empty: frozenset[tuple[str, str, str]] = frozenset()
     for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
         b = base.symbols.get(symbol_id)
         h = head.symbols.get(symbol_id)
@@ -65,7 +78,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             kinds.append(BODY_CHANGED)
         if b.kind != h.kind or b.definition_hash != h.definition_hash:
             kinds.append(DEFINITION_CHANGED)
-        if _dependency_signature(base, symbol_id) != _dependency_signature(head, symbol_id):
+        if base_deps.get(symbol_id, empty) != head_deps.get(symbol_id, empty):
             kinds.append(DEPENDENCIES_CHANGED)
         if kinds:
             changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))

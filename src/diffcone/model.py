@@ -82,6 +82,3 @@ class SourceIndex:
     errors: list[AnalysisError] = field(default_factory=list)
     # Modules that failed to parse; their symbols are unknown in this revision.
     failed_modules: set[str] = field(default_factory=set)
-
-    def outgoing(self, symbol_id: str) -> list[Edge]:
-        return sorted(e for e in self.edges if e.source == symbol_id)

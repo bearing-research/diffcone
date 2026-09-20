@@ -13,13 +13,15 @@ Milestone 1 (`diffcone plan` over two committed revisions with a target manifest
 ```bash
 uv sync
 uv run diffcone plan --repo . --base <rev> --head <rev> --targets targets.json \
-    --source-root src --source-root tests --format json|text
+    --source-root src --source-root . --format json|text
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests && uv run ruff format --check src tests
 ```
 
 Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan.
+
+Module names come from the longest matching source root: with roots `src` and `.`, `src/calc/ops.py` is `calc.ops` and `tests/test_x.py` is `tests.test_x`. Do not document commands or manifests in README or here that are not actually wired up and verified.
 
 ## Code layout
 
@@ -54,7 +56,7 @@ Git snapshot reader
 
 - **Analyze both revisions.** Deleted functions, removed calls, and changed aliases must stay in consideration even if absent from the head graph.
 - **Stable symbol identity.** Identity is the qualified symbol (module + function/method), never source location. Inserting blank lines above a function must not change its identity or count as a body change.
-- **Body changes vs. broader changes.** Module-level init, class structure, decorators, defaults, and other definition-time changes need broader (conservative) invalidation, never "irrelevant".
+- **Body changes vs. broader changes.** Class structure and class bodies, decorators, defaults, import statements, and other definition-time changes invalidate every member (structural). Module body changes reach only members and importers that reference module state, plus targets that declare the module as a lifecycle dependency. This trade-off is documented in `docs/design.md`; do not silently move it in either direction.
 - **Unknown != unaffected.** Unresolved relationships are represented explicitly. When impact cannot be bounded, select all supplied targets and report the fallback rule.
 - **New or changed targets are always selected**, even with no dependency edges.
 - **Every selection reason maps to a real dependency edge or an explicit fallback rule.** Never fabricate call paths.

@@ -200,12 +200,19 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
     return base
 
 
-def _collect_store_names(stmt: ast.stmt) -> set[str]:
+COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+NESTED_SCOPES = DEF_NODES + COMPREHENSIONS + (ast.Lambda,)
+
+
+def _collect_store_names(stmt: ast.AST) -> set[str]:
+    """Names bound by a statement in *its own* scope (nested scopes excluded)."""
     names: set[str] = set()
     stack: list[ast.AST] = [stmt]
     while stack:
         node = stack.pop()
-        if isinstance(node, DEF_NODES) and node is not stmt:
+        if isinstance(node, NESTED_SCOPES) and node is not stmt:
+            if isinstance(node, DEF_NODES):
+                names.add(node.name)
             continue
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
@@ -218,15 +225,33 @@ def _collect_store_names(stmt: ast.stmt) -> set[str]:
 
 
 class _LocalBindings(ast.NodeVisitor):
-    """Collect every name bound anywhere inside a function (including nested
-    scopes). Names declared ``global`` are excluded."""
+    """Collect the names a function, lambda or class body binds in its own
+    scope. Nested functions, lambdas and comprehensions get their own scope;
+    only their names (for defs) are bound here. ``global`` names are excluded.
+    """
 
     def __init__(self) -> None:
         self.names: set[str] = set()
         self.globals: set[str] = set()
 
+    def collect(self, node: ast.AST) -> set[str]:
+        if isinstance(node, FUNC_NODES + (ast.Lambda,)):
+            self.visit(node.args)
+        body = getattr(node, "body", [])
+        for stmt in body if isinstance(body, list) else [body]:
+            self.visit(stmt)
+        return self.names - self.globals
+
     def visit_arg(self, node: ast.arg) -> None:
         self.names.add(node.arg)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        return
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
@@ -260,13 +285,11 @@ class _LocalBindings(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self.names.add(node.name)
-        self.generic_visit(node)
 
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.names.add(node.name)
-        self.generic_visit(node)
 
 
 # --------------------------------------------------------------------------- indexer
@@ -479,7 +502,7 @@ class Indexer:
             for s in scope.tree.body
             if not isinstance(s, DEF_NODES + (ast.Import, ast.ImportFrom))
         ]
-        collector = _ReferenceCollector(self, scope.name, module_scope)
+        collector = _ReferenceCollector(self, scope.name, module_scope, skip_defs=True)
         for stmt in top_level:
             collector.visit(stmt)
         self._resolve_definitions(scope, scope.tree.body, scope.members, None)
@@ -498,7 +521,7 @@ class Indexer:
                     continue
                 cscope = self.class_scopes[symbol_id]
                 class_level = Scope(module=scope, locals=set(cscope.bindings))
-                collector = _ReferenceCollector(self, symbol_id, class_level)
+                collector = _ReferenceCollector(self, symbol_id, class_level, skip_defs=True)
                 for expr in list(stmt.bases) + list(stmt.keywords) + list(stmt.decorator_list):
                     collector.visit(expr)
                 for inner in stmt.body:
@@ -518,10 +541,7 @@ class Indexer:
         symbol_id: str,
         class_scope: ClassScope | None,
     ) -> None:
-        bindings = _LocalBindings()
-        bindings.visit(node)
-        local_names = bindings.names - bindings.globals
-        fscope = Scope(module=scope, locals=local_names)
+        fscope = Scope(module=scope, locals=_LocalBindings().collect(node))
         if class_scope is not None and not _is_staticmethod(node):
             params = node.args.posonlyargs + node.args.args
             if params:
@@ -593,36 +613,45 @@ class Indexer:
             return self._import_binding_node(scope.local_imports[name])
         if name in scope.locals:
             return Local()
-        module = scope.module
-        if name in module.members:
-            return Resolved(module.members[name])
-        if name in module.imports:
-            return self._import_binding_node(module.imports[name])
-        if name in module.bindings:
-            return Resolved(module.name, detail=f"attribute:{name}")
-        for star in module.star_imports:
-            found = self._star_lookup(star, name)
-            if found is not None:
-                return found
+        found = self._lookup_in_module(scope.module, name, set())
+        if found is not None:
+            return found
         if name in BUILTIN_NAMES or (name.startswith("__") and name.endswith("__")):
             return None
         return Unresolved(UNRESOLVED_NAME, name)
 
-    def _star_lookup(self, module: str, name: str) -> Node:
-        target = self.scopes.get(module)
-        if target is None:
-            if self._module_in_scope(module):
-                return None
-            return External(module)
+    def _lookup_in_module(self, target: ModuleScope, name: str, seen: set[str]) -> Node:
+        """Resolve ``name`` as seen from inside ``target``'s global namespace.
+
+        Order: own definitions, import aliases, module-level variables,
+        submodules, then star imports. Every analysed star-imported module is
+        consulted before an external star import is blamed, so an in-scope
+        symbol is never misattributed to a third-party package.
+        """
         if name in target.members:
             return Resolved(target.members[name])
         if name in target.imports:
             return self._import_binding_node(target.imports[name])
         if name in target.bindings:
-            return Resolved(module, detail=f"attribute:{name}")
-        if self._module_in_scope(f"{module}.{name}"):
-            return ModuleNode(f"{module}.{name}")
-        return None
+            return Resolved(target.name, detail=f"attribute:{name}")
+        if self._module_in_scope(f"{target.name}.{name}"):
+            return ModuleNode(f"{target.name}.{name}")
+        external: str | None = None
+        for star in target.star_imports:
+            if star in seen:
+                continue
+            seen.add(star)
+            star_scope = self.scopes.get(star)
+            if star_scope is None:
+                if external is None and not self._module_in_scope(star):
+                    external = star
+                continue
+            found = self._lookup_in_module(star_scope, name, seen)
+            if isinstance(found, External):
+                external = external or found.module
+            elif found is not None:
+                return found
+        return External(external) if external is not None else None
 
     def _import_binding_node(self, binding: ImportBinding) -> Node:
         if not self._module_in_scope(binding.module):
@@ -647,17 +676,8 @@ class Indexer:
             target = self.scopes.get(node.module)
             if target is None:
                 return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
-            if attr in target.members:
-                return Resolved(target.members[attr])
-            if attr in target.imports:
-                return self._import_binding_node(target.imports[attr])
-            if attr in target.bindings:
-                return Resolved(node.module, detail=f"attribute:{attr}")
-            for star in target.star_imports:
-                found = self._star_lookup(star, attr)
-                if found is not None:
-                    return found
-            return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+            found = self._lookup_in_module(target, attr, set())
+            return found if found is not None else Unresolved(UNRESOLVED_ATTRIBUTE, attr)
         if isinstance(node, External):
             return node
         if isinstance(node, Resolved):
@@ -729,10 +749,102 @@ def _flatten_chain(node: ast.expr) -> list[str] | None:
 
 
 class _ReferenceCollector(ast.NodeVisitor):
-    def __init__(self, indexer: Indexer, source: str, scope: Scope) -> None:
+    """Walk a symbol's code and record edges / unresolved references.
+
+    Nested functions, lambdas and comprehensions push their own scope so a
+    name bound there does not shadow the enclosing symbol's references. With
+    ``skip_defs`` (module and class bodies) nested definitions are not
+    entered at all: they are symbols resolved on their own.
+    """
+
+    def __init__(
+        self, indexer: Indexer, source: str, scope: Scope, *, skip_defs: bool = False
+    ) -> None:
         self.indexer = indexer
         self.source = source
         self.scope = scope
+        self.skip_defs = skip_defs
+
+    def _push(self, bound: set[str]) -> Scope:
+        outer = self.scope
+        self.scope = Scope(
+            module=outer.module,
+            local_imports=outer.local_imports,
+            locals=outer.locals | bound,
+            self_name=None if outer.self_name in bound else outer.self_name,
+            self_class=None if outer.self_name in bound else outer.self_class,
+        )
+        return outer
+
+    def _is_shadowed(self, name: str) -> bool:
+        """True when ``name`` is bound by the program rather than a builtin."""
+        scope = self.scope
+        if name in scope.locals or name in scope.local_imports:
+            return True
+        module = scope.module
+        return name in module.members or name in module.imports or name in module.bindings
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self.skip_defs:
+            return
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
+            self.visit(default)
+        outer = self._push(_LocalBindings().collect(node))
+        try:
+            for arg in ast.walk(node.args):
+                if isinstance(arg, ast.arg) and arg.annotation is not None:
+                    self.visit(arg.annotation)
+            if node.returns is not None:
+                self.visit(node.returns)
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self.scope = outer
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if self.skip_defs:
+            return
+        for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+            self.visit(expr)
+        outer = self._push(_LocalBindings().collect(node))
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self.scope = outer
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
+            self.visit(default)
+        outer = self._push(_LocalBindings().collect(node))
+        try:
+            self.visit(node.body)
+        finally:
+            self.scope = outer
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        generators = node.generators  # type: ignore[attr-defined]
+        bound: set[str] = set()
+        for gen in generators:
+            bound |= _collect_store_names(gen.target)
+        outer = self._push(bound)
+        try:
+            for gen in generators:
+                self.visit(gen.iter)
+                for cond in gen.ifs:
+                    self.visit(cond)
+            for field_name in ("elt", "key", "value"):
+                child = getattr(node, field_name, None)
+                if child is not None:
+                    self.visit(child)
+        finally:
+            self.scope = outer
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
     def _resolve(self, parts: list[str], kind: str = REFERENCES) -> None:
         node = self.indexer.resolve_chain(parts, self.scope)
@@ -752,6 +864,11 @@ class _ReferenceCollector(ast.NodeVisitor):
         if parts is not None:
             self._resolve(parts)
             return
+        # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
+        # unknown, but the attribute name still bounds what it may refer to.
+        self.indexer.index.unresolved.add(
+            UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
+        )
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -764,9 +881,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         parts = _flatten_chain(node.func)
         if parts is not None:
             name = ".".join(parts)
-            if len(parts) == 1 and parts[0] in DYNAMIC_CALLS and parts[0] not in self.scope.locals:
+            if len(parts) == 1 and parts[0] in DYNAMIC_CALLS and not self._is_shadowed(name):
                 self._dynamic(f"{name}()")
-            elif len(parts) == 1 and parts[0] == "getattr" and "getattr" not in self.scope.locals:
+            elif len(parts) == 1 and parts[0] == "getattr" and not self._is_shadowed(name):
                 self._getattr(node)
             elif name in ("importlib.import_module", "importlib.__import__"):
                 self._import_module(node, name)

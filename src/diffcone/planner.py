@@ -10,10 +10,10 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
 * ``references``/``entry``/``lifecycle``/``unresolved_name_match``: any impact
   on Y affects X (behaviour-level).
 * ``defined_in``: X is affected only when its container Y is *structurally*
-  affected (added, deleted, definition or dependencies changed, or itself
-  structurally invalidated by its own container). Plain body changes of a
-  module or class do not invalidate every member; members that use module or
-  class state carry their own ``references`` edges.
+  affected (added, deleted, definition or dependencies changed, a class body
+  change, or itself structurally invalidated by its own container). A plain
+  body change of a module does not invalidate every member; members that use
+  module state carry their own ``references`` edges.
 * ``imports``/``imports_name``: module-level imports break only when the
   imported module or name is deleted; then the importing module and every
   member of it are invalidated.
@@ -25,8 +25,10 @@ rule. See docs/design.md.
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from diffcone.classify import DELETED, SymbolChange, classify
 from diffcone.indexer import build_index
@@ -42,7 +44,6 @@ from diffcone.model import (
     AnalysisError,
     Edge,
     SourceIndex,
-    UnresolvedReference,
 )
 from diffcone.snapshot import read_snapshot
 
@@ -169,24 +170,17 @@ class _Graph:
                 adj[key].sort(key=lambda item: (item[0], item[1]))
 
 
-def _union_edges(base: SourceIndex, head: SourceIndex) -> dict[Edge, tuple[str, ...]]:
-    revs: dict[Edge, list[str]] = defaultdict(list)
-    for edge in sorted(base.edges):
-        revs[edge].append("base")
-    for edge in sorted(head.edges):
-        revs[edge].append("head")
-    return {edge: tuple(r) for edge, r in revs.items()}
+T = TypeVar("T")
 
 
-def _union_unresolved(
-    base: SourceIndex, head: SourceIndex
-) -> dict[UnresolvedReference, tuple[str, ...]]:
-    revs: dict[UnresolvedReference, list[str]] = defaultdict(list)
-    for ref in sorted(base.unresolved):
-        revs[ref].append("base")
-    for ref in sorted(head.unresolved):
-        revs[ref].append("head")
-    return {ref: tuple(r) for ref, r in revs.items()}
+def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[str, ...]]:
+    """Merge two revisions' items, tagging each with the revisions it appears in."""
+    revs: dict[T, list[str]] = defaultdict(list)
+    for item in sorted(base_items):  # type: ignore[type-var]
+        revs[item].append("base")
+    for item in sorted(head_items):  # type: ignore[type-var]
+        revs[item].append("head")
+    return {item: tuple(r) for item, r in revs.items()}
 
 
 def _propagate(edge: Edge, target_mode: int, target_change: SymbolChange | None) -> int | None:
@@ -217,7 +211,7 @@ def plan_from_indexes(
     errors = sorted(base.errors + head.errors)
 
     graph = _Graph()
-    for edge, revs in _union_edges(base, head).items():
+    for edge, revs in _union(base.edges, head.edges).items():
         graph.add(edge, revs)
 
     # Conservative edges from unresolved references whose name matches a
@@ -228,7 +222,7 @@ def plan_from_indexes(
         short = (change.head or change.base).name  # type: ignore[union-attr]
         changed_by_name[short].append(change)
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
-    for ref, revs in _union_unresolved(base, head).items():
+    for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
             unresolved_records.append(

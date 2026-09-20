@@ -65,7 +65,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     text = to_json(result) if args.format == "json" else to_text(result)
     if args.output:
-        Path(args.output).write_text(text, "utf-8")
+        try:
+            Path(args.output).write_text(text, "utf-8")
+        except OSError as exc:
+            print(f"diffcone: error: cannot write {args.output}: {exc}", file=sys.stderr)
+            return 2
     else:
         sys.stdout.write(text)
     return 1 if result.degraded else 0

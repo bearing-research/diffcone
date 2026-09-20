@@ -73,7 +73,7 @@ def read_files(repo: Path, commit: str, paths: list[str]) -> dict[str, bytes]:
     pos = 0
     for path in paths:
         newline = out.index(b"\n", pos)
-        header = out[pos:newline].decode()
+        header = out[pos:newline].decode("utf-8", "replace")
         pos = newline + 1
         parts = header.split()
         if len(parts) < 3 or parts[-1] == "missing":

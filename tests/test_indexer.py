@@ -179,3 +179,79 @@ def test_parse_error_is_recorded_not_hidden():
 
 def test_edge_type_is_hashable_and_ordered():
     assert Edge("a", "b", "references") < Edge("a", "c", "references")
+
+
+def test_star_import_order_prefers_in_scope_modules():
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "def helper():\n    pass\n",
+            "pkg/b.py": (
+                "from numpy import *\nfrom pkg.a import *\n\ndef f():\n    helper(); array()\n"
+            ),
+        }
+    )
+    assert ("pkg.a.helper", "references", "") in edges(idx, "pkg.b.f")
+    assert {e.module for e in idx.external if e.symbol == "pkg.b.f"} == {"numpy"}
+    assert not [u for u in idx.unresolved if u.symbol == "pkg.b.f"]
+
+
+def test_call_result_attribute_is_recorded():
+    idx = index(
+        {"m.py": "class Foo:\n    def run(self):\n        pass\n\ndef f():\n    Foo().run()\n"}
+    )
+    assert ("m.Foo", "references", "") in edges(idx, "m.f")
+    assert {(u.kind, u.name, u.detail) for u in idx.unresolved if u.symbol == "m.f"} == {
+        ("attribute", "run", "<expr>.run")
+    }
+
+
+def test_nested_scopes_do_not_leak_bindings():
+    idx = index(
+        {
+            "m.py": (
+                "def helper():\n    pass\n\n"
+                "def f():\n"
+                "    a = [helper for helper in range(2)]\n"
+                "    g = lambda helper: helper\n"
+                "    def inner(helper):\n        return helper\n"
+                "    class K:\n        helper = 1\n"
+                "    return helper()\n\n"
+                "def shadowed():\n    helper = 1\n    return helper\n"
+            )
+        }
+    )
+    assert ("m.helper", "references", "") in edges(idx, "m.f")
+    assert ("m.helper", "references", "") not in edges(idx, "m.shadowed")
+    assert not [u for u in idx.unresolved if u.symbol in ("m.f", "m.shadowed")]
+
+
+def test_shadowed_builtins_are_not_dynamic():
+    idx = index(
+        {
+            "m.py": (
+                "def vars(x):\n    return x\n\n"
+                "def f(o):\n    return vars(o)\n\n"
+                "def g(o):\n    return globals()\n"
+            )
+        }
+    )
+    assert ("m.vars", "references", "") in edges(idx, "m.f")
+    assert not [u for u in idx.unresolved if u.symbol == "m.f"]
+    assert [u.kind for u in idx.unresolved if u.symbol == "m.g"] == ["dynamic"]
+
+
+def test_module_collector_skips_nested_definitions():
+    idx = index(
+        {
+            "m.py": (
+                "import sys\n\n"
+                "def a():\n    pass\n\n"
+                "if sys.platform:\n"
+                "    def c(x):\n        return a() + x\n"
+            )
+        }
+    )
+    assert edges(idx, "m") == set()
+    assert not [u for u in idx.unresolved if u.symbol == "m"]
+    assert ("m.a", "references", "") in edges(idx, "m.c")

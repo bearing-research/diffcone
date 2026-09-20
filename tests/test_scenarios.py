@@ -535,3 +535,266 @@ def test_unknown_entry_symbol_is_selected_by_fallback(repo):
         ("lifecycle_dependency_unresolved", "target:asv:b::bad_setup"),
     }
     assert not plan.degraded
+
+
+# --- regression scenarios added after code review ---------------------------
+
+
+def test_call_result_method_access_is_name_bounded(repo):
+    base = repo.commit(
+        {
+            "pkg/svc.py": (
+                "class Foo:\n"
+                "    def run(self):\n        return 1\n\n"
+                "    def stop(self):\n        return 0\n\n\n"
+                "def make():\n    return Foo()\n"
+            ),
+            "tests/test_svc.py": (
+                "from pkg.svc import Foo, make\n\n\n"
+                "def test_ctor_call():\n    assert Foo().run() == 1\n\n\n"
+                "def test_factory_call():\n    assert make().run() == 1\n\n\n"
+                "def test_stop():\n    assert Foo().stop() == 0\n"
+            ),
+            "benchmarks/bench.py": (
+                "from pkg.svc import Foo\n\n\n"
+                "def time_run():\n    Foo().run()\n\n\n"
+                "def time_stop():\n    Foo().stop()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/svc.py": (
+                "class Foo:\n"
+                "    def run(self):\n        return 2\n\n"
+                "    def stop(self):\n        return 0\n\n\n"
+                "def make():\n    return Foo()\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_ctor_call", "tests.test_svc.test_ctor_call"),
+        py_target("t::test_factory_call", "tests.test_svc.test_factory_call"),
+        py_target("t::test_stop", "tests.test_svc.test_stop"),
+        asv_target("b.time_run", "benchmarks.bench.time_run"),
+        asv_target("b.time_stop", "benchmarks.bench.time_stop"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.svc.Foo.run": ("body_changed",)}
+    assert selected(plan) == {"t::test_ctor_call", "t::test_factory_call", "b.time_run"}
+    assert unselected(plan) == {"t::test_stop", "b.time_stop"}
+    r = reason(plan, "t::test_factory_call", "unresolved_name_match")
+    assert r.path[-1].detail == "<expr>.run"
+    assert r.conservative
+
+
+def test_class_attribute_change_invalidates_methods(repo):
+    base = repo.commit(
+        {
+            "benchmarks/bench.py": (
+                "class TimeOps:\n"
+                "    params = [10, 100]\n\n"
+                "    def time_add(self, n):\n        pass\n\n"
+                "    def time_mul(self, n):\n        pass\n\n\n"
+                "class Other:\n"
+                "    def time_other(self):\n        pass\n"
+            ),
+            "tests/test_marks.py": (
+                "import pytest\n\n"
+                "pytestmark = pytest.mark.slow\n\n\n"
+                "def test_a():\n    assert True\n"
+            ),
+            "tests/test_plain.py": "def test_b():\n    assert True\n",
+        }
+    )
+    head = repo.commit(
+        {
+            "benchmarks/bench.py": (
+                "class TimeOps:\n"
+                "    params = [10, 1000]\n\n"
+                "    def time_add(self, n):\n        pass\n\n"
+                "    def time_mul(self, n):\n        pass\n\n\n"
+                "class Other:\n"
+                "    def time_other(self):\n        pass\n"
+            ),
+            "tests/test_marks.py": (
+                "import pytest\n\n"
+                "pytestmark = pytest.mark.skip\n\n\n"
+                "def test_a():\n    assert True\n"
+            ),
+        }
+    )
+    targets = [
+        asv_target("b.TimeOps.time_add", "benchmarks.bench.TimeOps.time_add"),
+        asv_target("b.TimeOps.time_mul", "benchmarks.bench.TimeOps.time_mul"),
+        asv_target("b.Other.time_other", "benchmarks.bench.Other.time_other"),
+        # A runner integration declares the module as a lifecycle dependency
+        # when module-level state (pytestmark, importorskip) governs the test.
+        py_target("t::test_a", "tests.test_marks.test_a", "tests.test_marks"),
+        py_target("t::test_b", "tests.test_plain.test_b", "tests.test_plain"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {
+        "benchmarks.bench.TimeOps": ("body_changed",),
+        "tests.test_marks": ("body_changed",),
+    }
+    assert selected(plan) == {"b.TimeOps.time_add", "b.TimeOps.time_mul", "t::test_a"}
+    assert unselected(plan) == {"b.Other.time_other", "t::test_b"}
+    r = reason(plan, "b.TimeOps.time_mul")
+    assert [s.kind for s in r.path] == ["entry", "defined_in"]
+    assert r.changed_symbol == "benchmarks.bench.TimeOps"
+    r = reason(plan, "t::test_a")
+    assert [s.kind for s in r.path] == ["lifecycle"]
+    assert r.changed_symbol == "tests.test_marks"
+
+
+def test_conditional_definition_does_not_invalidate_module(repo):
+    base = repo.commit(
+        {
+            "pkg/m.py": (
+                "import sys\n\n\n"
+                "def a():\n    return 'a'\n\n\n"
+                "def b():\n    return 'b'\n\n\n"
+                "if sys.platform:\n"
+                "    def c():\n        return a()\n"
+            ),
+            "tests/test_m.py": (
+                "from pkg.m import b, c\n\n\n"
+                "def test_b():\n    assert b() == 'b'\n\n\n"
+                "def test_c():\n    assert c() == 'a'\n"
+            ),
+            "benchmarks/bench.py": "from pkg import m\n\n\ndef time_b():\n    m.b()\n",
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/m.py": (
+                "import sys\n\n\n"
+                "def a():\n    return 'a'\n\n\n"
+                "def b():\n    return 'b'\n\n\n"
+                "if sys.platform:\n"
+                "    def c():\n        return b()\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::test_b", "tests.test_m.test_b"),
+        py_target("t::test_c", "tests.test_m.test_c"),
+        asv_target("b.time_b", "benchmarks.bench.time_b"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.m.c": ("body_changed", "dependencies_changed")}
+    assert selected(plan) == {"t::test_c"}
+    assert unselected(plan) == {"t::test_b", "b.time_b"}
+    # Names local to c() are not reported as unresolved references of the module.
+    assert not [u for u in plan.unresolved if u.symbol == "pkg.m"]
+
+
+def test_nested_scope_bindings_do_not_shadow_references(repo):
+    base = repo.commit(
+        {
+            "pkg/h.py": "def helper(x=0):\n    return x\n",
+            "tests/test_h.py": (
+                "from pkg.h import helper\n\n\n"
+                "def test_comprehension():\n"
+                "    xs = [helper for helper in range(3)]\n"
+                "    return helper(), xs\n\n\n"
+                "def test_nested_def():\n"
+                "    def inner(helper):\n        return helper\n"
+                "    return inner(1), helper()\n\n\n"
+                "def test_lambda():\n"
+                "    f = lambda helper: helper\n"
+                "    return f(1), helper()\n\n\n"
+                "def test_really_shadowed():\n"
+                "    helper = 1\n"
+                "    return helper\n"
+            ),
+            "benchmarks/bench.py": (
+                "from pkg.h import helper\n\n\n"
+                "def time_gen():\n    return sum(helper for helper in range(3)) + helper()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/h.py": "def helper(x=0):\n    return x + 1\n"})
+    targets = [
+        py_target("t::test_comprehension", "tests.test_h.test_comprehension"),
+        py_target("t::test_nested_def", "tests.test_h.test_nested_def"),
+        py_target("t::test_lambda", "tests.test_h.test_lambda"),
+        py_target("t::test_really_shadowed", "tests.test_h.test_really_shadowed"),
+        asv_target("b.time_gen", "benchmarks.bench.time_gen"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {
+        "t::test_comprehension",
+        "t::test_nested_def",
+        "t::test_lambda",
+        "b.time_gen",
+    }
+    assert unselected(plan) == {"t::test_really_shadowed"}
+    assert all(not r.conservative for d in plan.selected for r in d.reasons)
+
+
+def test_star_import_after_external_star_import(repo):
+    base = repo.commit(
+        {
+            "pkg/helpers.py": "def helper():\n    return 1\n",
+            "tests/test_star.py": (
+                "from os.path import *\n"
+                "from pkg.helpers import *\n\n\n"
+                "def test_helper():\n    assert helper() == 1\n\n\n"
+                "def test_join():\n    assert join('a', 'b')\n"
+            ),
+            "benchmarks/bench.py": (
+                "from json import *\nfrom pkg.helpers import *\n\n\n"
+                "def time_helper():\n    helper()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/helpers.py": "def helper():\n    return 2\n"})
+    targets = [
+        py_target("t::test_helper", "tests.test_star.test_helper"),
+        py_target("t::test_join", "tests.test_star.test_join"),
+        asv_target("b.time_helper", "benchmarks.bench.time_helper"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_helper", "b.time_helper"}
+    assert unselected(plan) == {"t::test_join"}
+    assert not reason(plan, "t::test_helper").conservative
+
+
+def test_multiple_source_roots_src_layout(repo):
+    base = repo.commit(
+        {
+            "src/calc/__init__.py": "",
+            "src/calc/ops.py": OPS,
+            "tests/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef db():\n    return {}\n",
+            "tests/test_calc.py": (
+                "from calc.ops import add, mul\n\n\n"
+                "def test_add(db):\n    assert add(1, 2) == 3\n\n\n"
+                "def test_mul():\n    assert mul(2, 3) == 6\n"
+            ),
+            "benchmarks/bench_calc.py": (
+                "from calc.ops import add\n\n\n"
+                "class TimeCalc:\n"
+                "    def setup(self):\n        pass\n\n"
+                "    def time_add(self):\n        add(1, 2)\n"
+            ),
+        }
+    )
+    head = repo.commit({"src/calc/ops.py": OPS.replace("a + b", "b + a")})
+    targets = [
+        py_target("tests/test_calc.py::test_add", "tests.test_calc.test_add", "tests.conftest.db"),
+        py_target("tests/test_calc.py::test_mul", "tests.test_calc.test_mul"),
+        asv_target(
+            "bench_calc.TimeCalc.time_add",
+            "benchmarks.bench_calc.TimeCalc.time_add",
+            "benchmarks.bench_calc.TimeCalc.setup",
+        ),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["src", "."])
+    assert set(plan.head_index.modules) >= {"calc", "calc.ops", "tests.test_calc", "tests.conftest"}
+    assert "src.calc.ops" not in plan.head_index.modules
+    assert changes(plan) == {"calc.ops.add": ("body_changed",)}
+    assert selected(plan) == {"tests/test_calc.py::test_add", "bench_calc.TimeCalc.time_add"}
+    assert unselected(plan) == {"tests/test_calc.py::test_mul"}
+    assert plan.fallbacks == []

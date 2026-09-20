@@ -158,3 +158,34 @@ def test_report_helpers_round_trip(repo):
     text = to_text(plan)
     assert "pkg.ops.mul [function] body_changed" in text
     assert "asv: bench.time_mul" in text
+
+
+def test_unwritable_output_and_non_utf8_manifest(repo, capsys, tmp_path):
+    base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    manifest = repo.write_manifest(TARGETS)
+    missing_dir = tmp_path / "no" / "such" / "dir" / "out.json"
+    code = main(
+        [
+            "plan",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            base,
+            "--targets",
+            str(manifest),
+            "--output",
+            str(missing_dir),
+        ]
+    )
+    assert code == 2
+    assert "cannot write" in capsys.readouterr().err
+
+    bad = tmp_path / "bad.json"
+    bad.write_bytes(b'{"targets": []}\xff')
+    code = main(
+        ["plan", "--repo", str(repo.path), "--base", base, "--head", base, "--targets", str(bad)]
+    )
+    assert code == 2
+    assert "manifest" in capsys.readouterr().err

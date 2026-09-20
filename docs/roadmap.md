@@ -31,7 +31,13 @@ in rough order.
   a whole module.
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) with explicit opt-in edges.
-* Symbol-level ignore/force rules for known dynamic patterns.
+* Symbol-level ignore/force rules for known dynamic patterns, and narrowing
+  the always-on `dynamic_reference` seed (for example to the changed
+  packages).
+* Module-init side effects: let runner discovery declare module lifecycle
+  dependencies automatically (pytest marks, `importorskip`, ASV module
+  attributes), and evaluate making module body changes structural for test
+  modules only.
 
 ## 4. Validated execution integration
 

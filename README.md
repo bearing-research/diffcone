@@ -39,9 +39,15 @@ uv run diffcone plan \
   --base main \
   --head HEAD \
   --targets targets.json \
-  --source-root src --source-root tests \
+  --source-root src --source-root . \
   --format json          # or: text
 ```
+
+Source roots decide module names: a file is named relative to the **longest**
+root that contains it. With `--source-root src --source-root .`, the file
+`src/calc/ops.py` is module `calc.ops` and `tests/test_calc.py` is
+`tests.test_calc`, which is how the manifest below refers to them. With only
+`--source-root tests`, that test module would be named `test_calc` instead.
 
 Exit codes: `0` plan produced; `1` plan produced but analysis errors forced a
 select-everything fallback; `2` no plan (bad revision, bad manifest).
@@ -53,7 +59,7 @@ validated before real pytest/ASV discovery exists. It is JSON:
 
 ```json
 {
-  "source_roots": ["src", "tests"],
+  "source_roots": ["src", "."],
   "targets": [
     {
       "runner": "pytest",
@@ -75,7 +81,9 @@ validated before real pytest/ASV discovery exists. It is JSON:
   (module path relative to a source root, then class and function names).
 * `lifecycle_dependencies` are symbols the runner executes for this target
   outside its body: pytest fixtures, ASV `setup`/`setup_cache`, etc. Diffcone
-  does not infer these from naming conventions.
+  does not infer these from naming conventions. A module symbol (for example
+  `tests.test_calc`) can be listed too; that makes module-level state such as
+  `pytestmark` or `pytest.importorskip` count for the target.
 * A target's parameter cases are not modelled; a target is selected as a
   whole.
 * `--source-root` on the command line overrides `source_roots`.
@@ -109,12 +117,16 @@ The JSON report (`schema_version: 1`) contains:
   lookup or instance attributes. Those references are reported as unresolved
   and matched conservatively by name against changed symbols.
 * **Import-statement changes invalidate the whole importing module**, and
-  adding or removing a method invalidates every method of its class. This is
-  conservative by design for the first milestone.
+  any change to a class body (attributes, member list, bases, decorators)
+  invalidates every method of that class. This is conservative by design.
 * **Module-level side effects are only partially tracked.** A module's
   top-level statements are hashed, and functions that use module-level state
   get edges to the module, but a body change in a module's init code does not
   by itself invalidate every function defined in it or every importer.
+  Declare the module as a lifecycle dependency when it should.
+* **Dynamic reflection is always-on.** A function using `eval`, `exec`,
+  `globals()`, `vars()`, `__import__`, or `getattr`/`import_module` with a
+  non-literal name is treated as affected by *any* change in the repository.
 * No caching; every run re-indexes both revisions.
 
 ## Development

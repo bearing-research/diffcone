@@ -56,7 +56,8 @@ whitespace, comments and positions never matter.
 
 Consequences: a docstring edit is a body change (conservative); adding or
 removing a method is a class definition change; changing any import statement
-is a module definition change.
+is a module definition change. Definitions nested inside `if`/`try`/`with`
+blocks are still symbols and are excluded from their scope's body hash.
 
 ## Dependency edges
 
@@ -79,24 +80,37 @@ A name or dotted chain `a.b.c` is resolved from its base:
 1. `self`/`cls` (the first parameter of a non-static method) → the enclosing
    class; `self.m` resolves to `Class.m` if the class itself defines it.
 2. A function-local import alias.
-3. A function-local binding (parameter, assignment, comprehension variable,
-   nested def) → **local**; `local.attr` becomes an unresolved attribute
-   reference bounded by `attr`.
+3. A binding of the current scope (parameter, assignment, `except ... as`,
+   `with ... as`, nested def name, function-local import) → **local**;
+   `local.attr` becomes an unresolved attribute reference bounded by `attr`.
+   Nested functions, lambdas and comprehensions are separate scopes: a
+   comprehension variable or an inner function's parameter never shadows a
+   reference made outside it, while an inner scope still sees the enclosing
+   function's locals.
 4. A module-level definition in the same module.
 5. A module-level import alias (`import a.b as x`, `from a import b`,
    relative forms). Absolute module names are resolved against the snapshot;
    modules outside the source roots are *external* (recorded, not edges).
    A missing submodule of an analysed package is *unresolved*, not external.
 6. A module-level variable → the module symbol (`attribute:NAME`).
-7. Star imports from analysed modules, in order.
-8. Builtins and dunder names are ignored.
+7. Star imports: every analysed star-imported module is consulted (in order,
+   recursively) before an out-of-scope star import is blamed, so an in-scope
+   symbol is never misattributed to a third-party package.
+8. Builtins and dunder names are ignored, unless the program binds the same
+   name itself.
 9. Anything else → unresolved bare name.
 
 Attribute steps walk from module to submodule, module member, module
 variable or star-imported name; from class to method, nested class or class
 variable. A step that cannot be taken yields an unresolved attribute
 reference bounded by the attribute name. Once a chain reaches a function or
-an opaque variable it stops there.
+an opaque variable it stops there. An attribute whose base is not a name
+chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
+attribute reference for `run` and the base expression is analysed on its
+own, so `Foo` still gets a reference edge.
+
+Module and class bodies are analysed without entering the definitions they
+contain; those are symbols with their own edges.
 
 `getattr(x, "lit")` is resolved like `x.lit`; `getattr` with a non-literal
 name, `eval`, `exec`, `__import__`, `globals()`, `vars()` and
@@ -132,8 +146,15 @@ Each changed symbol seeds a backward search. A node carries impact in one of
 two modes:
 
 * **behaviour**: the symbol's runtime behaviour may differ;
-* **structural**: the symbol was added/deleted or its definition or
-  dependencies changed, which invalidates everything defined inside it.
+* **structural**: the symbol was added/deleted, its definition or
+  dependencies changed, or (for classes) its body changed; this invalidates
+  everything defined inside it. Class bodies are structural because
+  class-level attributes such as ASV `params`, pytest marks, or registries
+  shape how every method runs without being referenced textually. Module
+  bodies are not: making every constant edit invalidate a whole module and
+  all its importers would make the plan useless; members that use module
+  state carry their own edges, and a runner may declare the module as a
+  lifecycle dependency of a target when module-level state governs it.
 
 Edge rules (impact flows from the edge's target back to its source):
 
@@ -144,9 +165,11 @@ Edge rules (impact flows from the edge's target back to its source):
 | `imports`, `imports_name` | imported module/name was **deleted** | structural |
 
 So: changing a function body reaches its callers and their callers; adding a
-method invalidates its class and all sibling methods; deleting a symbol that
-a test module imports at module level invalidates every test in that module;
-editing a module-level constant reaches only the functions that reference it.
+method or editing a class attribute invalidates all methods of the class;
+deleting a symbol that a test module imports at module level invalidates
+every test in that module; editing a module-level constant reaches only the
+functions that reference it (or targets that declare the module as a
+lifecycle dependency).
 
 ## Uncertainty and fallbacks
 
@@ -159,6 +182,10 @@ Unknown is never treated as unaffected:
   unresolved reference with its matches.
 * **Dynamic references.** A symbol containing a dynamic reference is treated
   as affected whenever anything at all changed (rule `dynamic_reference`).
+  This is deliberately always-on: a helper using `vars(o)` is selected on
+  every non-empty change set. Narrowing it (per-package seeds, ignore rules)
+  is roadmap work; a project-defined function named `vars` or `getattr` is
+  not mistaken for the builtin.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).
@@ -180,7 +207,10 @@ produce byte-identical reports.
 
 * Inheritance: `self.m` where `m` is inherited is unresolved (name-bounded).
 * Module init side effects: a body change in module init does not invalidate
-  importers that do not reference the module's state.
+  the module's own members or importers that do not reference its state.
+  Use a module lifecycle dependency where that matters.
+* Walrus assignments inside comprehensions bind in the enclosing scope in
+  Python but are treated as comprehension-local here.
 * Decorators that rewrite the decorated function are treated as ordinary
   references.
 * Parameterised targets are selected as a whole.

@@ -94,7 +94,7 @@ def parse_manifest(data: Any) -> Manifest:
 def load_manifest(path: str | Path) -> Manifest:
     try:
         data = json.loads(Path(path).read_text("utf-8"))
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError covers UnicodeDecodeError
         raise ManifestError(f"cannot read manifest {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from exc
