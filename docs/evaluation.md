@@ -129,6 +129,30 @@ uninstrumented while the head suite ran under coverage. Both suites now
 run under the tracer when `--coverage` is requested (lesson recorded
 below).
 
+## pytest-mock (pytest-dev/pytest-mock, 69 tests, entry-point plugin)
+
+The project is itself a pytest plugin: its `mocker` fixture is registered
+through a `pytest11` entry point rather than a conftest, and the plugin's
+`pytest_configure` hook monkeypatches `unittest.mock` at session start.
+Last six commits; one touches Python. Reproduce with:
+
+```bash
+git clone --depth 120 https://github.com/pytest-dev/pytest-mock.git
+cd pytest-mock && uv venv .venv && uv pip install -p .venv/bin/python -e . pytest pytest-cov pytest-asyncio
+diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
+  --source-root src --source-root tests \
+  --command ".venv/bin/python -m pytest" --coverage --max 6
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| a8bd0b1 | Honour resetall() arguments for non-callable mocks | 25 / 69 | 64 % | 100 % | 20 % |
+
+Every test depends on the plugin's hooks, so any change to the hook chain
+selects the whole suite; this commit changed one `MockerFixture` method and
+the 25 selected tests are those that reach `MockerFixture` through the
+fixture or by name.
+
 ## diffcone itself (87 tests)
 
 Last five commits at the time of writing (one docs commit skipped):
@@ -183,8 +207,24 @@ From the first structlog run:
    outcome misses. Both suites now run under the same instrumentation and
    the corpus outcome cache is keyed by mode.
 
+From the first pytest-mock run (savings 19 % → 0 % → 64 %):
+
+1. Fixtures registered through the project's own `pytest11` entry point
+   were unknown to discovery (55 tests carried `fixture:mocker`); entry
+   points from `pyproject.toml` and `setup.cfg` are now plugin modules,
+   following one level of re-exports, and their hooks are lifecycle
+   dependencies of every test. That last part first *widened* selection
+   (0 %), because:
+2. `mocker = pytest.fixture()(_mocker)` is an assignment-style fixture,
+   now recognised; and
+3. the hook's `for method, wrapper in wrappers.items(): getattr(m, method)`
+   over a dict literal was an unbounded dynamic reference reachable from
+   every test. Dict-literal keys now bound loop variables, and a traversal
+   order bug that ignored function-local literal assignments placed before
+   their loop was fixed.
+
 ## Not yet exercised
 
-Suites that take minutes (per-test coverage cost at scale), plugin-provided
-fixtures such as `mocker` (`--assume-external-fixture`; structlog's async
-tests needed none), and monorepos.
+Suites that take minutes (per-test coverage cost at scale), fixtures from
+*installed third-party* plugins (`--assume-external-fixture`; none of the
+four repositories needed it), and monorepos.

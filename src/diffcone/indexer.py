@@ -287,7 +287,9 @@ def _collect_literal_bindings(
         else:
             found[name] = None if (name in found and found[name] is None) else values
 
-    stack: list[ast.AST] = list(ast.iter_child_nodes(node))
+    # Source order matters: ``names = {...}`` must be seen before the loop
+    # that iterates it, so children are pushed reversed onto the LIFO stack.
+    stack: list[ast.AST] = list(reversed(list(ast.iter_child_nodes(node))))
     while stack:
         n = stack.pop()
         if isinstance(n, NESTED_SCOPES):
@@ -321,7 +323,7 @@ def _collect_literal_bindings(
         elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
             if n.id not in found:
                 found[n.id] = None
-        stack.extend(ast.iter_child_nodes(n))
+        stack.extend(reversed(list(ast.iter_child_nodes(n))))
     return found
 
 

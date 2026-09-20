@@ -526,3 +526,28 @@ def test_dict_literal_keys_bound_loop_variables():
     }
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.g"}
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.h"}
+
+
+def test_literal_bindings_follow_source_order():
+    idx = index(
+        {
+            "m.py": (
+                "def f(mod):\n"
+                "    wrappers = {'assert_called': 1, 'assert_any_call': 2}\n"
+                "    for method, wrapper in wrappers.items():\n"
+                "        getattr(mod, method)\n\n"
+                "def g(mod):\n"
+                "    names = ('a', 'b')\n"
+                "    for n in names:\n"
+                "        getattr(mod, n)\n"
+            )
+        }
+    )
+    for sym in ("m.f", "m.g"):
+        refs = {(u.kind, u.name) for u in idx.unresolved if u.symbol == sym}
+        assert ("dynamic", "") not in refs, sym
+    assert {u.name for u in idx.unresolved if u.symbol == "m.f"} == {
+        "assert_called",
+        "assert_any_call",
+        "items",  # ``wrappers.items`` on a local is itself a bounded attribute
+    }
