@@ -195,20 +195,28 @@ class _Graph:
         self.forward[edge.source].append((edge.target, edge, revisions))
 
     def freeze(self) -> None:
+        # A plain tuple key: dataclass ordering on Edge is far slower.
         for adj in (self.reverse, self.forward):
             for key in adj:
-                adj[key].sort(key=lambda item: (item[0], item[1]))
+                adj[key].sort(
+                    key=lambda item: (item[0], item[1].kind, item[1].detail, item[1].target)
+                )
 
 
 T = TypeVar("T")
 
 
 def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[str, ...]]:
-    """Merge two revisions' items, tagging each with the revisions it appears in."""
+    """Merge two revisions' items, tagging each with the revisions it appears in.
+
+    Insertion order is not significant: adjacency lists are sorted in
+    ``_Graph.freeze`` and records are sorted before reporting, so the items
+    are not sorted here (comparing tens of thousands of dataclasses was a
+    third of planning time)."""
     revs: dict[T, list[str]] = defaultdict(list)
-    for item in sorted(base_items):  # type: ignore[type-var]
+    for item in base_items:
         revs[item].append("base")
-    for item in sorted(head_items):  # type: ignore[type-var]
+    for item in head_items:
         revs[item].append("head")
     return {item: tuple(r) for item, r in revs.items()}
 
