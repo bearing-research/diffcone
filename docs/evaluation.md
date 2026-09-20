@@ -9,8 +9,9 @@ were produced by the rules at the commit that last touched this file.
 
 Definitions, exactly as `CorpusReport` computes them:
 
-* **affected**: a test that executed a line owned by a changed head symbol
-  whose change carries impact (additive-only changes do not count);
+* **affected**: a test that executed a line owned by a changed symbol, at
+  either snapshot, whose change carries impact (additive-only changes do
+  not count; a symbol deleted in head is attributed from the base run);
 * **recall** = affected tests that were selected / affected tests, pooled
   over the validated commits; it must be 100 % for the run to pass;
 * **precision** = affected tests that were selected / selected tests *that
@@ -43,11 +44,11 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| d287360 | Add frozendict signature | 37 / 186 | 80 % | 100 % | 3 % |
+| d287360 | Add frozendict signature | 33 / 186 | 82 % | 100 % | 3 % |
 | 80ddcb3 | Add tests for get_in defaults, ... | 4 / 190 | 98 % | 100 % | 100 % |
-| a1e25cb | Expose combined `__annotations__` on composed functions | 43 / 192 | 78 % | 100 % | 19 % |
-| 55ce42d | Support Python 3.15 and refresh dev tooling | 38 / 192 | 80 % | n/a | 0 % |
-| d2eba03 | Fix interpose([]) raising StopIteration | 22 / 193 | 89 % | 100 % | 9 % |
+| a1e25cb | Expose combined `__annotations__` on composed functions | 40 / 192 | 79 % | 100 % | 20 % |
+| 55ce42d | Support Python 3.15 and refresh dev tooling | 35 / 192 | 82 % | n/a | 0 % |
+| d2eba03 | Fix interpose([]) raising StopIteration | 37 / 193 | 81 % | 100 % | 5 % |
 | 451af60 | Add pysentry-pre-commit | 0 / 193 | 100 % | n/a | n/a |
 
 Totals: 7 outcome changes, 0 missed; recall 100 % (15 of 15); precision
@@ -261,14 +262,112 @@ benchmark rather than a savings one. The `--jobs` done-when asked for
 under 20 minutes; 21.5 is the honest number on this machine with
 coverage runs competing for CPU.
 
-## diffcone itself (115 tests)
+## pipx (pypa/pipx, 699 tests, `src` layout, installed plugin fixtures)
 
-Last six commits at the time of writing (three docs commits skipped):
-4 outcome changes, 0 missed; recall 100 % (310 of 310); precision 97 %;
-mean savings 6 %. All three validated commits changed the indexer, which
-nearly every test exercises, so they selected 105 of 112, 106 of 113 and
-108 of 115 tests; an earlier run over commits that changed only the
-execution module selected 20 of 86 and 22 of 87.
+The first repository whose tests request fixtures from *installed*
+plugins: `mocker` (pytest-mock) in 152 tests and `fake_process`
+(pytest-subprocess) in one. Before the well-known plugin fixture table
+(commit 69581fe) those 153 tests fell back to select-all on every change;
+now both names are assumed and reported. The suite installs packages into
+throwaway venvs (12 min serial, 27 min for this corpus with two jobs), so
+the `--setup-command` links the project's pre-populated package cache
+into each checkout and copies the build-generated `version.py`. Last four
+commits, two touch Python. Reproduce with:
+
+```bash
+git clone --depth 80 https://github.com/pypa/pipx.git
+cd pipx && uv venv .venv && uv pip install -p .venv/bin/python -e . --group test pytest-cov
+.venv/bin/python -m pytest -q tests   # populates .pipx_tests/package_cache
+diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
+  --source-root src --source-root tests \
+  --command "$PWD/.venv/bin/python -m pytest -p no:cacheprovider -q" \
+  --setup-command "ln -s $PWD/.pipx_tests .pipx_tests && cp $PWD/src/pipx/version.py src/pipx/version.py" \
+  --coverage --max 4 --jobs 2
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| b83f660 | fix(upgrade): don't claim 'latest version' for local-path installs | 461 / 698 | 34 % | 100 % | 9 % |
+| 84eaad3 | fix(reinstall): propagate returned failures in reinstall-all | 462 / 699 | 34 % | 100 % | 2 % |
+
+Totals: 0 outcome changes, 0 missed; recall 100 % (50 of 50); precision
+5 %; mean savings 34 %. No test needed `--assume-external-fixture`. The
+precision is bounded by one function: `pipx.main._dispatch` invokes the
+subcommand through a dynamic reference, so every test that drives the CLI
+through `run_pipx_cli` (456 and 461 of the selected tests) is selected
+under the `dynamic_reference` rule whenever any command module changes.
+That is the documented trade-off for dynamic dispatch (bounded by the
+import closure, not resolved), and the place where a dispatch-table
+resolution rule would pay off most.
+
+## opentelemetry-python, SDK session (monorepo, 830 tests, `src` layouts)
+
+A monorepo whose packages (`opentelemetry-api`, `opentelemetry-sdk`,
+`opentelemetry-semantic-conventions`, a shared `tests/opentelemetry-test-utils`
+package, exporters, shims) each carry a `tests/` tree and run as separate
+tox sessions. One plan models one session: the SDK session imports four
+packages and collects `opentelemetry-sdk/tests`. Planning the API and SDK
+test trees together collides on same-named test modules (`context`,
+`trace.test_globals`) and degrades, which is also how one pytest session
+over both would fail. Test classes inherit from bases in the shared
+test-utils package (`ConcurrencyTestBase`), which discovery reports as
+unknown bases (12 notes; those methods are found through the class's own
+definitions). Last twelve commits, ten touch Python, suite 18 s. Reproduce with:
+
+```bash
+git clone --depth 100 https://github.com/open-telemetry/opentelemetry-python.git
+cd opentelemetry-python && uv venv -p 3.13 .venv \
+  && uv pip install -p .venv/bin/python -r opentelemetry-sdk/test-requirements.txt pytest-cov
+diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
+  --source-root opentelemetry-api/src --source-root opentelemetry-sdk/src \
+  --source-root opentelemetry-semantic-conventions/src \
+  --source-root tests/opentelemetry-test-utils/src --source-root opentelemetry-sdk/tests \
+  --command "$PWD/.venv/bin/python -m pytest -p no:cacheprovider -q opentelemetry-sdk/tests" \
+  --coverage --max 12 --jobs 3
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 565 / 827 | 32 % | 100 % | 14 % |
+| 477ffd4 | opentelemetry-docker-tests: add Prometheus exporter docker tests | 0 / 827 | 100 % | n/a | n/a |
+| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 561 / 830 | 32 % | 100 % | 16 % |
+| cfad5eb | Fix TraceState.update to only update already existing keys | 559 / 830 | 33 % | 100 % | 0 % |
+| 34c5e5f | Added guard against negative value of max_value_len | 698 / 830 | 16 % | 100 % | 58 % |
+| ee219ad | test(exporter-otlp-proto-grpc): relax timing delta ... | 0 / 830 | 100 % | n/a | n/a |
+| 5843c4e | DOC(exporter-otlp-proto-http): clarify endpoint= kwarg ... | 0 / 830 | 100 % | n/a | n/a |
+| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 658 / 830 | 21 % | 100 % | 59 % |
+| 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
+| 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
+
+Totals: 11 outcome changes, 0 missed; recall 100 % (955 of 955); precision
+32 %; mean savings 63 %. Commits outside the session's packages (exporters,
+docker tests, docs) select nothing, as they should. The two lowest rows
+(checked with `validate --coverage --format json` on the pair):
+
+* cfad5eb changes one method, `TraceState.update`; one test executed it
+  and 557 were selected, because `update` is also what every dict on an
+  unresolved receiver is called with and an unresolved `.update(...)`
+  matches every in-scope symbol of that name (the name-bounded fallback,
+  design.md "Uncertainty and fallbacks"). Precision 0 % is rounding of
+  1 in 557.
+* 5aa2f8f adds `enabled` to the API's `Logger`, `NoOpLogger` and
+  `ProxyLogger` classes: a structural class change invalidates every
+  member, and the SDK's logger tests construct these classes, so 563 tests
+  are selected of which 78 executed a changed symbol.
+
+Before the class-level `mock.patch` fix (commit 96d123c) seven tests of
+this session fell back to select-all because the class decorator's
+injected argument looked like an unknown fixture.
+
+## diffcone itself (129 tests)
+
+Last six commits at the time of writing (`corpus --range HEAD~12..HEAD
+--max 6 --jobs 2 --coverage`, 14 min): 0 outcome changes, 0 missed;
+recall 100 % (344 of 344); precision 56 %; mean savings 18 %. Five of the
+six commits changed the indexer, the cache or discovery, which nearly
+every test exercises (114 of 121 up to 122 of 129 selected); the commit
+that changed only the execution module selected 26 of 128 tests at 58 %
+precision.
 
 ## How the numbers moved
 
@@ -370,6 +469,14 @@ been re-stated from the re-run:
   80 % precision and its table above is from the re-run. Between the first
   and last of those commits toolz temporarily lost one affected test
   (recall 93 %), which is what drove the follow-ups;
+* base-side coverage attribution (commit 6836992, a measurement change,
+  not a selection change): toolz re-run identical in totals (15 of 15
+  affected, 10 % precision, 87 % savings). The re-run also showed that the
+  toolz table had not been re-stated after module-level variables became
+  symbols, contrary to the note below: d287360 now selects 33 (was 37),
+  a1e25cb 40 (was 43), 55ce42d 35 (was 38) and d2eba03 37 (was 22, the
+  `interpose` fix also changing a module-level variable's mutators). The
+  table above is from the re-run;
 * prefix-bounded dynamic names (commit 042f611): toolz, click, pytest-mock
   and attrs unchanged (attrs' lazy loader had already stopped being a seed
   once module-level variables became symbols); the pytest pair re-validated
@@ -382,6 +489,7 @@ been re-stated from the re-run:
 ## Not yet exercised
 
 A full corpus on a multi-minute suite (one pytest pair is measured above;
-`corpus` would need parallel worktrees to be practical), fixtures from
-*installed third-party* plugins (`--assume-external-fixture`; none of the
-six repositories needed it), and monorepos.
+`corpus --jobs` makes it practical but it has not been recorded), and a
+monorepo that runs one session over several packages (hatch: `src`,
+`backend/src` and `tests` plan as one session with 2 106 discovered tests
+and no analysis errors, but its suite was not run).
