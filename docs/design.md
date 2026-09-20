@@ -316,8 +316,12 @@ module (`indirect` names stay requests). `@pytest.mark.usefixtures(...)`
 on the function, class, enclosing classes or module adds requests.
 Resolution order is class fixtures (the class, then its in-module bases,
 then enclosing classes), module fixtures, `conftest.py` from the test's
-directory outward, then modules named in `pytest_plugins` (conftest
-declarations are global). Nearest scope wins; a fixture that requests its
+directory outward, then plugin modules: those named in `pytest_plugins`
+(conftest declarations are global) and the project's own `pytest11` entry
+points from `pyproject.toml` or `setup.cfg`, following one level of
+`from ... import` re-exports so a plugin package's `__init__` exposes the
+fixtures it imports. Hooks defined in those plugin modules are lifecycle
+dependencies of every test. Nearest scope wins; a fixture that requests its
 own name (`def db(db)`) resolves to the next definition outward; requests
 are resolved transitively along the same chain; autouse fixtures anywhere
 on the chain apply.

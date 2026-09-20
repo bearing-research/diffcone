@@ -651,3 +651,47 @@ def test_snapshot_reads_config_only_on_request(repo):
     assert set(read_snapshot(repo.path, rev, ["."], with_config=True).config_files) == {
         "pytest.ini"
     }
+
+
+def test_entry_point_plugin_fixtures_and_hooks_are_resolved(repo):
+    files = {
+        "pyproject.toml": '[project]\nname = "x"\n[project.entry-points.pytest11]\nmyplug = "myplug"\n',
+        "src/myplug/__init__.py": "from myplug.plugin import mocker, helper\n",
+        "src/myplug/plugin.py": (
+            "import pytest\n\n\n"
+            "@pytest.fixture\ndef mocker():\n    return 1\n\n\n"
+            "@pytest.fixture\ndef hidden():\n    return 2\n\n\n"
+            "def helper():\n    pass\n\n\n"
+            "def pytest_configure(config):\n    pass\n"
+        ),
+        "tests/test_x.py": (
+            "pytest_plugins = ['pytester']\n\n\n"
+            "def test_a(mocker):\n    assert mocker\n\n\n"
+            "def test_b(hidden):\n    assert hidden\n"
+        ),
+    }
+    rev = repo.commit(files)
+    result = run_discovery(repo, rev, "pytest", roots=["src", "tests"])
+    assert result.config["entry_point_plugins"] == ["myplug"]
+    targets = by_id(result)
+    a = targets["tests/test_x.py::test_a"]
+    assert "myplug.plugin.mocker" in a.lifecycle_dependencies
+    assert "myplug.plugin.pytest_configure" in a.lifecycle_dependencies
+    assert not any(d.startswith("fixture:") for d in a.lifecycle_dependencies)
+    # ``hidden`` is not re-exported by the package, so pytest would not see it.
+    b = targets["tests/test_x.py::test_b"]
+    assert "fixture:hidden" in b.lifecycle_dependencies
+    # pytester is pytest's own plugin: no note about it.
+    assert [n.kind for n in result.notes] == ["unresolved_fixture"]
+
+    rev2 = repo.commit(
+        {
+            "pyproject.toml": None,
+            "setup.cfg": "[options.entry_points]\npytest11 =\n    myplug = myplug.plugin\n",
+        }
+    )
+    result2 = run_discovery(repo, rev2, "pytest", roots=["src", "tests"])
+    assert result2.config["entry_point_plugins"] == ["myplug.plugin"]
+    assert (
+        "myplug.plugin.hidden" in by_id(result2)["tests/test_x.py::test_b"].lifecycle_dependencies
+    )

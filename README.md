@@ -116,7 +116,8 @@ cannot resolve.
 (without `__init__`), nested classes and `unittest.TestCase` methods. Each
 test's lifecycle dependencies are its fixtures (by parameter, by
 `usefixtures`, transitively, resolved class > module > nearest `conftest.py`
-outward > `pytest_plugins` modules in the source roots), autouse fixtures,
+outward > `pytest_plugins` modules and the project's own `pytest11`
+entry-point plugins in the source roots), autouse fixtures,
 xunit setup functions, its module, every `conftest.py` on its path and their
 `pytest_*` hooks. A fixture that is neither found nor a pytest builtin
 becomes the dependency `fixture:<name>`, which the planner cannot resolve, so

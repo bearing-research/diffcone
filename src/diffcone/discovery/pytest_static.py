@@ -139,6 +139,7 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         "python_classes": DEFAULT_PYTHON_CLASSES,
         "python_functions": DEFAULT_PYTHON_FUNCTIONS,
         "testpaths": (),
+        "entry_point_plugins": (),  # pytest11 entry points defined by the project itself
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
@@ -169,7 +170,46 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
                 values = _split(section[key])
                 if values:
                     config[key] = values
+    config["entry_point_plugins"] = tuple(_entry_point_plugins(files))
     return config
+
+
+def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
+    """Modules the project registers as pytest plugins (``pytest11`` entry
+    points in pyproject.toml or setup.cfg). pytest loads them for every test
+    session, so their fixtures and hooks are visible everywhere."""
+    modules: list[str] = []
+    if "pyproject.toml" in files:
+        try:
+            data = tomllib.loads(files["pyproject.toml"].decode("utf-8"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            data = {}
+        entries = data.get("project", {}).get("entry-points", {}).get("pytest11", {})
+        if isinstance(entries, dict):
+            modules += [str(v).split(":", 1)[0].strip() for v in entries.values()]
+    if "setup.cfg" in files:
+        section = _ini_section(files["setup.cfg"], "options.entry_points") or {}
+        for line in str(section.get("pytest11", "")).splitlines():
+            if "=" in line:
+                modules.append(line.split("=", 1)[1].split(":", 1)[0].strip())
+    return [m for m in dict.fromkeys(modules) if m]
+
+
+BUILTIN_PLUGINS = frozenset({"pytester", "pytest", "_pytest"})
+
+
+def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
+    """Absolute module of a ``from ... import`` statement in ``parsed``."""
+    if node.level == 0:
+        return node.module or ""
+    parts = parsed.module.split(".")
+    if not parsed.path.endswith("__init__.py"):
+        parts = parts[:-1]
+    drop = node.level - 1
+    if drop:
+        parts = parts[: len(parts) - drop] if drop <= len(parts) else []
+    base = ".".join(parts)
+    return f"{base}.{node.module}" if node.module and base else (node.module or base)
 
 
 def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
@@ -513,31 +553,65 @@ def discover_pytest(
     # pytest_plugins declared in conftests are global; those in a test module
     # apply to that module (pytest only honours them in the root conftest, but
     # we accept both and note out-of-scope ones).
-    def plugin_facts(declared: list[str], where: str) -> list[ModuleFacts]:
+    def module_facts(name: str) -> ModuleFacts | None:
+        if name in facts_by_module:
+            return facts_by_module[name]
+        if name in index.modules:
+            pm, _ = parse_modules(snapshot, [index.symbols[name].path])
+            if pm:
+                facts_by_module[name] = _collect_facts(pm[0])
+                return facts_by_module[name]
+        return None
+
+    def plugin_facts(
+        declared: list[str], where: str, kind: str = "pytest_plugins"
+    ) -> list[ModuleFacts]:
         found: list[ModuleFacts] = []
         for name in declared:
-            if name in facts_by_module:
-                found.append(facts_by_module[name])
-            elif name in index.modules:
-                pm, _ = parse_modules(snapshot, [index.symbols[name].path])
-                if pm:
-                    facts_by_module[name] = _collect_facts(pm[0])
-                    found.append(facts_by_module[name])
-            else:
+            if name.split(".")[0] in BUILTIN_PLUGINS:
+                continue
+            facts = module_facts(name)
+            if facts is None:
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
                         "plugin_out_of_scope",
-                        f"{where}: pytest_plugins entry {name!r} is not within the source roots",
+                        f"{where}: {kind} entry {name!r} is not within the source roots",
                     )
                 )
+                continue
+            found.append(facts)
+            # A plugin package usually re-exports its fixtures from submodules
+            # (``from .plugin import mocker``); pytest registers whatever the
+            # entry module's namespace holds, so follow one level of imports.
+            for stmt in facts.parsed.tree.body:
+                if isinstance(stmt, ast.ImportFrom):
+                    base = _absolute_module(facts.parsed, stmt)
+                    sub = module_facts(base) if base else None
+                    if sub is not None and sub is not facts:
+                        names = {a.asname or a.name for a in stmt.names}
+                        if "*" not in names:
+                            visible = ModuleFacts(parsed=sub.parsed, hooks=sub.hooks)
+                            visible.fixtures = {
+                                n: f
+                                for n, f in sub.fixtures.items()
+                                if f.symbol.rsplit(".", 1)[-1] in names or n in names
+                            }
+                            found.append(visible)
+                        else:
+                            found.append(sub)
         return found
 
     global_plugins: list[ModuleFacts] = []
+    if config["entry_point_plugins"]:
+        global_plugins.extend(
+            plugin_facts(list(config["entry_point_plugins"]), "pyproject/setup.cfg", "pytest11")
+        )
     for path in sorted(conftest_paths):
         facts = facts_by_path.get(path)
         if facts is not None and facts.plugins:
             global_plugins.extend(plugin_facts(facts.plugins, path))
+    plugin_hooks = [h for p in global_plugins for h in p.hooks]
 
     unresolved: Counter[str] = Counter()
     for path in sorted(test_paths):
@@ -552,6 +626,7 @@ def discover_pytest(
         for c in conftests:
             module_deps += c.hooks
         module_deps += facts.hooks  # e.g. pytest_generate_tests in the test module
+        module_deps += plugin_hooks  # hooks of the project's own pytest plugins
         module_deps += facts.setup_functions
         _collect_module_tests(result, facts, resolver, config, module_deps, index)
 
