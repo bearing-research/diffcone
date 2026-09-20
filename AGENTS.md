@@ -21,7 +21,8 @@ must:
 Out of scope until the roadmap says otherwise: type inference, dispatch on
 receivers of unknown type (`self`/`cls` dispatch to in-scope overrides is in
 scope), branch- or argument-sensitive analysis, runtime tracing, machine
-learning ranking, persistent caching.
+learning ranking, and persistent caching beyond the per-commit index cache
+described in CLAUDE.md.
 
 ## Invariants
 

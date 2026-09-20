@@ -19,7 +19,12 @@ Definitions, exactly as `CorpusReport` computes them:
   project's own `addopts`, skipped by markers), which is why a row can show
   11 selected and 80 % precision;
 * **savings** = 1 − selected / targets, per commit; the total is the mean
-  over validated commits.
+  over validated commits;
+* **denominators**: *targets* is the static discovery count at head;
+  *tests that ran under coverage* is the number of test functions with a
+  coverage context (the suite may collect parametrised cases of the same
+  function, skip tests, or deselect some through `addopts`, so it differs
+  from both the discovery count and the runner's collected count).
 
 `--max N` keeps the last N commits of the range *before* commits without
 `.py` changes are skipped, so a run may show fewer validated rows than N.
@@ -84,12 +89,10 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | 2103e15 | Forward all user's parameters set in `PAGER` | 34 / 537 | 94 % | 100 % | 62 % |
 | e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
-| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 540 / 555 | 3 % | 100 % | 78 % |
+| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 520 / 555 | 6 % | 100 % | 81 % |
 
 Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
-80 %; mean savings 66 % (after module-level variables became symbols; the
-per-commit rows above are from the earlier run and moved by at most one
-point).
+80 %; mean savings 66 %.
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
@@ -157,8 +160,8 @@ fixture or by name.
 
 ## attrs (python-attrs/attrs, 667 tests, `src` layout, hypothesis)
 
-Last 40 commits; 16 touch Python, the rest are docs, CI and typing-example
-commits. Suite runtime about six seconds. Uses pytest 9's native
+Last 40 commits; 16 touch a `.py` file and were validated, the other 24
+(docs, CI, changelog) were skipped. Suite runtime about six seconds. Uses pytest 9's native
 `[tool.pytest]` table and hypothesis `@given`. Discovery is clean once both
 are understood (see lessons). Reproduce with:
 
@@ -172,8 +175,10 @@ diffcone corpus --repo . --range HEAD~120..HEAD --discover pytest \
 ```
 
 Totals: 26 outcome changes, 0 missed; recall 100 % (1 869 of 1 869);
-precision 53 %; mean savings 67 %. Selected rows (the 16 validated commits;
-docs-only and typing-example commits select nothing):
+precision 53 %; mean savings 67 %. The 16 validated commits (nine touch
+only docstrings, `typing_tests/` examples outside the source roots, or
+test-typing stubs, change no symbol with impact, and select nothing; they
+count at 100 % savings):
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
@@ -184,16 +189,20 @@ docs-only and typing-example commits select nothing):
 | 9b98a73 | Drop Python 3.9 | 666 / 666 | 0 % | 100 % | 83 % |
 | 3e01de4 | docs: fix markup (removes a `from . import` binding) | 551 / 666 | 17 % | 100 % | 1 % |
 | f53fc54 | Stop evolve dunders from being modified | 551 / 667 | 17 % | 100 % | 63 % |
-| 9 others | docs, typing examples, changelog | 0 | 100 % | n/a | n/a |
+| 9 others | docstrings, `typing_tests/` examples, typing stubs | 0 | 100 % | n/a | n/a |
 
 The remaining wide rows share one cause: `attr/__init__.py` is a hub whose
 import list changed (3e01de4 removes a `from . import` binding, which is
 structural by rule), or the change is in `_make.py`, which every attrs
 class definition runs through.
 
-## pytest (pytest-dev/pytest, 2 841 discovered tests, 4 538 collected, `src` layout)
+## pytest (pytest-dev/pytest, 3 486 discovered tests, 4 538 collected cases, `src` layout)
 
-The multi-minute suite: 2 min 18 s serial for a plain run. Loads its own
+The multi-minute suite: 2 min 18 s serial for a plain run. Discovery finds
+3 486 test functions (2 841 before the `python_files` fix in lesson 5);
+pytest collects 4 538 cases from them because of parametrisation, and
+3 436 of the functions ran under coverage (the rest are skipped by markers
+or platform). Loads its own
 `pytester` plugin through `addopts = ["-p", "pytester"]`, collects extra
 files through `python_files = ["testing/python/*.py"]`, and needs a
 build-generated `_version.py` in every checkout. One parent-to-commit pair
@@ -214,10 +223,10 @@ diffcone validate --repo . --base HEAD~1 --head HEAD --discover pytest \
 |---|---|
 | wall time for the pair (two suites under coverage) | 8 min 14 s |
 | outcome changes | 1, caught |
-| tests that executed a changed symbol | 1 490 of 3 436 |
+| tests that executed a changed symbol | 1 490 of the 3 436 that ran under coverage |
 | recall | 100 % |
-| precision | 43 % |
-| selected | 3 485 of 3 486 |
+| precision | 43 % (1 490 of the selected tests that ran under coverage) |
+| selected | 3 485 of 3 486 discovered |
 
 Nearly everything is selected because pytest dispatches hooks by name
 through pluggy and `pytester` runs a full inner session from within tests:
@@ -226,7 +235,7 @@ and 1 490 tests really do execute the changed method. A corpus over six
 such pairs would take about 50 minutes serially; `corpus` has no parallel
 mode yet.
 
-## diffcone itself (87 tests)
+## diffcone itself (113 tests)
 
 Last five commits at the time of writing (one docs commit skipped):
 6 outcome changes, 0 missed; recall 100 % (172 of 172); precision 87 %;
@@ -323,11 +332,17 @@ From the first pytest-mock run (savings 19 % → 0 % → 64 %):
 
 ## Re-measurements without number changes
 
-Selection-rule changes that were re-run on all four corpora and moved no
+Selection-rule changes that were re-run on every corpus and moved no
 number (recall, precision and savings identical to the tables above):
 
 * override-aware dispatch for `self`/`cls` lookups, including mixin and
-  class-attribute overrides (commits 4722191 and its review follow-up).
+  class-attribute overrides (commits 4722191 and its review follow-up);
+* module-level variables as symbols with writer edges and enclosing-scope
+  defaults (commits ab49129 through cca7217): toolz, structlog and
+  pytest-mock unchanged; click moved from 65 % to 66 % savings and 77 % to
+  80 % precision and its table above is from the re-run. Between the first
+  and last of those commits toolz temporarily lost one affected test
+  (recall 93 %), which is what drove the follow-ups.
 
 ## Not yet exercised
 
