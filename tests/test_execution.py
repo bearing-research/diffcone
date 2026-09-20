@@ -752,3 +752,19 @@ def test_shadowed_files_detects_installed_copies(repo):
         ("/elsewhere/src/pkg/__init__.py", "src/pkg/__init__.py"),
         ("/site-packages/pkg/ops.py", "src/pkg/ops.py"),
     ]
+
+
+def test_parsers_cope_with_spaces_pipes_and_brackets_in_parameter_ids():
+    from diffcone.execution import fold_nodeid
+
+    out = (
+        "tests/test_o.py::test_choice[choices4-[TEXT: a|b]] PASSED [ 12%]\n"
+        "tests/test_o.py::test_choice[c-x] FAILED [ 50%]\n"
+        "tests/test_o.py::test_plain PASSED\n"
+    )
+    assert parse_pytest_verbose(out) == {
+        "tests/test_o.py::test_choice": "FAILED",
+        "tests/test_o.py::test_plain": "PASSED",
+    }
+    context = "tests/test_o.py::test_choice[choices4-[TEXT: a|b]]|run"
+    assert fold_nodeid(context.rsplit("|", 1)[0]) == "tests/test_o.py::test_choice"

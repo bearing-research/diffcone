@@ -37,8 +37,11 @@ from diffcone.snapshot import GitError, _git
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
 
+# Parameter ids may contain spaces, pipes and nested brackets
+# (``test_x[choices4-[TEXT: a|b]] PASSED [ 12%]``), so the node id is
+# everything up to the outcome token.
 _PYTEST_LINE = re.compile(
-    r"^(?P<nodeid>\S+::\S+?) (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b"
+    r"^(?P<nodeid>\S+::.*?) (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s|$)"
 )
 
 
@@ -352,11 +355,11 @@ def read_coverage_contexts(
     for context, path, numbits in line_rows:
         rel = rel_path(path) if context else None
         if rel is not None:
-            result[fold_nodeid(context.split("|", 1)[0])][rel].update(_numbits_to_lines(numbits))
+            result[fold_nodeid(context.rsplit("|", 1)[0])][rel].update(_numbits_to_lines(numbits))
     for context, path, fromno, tono in arc_rows:
         rel = rel_path(path) if context else None
         if rel is not None:
-            lines = result[fold_nodeid(context.split("|", 1)[0])][rel]
+            lines = result[fold_nodeid(context.rsplit("|", 1)[0])][rel]
             # Negative numbers mark entry/exit arcs; abs() gives the real line.
             lines.update(n for n in (abs(fromno), abs(tono)) if n > 0)
     return result
