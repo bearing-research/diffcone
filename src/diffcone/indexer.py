@@ -41,6 +41,7 @@ from diffcone.model import (
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME,
+    VARIABLE,
     AnalysisError,
     Edge,
     ExternalReference,
@@ -194,6 +195,10 @@ class ModuleScope:
     bindings: set[str] = field(default_factory=set)
     members: dict[str, str] = field(default_factory=dict)
     import_nodes: list[ast.stmt] = field(default_factory=list)
+    # Simple top-level assignments that are symbols of their own: name -> id,
+    # and the statement each one came from (excluded from the module body hash).
+    variables: dict[str, str] = field(default_factory=dict)
+    variable_stmts: dict[str, ast.stmt] = field(default_factory=dict)
     # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
 
@@ -648,6 +653,8 @@ class Indexer:
                 scope.bindings |= _collect_store_names(stmt)
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
         imports = tuple(sorted(_canonical_imports(scope)))
+        body = _split_docstring(scope.tree.body)[1]
+        variable_stmts = _variable_statements(scope, body)
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -656,7 +663,9 @@ class Indexer:
                 name=scope.name.rsplit(".", 1)[-1],
                 path=scope.path,
                 lineno=1,
-                body_hash=hash_scope_body(_split_docstring(scope.tree.body)[1], strip_imports=True),
+                body_hash=hash_scope_body(
+                    [s for s in body if s not in variable_stmts.values()], strip_imports=True
+                ),
                 docstring_hash=_docstring_hash([scope.tree.body]),
                 definition_hash=_digest("\n".join(imports)),
                 container=None,
@@ -665,6 +674,27 @@ class Indexer:
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
+        for name, stmt in variable_stmts.items():
+            if name in scope.members:
+                continue  # also a def/class: Python's last binding wins; stay conservative
+            symbol_id = f"{scope.name}.{name}"
+            value = stmt.value  # type: ignore[attr-defined]
+            symbol = Symbol(
+                id=symbol_id,
+                kind=VARIABLE,
+                module=scope.name,
+                name=name,
+                path=scope.path,
+                lineno=stmt.lineno,
+                body_hash=hash_nodes([value]),
+                definition_hash="",
+                container=scope.name,
+                line_ranges=((stmt.lineno, _end_line(stmt)),),
+            )
+            if self._add_symbol(symbol):
+                scope.variables[name] = symbol_id
+                scope.variable_stmts[name] = stmt
+                self.index.edges.add(Edge(symbol_id, scope.name, DEFINED_IN))
 
     def _register_imports(
         self,
@@ -946,8 +976,18 @@ class Indexer:
             if not isinstance(s, DEF_NODES + (ast.Import, ast.ImportFrom))
         ]
         collector = _ReferenceCollector(self, scope.name, module_scope, skip_defs=True)
+        variable_ids = {
+            id(stmt): symbol
+            for name, stmt in scope.variable_stmts.items()
+            for symbol in [scope.variables[name]]
+        }
         for stmt in top_level:
-            collector.visit(stmt)
+            owner = variable_ids.get(id(stmt))
+            if owner is not None:
+                # The right-hand side's references belong to the variable symbol.
+                _ReferenceCollector(self, owner, module_scope, skip_defs=True).visit(stmt)
+            else:
+                collector.visit(stmt)
         self._resolve_definitions(scope, scope.tree.body, scope.members, None)
 
     def _resolve_definitions(
@@ -1101,6 +1141,8 @@ class Indexer:
             return Resolved(target.members[name])
         if name in target.imports:
             return self._import_binding_node(target.imports[name])
+        if name in target.variables:
+            return Resolved(target.variables[name])
         if name in target.bindings:
             return Resolved(target.name, detail=f"attribute:{name}")
         if self._module_in_scope(f"{target.name}.{name}"):
@@ -1225,6 +1267,36 @@ def _start_line(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> 
     """First line of a definition including its decorators, which belong to
     the definition (they are part of its definition hash)."""
     return min([node.lineno, *(d.lineno for d in node.decorator_list)])
+
+
+def _variable_statements(scope: ModuleScope, body: list[ast.stmt]) -> dict[str, ast.stmt]:
+    """Top-level ``NAME = <expr>`` / ``NAME: T = <expr>`` statements whose name
+    is bound exactly once in the module: candidates for variable symbols.
+    Names bound any other way too (in a loop, by unpacking, inside a block)
+    stay on the module symbol."""
+    simple: dict[str, list[ast.stmt]] = defaultdict(list)
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target = stmt.targets[0]
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target = stmt.target
+        else:
+            continue
+        if isinstance(target, ast.Name):
+            simple[target.id].append(stmt)
+    simple_stmts = {id(s) for stmts in simple.values() for s in stmts}
+    other_bound: set[str] = set()
+    for stmt in iter_scope_statements(scope.tree.body):
+        if isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
+            continue
+        if id(stmt) in simple_stmts:
+            continue
+        other_bound |= _collect_store_names(stmt)
+    return {
+        name: stmts[0]
+        for name, stmts in simple.items()
+        if len(stmts) == 1 and name not in other_bound and name not in scope.imports
+    }
 
 
 def _end_line(node: ast.AST) -> int:

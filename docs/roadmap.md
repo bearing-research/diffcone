@@ -11,38 +11,7 @@ states the mechanism, the trade-off and what "done" means, so the
 implementation can be checked against it and the corpus can measure it.
 Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
-## 1. Module-level variables as symbols
-
-**Problem.** Every module-level binding is folded into the module symbol:
-`attr.ib` (an alias `ib = attrib` in `attr/__init__.py`) resolves to the
-module `attr`, so any body change in that file, such as adding a name to
-`_LAZY_SUBMODULES`, reaches every test that touches any `attr.<name>`
-(417 of 666 on attrs commit 3e01de4, precision 1 %).
-
-**Mechanism.** Give each simple module-level or class-level assignment
-`NAME = <expr>` (single `Name` target, `Assign`/`AnnAssign`, at the scope's
-top level or inside `if`/`try` blocks) its own symbol of kind `variable`:
-id `module.NAME`, body hash of the right-hand side, definition hash empty,
-`defined_in` the module. References that today resolve to
-`Resolved(module, attribute:NAME)` resolve to the variable symbol instead;
-the variable's own right-hand-side references become its edges (an alias
-`ib = attrib` depends on `attrib`). Bindings made any other way (tuple
-unpacking, augmented assignment, `for` targets, `with ... as`) stay on the
-module symbol, and the module body hash excludes the statements that became
-symbols. A name bound both ways (rebound in a loop) stays on the module.
-
-**Trade-off.** More symbols (roughly one per constant); a variable
-rebound at module level after its definition is tracked by the module,
-which is conservative. Discovery lifecycle dependencies on the module
-symbol are unaffected.
-
-**Done when.** A scenario where a module-level constant changes selects
-only tests that reference it (directly or through a function), an alias
-`ib = attrib` reaches its users when `attrib` changes, and the attrs
-corpus commit 3e01de4 drops from 578 to the tests that reference
-`_LAZY_SUBMODULES` users; the other corpora keep 100 % recall.
-
-## 2. Prefix-bounded dynamic names
+## 1. Prefix-bounded dynamic names
 
 **Problem.** `importlib.import_module(f"attr.{name}")` in attrs' lazy
 `__getattr__` is an unbounded dynamic import, so it is an always-on seed
@@ -58,7 +27,7 @@ propagate only deletions, replacing the always-on seed.
 `imports` edges to every `pkg.*` module and no dynamic record, and commit
 5aa76a4 on attrs stops selecting through `_make_getattr`.
 
-## 3. Per-module resolution cache
+## 2. Per-module resolution cache
 
 **Status.** The per-commit index cache shipped (design.md, "Index cache"):
 a warm `plan --head WORKTREE` on click is 0.75 s, of which about 0.5 s is
@@ -91,7 +60,7 @@ re-resolves exactly one module (observable through cache counters), plans
 are byte-identical with and without the cache on every scenario fixture,
 and a synthetic 2 000-file tree plans warm in under one second.
 
-## 4. Evaluation at scale and breadth
+## 3. Evaluation at scale and breadth
 
 Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
@@ -113,7 +82,7 @@ the run shows (this is how every improvement so far was found).
   suite under coverage (already done for outcome symmetry) and reading its
   database closes that gap.
 
-## 5. Discovery completeness
+## 4. Discovery completeness
 
 * pytest: `request.getfixturevalue("name")` with a literal, names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
@@ -127,7 +96,7 @@ the run shows (this is how every improvement so far was found).
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 6. Resolution breadth
+## 5. Resolution breadth
 
 * Instance-attribute tracking: `self.attr = Callable` in `__init__` so
   `self.attr()` resolves; today it is name-bounded.

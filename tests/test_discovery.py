@@ -100,6 +100,8 @@ def test_pytest_discovery_rules(repo):
         "tests.test_basic.setup_module",
         "conftest.root_auto",  # autouse
         "tests.conftest._renamed_impl",  # module pytestmark usefixtures('renamed')
+        "tests.test_basic.pytestmark",  # module-level pytest names are variable symbols
+        "conftest.pytest_plugins",
     }
     plain = targets["tests/test_basic.py::test_plain"]
     assert plain.entry_symbol == "tests.test_basic.test_plain"
@@ -825,3 +827,19 @@ def test_addopts_p_plugins_are_resolved_including_pytest_internal_names(repo):
     assert {"_pytest.pytester.linecomp", "myplug.mine"} <= deps
     assert not any(d.startswith("fixture:") for d in deps)
     assert [(n.kind, "xdist" in n.detail) for n in result.notes] == [("plugin_out_of_scope", True)]
+
+
+def test_python_files_patterns_with_directories_match_the_path(repo):
+    rev = repo.commit(
+        {
+            "pyproject.toml": (
+                '[tool.pytest.ini_options]\npython_files = ["test_*.py", "testing/python/*.py"]\n'
+                'testpaths = ["testing"]\n'
+            ),
+            "testing/test_a.py": "def test_a():\n    pass\n",
+            "testing/python/approx.py": "def test_b():\n    pass\n",
+            "testing/other/approx.py": "def test_c():\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    assert set(by_id(result)) == {"testing/test_a.py::test_a", "testing/python/approx.py::test_b"}

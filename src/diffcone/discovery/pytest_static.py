@@ -243,6 +243,25 @@ def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
     return dict(parser.items(name))
 
 
+def _matches_python_file(path: str, pattern: str) -> bool:
+    """pytest's ``fnmatch_ex``: a pattern without a path separator matches the
+    basename; one with a separator matches the whole (repo-relative) path."""
+    if "/" in pattern:
+        pattern = pattern.lstrip("./")
+        return fnmatch(path, pattern)
+    return fnmatch(PurePosixPath(path).name, pattern)
+
+
+# Module-level names pytest reads from a test module or conftest; when they are
+# variable symbols, every test in the module depends on them.
+MODULE_LEVEL_PYTEST_NAMES = (
+    "pytestmark",
+    "pytest_plugins",
+    "collect_ignore",
+    "collect_ignore_glob",
+)
+
+
 def _matches(patterns: tuple[str, ...], name: str) -> bool:
     for pattern in patterns:
         if any(ch in pattern for ch in "*?["):
@@ -639,7 +658,7 @@ def discover_pytest(
     test_paths = [
         p
         for p in snapshot.files
-        if any(fnmatch(PurePosixPath(p).name, pat) for pat in python_files)
+        if any(_matches_python_file(p, pat) for pat in python_files)
         and _under_testpaths(p, tuple(config["testpaths"]))
     ]
     conftest_paths = [p for p in snapshot.files if PurePosixPath(p).name == "conftest.py"]
@@ -717,6 +736,11 @@ def discover_pytest(
         module_deps += facts.hooks  # e.g. pytest_generate_tests in the test module
         module_deps += plugin_hooks  # hooks of the project's own pytest plugins
         module_deps += facts.setup_functions
+        for owner in (facts, *conftests):
+            for name in MODULE_LEVEL_PYTEST_NAMES:
+                symbol = f"{owner.parsed.module}.{name}"
+                if symbol in index.symbols:
+                    module_deps.append(symbol)
         _collect_module_tests(result, facts, resolver, config, module_deps, index)
 
     for name, count in sorted(unresolved.items()):

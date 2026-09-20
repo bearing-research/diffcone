@@ -12,6 +12,7 @@ MODULE = "module"
 CLASS = "class"
 FUNCTION = "function"
 METHOD = "method"
+VARIABLE = "variable"  # a simple module-level assignment ``NAME = <expr>``
 
 # Edge kinds. ``source`` depends on ``target``.
 REFERENCES = "references"  # name/call/attribute reference resolved to a symbol

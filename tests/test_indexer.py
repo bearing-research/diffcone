@@ -54,6 +54,7 @@ def test_symbol_kinds_and_containers():
         "pkg.m.C.s": "method",
         "pkg.m.C.Inner": "class",
         "pkg.m.C.Inner.im": "method",
+        "pkg.m.X": "variable",
     }
     assert idx.symbols["pkg.m.C.Inner.im"].container == "pkg.m.C.Inner"
     assert ("pkg.m.C", "defined_in", "") in edges(idx, "pkg.m.C.m")
@@ -89,7 +90,7 @@ def test_relative_imports_and_self_resolution():
     assert edges(idx, "pkg.sub.mod.C.b") == {
         ("pkg.sub.mod.C", "defined_in", ""),
         ("pkg.util.helper", "references", ""),
-        ("pkg.util", "references", "attribute:LIMIT"),
+        ("pkg.util.LIMIT", "references", ""),
         ("pkg.sub.sibling.s", "references", ""),
     }
     # staticmethod: ``self`` is an ordinary parameter, so self.b is unresolved.
@@ -100,7 +101,7 @@ def test_relative_imports_and_self_resolution():
     assert edges(idx, "pkg.sub.mod") >= {
         ("pkg.util", "imports", ""),
         ("pkg.util.helper", "imports_name", ""),
-        ("pkg.util", "imports_name", "attribute:LIMIT"),
+        ("pkg.util.LIMIT", "imports_name", ""),
         ("pkg.sub.sibling", "imports", ""),
     }
 
@@ -166,7 +167,11 @@ def test_definition_vs_body_hash():
     m4 = index({"m.py": "import os\nX = 2\ndef f():\n    pass\n"}).symbols["m"]
     assert m1.body_hash == m2.body_hash and m1.definition_hash == m2.definition_hash
     assert m1.definition_hash != m3.definition_hash and m1.body_hash == m3.body_hash
-    assert m1.body_hash != m4.body_hash and m1.definition_hash == m4.definition_hash
+    # ``X`` is a variable symbol of its own: the module body hash ignores it.
+    assert m1.body_hash == m4.body_hash and m1.definition_hash == m4.definition_hash
+    x1 = index({"m.py": "import os\nX = 1\ndef f():\n    pass\n"}).symbols["m.X"]
+    x4 = index({"m.py": "import os\nX = 2\ndef f():\n    pass\n"}).symbols["m.X"]
+    assert x1.body_hash != x4.body_hash
 
 
 def test_parse_error_is_recorded_not_hidden():
@@ -636,3 +641,49 @@ def test_dispatched_call_sites_reach_overrides():
     # Sub.step's getattr is reached through Base.run's unbounded ``mode`` as
     # well as the literal direct call, so it must stay dynamic.
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.Sub.step"}
+
+
+def test_module_level_variables_are_symbols():
+    idx = index(
+        {
+            "pkg/__init__.py": "from pkg._make import attrib\n\nib = attrib\n__all__ = ['ib']\n",
+            "pkg/_make.py": "def attrib():\n    pass\n",
+            "pkg/config.py": (
+                "LIMIT = 3\n"
+                "PAIR_A, PAIR_B = 1, 2\n"
+                "REBOUND = 1\n"
+                "REBOUND = 2\n"
+                "if LIMIT:\n    IN_BLOCK = 5\n"
+                "def helper():\n    return LIMIT + PAIR_A + REBOUND + IN_BLOCK\n"
+            ),
+            "pkg/user.py": (
+                "import pkg\nfrom pkg import config\nfrom pkg.config import LIMIT\n\n"
+                "def f():\n    return pkg.ib(), config.LIMIT, LIMIT\n"
+            ),
+        }
+    )
+    kinds = {i: s.kind for i, s in idx.symbols.items() if i.startswith("pkg.config")}
+    assert kinds["pkg.config.LIMIT"] == "variable"
+    assert "pkg.config.PAIR_A" not in kinds and "pkg.config.REBOUND" not in kinds
+    assert "pkg.config.IN_BLOCK" not in kinds
+    assert idx.symbols["pkg.config.LIMIT"].container == "pkg.config"
+    # References resolve to the variable, not the module; other bindings stay on it.
+    assert edges(idx, "pkg.config.helper") == {
+        ("pkg.config", "defined_in", ""),
+        ("pkg.config.LIMIT", "references", ""),
+        ("pkg.config", "references", "attribute:PAIR_A"),
+        ("pkg.config", "references", "attribute:REBOUND"),
+        ("pkg.config", "references", "attribute:IN_BLOCK"),
+    }
+    assert edges(idx, "pkg.user.f") >= {
+        ("pkg.ib", "references", ""),
+        ("pkg.config.LIMIT", "references", ""),
+    }
+    # An alias variable depends on what it aliases; the module does not.
+    assert edges(idx, "pkg.ib") == {
+        ("pkg", "defined_in", ""),
+        ("pkg._make.attrib", "references", ""),
+    }
+    assert ("pkg._make.attrib", "references", "") not in edges(idx, "pkg")
+    # Module-level from-imports of a variable are imports_name edges to it.
+    assert ("pkg.config.LIMIT", "imports_name", "") in edges(idx, "pkg.user")

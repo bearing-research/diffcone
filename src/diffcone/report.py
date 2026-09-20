@@ -16,7 +16,8 @@ SCHEMA_VERSION = (
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
     "resolved": [
-        "module-level functions, methods and classes as symbols",
+        "module-level functions, methods, classes and simple module-level assignments "
+        "(NAME = <expr>, bound once) as symbols",
         "direct name and attribute references resolvable through module-level "
         "definitions, import aliases, star imports within source roots, or self/cls",
         "absolute and relative imports within source roots",

@@ -384,7 +384,7 @@ def test_coverage_attributes_lines_to_the_innermost_symbol(repo):
         "tests/test_ops.py::test_unrelated"
     }
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
-    assert v.coverage is not None and v.coverage.changed_symbols == ("pkg.ops",)
+    assert v.coverage is not None and v.coverage.changed_symbols == ("pkg.ops.X",)
     assert v.coverage.missed == []  # test_add ran add(), not the module's own lines
     assert v.ok
 

@@ -57,6 +57,7 @@ A symbol's identity is its dotted qualified name:
 | class | module + class name (nested classes chain) | `pkg.models.Model` |
 | function | module + name | `pkg.service.run` |
 | method | module + class + name | `pkg.models.Model.save` |
+| variable | module + name, for a top-level `NAME = <expr>` bound exactly once | `attr.ib` (an alias), `pkg.config.LIMIT` |
 
 Line numbers and file paths are metadata. Inserting blank lines or comments
 does not change identity or any hash. Functions defined inside functions are
@@ -76,7 +77,8 @@ whitespace, comments and positions never matter.
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
-| module | top-level statements excluding definitions and imports | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
+| variable | the right-hand side | (none) |
+| module | top-level statements excluding definitions, imports and variable symbols | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
 The docstring is excluded from every body hash and hashed on its own:
 a docstring-only edit is reported as `docstring_changed` and carries no
@@ -120,7 +122,11 @@ A name or dotted chain `a.b.c` is resolved from its base:
    relative forms). Absolute module names are resolved against the snapshot;
    modules outside the source roots are *external* (recorded, not edges).
    A missing submodule of an analysed package is *unresolved*, not external.
-6. A module-level variable → the module symbol (`attribute:NAME`).
+6. A module-level variable → its `variable` symbol when it is a simple
+   top-level assignment bound once (its right-hand side's references are
+   the variable's edges, so an alias `ib = attrib` depends on `attrib`);
+   otherwise (rebound, unpacked, assigned inside a block) the module symbol
+   (`attribute:NAME`).
 7. Star imports: every analysed star-imported module is consulted (in order,
    recursively) before an out-of-scope star import is blamed, so an in-scope
    symbol is never misattributed to a third-party package.
@@ -332,8 +338,9 @@ or pytest 9's native `[tool.pytest]` table), `tox.ini`, `setup.cfg` in that
 order. `testpaths` entries may be directories, files or globs
 (`tests/integ*`); a leading `./` is ignored.
 
-Collected: files matching `python_files` under the source roots (restricted
-to `testpaths` if set); module-level functions matching `python_functions`;
+Collected: files matching `python_files` under the source roots (a pattern
+without `/` matches the basename, one with `/` the repo-relative path, as
+pytest's `fnmatch_ex` does; restricted to `testpaths` if set); module-level functions matching `python_functions`;
 methods of classes matching `python_classes` that have no `__init__`,
 including methods inherited from base classes defined in the same module
 (own definitions win; a base defined elsewhere yields an
@@ -373,7 +380,9 @@ are resolved transitively along the same chain; autouse fixtures anywhere
 on the chain apply.
 
 Lifecycle dependencies of a test: the resolved fixture symbols, the test
-module and its own `pytest_*` hooks (`pytest_generate_tests` applies to
+module and its own `pytest_*` hooks, the module-level `pytestmark`,
+`pytest_plugins`, `collect_ignore` and `collect_ignore_glob` variables of
+the module and its conftests when they are variable symbols (`pytest_generate_tests` applies to
 every test in the module), every conftest module on the chain and its
 `pytest_*` hook functions, `setup_module`/`teardown_module`/
 `setup_function`/`teardown_function` if present, and the class's (or its

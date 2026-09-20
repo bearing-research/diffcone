@@ -628,15 +628,20 @@ def test_class_attribute_change_invalidates_methods(repo):
         asv_target("b.TimeOps.time_add", "benchmarks.bench.TimeOps.time_add"),
         asv_target("b.TimeOps.time_mul", "benchmarks.bench.TimeOps.time_mul"),
         asv_target("b.Other.time_other", "benchmarks.bench.Other.time_other"),
-        # A runner integration declares the module as a lifecycle dependency
-        # when module-level state (pytestmark, importorskip) governs the test.
-        py_target("t::test_a", "tests.test_marks.test_a", "tests.test_marks"),
+        # A runner integration declares the module and its pytestmark variable
+        # as lifecycle dependencies when module-level state governs the test.
+        py_target(
+            "t::test_a",
+            "tests.test_marks.test_a",
+            "tests.test_marks",
+            "tests.test_marks.pytestmark",
+        ),
         py_target("t::test_b", "tests.test_plain.test_b", "tests.test_plain"),
     ]
     plan = repo.plan(base, head, targets)
     assert changes(plan) == {
         "benchmarks.bench.TimeOps": ("body_changed",),
-        "tests.test_marks": ("body_changed",),
+        "tests.test_marks.pytestmark": ("body_changed",),
     }
     assert selected(plan) == {"b.TimeOps.time_add", "b.TimeOps.time_mul", "t::test_a"}
     assert unselected(plan) == {"b.Other.time_other", "t::test_b"}
@@ -645,7 +650,7 @@ def test_class_attribute_change_invalidates_methods(repo):
     assert r.changed_symbol == "benchmarks.bench.TimeOps"
     r = reason(plan, "t::test_a")
     assert [s.kind for s in r.path] == ["lifecycle"]
-    assert r.changed_symbol == "tests.test_marks"
+    assert r.changed_symbol == "tests.test_marks.pytestmark"
 
 
 def test_conditional_definition_does_not_invalidate_module(repo):
@@ -1061,7 +1066,9 @@ def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
     )
     plan2 = repo.plan(base, head2, [], discover_runners=["pytest"])
     assert selected(plan2) == {"tests/test_tools.py::test_a"}
-    assert [s.kind for s in reason(plan2, "tests/test_tools.py::test_a").path] == ["lifecycle"]
+    r2 = reason(plan2, "tests/test_tools.py::test_a")
+    assert [s.kind for s in r2.path] == ["lifecycle"]
+    assert r2.changed_symbol == "tests.test_tools.pytestmark"
 
 
 def test_dynamic_references_are_bounded_by_the_import_closure(repo):
@@ -1233,3 +1240,61 @@ def test_docstring_only_changes_carry_no_impact(repo):
     plan2 = repo.plan(base, head2, targets)
     assert changes(plan2) == {"pkg.core.hub": ("body_changed",)}
     assert selected(plan2) == {"t::test_hub", "b.time_hub"}
+
+
+def test_module_constant_change_reaches_only_its_users(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "from pkg._make import attrib\n\nib = attrib\nLAZY = {'a'}\n",
+            "pkg/_make.py": "def attrib():\n    return 1\n\n\ndef other():\n    return 2\n",
+            "tests/test_pkg.py": (
+                "import pkg\nfrom pkg._make import other\n\n\n"
+                "def test_ib():\n    assert pkg.ib() == 1\n\n\n"
+                "def test_lazy():\n    assert 'a' in pkg.LAZY\n\n\n"
+                "def test_other():\n    assert other() == 2\n"
+            ),
+            "benchmarks/bench.py": "import pkg\n\n\ndef time_ib():\n    pkg.ib()\n",
+        }
+    )
+    targets = [
+        py_target("t::test_ib", "tests.test_pkg.test_ib"),
+        py_target("t::test_lazy", "tests.test_pkg.test_lazy"),
+        py_target("t::test_other", "tests.test_pkg.test_other"),
+        asv_target("b.time_ib", "benchmarks.bench.time_ib"),
+    ]
+    # Editing one constant in the package __init__ reaches only its users.
+    head = repo.commit(
+        {"pkg/__init__.py": "from pkg._make import attrib\n\nib = attrib\nLAZY = {'a', 'b'}\n"}
+    )
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.LAZY": ("body_changed",)}
+    assert selected(plan) == {"t::test_lazy"}
+    # Changing the aliased function reaches users of the alias through the variable.
+    head2 = repo.commit(
+        {
+            "pkg/__init__.py": "from pkg._make import attrib\n\nib = attrib\nLAZY = {'a'}\n",
+            "pkg/_make.py": "def attrib():\n    return 11\n\n\ndef other():\n    return 2\n",
+        }
+    )
+    plan2 = repo.plan(base, head2, targets)
+    assert selected(plan2) == {"t::test_ib", "b.time_ib"}
+    r = reason(plan2, "t::test_ib")
+    assert path_ids(r) == [
+        "target:pytest:t::test_ib",
+        "tests.test_pkg.test_ib",
+        "pkg.ib",
+        "pkg._make.attrib",
+    ]
+    # Re-pointing the alias is a body change of the variable: alias users only.
+    head3 = repo.commit(
+        {
+            "pkg/__init__.py": "from pkg._make import attrib, other\n\nib = other\nLAZY = {'a'}\n",
+            "pkg/_make.py": "def attrib():\n    return 1\n\n\ndef other():\n    return 2\n",
+        }
+    )
+    plan3 = repo.plan(base, head3, targets)
+    assert changes(plan3) == {
+        "pkg": ("imports_added", "dependencies_added"),
+        "pkg.ib": ("body_changed", "dependencies_changed"),
+    }
+    assert selected(plan3) == {"t::test_ib", "b.time_ib"}
