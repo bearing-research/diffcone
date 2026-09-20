@@ -369,8 +369,9 @@ from the `run` and `validate` commands after a plan exists.
   temporary detached worktrees that are removed afterwards; `WORKTREE` runs
   in the repository; `INDEX` is not supported. Every test whose outcome
   differs between the snapshots must be selected; otherwise it is reported
-  as missed and the command exits 1. New or deleted tests count as outcome
-  changes. This is a necessary, not sufficient, check: behaviour changes
+  as missed and the command exits 1. New tests count as outcome changes;
+  tests that ran at base and no longer exist at head are reported as
+  removed, not missed (there is nothing to select). This is a necessary, not sufficient, check: behaviour changes
   that keep the same outcome are not visible to it.
 * `validate --coverage` makes the single head run also record
   `--cov=. --cov-context=test` into a temporary coverage database (the
@@ -381,9 +382,11 @@ from the `run` and `validate` commands after a plan exists.
   both the `line_bits` and `arc` tables, paths resolved against the
   checkout, contexts folded to the test function.
   A test is *dynamically affected* when it executed a line owned by a
-  changed head symbol. Ownership mirrors the planner's rules: a function or
-  method owns its lines; a module or class owns only the lines outside its
-  members unless its change is structural, in which case all its lines
+  changed head symbol whose change carries impact (additive-only changes
+  are not ground truth: nothing executed behaves differently). Ownership
+  mirrors the planner's rules: a function or method owns its lines
+  including its decorators; a module or class owns only the lines outside
+  its members unless its change is structural, in which case all its lines
   count (a constant edit does not make every function in the module
   "executed changed code", but adding a method does for the whole class).
   Recall is caught / dynamically affected and must be 100 % for the command

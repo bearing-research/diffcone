@@ -97,10 +97,16 @@ class TargetOutcome:
     base: str | None  # None: absent at that snapshot
     head: str | None
     selected: bool
+    known_at_head: bool = True  # a target of the plan (exists in the head snapshot)
 
     @property
     def changed(self) -> bool:
         return self.base != self.head
+
+    @property
+    def removed(self) -> bool:
+        """Ran at base, gone at head: nothing to select, so never a miss."""
+        return self.head is None and not self.known_at_head
 
 
 @dataclass(frozen=True)
@@ -153,7 +159,11 @@ class Validation:
 
     @property
     def missed(self) -> list[TargetOutcome]:
-        return [o for o in self.outcomes if o.changed and not o.selected]
+        return [o for o in self.outcomes if o.changed and not o.selected and not o.removed]
+
+    @property
+    def removed(self) -> list[TargetOutcome]:
+        return [o for o in self.outcomes if o.removed]
 
     @property
     def selected_count(self) -> int:
@@ -348,7 +358,9 @@ def _line_owner_index(plan: Plan) -> tuple[dict[str, dict[int, set[str]]], tuple
     changed_ids: list[str] = []
     for change in plan.changes:
         symbol = change.head
-        if symbol is None or not symbol.line_ranges:
+        # Additive-only changes carry no impact for the planner and mean no
+        # behaviour change for the code executed, so they are not ground truth.
+        if symbol is None or not symbol.line_ranges or not change.carries_impact:
             continue
         changed_ids.append(symbol.id)
         excluded: set[int] = set()
@@ -440,6 +452,7 @@ def validate_pytest(
                 base_outcomes.get(runner_id),
                 head_outcomes.get(runner_id),
                 runner_id in selected,
+                known_at_head=runner_id in known,
             )
         )
     return validation
@@ -457,6 +470,7 @@ def validation_to_dict(v: Validation) -> dict:
             "missed": len(v.missed),
         },
         "missed": [{"runner_id": o.runner_id, "base": o.base, "head": o.head} for o in v.missed],
+        "removed": [o.runner_id for o in v.removed],
         "caught": [{"runner_id": o.runner_id, "base": o.base, "head": o.head} for o in v.caught],
         "outcomes": [
             {"runner_id": o.runner_id, "base": o.base, "head": o.head, "selected": o.selected}
@@ -510,6 +524,8 @@ def validation_to_text(v: Validation) -> str:
     ]
     for o in v.missed:
         lines.append(f"  MISSED {o.runner_id}: {o.base} -> {o.head}")
+    if v.removed:
+        lines.append(f"  removed at head (not misses): {len(v.removed)}")
     for o in v.caught:
         lines.append(f"  caught {o.runner_id}: {o.base} -> {o.head}")
     if v.coverage is None:

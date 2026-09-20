@@ -646,7 +646,7 @@ class Indexer:
                     ),
                     definition_hash=definition_hash,
                     container=container_id,
-                    line_ranges=tuple((n.lineno, _end_line(n)) for n in nodes),
+                    line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -683,7 +683,7 @@ class Indexer:
                     body_hash=_digest("\n".join(hash_nodes(list(n.body)) for n in nodes)),
                     definition_hash=definition_hash,
                     container=container_id,
-                    line_ranges=tuple((n.lineno, _end_line(n)) for n in nodes),
+                    line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -1065,6 +1065,12 @@ def _canonical_imports(scope: ModuleScope) -> set[str]:
                 entry = f"from {base} import {alias.name}"
                 out.add(entry + (f" as {alias.asname}" if alias.asname else ""))
     return out
+
+
+def _start_line(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> int:
+    """First line of a definition including its decorators, which belong to
+    the definition (they are part of its definition hash)."""
+    return min([node.lineno, *(d.lineno for d in node.decorator_list)])
 
 
 def _end_line(node: ast.AST) -> int:

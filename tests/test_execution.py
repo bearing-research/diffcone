@@ -11,7 +11,7 @@ from diffcone import execution
 from diffcone.cli import main
 from diffcone.execution import build_command, parse_pytest_verbose, run_selected, validate_pytest
 from diffcone.snapshot import GitError
-from diffcone.testing import asv_target, py_target
+from diffcone.testing import asv_target, changes, py_target
 
 PYTEST = f"{sys.executable} -m pytest"
 
@@ -653,3 +653,58 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
     assert code == 0
     assert "corpus" in out and "1 validated" in out and "OK" in out
     assert "recall 100%" in out
+
+
+def test_removed_tests_are_not_misses_and_additive_changes_are_not_ground_truth(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS + "\n\ndef test_gone():\n    assert True\n",
+        }
+    )
+    head = repo.commit(
+        {
+            "tests/test_ops.py": (
+                "import os\n" + TEST_OPS + "\n\n@pytest.mark.parametrize('n', [1])\n"
+                "def test_new(n):\n    assert os.sep\n"
+            ).replace("import os\nfrom", "import os\nimport pytest\nfrom"),
+        }
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    # The module only gained imports: additive, no impact; test_gone was removed.
+    assert changes(plan)["tests.test_ops"] == ("imports_added",)  # external imports: no edges
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert [o.runner_id for o in v.removed] == ["tests/test_ops.py::test_gone"]
+    assert v.missed == []
+    assert [(h.runner_id, h.selected) for h in v.coverage.affected] == [
+        ("tests/test_ops.py::test_new", True)
+    ]
+    assert v.ok
+    d = validation_to_dict_local(v)
+    assert d["removed"] == ["tests/test_ops.py::test_gone"]
+    assert "removed at head (not misses): 1" in execution.validation_to_text(v)
+
+
+def validation_to_dict_local(v):
+    from diffcone.execution import validation_to_dict
+
+    return validation_to_dict(v)
+
+
+def test_decorators_belong_to_the_decorated_definition(repo):
+    base = repo.commit(
+        {
+            "m.py": (
+                "import functools\n\n\n"
+                "@functools.lru_cache\n"
+                "@functools.wraps(len)\n"
+                "def f():\n    return 1\n\n\n"
+                "@functools.total_ordering\n"
+                "class C:\n    def __lt__(self, o):\n        return True\n"
+            )
+        }
+    )
+    symbols = repo.plan(base, base, []).head_index.symbols
+    assert symbols["m.f"].line_ranges == ((4, 7),)
+    assert symbols["m.C"].line_ranges == ((10, 13),)
