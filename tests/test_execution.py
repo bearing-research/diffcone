@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
+from diffcone import execution
 from diffcone.cli import main
 from diffcone.execution import build_command, parse_pytest_verbose, run_selected, validate_pytest
+from diffcone.snapshot import GitError
 from diffcone.testing import asv_target, py_target
 
 PYTEST = f"{sys.executable} -m pytest"
@@ -353,3 +357,139 @@ def test_symbols_carry_line_ranges(repo):
     assert symbols["m.C.m"].line_ranges == ((6, 7),)
     assert symbols["m"].line_ranges == ((1, 7),)
     assert symbols["m.C.m"].covers_line(7) and not symbols["m.C.m"].covers_line(2)
+
+
+# --- regression tests added after code review ------------------------------
+
+MOD = "X = 1\n\n\ndef add(a, b):\n    return a + b\n\n\ndef unrelated():\n    return X\n"
+TEST_MOD = (
+    "from pkg.ops import add, unrelated\n\n\n"
+    "def test_add():\n    assert add(1, 2) == 3\n\n\n"
+    "def test_unrelated():\n    assert unrelated() >= 1\n"
+)
+
+
+def _covplan(repo, base, head, extra_ini: str = ""):
+    return repo.plan(base, head, [], discover_runners=["pytest"])
+
+
+def test_coverage_attributes_lines_to_the_innermost_symbol(repo):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": MOD, "tests/test_ops.py": TEST_MOD})
+    # A module *body* change: only functions referencing module state are
+    # affected statically; coverage must not blame every function in the file.
+    head = repo.commit({"pkg/ops.py": MOD.replace("X = 1", "X = 2")})
+    plan = _covplan(repo, base, head)
+    assert {d.target.runner_id for d in plan.decisions if d.selected} == {
+        "tests/test_ops.py::test_unrelated"
+    }
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.coverage is not None and v.coverage.changed_symbols == ("pkg.ops",)
+    assert v.coverage.missed == []  # test_add ran add(), not the module's own lines
+    assert v.ok
+
+    # A structural class change (method added) counts every method's lines.
+    base2 = repo.commit(
+        {
+            "pkg/ops.py": "class K:\n    def a(self):\n        return 1\n",
+            "tests/test_ops.py": (
+                "from pkg.ops import K\n\n\ndef test_a():\n    assert K().a() == 1\n"
+            ),
+        }
+    )
+    head2 = repo.commit(
+        {
+            "pkg/ops.py": (
+                "class K:\n    def a(self):\n        return 1\n\n"
+                "    def b(self):\n        return 2\n"
+            )
+        }
+    )
+    plan2 = _covplan(repo, base2, head2)
+    v2 = validate_pytest(plan2, repo=repo.path, command=PYTEST, coverage=True)
+    hit = next(h for h in v2.coverage.hits if h.runner_id == "tests/test_ops.py::test_a")
+    assert "pkg.ops.K" in hit.executed_changed
+    assert hit.selected and v2.ok
+
+
+@pytest.mark.parametrize(
+    "coveragerc",
+    [
+        "[run]\nbranch = True\n",
+        "[run]\nrelative_files = True\n",
+        "[run]\nbranch = True\nrelative_files = True\n",
+    ],
+)
+def test_coverage_honours_branch_and_relative_files_config(repo, coveragerc):
+    base = repo.commit(
+        {
+            ".coveragerc": coveragerc,
+            "pkg/__init__.py": "",
+            "pkg/ops.py": MOD,
+            "ext/__init__.py": "",
+            "ext/bridge.py": "from pkg.ops import add\n\n\ndef via():\n    return add(1, 1)\n",
+            "tests/test_bridge.py": (
+                "from ext.bridge import via\n\n\ndef test_via():\n    assert via() >= 2\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "a + b + 0")})
+    plan = repo.plan(base, head, [], source_roots=["pkg", "tests"], discover_runners=["pytest"])
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert [h.runner_id for h in v.coverage.missed] == ["tests/test_bridge.py::test_via"]
+    assert not v.ok
+
+
+def test_coverage_with_no_contexts_is_an_error_not_ok(repo):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": MOD, "tests/test_ops.py": TEST_MOD})
+    head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "b + a")})
+    plan = _covplan(repo, base, head)
+    with pytest.raises(GitError, match="no per-test contexts"):
+        validate_pytest(plan, repo=repo.path, command=f"{PYTEST} -k no_such_test", coverage=True)
+
+
+def test_coverage_run_keeps_addopts_and_runs_head_once(repo, monkeypatch):
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\naddopts = --ignore=tests/excluded\n",
+            "pkg/__init__.py": "",
+            "pkg/ops.py": MOD,
+            "tests/test_ops.py": TEST_MOD,
+            "tests/excluded/test_x.py": (
+                "from pkg.ops import add\n\n\ndef test_excluded():\n    assert add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    calls: list[list[str]] = []
+    real_run = execution.subprocess.run
+
+    def counting_run(argv, **kwargs):
+        calls.append(list(argv))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(execution.subprocess, "run", counting_run)
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    # The excluded test never runs, so it is neither an outcome nor a coverage miss.
+    assert v.ok
+    assert all("excluded" not in h.runner_id for h in v.coverage.hits)
+    excluded = next(o for o in v.outcomes if "excluded" in o.runner_id)
+    assert (excluded.base, excluded.head, excluded.changed) == (None, None, False)
+    # base run + head run (with coverage): exactly two pytest invocations.
+    pytest_calls = [c for c in calls if "-m" in c and "pytest" in c]
+    assert len(pytest_calls) == 2
+    assert any("--cov-context=test" in c for c in pytest_calls)
+    assert all("addopts=" not in " ".join(c) for c in pytest_calls)
+
+
+def test_validation_status_label_names_the_failing_check():
+    from diffcone.execution import CoverageHit, CoverageValidation, TargetOutcome, Validation
+
+    v = Validation("pytest", ["pytest"])
+    assert "validation (pytest): OK" in execution.validation_to_text(v)
+    v.coverage = CoverageValidation([CoverageHit("t::a", False, ("pkg.f",))])
+    assert "validation (pytest): MISSED (coverage)" in execution.validation_to_text(v)
+    v.outcomes = [TargetOutcome("t::b", "PASSED", "FAILED", False)]
+    assert "validation (pytest): MISSED (outcome, coverage)" in execution.validation_to_text(v)
+    v.coverage = None
+    assert "validation (pytest): MISSED (outcome)" in execution.validation_to_text(v)

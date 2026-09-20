@@ -25,12 +25,13 @@ import sqlite3
 import subprocess
 import tempfile
 from collections import defaultdict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from diffcone.classify import DELETED
 from diffcone.manifest import Target
-from diffcone.model import KIND_COMMIT, KIND_WORKTREE, Symbol
+from diffcone.model import KIND_COMMIT, KIND_WORKTREE
 from diffcone.planner import Plan
 from diffcone.snapshot import GitError, _git
 
@@ -163,6 +164,11 @@ class Validation:
         return not self.missed and (self.coverage is None or not self.coverage.missed)
 
 
+def fold_nodeid(nodeid: str) -> str:
+    """Drop the parameter case (``[...]``) so a node id names the test function."""
+    return re.sub(r"\[.*\]$", "", nodeid)
+
+
 def parse_pytest_verbose(output: str) -> dict[str, str]:
     """Map pytest node ids (parameter cases folded into their function) to
     the worst outcome observed for that function."""
@@ -172,7 +178,7 @@ def parse_pytest_verbose(output: str) -> dict[str, str]:
         m = _PYTEST_LINE.match(line.strip())
         if not m:
             continue
-        nodeid = re.sub(r"\[.*\]$", "", m.group("nodeid"))
+        nodeid = fold_nodeid(m.group("nodeid"))
         outcome = m.group("outcome")
         current = outcomes.get(nodeid)
         if current is None or rank[outcome] > rank[current]:
@@ -209,7 +215,21 @@ class _Checkout:
             self._tmp.cleanup()
 
 
-def _run_full_pytest(cwd: Path, command: str | None) -> tuple[dict[str, str], str]:
+@dataclass
+class _SuiteRun:
+    outcomes: dict[str, str]
+    log: str
+    returncode: int
+    coverage_db: Path | None = None
+
+
+@contextmanager
+def _run_full_pytest(
+    cwd: Path, command: str | None, *, coverage: bool = False
+) -> Iterator[_SuiteRun]:
+    """Run the whole suite once with ``-v``; with ``coverage`` the same run
+    also records per-test coverage contexts into a temporary database that
+    lives for the duration of the context."""
     argv = [
         *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
         "-v",
@@ -218,9 +238,24 @@ def _run_full_pytest(cwd: Path, command: str | None) -> tuple[dict[str, str], st
         "--no-header",
         "-rN",
     ]
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
-    log = proc.stdout + proc.stderr
-    return parse_pytest_verbose(proc.stdout), log
+    with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
+        env = dict(os.environ)
+        db: Path | None = None
+        if coverage:
+            db = Path(tmp) / ".coverage"
+            # The project's own addopts stay in force so this run collects the
+            # same tests as a plain run; only the coverage options are added.
+            argv += ["--cov=.", "--cov-context=test", "--cov-report="]
+            env["COVERAGE_FILE"] = str(db)
+        proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
+        log = proc.stdout + proc.stderr
+        if coverage and not (db and db.exists()):
+            raise GitError(
+                "coverage validation produced no coverage database; is pytest-cov installed in "
+                f"the environment that runs {argv[0]!r} (and not disabled by --no-cov)?\n"
+                f"exit code {proc.returncode}\n{log[-2000:]}"
+            )
+        yield _SuiteRun(parse_pytest_verbose(proc.stdout), log, proc.returncode, db)
 
 
 # --------------------------------------------------------------------------- coverage
@@ -238,109 +273,127 @@ def _numbits_to_lines(blob: bytes) -> list[int]:
 
 def read_coverage_contexts(db_path: Path, root: Path) -> dict[str, dict[str, set[int]]]:
     """Per pytest node id (parameter cases and setup/run/teardown phases
-    folded), the executed lines per repo-relative file."""
+    folded), the executed lines per checkout-relative file.
+
+    Reads both the ``line_bits`` table (line coverage) and the ``arc`` table
+    (branch coverage, which coverage.py uses *instead* when ``branch = True``
+    is configured). Paths may be stored relative when the project sets
+    ``relative_files``; they are resolved against the checkout root.
+    """
     result: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+    root = root.resolve()
+
+    def rel_path(path: str) -> str | None:
+        p = Path(path)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            return str(p.resolve().relative_to(root))
+        except ValueError:
+            return None
+
     con = sqlite3.connect(db_path)
     try:
-        rows = con.execute(
+        line_rows = con.execute(
             "SELECT context.context, file.path, line_bits.numbits FROM line_bits "
             "JOIN context ON context.id = line_bits.context_id "
             "JOIN file ON file.id = line_bits.file_id"
         ).fetchall()
+        arc_rows = con.execute(
+            "SELECT context.context, file.path, arc.fromno, arc.tono FROM arc "
+            "JOIN context ON context.id = arc.context_id "
+            "JOIN file ON file.id = arc.file_id"
+        ).fetchall()
     finally:
         con.close()
-    root = root.resolve()
-    for context, path, numbits in rows:
-        if not context:
-            continue  # collection / import time, not attributable to one test
-        nodeid = context.split("|", 1)[0]
-        nodeid = re.sub(r"\[.*\]$", "", nodeid)
-        try:
-            rel = str(Path(path).resolve().relative_to(root))
-        except ValueError:
-            continue
-        result[nodeid][rel].update(_numbits_to_lines(numbits))
+    for context, path, numbits in line_rows:
+        rel = rel_path(path) if context else None
+        if rel is not None:
+            result[fold_nodeid(context.split("|", 1)[0])][rel].update(_numbits_to_lines(numbits))
+    for context, path, fromno, tono in arc_rows:
+        rel = rel_path(path) if context else None
+        if rel is not None:
+            lines = result[fold_nodeid(context.split("|", 1)[0])][rel]
+            # Negative numbers mark entry/exit arcs; abs() gives the real line.
+            lines.update(n for n in (abs(fromno), abs(tono)) if n > 0)
     return result
 
 
-def _changed_head_symbols(plan: Plan) -> list[Symbol]:
-    return [
-        c.head
-        for c in plan.changes
-        if c.head is not None and DELETED not in c.changes and c.head.line_ranges
-    ]
+def _line_owner_index(plan: Plan) -> tuple[dict[str, dict[int, set[str]]], tuple[str, ...]]:
+    """``{path: {line: changed symbol ids}}`` for the changed head symbols.
+
+    A container (module or class) owns only the lines outside its members'
+    definitions, mirroring how the planner treats body changes; when its
+    change is structural (which invalidates every member) all its lines
+    count, mirroring the ``defined_in`` propagation rule.
+    """
+    head = plan.head_index
+    members_of: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for symbol in head.symbols.values():
+        if symbol.container is not None:
+            members_of[symbol.container].extend(symbol.line_ranges)
+    index: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
+    changed_ids: list[str] = []
+    for change in plan.changes:
+        symbol = change.head
+        if symbol is None or not symbol.line_ranges:
+            continue
+        changed_ids.append(symbol.id)
+        excluded: set[int] = set()
+        if not change.structural:
+            for start, end in members_of.get(symbol.id, ()):
+                excluded.update(range(start, end + 1))
+        for start, end in symbol.line_ranges:
+            for line in range(start, end + 1):
+                if line not in excluded:
+                    index[symbol.path][line].add(symbol.id)
+    return index, tuple(sorted(changed_ids))
 
 
-def _run_coverage_pytest(
-    cwd: Path, command: str | None
-) -> tuple[Path, str, tempfile.TemporaryDirectory[str]]:
-    tmp = tempfile.TemporaryDirectory(prefix="diffcone-cov-")
-    db = Path(tmp.name) / ".coverage"
-    argv = [
-        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
-        "-p",
-        "no:cacheprovider",
-        "-q",
-        "--cov=.",
-        "--cov-context=test",
-        "--cov-report=",
-        "-o",
-        "addopts=",
-    ]
-    env = dict(os.environ, COVERAGE_FILE=str(db))
-    proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
-    log = proc.stdout + proc.stderr
-    if not db.exists():
-        tmp.cleanup()
+def coverage_validation(
+    plan: Plan, run: _SuiteRun, head_dir: Path, selected: set[str]
+) -> CoverageValidation:
+    assert run.coverage_db is not None
+    contexts = read_coverage_contexts(run.coverage_db, head_dir)
+    if not contexts:
         raise GitError(
-            "coverage validation produced no coverage database; is pytest-cov installed in the "
-            f"environment that runs {argv[0]!r}?\n{log[-2000:]}"
+            "coverage validation recorded no per-test contexts: the head suite collected no "
+            f"tests under coverage (exit code {run.returncode})\n{run.log[-2000:]}"
         )
-    return db, log, tmp
-
-
-def coverage_validation(plan: Plan, head_dir: Path, command: str | None) -> CoverageValidation:
-    db, log, tmp = _run_coverage_pytest(head_dir, command)
-    try:
-        contexts = read_coverage_contexts(db, head_dir)
-    finally:
-        tmp.cleanup()
-    changed = _changed_head_symbols(plan)
-    by_path: dict[str, list[Symbol]] = defaultdict(list)
-    for symbol in changed:
-        by_path[symbol.path].append(symbol)
-    selected = {
-        d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
-    }
+    owners, changed_ids = _line_owner_index(plan)
     hits: list[CoverageHit] = []
     for nodeid in sorted(contexts):
         executed: set[str] = set()
         for rel, lines in contexts[nodeid].items():
-            for symbol in by_path.get(rel, ()):
-                if any(symbol.covers_line(line) for line in lines):
-                    executed.add(symbol.id)
+            by_line = owners.get(rel)
+            if by_line:
+                for line in lines:
+                    executed.update(by_line.get(line, ()))
         hits.append(CoverageHit(nodeid, nodeid in selected, tuple(sorted(executed))))
-    return CoverageValidation(hits, tuple(sorted(s.id for s in changed)), log)
+    return CoverageValidation(hits, changed_ids, run.log)
 
 
 def validate_pytest(
     plan: Plan, *, repo: Path, command: str | None = None, coverage: bool = False
 ) -> Validation:
     """Run the full suite at base and head and compare outcome changes with
-    the plan's pytest selection; with ``coverage`` also check dynamic
-    execution of changed symbols at head."""
+    the plan's pytest selection; with ``coverage`` the head run also records
+    per-test coverage and every test that executed a changed symbol must be
+    selected."""
     if plan.head.kind == KIND_WORKTREE and plan.base.kind == KIND_WORKTREE:
         raise GitError("validate needs at least one committed snapshot")
-    with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
-        base_outcomes, base_log = _run_full_pytest(base_dir, command)
-    cov: CoverageValidation | None = None
-    with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
-        head_outcomes, head_log = _run_full_pytest(head_dir, command)
-        if coverage:
-            cov = coverage_validation(plan, head_dir, command)
     selected = {
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }
+    with _Checkout(repo, plan.base.kind, plan.base.commit) as base_dir:
+        with _run_full_pytest(base_dir, command) as base_run:
+            base_outcomes, base_log = base_run.outcomes, base_run.log
+    cov: CoverageValidation | None = None
+    with _Checkout(repo, plan.head.kind, plan.head.commit) as head_dir:
+        with _run_full_pytest(head_dir, command, coverage=coverage) as head_run:
+            head_outcomes, head_log = head_run.outcomes, head_run.log
+            if coverage:
+                cov = coverage_validation(plan, head_run, head_dir, selected)
     known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
@@ -407,9 +460,20 @@ def validation_to_dict(v: Validation) -> dict:
     }
 
 
+def _status_label(v: Validation) -> str:
+    if v.ok:
+        return "OK"
+    reasons = []
+    if v.missed:
+        reasons.append("outcome")
+    if v.coverage is not None and v.coverage.missed:
+        reasons.append("coverage")
+    return f"MISSED ({', '.join(reasons)})"
+
+
 def validation_to_text(v: Validation) -> str:
     lines = [
-        f"validation ({v.runner}): {'OK' if v.ok else 'MISSED OUTCOME CHANGES'}",
+        f"validation ({v.runner}): {_status_label(v)}",
         f"  targets: {len(v.outcomes)}, selected: {v.selected_count}, "
         f"outcome changed: {sum(1 for o in v.outcomes if o.changed)} "
         f"(caught {len(v.caught)}, missed {len(v.missed)})",

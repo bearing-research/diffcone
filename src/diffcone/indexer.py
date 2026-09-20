@@ -851,11 +851,10 @@ class Indexer:
 
 
 def _end_line(node: ast.AST) -> int:
-    end = getattr(node, "end_lineno", None)
-    if end is not None:
-        return end
-    last = max((getattr(n, "end_lineno", 0) or 0 for n in ast.walk(node)), default=0)
-    return last or getattr(node, "lineno", 1)
+    """Last source line of a definition; a Module has no position of its own."""
+    if isinstance(node, ast.Module):
+        return node.body[-1].end_lineno or 1 if node.body else 1
+    return node.end_lineno or node.lineno  # type: ignore[attr-defined]
 
 
 def _chain_text(expr: ast.expr) -> str:
