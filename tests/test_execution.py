@@ -575,9 +575,12 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
     assert [o.runner_id for o in e4.validation.missed] == ["tests/test_data.py::test_data"]
     assert report.outcome_missed == 1 and report.recall == 1.0 and not report.ok
     assert report.mean_savings == pytest.approx(2 / 3)
-    # c2's suite ran once (as head of pair 1, cached as base of pair 2).
+    # Each commit's suite ran once: c1, c2 (head, coverage), c3 (base of the
+    # next pair: skipped as a commit, but its non-.py change could still alter
+    # outcomes, so it is not assumed equal to c2) and c4 (head, coverage).
     suite_runs = [c for c in calls if "-m" in c and "pytest" in c and "-v" in c]
-    assert len(suite_runs) == 3  # c1, c2 (with coverage), c4 (with coverage)
+    assert len(suite_runs) == 4
+    assert sum(1 for c in suite_runs if "--cov-context=test" in c) == 2
 
     code = main(
         [
