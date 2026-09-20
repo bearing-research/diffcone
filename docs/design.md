@@ -327,6 +327,24 @@ Not modelled: `params` expansion, benchmark methods inherited from base
 classes, a `benchmark_dir` outside the source roots (targets get
 `missing_symbol` notes).
 
+## Execution and validation
+
+`diffcone/execution.py` is the only module that runs project code, and only
+from the `run` and `validate` commands after a plan exists.
+
+* `run` builds the runner command for the selected targets: pytest node ids
+  appended to the command, or an anchored `--bench` regex for ASV. It exits
+  with the runner's exit code, 0 when nothing was selected.
+* `validate` (pytest only) runs the full suite at base and head with `-v`
+  and parses the per-test outcome lines, folding parameter cases into their
+  function and keeping the worst outcome. Commits are checked out into
+  temporary detached worktrees that are removed afterwards; `WORKTREE` runs
+  in the repository; `INDEX` is not supported. Every test whose outcome
+  differs between the snapshots must be selected; otherwise it is reported
+  as missed and the command exits 1. New or deleted tests count as outcome
+  changes. This is a necessary, not sufficient, check: behaviour changes
+  that keep the same outcome are not visible to it.
+
 ## Known gaps (by design)
 
 * Dynamic dispatch: `self.m()` resolves to the definition found in the

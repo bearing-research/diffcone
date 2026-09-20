@@ -44,10 +44,12 @@ Static discovery covers the common layout. Remaining gaps, roughly by value:
   attributes), and evaluate making module body changes structural for test
   modules only.
 
-## 4. Validated execution integration
+## 4. Validation depth
 
-* `diffcone run --runner pytest` that executes the selected set and
-  optionally the full set, comparing outcomes to measure precision/recall of
-  the plan on real repositories.
+* Coverage-based validation: run the head suite with per-test coverage
+  contexts (pytest-cov) and treat "executed a changed function" as ground
+  truth, measuring precision and recall of the static plan rather than
+  only outcome changes.
+* `validate` for ASV.
 * Persistent cache of per-commit indexes once correctness is established.
 * A corpus of real-world before/after commits as regression data.

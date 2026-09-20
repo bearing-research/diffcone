@@ -6,9 +6,11 @@ observe them, and explains every selection with a concrete dependency path or
 an explicit fallback rule.
 
 **Status: early prototype.** `diffcone plan` (milestone 1), static
-pytest/ASV target discovery (milestone 2) and working-tree analysis
-(milestone 3) are implemented and covered by acceptance scenarios. The tool
-produces a selection *plan* and does not run or deselect anything. See [Limitations](#limitations) and
+pytest/ASV target discovery (milestone 2), working-tree analysis
+(milestone 3), inheritance-aware resolution (milestone 4) and execution /
+validation commands (milestone 5) are implemented and covered by acceptance
+scenarios. Analysis never runs project code; `run` and `validate` execute
+the runner only after a plan exists. See [Limitations](#limitations) and
 [docs/roadmap.md](docs/roadmap.md) before relying on it.
 
 ## What it does
@@ -69,6 +71,27 @@ root that contains it. With `--source-root src --source-root .`, the file
 
 Exit codes: `0` plan produced; `1` plan produced but analysis errors forced a
 select-everything fallback; `2` no plan (bad revision, bad manifest).
+
+### Running and validating
+
+Planning never executes project code. Two commands run things *after* a
+plan exists, with a command line you control:
+
+```bash
+# execute only the selected pytest targets (arguments after -- go to pytest)
+uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" -- -x
+uv run diffcone run --base main --head HEAD --discover asv --runner asv --dry-run
+
+# outcome-based validation of the plan
+uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest"
+```
+
+`validate` runs the full pytest suite at both snapshots (commits are checked
+out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
+every test whose pass/fail outcome changed but was not selected. It exits 1
+on a miss. It is deliberately only outcome-based: a behaviour change that
+keeps the same outcome is invisible to it; coverage-based validation is on
+the roadmap.
 
 ### Static discovery
 

@@ -1,19 +1,30 @@
 """Command-line interface.
 
-Exit codes:
+Exit codes (plan / discover):
   0  plan produced, analysis complete
   1  plan produced, but analysis errors forced a conservative fallback
   2  no plan (bad arguments, unreadable manifest, unknown revision)
+
+``run`` exits with the runner's exit code (0 when nothing was selected or
+with --dry-run); ``validate`` exits 0 when every outcome change was selected,
+1 when some were missed, 2 on errors.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
+from diffcone.execution import (
+    run_selected,
+    validate_pytest,
+    validation_to_dict,
+    validation_to_text,
+)
 from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
 from diffcone.planner import plan
@@ -78,6 +89,49 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.add_argument("--format", choices=("json", "text"), default="json")
 
+    r = sub.add_parser(
+        "run",
+        help="plan, then execute only the selected targets with the runner's CLI",
+        description=(
+            "Build a plan exactly like `plan`, then invoke the runner on the selected "
+            "targets (pytest node ids, or an asv --bench pattern). Nothing is executed "
+            "during analysis. Arguments after `--` are passed to the runner."
+        ),
+    )
+    r.add_argument("--base", required=True, help="base snapshot: a git revision, INDEX or WORKTREE")
+    r.add_argument("--head", required=True, help="head snapshot: a git revision, INDEX or WORKTREE")
+    r.add_argument("--targets", help="path to a JSON target manifest")
+    r.add_argument("--runner", choices=RUNNERS, default="pytest", help="which runner to execute")
+    r.add_argument(
+        "--command",
+        dest="runner_command",
+        help='runner command line (default: "python -m pytest" or "asv run"); run in --repo',
+    )
+    r.add_argument("--dry-run", action="store_true", help="print the command instead of running")
+    _add_common(r)
+    r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
+
+    v = sub.add_parser(
+        "validate",
+        help="run the full pytest suite at both snapshots and check the plan against it",
+        description=(
+            "Outcome-based validation: runs the whole pytest suite at base and head "
+            "(commits in temporary git worktrees, WORKTREE in place), then reports every "
+            "test whose pass/fail outcome changed but was not selected. Behaviour changes "
+            "that keep the same outcome are invisible to this check."
+        ),
+    )
+    v.add_argument("--base", required=True, help="base snapshot: a git revision or WORKTREE")
+    v.add_argument("--head", required=True, help="head snapshot: a git revision or WORKTREE")
+    v.add_argument("--targets", help="path to a JSON target manifest")
+    v.add_argument(
+        "--command",
+        dest="runner_command",
+        help='pytest command line (default: "python -m pytest")',
+    )
+    _add_common(v)
+    v.add_argument("--format", choices=("json", "text"), default="text")
+
     d = sub.add_parser(
         "discover",
         help="statically discover targets in a snapshot and emit a manifest",
@@ -110,23 +164,59 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     options = DiscoveryOptions(external_fixtures=frozenset(args.external_fixtures))
+
+    def build_plan():
+        if not args.targets and not args.discover:
+            parser.error(f"{args.command} requires --targets and/or --discover")
+        manifest = load_manifest(args.targets) if args.targets else None
+        return plan(
+            Path(args.repo),
+            args.base,
+            args.head,
+            manifest,
+            source_roots=args.source_roots,
+            discover_runners=args.discover or (),
+            discovery_options=options,
+        )
+
     try:
         if args.command == "plan":
-            if not args.targets and not args.discover:
-                parser.error("plan requires --targets and/or --discover")
-            manifest = load_manifest(args.targets) if args.targets else None
-            result = plan(
-                Path(args.repo),
-                args.base,
-                args.head,
-                manifest,
-                source_roots=args.source_roots,
-                discover_runners=args.discover or (),
-                discovery_options=options,
-            )
+            result = build_plan()
             text = to_json(result) if args.format == "json" else to_text(result)
             code = _write(text, args.output)
             return code if code else (1 if result.degraded else 0)
+        if args.command == "run":
+            result = build_plan()
+            outcome = run_selected(
+                result,
+                args.runner,
+                cwd=Path(args.repo),
+                command=args.runner_command,
+                extra=args.runner_args,
+                dry_run=args.dry_run,
+            )
+            status = "degraded" if result.degraded else "complete"
+            print(
+                f"diffcone: {len(outcome.selected)} of {outcome.total} {args.runner} target(s) "
+                f"selected (plan {status})",
+                file=sys.stderr,
+            )
+            if not outcome.selected:
+                print("diffcone: nothing selected; not running", file=sys.stderr)
+                return 0
+            if args.dry_run:
+                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
+            return outcome.returncode or 0
+        if args.command == "validate":
+            result = build_plan()
+            validation = validate_pytest(result, repo=Path(args.repo), command=args.runner_command)
+            text = (
+                json.dumps(validation_to_dict(validation), indent=2) + "\n"
+                if args.format == "json"
+                else validation_to_text(validation)
+            )
+            code = _write(text, args.output)
+            return code if code else (0 if validation.ok else 1)
         if args.command == "discover":
             runners = args.discover or list(RUNNERS)
             roots = args.source_roots or ["."]

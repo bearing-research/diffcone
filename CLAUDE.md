@@ -16,6 +16,8 @@ uv run diffcone plan --repo . --base <rev> --head <rev> \
     --discover pytest --discover asv [--targets targets.json] \
     --source-root src --source-root . --format json|text
 uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
+uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" [--dry-run] -- -x
+uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest"
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests && uv run ruff format --check src tests
@@ -32,6 +34,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
 - `src/diffcone/report.py` renders JSON (`schema_version` 2) and text.
+- `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate` after a plan exists; keep it that way.
 - `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.
 - `src/diffcone/testing.py` is the public scenario-test toolkit: `FixtureRepo` (throwaway git repo built from dicts, `commit`/`plan`/`git`/`try_git`), target constructors and plan assertion helpers. Tests import from `diffcone.testing`, never from other test files; `tests/conftest.py` only defines the `repo` fixture.
 
