@@ -26,8 +26,9 @@ import ast
 import builtins
 import copy
 import hashlib
+import json
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from diffcone.model import (
     CLASS,
@@ -176,7 +177,9 @@ class ClassScope:
     enclosing: ClassScope | None = None  # the class this one is nested in, if any
     members: dict[str, str] = field(default_factory=dict)  # name -> symbol id
     bindings: set[str] = field(default_factory=set)
-    base_exprs: list[ast.expr] = field(default_factory=list)
+    # Each base as a dotted name chain, or None for a non-name expression
+    # (``Generic[T]``, ``namedtuple(...)``) that the collector visits instead.
+    base_chains: list[list[str] | None] = field(default_factory=list)
     bases: list[str] = field(default_factory=list)  # in-scope base class ids, in order
     complete: bool = True  # False when some base is external/dynamic/unresolved
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
@@ -189,7 +192,9 @@ class ModuleScope:
     name: str
     path: str
     is_package: bool
-    tree: ast.Module
+    # None for a module whose facts were served by the module cache; the
+    # tree is parsed on demand only when the module must be re-resolved.
+    tree: ast.Module | None
     imports: dict[str, ImportBinding] = field(default_factory=dict)
     star_imports: list[str] = field(default_factory=list)
     bindings: set[str] = field(default_factory=set)
@@ -201,6 +206,10 @@ class ModuleScope:
     variable_stmts: dict[str, ast.stmt] = field(default_factory=dict)
     # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    # Module cache bookkeeping: the content key of the file and the digest
+    # of everything other modules' resolution may read from this one.
+    cache_key: str | None = None
+    env_digest: str = ""
 
 
 @dataclass
@@ -577,96 +586,337 @@ class _ParamDynamic:
     detail: str
 
 
+@dataclass
+class _Output:
+    """Everything a resolution pass writes. Pass 2 runs per module against a
+    fresh instance so a module's contribution can be cached and merged; the
+    rest of the indexer writes to the global one backed by the index."""
+
+    edges: set[Edge] = field(default_factory=set)
+    unresolved: set[UnresolvedReference] = field(default_factory=set)
+    external: set[ExternalReference] = field(default_factory=set)
+    call_sites: dict[str, list[_CallSite]] = field(default_factory=lambda: defaultdict(list))
+    escapes: set[str] = field(default_factory=set)
+    func_params: dict[str, _FuncParams] = field(default_factory=dict)
+    param_dynamics: list[_ParamDynamic] = field(default_factory=list)
+
+    def merge(self, other: _Output) -> None:
+        self.edges |= other.edges
+        self.unresolved |= other.unresolved
+        self.external |= other.external
+        for function, sites in other.call_sites.items():
+            self.call_sites[function].extend(sites)
+        self.escapes |= other.escapes
+        self.func_params.update(other.func_params)
+        self.param_dynamics.extend(other.param_dynamics)
+
+
+def _tuples(value: list | None) -> tuple[str, ...] | None:
+    return None if value is None else tuple(value)
+
+
+def _scope_to_dict(scope: Scope) -> dict:
+    """The part of a function scope that deferred parameter-dynamic expansion
+    resolves names against (module, imports, locals, self, aliases)."""
+    return {
+        "module": scope.module.name,
+        "local_imports": {k: [b.module, b.attr] for k, b in scope.local_imports.items()},
+        "locals": sorted(scope.locals),
+        "self_name": scope.self_name,
+        "self_class": scope.self_class,
+        "param_aliases": scope.param_aliases,
+    }
+
+
+def _scope_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> Scope:
+    return Scope(
+        module=scopes[data["module"]],
+        local_imports={k: ImportBinding(m, a) for k, (m, a) in data["local_imports"].items()},
+        locals=set(data["locals"]),
+        self_name=data["self_name"],
+        self_class=data["self_class"],
+        param_aliases=dict(data["param_aliases"]),
+    )
+
+
+def _output_to_dict(out: _Output) -> dict:
+    return {
+        "edges": [[e.source, e.target, e.kind, e.detail] for e in sorted(out.edges)],
+        "unresolved": [[u.symbol, u.kind, u.name, u.detail] for u in sorted(out.unresolved)],
+        "external": [[x.symbol, x.module] for x in sorted(out.external)],
+        "call_sites": {
+            f: [[s.positional, s.keywords, s.unbounded, s.receiver_bound] for s in sites]
+            for f, sites in out.call_sites.items()
+        },
+        "escapes": sorted(out.escapes),
+        "func_params": {
+            f: [p.positional, p.bound, p.defaults, p.has_varargs]
+            for f, p in out.func_params.items()
+        },
+        "param_dynamics": [
+            [pd.function, pd.param, pd.kind, pd.base, _scope_to_dict(pd.scope), pd.detail]
+            for pd in out.param_dynamics
+        ],
+    }
+
+
+def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
+    out = _Output()
+    out.edges = {Edge(*e) for e in data["edges"]}
+    out.unresolved = {UnresolvedReference(*u) for u in data["unresolved"]}
+    out.external = {ExternalReference(*x) for x in data["external"]}
+    for f, sites in data["call_sites"].items():
+        out.call_sites[f] = [
+            _CallSite(
+                positional=[_tuples(v) for v in positional],
+                keywords={k: _tuples(v) for k, v in keywords.items()},
+                unbounded=unbounded,
+                receiver_bound=receiver_bound,
+            )
+            for positional, keywords, unbounded, receiver_bound in sites
+        ]
+    out.escapes = set(data["escapes"])
+    out.func_params = {
+        f: _FuncParams(
+            positional=list(positional),
+            bound=bound,
+            defaults={k: _tuples(v) for k, v in defaults.items()},
+            has_varargs=has_varargs,
+        )
+        for f, (positional, bound, defaults, has_varargs) in data["func_params"].items()
+    }
+    out.param_dynamics = [
+        _ParamDynamic(function, param, kind, base, _scope_from_dict(scope, scopes), detail)
+        for function, param, kind, base, scope, detail in data["param_dynamics"]
+    ]
+    return out
+
+
+def _facts_to_dict(
+    scope: ModuleScope, symbols: list[Symbol], classes: list[ClassScope], edges: set[Edge]
+) -> dict:
+    """A module's first-pass output: a pure function of its file (given its
+    module name), so it is cached by content. ``env`` digests the part other
+    modules' resolution can observe (names, kinds, class members); it feeds
+    the environment fingerprint that keys second-pass outputs."""
+    record = {
+        "imports": {k: [b.module, b.attr] for k, b in scope.imports.items()},
+        "star_imports": list(scope.star_imports),
+        "bindings": sorted(scope.bindings),
+        "members": dict(scope.members),
+        "variables": dict(scope.variables),
+        "literal_names": {
+            k: (list(v) if v is not None else None) for k, v in scope.literal_names.items()
+        },
+        "symbols": [asdict(s) for s in symbols],
+        "classes": [
+            {
+                "id": c.id,
+                "enclosing": c.enclosing.id if c.enclosing is not None else None,
+                "members": dict(c.members),
+                "bindings": sorted(c.bindings),
+                "base_chains": c.base_chains,
+            }
+            for c in classes
+        ],
+        "edges": [[e.source, e.target, e.kind, e.detail] for e in sorted(edges)],
+    }
+    env = [
+        scope.name,
+        record["imports"],
+        record["star_imports"],
+        record["bindings"],
+        record["members"],
+        record["variables"],
+        [[s.id, s.kind, s.module] for s in symbols],
+        [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
+    ]
+    record["env"] = _digest(json.dumps(env, sort_keys=True))
+    return record
+
+
 class Indexer:
-    def __init__(self, snapshot: Snapshot, hash_cache=None) -> None:
+    def __init__(self, snapshot: Snapshot, module_cache=None) -> None:
         self.snapshot = snapshot
         self.index = SourceIndex(snapshot=snapshot.info)
         self.index.errors.extend(snapshot.errors)
-        # Optional content-keyed cache of per-symbol hashes (diffcone.cache.HashCache).
-        self.hash_cache = hash_cache
-        self._hash_memo: dict[str, list[str]] | None = None
-        self._hash_memo_key: str | None = None
-        self._hash_memo_new: dict[str, list[str]] = {}
-        self._hash_memo_dirty = False
+        # Optional per-module cache of first-pass facts and second-pass
+        # outputs (diffcone.cache.ModuleCache). Applies to every snapshot kind.
+        self.module_cache = module_cache
         self.scopes: dict[str, ModuleScope] = {}
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()
         self._bases_final = False
-        # Interprocedural literal propagation for ``getattr(x, param)``:
-        # per function, what its resolved call sites pass; whether it is used
-        # other than by a direct call; and the pending parameter-driven uses.
-        self.call_sites: dict[str, list[_CallSite]] = defaultdict(list)
-        self.escapes: set[str] = set()
-        self.func_params: dict[str, _FuncParams] = {}
-        self.param_dynamics: list[_ParamDynamic] = []
+        # Where writes go: the global output is backed by the index; pass 2
+        # swaps in a per-module output so it can be cached (see _Output).
+        self._global = _Output(
+            edges=self.index.edges, unresolved=self.index.unresolved, external=self.index.external
+        )
+        self.out = self._global
+        # Symbols and class scopes added by the module being indexed, and
+        # whether one of its symbols collided with an earlier module's.
+        self._added_symbols: list[Symbol] = []
+        self._added_classes: list[ClassScope] = []
+        self._collided = False
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
-
-    def _symbol_hashes(self, symbol_id: str, compute) -> tuple[str, str, str]:
-        """(body, definition, docstring) hashes for ``symbol_id`` in the module
-        being indexed, from the hash cache when its file is unchanged."""
-        if self._hash_memo is not None:
-            cached = self._hash_memo.get(symbol_id)
-            if cached is not None and len(cached) == 3:
-                self._hash_memo_new[symbol_id] = cached
-                return cached[0], cached[1], cached[2]
-        hashes = compute()
-        self._hash_memo_new[symbol_id] = list(hashes)
-        self._hash_memo_dirty = True
-        return hashes
-
-    def _begin_hash_memo(self, path: str) -> None:
-        self._hash_memo = None
-        self._hash_memo_key = None
-        self._hash_memo_new = {}
-        self._hash_memo_dirty = False
-        if self.hash_cache is not None:
-            self._hash_memo_key = self.hash_cache.content_key(self.snapshot.files[path])
-            self._hash_memo = self.hash_cache.load(self._hash_memo_key)
-
-    def _end_hash_memo(self) -> None:
-        if self.hash_cache is not None and self._hash_memo_key is not None:
-            if self._hash_memo is None or self._hash_memo_dirty:
-                self.hash_cache.store(self._hash_memo_key, self._hash_memo_new)
-        self._hash_memo = None
+        # Cache counters (modules whose facts / resolution had to be computed).
+        self.modules_indexed = 0
+        self.modules_resolved = 0
 
     # -- pass 1 ---------------------------------------------------------------
 
     def build(self) -> SourceIndex:
-        for path in sorted(self.snapshot.files):
-            module = module_name_for(path, self.snapshot.source_roots)
-            if module is None:
-                continue
+        cache = self.module_cache
+        facts: dict[str, dict | None] = {}
+        candidates = [
+            (path, module)
+            for path in sorted(self.snapshot.files)
+            if (module := module_name_for(path, self.snapshot.source_roots)) is not None
+        ]
+        keys: dict[str, str] = {}  # path -> cache key; every record is loaded in one query
+        if cache is not None:
+            keys = {p: cache.key(m, p, self.snapshot.files[p]) for p, m in candidates}
+        loaded = cache.load_facts(list(keys.values())) if cache is not None else {}
+        for path, module in candidates:
             if module in self.scopes:
                 other = self.scopes[module].path
                 self._error(path, f"module {module!r} is also defined by {other}")
                 continue
-            try:
-                source = self.snapshot.files[path].decode("utf-8")
-                tree = ast.parse(source, filename=path)
-            except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
-                self._error(path, f"cannot parse: {exc}")
-                self.index.failed_modules.add(module)
-                continue
+            record = loaded.get(keys[path]) if path in keys else None
+            if record is None:
+                tree = self._parse(path, module)
+                if tree is None:
+                    continue
+            else:
+                tree = None
             scope = ModuleScope(
                 name=module, path=path, is_package=path.endswith("__init__.py"), tree=tree
             )
+            scope.cache_key = keys.get(path)
             self.scopes[module] = scope
             self.index.modules.add(module)
+            facts[module] = record
+        new_facts: dict[str, dict] = {}
+        new_resolved: dict[str, dict] = {}
         for module in self.index.modules:
             parts = module.split(".")
             for i in range(1, len(parts) + 1):
                 self._module_prefixes.add(".".join(parts[:i]))
         for module in sorted(self.scopes):
-            self._index_module(self.scopes[module])
+            scope = self.scopes[module]
+            record = facts[module]
+            if record is not None and any(s["id"] in self.index.symbols for s in record["symbols"]):
+                # Collides with an earlier module (an error either way): index
+                # it afresh so the errors come out exactly as without a cache.
+                record = None
+                scope.tree = self._parse(scope.path, module)
+                if scope.tree is None:  # pragma: no cover - same content parsed before
+                    del self.scopes[module]
+                    self.index.modules.discard(module)
+                    continue
+            if record is not None:
+                self._apply_facts(scope, record)
+                continue
+            self.modules_indexed += 1
+            self._added_symbols, self._added_classes, self._collided = [], [], False
+            self.out = _Output()
+            try:
+                self._index_module(scope)
+            finally:
+                captured, self.out = self.out, self._global
+            self._global.merge(captured)
+            if cache is not None:
+                record = _facts_to_dict(
+                    scope, self._added_symbols, self._added_classes, captured.edges
+                )
+                scope.env_digest = record["env"]
+                if not self._collided and scope.cache_key is not None:
+                    new_facts[scope.cache_key] = record
         for class_id in sorted(self.class_scopes):
             self._ensure_bases(class_id)
         self._bases_final = True  # MROs may be memoised from here on
         self._build_descendants()
+        fingerprint = self._environment_fingerprint() if cache is not None else ""
+        resolved_keys = {
+            m: f"{s.cache_key}-{fingerprint}" for m, s in self.scopes.items() if s.cache_key
+        }
+        loaded = cache.load_resolved(list(resolved_keys.values())) if cache is not None else {}
         for module in sorted(self.scopes):
-            self._resolve_module(self.scopes[module])
+            scope = self.scopes[module]
+            key = resolved_keys.get(module)
+            data = loaded.get(key) if key is not None else None
+            if data is not None:
+                out = _output_from_dict(data, self.scopes)
+            else:
+                self.modules_resolved += 1
+                if scope.tree is None:
+                    self._load_tree(scope)
+                self.out = _Output()
+                try:
+                    self._resolve_module(scope)
+                finally:
+                    out, self.out = self.out, self._global
+                if key is not None:
+                    new_resolved[key] = _output_to_dict(out)
+            self._global.merge(out)
         self._resolve_param_dynamics()
+        if cache is not None and (new_facts or new_resolved):
+            cache.store({**new_facts, **new_resolved})
         return self.index
+
+    def _parse(self, path: str, module: str) -> ast.Module | None:
+        try:
+            source = self.snapshot.files[path].decode("utf-8")
+            return ast.parse(source, filename=path)
+        except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
+            self._error(path, f"cannot parse: {exc}")
+            self.index.failed_modules.add(module)
+            return None
+
+    def _load_tree(self, scope: ModuleScope) -> None:
+        """Parse a module whose facts came from the cache but which must be
+        resolved again (its file or the environment changed)."""
+        tree = self._parse(scope.path, scope.name)
+        if tree is None:  # pragma: no cover - the same content parsed before
+            tree = ast.Module(body=[], type_ignores=[])
+        scope.tree = tree
+        _, _, variable_stmts = self._module_statements(scope)
+        scope.variable_stmts = {n: s for n, s in variable_stmts.items() if n in scope.variables}
+
+    def _apply_facts(self, scope: ModuleScope, record: dict) -> None:
+        scope.imports = {k: ImportBinding(m, a) for k, (m, a) in record["imports"].items()}
+        scope.star_imports = list(record["star_imports"])
+        scope.bindings = set(record["bindings"])
+        scope.members = dict(record["members"])
+        scope.variables = dict(record["variables"])
+        scope.literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
+        scope.env_digest = record["env"]
+        for data in record["symbols"]:
+            data = dict(data)
+            data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
+            data["imports"] = tuple(data["imports"])
+            self._add_symbol(Symbol(**data))
+        for data in record["classes"]:
+            enclosing = self.class_scopes[data["enclosing"]] if data["enclosing"] else None
+            self.class_scopes[data["id"]] = ClassScope(
+                id=data["id"],
+                module=scope,
+                enclosing=enclosing,
+                members=dict(data["members"]),
+                bindings=set(data["bindings"]),
+                base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
+            )
+        self.out.edges.update(Edge(*e) for e in record["edges"])
+
+    def _environment_fingerprint(self) -> str:
+        """Digest of everything a module's resolution reads from other
+        modules: their observable facts plus every class's resolved bases."""
+        material = [
+            [[m, self.scopes[m].env_digest] for m in sorted(self.scopes)],
+            [[c, cs.bases, cs.complete] for c, cs in sorted(self.class_scopes.items())],
+        ]
+        return _digest(json.dumps(material))
 
     def _resolve_param_dynamics(self) -> None:
         """Expand ``getattr(x, p)`` / ``import_module(p)`` where ``p`` is a
@@ -675,15 +925,15 @@ class Indexer:
         unresolved reference so callers may be unknown) or has an unbounded
         call site stays dynamic."""
         unresolved_names = {u.name for u in self.index.unresolved if u.name}
-        for pd in self.param_dynamics:
-            info = self.func_params.get(pd.function)
+        for pd in self.out.param_dynamics:
+            info = self.out.func_params.get(pd.function)
             symbol = self.index.symbols.get(pd.function)
             candidates: list[str] | None = []
-            sites = self.call_sites.get(pd.function, [])
+            sites = self.out.call_sites.get(pd.function, [])
             if (
                 info is None
                 or symbol is None
-                or pd.function in self.escapes
+                or pd.function in self.out.escapes
                 or symbol.name in unresolved_names
                 or not sites
             ):
@@ -696,20 +946,20 @@ class Indexer:
                         break
                     candidates.extend(values)
             if candidates is None:
-                self.index.unresolved.add(
+                self.out.unresolved.add(
                     UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
                 )
                 continue
             for name in dict.fromkeys(candidates):
                 if pd.kind == "import":
                     if name.startswith("."):
-                        self.index.unresolved.add(
+                        self.out.unresolved.add(
                             UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
                         )
                     else:
                         self._module_import_edge(pd.function, name)
                 elif pd.base is None:
-                    self.index.unresolved.add(
+                    self.out.unresolved.add(
                         UnresolvedReference(
                             pd.function, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
                         )
@@ -730,33 +980,38 @@ class Indexer:
                 symbol.path,
                 f"symbol identity {symbol.id!r} collides with {existing.kind} in {existing.path}",
             )
+            self._collided = True
             return False
         self.index.symbols[symbol.id] = symbol
+        self._added_symbols.append(symbol)
         return True
 
-    def _index_module(self, scope: ModuleScope) -> None:
+    def _module_statements(
+        self, scope: ModuleScope
+    ) -> tuple[list[ast.stmt], list[ast.stmt], dict[str, ast.stmt]]:
+        """(all scope statements, body without docstring, variable statements)
+        of a parsed module; fills the import table and statement list."""
+        assert scope.tree is not None
         stmts = list(iter_scope_statements(scope.tree.body))
         scope.import_nodes = [s for s in stmts if isinstance(s, (ast.Import, ast.ImportFrom))]
-        for node in scope.import_nodes:
-            self._register_imports(scope, node, scope.imports, scope.star_imports)
+        if not scope.imports and not scope.star_imports:
+            for node in scope.import_nodes:
+                self._register_imports(scope, node, scope.imports, scope.star_imports)
+        body = _split_docstring(scope.tree.body)[1]
+        return stmts, body, _variable_statements(scope, body)
+
+    def _index_module(self, scope: ModuleScope) -> None:
+        assert scope.tree is not None
+        stmts, body, variable_stmts = self._module_statements(scope)
         for stmt in stmts:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
         imports = tuple(sorted(_canonical_imports(scope)))
-        body = _split_docstring(scope.tree.body)[1]
-        variable_stmts = _variable_statements(scope, body)
-        self._begin_hash_memo(scope.path)
-        module_body_hash, _, module_doc_hash = self._symbol_hashes(
-            scope.name,
-            lambda: (
-                hash_scope_body(
-                    [s for s in body if s not in variable_stmts.values()], strip_imports=True
-                ),
-                "",
-                _docstring_hash([scope.tree.body]),
-            ),
+        module_body_hash = hash_scope_body(
+            [s for s in body if s not in variable_stmts.values()], strip_imports=True
         )
+        module_doc_hash = _docstring_hash([scope.tree.body])
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -801,14 +1056,7 @@ class Indexer:
                 name=name,
                 path=scope.path,
                 lineno=stmt.lineno,
-                body_hash=self._symbol_hashes(
-                    symbol_id,
-                    lambda value=value, name=name: (
-                        hash_nodes([value, *mutators.get(name, [])]),
-                        "",
-                        "",
-                    ),
-                )[0],
+                body_hash=hash_nodes([value, *mutators.get(name, [])]),
                 definition_hash="",
                 container=scope.name,
                 line_ranges=tuple(
@@ -818,8 +1066,7 @@ class Indexer:
             if self._add_symbol(symbol):
                 scope.variables[name] = symbol_id
                 scope.variable_stmts[name] = stmt
-                self.index.edges.add(Edge(symbol_id, scope.name, DEFINED_IN))
-        self._end_hash_memo()
+                self.out.edges.add(Edge(symbol_id, scope.name, DEFINED_IN))
 
     def _register_imports(
         self,
@@ -893,7 +1140,7 @@ class Indexer:
                         _docstring_hash([n.body for n in nodes]),
                     )
 
-                body_hash, definition_hash, doc_hash = self._symbol_hashes(symbol_id, class_hashes)
+                body_hash, definition_hash, doc_hash = class_hashes()
                 symbol = Symbol(
                     id=symbol_id,
                     kind=CLASS,
@@ -910,11 +1157,12 @@ class Indexer:
                 if not self._add_symbol(symbol):
                     continue
                 members[name] = symbol_id
-                self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+                self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 for n in nodes:
-                    cscope.base_exprs.extend(n.bases)
+                    cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                 self.class_scopes[symbol_id] = cscope
+                self._added_classes.append(cscope)
                 for n in nodes:
                     for stmt in iter_scope_statements(n.body):
                         if not isinstance(stmt, DEF_NODES):
@@ -943,9 +1191,7 @@ class Indexer:
                         _docstring_hash([n.body for n in nodes]),
                     )
 
-                body_hash, definition_hash, doc_hash = self._symbol_hashes(
-                    symbol_id, function_hashes
-                )
+                body_hash, definition_hash, doc_hash = function_hashes()
                 symbol = Symbol(
                     id=symbol_id,
                     kind=METHOD if class_scope is not None else FUNCTION,
@@ -962,7 +1208,7 @@ class Indexer:
                 if not self._add_symbol(symbol):
                     continue
                 members[name] = symbol_id
-                self.index.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+                self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
 
     def modules_with_prefix(self, prefix: str) -> tuple[str, ...]:
         return tuple(sorted(m for m in self.scopes if m.startswith(prefix)))
@@ -980,9 +1226,9 @@ class Indexer:
         if cscope.bases_state:
             return
         cscope.bases_state = 1
-        for expr in cscope.base_exprs:
-            node = self._resolve_base_expr(expr, cscope)
-            self._record(cscope.id, node, chain=_chain_text(expr))
+        for parts in cscope.base_chains:
+            node = self._resolve_base_expr(parts, cscope)
+            self._record(cscope.id, node, chain=".".join(parts) if parts else "<expr>")
             if (
                 isinstance(node, Resolved)
                 and not node.detail
@@ -995,11 +1241,10 @@ class Indexer:
                 cscope.complete = False  # external, dynamic (``Generic[T]``) or unknown
         cscope.bases_state = 2
 
-    def _resolve_base_expr(self, expr: ast.expr, cscope: ClassScope) -> Node:
+    def _resolve_base_expr(self, parts: list[str] | None, cscope: ClassScope) -> Node:
         """A base name is looked up in the enclosing class body (for nested
         classes) and then in the module, as Python does when the class
         statement executes."""
-        parts = _flatten_chain(expr)
         if parts is None:
             return None  # ``Generic[T]``, ``namedtuple(...)``: the collector visits it
         enclosing = cscope.enclosing
@@ -1198,7 +1443,7 @@ class Indexer:
         for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
             if default is not None:
                 defaults[a.arg] = fscope.string_candidates(default)
-        self.func_params[symbol_id] = _FuncParams(
+        self.out.func_params[symbol_id] = _FuncParams(
             positional=positional,
             bound=bound_method,
             defaults=defaults,
@@ -1275,19 +1520,19 @@ class Indexer:
     def _module_import_edge(self, source: str, module: str) -> None:
         if not self._module_in_scope(module):
             if self._module_in_scope(module.split(".")[0]):
-                self.index.unresolved.add(
+                self.out.unresolved.add(
                     UnresolvedReference(
                         source, UNRESOLVED_ATTRIBUTE, module.rsplit(".", 1)[-1], f"import {module}"
                     )
                 )
             else:
-                self.index.external.add(ExternalReference(source, module))
+                self.out.external.add(ExternalReference(source, module))
             return
         parts = module.split(".")
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             if prefix in self.scopes and prefix != source:
-                self.index.edges.add(Edge(source, prefix, IMPORTS))
+                self.out.edges.add(Edge(source, prefix, IMPORTS))
 
     # -- resolution --------------------------------------------------------------
 
@@ -1402,27 +1647,27 @@ class Indexer:
             return
         if isinstance(node, Resolved):
             if node.symbol != source:
-                self.index.edges.add(Edge(source, node.symbol, kind, node.detail))
+                self.out.edges.add(Edge(source, node.symbol, kind, node.detail))
             if node.uncertain_attr:
-                self.index.unresolved.add(
+                self.out.unresolved.add(
                     UnresolvedReference(source, UNRESOLVED_ATTRIBUTE, node.uncertain_attr, chain)
                 )
             for symbol_id, detail in node.overrides:
                 if symbol_id != source:
                     label = f"override:{detail}" if detail else "override"
-                    self.index.edges.add(Edge(source, symbol_id, kind, label))
+                    self.out.edges.add(Edge(source, symbol_id, kind, label))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 init = self.lookup_in_class(node.symbol, "__init__")
                 if isinstance(init, Resolved) and init.symbol != source:
-                    self.index.edges.add(Edge(source, init.symbol, REFERENCES, "constructor"))
+                    self.out.edges.add(Edge(source, init.symbol, REFERENCES, "constructor"))
         elif isinstance(node, ModuleNode):
             if node.module in self.scopes and node.module != source:
-                self.index.edges.add(Edge(source, node.module, kind, "module"))
+                self.out.edges.add(Edge(source, node.module, kind, "module"))
         elif isinstance(node, External):
-            self.index.external.add(ExternalReference(source, node.module))
+            self.out.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):
-            self.index.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
+            self.out.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
 
 
 def _canonical_imports(scope: ModuleScope) -> set[str]:
@@ -1482,11 +1727,6 @@ def _end_line(node: ast.AST) -> int:
     if isinstance(node, ast.Module):
         return node.body[-1].end_lineno or 1 if node.body else 1
     return node.end_lineno or node.lineno  # type: ignore[attr-defined]
-
-
-def _chain_text(expr: ast.expr) -> str:
-    parts = _flatten_chain(expr)
-    return ".".join(parts) if parts else "<expr>"
 
 
 def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -1626,7 +1866,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.indexer._record(self.source, node, kind=kind, chain=".".join(parts))
 
     def _dynamic(self, detail: str) -> None:
-        self.indexer.index.unresolved.add(
+        self.indexer.out.unresolved.add(
             UnresolvedReference(self.source, UNRESOLVED_DYNAMIC, "", detail)
         )
 
@@ -1648,7 +1888,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
         # unknown, but the attribute name still bounds what it may refer to.
-        self.indexer.index.unresolved.add(
+        self.indexer.out.unresolved.add(
             UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
         )
         self.generic_visit(node)
@@ -1710,7 +1950,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
-            self.indexer.index.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
+            self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
 
     def visit_Assign(self, node: ast.Assign) -> None:
         for target in node.targets:
@@ -1788,11 +2028,11 @@ class _ReferenceCollector(ast.NodeVisitor):
             unbounded=unbounded,
             receiver_bound=receiver_bound,
         )
-        self.indexer.call_sites[symbol.id].append(site)
+        self.indexer.out.call_sites[symbol.id].append(site)
         # A dispatched call may land on any override: they share the call site.
         for override_id, detail in target.overrides:
             if not detail:
-                self.indexer.call_sites[override_id].append(site)
+                self.indexer.out.call_sites[override_id].append(site)
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be
@@ -1803,10 +2043,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         if isinstance(target, Resolved) and not target.detail:
             symbol = self.indexer.index.symbols.get(target.symbol)
             if symbol is not None and symbol.kind in (FUNCTION, METHOD):
-                self.indexer.escapes.add(symbol.id)
+                self.indexer.out.escapes.add(symbol.id)
                 for override_id, detail in target.overrides:
                     if not detail:
-                        self.indexer.escapes.add(override_id)
+                        self.indexer.out.escapes.add(override_id)
 
     def _param_dynamic(
         self, expr: ast.expr, kind: str, base: list[str] | None, detail: str
@@ -1815,7 +2055,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         parameters; returns False when that does not apply."""
         if not (isinstance(expr, ast.Name) and expr.id in self.scope.params):
             return False
-        self.indexer.param_dynamics.append(
+        self.indexer.out.param_dynamics.append(
             _ParamDynamic(self.source, expr.id, kind, base, self.scope, detail)
         )
         return True
@@ -1839,7 +2079,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         for name in names:
             if base is None:
                 # Unknown receiver, known attribute name: bounded like ``obj.name``.
-                self.indexer.index.unresolved.add(
+                self.indexer.out.unresolved.add(
                     UnresolvedReference(
                         self.source, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
                     )
@@ -1858,7 +2098,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # the prefix may be imported; nothing outside it can be.
                 names = self.indexer.modules_with_prefix(prefix)
                 if not names:
-                    self.indexer.index.external.add(ExternalReference(self.source, prefix + "*"))
+                    self.indexer.out.external.add(ExternalReference(self.source, prefix + "*"))
                     return
         if names is None or any(n.startswith(".") for n in names):
             if names is not None or not self._param_dynamic(
@@ -1870,5 +2110,5 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.indexer._module_import_edge(self.source, module)
 
 
-def build_index(snapshot: Snapshot, hash_cache=None) -> SourceIndex:
-    return Indexer(snapshot, hash_cache=hash_cache).build()
+def build_index(snapshot: Snapshot, module_cache=None) -> SourceIndex:
+    return Indexer(snapshot, module_cache=module_cache).build()

@@ -56,7 +56,7 @@ Git snapshot reader
 ```
 
 - The planner operates on explicit in-memory data structures and must not import pytest or ASV. The engine is runner-independent; runner names are just labels on targets.
-- The only persistent state is the per-commit index cache under `.diffcone/cache/` (`src/diffcone/cache.py`): keyed by commit, source roots, `INDEX_FORMAT` and a fingerprint of the indexer's source, never used for `WORKTREE`/`INDEX`, and required to yield a byte-identical plan to a cache miss (tests enforce this). Bump `INDEX_FORMAT` when the index's meaning changes; the fingerprint covers ordinary edits.
+- The only persistent state is the cache under `.diffcone/cache/` (`src/diffcone/cache.py`): whole indexes per commit (keyed by commit, source roots, `INDEX_FORMAT` and a fingerprint of the indexer's source and Python version; never used for `WORKTREE`/`INDEX`) and per-module facts and resolution outputs in `modules.sqlite` (keyed by file content and an environment fingerprint; used for every snapshot kind). Both must yield a byte-identical plan to a miss: every indexer unit test and scenario fixture is also run cold- and warm-cached and compared. Anything the indexer reads from other modules during resolution must be part of the environment fingerprint (`Indexer._environment_fingerprint`, `_facts_to_dict`'s `env`), and every write in pass 2 must go through `self.out`. Bump `INDEX_FORMAT` when the index's meaning changes; the fingerprint covers ordinary edits.
 - JSON report must distinguish: analyzed snapshots and scope, changed symbols, selected targets, unselected targets, dependency explanations, unresolved relationships, fallback decisions, analysis errors.
 
 ## Non-negotiable analysis rules (see docs/design.md for the precise propagation table)

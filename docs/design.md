@@ -316,17 +316,57 @@ optimisation only: a hit must yield a byte-identical plan to a miss (tests
 compare the reports and assert git is not read on a hit), writes are
 atomic, write failures are silent, and `--no-cache` / `--cache-dir` control
 it. `INDEX_FORMAT` is bumped whenever the indexer's output for the same
-input can change. Alongside it, a per-file hash cache (`hashes/<sha256 of
-format, fingerprint and file content>.json`) stores every symbol's body,
-definition and docstring hashes, which are pure functions of the file's
-text and the dominant first-pass cost; it applies to every snapshot kind,
-so a warm `WORKTREE` plan re-hashes only the files that changed.
+input can change; the fingerprint also covers the Python minor version,
+since `ast.dump` output (hence every hash) may differ between versions.
 
-Cost on click (75 files, 555 tests): a cold `plan --head WORKTREE` is
-1.45 s wall, a warm one 0.75 s (0.66 s in-process), of which indexing the
-working tree is about 0.5 s. Parsing is cheap; resolution and hashing
-dominate, so the next step when this matters again is a per-module
-resolution cache (roadmap).
+### Module cache
+
+Alongside the whole-index entries, `ModuleCache` keeps per-module results
+in one SQLite file (`modules.sqlite`) for every snapshot kind, including
+the working tree. Indexing is split into stages so each is a pure function
+of something cacheable:
+
+* **Facts, per file.** Pass 1 of a module (its symbols with hashes and line
+  ranges, import table, bindings, literal names, class scopes with their
+  base name chains, `defined_in` edges) depends only on the file's text,
+  its module name and path, so it is stored under a key of those plus the
+  index format and indexer fingerprint. A served module is not parsed at
+  all. A module whose symbols collide with an earlier module's (an error
+  either way) is indexed afresh so the errors come out exactly as without
+  a cache, and a record is never stored for a module that collided.
+* **Environment fingerprint.** After every class's bases are resolved
+  (always run; it is cheap and its edges are part of the index), a digest
+  is taken of everything a module's resolution can read from other
+  modules: each module's observable facts (names, kinds, members, imports,
+  bindings, star imports; digested once per file and stored with its
+  facts) plus every class's resolved bases and completeness. A body edit
+  leaves it unchanged; adding, removing or renaming a symbol changes it.
+* **Resolution, per module.** Pass 2 writes (edges, unresolved and
+  external references, call sites, escapes, parameter tables and deferred
+  parameter-dynamic uses, whose function scopes are serialised) go to a
+  per-module output, merged into the index and stored under
+  `<facts key>-<fingerprint>`. Only a module whose file or environment
+  changed is parsed and resolved again. Parameter-dynamic expansion needs
+  every module's call sites, so it stays a final pass over the merged
+  outputs.
+
+Loads and stores are batched (one query per pass, one transaction per
+build); with one file per record, opening thousands of files cost more
+than resolving. The cache is invisible by construction and by test: every
+indexer unit test builds its index plain, through a cold cache and through
+a warm one and compares them; every scenario fixture plans uncached, cold
+and warm (with the whole-index entries removed so the module cache is what
+answers) and compares the reports; a test asserts that a one-line body
+edit re-parses and re-resolves exactly one module. There is no eviction
+yet; the file grows with every distinct file content seen.
+
+Cost, warm `plan --base HEAD --head WORKTREE --discover pytest` wall time
+through the installed entry point (about 0.1 s of it is interpreter
+start-up): click (75 files, 555 tests) 0.27 s, was 0.75 s; pytest (3 486
+discovered tests) 1.2 s; a synthetic tree of 2 501 modules 0.90 s with a
+clean tree and 1.0 s with a pending one-line edit that selects 1 000
+tests. On the synthetic tree, indexing the working tree fell from 1.1 s to
+0.27 s in-process; the planner (0.4 to 0.55 s) is now the largest phase.
 
 ## Determinism
 

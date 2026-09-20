@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+from diffcone.cache import ModuleCache, index_to_dict
 from diffcone.indexer import build_index
 from diffcone.model import Edge, SnapshotInfo
 from diffcone.snapshot import Snapshot, module_name_for
@@ -13,7 +17,17 @@ def index(files: dict[str, str], roots: list[str] | None = None):
         source_roots=roots or ["."],
         files={k: v.encode() for k, v in files.items()},
     )
-    return build_index(snap)
+    result = build_index(snap)
+    # The module cache must be invisible: the same index whether every module
+    # is computed, stored (cold) or loaded back (warm).
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = ModuleCache(Path(tmp))
+        cold = build_index(snap, module_cache=cache)
+        assert index_to_dict(cold) == index_to_dict(result)
+        warm = build_index(snap, module_cache=cache)
+        assert index_to_dict(warm) == index_to_dict(result)
+        assert cache.facts_hits == cache.resolved_hits == len(result.modules)
+    return result
 
 
 def edges(idx, source: str) -> set[tuple[str, str, str]]:

@@ -11,40 +11,7 @@ states the mechanism, the trade-off and what "done" means, so the
 implementation can be checked against it and the corpus can measure it.
 Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
-## 1. Per-module resolution cache
-
-**Status.** The per-commit index cache shipped (design.md, "Index cache"):
-a warm `plan --head WORKTREE` on click is 0.75 s, of which about 0.5 s is
-indexing the working tree from scratch. That is under the one-second goal
-for click; a monorepo will not be.
-
-**Mechanism.** Split indexing into cacheable per-module stages:
-
-* *pass 1 per file*, keyed by `(content hash, index format)`: symbols with
-  hashes and line ranges, import table, bindings, literal names, class
-  scopes. A pure function of the file.
-* *global fingerprint*: the sorted module names plus every symbol id and
-  class member list, computed from the pass-1 outputs (mostly cache hits).
-  A body edit does not change it; adding or renaming a symbol does.
-* *pass 2 per module*, keyed by `(content hash, fingerprint)`: edges,
-  unresolved and external references, call sites, escapes and parameter
-  dynamics contributed by that module. Only modules whose file or whose
-  fingerprint changed are re-parsed and re-resolved; the rest load their
-  pass-2 output without an AST. Parameter-dynamic expansion and override
-  edges need cross-module state (call sites, descendants), so they stay a
-  final full pass over the merged outputs.
-
-**Trade-off.** Serialising pass-2 state that today lives on `Scope` objects
-(local imports, literal names, parameters) for deferred parameter-dynamic
-expansion is the intricate part; if it proves fragile, cache pass 1 only
-and keep pass 2 full, which still removes parsing and hashing.
-
-**Done when.** A second `plan --head WORKTREE` after a one-line body edit
-re-resolves exactly one module (observable through cache counters), plans
-are byte-identical with and without the cache on every scenario fixture,
-and a synthetic 2 000-file tree plans warm in under one second.
-
-## 2. Evaluation at scale and breadth
+## 1. Evaluation at scale and breadth
 
 Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
@@ -62,7 +29,7 @@ the run shows (this is how every improvement so far was found).
   suite under coverage (already done for outcome symmetry) and reading its
   database closes that gap.
 
-## 3. Discovery completeness
+## 2. Discovery completeness
 
 * pytest: `request.getfixturevalue("name")` with a literal, names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
@@ -76,7 +43,7 @@ the run shows (this is how every improvement so far was found).
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 4. Resolution breadth
+## 3. Resolution breadth
 
 * Instance-attribute tracking: `self.attr = Callable` in `__init__` so
   `self.attr()` resolves; today it is name-bounded.
@@ -85,3 +52,24 @@ the run shows (this is how every improvement so far was found).
   rules for known dynamic patterns.
 * A `watch` loop for the developer inner loop once incremental analysis
   exists.
+
+## 4. Planner cost on large trees
+
+**Status.** With the module cache (design.md, "Module cache") a warm
+working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing
+and 0.4 to 0.55 s in `plan_from_indexes`: unioning the two indexes' edges
+into one graph (0.16 s), dependency signatures for classification and
+per-target explanation paths (about 0.1 s for 1 000 selected targets).
+
+**Mechanism.** Profile first (`cProfile` around `plan_from_indexes` on
+the synthetic tree); the candidates the current profile suggests are
+building the union graph without re-adding every edge of both indexes,
+and producing explanation paths without a sort per selected target.
+
+**Trade-off.** Both touch determinism-sensitive code (sorted adjacency,
+breadth-first order); the byte-identical-report tests and the recorded
+corpora are the guard. Not worth doing before a real repository of that
+size is in the evaluation set.
+
+**Done when.** The synthetic tree plans warm in under 0.7 s wall with a
+pending edit, and every recorded plan is byte-identical.

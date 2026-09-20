@@ -8,6 +8,13 @@ to a cache miss; the cache is an optimisation only.
 
 Layout: ``<cache_dir>/index/<key>.json`` where ``cache_dir`` defaults to
 ``<repo>/.diffcone/cache`` (add ``.diffcone/`` to ``.gitignore``).
+
+Beside it, the :class:`ModuleCache` keeps per-module results for every
+snapshot kind, including the working tree: a module's first-pass facts are a
+pure function of its file, and its second-pass resolution a pure function of
+the file plus a fingerprint of what other modules expose (see
+``Indexer.build``). A warm working-tree plan after a one-line edit then
+re-parses and re-resolves only the edited module.
 """
 
 from __future__ import annotations
@@ -15,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
+import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -39,6 +48,8 @@ def _indexer_fingerprint() -> str:
     INDEX_FORMAT (a stale base index once produced phantom changed symbols)."""
     here = Path(__file__).parent
     h = hashlib.sha256()
+    # ``ast.dump`` output (hence every hash) may differ between Python versions.
+    h.update(f"python{sys.version_info[0]}.{sys.version_info[1]}:".encode())
     for name in ("model.py", "snapshot.py", "indexer.py"):
         h.update((here / name).read_bytes())
     return h.hexdigest()[:16]
@@ -92,49 +103,102 @@ def index_from_dict(data: dict) -> SourceIndex:
     )
 
 
-class HashCache:
-    """Per-file symbol hashes keyed by the file's content: body, definition
-    and docstring hashes are pure functions of the source text, and computing
-    them (``ast.dump`` of every body) is the dominant cost of the indexer's
-    first pass. Used for every snapshot kind, including the working tree."""
+class ModuleCache:
+    """Per-module records in one SQLite file (``<cache_dir>/modules.sqlite``):
+    first-pass facts under ``<key>`` and second-pass outputs under
+    ``<key>-<fingerprint>``, where ``key`` identifies the module name, path,
+    file content and indexer version, and ``fingerprint`` the environment the
+    module was resolved against. Records are plain JSON produced by the
+    indexer; a hit must be indistinguishable from a miss. One file rather
+    than one per record because a warm plan on a large tree loads thousands
+    of records, and opening that many files costs more than resolving.
+
+    Every operation opens its own connection, so one instance may be shared
+    by threads (``corpus --jobs``) and by concurrent processes (SQLite locks;
+    a writer that cannot get the lock in time gives up silently)."""
 
     def __init__(self, directory: Path) -> None:
-        self.directory = directory / "hashes"
-        self.hits = 0
-        self.misses = 0
-
-    def _path(self, content_key: str) -> Path:
-        return self.directory / f"{content_key}.json"
+        self.path = directory / "modules.sqlite"
+        self.facts_hits = 0
+        self.facts_misses = 0
+        self.resolved_hits = 0
+        self.resolved_misses = 0
 
     @staticmethod
-    def content_key(content: bytes) -> str:
+    def key(module: str, path: str, content: bytes) -> str:
         h = hashlib.sha256()
-        h.update(f"{INDEX_FORMAT}:{INDEXER_FINGERPRINT}:".encode())
+        h.update(f"{INDEX_FORMAT}:{INDEXER_FINGERPRINT}:{module}:{path}:".encode())
         h.update(content)
         return h.hexdigest()
 
-    def load(self, content_key: str) -> dict[str, list[str]] | None:
+    def _connect(self, write: bool) -> sqlite3.Connection | None:
+        if not write and not self.path.exists():
+            return None
         try:
-            data = json.loads(self._path(content_key).read_text("utf-8"))
-        except (OSError, ValueError):
-            self.misses += 1
+            if write:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.path, timeout=10)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data TEXT)")
+            return conn
+        except (sqlite3.Error, OSError):
             return None
-        if not isinstance(data, dict):
-            self.misses += 1
-            return None
-        self.hits += 1
-        return data
 
-    def store(self, content_key: str, hashes: dict[str, list[str]]) -> None:
-        path = self._path(content_key)
+    def _load(self, keys: list[str]) -> dict[str, dict]:
+        found: dict[str, dict] = {}
+        if not keys:
+            return found
+        conn = self._connect(write=False)
+        if conn is None:
+            return found
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(hashes, f)
-            os.replace(tmp, path)
-        except OSError:
-            pass
+            with conn:
+                for i in range(0, len(keys), 500):
+                    chunk = keys[i : i + 500]
+                    marks = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        f"SELECT key, data FROM records WHERE key IN ({marks})", chunk
+                    ).fetchall()
+                    for key, data in rows:
+                        try:
+                            record = json.loads(data)
+                        except ValueError:
+                            continue
+                        if isinstance(record, dict):
+                            found[key] = record
+        except sqlite3.Error:
+            return {}
+        finally:
+            conn.close()
+        return found
+
+    def load_facts(self, keys: list[str]) -> dict[str, dict]:
+        found = self._load(keys)
+        self.facts_hits += len(found)
+        self.facts_misses += len(keys) - len(found)
+        return found
+
+    def load_resolved(self, keys: list[str]) -> dict[str, dict]:
+        found = self._load(keys)
+        self.resolved_hits += len(found)
+        self.resolved_misses += len(keys) - len(found)
+        return found
+
+    def store(self, records: dict[str, dict]) -> None:
+        conn = self._connect(write=True)
+        if conn is None:
+            return
+        try:
+            with conn:
+                conn.executemany(
+                    "INSERT OR REPLACE INTO records (key, data) VALUES (?, ?)",
+                    [(key, json.dumps(record)) for key, record in records.items()],
+                )
+        except sqlite3.Error:
+            pass  # a cache write failure is never an error
+        finally:
+            conn.close()
 
 
 class IndexCache:
@@ -142,7 +206,7 @@ class IndexCache:
         self.directory = directory
         self.hits = 0
         self.misses = 0
-        self.hashes = HashCache(directory)
+        self.modules = ModuleCache(directory)
 
     def _path(self, commit: str, source_roots: list[str]) -> Path:
         return self.directory / "index" / f"{index_key(commit, source_roots)}.json"

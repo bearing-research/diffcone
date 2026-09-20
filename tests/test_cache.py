@@ -129,31 +129,88 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
-def test_hash_cache_is_invisible_and_hits_on_unchanged_files(repo, tmp_path):
-    from diffcone.cache import HashCache
+def test_module_cache_reindexes_only_what_changed(repo, tmp_path):
+    from diffcone.cache import ModuleCache
     from diffcone.indexer import build_index
     from diffcone.snapshot import read_snapshot
 
+    ops = OPS + "\n\nX = 1\n\n\nclass K:\n    def m(self):\n        return X\n"
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": ops, "tests/test_ops.py": TEST_OPS})
+    snap = read_snapshot(repo.path, base, ["."])
+    plain = build_index(snap)
+    mc = ModuleCache(tmp_path / "c")
+    first = build_index(snap, module_cache=mc)
+    assert index_to_dict(first) == index_to_dict(plain)
+    assert (mc.facts_hits, mc.facts_misses) == (0, 3)
+    assert (mc.resolved_hits, mc.resolved_misses) == (0, 3)
+    second = build_index(snap, module_cache=mc)
+    assert index_to_dict(second) == index_to_dict(plain)
+    assert (mc.facts_hits, mc.resolved_hits) == (3, 3)
+
+    # A body edit re-parses and re-resolves exactly the edited module.
+    (repo.path / "pkg/ops.py").write_text(ops.replace("a + b", "b + a"))
+    wt = read_snapshot(repo.path, "WORKTREE", ["."])
+    mc = ModuleCache(tmp_path / "c")
+    assert index_to_dict(build_index(wt, module_cache=mc)) == index_to_dict(build_index(wt))
+    assert (mc.facts_hits, mc.facts_misses) == (2, 1)
+    assert (mc.resolved_hits, mc.resolved_misses) == (2, 1)
+
+    # Removing a symbol changes what other modules may see: their facts are
+    # served, but every module is resolved again against the new environment.
+    (repo.path / "pkg/ops.py").write_text(OPS + "\n\nX = 2\n")
+    wt = read_snapshot(repo.path, "WORKTREE", ["."])
+    mc = ModuleCache(tmp_path / "c")
+    assert index_to_dict(build_index(wt, module_cache=mc)) == index_to_dict(build_index(wt))
+    assert (mc.facts_hits, mc.facts_misses) == (2, 1)
+    assert (mc.resolved_hits, mc.resolved_misses) == (0, 3)
+    mc = ModuleCache(tmp_path / "c")
+    build_index(wt, module_cache=mc)
+    assert (mc.facts_hits, mc.resolved_hits) == (3, 3)
+
+
+def test_module_cache_keeps_symbol_collision_errors(repo, tmp_path):
+    """A class ``b`` in ``pkg/a/__init__.py`` and a module ``pkg/a/b.py`` share
+    an identity; the error is reported the same whether facts came from the
+    cache (the colliding module is indexed afresh) or not."""
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    mc = ModuleCache(tmp_path / "c")
+    clean = repo.commit(
+        {"pkg/__init__.py": "", "pkg/a/__init__.py": "", "pkg/a/b.py": "def f():\n    return 1\n"}
+    )
+    build_index(read_snapshot(repo.path, clean, ["."]), module_cache=mc)  # caches pkg.a.b's facts
+    base = repo.commit({"pkg/a/__init__.py": "class b:\n    pass\n"})
+    snap = read_snapshot(repo.path, base, ["."])
+    plain = build_index(snap)
+    assert any("collides" in e.message for e in plain.errors)
+    for _ in range(2):
+        mc = ModuleCache(tmp_path / "c")
+        assert index_to_dict(build_index(snap, module_cache=mc)) == index_to_dict(plain)
+    # pkg.a.b's cached facts hit but collide, so it is indexed afresh (and
+    # its colliding record is never stored); the other two are served.
+    assert (mc.facts_hits, mc.facts_misses) == (3, 0)
+
+
+def test_worktree_plan_reresolves_one_module_after_a_body_edit(repo, tmp_path):
     base = repo.commit(
         {
             "pkg/__init__.py": "",
-            "pkg/ops.py": OPS + "\n\nX = 1\n\n\nclass K:\n    def m(self):\n        return X\n",
+            "pkg/ops.py": OPS,
+            "pkg/more.py": "from pkg.ops import add\n\n\ndef twice(a):\n    return add(a, a)\n",
             "tests/test_ops.py": TEST_OPS,
         }
     )
-    snap = read_snapshot(repo.path, base, ["."])
-    plain = build_index(snap)
-    hc = HashCache(tmp_path / "c")
-    first = build_index(snap, hash_cache=hc)
-    assert index_to_dict(first) == index_to_dict(plain)
-    assert hc.hits == 0 and hc.misses == 3
-    second = build_index(snap, hash_cache=hc)
-    assert index_to_dict(second) == index_to_dict(plain)
-    assert hc.hits == 3
-    # A changed file misses and recomputes; unchanged files still hit.
-    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a") + "\n\nX = 2\n")
-    wt = read_snapshot(repo.path, "WORKTREE", ["."])
-    hc2 = HashCache(tmp_path / "c")
-    cached = build_index(wt, hash_cache=hc2)
-    assert index_to_dict(cached) == index_to_dict(build_index(wt))
-    assert (hc2.hits, hc2.misses) == (2, 1)
+    targets = [py_target("t::test_add", "tests.test_ops.test_add")]
+    for _ in range(2):
+        cache = IndexCache(tmp_path / "cache")
+        repo.plan(base, "WORKTREE", targets, cache=cache)
+    assert (cache.modules.facts_misses, cache.modules.resolved_misses) == (0, 0)
+    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a"))
+    cache = IndexCache(tmp_path / "cache")
+    result = repo.plan(base, "WORKTREE", targets, cache=cache)
+    assert (cache.modules.facts_misses, cache.modules.resolved_misses) == (1, 1)
+    assert cache.modules.facts_hits == 3 and cache.modules.resolved_hits == 3
+    uncached = repo.plan(base, "WORKTREE", targets)
+    assert _plans_equal(result, uncached)

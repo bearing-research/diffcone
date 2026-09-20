@@ -9,11 +9,14 @@ tests use; projects integrating diffcone can use them the same way.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
+from diffcone.cache import IndexCache
 from diffcone.manifest import Manifest, Target, parse_manifest
 from diffcone.planner import Plan, Reason, plan
+from diffcone.report import to_dict
 
 # A hermetic git environment: no user config, deterministic identity.
 GIT_ENV = {
@@ -74,7 +77,28 @@ class FixtureRepo:
             if targets and isinstance(targets[0], dict)
             else Manifest(list(targets))  # type: ignore[arg-type]
         )
-        return plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
+        result = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
+        if "cache" not in kwargs:
+            self._check_cache_invisible(result, base, head, manifest, source_roots, kwargs)
+        return result
+
+    def _check_cache_invisible(self, result, base, head, manifest, source_roots, kwargs) -> None:
+        """The caches are an optimisation only: a plan served cold (module
+        facts and resolution computed and stored) and one served warm (every
+        module's facts and resolution loaded, whole-index entries removed so
+        the module cache is what answers) must equal the uncached plan."""
+        directory = self.path.parent / ".fixture-cache"
+        shutil.rmtree(directory, ignore_errors=True)
+        expected = json.dumps(to_dict(result), sort_keys=True)
+        for warm in (False, True):
+            if warm:
+                shutil.rmtree(directory / "index", ignore_errors=True)
+            cache = IndexCache(directory)
+            again = plan(
+                self.path, base, head, manifest, source_roots=source_roots, cache=cache, **kwargs
+            )
+            got = json.dumps(to_dict(again), sort_keys=True)
+            assert got == expected, f"{'warm' if warm else 'cold'} cached plan differs"
 
     def write_manifest(self, targets: list[dict], name: str = "targets.json") -> Path:
         path = self.path.parent / name

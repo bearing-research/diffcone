@@ -49,9 +49,10 @@ uv run diffcone plan \
 ```
 
 Committed snapshots are indexed once and cached under `.diffcone/cache/`
-(add it to `.gitignore`; `--no-cache` and `--cache-dir` control it), so the
-developer loop `--base main --head WORKTREE` re-indexes only the working
-tree.
+(add it to `.gitignore`; `--no-cache` and `--cache-dir` control it), and
+every module's index is cached by file content, so the developer loop
+`--base main --head WORKTREE` re-parses and re-resolves only the files
+that changed since the last plan.
 
 `--base` and `--head` accept any git revision, `INDEX` (staged content) or
 `WORKTREE` (files on disk, tracked or untracked, ignored files excluded).
