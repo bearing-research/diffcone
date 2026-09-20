@@ -152,11 +152,16 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
     if section is None and "pyproject.toml" in files:
         try:
             data = tomllib.loads(files["pyproject.toml"].decode("utf-8"))
-            section = data.get("tool", {}).get("pytest", {}).get("ini_options")
+            tool = data.get("tool", {}).get("pytest", {})
         except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-            section = None
+            tool = {}
+        section = tool.get("ini_options")
         if section is not None:
             config["source"] = "pyproject.toml"
+        elif tool:
+            # pytest >= 9 native TOML table: [tool.pytest] with real TOML values.
+            section = {k: v for k, v in tool.items() if k != "ini_options"}
+            config["source"] = "pyproject.toml [tool.pytest]"
     if section is None and "tox.ini" in files:
         section = _ini_section(files["tox.ini"], "pytest")
         if section is not None:
@@ -375,8 +380,26 @@ def _fixture_requests(
     injected = _injected_patch_count(node.decorator_list)
     if injected:
         required = required[injected:]
-    skip = marks.parametrized - marks.indirect
+    skip = set(marks.parametrized - marks.indirect)
+    # hypothesis ``@given``: keyword strategies fill parameters by name,
+    # positional strategies fill the *last* parameters (from the right).
+    given_positional, given_keywords = _given_arguments(node.decorator_list)
+    skip |= given_keywords
+    remaining = [p for p in required if p not in skip]
+    if given_positional:
+        skip |= set(remaining[len(remaining) - given_positional :])
     return tuple(p for p in required if p != "request" and p not in skip)
+
+
+def _given_arguments(decorators: list[ast.expr]) -> tuple[int, set[str]]:
+    positional = 0
+    keywords: set[str] = set()
+    for dec in decorators:
+        parts, call = decorator_chain(dec)
+        if call is not None and parts and parts[-1] == "given":
+            positional += len(call.args)
+            keywords |= {k.arg for k in call.keywords if k.arg is not None}
+    return positional, keywords
 
 
 def _collect_facts(parsed: ParsedModule) -> ModuleFacts:

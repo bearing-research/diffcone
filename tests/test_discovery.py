@@ -750,3 +750,54 @@ def test_entry_point_reexports_use_original_names_and_filter_hooks(repo):
     assert "myplug.plugin.pytest_configure" in deps  # imported hook
     assert "myplug.plugin.pytest_unconfigure" not in deps  # not imported: not registered
     assert not any(d.startswith("fixture:") for d in deps)
+
+
+def test_hypothesis_given_arguments_are_not_fixture_requests(repo):
+    rev = repo.commit(
+        {
+            "tests/conftest.py": (
+                "import pytest\n\n\n@pytest.fixture\ndef C():\n    return 1\n\n\n"
+                "@pytest.fixture\ndef db():\n    return 2\n"
+            ),
+            "tests/test_h.py": (
+                "from hypothesis import given, strategies as st\n\n\n"
+                "class TestX:\n"
+                "    @given(st.booleans())\n"
+                "    def test_positional_fills_last(self, C, tuple_factory):\n        pass\n\n"
+                "    @given(container=st.integers())\n"
+                "    def test_keyword(self, container, C):\n        pass\n\n"
+                "    @given(st.integers(), st.integers())\n"
+                "    def test_two_positional(self, db, a, b):\n        pass\n\n\n"
+                "@given(x=st.integers())\n"
+                "def test_module_level(db, x):\n    pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    targets = by_id(result)
+
+    def fixtures(runner_id):
+        return {
+            d
+            for d in targets[runner_id].lifecycle_dependencies
+            if d.startswith(("fixture:", "tests.conftest."))
+        }
+
+    assert fixtures("tests/test_h.py::TestX::test_positional_fills_last") == {"tests.conftest.C"}
+    assert fixtures("tests/test_h.py::TestX::test_keyword") == {"tests.conftest.C"}
+    assert fixtures("tests/test_h.py::TestX::test_two_positional") == {"tests.conftest.db"}
+    assert fixtures("tests/test_h.py::test_module_level") == {"tests.conftest.db"}
+    assert result.notes == []
+
+
+def test_pytest9_native_toml_table(repo):
+    rev = repo.commit(
+        {
+            "pyproject.toml": '[tool.pytest]\ntestpaths = ["qa"]\npython_files = ["check_*.py"]\n',
+            "qa/check_a.py": "def test_a():\n    pass\n",
+            "tests/test_b.py": "def test_b():\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    assert result.config["source"] == "pyproject.toml [tool.pytest]"
+    assert set(by_id(result)) == {"qa/check_a.py::test_a"}

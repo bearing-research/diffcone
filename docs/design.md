@@ -323,8 +323,9 @@ indexed carries a `missing_symbol` note and falls into the planner's
 ### pytest
 
 Configuration: a `pytest.ini` at the root is the config file whenever it
-exists (even empty), otherwise `pyproject.toml`, `tox.ini`, `setup.cfg` in
-that order. `testpaths` entries may be directories, files or globs
+exists (even empty), otherwise `pyproject.toml` (`[tool.pytest.ini_options]`,
+or pytest 9's native `[tool.pytest]` table), `tox.ini`, `setup.cfg` in that
+order. `testpaths` entries may be directories, files or globs
 (`tests/integ*`); a leading `./` is ignored.
 
 Collected: files matching `python_files` under the source roots (restricted
@@ -344,7 +345,9 @@ Fixtures are functions decorated with a dotted name ending in `fixture` or
 arguments are honoured.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
-`patch.object` decorators (unless `new` is given), and names supplied by
+`patch.object` decorators (unless `new` is given), arguments supplied by
+hypothesis `@given` (keyword strategies by name, positional strategies
+filling the last parameters), and names supplied by
 `@pytest.mark.parametrize` on the function, class, enclosing classes or
 module (`indirect` names stay requests). `@pytest.mark.usefixtures(...)`
 on the function, class, enclosing classes or module adds requests.
