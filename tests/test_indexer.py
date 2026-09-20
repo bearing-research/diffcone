@@ -495,3 +495,34 @@ def test_parameter_driven_getattr_uses_call_site_literals():
     # Still dynamic: escaping as a value, an unbounded call site, never called.
     for sym in ("pkg.m.escaping", "pkg.m.unbounded_site", "pkg.m.uncalled"):
         assert ("dynamic", "") in unresolved(sym), sym
+
+
+def test_dict_literal_keys_bound_loop_variables():
+    idx = index(
+        {
+            "m.py": (
+                "WRAPPERS = {'assert_called': 1, 'assert_any_call': 2}\n\n"
+                "def f(mod):\n"
+                "    for method, wrapper in WRAPPERS.items():\n"
+                "        getattr(mod.NonCallableMock, method)\n"
+                "    for key in WRAPPERS:\n"
+                "        getattr(mod, key)\n"
+                "    for k2 in WRAPPERS.keys():\n"
+                "        getattr(mod, k2)\n\n"
+                "def g(mod):\n"
+                "    for method, wrapper in WRAPPERS.items():\n"
+                "        getattr(mod, wrapper)\n\n"
+                "def h(mod, d):\n"
+                "    for k in d.items():\n"
+                "        getattr(mod, k)\n"
+            )
+        }
+    )
+    f_refs = {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.f"}
+    assert f_refs == {
+        ("attribute", "NonCallableMock"),  # the receiver chain on a local
+        ("attribute", "assert_called"),
+        ("attribute", "assert_any_call"),
+    }
+    assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.g"}
+    assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.h"}

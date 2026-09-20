@@ -154,8 +154,10 @@ contain; those are symbols with their own edges.
 
 `getattr(x, name)` and `importlib.import_module(name)` are expanded over
 every string `name` may hold when that is bounded: a string literal, a
-tuple/list/set of literals, a variable assigned only such values (in the
-function or at module level), or a `for` variable iterating over one
+tuple/list/set of literals, a dict literal with string keys (iterated
+directly, via `.keys()` or as the key of `.items()`), a variable assigned
+only such values (in the function or at module level), or a `for` variable
+iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
 resolved like `x.<candidate>` or an import. When the name is one of the
 enclosing function's parameters, the literal strings that every resolved

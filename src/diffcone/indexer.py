@@ -231,6 +231,14 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
 def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return (expr.value,)
+    if isinstance(expr, ast.Dict):
+        # Iterating a dict yields its keys; only all-literal string keys count.
+        keys: list[str] = []
+        for key in expr.keys:
+            if key is None or not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                return None
+            keys.append(key.value)
+        return tuple(keys)
     if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
         out: list[str] = []
         for elt in expr.elts:
@@ -254,6 +262,14 @@ def _string_candidates(
         if expr.id in local_literals:
             return local_literals[expr.id]
         return module_literals.get(expr.id)
+    # ``D.keys()`` / ``D.items()`` / ``tuple(D)`` over a literal-keyed dict.
+    if (
+        isinstance(expr, ast.Call)
+        and not expr.args
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr in ("keys", "items")
+    ):
+        return _string_candidates(expr.func.value, local_literals, module_literals)
     return None
 
 
@@ -286,6 +302,22 @@ def _collect_literal_bindings(
                 bind(n.target.id, _string_candidates(n.value, found, module_literals))
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
             bind(n.target.id, _string_candidates(n.iter, found, module_literals))
+        elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Tuple):
+            # ``for key, value in D.items()``: the key is bounded, the value is not.
+            elts = n.target.elts
+            is_items = (
+                isinstance(n.iter, ast.Call)
+                and isinstance(n.iter.func, ast.Attribute)
+                and n.iter.func.attr == "items"
+            )
+            for i, elt in enumerate(elts):
+                if isinstance(elt, ast.Name):
+                    values = (
+                        _string_candidates(n.iter, found, module_literals)
+                        if is_items and i == 0 and len(elts) == 2
+                        else None
+                    )
+                    bind(elt.id, values)
         elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
             if n.id not in found:
                 found[n.id] = None
