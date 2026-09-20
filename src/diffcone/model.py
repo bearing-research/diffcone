@@ -74,6 +74,8 @@ class AnalysisError:
 class SourceIndex:
     revision: str
     commit: str
+    kind: str = "commit"  # "commit" | "index" | "worktree"
+    description: str = ""
     modules: set[str] = field(default_factory=set)
     symbols: dict[str, Symbol] = field(default_factory=dict)
     edges: set[Edge] = field(default_factory=set)

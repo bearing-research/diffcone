@@ -1,8 +1,8 @@
 # Roadmap
 
-Implemented today: `diffcone plan` over two committed revisions, with
-targets from a manifest and/or static pytest and ASV discovery (see
-[design.md](design.md)). Everything below is planned, in rough order.
+Implemented today: `diffcone plan` over two snapshots (commits, the staged
+index or the working tree), with targets from a manifest and/or static
+pytest and ASV discovery (see [design.md](design.md)). Everything below is planned, in rough order.
 
 ## 1. Discovery completeness
 
@@ -20,11 +20,11 @@ Static discovery covers the common layout. Remaining gaps, roughly by value:
   it would execute project code, so it stays opt-in and separate from
   planning.
 
-## 2. Working-tree analysis
+## 2. Incremental analysis
 
-* Analyse the index/working tree as the head snapshot (`--head WORKTREE`),
-  with the report stating exactly which uncommitted state was read.
-* Incremental re-indexing keyed by blob hash.
+* Incremental re-indexing keyed by blob hash, so repeated `--head WORKTREE`
+  runs only re-parse changed files.
+* A `diffcone watch` loop for the developer inner loop once caching exists.
 
 ## 3. Broader resolution
 

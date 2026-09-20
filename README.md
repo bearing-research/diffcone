@@ -5,18 +5,19 @@ It maps changes in application code to the tests and benchmarks that can
 observe them, and explains every selection with a concrete dependency path or
 an explicit fallback rule.
 
-**Status: early prototype.** `diffcone plan` (milestone 1) and static
-pytest/ASV target discovery (milestone 2) are implemented and covered by
-acceptance scenarios. The tool produces a selection *plan* and does not run
-or deselect anything. See [Limitations](#limitations) and
+**Status: early prototype.** `diffcone plan` (milestone 1), static
+pytest/ASV target discovery (milestone 2) and working-tree analysis
+(milestone 3) are implemented and covered by acceptance scenarios. The tool
+produces a selection *plan* and does not run or deselect anything. See [Limitations](#limitations) and
 [docs/roadmap.md](docs/roadmap.md) before relying on it.
 
 ## What it does
 
-Given two **committed** git revisions and a set of runnable targets (from a
-manifest, from static discovery, or both), `diffcone plan`:
+Given two snapshots (git revisions, the staged `INDEX`, or the `WORKTREE`)
+and a set of runnable targets (from a manifest, from static discovery, or
+both), `diffcone plan`:
 
-1. reads both source snapshots straight from git (no checkout, no execution);
+1. reads both snapshots without checking anything out or executing code;
 2. indexes modules, classes, functions and methods with stable identities and
    hashes of their bodies and definitions;
 3. resolves the statically resolvable subset of references into dependency
@@ -45,7 +46,12 @@ uv run diffcone plan \
   --format json          # or: text
 ```
 
-`--discover RUNNER` statically discovers targets in the head revision.
+`--base` and `--head` accept any git revision, `INDEX` (staged content) or
+`WORKTREE` (files on disk, tracked or untracked, ignored files excluded).
+The report names the kind of each snapshot and flags uncommitted analysis,
+so `--head WORKTREE` is the everyday developer loop and `--head HEAD` is the
+CI form. `--discover RUNNER` statically discovers targets in the head
+snapshot.
 `--targets manifest.json` supplies them explicitly; both can be combined, and
 a manifest entry overrides a discovered target with the same id. To inspect
 or edit what discovery finds, emit a manifest first:
@@ -145,8 +151,9 @@ The JSON report (`schema_version: 1`) contains:
 
 ## Limitations
 
-* **Committed snapshots only.** Uncommitted working-tree changes are never
-  read; the report says so explicitly.
+* **Uncommitted analysis is explicit.** A `WORKTREE` or `INDEX` snapshot is
+  named as such in the report (`analysis.head.kind`, `uncommitted_analyzed`).
+  Results for a working tree are only as stable as the working tree.
 * **Discovery is static and partial.** `request.getfixturevalue`, fixtures
   from installed plugins, test base classes defined in other modules,
   inherited ASV benchmark methods and `params` expansion into cases are not

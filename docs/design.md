@@ -22,10 +22,21 @@ target with the same runner and id).
 
 ### Snapshot reader
 
-`read_snapshot(repo, revision, source_roots)` resolves the revision to a
-commit, lists `.py` files under the source roots with `git ls-tree`, and
-reads their contents with `git cat-file --batch`. Nothing is checked out and
-the working tree is never consulted. Unknown revisions are fatal (exit 2).
+`read_snapshot(repo, revision, source_roots)` returns one of three snapshot
+kinds, and the kind travels with the index into the report:
+
+| `revision` | kind | contents |
+|---|---|---|
+| any git revision | `commit` | `.py` files under the source roots from the object store (`git ls-tree` + `git cat-file --batch`); nothing is checked out |
+| `INDEX` | `index` | staged content of tracked files (`git ls-files --cached`, blobs read as `:path`) |
+| `WORKTREE` | `worktree` | files on disk: tracked and untracked (`git ls-files --cached --others --exclude-standard`), ignored files excluded, tracked files deleted on disk absent |
+
+`INDEX` and `WORKTREE` record `HEAD` as their commit and carry a description
+that says "uncommitted". The report exposes `analysis.<side>.kind` and
+`uncommitted_analyzed`; the text report prints both descriptions and a
+prominent scope line. Runner configuration for discovery is read from the
+same snapshot (staged or on-disk files respectively). Unknown revisions are
+fatal (exit 2).
 
 ## Symbol identity
 

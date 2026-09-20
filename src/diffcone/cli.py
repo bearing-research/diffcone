@@ -61,14 +61,19 @@ def build_parser() -> argparse.ArgumentParser:
         "plan",
         help="produce a selection plan for two committed revisions",
         description=(
-            "Compare two committed git revisions and report which targets are affected. "
-            "Targets come from --targets, from --discover, or both. Only committed snapshots "
-            "are analyzed; uncommitted working-tree changes are ignored. Project code is "
-            "never executed."
+            "Compare two snapshots and report which targets are affected. A snapshot is a "
+            "git revision, INDEX (staged content) or WORKTREE (files on disk). The report "
+            "states exactly which kind was read. Targets come from --targets, from "
+            "--discover, or both. Project code is never executed."
         ),
     )
-    p.add_argument("--base", required=True, help="base git revision (committed)")
-    p.add_argument("--head", required=True, help="head git revision (committed)")
+    p.add_argument("--base", required=True, help="base snapshot: a git revision, INDEX or WORKTREE")
+    p.add_argument(
+        "--head",
+        required=True,
+        help="head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on "
+        "disk, ignored files excluded)",
+    )
     p.add_argument("--targets", help="path to a JSON target manifest")
     _add_common(p)
     p.add_argument("--format", choices=("json", "text"), default="json")
@@ -81,7 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
             "importing them, and print a target manifest (JSON) for `diffcone plan --targets`."
         ),
     )
-    d.add_argument("--rev", default="HEAD", help="git revision to discover in (default: HEAD)")
+    d.add_argument(
+        "--rev", default="HEAD", help="snapshot to discover in: revision, INDEX or WORKTREE"
+    )
     _add_common(d)
     return parser
 

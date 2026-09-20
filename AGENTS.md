@@ -6,11 +6,13 @@ it for Claude Code.
 ## Scope boundaries (do not widen silently)
 
 Diffcone is a static-first, function-level change-impact engine. The current
-milestone compares two **committed** git revisions and produces an
-explainable selection **plan** from a manifest of targets. It must:
+milestone compares two snapshots (git revisions, `INDEX`, `WORKTREE`) and produces an
+explainable selection **plan** from manifest and/or discovered targets. It
+must:
 
 * never execute project code or modify the working tree during analysis;
-* never imply that uncommitted changes were analysed;
+* always state which snapshot kind was analysed (commit, index or working
+  tree); never present uncommitted analysis as committed;
 * keep the planner free of pytest/ASV imports; runner integrations feed the
   manifest;
 * keep the layers separate: snapshot reader → indexer/resolver → classifier

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Diffcone is a static-first, function-level change-impact engine for Python. It maps changes in application code to affected tests and benchmarks (pytest and ASV are the first runner integrations).
 
-Milestone 1 (`diffcone plan` over two committed revisions with a target manifest) and milestone 2 (static pytest/ASV discovery) are implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `AGENTS.md` holds the scope boundaries. Stdlib only, no runtime dependencies.
+Milestone 1 (`diffcone plan` over two committed revisions with a target manifest), milestone 2 (static pytest/ASV discovery) and milestone 3 (`INDEX`/`WORKTREE` snapshots) are implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `AGENTS.md` holds the scope boundaries. Stdlib only, no runtime dependencies.
 
 ## Commands
 
@@ -27,7 +27,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 
 ## Code layout
 
-- `src/diffcone/snapshot.py` reads files from git objects (`ls-tree` + `cat-file --batch`); never touches the working tree.
+- `src/diffcone/snapshot.py` reads a commit from git objects (`ls-tree` + `cat-file --batch`), the staged `INDEX`, or the `WORKTREE` from disk (via `ls-files --exclude-standard`); the snapshot `kind` travels through the index into the report.
 - `src/diffcone/indexer.py` parses modules, assigns symbol identities, hashes bodies/definitions, resolves references into `Edge`s and records `UnresolvedReference`s. This is where the supported subset lives.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
@@ -37,7 +37,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 
 ## What `diffcone plan` is
 
-The deliverable is an **explainable selection plan**. The command does not execute or deselect targets, does not run project code (discovery included), and does not modify the working tree. It compares **two explicit committed git revisions** only; output and docs must not imply uncommitted changes were analyzed.
+The deliverable is an **explainable selection plan**. The command does not execute or deselect targets, does not run project code (discovery included), and does not modify the working tree. It compares two snapshots: git revisions, `INDEX` (staged) or `WORKTREE` (on disk). The report must always state which kind was read (`analysis.<side>.kind`, `uncommitted_analyzed`); never let a working-tree analysis look like a committed one.
 
 Targets are manifest records (`runner`, `runner_id`, `entry_symbol`, `lifecycle_dependencies`), hand-written or produced by static discovery. ASV setup functions and pytest fixtures are both expressed as lifecycle dependencies on the target. Discovery must document exactly which collection rules it reproduces and report, not guess, everything else; unknown fixtures become `fixture:<name>` so the planner selects conservatively.
 

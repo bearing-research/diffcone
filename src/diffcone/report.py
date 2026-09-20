@@ -52,6 +52,15 @@ def _target_dict(decision: Decision) -> dict[str, Any]:
     }
 
 
+def _snapshot_dict(index: Any) -> dict[str, Any]:
+    return {
+        "revision": index.revision,
+        "commit": index.commit,
+        "kind": index.kind,
+        "description": index.description,
+    }
+
+
 def to_dict(plan: Plan) -> dict[str, Any]:
     selected = [d for d in plan.decisions if d.selected]
     unselected = [d for d in plan.decisions if not d.selected]
@@ -60,10 +69,12 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         "status": "degraded" if plan.degraded else "complete",
         "analysis": {
             "repo": plan.repo,
-            "base": {"revision": plan.base_revision, "commit": plan.base_commit},
-            "head": {"revision": plan.head_revision, "commit": plan.head_commit},
+            "base": _snapshot_dict(plan.base_index),
+            "head": _snapshot_dict(plan.head_index),
             "source_roots": plan.source_roots,
-            "working_tree_analyzed": False,
+            "working_tree_analyzed": plan.head_index.kind == "worktree"
+            or plan.base_index.kind == "worktree",
+            "uncommitted_analyzed": plan.uncommitted_analyzed,
             "scope": SCOPE_DESCRIPTION,
             "counts": {
                 "modules_base": len(plan.base_index.modules),
@@ -152,7 +163,12 @@ def to_text(plan: Plan) -> str:
         f"{plan.head_revision} ({plan.head_commit[:12]})"
     )
     lines.append(f"source roots: {', '.join(plan.source_roots)}")
-    lines.append("scope: committed snapshots only; the working tree was not analyzed")
+    lines.append(f"base: {plan.base_index.description}")
+    lines.append(f"head: {plan.head_index.description}")
+    if plan.uncommitted_analyzed:
+        lines.append("scope: UNCOMMITTED state was analyzed (see base/head above)")
+    else:
+        lines.append("scope: committed snapshots only; the working tree was not analyzed")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
     lines.append("")
     lines.append(f"changed symbols ({len(plan.changes)}):")

@@ -148,6 +148,11 @@ class Plan:
     def degraded(self) -> bool:
         return bool(self.errors)
 
+    @property
+    def uncommitted_analyzed(self) -> bool:
+        """True when either snapshot is the index or the working tree."""
+        return any(i.kind != "commit" for i in (self.base_index, self.head_index))
+
 
 # --------------------------------------------------------------------------- graph
 

@@ -1,7 +1,15 @@
 """Git snapshot reader.
 
-Reads Python sources at a committed revision straight from the object store.
-It never checks anything out and never touches the working tree.
+Three kinds of snapshot can be read, and every one says what it is:
+
+* ``commit`` (any git revision): sources come straight from the object store;
+  nothing is checked out and the working tree is not touched.
+* ``INDEX``: the staged content of every tracked file (what ``git commit``
+  would record right now).
+* ``WORKTREE``: the files on disk, tracked or untracked, excluding ignored
+  ones; tracked files deleted from disk are absent.
+
+The last two are always reported as uncommitted state on top of ``HEAD``.
 """
 
 from __future__ import annotations
@@ -17,6 +25,14 @@ class GitError(Exception):
 
 CONFIG_FILES = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", "asv.conf.json")
 
+WORKTREE = "WORKTREE"
+INDEX = "INDEX"
+SPECIAL_REVISIONS = (WORKTREE, INDEX)
+
+KIND_COMMIT = "commit"
+KIND_INDEX = "index"
+KIND_WORKTREE = "worktree"
+
 
 @dataclass
 class Snapshot:
@@ -26,6 +42,12 @@ class Snapshot:
     files: dict[str, bytes] = field(default_factory=dict)  # repo-relative path -> content
     # Root-level runner configuration files, when present (see CONFIG_FILES).
     config_files: dict[str, bytes] = field(default_factory=dict)
+    kind: str = KIND_COMMIT
+    description: str = ""
+
+    @property
+    def committed(self) -> bool:
+        return self.kind == KIND_COMMIT
 
 
 def _git(repo: Path, args: list[str], stdin: bytes | None = None) -> bytes:
@@ -94,14 +116,21 @@ def list_root_files(repo: Path, commit: str) -> set[str]:
     return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
 
 
-def read_snapshot(
+def _pathspec(source_roots: list[str]) -> list[str]:
+    roots = [_normalise_root(r) for r in source_roots]
+    if "" in roots:
+        return []
+    return ["--", *[r for r in roots if r]]
+
+
+def _ls_files(repo: Path, args: list[str], source_roots: list[str]) -> list[str]:
+    out = _git(repo, ["ls-files", "-z", *args, *_pathspec(source_roots)])
+    return sorted({p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p})
+
+
+def read_commit_snapshot(
     repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
-    """Read the Python sources at ``revision``.
-
-    ``with_config`` also reads the root-level runner configuration files;
-    only discovery needs them, so the base snapshot skips the extra git calls.
-    """
     commit = resolve_commit(repo, revision)
     paths = list_python_files(repo, commit, source_roots)
     config_files: dict[str, bytes] = {}
@@ -114,7 +143,78 @@ def read_snapshot(
         source_roots=list(source_roots),
         files=read_files(repo, commit, paths),
         config_files=config_files,
+        kind=KIND_COMMIT,
+        description=f"commit {commit[:12]} ({revision})",
     )
+
+
+def read_index_snapshot(
+    repo: Path, source_roots: list[str], *, with_config: bool = False
+) -> Snapshot:
+    """The staged content of tracked files (git's index)."""
+    head = resolve_commit(repo, "HEAD")
+    paths = [p for p in _ls_files(repo, ["--cached"], source_roots) if p.endswith(".py")]
+    config_files: dict[str, bytes] = {}
+    if with_config:
+        staged_root = set(_ls_files(repo, ["--cached"], ["."]))
+        config_files = read_files(repo, "", [n for n in CONFIG_FILES if n in staged_root])
+    return Snapshot(
+        revision=INDEX,
+        commit=head,
+        source_roots=list(source_roots),
+        files=read_files(repo, "", paths),
+        config_files=config_files,
+        kind=KIND_INDEX,
+        description=f"git index (staged content) on top of commit {head[:12]}; uncommitted",
+    )
+
+
+def read_worktree_snapshot(
+    repo: Path, source_roots: list[str], *, with_config: bool = False
+) -> Snapshot:
+    """Files on disk: tracked and untracked, minus ignored ones."""
+    head = resolve_commit(repo, "HEAD")
+    listed = _ls_files(repo, ["--cached", "--others", "--exclude-standard"], source_roots)
+    files: dict[str, bytes] = {}
+    for path in listed:
+        if not path.endswith(".py"):
+            continue
+        full = repo / path
+        if full.is_file():  # tracked files deleted on disk are absent from the snapshot
+            files[path] = full.read_bytes()
+    config_files: dict[str, bytes] = {}
+    if with_config:
+        for name in CONFIG_FILES:
+            full = repo / name
+            if full.is_file():
+                config_files[name] = full.read_bytes()
+    return Snapshot(
+        revision=WORKTREE,
+        commit=head,
+        source_roots=list(source_roots),
+        files=files,
+        config_files=config_files,
+        kind=KIND_WORKTREE,
+        description=(
+            f"working tree (tracked and untracked files, ignored files excluded) on top of "
+            f"commit {head[:12]}; uncommitted"
+        ),
+    )
+
+
+def read_snapshot(
+    repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
+) -> Snapshot:
+    """Read the Python sources at ``revision``: a commit, ``INDEX`` or ``WORKTREE``.
+
+    ``with_config`` also reads the root-level runner configuration files;
+    only discovery needs them, so the base snapshot skips the extra work.
+    """
+    if revision == WORKTREE:
+        return read_worktree_snapshot(repo, source_roots, with_config=with_config)
+    if revision == INDEX:
+        return read_index_snapshot(repo, source_roots, with_config=with_config)
+    return read_commit_snapshot(repo, revision, source_roots, with_config=with_config)
 
 
 def module_name_for(path: str, source_roots: list[str]) -> str | None:
