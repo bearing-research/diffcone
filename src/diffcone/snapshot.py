@@ -94,17 +94,26 @@ def list_root_files(repo: Path, commit: str) -> set[str]:
     return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
 
 
-def read_snapshot(repo: Path, revision: str, source_roots: list[str]) -> Snapshot:
+def read_snapshot(
+    repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
+) -> Snapshot:
+    """Read the Python sources at ``revision``.
+
+    ``with_config`` also reads the root-level runner configuration files;
+    only discovery needs them, so the base snapshot skips the extra git calls.
+    """
     commit = resolve_commit(repo, revision)
     paths = list_python_files(repo, commit, source_roots)
-    root = list_root_files(repo, commit)
-    config_paths = [name for name in CONFIG_FILES if name in root]
+    config_files: dict[str, bytes] = {}
+    if with_config:
+        root = list_root_files(repo, commit)
+        config_files = read_files(repo, commit, [n for n in CONFIG_FILES if n in root])
     return Snapshot(
         revision=revision,
         commit=commit,
         source_roots=list(source_roots),
         files=read_files(repo, commit, paths),
-        config_files=read_files(repo, commit, config_paths),
+        config_files=config_files,
     )
 
 

@@ -147,11 +147,11 @@ The JSON report (`schema_version: 1`) contains:
 
 * **Committed snapshots only.** Uncommitted working-tree changes are never
   read; the report says so explicitly.
-* **Discovery is static and partial.** Fixture parametrisation, `indirect`,
-  `request.getfixturevalue`, fixtures from installed plugins, inherited
-  benchmark methods and ASV `params` expansion are not modelled; see
-  `docs/design.md` for the exact subset. Unknown fixtures are reported and
-  selected conservatively.
+* **Discovery is static and partial.** `request.getfixturevalue`, fixtures
+  from installed plugins, test base classes defined in other modules,
+  inherited ASV benchmark methods and `params` expansion into cases are not
+  modelled; see `docs/design.md` for the exact subset. Unknown fixtures are
+  reported and selected conservatively.
 * **Narrow, documented resolution subset** (see
   [docs/design.md](docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source

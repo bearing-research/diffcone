@@ -220,39 +220,59 @@ indexed carries a `missing_symbol` note and falls into the planner's
 
 ### pytest
 
+Configuration: a `pytest.ini` at the root is the config file whenever it
+exists (even empty), otherwise `pyproject.toml`, `tox.ini`, `setup.cfg` in
+that order. `testpaths` entries may be directories, files or globs
+(`tests/integ*`); a leading `./` is ignored.
+
 Collected: files matching `python_files` under the source roots (restricted
 to `testpaths` if set); module-level functions matching `python_functions`;
-methods of classes matching `python_classes` that have no `__init__`, nested
-test classes; methods whose name starts with `test` in classes with a base
-ending in `TestCase`. Node ids follow pytest (`path::Class::method`);
-parameter cases are not enumerated.
+methods of classes matching `python_classes` that have no `__init__`,
+including methods inherited from base classes defined in the same module
+(own definitions win; a base defined elsewhere yields an
+`unknown_base_class` note); nested test classes; methods whose name starts
+with `test` in classes with a base ending in `TestCase`. Node ids follow
+pytest (`path::Class::method`); the entry symbol of an inherited test is the
+method where it is defined, and the collecting class is a lifecycle
+dependency. Parameter cases are not enumerated.
 
 Fixtures are functions decorated with a dotted name ending in `fixture` or
 `yield_fixture`; `name=` and `autouse=True` keyword arguments are honoured.
-Requests come from parameter names (minus `self` and `request`),
-`@pytest.mark.usefixtures(...)` on the function or class, and a module- or
-class-level `pytestmark`. Resolution order is class fixtures (innermost
-first), module fixtures, `conftest.py` from the test's directory outward,
-then modules named in `pytest_plugins` (conftest declarations are global).
-Nearest scope wins; fixture requests are resolved transitively along the
-same chain; autouse fixtures anywhere on the chain apply.
+Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
+`request`, parameters with defaults, arguments injected by `mock.patch` /
+`patch.object` decorators (unless `new` is given), and names supplied by
+`@pytest.mark.parametrize` on the function, class, enclosing classes or
+module (`indirect` names stay requests). `@pytest.mark.usefixtures(...)`
+on the function, class, enclosing classes or module adds requests.
+Resolution order is class fixtures (the class, then its in-module bases,
+then enclosing classes), module fixtures, `conftest.py` from the test's
+directory outward, then modules named in `pytest_plugins` (conftest
+declarations are global). Nearest scope wins; a fixture that requests its
+own name (`def db(db)`) resolves to the next definition outward; requests
+are resolved transitively along the same chain; autouse fixtures anywhere
+on the chain apply.
 
 Lifecycle dependencies of a test: the resolved fixture symbols, the test
-module, every conftest module on the chain and its `pytest_*` hook
-functions, `setup_module`/`teardown_module`/`setup_function`/
-`teardown_function` if present, and the class's xunit/unittest
-setup/teardown methods if present. Unknown fixtures become `fixture:<name>`
-unless declared external (`--assume-external-fixture`) or a pytest builtin.
+module and its own `pytest_*` hooks (`pytest_generate_tests` applies to
+every test in the module), every conftest module on the chain and its
+`pytest_*` hook functions, `setup_module`/`teardown_module`/
+`setup_function`/`teardown_function` if present, and the class's (or its
+in-module bases') xunit/unittest setup/teardown methods if present. Unknown
+fixtures become `fixture:<name>` unless declared external
+(`--assume-external-fixture`) or a pytest builtin; a name supplied only by
+`pytest_generate_tests` is reported the same way.
 
-Not modelled: fixture parametrisation and `indirect`, dynamic
-`request.getfixturevalue`, fixture visibility rules of `pytest_plugins`
-declared outside the root conftest (accepted anyway), plugin-provided
-fixtures, doctests, and `conftest.py` files outside the source roots.
+Not modelled: dynamic `request.getfixturevalue`, fixture visibility rules of
+`pytest_plugins` declared outside the root conftest (accepted anyway),
+plugin-provided fixtures, doctests, base classes defined in other modules,
+and `conftest.py` files outside the source roots.
 
 ### ASV
 
-Collected: `.py` files under `benchmark_dir` (default `benchmarks`) whose
-path components do not start with an underscore; functions and methods of
+Collected: `.py` files under `benchmark_dir` (default `benchmarks`; read
+from `asv.conf.json`, whose `//` and `/* */` comments are stripped, with an
+`unparsable_config` note if it still fails to parse) whose path components
+do not start with an underscore; functions and methods of
 non-underscore classes named with `time_`, `timeraw_`, `mem_`, `peakmem_` or
 `track_`. Benchmark ids are `<module relative to benchmark_dir>.<Class>.<method>`.
 

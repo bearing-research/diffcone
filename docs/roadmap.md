@@ -8,10 +8,11 @@ targets from a manifest and/or static pytest and ASV discovery (see
 
 Static discovery covers the common layout. Remaining gaps, roughly by value:
 
-* pytest: fixture parametrisation and `indirect`, `request.getfixturevalue`
-  with literal names, `conftest.py` outside the source roots, doctests,
-  a curated list of well-known plugin fixtures so `--assume-external-fixture`
-  is rarely needed.
+* pytest: `request.getfixturevalue` with literal names, names supplied by
+  `pytest_generate_tests` (currently reported as unresolved), base classes
+  defined in other modules, `conftest.py` outside the source roots,
+  doctests, a curated list of well-known plugin fixtures so
+  `--assume-external-fixture` is rarely needed.
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots.
 * An optional collection-based validator (`pytest --collect-only` via a

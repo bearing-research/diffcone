@@ -43,18 +43,49 @@ def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
     if raw is None:
         return config
     text = raw.decode("utf-8", "replace")
-    # asv.conf.json permits // line comments.
-    lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
     try:
-        data = json.loads("\n".join(lines))
-    except json.JSONDecodeError:
+        data = json.loads(strip_json_comments(text))
+    except json.JSONDecodeError as exc:
         config["source"] = "asv.conf.json (unparsable, defaults used)"
+        config["error"] = str(exc)
         return config
     config["source"] = "asv.conf.json"
     bench_dir = data.get("benchmark_dir")
     if isinstance(bench_dir, str) and bench_dir.strip():
         config["benchmark_dir"] = bench_dir.strip().strip("/")
     return config
+
+
+def strip_json_comments(text: str) -> str:
+    """Remove ``//`` and ``/* */`` comments outside string literals, as asv's
+    configuration loader allows."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 1
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+            out.append(ch)
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _is_benchmark(name: str) -> bool:
@@ -67,6 +98,15 @@ def discover_asv(
     result = DiscoveryResult(runner=RUNNER)
     config = read_asv_config(snapshot)
     result.config = dict(config)
+    if "error" in config:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unparsable_config",
+                f"asv.conf.json could not be parsed ({config['error']}); "
+                f"using benchmark_dir {config['benchmark_dir']!r}",
+            )
+        )
     bench_dir = config["benchmark_dir"]
     prefix = bench_dir + "/"
     paths = [

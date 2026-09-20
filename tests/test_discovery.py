@@ -13,7 +13,7 @@ from diffcone.snapshot import read_snapshot
 
 
 def run_discovery(repo, rev, runner, roots=None, **opts):
-    snap = read_snapshot(repo.path, rev, roots or ["."])
+    snap = read_snapshot(repo.path, rev, roots or ["."], with_config=True)
     return discover(runner, snap, build_index(snap), DiscoveryOptions(**opts))
 
 
@@ -374,3 +374,281 @@ def test_cli_discover_and_plan_with_discover(repo, capsys):
     assert code == 0
     assert "discovery (pytest): 1 target(s), 0 note(s)" in out
     assert "tests/test_m.py::test_f\n" in out and "(conservative)" not in out
+
+
+# --- regression tests added after code review ------------------------------
+
+
+def test_pytest_parameters_that_are_not_fixture_requests(repo):
+    rev = repo.commit(
+        {
+            "tests/conftest.py": (
+                "import pytest\n\n\n"
+                "@pytest.fixture\ndef db():\n    return {}\n\n\n"
+                "@pytest.fixture\ndef cfg():\n    return {}\n"
+            ),
+            "tests/test_params.py": (
+                "import pytest\nfrom unittest import mock\n\n"
+                "pytestmark = pytest.mark.parametrize('mod_case', [1])\n\n\n"
+                "@pytest.mark.parametrize('n, m', [(1, 2)])\n"
+                "def test_parametrized(n, m, db):\n    pass\n\n\n"
+                "@pytest.mark.parametrize(['a', 'b'], [(1, 2)])\n"
+                "def test_list_argnames(a, b):\n    pass\n\n\n"
+                "@pytest.mark.parametrize('db', ['x'], indirect=True)\n"
+                "def test_indirect(db):\n    pass\n\n\n"
+                "@pytest.mark.parametrize('db, plain', [({}, 1)], indirect=['db'])\n"
+                "def test_indirect_list(db, plain):\n    pass\n\n\n"
+                "def test_defaults(db, limit=3, *, verbose=False, cfg):\n    pass\n\n\n"
+                "@mock.patch('os.getcwd')\n"
+                "@mock.patch.object(dict, 'get')\n"
+                "@mock.patch('os.sep', '/')\n"
+                "def test_patched(mock_get, mock_cwd, db):\n    pass\n\n\n"
+                "def test_module_mark(mod_case, cfg):\n    pass\n\n\n"
+                "@pytest.mark.parametrize('cls_case', [1])\n"
+                "class TestGroup:\n"
+                "    def test_in_class(self, cls_case, db):\n        pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    targets = by_id(result)
+    fixture_deps = {
+        k: {d for d in t.lifecycle_dependencies if d.startswith(("fixture:", "tests.conftest."))}
+        for k, t in targets.items()
+    }
+    assert fixture_deps == {
+        "tests/test_params.py::test_parametrized": {"tests.conftest.db"},
+        "tests/test_params.py::test_list_argnames": set(),
+        "tests/test_params.py::test_indirect": {"tests.conftest.db"},
+        "tests/test_params.py::test_indirect_list": {"tests.conftest.db"},
+        "tests/test_params.py::test_defaults": {"tests.conftest.db", "tests.conftest.cfg"},
+        "tests/test_params.py::test_patched": {"tests.conftest.db"},
+        "tests/test_params.py::test_module_mark": {"tests.conftest.cfg"},
+        "tests/test_params.py::TestGroup::test_in_class": {"tests.conftest.db"},
+    }
+    assert result.notes == []
+
+
+def test_pytest_same_name_fixture_override_keeps_outer_fixture(repo):
+    base = repo.commit(
+        {
+            "conftest.py": "import pytest\n\n\n@pytest.fixture\ndef db():\n    return {}\n",
+            "tests/conftest.py": (
+                "import pytest\n\n\n@pytest.fixture\ndef db(db):\n    return dict(db)\n"
+            ),
+            "tests/test_x.py": "def test_x(db):\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, base, "pytest")
+    deps = set(by_id(result)["tests/test_x.py::test_x"].lifecycle_dependencies)
+    assert {"tests.conftest.db", "conftest.db"} <= deps
+    assert result.notes == []
+
+    head = repo.commit(
+        {"conftest.py": "import pytest\n\n\n@pytest.fixture\ndef db():\n    return {'v': 2}\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_x.py::test_x"}
+    assert reason(plan, "tests/test_x.py::test_x").changed_symbol == "conftest.db"
+
+
+def test_pytest_inherited_test_methods(repo):
+    base = repo.commit(
+        {
+            "pkg/codec.py": "def encode(x):\n    return x\n",
+            "tests/conftest.py": (
+                "import pytest\n\n\n@pytest.fixture\ndef payload():\n    return 1\n"
+            ),
+            "tests/test_inherit.py": (
+                "import pytest\nfrom pkg.codec import encode\n"
+                "from somewhere import ExternalMixin\n\n\n"
+                "class Base:\n"
+                "    @pytest.fixture\n    def base_fix(self):\n        return 1\n\n"
+                "    def setup_method(self):\n        pass\n\n"
+                "    def test_roundtrip(self, payload, base_fix):\n"
+                "        assert encode(payload)\n\n"
+                "    def test_overridden(self):\n        pass\n\n\n"
+                "class TestJson(Base):\n"
+                "    codec = 'json'\n\n"
+                "    def test_overridden(self):\n        pass\n\n\n"
+                "class TestExternal(ExternalMixin):\n"
+                "    def test_own(self):\n        pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, base, "pytest")
+    targets = by_id(result)
+    assert set(targets) == {
+        "tests/test_inherit.py::TestJson::test_roundtrip",
+        "tests/test_inherit.py::TestJson::test_overridden",
+        "tests/test_inherit.py::TestExternal::test_own",
+    }
+    inherited = targets["tests/test_inherit.py::TestJson::test_roundtrip"]
+    assert inherited.entry_symbol == "tests.test_inherit.Base.test_roundtrip"
+    assert {
+        "tests.conftest.payload",
+        "tests.test_inherit.Base.base_fix",
+        "tests.test_inherit.Base.setup_method",
+        "tests.test_inherit.TestJson",  # the collecting class
+    } <= set(inherited.lifecycle_dependencies)
+    own = targets["tests/test_inherit.py::TestJson::test_overridden"]
+    assert own.entry_symbol == "tests.test_inherit.TestJson.test_overridden"
+    assert [(n.kind, "ExternalMixin" in n.detail) for n in result.notes] == [
+        ("unknown_base_class", True)
+    ]
+
+    # Changing the base's test body or the subclass's class attribute selects it.
+    head = repo.commit({"pkg/codec.py": "def encode(x):\n    return [x]\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_inherit.py::TestJson::test_roundtrip"}
+    head2 = repo.commit(
+        {
+            "tests/test_inherit.py": (
+                "import pytest\nfrom pkg.codec import encode\n"
+                "from somewhere import ExternalMixin\n\n\n"
+                "class Base:\n"
+                "    @pytest.fixture\n    def base_fix(self):\n        return 1\n\n"
+                "    def setup_method(self):\n        pass\n\n"
+                "    def test_roundtrip(self, payload, base_fix):\n"
+                "        assert encode(payload)\n\n"
+                "    def test_overridden(self):\n        pass\n\n\n"
+                "class TestJson(Base):\n"
+                "    codec = 'msgpack'\n\n"
+                "    def test_overridden(self):\n        pass\n\n\n"
+                "class TestExternal(ExternalMixin):\n"
+                "    def test_own(self):\n        pass\n"
+            )
+        }
+    )
+    plan = repo.plan(base, head2, [], discover_runners=["pytest"])
+    assert selected(plan) == {
+        "tests/test_inherit.py::TestJson::test_roundtrip",
+        "tests/test_inherit.py::TestJson::test_overridden",
+    }
+
+
+def test_pytest_testpaths_globs_and_dot_prefix(repo):
+    files = {
+        "tests/unit/test_a.py": "def test_a():\n    pass\n",
+        "tests/integ_db/test_b.py": "def test_b():\n    pass\n",
+        "tests/integ_web/test_c.py": "def test_c():\n    pass\n",
+        "tests/other/test_d.py": "def test_d():\n    pass\n",
+        "pytest.ini": "[pytest]\ntestpaths = ./tests/unit tests/integ*\n",
+    }
+    rev = repo.commit(files)
+    result = run_discovery(repo, rev, "pytest")
+    assert set(by_id(result)) == {
+        "tests/unit/test_a.py::test_a",
+        "tests/integ_db/test_b.py::test_b",
+        "tests/integ_web/test_c.py::test_c",
+    }
+
+
+def test_pytest_module_hooks_and_nested_class_marks(repo):
+    base = repo.commit(
+        {
+            "tests/conftest.py": ("import pytest\n\n\n@pytest.fixture\ndef db():\n    return {}\n"),
+            "tests/test_gen.py": (
+                "import pytest\n\n\n"
+                "def pytest_generate_tests(metafunc):\n"
+                "    if 'case' in metafunc.fixturenames:\n"
+                "        metafunc.parametrize('case', [1, 2])\n\n\n"
+                "def test_cases(case):\n    pass\n\n\n"
+                "@pytest.mark.usefixtures('db')\n"
+                "class TestOuter:\n"
+                "    class TestInner:\n"
+                "        def test_a(self):\n            pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, base, "pytest")
+    targets = by_id(result)
+    cases = targets["tests/test_gen.py::test_cases"]
+    assert "tests.test_gen.pytest_generate_tests" in cases.lifecycle_dependencies
+    # ``case`` comes from the hook, not a fixture: it is still reported as
+    # unresolved (conservative), which is documented behaviour.
+    assert "fixture:case" in cases.lifecycle_dependencies
+    inner = targets["tests/test_gen.py::TestOuter::TestInner::test_a"]
+    assert "tests.conftest.db" in inner.lifecycle_dependencies
+
+    head = repo.commit(
+        {
+            "tests/test_gen.py": (
+                "import pytest\n\n\n"
+                "def pytest_generate_tests(metafunc):\n"
+                "    if 'case' in metafunc.fixturenames:\n"
+                "        metafunc.parametrize('case', [1, 2, 3])\n\n\n"
+                "def test_cases(case):\n    pass\n\n\n"
+                "@pytest.mark.usefixtures('db')\n"
+                "class TestOuter:\n"
+                "    class TestInner:\n"
+                "        def test_a(self):\n            pass\n"
+            )
+        }
+    )
+    plan = repo.plan(
+        base,
+        head,
+        [],
+        discover_runners=["pytest"],
+        discovery_options=DiscoveryOptions(external_fixtures=frozenset({"case"})),
+    )
+    # The hook runs for every test in the module, so both are selected.
+    assert selected(plan) == {
+        "tests/test_gen.py::test_cases",
+        "tests/test_gen.py::TestOuter::TestInner::test_a",
+    }
+    r = reason(plan, "tests/test_gen.py::test_cases")
+    assert r.changed_symbol == "tests.test_gen.pytest_generate_tests"
+    assert [s.kind for s in r.path] == ["lifecycle"]
+
+
+def test_empty_pytest_ini_wins_over_pyproject(repo):
+    rev = repo.commit(
+        {
+            "pytest.ini": "",
+            "pyproject.toml": '[tool.pytest.ini_options]\npython_files = ["check_*.py"]\n',
+            "tests/test_default.py": "def test_x():\n    pass\n",
+            "tests/check_y.py": "def test_y():\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    assert result.config["source"] == "pytest.ini"
+    assert result.config["python_files"] == ["test_*.py", "*_test.py"]
+    assert set(by_id(result)) == {"tests/test_default.py::test_x"}
+
+
+def test_asv_config_with_inline_comments(repo):
+    from diffcone.discovery.asv_static import strip_json_comments
+
+    text = (
+        "{\n"
+        "  // leading comment\n"
+        '  "benchmark_dir": "perf",  // trailing comment\n'
+        '  "repo": "https://example.invalid/x", /* block */\n'
+        '  "note": "a // not a comment /* nor this */"\n'
+        "}\n"
+    )
+    assert json.loads(strip_json_comments(text)) == {
+        "benchmark_dir": "perf",
+        "repo": "https://example.invalid/x",
+        "note": "a // not a comment /* nor this */",
+    }
+    rev = repo.commit({"asv.conf.json": text, "perf/b.py": "def time_x():\n    pass\n"})
+    result = run_discovery(repo, rev, "asv")
+    assert result.config["benchmark_dir"] == "perf"
+    assert set(by_id(result)) == {"b.time_x"}
+    assert result.notes == []
+
+    rev2 = repo.commit({"asv.conf.json": '{"benchmark_dir": "perf",}\n'})
+    result = run_discovery(repo, rev2, "asv")
+    assert result.config["benchmark_dir"] == "benchmarks"
+    assert [n.kind for n in result.notes] == ["unparsable_config", "no_benchmarks"]
+
+
+def test_snapshot_reads_config_only_on_request(repo):
+    rev = repo.commit({"pytest.ini": "[pytest]\n", "pkg/m.py": "x = 1\n"})
+    assert read_snapshot(repo.path, rev, ["."]).config_files == {}
+    assert set(read_snapshot(repo.path, rev, ["."], with_config=True).config_files) == {
+        "pytest.ini"
+    }

@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "discover":
             runners = args.discover or list(RUNNERS)
             roots = args.source_roots or ["."]
-            snapshot = read_snapshot(Path(args.repo), args.rev, roots)
+            snapshot = read_snapshot(Path(args.repo), args.rev, roots, with_config=True)
             index = build_index(snapshot)
             results = [discover(r, snapshot, index, options) for r in runners]
             data = manifest_to_dict([t for r in results for t in r.targets], roots)

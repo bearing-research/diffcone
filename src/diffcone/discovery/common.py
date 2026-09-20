@@ -7,7 +7,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from diffcone.indexer import DEF_NODES, FUNC_NODES, iter_scope_statements
-from diffcone.model import AnalysisError
 from diffcone.snapshot import Snapshot, module_name_for
 
 
@@ -99,12 +98,3 @@ def scope_assignments(body: list[ast.stmt]) -> Iterator[tuple[str, ast.expr]]:
         elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
             if isinstance(stmt.target, ast.Name):
                 yield stmt.target.id, stmt.value
-
-
-def parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    args = node.args
-    return [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
-
-
-def error(revision: str, path: str, message: str) -> AnalysisError:
-    return AnalysisError(revision=revision, path=path, message=message)

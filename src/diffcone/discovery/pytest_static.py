@@ -17,14 +17,20 @@ Collected:
 
 Lifecycle dependencies attached to each test:
 
-* fixtures requested by parameter name, by ``@pytest.mark.usefixtures`` on
-  the function, class or module (``pytestmark``), and transitively by other
-  fixtures, resolved in pytest's order: class, module, nearest ``conftest.py``
-  outward, then ``pytest_plugins`` modules within the source roots;
+* fixtures requested by parameter name (excluding parameters with defaults,
+  ``parametrize`` argnames unless ``indirect``, and arguments injected by
+  ``mock.patch`` decorators), by ``@pytest.mark.usefixtures`` on the
+  function, class (including enclosing classes) or module (``pytestmark``),
+  and transitively by other fixtures, resolved in pytest's order: class and
+  its in-module bases, module, nearest ``conftest.py`` outward, then
+  ``pytest_plugins`` modules within the source roots; a fixture requesting
+  its own name resolves to the next definition outward;
 * ``autouse`` fixtures visible from the test;
-* the test module, every ``conftest.py`` on the path, and each
-  ``pytest_*`` hook function in those conftests;
-* xunit-style setup/teardown functions and methods when present.
+* the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
+  path and each ``pytest_*`` hook function in those conftests;
+* xunit-style setup/teardown functions and methods when present;
+* for tests inherited from a base class defined in the same module, the
+  collecting class itself. Bases defined elsewhere are reported.
 
 Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
 (``@pytest.fixture``, ``@pytest.fixture(name=...)``, ``@fixture``,
@@ -52,7 +58,6 @@ from diffcone.discovery.common import (
     ParsedModule,
     decorator_chain,
     keyword_value,
-    parameter_names,
     parse_modules,
     scope_assignments,
     scope_classes,
@@ -139,7 +144,8 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
     files = snapshot.config_files
     # pytest's precedence: pytest.ini, pyproject.toml, tox.ini, setup.cfg.
     if "pytest.ini" in files:
-        section = _ini_section(files["pytest.ini"], "pytest")
+        # pytest treats any pytest.ini as *the* config file, even an empty one.
+        section = _ini_section(files["pytest.ini"], "pytest") or {}
         config["source"] = "pytest.ini"
     if section is None and "pyproject.toml" in files:
         try:
@@ -226,23 +232,84 @@ def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str
     return False, None, False
 
 
+@dataclass(frozen=True)
+class Marks:
+    """The mark-derived facts that flow from module to class to function."""
+
+    usefixtures: tuple[str, ...] = ()
+    parametrized: frozenset[str] = frozenset()  # argnames supplied by parametrize
+    indirect: frozenset[str] = frozenset()  # parametrized names that are still fixtures
+
+    def __add__(self, other: Marks) -> Marks:
+        return Marks(
+            self.usefixtures + other.usefixtures,
+            self.parametrized | other.parametrized,
+            self.indirect | other.indirect,
+        )
+
+
+NO_MARKS = Marks()
+
+
+def _split_argnames(node: ast.expr) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [n.strip() for n in node.value.replace(",", " ").split() if n.strip()]
+    return string_literals([node])
+
+
+def _marks_from_expressions(exprs: list[ast.expr]) -> Marks:
+    use: list[str] = []
+    parametrized: set[str] = set()
+    indirect: set[str] = set()
+    for expr in exprs:
+        parts, call = decorator_chain(expr)
+        if call is None or len(parts) < 2 or parts[-2] != "mark":
+            continue
+        if parts[-1] == "usefixtures":
+            use.extend(string_literals(list(call.args)))
+        elif parts[-1] == "parametrize" and call.args:
+            names = _split_argnames(call.args[0])
+            parametrized.update(names)
+            ind = keyword_value(call, "indirect")
+            if isinstance(ind, ast.Constant) and ind.value is True:
+                indirect.update(names)
+            elif isinstance(ind, (ast.List, ast.Tuple)):
+                indirect.update(string_literals(list(ind.elts)))
+    return Marks(tuple(use), frozenset(parametrized), frozenset(indirect))
+
+
+def _marks_from_pytestmark(body: list[ast.stmt]) -> Marks:
+    exprs: list[ast.expr] = []
+    for name, value in scope_assignments(body):
+        if name == "pytestmark":
+            exprs += list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
+    return _marks_from_expressions(exprs)
+
+
 def _usefixtures_from_decorators(decorators: list[ast.expr]) -> tuple[str, ...]:
-    names: list[str] = []
-    for dec in decorators:
-        parts, call = decorator_chain(dec)
-        if call is not None and len(parts) >= 2 and parts[-2:] == ["mark", "usefixtures"]:
-            names.extend(string_literals(list(call.args)))
-    return tuple(names)
+    return _marks_from_expressions(decorators).usefixtures
 
 
 def _usefixtures_from_pytestmark(body: list[ast.stmt]) -> tuple[str, ...]:
-    names: list[str] = []
-    for name, value in scope_assignments(body):
-        if name != "pytestmark":
+    return _marks_from_pytestmark(body).usefixtures
+
+
+def _injected_patch_count(decorators: list[ast.expr]) -> int:
+    """Number of ``mock.patch``/``patch.object`` decorators that inject an argument."""
+    count = 0
+    for dec in decorators:
+        parts, call = decorator_chain(dec)
+        if call is None or not parts:
             continue
-        marks = list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
-        names.extend(_usefixtures_from_decorators(marks))
-    return tuple(names)
+        if parts[-1] == "patch":
+            positional_new = len(call.args) >= 2
+        elif len(parts) >= 2 and parts[-2] == "patch" and parts[-1] == "object":
+            positional_new = len(call.args) >= 3
+        else:
+            continue
+        if not positional_new and keyword_value(call, "new") is None:
+            count += 1
+    return count
 
 
 def _plugins_from_body(body: list[ast.stmt]) -> list[str]:
@@ -253,12 +320,26 @@ def _plugins_from_body(body: list[ast.stmt]) -> list[str]:
 
 
 def _fixture_requests(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, is_method: bool
+    node: ast.FunctionDef | ast.AsyncFunctionDef, is_method: bool, marks: Marks = NO_MARKS
 ) -> tuple[str, ...]:
-    params = parameter_names(node)
-    if is_method and params:
-        params = params[1:]
-    return tuple(p for p in params if p != "request")
+    """Parameter names pytest would look up as fixtures.
+
+    Mirrors ``getfuncargnames``: drops ``self``, parameters with defaults,
+    arguments injected by ``mock.patch`` decorators, and names supplied by
+    ``parametrize`` unless they are marked ``indirect``.
+    """
+    args = node.args
+    positional = args.posonlyargs + args.args
+    n_defaults = len(args.defaults)
+    required = [a.arg for a in positional[: len(positional) - n_defaults]]
+    required += [a.arg for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d is None]
+    if is_method and required:
+        required = required[1:]
+    injected = _injected_patch_count(node.decorator_list)
+    if injected:
+        required = required[injected:]
+    skip = marks.parametrized - marks.indirect
+    return tuple(p for p in required if p != "request" and p not in skip)
 
 
 def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
@@ -326,21 +407,28 @@ class _Resolver:
     def lifecycle(self, class_ids: list[str], requests: list[str]) -> list[str]:
         levels = self.chain(class_ids)
         deps: list[str] = []
-        seen: set[str] = set()
-        queue = list(requests)
+        seen: set[tuple[str, int]] = set()
+        # (name, first level to search): a fixture that requests its own name
+        # (``def db(db)``) refers to the next definition outward.
+        queue: list[tuple[str, int]] = [(name, 0) for name in requests]
         for level in levels:
             for fixture in level.values():
                 if fixture.autouse:
-                    queue.append(fixture.name)
+                    queue.append((fixture.name, 0))
         while queue:
-            name = queue.pop(0)
-            if name in seen:
+            name, start = queue.pop(0)
+            if (name, start) in seen:
                 continue
-            seen.add(name)
-            fixture = next((lvl[name] for lvl in levels if name in lvl), None)
-            if fixture is not None:
+            seen.add((name, start))
+            found = next(
+                ((i, lvl[name]) for i, lvl in enumerate(levels) if i >= start and name in lvl),
+                None,
+            )
+            if found is not None:
+                level_index, fixture = found
                 deps.append(fixture.symbol)
-                queue.extend(fixture.requests)
+                for req in fixture.requests:
+                    queue.append((req, level_index + 1 if req == name else 0))
             elif name in self.options.external_fixtures or name in BUILTIN_FIXTURES:
                 continue
             else:
@@ -376,13 +464,25 @@ def _has_init(cls: ast.ClassDef) -> bool:
 
 
 def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
+    """Whether ``path`` lies under one of pytest's ``testpaths`` entries.
+
+    Entries may be files, directories or globs (``tests/integ*``); a leading
+    ``./`` is ignored.
+    """
     if not testpaths:
         return True
-    for tp in testpaths:
-        tp = tp.strip("/").rstrip("/")
+    parents = [str(p) for p in PurePosixPath(path).parents if str(p) != "."]
+    for raw in testpaths:
+        tp = raw.strip()
+        while tp.startswith("./"):
+            tp = tp[2:]
+        tp = tp.strip("/")
         if tp in ("", "."):
             return True
-        if path == tp or path.startswith(tp + "/"):
+        if any(ch in tp for ch in "*?["):
+            if fnmatch(path, tp) or any(fnmatch(parent, tp) for parent in parents):
+                return True
+        elif path == tp or path.startswith(tp + "/"):
             return True
     return False
 
@@ -451,6 +551,7 @@ def discover_pytest(
         module_deps += [c.parsed.module for c in conftests]
         for c in conftests:
             module_deps += c.hooks
+        module_deps += facts.hooks  # e.g. pytest_generate_tests in the test module
         module_deps += facts.setup_functions
         _collect_module_tests(result, facts, resolver, config, module_deps, index)
 
@@ -480,6 +581,8 @@ def _collect_module_tests(
     parsed = facts.parsed
     functions = tuple(config["python_functions"])
     classes = tuple(config["python_classes"])
+    module_marks = _marks_from_pytestmark(parsed.tree.body)
+    module_classes = {c.name: c for c in scope_classes(parsed.tree.body)}
 
     def add(nodeid: str, entry: str, class_ids: list[str], requests: list[str], extra: list[str]):
         if entry not in index.symbols:
@@ -492,44 +595,73 @@ def _collect_module_tests(
     for func in scope_functions(parsed.tree.body):
         if not _matches(functions, func.name) or _is_fixture(func)[0]:
             continue
-        requests = list(_fixture_requests(func, False))
-        requests += _usefixtures_from_decorators(func.decorator_list)
-        requests += facts.usefixtures
+        marks = module_marks + _marks_from_expressions(func.decorator_list)
+        requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
         add(f"{parsed.path}::{func.name}", f"{parsed.module}.{func.name}", [], requests, [])
 
-    def walk_class(cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str) -> None:
+    def mro(cls: ast.ClassDef, nodeid: str) -> list[tuple[ast.ClassDef, str]]:
+        """In-module base classes, nearest first, with their symbol ids."""
+        chain: list[tuple[ast.ClassDef, str]] = []
+        seen: set[str] = set()
+        queue = list(cls.bases)
+        while queue:
+            base = queue.pop(0)
+            parts, _ = decorator_chain(base)
+            name = parts[-1] if parts else ""
+            if name in ("object", "") or name in seen:
+                continue
+            seen.add(name)
+            if name in module_classes and name != cls.name:
+                base_cls = module_classes[name]
+                chain.append((base_cls, f"{parsed.module}.{name}"))
+                queue.extend(base_cls.bases)
+            elif not name.endswith("TestCase"):
+                result.notes.append(
+                    DiscoveryNote(
+                        RUNNER,
+                        "unknown_base_class",
+                        f"{nodeid}: base class {name!r} is not defined in this module; "
+                        "test methods it may contribute are not discovered",
+                    )
+                )
+        return chain
+
+    def walk_class(
+        cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str, inherited: Marks
+    ) -> None:
         unittest_style = _is_unittest_class(cls)
         if not (unittest_style or _matches(classes, cls.name)) or _has_init(cls):
             return
         class_id = f"{prefix_ids[-1] if prefix_ids else parsed.module}.{cls.name}"
-        class_ids = prefix_ids + [class_id]
-        class_use = _usefixtures_from_decorators(cls.decorator_list)
-        class_use += _usefixtures_from_pytestmark(cls.body)
+        nodeid = f"{nodeid_prefix}::{cls.name}"
+        bases = mro(cls, nodeid)
+        # Fixture lookup: this class, then its in-module bases, then outer classes.
+        class_ids = prefix_ids + [b_id for _, b_id in reversed(bases)] + [class_id]
+        class_marks = inherited + _marks_from_expressions(cls.decorator_list)
+        class_marks = class_marks + _marks_from_pytestmark(cls.body)
+        # Methods: own definitions win over inherited ones.
+        methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
+        for owner, owner_id in reversed(bases):
+            for f in scope_functions(owner.body):
+                methods[f.name] = (f, owner_id)
+        for f in scope_functions(cls.body):
+            methods[f.name] = (f, class_id)
         setup = [
-            f"{class_id}.{f.name}"
-            for f in scope_functions(cls.body)
-            if f.name in CLASS_SETUP_METHODS
+            f"{owner_id}.{name}"
+            for name, (_, owner_id) in methods.items()
+            if name in CLASS_SETUP_METHODS
         ]
-        for func in scope_functions(cls.body):
+        extra = setup + [class_id] if bases else setup
+        for name, (func, owner_id) in sorted(methods.items()):
             if _is_fixture(func)[0]:
                 continue
-            if not (
-                _matches(functions, func.name) or (unittest_style and func.name.startswith("test"))
-            ):
+            if not (_matches(functions, name) or (unittest_style and name.startswith("test"))):
                 continue
-            requests = list(_fixture_requests(func, True))
-            requests += _usefixtures_from_decorators(func.decorator_list)
-            requests += class_use
-            requests += facts.usefixtures
-            add(
-                f"{nodeid_prefix}::{cls.name}::{func.name}",
-                f"{class_id}.{func.name}",
-                class_ids,
-                requests,
-                setup,
-            )
+            marks = class_marks + _marks_from_expressions(func.decorator_list)
+            requests = list(_fixture_requests(func, True, marks)) + list(marks.usefixtures)
+            add(f"{nodeid}::{name}", f"{owner_id}.{name}", class_ids, requests, extra)
         for inner in scope_classes(cls.body):
-            walk_class(inner, class_ids, f"{nodeid_prefix}::{cls.name}")
+            walk_class(inner, prefix_ids + [class_id], nodeid, class_marks)
 
     for cls in scope_classes(parsed.tree.body):
-        walk_class(cls, [], parsed.path)
+        walk_class(cls, [], parsed.path, module_marks)

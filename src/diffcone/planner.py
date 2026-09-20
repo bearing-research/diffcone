@@ -420,11 +420,11 @@ def plan(
     manifest_roots = manifest.source_roots if manifest is not None else None
     roots = list(source_roots or manifest_roots or ["."])
     base_index = build_index(read_snapshot(repo_path, base, roots))
-    head_snapshot = read_snapshot(repo_path, head, roots)
+    runners = list(discover_runners)
+    head_snapshot = read_snapshot(repo_path, head, roots, with_config=bool(runners))
     head_index = build_index(head_snapshot)
     discovered = [
-        discover(runner, head_snapshot, head_index, discovery_options)
-        for runner in discover_runners
+        discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
     ]
     return plan_from_indexes(
         base_index,
