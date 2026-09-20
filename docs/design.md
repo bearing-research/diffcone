@@ -446,14 +446,26 @@ the module and its conftests when they are variable symbols (`pytest_generate_te
 every test in the module), every conftest module on the chain and its
 `pytest_*` hook functions, `setup_module`/`teardown_module`/
 `setup_function`/`teardown_function` if present, and the class's (or its
-in-module bases') xunit/unittest setup/teardown methods if present. Unknown
-fixtures become `fixture:<name>` unless declared external
-(`--assume-external-fixture`) or a pytest builtin; a name supplied only by
-`pytest_generate_tests` is reported the same way.
+in-module bases') xunit/unittest setup/teardown methods if present. A
+fixture found at no in-scope level is a pytest builtin (ignored), a name a
+well-known plugin provides (`WELL_KNOWN_PLUGIN_FIXTURES` in
+`pytest_static.py`: `mocker` from pytest-mock, `fp` from pytest-subprocess,
+`httpx_mock`, `freezer`, `anyio_backend`, `benchmark`, `db`, ...) or one
+declared with `--assume-external-fixture`, in which case it is assumed to
+come from the installed plugin and reported in an `external_fixture` note
+with its request count and origin (`--no-well-known-fixtures` turns the
+table off), or otherwise unknown and becomes `fixture:<name>`; a name
+supplied only by `pytest_generate_tests` is reported the same way. A name
+defined in scope always wins over the table, and a project requesting one
+of these names without the plugin would fail at collection, so the
+assumption never hides a real dependency. Measured on pipx (699 tests):
+before the table, 153 tests were selected on every change because of
+`mocker` and `fake_process` alone.
 
 Not modelled: dynamic `request.getfixturevalue`, fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
-plugin-provided fixtures, doctests, base classes defined in other modules,
+fixtures of plugins outside the well-known table, doctests, base classes
+defined in other modules,
 and `conftest.py` files outside the source roots.
 
 ### ASV

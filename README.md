@@ -125,10 +125,13 @@ test's lifecycle dependencies are its fixtures (by parameter, by
 outward > `pytest_plugins` modules and the project's own `pytest11`
 entry-point plugins in the source roots), autouse fixtures,
 xunit setup functions, its module, every `conftest.py` on its path and their
-`pytest_*` hooks. A fixture that is neither found nor a pytest builtin
-becomes the dependency `fixture:<name>`, which the planner cannot resolve, so
-the test is selected conservatively; pass `--assume-external-fixture NAME`
-for fixtures that installed plugins provide (`mocker`, `httpx_mock`, ...).
+`pytest_*` hooks. A fixture that is not found is assumed to come from an
+installed plugin when a well-known plugin provides it (`mocker`,
+`httpx_mock`, `freezer`, `anyio_backend`, `benchmark`, ...; the report
+lists every such assumption; `--no-well-known-fixtures` turns this off) or
+when it is passed with `--assume-external-fixture NAME`; any other unknown
+fixture becomes the dependency `fixture:<name>`, which the planner cannot
+resolve, so the test is selected conservatively.
 
 **ASV** ([details](docs/design.md#asv)): `benchmark_dir` from
 `asv.conf.json`; `time_`/`timeraw_`/`mem_`/`peakmem_`/`track_` functions and

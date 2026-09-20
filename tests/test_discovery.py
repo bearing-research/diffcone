@@ -42,7 +42,7 @@ PYTEST_TREE = {
         "def setup_module():\n    pass\n\n\n"
         "@pytest.fixture\ndef local(db):\n    return db\n\n\n"
         "def test_plain():\n    pass\n\n\n"
-        "def test_with_fixtures(local, tmp_path, mocker, shared):\n    pass\n\n\n"
+        "def test_with_fixtures(local, tmp_path, widget, shared):\n    pass\n\n\n"
         "@pytest.mark.usefixtures('root_db')\ndef test_marked():\n    pass\n\n\n"
         "def helper():\n    pass\n\n\n"
         "class TestGroup:\n"
@@ -113,10 +113,10 @@ def test_pytest_discovery_rules(repo):
         "tests.conftest.db",  # transitively through local
         "conftest.root_db",  # transitively through db
         "plugins.shared.shared",  # via pytest_plugins
-        "fixture:mocker",  # unknown: conservative
+        "fixture:widget",  # unknown: conservative
     }
     assert {(n.kind) for n in result.notes} == {"unresolved_fixture"}
-    assert "mocker" in result.notes[0].detail
+    assert "widget" in result.notes[0].detail
 
     marked = targets["tests/test_basic.py::test_marked"]
     assert "conftest.root_db" in marked.lifecycle_dependencies
@@ -139,11 +139,14 @@ def test_pytest_discovery_rules(repo):
     assert "tests.conftest.db" not in override.lifecycle_dependencies
     assert "conftest.root_db" not in override.lifecycle_dependencies
 
-    # Declaring the plugin fixture as external removes the conservative dep.
-    result2 = run_discovery(repo, rev, "pytest", external_fixtures=frozenset({"mocker"}))
+    # Declaring the plugin fixture as external removes the conservative dep
+    # and reports the assumption.
+    result2 = run_discovery(repo, rev, "pytest", external_fixtures=frozenset({"widget"}))
     rich2 = by_id(result2)["tests/test_basic.py::test_with_fixtures"]
-    assert "fixture:mocker" not in rich2.lifecycle_dependencies
-    assert result2.notes == []
+    assert "fixture:widget" not in rich2.lifecycle_dependencies
+    assert [n.kind for n in result2.notes] == ["external_fixture"]
+    assert "'widget' requested by 1 test(s)" in result2.notes[0].detail
+    assert "declared external" in result2.notes[0].detail
 
 
 def test_pytest_config_from_pyproject_and_ini(repo):
@@ -321,7 +324,7 @@ def test_cli_discover_and_plan_with_discover(repo, capsys):
     base = repo.commit(
         {
             "pkg/m.py": "def f():\n    return 1\n",
-            "tests/test_m.py": "from pkg.m import f\n\n\ndef test_f(mocker):\n    assert f()\n",
+            "tests/test_m.py": "from pkg.m import f\n\n\ndef test_f(widget):\n    assert f()\n",
         }
     )
     head = repo.commit({"pkg/m.py": "def f():\n    return 2\n"})
@@ -331,7 +334,7 @@ def test_cli_discover_and_plan_with_discover(repo, capsys):
     data = json.loads(out)
     assert data["source_roots"] == ["."]
     assert [t["runner_id"] for t in data["targets"]] == ["tests/test_m.py::test_f"]
-    assert data["targets"][0]["lifecycle_dependencies"] == ["fixture:mocker", "tests.test_m"]
+    assert data["targets"][0]["lifecycle_dependencies"] == ["fixture:widget", "tests.test_m"]
     assert data["discovery"]["runners"][0]["notes"][0]["kind"] == "unresolved_fixture"
 
     manifest = repo.path.parent / "discovered.json"
@@ -352,7 +355,7 @@ def test_cli_discover_and_plan_with_discover(repo, capsys):
     report = json.loads(capsys.readouterr().out)
     assert code == 0
     assert [t["runner_id"] for t in report["selected_targets"]] == ["tests/test_m.py::test_f"]
-    assert report["selected_targets"][0]["conservative"] is True  # fixture:mocker unresolved
+    assert report["selected_targets"][0]["conservative"] is True  # fixture:widget unresolved
 
     code = main(
         [
@@ -366,14 +369,14 @@ def test_cli_discover_and_plan_with_discover(repo, capsys):
             "--discover",
             "pytest",
             "--assume-external-fixture",
-            "mocker",
+            "widget",
             "--format",
             "text",
         ]
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert "discovery (pytest): 1 target(s), 0 note(s)" in out
+    assert "discovery (pytest): 1 target(s), 1 note(s)" in out
     assert "tests/test_m.py::test_f\n" in out and "(conservative)" not in out
 
 
@@ -843,3 +846,78 @@ def test_python_files_patterns_with_directories_match_the_path(repo):
     )
     result = run_discovery(repo, rev, "pytest")
     assert set(by_id(result)) == {"testing/test_a.py::test_a", "testing/python/approx.py::test_b"}
+
+
+def test_well_known_plugin_fixtures_are_assumed_and_reported(repo):
+    rev = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\n\n@pytest.fixture\ndef freezer():\n    return 1\n"
+            ),
+            "tests/test_a.py": (
+                "def test_a(mocker, fake_process):\n    pass\n\n\n"
+                "def test_b(mocker, freezer, widget):\n    pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    targets = by_id(result)
+    a = targets["tests/test_a.py::test_a"]
+    assert list(a.lifecycle_dependencies) == ["tests.conftest", "tests.test_a"]  # both assumed
+    b = targets["tests/test_a.py::test_b"]
+    # A fixture defined in scope wins over the table; an unknown name stays conservative.
+    assert list(b.lifecycle_dependencies) == [
+        "fixture:widget",
+        "tests.conftest",
+        "tests.conftest.freezer",
+        "tests.test_a",
+    ]
+    assert [(n.kind, n.detail.split(" ")[1]) for n in result.notes] == [
+        ("unresolved_fixture", "'widget'"),
+        ("external_fixture", "'fake_process'"),
+        ("external_fixture", "'mocker'"),
+    ]
+    assert "requested by 2 test(s)" in result.notes[2].detail
+    assert "assumed from the installed plugin pytest-mock" in result.notes[2].detail
+    assert "pytest-subprocess" in result.notes[1].detail
+
+    # Opting out reports them as unresolved again.
+    plain = run_discovery(repo, rev, "pytest", well_known_fixtures=False)
+    a2 = by_id(plain)["tests/test_a.py::test_a"]
+    assert list(a2.lifecycle_dependencies) == [
+        "fixture:fake_process",
+        "fixture:mocker",
+        "tests.conftest",
+        "tests.test_a",
+    ]
+    assert [n.kind for n in plain.notes] == ["unresolved_fixture"] * 3
+
+
+def test_cli_no_well_known_fixtures(repo, capsys):
+    base = repo.commit(
+        {
+            "pkg/m.py": "def f():\n    return 1\n",
+            "tests/test_m.py": "from pkg.m import f\n\n\ndef test_f(mocker):\n    assert f()\n",
+        }
+    )
+    head = repo.commit({"pkg/m.py": "def f():\n    return 2\n"})
+    common = [
+        "plan",
+        "--repo",
+        str(repo.path),
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+    ]
+    assert main(common) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["selected_targets"][0]["conservative"] is False
+    assert report["discovery"][0]["notes"][0]["kind"] == "external_fixture"
+    assert main([*common, "--no-well-known-fixtures"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["selected_targets"][0]["conservative"] is True
+    assert report["discovery"][0]["notes"][0]["kind"] == "unresolved_fixture"

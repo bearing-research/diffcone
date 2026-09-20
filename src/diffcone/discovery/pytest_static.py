@@ -35,11 +35,15 @@ Lifecycle dependencies attached to each test:
 Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
 (``@pytest.fixture``, ``@pytest.fixture(name=...)``, ``@fixture``,
 ``@pytest_asyncio.fixture``). Overriding follows nearest-scope-wins.
-Fixture parametrisation, ``indirect`` parametrisation, dynamic
-``request.getfixturevalue`` and fixtures from installed plugins are not
-modelled; an unknown fixture becomes the lifecycle dependency
-``fixture:<name>`` so the planner selects its users unless the name is
-declared external.
+Fixture parametrisation, ``indirect`` parametrisation and dynamic
+``request.getfixturevalue`` are not modelled. Fixtures from installed
+plugins cannot be seen: a name found at no in-scope level that a well-known
+plugin provides (``WELL_KNOWN_PLUGIN_FIXTURES``: ``mocker`` from
+pytest-mock, ``httpx_mock`` from pytest-httpx, ...) or that was declared
+external is assumed to come from that plugin and reported in an
+``external_fixture`` note with its request count; any other unknown fixture
+becomes the lifecycle dependency ``fixture:<name>`` so the planner selects
+its users.
 """
 
 from __future__ import annotations
@@ -73,6 +77,169 @@ RUNNER = "pytest"
 DEFAULT_PYTHON_FILES = ("test_*.py", "*_test.py")
 DEFAULT_PYTHON_CLASSES = ("Test",)
 DEFAULT_PYTHON_FUNCTIONS = ("test",)
+
+# Fixtures provided by widely used pytest plugins, by distribution. A name
+# defined at any in-scope level wins over this table; a project requesting
+# one of these without the plugin installed fails at collection anyway, so
+# assuming the plugin never hides a real dependency. Every use is reported.
+_PLUGIN_FIXTURES: dict[str, tuple[str, ...]] = {
+    "pytest-mock": ("mocker", "class_mocker", "module_mocker", "package_mocker", "session_mocker"),
+    "pytest-subprocess": ("fp", "fake_process"),
+    "pytest-httpx": ("httpx_mock",),
+    "respx": ("respx_mock",),
+    "requests-mock": ("requests_mock",),
+    "pytest-responses": ("responses",),
+    "pytest-httpserver": (
+        "httpserver",
+        "make_httpserver",
+        "httpserver_listen_address",
+        "httpserver_ssl_context",
+    ),
+    "pytest-localserver": ("smtpserver",),
+    "pytest-httpbin": ("httpbin", "httpbin_secure", "httpbin_both", "httpbin_ca_bundle"),
+    "pytest-recording": ("vcr", "vcr_config", "vcr_cassette", "vcr_cassette_name"),
+    "pytest-freezer": ("freezer",),
+    "time-machine": ("time_machine",),
+    "pytest-asyncio": (
+        "event_loop",
+        "event_loop_policy",
+        "unused_tcp_port",
+        "unused_tcp_port_factory",
+        "unused_udp_port",
+        "unused_udp_port_factory",
+    ),
+    "anyio": (
+        "anyio_backend",
+        "anyio_backend_name",
+        "anyio_backend_options",
+        "free_tcp_port",
+        "free_tcp_port_factory",
+        "free_udp_port",
+        "free_udp_port_factory",
+    ),
+    "pytest-trio": ("nursery",),
+    "pytest-aiohttp": (
+        "aiohttp_client",
+        "aiohttp_server",
+        "aiohttp_raw_server",
+        "aiohttp_unused_port",
+        "aiohttp_client_cls",
+    ),
+    "pytest-tornasync": ("io_loop", "http_client", "http_server", "http_server_port"),
+    "pytest-xdist": ("worker_id", "testrun_uid"),
+    "pytest-benchmark": ("benchmark", "benchmark_weave"),
+    "pytest-cov": ("cov",),
+    "pytest-django": (
+        "db",
+        "transactional_db",
+        "django_db_reset_sequences",
+        "django_db_serialized_rollback",
+        "django_db_blocker",
+        "django_db_setup",
+        "django_db_keepdb",
+        "django_db_createdb",
+        "django_db_modify_db_settings",
+        "django_db_use_migrations",
+        "client",
+        "async_client",
+        "rf",
+        "async_rf",
+        "admin_client",
+        "admin_user",
+        "django_user_model",
+        "django_username_field",
+        "settings",
+        "live_server",
+        "django_assert_num_queries",
+        "django_assert_max_num_queries",
+        "django_capture_on_commit_callbacks",
+        "mailoutbox",
+        "django_mail_patch_dns",
+        "django_mail_dnsname",
+        "django_test_environment",
+    ),
+    "pytest-flask": (
+        "client_class",
+        "config",
+        "request_ctx",
+        "accept_json",
+        "accept_jsonp",
+        "accept_any",
+        "accept_mimetype",
+    ),
+    "pytest-celery": (
+        "celery_app",
+        "celery_worker",
+        "celery_session_app",
+        "celery_session_worker",
+        "celery_config",
+        "celery_parameters",
+        "celery_enable_logging",
+        "celery_includes",
+        "celery_worker_pool",
+        "celery_worker_parameters",
+    ),
+    "pytest-regressions": (
+        "data_regression",
+        "file_regression",
+        "num_regression",
+        "image_regression",
+        "dataframe_regression",
+        "ndarrays_regression",
+    ),
+    "pytest-datadir": ("datadir", "shared_datadir", "original_datadir"),
+    "pytest-datafiles": ("datafiles",),
+    "syrupy": ("snapshot",),
+    "pytest-golden": ("golden",),
+    "pytest-textual-snapshot": ("snap_compare",),
+    "pytest-socket": ("socket_enabled", "socket_disabled"),
+    "pytest-console-scripts": ("script_runner",),
+    "pytest-check": ("check",),
+    "pytest-print": ("printer", "printer_session"),
+    "pytest-structlog": ("log",),
+    "pytest-metadata": ("metadata",),
+    "pytest-base-url": ("base_url",),
+    "pytest-variables": ("variables",),
+    "pytest-qt": ("qtbot", "qapp", "qapp_args", "qapp_cls", "qtlog", "qtmodeltester"),
+    "pytest-playwright": (
+        "page",
+        "browser",
+        "context",
+        "playwright",
+        "browser_name",
+        "browser_type",
+        "browser_type_launch_args",
+        "browser_context_args",
+        "new_context",
+    ),
+    "pytest-selenium": (
+        "selenium",
+        "driver",
+        "driver_class",
+        "driver_args",
+        "driver_kwargs",
+        "driver_path",
+        "chrome_options",
+        "firefox_options",
+        "capabilities",
+        "session_capabilities",
+    ),
+    "pytest-docker": (
+        "docker_ip",
+        "docker_services",
+        "docker_compose_file",
+        "docker_compose_project_name",
+        "docker_cleanup",
+        "docker_setup",
+    ),
+    "pytest-postgresql": ("postgresql", "postgresql_proc", "postgresql_noproc"),
+    "pytest-mysql": ("mysql", "mysql_proc", "mysql_noproc"),
+    "pytest-redis": ("redisdb", "redis_proc", "redis_noproc"),
+    "pytest-mongodb": ("mongodb",),
+}
+WELL_KNOWN_PLUGIN_FIXTURES: dict[str, str] = {
+    name: dist for dist, names in _PLUGIN_FIXTURES.items() for name in names
+}
 
 BUILTIN_FIXTURES = frozenset(
     {
@@ -509,12 +676,14 @@ class _Resolver:
         plugins: list[ModuleFacts],
         options: DiscoveryOptions,
         unresolved: Counter[str],
+        assumed: Counter[str],
     ) -> None:
         self.module = module
         self.conftests = conftests
         self.plugins = plugins
         self.options = options
         self.unresolved = unresolved
+        self.assumed = assumed  # external fixture name -> requesting tests
 
     def chain(self, class_ids: list[str]) -> list[dict[str, Fixture]]:
         levels: list[dict[str, Fixture]] = []
@@ -550,8 +719,12 @@ class _Resolver:
                 deps.append(fixture.symbol)
                 for req in fixture.requests:
                     queue.append((req, level_index + 1 if req == name else 0))
-            elif name in self.options.external_fixtures or name in BUILTIN_FIXTURES:
+            elif name in BUILTIN_FIXTURES:
                 continue
+            elif name in self.options.external_fixtures or (
+                self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES
+            ):
+                self.assumed[name] += 1
             else:
                 self.unresolved[name] += 1
                 deps.append(f"fixture:{name}")
@@ -722,13 +895,14 @@ def discover_pytest(
     plugin_hooks = [h for p in global_plugins for h in p.hooks]
 
     unresolved: Counter[str] = Counter()
+    assumed: Counter[str] = Counter()
     for path in sorted(test_paths):
         facts = facts_by_path.get(path)
         if facts is None:
             continue
         conftests = _conftest_chain(path, facts_by_path)
         plugins = global_plugins + plugin_facts(facts.plugins, path)
-        resolver = _Resolver(facts, conftests, plugins, options, unresolved)
+        resolver = _Resolver(facts, conftests, plugins, options, unresolved, assumed)
         module_deps = [facts.parsed.module]
         module_deps += [c.parsed.module for c in conftests]
         for c in conftests:
@@ -750,6 +924,20 @@ def discover_pytest(
                 "unresolved_fixture",
                 f"fixture {name!r} requested by {count} test(s) was not found in the source "
                 "roots; its users are selected conservatively (declare it external to opt out)",
+            )
+        )
+    for name, count in sorted(assumed.items()):
+        origin = (
+            "declared external"
+            if name in options.external_fixtures
+            else f"assumed from the installed plugin {WELL_KNOWN_PLUGIN_FIXTURES[name]}"
+        )
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "external_fixture",
+                f"fixture {name!r} requested by {count} test(s) is not in the source roots and "
+                f"was {origin}; it is not a dependency of its users",
             )
         )
     result.targets.sort()

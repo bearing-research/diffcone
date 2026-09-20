@@ -17,10 +17,22 @@ Each of these is a corpus run first; code changes follow only from what
 the run shows (this is how every improvement so far was found).
 
 * **Third-party plugin fixtures.** None of the six repositories requested a
-  fixture from an *installed* plugin. Find one that uses `mocker`,
-  `httpx_mock`, `freezer` or `anyio_backend` and measure how much
-  `--assume-external-fixture` is needed; then ship a curated list of
-  well-known plugin fixture names as the default, still overridable.
+  fixture from an *installed* plugin. Measured on pipx (699 tests): 153
+  tests fall back to select-all only because `mocker` (pytest-mock) and
+  `fake_process` (pytest-subprocess) are not in the source roots.
+  *Mechanism:* a curated table of well-known plugin fixture names, each
+  mapped to the distribution that provides it, consulted after every
+  in-scope level and before a name becomes `fixture:<name>`; every assumed
+  name is reported in a discovery note (`external_fixture`, with the
+  request count and the plugin) so the assumption is visible;
+  `--assume-external-fixture` extends the table and
+  `--no-well-known-fixtures` disables it. A name defined in scope always
+  wins over the table. *Trade-off:* a project that requests `mocker`
+  without installing pytest-mock would fail at collection anyway, so
+  assuming the plugin never hides a real dependency; the table is a list
+  to maintain. *Done when:* pipx plans without a fixture fallback, the
+  assumed names are in the report, and a coverage corpus on pipx keeps
+  recall at 100 %.
 * **A monorepo** with several packages under one root and tests per
   package: exercises multiple source roots, cross-package imports and
   `conftest.py` layering across packages.

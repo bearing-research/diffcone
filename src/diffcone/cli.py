@@ -60,7 +60,13 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         dest="external_fixtures",
         metavar="NAME",
         default=[],
-        help="pytest fixture provided by an installed plugin; not reported as unresolved",
+        help="pytest fixture provided by an installed plugin; not reported as unresolved "
+        "(fixtures of well-known plugins such as pytest-mock's mocker are assumed by default)",
+    )
+    p.add_argument(
+        "--no-well-known-fixtures",
+        action="store_true",
+        help="do not assume fixtures of well-known pytest plugins; report them as unresolved",
     )
     p.add_argument("--output", "-o", help="write the result to this file instead of stdout")
     p.add_argument(
@@ -226,7 +232,10 @@ def _write(text: str, output: str | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    options = DiscoveryOptions(external_fixtures=frozenset(args.external_fixtures))
+    options = DiscoveryOptions(
+        external_fixtures=frozenset(args.external_fixtures),
+        well_known_fixtures=not args.no_well_known_fixtures,
+    )
 
     cache = None
     if not args.no_cache:

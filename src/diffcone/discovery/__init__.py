@@ -28,9 +28,13 @@ class DiscoveryNote:
 
 @dataclass
 class DiscoveryOptions:
-    # Fixture names supplied by installed plugins (pytest-mock's ``mocker``,
-    # etc.) that should not be treated as unresolved.
+    # Fixture names supplied by installed plugins that should not be treated
+    # as unresolved, in addition to the well-known ones
+    # (``pytest_static.WELL_KNOWN_PLUGIN_FIXTURES``).
     external_fixtures: frozenset[str] = frozenset()
+    # Consult the well-known plugin fixture table; every assumed name is
+    # reported in an ``external_fixture`` discovery note.
+    well_known_fixtures: bool = True
 
 
 @dataclass
