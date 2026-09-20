@@ -457,3 +457,41 @@ def test_getattr_and_import_module_with_bounded_names():
         idx, "pkg.b.module_level"
     )
     assert ("pkg.a", "imports", "") in edges(idx, "pkg.b.mods")
+
+
+def test_parameter_driven_getattr_uses_call_site_literals():
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/mods.py": "def target():\n    pass\n",
+            "pkg/m.py": (
+                "import importlib\nimport pkg.mods\n\n"
+                "def helper(stream, attr, value=None):\n"
+                "    return getattr(stream, attr, None) == value\n\n"
+                "def a(s):\n    return helper(s, 'encoding')\n\n"
+                "def b(s):\n    return helper(s, attr='errors')\n\n"
+                "class K:\n"
+                "    def m(self, name):\n        return getattr(pkg.mods, name)\n"
+                "    def caller(self):\n        return self.m('target')\n\n"
+                "def with_default(attr='mode'):\n    return getattr(object(), attr)\n\n"
+                "def d():\n    return with_default()\n\n"
+                "def loader(mod):\n    return importlib.import_module(mod)\n\n"
+                "def e():\n    return loader('pkg.mods')\n\n"
+                "def escaping(obj, attr):\n    return getattr(obj, attr)\n\n"
+                "def f(x):\n    fn = escaping\n    return fn(x, 'y')\n\n"
+                "def unbounded_site(obj, attr):\n    return getattr(obj, attr)\n\n"
+                "def g(x, n):\n    return unbounded_site(x, n)\n\n"
+                "def uncalled(obj, attr):\n    return getattr(obj, attr)\n"
+            ),
+        }
+    )
+    unresolved = lambda sym: {(u.kind, u.name) for u in idx.unresolved if u.symbol == sym}  # noqa: E731
+    assert unresolved("pkg.m.helper") == {("attribute", "encoding"), ("attribute", "errors")}
+    assert ("pkg.mods.target", "references", "") in edges(idx, "pkg.m.K.m")
+    assert ("dynamic", "") not in unresolved("pkg.m.K.m")
+    assert unresolved("pkg.m.with_default") == {("attribute", "mode")}
+    assert ("pkg.mods", "imports", "") in edges(idx, "pkg.m.loader")
+    assert ("dynamic", "") not in unresolved("pkg.m.loader")
+    # Still dynamic: escaping as a value, an unbounded call site, never called.
+    for sym in ("pkg.m.escaping", "pkg.m.unbounded_site", "pkg.m.uncalled"):
+        assert ("dynamic", "") in unresolved(sym), sym

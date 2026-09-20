@@ -26,6 +26,7 @@ import ast
 import builtins
 import copy
 import hashlib
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from diffcone.model import (
@@ -166,6 +167,9 @@ class Scope:
     # Function-level ``name = "lit"`` / ``for name in ("a", "b")`` bindings:
     # the string values a name may hold, or None when any binding is not literal.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    # The enclosing function's own parameters (only in that function's scope,
+    # not in nested scopes): name -> positional index or None for keyword-only.
+    params: dict[str, int | None] = field(default_factory=dict)
 
     def string_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
         """Every string ``expr`` may evaluate to, or None when unbounded."""
@@ -384,6 +388,45 @@ class _LocalBindings(ast.NodeVisitor):
 # --------------------------------------------------------------------------- indexer
 
 
+@dataclass
+class _FuncParams:
+    positional: list[str]  # including self/cls for bound methods
+    bound: bool
+    defaults: dict[str, tuple[str, ...] | None]
+    has_varargs: bool
+
+
+@dataclass
+class _CallSite:
+    positional: list[tuple[str, ...] | None]  # candidates per positional argument
+    keywords: dict[str, tuple[str, ...] | None]
+    unbounded: bool  # *args / **kwargs at the call site
+    receiver_bound: bool  # ``obj.m(...)`` / ``self.m(...)``: self is implicit
+
+    def value_for(self, param: str, info: _FuncParams) -> tuple[str, ...] | None:
+        if self.unbounded:
+            return None
+        if param in self.keywords:
+            return self.keywords[param]
+        if param in info.positional:
+            index = info.positional.index(param)
+            if info.bound and self.receiver_bound:
+                index -= 1
+            if 0 <= index < len(self.positional):
+                return self.positional[index]
+        return info.defaults.get(param)
+
+
+@dataclass
+class _ParamDynamic:
+    function: str
+    param: str
+    kind: str  # "getattr" | "import"
+    base: list[str] | None  # receiver chain for getattr, when it is a name chain
+    scope: Scope
+    detail: str
+
+
 class Indexer:
     def __init__(self, snapshot: Snapshot) -> None:
         self.snapshot = snapshot
@@ -393,6 +436,13 @@ class Indexer:
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()
         self._bases_final = False
+        # Interprocedural literal propagation for ``getattr(x, param)``:
+        # per function, what its resolved call sites pass; whether it is used
+        # other than by a direct call; and the pending parameter-driven uses.
+        self.call_sites: dict[str, list[_CallSite]] = defaultdict(list)
+        self.escapes: set[str] = set()
+        self.func_params: dict[str, _FuncParams] = {}
+        self.param_dynamics: list[_ParamDynamic] = []
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -428,7 +478,58 @@ class Indexer:
         self._bases_final = True  # MROs may be memoised from here on
         for module in sorted(self.scopes):
             self._resolve_module(self.scopes[module])
+        self._resolve_param_dynamics()
         return self.index
+
+    def _resolve_param_dynamics(self) -> None:
+        """Expand ``getattr(x, p)`` / ``import_module(p)`` where ``p`` is a
+        parameter, using the literal strings every resolved call site passes.
+        A function that escapes (used as a value, or whose name occurs as an
+        unresolved reference so callers may be unknown) or has an unbounded
+        call site stays dynamic."""
+        unresolved_names = {u.name for u in self.index.unresolved if u.name}
+        for pd in self.param_dynamics:
+            info = self.func_params.get(pd.function)
+            symbol = self.index.symbols.get(pd.function)
+            candidates: list[str] | None = []
+            sites = self.call_sites.get(pd.function, [])
+            if (
+                info is None
+                or symbol is None
+                or pd.function in self.escapes
+                or symbol.name in unresolved_names
+                or not sites
+            ):
+                candidates = None
+            else:
+                for site in sites:
+                    values = site.value_for(pd.param, info)
+                    if values is None:
+                        candidates = None
+                        break
+                    candidates.extend(values)
+            if candidates is None:
+                self.index.unresolved.add(
+                    UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
+                )
+                continue
+            for name in dict.fromkeys(candidates):
+                if pd.kind == "import":
+                    if name.startswith("."):
+                        self.index.unresolved.add(
+                            UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
+                        )
+                    else:
+                        self._module_import_edge(pd.function, name)
+                elif pd.base is None:
+                    self.index.unresolved.add(
+                        UnresolvedReference(
+                            pd.function, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
+                        )
+                    )
+                else:
+                    node = self.resolve_chain(pd.base + [name], pd.scope)
+                    self._record(pd.function, node, chain=".".join(pd.base + [name]))
 
     def _error(self, path: str, message: str) -> None:
         self.index.errors.append(
@@ -741,11 +842,30 @@ class Indexer:
             locals=_LocalBindings().collect(node),
             literal_names=_collect_literal_bindings(node, scope.literal_names),
         )
-        if class_scope is not None and not _is_staticmethod(node):
+        bound_method = class_scope is not None and not _is_staticmethod(node)
+        if bound_method:
             params = node.args.posonlyargs + node.args.args
             if params:
                 fscope.self_name = params[0].arg
                 fscope.self_class = class_scope.id
+        positional = [a.arg for a in node.args.posonlyargs + node.args.args]
+        fscope.params = {name: i for i, name in enumerate(positional)}
+        fscope.params.update({a.arg: None for a in node.args.kwonlyargs})
+        defaults: dict[str, tuple[str, ...] | None] = {}
+        n_defaults = len(node.args.defaults)
+        for name, default in zip(
+            positional[len(positional) - n_defaults :], node.args.defaults, strict=True
+        ):
+            defaults[name] = fscope.string_candidates(default)
+        for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
+            if default is not None:
+                defaults[a.arg] = fscope.string_candidates(default)
+        self.func_params[symbol_id] = _FuncParams(
+            positional=positional,
+            bound=bound_method,
+            defaults=defaults,
+            has_varargs=node.args.vararg is not None or node.args.kwarg is not None,
+        )
         # Function-local imports are visible to the whole body.
         for inner in ast.walk(node):
             if isinstance(inner, (ast.Import, ast.ImportFrom)):
@@ -1009,6 +1129,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self_name=None if outer.self_name in bound else outer.self_name,
             self_class=None if outer.self_name in bound else outer.self_class,
             literal_names=literal_names,
+            params={},  # a nested scope's names are not the enclosing function's parameters
         )
         return outer
 
@@ -1100,11 +1221,13 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
             self._resolve([node.id])
+            self._mark_escape(node, [node.id])
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         parts = _flatten_chain(node)
         if parts is not None:
             self._resolve(parts)
+            self._mark_escape(node, parts)
             return
         if self._is_zero_arg_super(node.value) and self.scope.self_class is not None:
             # ``super().m``: next definition of ``m`` in the enclosing class's MRO.
@@ -1143,16 +1266,78 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._getattr(node)
             elif name in ("importlib.import_module", "importlib.__import__"):
                 self._import_module(node, name)
+            self._record_call_site(node, parts)
+        self._call_func = node.func
         self.generic_visit(node)
+
+    _call_func: ast.expr | None = None
+
+    def _record_call_site(self, node: ast.Call, parts: list[str]) -> None:
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if not (isinstance(target, Resolved) and not target.detail):
+            return
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            return
+        unbounded = any(isinstance(a, ast.Starred) for a in node.args) or any(
+            k.arg is None for k in node.keywords
+        )
+        receiver_bound = False
+        if symbol.kind == METHOD and len(parts) > 1:
+            base = self.indexer._lookup_base(parts[0], self.scope)
+            base_is_class = (
+                isinstance(base, Resolved)
+                and not base.detail
+                and base.symbol in self.indexer.class_scopes
+                and len(parts) == 2
+                and parts[0] != self.scope.self_name  # self/cls also resolve to the class
+            )
+            receiver_bound = not base_is_class
+        self.indexer.call_sites[symbol.id].append(
+            _CallSite(
+                positional=[self.scope.string_candidates(a) for a in node.args],
+                keywords={
+                    k.arg: self.scope.string_candidates(k.value)
+                    for k in node.keywords
+                    if k.arg is not None
+                },
+                unbounded=unbounded,
+                receiver_bound=receiver_bound,
+            )
+        )
+
+    def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
+        """A function referenced other than as the callee of a call may be
+        called from anywhere with anything."""
+        if node is self._call_func:
+            return
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = self.indexer.index.symbols.get(target.symbol)
+            if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                self.indexer.escapes.add(symbol.id)
+
+    def _param_dynamic(
+        self, expr: ast.expr, kind: str, base: list[str] | None, detail: str
+    ) -> bool:
+        """Defer a dynamic use whose name is one of the enclosing function's
+        parameters; returns False when that does not apply."""
+        if not (isinstance(expr, ast.Name) and expr.id in self.scope.params):
+            return False
+        self.indexer.param_dynamics.append(
+            _ParamDynamic(self.source, expr.id, kind, base, self.scope, detail)
+        )
+        return True
 
     def _getattr(self, node: ast.Call) -> None:
         if len(node.args) < 2:
             return
         names = self.scope.string_candidates(node.args[1])
-        if names is None:
-            self._dynamic("getattr(<non-literal>)")
-            return
         base = _flatten_chain(node.args[0])
+        if names is None:
+            if not self._param_dynamic(node.args[1], "getattr", base, "getattr(<non-literal>)"):
+                self._dynamic("getattr(<non-literal>)")
+            return
         for name in names:
             if base is None:
                 # Unknown receiver, known attribute name: bounded like ``obj.name``.
@@ -1169,7 +1354,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         names = self.scope.string_candidates(node.args[0])
         if names is None or any(n.startswith(".") for n in names):
-            self._dynamic(f"{name}(<non-literal>)")
+            if names is not None or not self._param_dynamic(
+                node.args[0], "import", None, f"{name}(<non-literal>)"
+            ):
+                self._dynamic(f"{name}(<non-literal>)")
             return
         for module in names:
             self.indexer._module_import_edge(self.source, module)

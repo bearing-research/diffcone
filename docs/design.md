@@ -157,10 +157,17 @@ every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a variable assigned only such values (in the
 function or at module level), or a `for` variable iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
-resolved like `x.<candidate>` or an import. Only when the name is unbounded
-do `getattr`, `eval`, `exec`, `__import__`, `globals()`, `vars()` and
-`import_module` mark the enclosing symbol as having a **dynamic**
-reference.
+resolved like `x.<candidate>` or an import. When the name is one of the
+enclosing function's parameters, the literal strings that every resolved
+call site passes for it (positionally, by keyword, or via the parameter's
+default) are used instead, so `def _attr(stream, attr): getattr(stream,
+attr)` called as `_attr(s, "encoding")` and `_attr(s, "errors")` is bounded
+to those two names; the function stays dynamic if it escapes (used as a
+value, or its name occurs as an unresolved reference so callers may be
+unknown), has no resolved call site, or any call site is unbounded
+(`*args`, a non-literal). Only when the name is unbounded do `getattr`,
+`eval`, `exec`, `__import__`, `globals()`, `vars()` and `import_module`
+mark the enclosing symbol as having a **dynamic** reference.
 
 Method identity and method-call resolution are separate: `Model.save` is a
 symbol, but `obj.save()` on an untyped `obj` is an unresolved attribute

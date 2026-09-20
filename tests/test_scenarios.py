@@ -412,7 +412,7 @@ def test_unresolvable_relationship_broadens_selection(repo):
                 "import importlib\n\n\n"
                 "def persist(obj):\n    return obj.save()\n\n\n"
                 "def fetch(obj):\n    return obj.load()\n\n\n"
-                "def plugin(name):\n    return importlib.import_module(name)\n\n\n"
+                "def plugin(name):\n    return importlib.import_module(name.strip())\n\n\n"
                 "def constant():\n    return 42\n"
             ),
             "tests/test_service.py": (
