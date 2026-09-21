@@ -66,7 +66,12 @@ definitions with the same name in one scope (overloads, property setters,
 conditional definitions) are one symbol whose hashes cover all of them.
 
 Source roots are mapped to module names with the longest matching root
-winning; `pkg/__init__.py` is module `pkg`. Two files that map to the same
+winning; `pkg/__init__.py` is module `pkg`. A root may carry a module
+prefix, `DIR=PREFIX` (`--source-root api/tests=api_tests`): its modules
+are named `PREFIX.<path>` and the directory itself is the package
+`PREFIX`. The prefixed name is diffcone's identity only, never used to
+resolve an import (pytest's `importlib` import mode, the case this
+serves, gives such modules no importable name either). Two files that map to the same
 module name are an analysis error (the second is skipped and the plan is
 degraded), which is the condition under which one pytest session would
 fail with an import file mismatch too.
@@ -78,12 +83,15 @@ sessions (opentelemetry-python: `tox -e test-opentelemetry-sdk` runs
 `opentelemetry-sdk/tests` alone) is planned once per session, for example
 `--source-root opentelemetry-api/src --source-root opentelemetry-sdk/src
 --source-root tests/opentelemetry-test-utils/src --source-root
-opentelemetry-sdk/tests`; planning the API and SDK test trees together
-collides on `trace.test_globals` and `context` and degrades exactly as
-pytest would. A repository that runs one session over several packages
-(hatch: `src`, `backend/src`, `tests`) is one plan. Cross-package imports
-resolve like any other in-scope import because module names are global
-across roots.
+opentelemetry-sdk/tests`. Planning the API and SDK test trees together
+collides on `trace.test_globals` and `context` and degrades exactly as a
+default-mode pytest session would; when a session really collects both
+(`--import-mode=importlib`), give each tree a prefix
+(`opentelemetry-api/tests=api_tests`, `opentelemetry-sdk/tests=sdk_tests`)
+and the trees keep distinct identities. A repository that runs one
+session over several packages (hatch: `src`, `backend/src`, `tests`) is
+one plan. Cross-package imports resolve like any other in-scope import
+because module names are global across roots.
 
 ## Hashes
 

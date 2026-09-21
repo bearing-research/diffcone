@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from diffcone.cache import ModuleCache, index_to_dict
 from diffcone.indexer import build_index
 from diffcone.model import Edge, SnapshotInfo
@@ -41,6 +43,13 @@ def test_module_names_follow_source_roots():
     assert module_name_for("src/pkg/mod.py", [".", "src"]) == "pkg.mod"
     assert module_name_for("other/x.py", ["src"]) is None
     assert module_name_for("pkg/not-valid.py", ["."]) is None
+    # A prefixed root names its modules PREFIX.<path>; the longest directory still wins.
+    assert module_name_for("api/tests/test_x.py", ["api/tests=api_tests"]) == "api_tests.test_x"
+    assert module_name_for("api/tests/__init__.py", ["api/tests=a.b"]) == "a.b"
+    assert module_name_for("api/tests/t.py", [".", "api/tests=api_tests"]) == "api_tests.t"
+    assert module_name_for("api/src/x.py", ["api/src", "api/tests=api_tests"]) == "x"
+    with pytest.raises(ValueError, match="dotted identifier"):
+        module_name_for("api/tests/t.py", ["api/tests=not-valid"])
 
 
 def test_symbol_kinds_and_containers():

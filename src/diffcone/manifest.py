@@ -8,7 +8,7 @@ are future work; naming conventions alone do not implement either.
 Format (JSON)::
 
     {
-      "source_roots": ["src", "tests"],          # optional, CLI overrides
+      "source_roots": ["src", "tests"],          # optional, CLI overrides; "DIR=PREFIX" allowed
       "targets": [
         {
           "runner": "pytest",

@@ -958,3 +958,28 @@ def test_coverage_attributes_symbols_deleted_in_head_from_the_base_run(repo):
     assert "tests/test_ops.py::test_gone" not in affected  # removed at head
     assert [o.runner_id for o in v.removed] == ["tests/test_ops.py::test_gone"]
     assert "tests/test_ops.py::test_add" not in affected
+
+
+def test_validate_with_prefixed_roots_in_importlib_mode(repo):
+    same_test = "from {pkg} import core\n\n\ndef test_run():\n    assert core.run() == {v}\n"
+    base = repo.commit(
+        {
+            "a/src/pa/__init__.py": "",
+            "a/src/pa/core.py": "def run():\n    return 1\n",
+            "a/tests/test_core.py": same_test.format(pkg="pa", v=1),
+            "b/src/pb/__init__.py": "",
+            "b/src/pb/core.py": "def run():\n    return 2\n",
+            "b/tests/test_core.py": same_test.format(pkg="pb", v=2),
+        }
+    )
+    head = repo.commit({"b/src/pb/core.py": "def run():\n    return 3\n"})  # outcome flips
+    roots = ["a/src", "b/src", "a/tests=a_tests", "b/tests=b_tests"]
+    plan = repo.plan(base, head, [], source_roots=roots, discover_runners=["pytest"])
+    # The package roots (directory parts of the specs) go on PYTHONPATH; the
+    # session collects both same-named test modules in importlib mode.
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST + " --import-mode=importlib")
+    assert v.ok
+    assert [(o.runner_id, o.base, o.head, o.selected) for o in v.outcomes] == [
+        ("a/tests/test_core.py::test_run", "PASSED", "PASSED", False),
+        ("b/tests/test_core.py::test_run", "PASSED", "FAILED", True),
+    ]

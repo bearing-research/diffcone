@@ -1434,3 +1434,35 @@ def test_lazy_loader_with_prefixed_import_is_not_an_always_on_seed(repo):
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"t::test_helper"}
     assert not [u for u in plan.unresolved if u.kind == "dynamic"]
+
+
+def test_prefixed_source_roots_keep_same_named_test_trees_apart(repo):
+    """Two packages with their own tests/ trees whose files share names:
+    a per-root prefix gives each tree its own module namespace, so one plan
+    covers the session that collects both (importlib import mode)."""
+    same_test = "from {pkg} import core\n\n\ndef test_run():\n    assert core.run() == {v}\n"
+    base = repo.commit(
+        {
+            "a/src/pa/__init__.py": "",
+            "a/src/pa/core.py": "def run():\n    return 1\n",
+            "a/tests/test_core.py": same_test.format(pkg="pa", v=1),
+            "b/src/pb/__init__.py": "",
+            "b/src/pb/core.py": "def run():\n    return 2\n",
+            "b/tests/test_core.py": same_test.format(pkg="pb", v=2),
+        }
+    )
+    head = repo.commit({"b/src/pb/core.py": "def run():\n    return 2 + 0\n"})
+    roots = ["a/src", "b/src", "a/tests=a_tests", "b/tests=b_tests"]
+    plan = repo.plan(base, head, [], source_roots=roots, discover_runners=["pytest"])
+    assert not plan.degraded and plan.errors == []
+    assert selected(plan) == {"b/tests/test_core.py::test_run"}
+    assert unselected(plan) == {"a/tests/test_core.py::test_run"}
+    entries = {d.target.runner_id: d.target.entry_symbol for d in plan.decisions}
+    assert entries == {
+        "a/tests/test_core.py::test_run": "a_tests.test_core.test_run",
+        "b/tests/test_core.py::test_run": "b_tests.test_core.test_run",
+    }
+    # Without the prefixes the two test modules collide and the plan degrades.
+    plain = repo.plan(base, head, [], source_roots=["a/src", "b/src", "a/tests", "b/tests"])
+    assert plain.degraded
+    assert any("also defined by" in e.message for e in plain.errors)

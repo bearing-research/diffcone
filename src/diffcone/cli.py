@@ -42,9 +42,10 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         "--source-root",
         action="append",
         dest="source_roots",
-        metavar="DIR",
+        metavar="DIR[=PREFIX]",
         help="repo-relative directory whose .py files are analyzed as a module tree "
-        "(repeatable; overrides the manifest's source_roots; default: .)",
+        "(repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names "
+        "its modules PREFIX.<path>, for per-package test trees whose files share names",
     )
     p.add_argument(
         "--discover",

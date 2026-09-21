@@ -36,7 +36,7 @@ from pathlib import Path
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE
 from diffcone.planner import Plan
-from diffcone.snapshot import GitError, _git
+from diffcone.snapshot import GitError, _git, split_root
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
 
@@ -278,8 +278,9 @@ def _checkout_env(cwd: Path, source_roots: list[str]) -> dict[str, str]:
     do it, and the suite would silently test the installed code."""
     env = dict(os.environ)
     roots = []
-    for root in source_roots:
-        candidate = (cwd / root).resolve() if root not in ("", ".") else cwd.resolve()
+    for spec in source_roots:
+        root = split_root(spec)[0]
+        candidate = (cwd / root).resolve() if root else cwd.resolve()
         if candidate.is_dir() and str(candidate) not in roots:
             roots.append(str(candidate))
     existing = env.get("PYTHONPATH")
@@ -450,9 +451,9 @@ def shadowed_files(plan: Plan, outside: set[str]) -> list[tuple[str, str]]:
     for symbol in plan.head_index.symbols.values():
         rel = symbol.path
         suffixes["/" + rel] = rel
-        for root in plan.source_roots:
-            root = root.strip("/")
-            if root and root != "." and rel.startswith(root + "/"):
+        for spec in plan.source_roots:
+            root = split_root(spec)[0]
+            if root and rel.startswith(root + "/"):
                 suffixes["/" + rel[len(root) + 1 :]] = rel
     found: list[tuple[str, str]] = []
     for path in sorted(outside):

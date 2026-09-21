@@ -327,7 +327,11 @@ test trees together collides on same-named test modules (`context`,
 over both would fail. Test classes inherit from bases in the shared
 test-utils package (`ConcurrencyTestBase`), which discovery reports as
 unknown bases (12 notes; those methods are found through the class's own
-definitions). Last twelve commits, ten touch Python, suite 18 s. Reproduce with:
+definitions). With per-root prefixes (`opentelemetry-api/tests=api_tests`,
+`opentelemetry-sdk/tests=sdk_tests`) both trees plan together without an
+analysis error (1 107 targets), which is what an `--import-mode=importlib`
+session over both would need. Last twelve commits, ten touch Python,
+suite 18 s. Reproduce with:
 
 ```bash
 git clone --depth 100 https://github.com/open-telemetry/opentelemetry-python.git

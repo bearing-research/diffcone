@@ -17,21 +17,13 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
   by `pytest_generate_tests` (currently reported as unresolved, so
   conservative), base classes defined in other modules, `conftest.py`
   outside the source roots, doctests.
-* **Monorepos with same-named test modules in one session.** Two files
-  mapping to one module name are an analysis error today, which matches
-  pytest's default import mode but not `--import-mode=importlib`, where
-  `opentelemetry-api/tests/trace/test_globals.py` and
-  `opentelemetry-sdk/tests/trace/test_globals.py` collect side by side
-  (evaluation.md plans that repository per session instead). *Mechanism:*
-  a per-root module prefix, `--source-root DIR=PREFIX`, so each test tree
-  gets its own namespace (`api_tests.trace.test_globals`) while package
-  roots keep theirs; discovery emits node ids from the path, unaffected.
-  *Trade-off:* a prefixed name is diffcone's, not Python's, so it must
-  never be used to resolve an import (imports of a prefixed module are
-  impossible in importlib mode anyway). *Done when:* the opentelemetry
-  API and SDK trees plan together without an analysis error and a hatch
-  style one-session monorepo corpus (`src`, `backend/src`, `tests`, 2 106
-  tests) is recorded.
+* **Hatch one-session monorepo corpus.** Per-root module prefixes
+  (`--source-root DIR=PREFIX`) shipped; the opentelemetry API and SDK
+  trees plan together without an analysis error. Still to record: a
+  coverage corpus on a repository that runs one session over several
+  packages (hatch: `src`, `backend/src`, `tests`, 2 625 collected tests),
+  which exercises cross-package imports and conftest layering under
+  execution, not only statically.
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare

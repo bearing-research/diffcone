@@ -89,9 +89,29 @@ def resolve_commit(repo: Path, revision: str) -> str:
     return commit
 
 
+def split_root(spec: str) -> tuple[str, str]:
+    """``(directory, module prefix)`` of a source-root spec.
+
+    A spec is a repo-relative directory, optionally followed by ``=PREFIX``:
+    modules under the directory are then named ``PREFIX.<path>`` instead of
+    ``<path>``. That gives a monorepo's per-package test trees, whose files
+    share names (``opentelemetry-api/tests/trace/test_globals.py`` and
+    ``opentelemetry-sdk/tests/trace/test_globals.py``), distinct identities
+    when one pytest session collects them (``--import-mode=importlib``). A
+    prefixed name is diffcone's, never Python's: it is not used to resolve
+    imports. The directory is normalised (``.`` and ``""`` are the root).
+    """
+    directory, sep, prefix = spec.partition("=")
+    directory = directory.strip().strip("/")
+    directory = "" if directory in ("", ".") else directory
+    prefix = prefix.strip() if sep else ""
+    if sep and (not prefix or not all(p.isidentifier() for p in prefix.split("."))):
+        raise ValueError(f"source root {spec!r}: the module prefix must be a dotted identifier")
+    return directory, prefix
+
+
 def _normalise_root(root: str) -> str:
-    root = root.strip().strip("/")
-    return "" if root in ("", ".") else root
+    return split_root(root)[0]
 
 
 def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[str]:
@@ -289,10 +309,10 @@ def module_name_for(path: str, source_roots: list[str]) -> str | None:
     The longest matching source root wins. Returns ``None`` when the path lies
     outside every root.
     """
-    best: str | None = None
+    best: tuple[str, str] | None = None
     best_len = -1
     for raw in source_roots:
-        root = _normalise_root(raw)
+        root, prefix = split_root(raw)
         if root == "":
             rel = path
         elif path.startswith(root + "/"):
@@ -300,13 +320,14 @@ def module_name_for(path: str, source_roots: list[str]) -> str | None:
         else:
             continue
         if len(root) > best_len:
-            best, best_len = rel, len(root)
+            best, best_len = (rel, prefix), len(root)
     if best is None:
         return None
-    rel = best[: -len(".py")]
+    rel, prefix = best
+    rel = rel[: -len(".py")]
     parts = rel.split("/")
     if parts[-1] == "__init__":
         parts = parts[:-1]
-    if not parts or not all(p.isidentifier() for p in parts):
+    if (not parts and not prefix) or not all(p.isidentifier() for p in parts):
         return None
-    return ".".join(parts)
+    return ".".join([*prefix.split("."), *parts] if prefix else parts)

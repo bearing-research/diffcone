@@ -107,7 +107,9 @@ In a monorepo, one plan is one pytest session: pass every package root
 that session imports plus the test tree it collects, and plan once per
 session when packages carry their own `tests/` trees (two files mapping to
 the same module name are reported as an analysis error, as pytest would
-report an import mismatch).
+report an import mismatch). When one session collects several such trees
+(`--import-mode=importlib`), give each its own namespace with
+`--source-root DIR=PREFIX`.
 
 `validate` runs the full pytest suite at both snapshots (commits are checked
 out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
