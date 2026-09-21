@@ -918,6 +918,22 @@ def test_validate_resolves_a_relative_command_against_the_repo(repo, monkeypatch
         validate_pytest(plan, repo=repo.path, command="./missing.sh")
 
 
+def test_relative_command_keeps_a_symlinked_interpreter(tmp_path, monkeypatch):
+    """``.venv/bin/python`` is a symlink to the base interpreter; resolving
+    it ran the suite outside the venv (no pytest-cov, no dependencies)."""
+    from diffcone.execution import resolve_command
+
+    real = tmp_path / "base" / "python3"
+    real.parent.mkdir()
+    real.write_text("#!/bin/sh\n")
+    venv = tmp_path / "repo" / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").symlink_to(real)
+    monkeypatch.chdir(tmp_path / "repo")
+    resolved = resolve_command(".venv/bin/python -m pytest", tmp_path / "repo")
+    assert resolved == f"{venv / 'python'} -m pytest"
+
+
 def test_coverage_attributes_symbols_deleted_in_head_from_the_base_run(repo):
     """A test that executed a function deleted in head has no head lines to
     attribute; the base run's coverage supplies them. A test deleted with it

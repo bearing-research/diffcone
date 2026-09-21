@@ -68,7 +68,9 @@ def build_command(
 def resolve_command(command: str | None, repo: Path) -> str | None:
     """Make a relative executable path in ``command`` (``.venv/bin/python``)
     absolute, against the current directory and then the repository, so
-    the command still works from a temporary worktree."""
+    the command still works from a temporary worktree. Symlinks are kept:
+    a venv's ``python`` is a link to the base interpreter, and following it
+    would run outside the venv."""
     if command is None:
         return None
     argv = shlex.split(command)
@@ -77,7 +79,7 @@ def resolve_command(command: str | None, repo: Path) -> str | None:
     for base in (Path.cwd(), repo):
         candidate = base / argv[0]
         if candidate.exists():
-            return shlex.join([str(candidate.resolve()), *argv[1:]])
+            return shlex.join([os.path.abspath(candidate), *argv[1:]])
     return command
 
 
