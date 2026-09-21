@@ -405,28 +405,37 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| b6aaa1a | release Hatchling v1.32.1 | 2105 / 2105 | 0 % | n/a | 0 % |
-| 248141c | Use hatchling plugin manager | 2105 / 2105 | 0 % | 100 % | 1 % |
-| 6a2b14f | release Hatchling v1.32.2 | 2105 / 2105 | 0 % | n/a | 0 % |
-| 0941887 | release Hatchling v1.32.3 | 2105 / 2105 | 0 % | n/a | 0 % |
+| b6aaa1a | release Hatchling v1.32.1 | 152 / 2105 | 93 % | n/a | 0 % |
+| 248141c | Use hatchling plugin manager | 268 / 2105 | 87 % | 100 % | 10 % |
+| 6a2b14f | release Hatchling v1.32.2 | 152 / 2105 | 93 % | n/a | 0 % |
+| 0941887 | release Hatchling v1.32.3 | 152 / 2105 | 93 % | n/a | 0 % |
 | 5c6dc6c | Strip surrounding whitespace from version metadata | 2106 / 2106 | 0 % | 100 % | 14 % |
 | cd57f68 | Revert type changes for BuildHookInterface | 2106 / 2106 | 0 % | 100 % | 22 % |
 
 Totals: 0 outcome changes, 0 missed; recall 100 % (788 of 788); precision
-6 %; mean savings 0 %, 24 min with three jobs. Every commit selects every
-test, including three releases that change only
-`hatchling.__about__.__version__`, for one reason:
-`hatchling.plugin.manager.ClassRegister.collect` calls
-`getattr(registered_class, self.identifier, None)`, whose attribute name
-is an instance attribute set from a constructor argument, so the call is
-a dynamic reference bounded only by the module's import closure, which
-contains `__about__`; and `ClassRegister.get` is reached from
-`CoreMetadata.name`, `ProjectConfig.env` and `BuilderInterface.__init__`,
-which every test reaches. The constructor calls pass string literals
-(`ClassRegister(..., "PLUGIN_NAME", ...)`), so instance-attribute tracking
-(roadmap, "Resolution breadth") would bound the name
-and turn the dynamic reference into a name-bounded attribute lookup;
-that is now the measured motivation for that item.
+16 %; mean savings 61 %, 18 min with three jobs. Before instance-attribute
+tracking every row selected every test. The three releases change only
+`hatchling.__about__.__version__`, and
+`hatchling.plugin.manager.ClassRegister.collect` called
+`getattr(registered_class, self.identifier, None)` with the attribute set
+from a constructor argument: a dynamic reference bounded only by the
+module's import closure, which contains `__about__`, in a method that
+every test reaches (`ClassRegister.get` from `CoreMetadata.name`,
+`ProjectConfig.env` and `BuilderInterface.__init__`). The one construction
+passes a literal (`ClassRegister(..., "PLUGIN_NAME", ...)`), so the lookup
+is now the name-bounded `registered_class.PLUGIN_NAME`. The 152 still
+selected on a release come from two other dynamic references: hatchling's
+CLI entry point dispatches through `vars(parser.parse_args())` (the
+argparse pattern of design.md, "Known gaps"; 67 tests), and the test
+helper `__load_template_module` imports
+`f"..templates.{template_name}"`, a relative name that the literal-prefix
+rule does not expand (78 tests). 248141c changes `PluginManager` itself.
+The last two rows change properties that every test reaches by name
+through untyped receivers: 5c6dc6c changes `ProjectMetadata.version`
+(1 691 tests via `installed_dist.version` alone), and cd57f68 changes
+builder and build-hook interfaces whose `root`, `config` and `metadata`
+properties are matched from `self.root`, `app.config` and
+`project.metadata`.
 
 ## diffcone itself (129 tests)
 
@@ -533,6 +542,12 @@ Selection-rule changes re-run on every measurement in this file. Recall
 stayed at 100 % in each; where a number moved, the affected table above has
 been re-stated from the re-run:
 
+* instance-attribute tracking, with call sites for constructions and
+  `super()` calls, rebound parameters, `getattr`-returned functions and
+  classes as escapes: every recorded commit of every corpus planned
+  identically before and after except hatch, which moved from 0 % to 61 %
+  mean savings with recall still 100 % (its table above is from the
+  re-run);
 * override-aware dispatch for `self`/`cls` lookups, including mixin and
   class-attribute overrides (commits 4722191 and its review follow-up);
 * module-level variables as symbols with writer edges and enclosing-scope

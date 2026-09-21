@@ -219,10 +219,46 @@ is one of the enclosing function's parameters, the literal strings that every re
 call site passes for it (positionally, by keyword, or via the parameter's
 default) are used instead, so `def _attr(stream, attr): getattr(stream,
 attr)` called as `_attr(s, "encoding")` and `_attr(s, "errors")` is bounded
-to those two names; the function stays dynamic if it escapes (used as a
-value, or its name occurs as an unresolved reference so callers may be
-unknown), has no resolved call site, or any call site is unbounded
-(`*args`, a non-literal). Only when the name is unbounded do `getattr`,
+to those two names. The call sites are plain calls, `obj.m(...)` and
+`self.m(...)` (shared with dispatched overrides), `super().m(...)`, and
+constructions: `Foo(...)` or `cls(...)` is a call site of the `__init__`
+its MRO resolves to (any subclass's for `cls`), with `self` implicit. The
+function stays dynamic if its body rebinds the parameter; if it escapes
+(used as a value: a bare reference, `getattr(mod, "f")` returning it, or
+`super().m` not called), or its name occurs as an unresolved reference so
+callers may be unknown (an unresolved `super().m` in class K counts only
+for an `m` that follows K in the MRO of K or of one of its subclasses);
+if it is an `__init__` and a class that inherits it escapes; or if it has
+no resolved call site or any call site is unbounded (`*args`, a
+non-literal). A class escapes when it is referenced other than as a
+callee, a base class or in a type position (an annotation, the second
+argument of `isinstance`/`issubclass`, the first of `cast`); `cls` as a
+value in a classmethod, `type(self)` and `self.__class__` make the class
+and every in-scope subclass escape. Expanding a `getattr` can make a
+function escape, which can unbound another expansion, so expansion is
+repeated until the escape set is stable.
+
+The name can also be an instance attribute: `getattr(hooks,
+self.identifier)` in a method of class C is expanded over what
+`self.identifier` may hold. That is bounded only when every class in the
+MRO of C or of an in-scope subclass of C is plain (no class decorators or
+keywords such as `metaclass=`, every base in scope or `object`), none of
+them defines the attribute at class level or defines `__setattr__`,
+`__delattr__`, `__getattr__` or `__getattribute__`, none uses
+`setattr(self, ...)`, `delattr(self, ...)`, `self.__dict__` or `vars(self)`,
+and every write of `self.<attr>` in their methods is a single-target
+assignment in `__init__` of a parameter the body does not rebind, a
+literal, or a name chain that resolves to a symbol. A write through any
+other receiver (`obj.identifier = ...`), `setattr(obj, "identifier",
+...)` / `monkeypatch.setattr` / `patch.object` naming it, or one of those
+with an unbounded name, or a write into another object's `__dict__`,
+leaves the attribute (or every attribute) unbounded everywhere, since the
+receiver's type is unknown. A parameter binding takes the literals of the
+`__init__`'s call sites as above. When every write binds a symbol
+(`self.handler = process`), `self.handler` and `self.handler.x` also get
+edges (detail `self.handler`) to that symbol, alongside the name-bounded
+unresolved reference an unknown attribute always records. Only when the
+name is unbounded do `getattr`,
 `eval`, `exec`, `__import__`, `globals()`, `vars()` and `import_module`
 mark the enclosing symbol as having a **dynamic** reference.
 
@@ -367,13 +403,15 @@ of something cacheable:
   facts) plus every class's resolved bases and completeness. A body edit
   leaves it unchanged; adding, removing or renaming a symbol changes it.
 * **Resolution, per module.** Pass 2 writes (edges, unresolved and
-  external references, call sites, escapes, parameter tables and deferred
-  parameter-dynamic uses, whose function scopes are serialised) go to a
+  external references, call sites, escapes, parameter tables, deferred
+  parameter- and attribute-dynamic uses, whose function scopes are
+  serialised, instance-attribute writes and reads, and attribute
+  unbounding) go to a
   per-module output, merged into the index and stored under
   `<facts key>-<fingerprint>`. Only a module whose file or environment
-  changed is parsed and resolved again. Parameter-dynamic expansion needs
-  every module's call sites, so it stays a final pass over the merged
-  outputs.
+  changed is parsed and resolved again. Parameter- and attribute-dynamic
+  expansion needs every module's call sites and writes, so it stays a
+  final pass over the merged outputs.
 
 Loads and stores are batched (one query per pass, one transaction per
 build); with one file per record, opening thousands of files cost more
@@ -616,3 +654,9 @@ from the `run` and `validate` commands after a plan exists.
   on any command change regardless of the arguments it passes (pipx in
   evaluation.md). Which handler a test reaches is a property of its
   argument strings, which are not analysed.
+* Instance attributes assume `__init__` ran: an object built without it
+  (`object.__new__`, a subclass whose `__init__` neither writes the
+  attribute nor calls `super().__init__`) has no instance value, and a
+  construction through a path the index cannot see (a class taken from a
+  registry by unresolved name, code outside the source roots) passes
+  arguments that are not counted.

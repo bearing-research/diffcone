@@ -11,13 +11,15 @@ Supported subset (see docs/design.md):
 * bare names and dotted attribute chains rooted at a module-level definition,
   an import alias, ``self``/``cls`` inside a method, or a star import;
 * ``import``/``from ... import`` (absolute and relative) within source roots;
-* ``importlib.import_module`` / ``getattr`` with literal arguments.
-
+* ``importlib.import_module`` / ``getattr`` with literal arguments, with
+  parameters whose call sites pass literals, and with instance attributes
+  that ``__init__`` binds to such values (``getattr(x, self.name)``);
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an
   inherited ``m``, ``Sub.m``, ``super().m``).
 
 Deliberately unsupported: type inference, dynamic dispatch on unknown
-receivers, instance attributes, decorators that rewrite call targets.
+receivers, instance attributes written outside ``__init__`` or reflectively,
+decorators that rewrite call targets.
 """
 
 from __future__ import annotations
@@ -182,6 +184,12 @@ class ClassScope:
     base_chains: list[list[str] | None] = field(default_factory=list)
     bases: list[str] = field(default_factory=list)  # in-scope base class ids, in order
     complete: bool = True  # False when some base is external/dynamic/unresolved
+    # No decorators and no class keywords (metaclass=...): nothing but the
+    # class body and its bases decides how instances are built.
+    plain: bool = True
+    # Some base is external, dynamic or unresolved, other than a plain
+    # ``object``: attributes may be written by code that is not visible.
+    opaque: bool = False
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising
@@ -237,6 +245,13 @@ class Scope:
     # Parameters whose default is a module-level variable alias that variable:
     # reads and in-place mutations through the parameter belong to it.
     param_aliases: dict[str, str] = field(default_factory=dict)
+    # Names the function body rebinds: a rebound parameter no longer holds
+    # what the call sites passed. Only in the function's own scope.
+    rebound: frozenset[str] = frozenset()
+    # The bound method whose own scope this is (not a nested scope's).
+    method: str = ""
+    # ``self_name`` names the class (``cls`` of a classmethod), not an instance.
+    self_is_class: bool = False
 
     @property
     def literal_names(self) -> dict[str, tuple[str, ...] | None]:
@@ -579,11 +594,36 @@ class _CallSite:
 @dataclass
 class _ParamDynamic:
     function: str
-    param: str
+    param: str  # a parameter name, or an instance attribute name with self_class
     kind: str  # "getattr" | "import"
     base: list[str] | None  # receiver chain for getattr, when it is a name chain
     scope: Scope
     detail: str
+    self_class: str = ""  # set when the name is ``self.<param>`` of this class
+
+
+@dataclass
+class _AttrWrite:
+    """A write of ``self.<attr>`` in a method of ``cls``. ``binding`` is what
+    an ``__init__`` assignment binds (``["param", name]``, ``["strings",
+    [...]]``, ``["symbol", id]``); None for any other write."""
+
+    cls: str
+    attr: str
+    method: str
+    binding: list | None
+
+
+@dataclass
+class _AttrRef:
+    """``self.<attr>[.rest]`` read in ``source`` where no class in the MRO
+    defines ``attr``: resolved to the bound symbols when there are some."""
+
+    source: str
+    cls: str
+    attr: str
+    rest: list[str]
+    chain: str
 
 
 @dataclass
@@ -599,6 +639,12 @@ class _Output:
     escapes: set[str] = field(default_factory=set)
     func_params: dict[str, _FuncParams] = field(default_factory=dict)
     param_dynamics: list[_ParamDynamic] = field(default_factory=list)
+    attr_writes: list[_AttrWrite] = field(default_factory=list)
+    # (class id, attribute) pairs whose value cannot be bounded; the class is
+    # "" for a write through a receiver of unknown type, the attribute "*"
+    # for every attribute.
+    attr_unbound: set[tuple[str, str]] = field(default_factory=set)
+    attr_refs: list[_AttrRef] = field(default_factory=list)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -609,6 +655,9 @@ class _Output:
         self.escapes |= other.escapes
         self.func_params.update(other.func_params)
         self.param_dynamics.extend(other.param_dynamics)
+        self.attr_writes.extend(other.attr_writes)
+        self.attr_unbound |= other.attr_unbound
+        self.attr_refs.extend(other.attr_refs)
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -654,9 +703,20 @@ def _output_to_dict(out: _Output) -> dict:
             for f, p in out.func_params.items()
         },
         "param_dynamics": [
-            [pd.function, pd.param, pd.kind, pd.base, _scope_to_dict(pd.scope), pd.detail]
+            [
+                pd.function,
+                pd.param,
+                pd.kind,
+                pd.base,
+                _scope_to_dict(pd.scope),
+                pd.detail,
+                pd.self_class,
+            ]
             for pd in out.param_dynamics
         ],
+        "attr_writes": [[w.cls, w.attr, w.method, w.binding] for w in out.attr_writes],
+        "attr_unbound": sorted(out.attr_unbound),
+        "attr_refs": [[r.source, r.cls, r.attr, r.rest, r.chain] for r in out.attr_refs],
     }
 
 
@@ -686,9 +746,14 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
         for f, (positional, bound, defaults, has_varargs) in data["func_params"].items()
     }
     out.param_dynamics = [
-        _ParamDynamic(function, param, kind, base, _scope_from_dict(scope, scopes), detail)
-        for function, param, kind, base, scope, detail in data["param_dynamics"]
+        _ParamDynamic(
+            function, param, kind, base, _scope_from_dict(scope, scopes), detail, self_class
+        )
+        for function, param, kind, base, scope, detail, self_class in data["param_dynamics"]
     ]
+    out.attr_writes = [_AttrWrite(*w) for w in data["attr_writes"]]
+    out.attr_unbound = {(c, a) for c, a in data["attr_unbound"]}
+    out.attr_refs = [_AttrRef(*r) for r in data["attr_refs"]]
     return out
 
 
@@ -716,6 +781,7 @@ def _facts_to_dict(
                 "members": dict(c.members),
                 "bindings": sorted(c.bindings),
                 "base_chains": c.base_chains,
+                "plain": c.plain,
             }
             for c in classes
         ],
@@ -760,6 +826,8 @@ class Indexer:
         self._collided = False
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
+        # Classes with an unresolved ``super().<name>``, per name (final pass).
+        self._super_misses: dict[str, set[str]] = defaultdict(set)
 
     # -- pass 1 ---------------------------------------------------------------
 
@@ -909,6 +977,7 @@ class Indexer:
                 members=dict(data["members"]),
                 bindings=set(data["bindings"]),
                 base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
+                plain=bool(data["plain"]),
             )
         edges = {Edge(*e) for e in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):
@@ -933,37 +1002,59 @@ class Indexer:
 
     def _resolve_param_dynamics(self) -> None:
         """Expand ``getattr(x, p)`` / ``import_module(p)`` where ``p`` is a
-        parameter, using the literal strings every resolved call site passes.
-        A function that escapes (used as a value, or whose name occurs as an
-        unresolved reference so callers may be unknown) or has an unbounded
-        call site stays dynamic."""
-        unresolved_names = {u.name for u in self.index.unresolved if u.name}
-        for pd in self.out.param_dynamics:
-            info = self.out.func_params.get(pd.function)
-            symbol = self.index.symbols.get(pd.function)
-            candidates: list[str] | None = []
-            sites = self.out.call_sites.get(pd.function, [])
-            if (
-                info is None
-                or symbol is None
-                or pd.function in self.out.escapes
-                or symbol.name in unresolved_names
-                or not sites
-            ):
-                candidates = None
-            else:
-                for site in sites:
-                    values = site.value_for(pd.param, info)
-                    if values is None:
-                        candidates = None
-                        break
-                    candidates.extend(values)
-            if candidates is None:
+        parameter or an instance attribute, using the literal strings every
+        resolved call site passes (for an attribute: what ``__init__`` binds
+        it to, see _attribute_writes). A function that escapes (used as a
+        value, or whose name occurs as an unresolved reference so callers may
+        be unknown) or has an unbounded call site stays dynamic.
+
+        Expanding a ``getattr`` can itself make a function escape (its value
+        is used), which can unbound another expansion, so the candidates are
+        recomputed until the escape set is stable."""
+        unresolved_names = {
+            u.name for u in self.index.unresolved if u.name and not u.detail.startswith("super().")
+        }
+        # ``super().m`` that did not resolve in class K can still only reach
+        # an ``m`` after K in the MRO of K or of a subclass of K.
+        self._super_misses.clear()
+        for u in self.index.unresolved:
+            if u.name and u.detail.startswith("super()."):
+                source = self.index.symbols.get(u.symbol)
+                while source is not None and source.kind != CLASS:
+                    source = self.index.symbols.get(source.container or "")
+                if source is None:
+                    unresolved_names.add(u.name)
+                else:
+                    self._super_misses[u.name].add(source.id)
+        writes: dict[tuple[str, str], list[_AttrWrite]] = defaultdict(list)
+        for w in self.out.attr_writes:
+            writes[(w.cls, w.attr)].append(w)
+        while True:
+            escapes = set(self.out.escapes)
+            planned: list[tuple[_ParamDynamic, list[str] | None]] = []
+            for pd in self.out.param_dynamics:
+                if pd.self_class:
+                    values = self._attribute_strings(
+                        pd.self_class, pd.param, writes, unresolved_names
+                    )
+                else:
+                    values = self._param_values(pd.function, pd.param, unresolved_names)
+                planned.append((pd, values))
+            for pd, values in planned:
+                if values is not None and pd.kind == "getattr" and pd.base is not None:
+                    for name in dict.fromkeys(values):
+                        node = self.resolve_chain(pd.base + [name], pd.scope)
+                        if isinstance(node, Resolved) and not node.detail:
+                            self.escape(node)
+            if self.out.escapes == escapes:
+                break
+        for pd, values in planned:
+            if values is None:
                 self.out.unresolved.add(
                     UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
                 )
                 continue
-            for name in dict.fromkeys(candidates):
+            for name in dict.fromkeys(values):
                 if pd.kind == "import":
                     if name.startswith("."):
                         self.out.unresolved.add(
@@ -980,6 +1071,155 @@ class Indexer:
                 else:
                     node = self.resolve_chain(pd.base + [name], pd.scope)
                     self._record(pd.function, node, chain=".".join(pd.base + [name]))
+        for ref in self.out.attr_refs:
+            bound = self._attribute_writes(ref.cls, ref.attr, writes)
+            if bound is None or any(w.binding[0] != "symbol" for w in bound):  # type: ignore[index]
+                continue
+            for w in bound:
+                node: Node = Resolved(w.binding[1])  # type: ignore[index]
+                for attr in ref.rest:
+                    node = self._step(node, attr)
+                if isinstance(node, Resolved) and not ref.rest and node.symbol != ref.source:
+                    self.out.edges.add(
+                        Edge(ref.source, node.symbol, REFERENCES, f"self.{ref.attr}")
+                    )
+                else:
+                    self._record(ref.source, node, chain=ref.chain)
+
+    def _param_values(
+        self, function: str, param: str, unresolved_names: set[str]
+    ) -> list[str] | None:
+        """The literal strings every call site of ``function`` passes for
+        ``param``, or None when some caller may be unseen or unbounded."""
+        info = self.out.func_params.get(function)
+        symbol = self.index.symbols.get(function)
+        sites = self.out.call_sites.get(function, [])
+        if (
+            info is None
+            or symbol is None
+            or function in self.out.escapes
+            or symbol.name in unresolved_names
+            or self._super_may_reach(symbol)
+            or not sites
+            or self._constructor_escapes(symbol, unresolved_names)
+        ):
+            return None
+        values: list[str] = []
+        for site in sites:
+            found = site.value_for(param, info)
+            if found is None:
+                return None
+            values.extend(found)
+        return values
+
+    def lookup_super(self, class_id: str, attr: str) -> Node:
+        """``super().<attr>`` in ``class_id``: the next definition after it in
+        its MRO, plus (as overrides) what follows it in the MRO of each
+        in-scope subclass, where a mixin may come first."""
+        hit = self.lookup_in_class(class_id, attr, skip_self=True)
+        base = (hit.symbol, hit.detail) if isinstance(hit, Resolved) else None
+        extra: list[tuple[str, str]] = []
+        for sub in self._descendants.get(class_id, ()):
+            mro = self._mro(sub)
+            if class_id not in mro:
+                continue
+            for cid in mro[mro.index(class_id) + 1 :]:
+                cscope = self.class_scopes[cid]
+                if attr in cscope.members:
+                    pair = (cscope.members[attr], "")
+                elif attr in cscope.bindings:
+                    pair = (cid, f"attribute:{attr}")
+                else:
+                    continue
+                if pair != base and pair not in extra:
+                    extra.append(pair)
+                break
+        if not extra or not isinstance(hit, Resolved):
+            return hit
+        return Resolved(hit.symbol, hit.detail, hit.uncertain_attr, overrides=tuple(extra))
+
+    def _super_may_reach(self, symbol: Symbol) -> bool:
+        """An unresolved ``super().<name>`` in class K may call ``symbol``
+        when its class follows K in some in-scope MRO."""
+        owner = symbol.container
+        for k in self._super_misses.get(symbol.name, ()):
+            for cid in (k, *self._descendants.get(k, ())):
+                mro = self._mro(cid)
+                if k in mro and owner in mro[mro.index(k) + 1 :]:
+                    return True
+        return False
+
+    def _constructor_escapes(self, symbol: Symbol, unresolved_names: set[str]) -> bool:
+        """An ``__init__`` also runs whenever a class that inherits it is
+        constructed: that happens unseen when such a class escapes or its name
+        occurs as an unresolved reference."""
+        if symbol.kind != METHOD or symbol.name != "__init__":
+            return False
+        owner = symbol.container
+        if owner not in self.class_scopes:
+            return True
+        for cid in (owner, *self._descendants.get(owner, ())):
+            init = self.lookup_in_class(cid, "__init__")
+            if not (isinstance(init, Resolved) and init.symbol == symbol.id):
+                continue
+            if cid in self.out.escapes or self.index.symbols[cid].name in unresolved_names:
+                return True
+        return False
+
+    def _attribute_writes(
+        self, class_id: str, attr: str, writes: dict[tuple[str, str], list[_AttrWrite]]
+    ) -> list[_AttrWrite] | None:
+        """What ``self.<attr>`` may hold in a method of ``class_id``: its
+        bound writes, or None when it cannot be bounded. The
+        instance may belong to any in-scope subclass, so every class in the
+        MRO of the class or of a subclass counts; each must be plain and
+        fully in scope, none may define the attribute at class level or
+        customise attribute access, and every write must be a bounded
+        ``__init__`` assignment."""
+        unbound = self.out.attr_unbound
+        if ("", "*") in unbound or ("", attr) in unbound:
+            return None
+        family: set[str] = set()
+        for cid in (class_id, *self._descendants.get(class_id, ())):
+            family.update(self._mro(cid))
+        bound: list[_AttrWrite] = []
+        for cid in sorted(family):
+            cscope = self.class_scopes[cid]
+            if not cscope.plain or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
+                return None
+            if attr in cscope.members or attr in cscope.bindings:
+                return None
+            if _ATTRIBUTE_HOOKS & cscope.members.keys():
+                return None
+            for w in writes.get((cid, attr), ()):
+                if w.binding is None:
+                    return None
+                bound.append(w)
+        return bound or None
+
+    def _attribute_strings(
+        self,
+        class_id: str,
+        attr: str,
+        writes: dict[tuple[str, str], list[_AttrWrite]],
+        unresolved_names: set[str],
+    ) -> list[str] | None:
+        bound = self._attribute_writes(class_id, attr, writes)
+        if bound is None:
+            return None
+        values: list[str] = []
+        for w in bound:
+            kind, value = w.binding  # type: ignore[misc]
+            if kind == "strings":
+                values.extend(value)
+            elif kind == "param":
+                found = self._param_values(w.method, value, unresolved_names)
+                if found is None:
+                    return None
+                values.extend(found)
+            else:
+                return None
+        return values
 
     def _error(self, path: str, message: str) -> None:
         self.index.errors.append(
@@ -1173,6 +1413,7 @@ class Indexer:
                 members[name] = symbol_id
                 self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
+                cscope.plain = len(nodes) == 1 and not (first.decorator_list or first.keywords)
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                 self.class_scopes[symbol_id] = cscope
@@ -1253,6 +1494,8 @@ class Indexer:
                 cscope.bases.append(node.symbol)
             else:
                 cscope.complete = False  # external, dynamic (``Generic[T]``) or unknown
+                if not (parts == ["object"] and node is None):
+                    cscope.opaque = True
         cscope.bases_state = 2
 
     def _resolve_base_expr(self, parts: list[str] | None, cscope: ClassScope) -> Node:
@@ -1445,6 +1688,9 @@ class Indexer:
             if params:
                 fscope.self_name = params[0].arg
                 fscope.self_class = class_scope.id
+                fscope.method = symbol_id
+                fscope.self_is_class = _has_decorator(node, "classmethod")
+        fscope.rebound = frozenset(_rebound_names(node))
         positional = [a.arg for a in node.args.posonlyargs + node.args.args]
         fscope.params = {name: i for i, name in enumerate(positional)}
         fscope.params.update({a.arg: None for a in node.args.kwonlyargs})
@@ -1482,9 +1728,9 @@ class Indexer:
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
             if arg.annotation is not None:
-                outer.visit(arg.annotation)
+                outer.visit_type(arg.annotation)
         if node.returns is not None:
-            outer.visit(node.returns)
+            outer.visit_type(node.returns)
         for name, default in zip(
             positional[len(positional) - n_defaults :] + [a.arg for a in node.args.kwonlyargs],
             list(node.args.defaults) + list(node.args.kw_defaults),
@@ -1656,6 +1902,22 @@ class Indexer:
             node = self._step(node, attr)
         return node
 
+    def escape(self, target: Resolved, *, classes: bool = True) -> None:
+        """Record that ``target`` is used as a value (see _mark_escape)."""
+        symbol = self.index.symbols.get(target.symbol)
+        if symbol is None:
+            return
+        if symbol.kind in (FUNCTION, METHOD) or (classes and symbol.kind == CLASS):
+            self.out.escapes.add(symbol.id)
+            for override_id, detail in target.overrides:
+                if not detail:
+                    self.out.escapes.add(override_id)
+
+    def escape_class_family(self, class_id: str) -> None:
+        """The class of an instance of ``class_id``: any in-scope subclass."""
+        self.out.escapes.add(class_id)
+        self.out.escapes.update(self._descendants.get(class_id, ()))
+
     def _record(self, source: str, node: Node, kind: str = REFERENCES, chain: str = "") -> None:
         if node is None:
             return
@@ -1743,13 +2005,35 @@ def _end_line(node: ast.AST) -> int:
     return node.end_lineno or node.lineno  # type: ignore[attr-defined]
 
 
-def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
     for dec in node.decorator_list:
-        if isinstance(dec, ast.Name) and dec.id == "staticmethod":
+        if isinstance(dec, ast.Name) and dec.id == name:
             return True
-        if isinstance(dec, ast.Attribute) and dec.attr == "staticmethod":
+        if isinstance(dec, ast.Attribute) and dec.attr == name:
             return True
     return False
+
+
+def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return _has_decorator(node, "staticmethod")
+
+
+# Defining one of these changes what ``self.<attr>`` reads or writes.
+_ATTRIBUTE_HOOKS = frozenset({"__setattr__", "__delattr__", "__getattr__", "__getattribute__"})
+
+
+def _rebound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Every name the function's body (nested scopes included, which only
+    over-approximates) binds, deletes or imports."""
+    names: set[str] = set()
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Name) and not isinstance(inner.ctx, ast.Load):
+            names.add(inner.id)
+        elif isinstance(inner, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and inner.name:
+            names.add(inner.name)
+        elif isinstance(inner, (ast.Import, ast.ImportFrom)):
+            names |= {(a.asname or a.name).split(".")[0] for a in inner.names}
+    return names
 
 
 def _flatten_chain(node: ast.expr) -> list[str] | None:
@@ -1779,6 +2063,19 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.source = source
         self.scope = scope
         self.skip_defs = skip_defs
+        # Type positions (annotations, ``isinstance``'s second argument,
+        # ``cast``'s first): a class named there is not used as a value.
+        self._type_depth = 0
+        self._type_nodes: set[int] = set()
+        # ``self.<attr> = value`` targets in ``__init__`` -> what they bind.
+        self._bindings: dict[int, list | None] = {}
+
+    def visit_type(self, node: ast.AST) -> None:
+        self._type_depth += 1
+        try:
+            self.visit(node)
+        finally:
+            self._type_depth -= 1
 
     def _push(
         self,
@@ -1793,6 +2090,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             locals=outer.locals | bound,
             self_name=None if outer.self_name in bound else outer.self_name,
             self_class=None if outer.self_name in bound else outer.self_class,
+            self_is_class=outer.self_is_class,
             literal_node=node,
             literal_parent=outer,
             literal_bound=frozenset(bound),
@@ -1821,9 +2119,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         try:
             for arg in ast.walk(node.args):
                 if isinstance(arg, ast.arg) and arg.annotation is not None:
-                    self.visit(arg.annotation)
+                    self.visit_type(arg.annotation)
             if node.returns is not None:
-                self.visit(node.returns)
+                self.visit_type(node.returns)
             for stmt in node.body:
                 self.visit(stmt)
         finally:
@@ -1889,16 +2187,44 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._resolve([node.id])
             self._mark_escape(node, [node.id])
 
+    def _is_self(self, node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Name)
+            and node.id == self.scope.self_name
+            and self.scope.self_class is not None
+        )
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if not isinstance(node.ctx, ast.Load):
+            self._attribute_write(node)
+        if node.attr == "__dict__" and self._is_self(node.value):
+            # ``self.__dict__`` can read or write any attribute.
+            self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
         parts = _flatten_chain(node)
         if parts is not None:
             self._resolve(parts)
             self._mark_escape(node, parts)
+            if (
+                isinstance(node.ctx, ast.Load)
+                and len(parts) >= 2
+                and parts[0] == self.scope.self_name
+                and self.scope.self_class is not None
+                and isinstance(
+                    self.indexer.lookup_in_class(self.scope.self_class, parts[1]), Unresolved
+                )
+            ):
+                self.indexer.out.attr_refs.append(
+                    _AttrRef(
+                        self.source, self.scope.self_class, parts[1], parts[2:], ".".join(parts)
+                    )
+                )
             return
         if self._is_zero_arg_super(node.value) and self.scope.self_class is not None:
             # ``super().m``: next definition of ``m`` in the enclosing class's MRO.
-            target = self.indexer.lookup_in_class(self.scope.self_class, node.attr, skip_self=True)
+            target = self.indexer.lookup_super(self.scope.self_class, node.attr)
             self.indexer._record(self.source, target, chain=f"super().{node.attr}")
+            if node is not self._call_func:
+                self._escape(target)
             return
         # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
         # unknown, but the attribute name still bounds what it may refer to.
@@ -1966,8 +2292,77 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return  # a module's own top-level mutations are part of the variable's hash
             self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
 
+    def _attribute_write(self, node: ast.Attribute) -> None:
+        """A store or delete of ``<receiver>.<attr>``: on ``self`` it is a
+        write of that class's instance attribute (bound only when it is a
+        plain ``__init__`` assignment); on any other receiver the type is
+        unknown, so no class's ``attr`` can be bounded."""
+        if self._is_self(node.value):
+            binding = self._bindings.pop(id(node), None)
+            self.indexer.out.attr_writes.append(
+                _AttrWrite(self.scope.self_class, node.attr, self.scope.method, binding)
+            )
+        else:
+            self.indexer.out.attr_unbound.add(("", node.attr))
+
+    def _init_binding(self, value: ast.expr) -> list | None:
+        """What ``self.<attr> = value`` in ``__init__`` binds, if bounded."""
+        if isinstance(value, ast.Name) and value.id in self.scope.params:
+            return None if value.id in self.scope.rebound else ["param", value.id]
+        strings = self.scope.string_candidates(value)
+        if strings is not None:
+            return ["strings", list(strings)]
+        parts = _flatten_chain(value)
+        if parts is None:
+            return None
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if (
+            isinstance(target, Resolved)
+            and not (target.detail or target.receiver or target.overrides)
+            and not target.uncertain_attr
+        ):
+            return ["symbol", target.symbol]
+        return None
+
+    def _stash_binding(self, target: ast.expr, value: ast.expr | None) -> None:
+        if (
+            value is not None
+            and isinstance(target, ast.Attribute)
+            and self._is_self(target.value)
+            and self.scope.method.rsplit(".", 1)[-1] == "__init__"
+        ):
+            self._bindings[id(target)] = self._init_binding(value)
+
+    def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
+        """``setattr(receiver, name, ...)`` and its relatives."""
+        names = self.scope.string_candidates(name) if name is not None else None
+        owner = self.scope.self_class if receiver is not None and self._is_self(receiver) else ""
+        for attr in names if names is not None else ("*",):
+            self.indexer.out.attr_unbound.add((owner, attr.rsplit(".", 1)[-1]))
+
+    def _dict_write(self, expr: ast.expr) -> None:
+        """``x.__dict__[k] = v``, ``vars(x).update(...)``: any attribute."""
+        while isinstance(expr, ast.Subscript):
+            expr = expr.value
+        receiver: ast.expr | None = None
+        if isinstance(expr, ast.Attribute) and expr.attr == "__dict__":
+            receiver = expr.value
+        elif (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "vars"
+            and expr.args
+        ):
+            receiver = expr.args[0]
+        if receiver is not None:
+            self._reflective_write(receiver, None)
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        if len(node.targets) == 1:
+            self._stash_binding(node.targets[0], node.value)
         for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                self._dict_write(target)
             for sub in ast.walk(target):
                 if isinstance(sub, (ast.Subscript, ast.Attribute)):
                     self._mutation_target(sub)
@@ -1977,16 +2372,24 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self._mutation_target(node.target)
+        if isinstance(node.target, ast.Subscript):
+            self._dict_write(node.target)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             self._mutation_target(node.target)
-        self.generic_visit(node)
+            self._stash_binding(node.target, node.value)
+        self.visit(node.target)
+        self.visit_type(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
 
     def visit_Delete(self, node: ast.Delete) -> None:
         for target in node.targets:
             self._mutation_target(target)
+            if isinstance(target, ast.Subscript):
+                self._dict_write(target)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -1994,33 +2397,84 @@ class _ReferenceCollector(ast.NodeVisitor):
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in self.MUTATING_METHODS
-            and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute))
+            and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute, ast.Call))
         ):
             self._mutation_target(node.func.value)
+            self._dict_write(node.func.value)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in (
+            "__setattr__",
+            "__delattr__",
+        ):
+            # ``object.__setattr__(self, n, v)`` / ``self.__setattr__(n, v)``.
+            receiver = node.func.value if self._is_self(node.func.value) else None
+            if receiver is None and node.args and self._is_self(node.args[0]):
+                receiver = node.args[0]
+            self._reflective_write(receiver, None)
         if parts is not None:
             name = ".".join(parts)
-            if len(parts) == 1 and parts[0] in DYNAMIC_CALLS and not self._is_shadowed(name):
+            builtin = len(parts) == 1 and not self._is_shadowed(name)
+            if builtin and parts[0] in DYNAMIC_CALLS:
                 self._dynamic(f"{name}()")
-            elif len(parts) == 1 and parts[0] == "getattr" and not self._is_shadowed(name):
+            elif builtin and parts[0] == "getattr":
                 self._getattr(node)
             elif name in ("importlib.import_module", "importlib.__import__"):
                 self._import_module(node, name)
+            if builtin and parts[0] == "vars" and node.args and self._is_self(node.args[0]):
+                self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
+            if builtin and parts[0] == "type" and len(node.args) == 1:
+                if self._is_self(node.args[0]):
+                    self.indexer.escape_class_family(self.scope.self_class)
+            if parts[-1] in ("setattr", "delattr") or parts[-2:] == ["patch", "object"]:
+                self._setattr_call(node, parts)
+            if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
+                self._mark_type_node(node.args[1])
+            elif parts[-1] == "cast" and node.args:
+                self._mark_type_node(node.args[0])
             self._record_call_site(node, parts)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and self._is_zero_arg_super(node.func.value)
+            and self.scope.self_class is not None
+        ):
+            target = self.indexer.lookup_super(self.scope.self_class, node.func.attr)
+            self._add_call_site(node, target, receiver_bound=True)
         self._call_func = node.func
         self.generic_visit(node)
 
     _call_func: ast.expr | None = None
+
+    def _mark_type_node(self, node: ast.expr) -> None:
+        self._type_nodes.add(id(node))
+        if isinstance(node, ast.Tuple):
+            self._type_nodes |= {id(e) for e in node.elts}
+
+    def _setattr_call(self, node: ast.Call, parts: list[str]) -> None:
+        """``setattr``/``delattr``, ``monkeypatch.setattr`` and
+        ``patch.object``: the receiver is the first argument and the name the
+        second (``monkeypatch.setattr("pkg.mod.name", value)`` names it in a
+        dotted string instead)."""
+        args = list(node.args)
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        if len(parts) > 1 and args and isinstance(args[0], ast.Constant):
+            self._reflective_write(None, args[0])
+            return
+        receiver = args[0] if args else keywords.get("target")
+        name = args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))
+        self._reflective_write(receiver, name)
 
     def _record_call_site(self, node: ast.Call, parts: list[str]) -> None:
         target = self.indexer.resolve_chain(parts, self.scope)
         if not (isinstance(target, Resolved) and not target.detail):
             return
         symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is not None and symbol.kind == CLASS:
+            # Constructing a class calls the ``__init__`` its MRO resolves to
+            # (any subclass's, for ``cls(...)``), with ``self`` implicit.
+            init = self.indexer.lookup_in_class(symbol.id, "__init__", dispatch=target.receiver)
+            self._add_call_site(node, init, receiver_bound=True)
+            return
         if symbol is None or symbol.kind not in (FUNCTION, METHOD):
             return
-        unbounded = any(isinstance(a, ast.Starred) for a in node.args) or any(
-            k.arg is None for k in node.keywords
-        )
         receiver_bound = False
         if symbol.kind == METHOD and len(parts) > 1:
             base = self.indexer._lookup_base(parts[0], self.scope)
@@ -2032,6 +2486,17 @@ class _ReferenceCollector(ast.NodeVisitor):
                 and parts[0] != self.scope.self_name  # self/cls also resolve to the class
             )
             receiver_bound = not base_is_class
+        self._add_call_site(node, target, receiver_bound=receiver_bound)
+
+    def _add_call_site(self, node: ast.Call, target: Node, *, receiver_bound: bool) -> None:
+        if not (isinstance(target, Resolved) and not target.detail):
+            return
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            return
+        unbounded = any(isinstance(a, ast.Starred) for a in node.args) or any(
+            k.arg is None for k in node.keywords
+        )
         site = _CallSite(
             positional=[self.scope.string_candidates(a) for a in node.args],
             keywords={
@@ -2050,24 +2515,45 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be
-        called from anywhere with anything."""
+        called from anywhere with anything; so may a class (constructed), unless
+        the reference is in a type position. ``self`` as a value is an
+        instance, not its class; ``cls``, ``type(self)`` and
+        ``self.__class__`` are the class of any in-scope subclass."""
+        if parts[0] == self.scope.self_name and self.scope.self_class is not None:
+            if parts == [parts[0], "__class__"] or (
+                len(parts) == 1 and self.scope.self_is_class and node is not self._call_func
+            ):
+                self.indexer.escape_class_family(self.scope.self_class)
+                return
+            if len(parts) == 1:
+                return
         if node is self._call_func:
             return
-        target = self.indexer.resolve_chain(parts, self.scope)
+        type_position = bool(self._type_depth) or id(node) in self._type_nodes
+        self._escape(self.indexer.resolve_chain(parts, self.scope), classes=not type_position)
+
+    def _escape(self, target: Node, *, classes: bool = True) -> None:
         if isinstance(target, Resolved) and not target.detail:
-            symbol = self.indexer.index.symbols.get(target.symbol)
-            if symbol is not None and symbol.kind in (FUNCTION, METHOD):
-                self.indexer.out.escapes.add(symbol.id)
-                for override_id, detail in target.overrides:
-                    if not detail:
-                        self.indexer.out.escapes.add(override_id)
+            self.indexer.escape(target, classes=classes)
 
     def _param_dynamic(
         self, expr: ast.expr, kind: str, base: list[str] | None, detail: str
     ) -> bool:
         """Defer a dynamic use whose name is one of the enclosing function's
-        parameters; returns False when that does not apply."""
-        if not (isinstance(expr, ast.Name) and expr.id in self.scope.params):
+        parameters (not rebound in its body) or an instance attribute
+        ``self.<name>``; returns False when that does not apply."""
+        if isinstance(expr, ast.Attribute) and self._is_self(expr.value):
+            self.indexer.out.param_dynamics.append(
+                _ParamDynamic(
+                    self.source, expr.attr, kind, base, self.scope, detail, self.scope.self_class
+                )
+            )
+            return True
+        if not (
+            isinstance(expr, ast.Name)
+            and expr.id in self.scope.params
+            and expr.id not in self.scope.rebound
+        ):
             return False
         self.indexer.out.param_dynamics.append(
             _ParamDynamic(self.source, expr.id, kind, base, self.scope, detail)
@@ -2099,7 +2585,10 @@ class _ReferenceCollector(ast.NodeVisitor):
                     )
                 )
             else:
+                # The attribute's value is used, so a function or class
+                # found this way may be called from here with anything.
                 self._resolve(base + [name])
+                self._escape(self.indexer.resolve_chain(base + [name], self.scope))
 
     def _import_module(self, node: ast.Call, name: str) -> None:
         if not node.args:

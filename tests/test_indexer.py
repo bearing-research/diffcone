@@ -525,6 +525,136 @@ def test_parameter_driven_getattr_uses_call_site_literals():
         assert ("dynamic", "") in unresolved(sym), sym
 
 
+def test_parameter_literals_see_super_calls_rebinding_and_getattr_escapes():
+    idx = index(
+        {
+            "m.py": (
+                "import m as me\n\n"
+                "def rebound(obj, attr):\n    attr = attr.upper()\n"
+                "    return getattr(obj, attr)\n\n"
+                "def a(o):\n    return rebound(o, 'x')\n\n"
+                "class B:\n    def bm(self, name):\n        return getattr(self, name)\n\n"
+                "class C(B):\n    def bm(self, name):\n        return super().bm('hidden')\n\n"
+                "def c(o: B):\n    return B.bm(o, 'shown')\n\n"
+                "def via_getattr(obj, attr):\n    return getattr(obj, attr)\n\n"
+                "def d(o, n):\n    return getattr(me, 'via_getattr')(o, n)\n\n"
+                "def e(o):\n    return via_getattr(o, 'lit')\n\n"
+                # An unresolved ``super().m`` in an unrelated class does not
+                # unbound ``Solo.m``; one that a subclass's MRO leads to does.
+                "class Solo:\n    def m(self, name):\n        return getattr(self, name)\n\n"
+                "def f(s: Solo):\n    return Solo.m(s, 'solo')\n\n"
+                "class Mixin:\n    def m(self, name):\n        return getattr(self, name)\n\n"
+                "def g(x: Mixin):\n    return Mixin.m(x, 'mixed')\n\n"
+                "class Front(Unknown):\n    def m(self, name):\n        return super().m(name)\n\n"
+                "class Both(Front, Mixin):\n    pass\n\n"
+                "class Other(Unknown):\n    def m(self, name):\n        return super().m(name)\n\n"
+                # ``super().m2`` in K lands on Mix.m2 for an X instance.
+                "class Base2:\n    def m2(self, name):\n        return name\n\n"
+                "class K(Base2):\n    def m2(self, name):\n        return super().m2('via_k')\n\n"
+                "class Mix:\n    def m2(self, name):\n        return getattr(self, name)\n\n"
+                "class X(K, Mix, Base2):\n    pass\n\n"
+                "def h(x: Mix):\n    return Mix.m2(x, 'direct')\n"
+            ),
+        }
+    )
+    unresolved = lambda sym: {(u.kind, u.name) for u in idx.unresolved if u.symbol == sym}  # noqa: E731
+    # A rebound parameter no longer holds what the call sites pass.
+    assert ("dynamic", "") in unresolved("m.rebound")
+    # ``super().m(...)`` is a call site of the method it resolves to.
+    assert {("attribute", "hidden"), ("attribute", "shown")} <= unresolved("m.B.bm")
+    # A function whose value is taken with ``getattr`` may be called with anything.
+    assert ("dynamic", "") in unresolved("m.via_getattr")
+    assert unresolved("m.Solo.m") == {("attribute", "solo")}
+    assert ("dynamic", "") in unresolved("m.Mixin.m")
+    assert unresolved("m.Mix.m2") == {("attribute", "direct"), ("attribute", "via_k")}
+    assert ("m.Mix.m2", "references", "override") in edges(idx, "m.K.m2")
+
+
+def test_instance_attributes_bound_by_constructor_arguments():
+    """``getattr(x, self.attr)`` is bounded by what every ``__init__`` write
+    binds, and ``self.attr()`` resolves to a bound function; anything that
+    could write or construct unseen leaves the attribute unbounded."""
+    base = (
+        "from pkg import hooks\n\n"
+        "def process():\n    return 1\n\n"
+        "class Register:\n"
+        "    def __init__(self, identifier, extra=None):\n"
+        "        self.identifier = identifier\n"
+        "        self.handler = process\n\n"
+        "    def collect(self):\n        return getattr(hooks, self.identifier)\n\n"
+        "    def run(self):\n        return self.handler()\n\n"
+        "    @classmethod\n    def default(cls):\n        return cls('sdist')\n\n"
+        "def make() -> Register:\n    return Register('wheel')\n\n"
+        "def check(x):\n    return isinstance(x, (int, Register))\n"
+    )
+    hooks = "def wheel():\n    pass\n\ndef sdist():\n    pass\n\ndef other():\n    pass\n"
+
+    def collect_refs(extra: str = "", *, replace: tuple[str, str] = ("", "")):
+        idx = index(
+            {
+                "pkg/__init__.py": "",
+                "pkg/hooks.py": hooks,
+                "pkg/reg.py": base.replace(*replace) + extra,
+            }
+        )
+        refs = {(e.target, e.detail) for e in idx.edges if e.source == "pkg.reg.Register.collect"}
+        dynamic = any(
+            u.kind == "dynamic" for u in idx.unresolved if u.symbol == "pkg.reg.Register.collect"
+        )
+        return idx, refs, dynamic
+
+    idx, refs, dynamic = collect_refs()
+    assert not dynamic
+    assert {"pkg.hooks.wheel", "pkg.hooks.sdist"} <= {t for t, _ in refs}
+    assert "pkg.hooks.other" not in {t for t, _ in refs}
+    assert ("pkg.reg.process", "references", "self.handler") in edges(idx, "pkg.reg.Register.run")
+
+    # Subclasses: one inheriting __init__ adds its constructor calls, one
+    # overriding it adds its super().__init__ arguments.
+    _, refs, dynamic = collect_refs(
+        "\nclass Sub(Register):\n    pass\n\ndef s():\n    return Sub('other')\n"
+        "\nclass Own(Register):\n    def __init__(self):\n"
+        "        super().__init__('wheel')\n"
+    )
+    assert not dynamic and "pkg.hooks.other" in {t for t, _ in refs}
+
+    unbounding = {
+        "rebinding in another method": "\n    def reset(self):\n        self.identifier = 'x'\n",
+        "setattr on self": "\n    def put(self, n, v):\n        setattr(self, n, v)\n",
+        "self.__dict__": "\n    def put(self, d):\n        self.__dict__.update(d)\n",
+        "__setattr__ hook": "\n    def __setattr__(self, n, v):\n        pass\n",
+        "type(self)(...)": "\n    def copy(self):\n        return type(self)(self.identifier)\n",
+    }
+    for label, method in unbounding.items():
+        source = base.replace("\n\ndef make()", method + "\n\ndef make()", 1)
+        _, _, dynamic = collect_refs(replace=(base, source))
+        assert dynamic, label
+    elsewhere = {
+        "write through another receiver": "\ndef poke(r):\n    r.identifier = 'x'\n",
+        "setattr through another receiver": "\ndef poke(r, n):\n    setattr(r, n, 1)\n",
+        "class used as a value": "\nFACTORIES = [Register]\n",
+        "non-literal constructor argument": "\ndef n(x):\n    return Register(x)\n",
+        "subclass with a non-literal super call": (
+            "\nclass Sub(Register):\n    def __init__(self, i):\n        super().__init__(i)\n"
+        ),
+        "subclass with an external base": (
+            "\nimport ext\n\nclass Sub(Register, ext.Base):\n    pass\n"
+        ),
+    }
+    for label, extra in elsewhere.items():
+        _, _, dynamic = collect_refs(extra)
+        assert dynamic, label
+    _, _, dynamic = collect_refs(replace=("class Register:", "@decorate\nclass Register:"))
+    assert dynamic, "decorated class"
+    _, _, dynamic = collect_refs(
+        replace=(
+            "        self.identifier = identifier\n",
+            "        self.identifier = identifier.lower()\n",
+        )
+    )
+    assert dynamic, "non-literal binding"
+
+
 def test_dict_literal_keys_bound_loop_variables():
     idx = index(
         {

@@ -1466,3 +1466,66 @@ def test_prefixed_source_roots_keep_same_named_test_trees_apart(repo):
     plain = repo.plan(base, head, [], source_roots=["a/src", "b/src", "a/tests", "b/tests"])
     assert plain.degraded
     assert any("also defined by" in e.message for e in plain.errors)
+
+
+def test_instance_attribute_name_bounds_a_registry_getattr(repo):
+    """hatch's plugin registry: ``getattr(hooks, self.identifier)`` where
+    every construction passes a literal. The attribute bounds the lookup, so
+    a change elsewhere in the registry's import closure (a version string)
+    no longer reaches every user of the registry."""
+    registry = (
+        "from pkg import about, hooks\n\n\n"
+        "class Register:\n"
+        "    def __init__(self, identifier):\n"
+        "        self.identifier = identifier\n\n"
+        "    def collect(self):\n"
+        "        return getattr(hooks, self.identifier)()\n\n\n"
+        "def version():\n    return about.VERSION\n\n\n"
+        "def builder():\n    return Register('wheel').collect()\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/about.py": "VERSION = '1.0'\n",
+            "pkg/hooks.py": "def wheel():\n    return 'w'\n\n\ndef sdist():\n    return 's'\n",
+            "pkg/registry.py": registry,
+            "tests/test_registry.py": (
+                "from pkg.registry import builder, version\n\n\n"
+                "def test_builder():\n    assert builder() == 'w'\n\n\n"
+                "def test_version():\n    assert version()\n"
+            ),
+            "benchmarks/bench_registry.py": (
+                "from pkg.registry import builder\n\n\ndef time_builder():\n    builder()\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_builder", "tests.test_registry.test_builder"),
+        py_target("t::test_version", "tests.test_registry.test_version"),
+        asv_target("bench.time_builder", "benchmarks.bench_registry.time_builder"),
+    ]
+    head = repo.commit({"pkg/about.py": "VERSION = '1.1'\n"})
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_version"}
+    assert unselected(plan) == {"t::test_builder", "bench.time_builder"}
+    # The hook the attribute names is a real dependency.
+    head2 = repo.commit(
+        {"pkg/hooks.py": "def wheel():\n    return 'W'\n\n\ndef sdist():\n    return 's'\n"}
+    )
+    plan2 = repo.plan(head, head2, targets)
+    assert selected(plan2) == {"t::test_builder", "bench.time_builder"}
+    # ``Register('wheel').collect()`` reaches collect by name (untyped
+    # receiver); collect reaches the hook through the bounded getattr.
+    assert path_ids(reason(plan2, "t::test_builder", "unresolved_name_match"))[-2:] == [
+        "pkg.registry.Register.collect",
+        "pkg.hooks.wheel",
+    ]
+    # Rebinding the attribute outside __init__ makes the lookup dynamic again.
+    rename = "\n\n    def rename(self, name):\n        self.identifier = name\n"
+    head3 = repo.commit(
+        {"pkg/registry.py": registry.replace("\n\n\ndef version()", rename + "\n\ndef version()")}
+    )
+    head4 = repo.commit({"pkg/about.py": "VERSION = '1.2'\n"})
+    plan4 = repo.plan(head3, head4, targets)
+    assert selected(plan4) == {"t::test_builder", "t::test_version", "bench.time_builder"}
+    assert rules(plan4, "bench.time_builder") == {"dynamic_reference"}

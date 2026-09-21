@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 3  # 3: module-level variables are symbols
+INDEX_FORMAT = 4  # 4: instance attributes, construction and super() call sites
 
 
 def _indexer_fingerprint() -> str:
