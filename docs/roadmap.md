@@ -3,7 +3,7 @@
 Implemented today: `diffcone plan` over two snapshots (commits, the staged
 index or the working tree), with targets from a manifest and/or static
 pytest and ASV discovery; `run`, `validate` (outcome and coverage based) and
-`corpus`; evaluation on six public repositories (see
+`corpus`; evaluation on nine public repositories (see
 [design.md](design.md) and [evaluation.md](evaluation.md)).
 
 Everything below is planned, in the order it is worth doing. Each item
@@ -27,23 +27,43 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
 ## 2. Resolution breadth
 
-* **Instance-attribute tracking.** `self.attr = <expr>` in `__init__`,
-  with the values that construction sites pass for the parameter it comes
-  from, so `self.attr()` resolves and `getattr(x, self.attr)` is bounded.
-  Measured on hatch (evaluation.md): every commit, including three
-  version-bump releases, selects all 2 105 tests because
-  `ClassRegister.collect` calls `getattr(cls, self.identifier)` and
-  `identifier` is a constructor argument that is always a string literal
-  at the call sites. *Mechanism:* in pass 2, for each class record
-  `self.<name> = <expr>` assignments in `__init__` (a parameter, a name
-  chain or a literal); resolve a chain `self.<name>` to the bound chain,
-  and treat a parameter-bound attribute like a parameter-dynamic use whose
-  call sites are the class's constructor calls (the existing literal
-  propagation machinery). *Trade-off:* attributes assigned elsewhere or
-  rebound stay unbounded; only `__init__` is read, which is where the
-  pattern lives. *Done when:* hatch's release commits select fewer than
-  a quarter of the suite at 100 % recall, and a scenario covers a
-  constructor-argument getattr and a callable attribute.
+* **Instance-attribute tracking.** Resolve `self.<name>` to what the
+  class's constructors bind it to, so `self.attr()` resolves and
+  `getattr(x, self.attr)` is bounded. Measured on hatch (evaluation.md):
+  every commit, including three version-bump releases, selects every test
+  because `ClassRegister.collect` calls `getattr(cls, self.identifier)`
+  and `identifier` is a constructor argument that is a string literal at
+  every call site. *Mechanism:* in pass 2, for each class collect every
+  write to `self.<name>` in every method of the class and of its in-scope
+  subclasses (assignments, augmented and annotated assignments, `del`).
+  An attribute is bounded only when its sole writes are in `__init__` and
+  each binds a parameter, a resolvable name chain or a literal; a write
+  anywhere else, a write through an unbounded target, or any
+  `setattr(self, ...)`, `self.__dict__` use or `__setattr__` definition
+  in the class or a subclass unbounds it (the last three unbound every
+  attribute of the class; hatch's `PluginManager.__getattr__` does
+  `setattr(self, name, ...)`, which is why this is needed). A chain
+  `self.<name>` then resolves to the bound chain, and a parameter-bound
+  attribute is treated like a parameter-dynamic use whose call sites are
+  the constructor calls: calls of the class and of each in-scope subclass
+  that does not define `__init__`, plus `super().__init__(...)` calls in
+  subclasses that do, through the existing literal-propagation machinery.
+  The class *escapes*, and the attribute stays unbounded, when the class
+  is referenced other than as a callee, a base class or in a type
+  position; type positions are annotations (including return
+  annotations such as hatch's `-> ClassRegister`), the second argument of
+  `isinstance`/`issubclass`, and `typing.cast`. Escape is tracked per
+  class alongside today's per-function escapes and serialised in the
+  module cache's resolution outputs. *Trade-off:* attributes written
+  outside `__init__`, set reflectively, or on classes passed around as
+  values stay unbounded, which is conservative; subclasses outside the
+  source roots are invisible, as they are for dispatch today. *Done when:*
+  on hatch's corpus the three release rows (which change only
+  `hatchling.__about__.__version__`, so coverage recall is n/a there)
+  each select fewer than a quarter of the suite with no outcome miss,
+  the three non-release rows keep 100 % recall, and scenarios cover a
+  constructor-argument `getattr`, a callable attribute, a rebinding in
+  another method, a `setattr(self, ...)` and a class that escapes.
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
   rules for known dynamic patterns.

@@ -424,7 +424,7 @@ contains `__about__`; and `ClassRegister.get` is reached from
 `CoreMetadata.name`, `ProjectConfig.env` and `BuilderInterface.__init__`,
 which every test reaches. The constructor calls pass string literals
 (`ClassRegister(..., "PLUGIN_NAME", ...)`), so instance-attribute tracking
-through `__init__` (roadmap, "Resolution breadth") would bound the name
+(roadmap, "Resolution breadth") would bound the name
 and turn the dynamic reference into a name-bounded attribute lookup;
 that is now the measured motivation for that item.
 
@@ -572,8 +572,9 @@ been re-stated from the re-run:
 
 ## Not yet exercised
 
-A monorepo whose per-package test trees share module names and are
-collected in one `--import-mode=importlib` session: per-root prefixes
-plan such trees together (the opentelemetry API and SDK trees above), but
-no corpus has been run over one, and a corpus over more than one session
-of the same repository.
+* A corpus over a monorepo whose per-package test trees share module
+  names and are collected in one `--import-mode=importlib` session.
+  Per-root prefixes plan such trees together (the opentelemetry API and
+  SDK trees above), but only planning, not validation, has been run over
+  one.
+* A corpus over more than one pytest session of the same repository.
