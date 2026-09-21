@@ -696,8 +696,11 @@ select every test on every commit, for three reasons:
   dependencies; pip then degrades on a test data file that is not UTF-8
   (the third reason);
 * files that do not parse (pygments' Python 2 example file under
-  `tests/examplefiles`, black's invalid-syntax test cases), which pytest
-  never imports.
+  `tests/examplefiles`, black's invalid-syntax test cases, pip's
+  non-UTF-8 test data file), which pytest never imports. Not planned:
+  any unparseable file under a source root forces select-all by design
+  (design.md, "Known gaps"); narrowing `--source-root` so such data
+  files fall outside it is the remedy.
 
 **Dynamic references** by construct (a seed with several uses splits its
 selections between them; "present" counts repositories whose index has

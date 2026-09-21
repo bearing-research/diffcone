@@ -683,3 +683,8 @@ from the `run` and `validate` commands after a plan exists.
   construction through a path the index cannot see (a class taken from a
   registry by unresolved name, code outside the source roots) passes
   arguments that are not counted.
+* Any file under a source root that does not parse (invalid syntax,
+  Python 2 code, a non-UTF-8 file) is an analysis error and forces
+  select-all, even a data file that no module imports and pytest never
+  collects (pygments, black and pip in the census). Python 2 is not
+  supported. Choose source roots that leave such files out.

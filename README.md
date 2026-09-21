@@ -240,6 +240,10 @@ its cause.
   get edges to the module, but a body change in a module's init code does not
   by itself invalidate every function defined in it or every importer.
   Declare the module as a lifecycle dependency when it should.
+* **A file that does not parse forces select-all.** Any file under a
+  source root with invalid syntax (including Python 2 code, which is not
+  supported) or that is not UTF-8 is an analysis error, even a test data
+  file nothing imports. Choose source roots that leave such files out.
 * **Dynamic reflection is bounded by imports, dynamic imports are not.** A
   function using `eval`, `exec`, `globals()`, `vars()` or `getattr` with an
   unbounded name is treated as affected by any change in a module its own

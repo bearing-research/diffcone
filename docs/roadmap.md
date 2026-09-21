@@ -15,29 +15,7 @@ means, so the implementation can be checked against it and the census
 and corpora can measure it. Any item that can narrow selection needs a
 regression scenario (AGENTS.md).
 
-## 1. Analysis errors that force select-all
-
-Seven of 42 census repositories selected every test on every commit;
-analysis errors were 33 % of all census selections, more than any
-selection rule. Repeated class definitions (anyio) and package bindings
-that shadow a submodule (tenacity, poetry, scrapy) are fixed; three
-repositories remain, all on unparseable files.
-
-* **Unparseable files** (pygments' Python 2 example under
-  `tests/examplefiles`; black's deliberately invalid test-case files;
-  pip's non-UTF-8 test data file). *Mechanism:* a module that fails to parse is
-  still reported as an analysis error, but the fallback is scoped:
-  targets whose import closure (over both revisions) can reach the
-  module, or that the module would define, are selected; others are
-  planned normally. A file no in-scope module imports and pytest does
-  not collect then costs nothing. *Trade-off:* an unparseable module
-  that is imported dynamically is invisible to the closure; dynamic
-  imports are already unbounded, so they still reach it. *Done when:* a
-  scenario with an unparseable data file keeps other selections
-  precise, the report still lists the error, and pygments, black and
-  pip stop degrading.
-
-## 2. Soundness: class creation hooks
+## 1. Soundness: class creation hooks
 
 Subclassing runs the base's `__init_subclass__` (and a metaclass's
 `__init__`/`__new__`); diffcone does not model it (flask's
@@ -51,7 +29,7 @@ a scenario where a test subclasses a base whose `__init_subclass__`
 reads a changed variable selects the test without any dynamic
 reference.
 
-## 3. Dynamic references: the widespread constructs
+## 2. Dynamic references: the widespread constructs
 
 The census attributes 23 % of selections to dynamic references alone
 (14 % more to dynamic references or name matches). The constructs that
@@ -74,7 +52,7 @@ Instance-attribute tracking (implemented) bounds none of the census's
 only in networkx); it is kept because it is sound and tested, with its
 evidence limited to hatch.
 
-## 4. Name matches
+## 3. Name matches
 
 7 % of census selections alone, dominant in five repositories through a
 few attribute names on untyped receivers (`app`, `callback`,
@@ -82,7 +60,7 @@ few attribute names on untyped receivers (`app`, `callback`,
 which are out of scope; the useful next step is measurement (how many
 of these selections the corpora's coverage confirms), before any rule.
 
-## 5. Discovery completeness (rare in the census)
+## 4. Discovery completeness (rare in the census)
 
 Unknown fixtures cause 1 % of census selections.
 
@@ -98,7 +76,7 @@ Unknown fixtures cause 1 % of census selections.
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 6. Other resolution work
+## 5. Other resolution work
 
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
@@ -106,7 +84,7 @@ Unknown fixtures cause 1 % of census selections.
 * A `watch` loop for the developer inner loop once incremental analysis
   exists.
 
-## 7. Planner cost on large trees
+## 6. Planner cost on large trees
 
 **Status.** With the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing
