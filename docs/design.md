@@ -201,6 +201,16 @@ own, so `Foo` still gets a reference edge.
 Module and class bodies are analysed without entering the definitions they
 contain; those are symbols with their own edges.
 
+`importlib.import_module` and `importlib.__import__` are recognised under
+any spelling the module's or function's imports give them (`from
+importlib import import_module`, `import importlib as il`). A relative
+name (`import_module(f"..templates.{name}", __name__)`) is resolved as
+`importlib.util.resolve_name` does when the `package` argument is a
+literal, `__name__` (the module's name) or `__package__` (its package);
+under a `DIR=PREFIX` root the indexed name is not the runtime one, so
+only a literal `package` resolves there. Any other relative name is
+unbounded.
+
 `getattr(x, name)` and `importlib.import_module(name)` are expanded over
 every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
@@ -400,7 +410,9 @@ of something cacheable:
   is taken of everything a module's resolution can read from other
   modules: each module's observable facts (names, kinds, members, imports,
   bindings, star imports; digested once per file and stored with its
-  facts) plus every class's resolved bases and completeness. A body edit
+  facts) plus every class's resolved bases and completeness, and the
+  source-root specs (whether a module's `__name__` is its indexed name
+  depends on them). A body edit
   leaves it unchanged; adding, removing or renaming a symbol changes it.
 * **Resolution, per module.** Pass 2 writes (edges, unresolved and
   external references, call sites, escapes, parameter tables, deferred

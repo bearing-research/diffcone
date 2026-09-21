@@ -52,7 +52,7 @@ from diffcone.model import (
     Symbol,
     UnresolvedReference,
 )
-from diffcone.snapshot import Snapshot, module_name_for
+from diffcone.snapshot import Snapshot, module_name_for, split_root
 
 BUILTIN_NAMES = frozenset(dir(builtins))
 DYNAMIC_CALLS = frozenset({"eval", "exec", "__import__", "globals", "vars"})
@@ -365,6 +365,22 @@ def _string_prefix(expr: ast.expr) -> str | None:
     ):
         return expr.func.value.value.split("{", 1)[0] or None
     return None
+
+
+def _resolve_relative_name(name: str, package: str, *, prefix: bool = False) -> str | None:
+    """``importlib.resolve_name``: ``..x`` against package ``a.b.c`` is
+    ``a.b.x``. A prefix keeps its trailing text (``..t.`` -> ``a.b.t.``) and
+    ``..`` alone becomes ``a.b.``. None when the dots go above the top."""
+    if not name.startswith("."):
+        return name
+    level = len(name) - len(name.lstrip("."))
+    bits = package.rsplit(".", level - 1)
+    if not package or len(bits) < level:
+        return None
+    base, rest = bits[0], name[level:]
+    if prefix or rest:
+        return f"{base}.{rest}"
+    return base
 
 
 def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
@@ -993,8 +1009,10 @@ class Indexer:
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other
-        modules: their observable facts plus every class's resolved bases."""
+        modules: their observable facts plus every class's resolved bases,
+        and the root specs (whether ``__name__`` is a module's runtime name)."""
         material = [
+            sorted(self.snapshot.source_roots),
             [[m, self.scopes[m].env_digest] for m in sorted(self.scopes)],
             [[c, cs.bases, cs.complete] for c, cs in sorted(self.class_scopes.items())],
         ]
@@ -2417,8 +2435,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._dynamic(f"{name}()")
             elif builtin and parts[0] == "getattr":
                 self._getattr(node)
-            elif name in ("importlib.import_module", "importlib.__import__"):
-                self._import_module(node, name)
+            elif (canonical := self._canonical_name(parts)) in (
+                "importlib.import_module",
+                "importlib.__import__",
+            ):
+                self._import_module(node, canonical)
             if builtin and parts[0] == "vars" and node.args and self._is_self(node.args[0]):
                 self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
             if builtin and parts[0] == "type" and len(node.args) == 1:
@@ -2590,12 +2611,58 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._resolve(base + [name])
                 self._escape(self.indexer.resolve_chain(base + [name], self.scope))
 
+    def _canonical_name(self, parts: list[str]) -> str | None:
+        """The dotted name a callee chain refers to through the scope's import
+        bindings (``import_module`` from ``from importlib import
+        import_module`` is ``importlib.import_module``); None for a local."""
+        head = parts[0]
+        binding = self.scope.local_imports.get(head)
+        if binding is None:
+            if head in self.scope.locals:
+                return None
+            binding = self.scope.module.imports.get(head)
+        if binding is None:
+            return ".".join(parts)
+        base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+        return ".".join([base, *parts[1:]])
+
+    def _import_package(self, node: ast.Call) -> str | None:
+        """``import_module``'s ``package`` argument when it is known: a
+        literal, ``__name__`` (this module) or ``__package__``."""
+        arg = node.args[1] if len(node.args) > 1 else None
+        for k in node.keywords:
+            if k.arg == "package":
+                arg = k.value
+        if arg is None:
+            return None
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+        module = self.scope.module
+        # Under a ``DIR=PREFIX`` root the indexed name is diffcone's own, not
+        # the one Python gives the module at runtime.
+        roots = [split_root(r)[0] for r in self.indexer.snapshot.source_roots]
+        if module_name_for(module.path, roots) != module.name:
+            return None
+        if isinstance(arg, ast.Name) and not self._is_shadowed(arg.id):
+            if arg.id == "__name__":
+                return module.name
+            if arg.id == "__package__":
+                return module.name if module.is_package else module.name.rpartition(".")[0]
+        return None
+
     def _import_module(self, node: ast.Call, name: str) -> None:
         if not node.args:
             return
+        package = self._import_package(node) if name == "importlib.import_module" else None
         names = self.scope.string_candidates(node.args[0])
+        if names is not None and package is not None:
+            resolved = [_resolve_relative_name(n, package) for n in names]
+            if all(r is not None for r in resolved):
+                names = tuple(r for r in resolved if r is not None)
         if names is None:
             prefix = _string_prefix(node.args[0])
+            if prefix is not None and prefix.startswith(".") and package is not None:
+                prefix = _resolve_relative_name(prefix, package, prefix=True)
             if prefix is not None and not prefix.startswith("."):
                 # ``import_module(f"attr.{name}")``: every in-scope module under
                 # the prefix may be imported; nothing outside it can be.

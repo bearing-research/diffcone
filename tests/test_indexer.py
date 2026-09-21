@@ -655,6 +655,67 @@ def test_instance_attributes_bound_by_constructor_arguments():
     assert dynamic, "non-literal binding"
 
 
+def test_import_module_under_any_spelling_and_relative_names():
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/t/__init__.py": "",
+        "pkg/t/a.py": "",
+        "pkg/t/b.py": "",
+        "pkg/other.py": "",
+        "pkg/sub/__init__.py": (
+            "import importlib\n\n"
+            "def pkg_rel(n):\n    return importlib.import_module(f'..t.{n}', __package__)\n"
+        ),
+        "pkg/m.py": (
+            "from importlib import import_module\n"
+            "import importlib as il\n"
+            "import importlib\n\n"
+            "def from_imported(n):\n    return import_module(n)\n\n"
+            "def aliased(n):\n    return il.import_module(n)\n\n"
+            "def aliased_literal():\n    return il.import_module('pkg.other')\n\n"
+            "def rel_literal():\n    return import_module('.t.a', __package__)\n\n"
+            "def rel_prefix(n):\n"
+            "    return importlib.import_module(f'.t.{n}', __name__.rpartition('.')[0])\n\n"
+            "def rel_name(n):\n    return importlib.import_module(f'..t.{n}', package=__name__)\n\n"
+            "def rel_const(n):\n    return importlib.import_module('.' + n, 'pkg.t')\n\n"
+            "def rel_unknown(n, p):\n    return importlib.import_module('.' + n, p)\n\n"
+            "def rel_no_package(n):\n    return importlib.import_module('.' + n)\n\n"
+            "def shadowed(n):\n    import_module = print\n    return import_module(n)\n"
+        ),
+    }
+
+    def check(idx, prefix=""):
+        dynamic = {u.symbol for u in idx.unresolved if u.kind == "dynamic"}
+
+        def imports(sym):
+            return {e.target for e in idx.edges if e.source == sym and e.kind == "imports"}
+
+        for sym in ("from_imported", "aliased", "rel_prefix", "rel_unknown", "rel_no_package"):
+            assert f"{prefix}pkg.m.{sym}" in dynamic, sym
+        if not prefix:  # a prefixed name is diffcone's own, never imported by that name
+            assert imports("pkg.m.aliased_literal") >= {"pkg.other"}
+        assert f"{prefix}pkg.m.shadowed" not in dynamic
+        return dynamic, imports
+
+    idx = index(files)
+    dynamic, imports = check(idx)
+    t_modules = {"pkg.t", "pkg.t.a", "pkg.t.b"}
+    assert imports("pkg.m.rel_literal") >= {"pkg.t.a"} and "pkg.m.rel_literal" not in dynamic
+    # ``package`` is taken as a package: ``..t.`` against "pkg.m" is ``pkg.t.``.
+    assert imports("pkg.m.rel_name") >= {"pkg.t.a", "pkg.t.b"} and "pkg.m.rel_name" not in dynamic
+    assert imports("pkg.m.rel_const") >= {"pkg.t.a", "pkg.t.b"} and "pkg.m.rel_const" not in dynamic
+    # ``__package__`` of the package pkg.sub is pkg.sub itself.
+    assert imports("pkg.sub.pkg_rel") >= {"pkg.t.a", "pkg.t.b"} and "pkg.sub.pkg_rel" not in dynamic
+    assert not imports("pkg.sub.pkg_rel") & {"pkg.other"}
+    assert t_modules >= imports("pkg.m.rel_const") - {"pkg"}
+    # Under a prefixed root the runtime ``__name__`` is not the indexed name:
+    # only the literal package still resolves.
+    prefixed = index({f"src/{k}": v for k, v in files.items()}, roots=["src=x"])
+    dynamic, imports = check(prefixed, "x.")
+    assert "x.pkg.m.rel_name" in dynamic and "x.pkg.m.rel_literal" in dynamic
+    assert "x.pkg.sub.pkg_rel" in dynamic
+
+
 def test_dict_literal_keys_bound_loop_variables():
     idx = index(
         {

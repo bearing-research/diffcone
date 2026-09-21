@@ -45,14 +45,14 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
 | d287360 | Add frozendict signature | 33 / 186 | 82 % | 100 % | 3 % |
-| 80ddcb3 | Add tests for get_in defaults, ... | 4 / 190 | 98 % | 100 % | 100 % |
+| 80ddcb3 | Add tests for get_in defaults, ... | 36 / 190 | 81 % | 100 % | 11 % |
 | a1e25cb | Expose combined `__annotations__` on composed functions | 40 / 192 | 79 % | 100 % | 20 % |
 | 55ce42d | Support Python 3.15 and refresh dev tooling | 35 / 192 | 82 % | n/a | 0 % |
 | d2eba03 | Fix interpose([]) raising StopIteration | 37 / 193 | 81 % | 100 % | 5 % |
 | 451af60 | Add pysentry-pre-commit | 0 / 193 | 100 % | n/a | n/a |
 
 Totals: 7 outcome changes, 0 missed; recall 100 % (15 of 15); precision
-10 %; mean savings 87 %.
+8 %; mean savings 84 %.
 
 Why the low-precision rows are low:
 
@@ -65,14 +65,18 @@ Why the low-precision rows are low:
 * **A dynamic `exec` helper.** `tests/test_inspect_args.py::make_func`
   builds functions with `exec`, and its module imports all of toolz, so its
   import closure is the whole package: about 17 tests are selected on every
-  production change. `_signatures.create_signature_registry` uses
-  `import_module` with a runtime name (unbounded by design), and since
-  module-level variables became symbols it is the writer (`mutated_by`)
-  of the `_signatures.signatures` registry that `has_keywords`, hence
-  `memoize` and `curry`, read: another 15 tests in `test_functoolz.py`
-  and `test_signatures.py` reach it on every production change. d2eba03
-  (a one-line `interpose` fix) selects 37 tests for that reason alone; 2
-  of them execute the change.
+  production change. `_signatures.create_signature_registry` calls
+  `import_module` (imported with `from importlib import import_module`)
+  on each key of a module-info dict, a dynamic import with a runtime
+  name, which can reach anything and is therefore affected by every
+  change, tests-only changes included. It runs when `toolz` is imported
+  and writes (`mutated_by`) the `_signatures.signatures` registry that
+  `has_keywords`, hence `memoize` and `curry`, read: 32 tests reach it
+  through the package or that registry. d2eba03 (a one-line `interpose`
+  fix) selects 37 tests for that reason alone, 2 of which execute the
+  change; 80ddcb3 only adds tests and selects 36, the 4 new tests and
+  those 32. Until the dynamic import was recognised under that spelling
+  (see "Re-measurements"), the tests-only commit selected 4.
 * a1e25cb changed `Compose` structurally (new members), which invalidates
   every `Compose` method; only 8 tests execute `Compose` at all.
 
@@ -406,7 +410,7 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
 | b6aaa1a | release Hatchling v1.32.1 | 152 / 2105 | 93 % | n/a | 0 % |
-| 248141c | Use hatchling plugin manager | 268 / 2105 | 87 % | 100 % | 10 % |
+| 248141c | Use hatchling plugin manager | 253 / 2105 | 88 % | 100 % | 11 % |
 | 6a2b14f | release Hatchling v1.32.2 | 152 / 2105 | 93 % | n/a | 0 % |
 | 0941887 | release Hatchling v1.32.3 | 152 / 2105 | 93 % | n/a | 0 % |
 | 5c6dc6c | Strip surrounding whitespace from version metadata | 2106 / 2106 | 0 % | 100 % | 14 % |
@@ -423,13 +427,17 @@ module's import closure, which contains `__about__`, in a method that
 every test reaches (`ClassRegister.get` from `CoreMetadata.name`,
 `ProjectConfig.env` and `BuilderInterface.__init__`). The one construction
 passes a literal (`ClassRegister(..., "PLUGIN_NAME", ...)`), so the lookup
-is now the name-bounded `registered_class.PLUGIN_NAME`. The 152 still
-selected on a release come from two other dynamic references: hatchling's
-CLI entry point dispatches through `vars(parser.parse_args())` (the
-argparse pattern of design.md, "Known gaps"; 67 tests), and the test
-helper `__load_template_module` imports
-`f"..templates.{template_name}"`, a relative name that the literal-prefix
-rule does not expand (78 tests). 248141c changes `PluginManager` itself.
+is now the name-bounded `registered_class.PLUGIN_NAME`. Of the 152 still
+selected on a release, 67 come from hatchling's CLI entry point, which
+dispatches through `vars(parser.parse_args())` (the argparse pattern of
+design.md, "Known gaps"), and 78 from the test helper
+`__load_template_module`, which imports `f"..templates.{template_name}"`
+relative to `__name__`: that resolves to the `helpers.templates.`
+modules, and the wheel templates embed
+`hatchling.__about__.__version__` in the metadata the tests compare, so
+those tests do depend on the release's change (the version is read at
+import time, so coverage cannot credit them). 248141c changes
+`PluginManager` itself.
 The last two rows change properties that every test reaches by name
 through untyped receivers: 5c6dc6c changes `ProjectMetadata.version`
 (1 691 tests via `installed_dist.version` alone), and cd57f68 changes
@@ -542,6 +550,15 @@ Selection-rule changes re-run on every measurement in this file. Recall
 stayed at 100 % in each; where a number moved, the affected table above has
 been re-stated from the re-run:
 
+* `import_module` recognised under any import spelling, and relative
+  names resolved against a known `package`: toolz's
+  `create_signature_registry` imports through `from importlib import
+  import_module`, which had been taken for an ordinary external
+  reference, so the tests-only commit 80ddcb3 went from 4 to 36 selected
+  (the toolz table is re-stated; recall 100 % before and after); hatch
+  248141c went from 268 to 253 selected (recall 100 %; the 78 template
+  tests on the release rows are now selected through the templates rather
+  than as a dynamic reference); every other recorded commit planned identically;
 * instance-attribute tracking, with call sites for constructions and
   `super()` calls, rebound parameters, `getattr`-returned functions and
   classes as escapes: every recorded commit of every corpus planned
