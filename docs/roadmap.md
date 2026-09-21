@@ -15,29 +15,15 @@ means, so the implementation can be checked against it and the census
 and corpora can measure it. Any item that can narrow selection needs a
 regression scenario (AGENTS.md).
 
-## 1. Soundness: class creation hooks
+## 1. Dynamic references: the widespread constructs
 
-Subclassing runs the base's `__init_subclass__` (and a metaclass's
-`__init__`/`__new__`); diffcone does not model it (flask's
-`MethodView.__init_subclass__` is reached only through a dynamic
-fallback in the census). *Mechanism:* a class, or a class statement in a
-function body, whose in-scope bases define `__init_subclass__` gets an
-edge to it (the first definition in its MRO after itself); a
-`metaclass=` keyword referencing an in-scope class gets edges to its
-`__new__`/`__init__`. *Trade-off:* widens selection only. *Done when:*
-a scenario where a test subclasses a base whose `__init_subclass__`
-reads a changed variable selects the test without any dynamic
-reference.
-
-## 2. Dynamic references: the widespread constructs
-
-The census attributes 23 % of selections to dynamic references alone
-(14 % more to dynamic references or name matches). The constructs that
+The census attributes 27 % of selections to dynamic references alone
+(18 % more to dynamic references or name matches). The constructs that
 matter in many repositories are `getattr` with a loop variable over a
-non-literal iterable (selections in 16 repositories, present in 30) and
-`getattr` with a parameter whose call sites are unbounded or escape (16
-and 31); `import_module` of a local variable and `__import__` of a
-parameter follow (6 and 4). Everything else is a single seed in a single
+non-literal iterable (selections in 18 repositories, present in 30) and
+`getattr` with a parameter whose call sites are unbounded or escape (17
+and 31); `getattr` and `import_module` of a local variable and
+`__import__` of a parameter follow (11, 8 and 4). Everything else is a single seed in a single
 repository (networkx's backend dispatcher, rich's `repr.auto`).
 *Mechanism:* not yet chosen. First classify a sample of the loop and
 parameter cases from the census (what the iterable is: `dir(obj)`,
@@ -52,15 +38,15 @@ Instance-attribute tracking (implemented) bounds none of the census's
 only in networkx); it is kept because it is sound and tested, with its
 evidence limited to hatch.
 
-## 3. Name matches
+## 2. Name matches
 
-7 % of census selections alone, dominant in five repositories through a
-few attribute names on untyped receivers (`app`, `callback`,
-`load_cert_chain`, `get`, `headers`). Any bound needs receiver types,
+9 % of census selections alone, dominant in six repositories through a
+few attribute names on untyped receivers (`app`, `callback`, anyio's
+task-group methods, `load_cert_chain`, `get`, `headers`). Any bound needs receiver types,
 which are out of scope; the useful next step is measurement (how many
 of these selections the corpora's coverage confirms), before any rule.
 
-## 4. Discovery completeness (rare in the census)
+## 3. Discovery completeness (rare in the census)
 
 Unknown fixtures cause 1 % of census selections.
 
@@ -76,7 +62,7 @@ Unknown fixtures cause 1 % of census selections.
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 5. Other resolution work
+## 4. Other resolution work
 
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
@@ -84,7 +70,7 @@ Unknown fixtures cause 1 % of census selections.
 * A `watch` loop for the developer inner loop once incremental analysis
   exists.
 
-## 6. Planner cost on large trees
+## 5. Planner cost on large trees
 
 **Status.** With the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing

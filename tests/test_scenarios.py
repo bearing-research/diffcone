@@ -1628,3 +1628,67 @@ def test_package_binding_that_shadows_a_submodule(repo):
     entries = {d.target.runner_id: d.target.entry_symbol for d in discovered.decisions}
     inner = "tests/test_walk/test_walk.py::test_inner"
     assert entries[inner] == "tests.test_walk.test_walk.test_inner"
+
+
+def test_subclassing_runs_the_base_init_subclass(repo):
+    """flask's ``MethodView.__init_subclass__`` reads ``http_method_funcs``
+    whenever a test defines a view class; the census found those tests
+    selected only through a dynamic fallback. Class creation now depends on
+    the ``__init_subclass__`` its bases provide and on a metaclass's
+    ``__new__``/``__init__``."""
+    views = (
+        "HTTP = frozenset({{{methods}}})\n\n\n"
+        "class MethodView:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        cls.methods = {{m for m in HTTP if m in cls.__dict__}}\n\n\n"
+        "class Registry(type):\n"
+        "    def __init__(cls, name, bases, ns):\n"
+        "        super().__init__(name, bases, ns)\n"
+        "        cls.registered = {registered}\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/views.py": views.format(methods="'get', 'post'", registered=True),
+            "tests/test_nested.py": (
+                "from pkg.views import MethodView\n\n\n"
+                "def test_nested():\n"
+                "    class Index(MethodView):\n"
+                "        def get(self):\n            return 'x'\n\n"
+                "    assert Index.methods == {'get'}\n"
+            ),
+            "tests/test_meta.py": (
+                "from pkg.views import Registry\n\n\n"
+                "class Plugin(metaclass=Registry):\n    pass\n\n\n"
+                "def test_plugin():\n    assert Plugin.registered\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+            "benchmarks/bench_views.py": (
+                "from pkg.views import MethodView\n\n\n"
+                "def time_define():\n"
+                "    class V(MethodView):\n        pass\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_nested", "tests.test_nested.test_nested"),
+        # Discovery makes a test depend on its module; the class statement runs there.
+        py_target("t::test_plugin", "tests.test_meta.test_plugin", "tests.test_meta"),
+        py_target("t::test_other", "tests.test_other.test_other"),
+        asv_target("bench.time_define", "benchmarks.bench_views.time_define"),
+    ]
+    head = repo.commit({"pkg/views.py": views.format(methods="'get'", registered=True)})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.views.HTTP": ("body_changed",)}
+    assert selected(plan) == {"t::test_nested", "bench.time_define"}
+    assert unselected(plan) == {"t::test_plugin", "t::test_other"}
+    assert path_ids(reason(plan, "t::test_nested"))[-3:] == [
+        "tests.test_nested.test_nested",
+        "pkg.views.MethodView.__init_subclass__",
+        "pkg.views.HTTP",
+    ]
+    head2 = repo.commit({"pkg/views.py": views.format(methods="'get'", registered=False)})
+    plan2 = repo.plan(head, head2, targets)
+    assert selected(plan2) == {"t::test_plugin"}
+    assert "pkg.views.Registry.__init__" in path_ids(reason(plan2, "t::test_plugin"))

@@ -209,6 +209,15 @@ chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
 attribute reference for `run` and the base expression is analysed on its
 own, so `Foo` still gets a reference edge.
 
+Creating a class runs code of its bases and metaclass, so a class
+statement depends on the `__init_subclass__` that each in-scope base
+finds through its MRO (their union covers the one the new class's MRO
+picks) and on an in-scope `metaclass=`'s `__new__` and `__init__` (edge
+details `__init_subclass__`, `__new__`, `__init__`). The dependency is
+recorded for the class and for what runs the statement: the module for a
+top-level class (it is created on import), the enclosing function for a
+class defined in a function body (a test that subclasses a view).
+
 Module and class bodies are analysed without entering the definitions they
 contain; those are symbols with their own edges.
 

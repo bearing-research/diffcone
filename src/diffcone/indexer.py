@@ -1704,6 +1704,10 @@ class Indexer:
                 cscope = self.class_scopes[symbol_id]
                 class_level = Scope(module=scope, locals=set(cscope.bindings))
                 collector = _ReferenceCollector(self, symbol_id, class_level, skip_defs=True)
+                # The class statement runs when its container runs: a
+                # top-level class is created when the module is imported.
+                for creator in (symbol_id, scope.name) if class_scope is None else (symbol_id,):
+                    self.class_creation(creator, cscope.bases, stmt.keywords, Scope(module=scope))
                 # Name-chain bases were resolved (and recorded) by _ensure_bases;
                 # only dynamic base expressions still need their references collected.
                 dynamic_bases = [b for b in stmt.bases if _flatten_chain(b) is None]
@@ -1955,6 +1959,28 @@ class Indexer:
             node = self._step(node, attr)
         return node
 
+    def class_creation(
+        self, source: str, bases: list[str], keywords: list[ast.keyword], scope: Scope
+    ) -> None:
+        """Creating a class runs code of its bases and metaclass: the
+        ``__init_subclass__`` that the new class's MRO finds after itself
+        (the union of what each in-scope base finds covers it), and an
+        in-scope metaclass's ``__new__`` and ``__init__``."""
+        hooks: list[tuple[str, str]] = []
+        for base in bases:
+            hooks.append((base, "__init_subclass__"))
+        for kw in keywords:
+            parts = _flatten_chain(kw.value) if kw.arg == "metaclass" else None
+            if parts is None:
+                continue
+            meta = self.resolve_chain(parts, scope)
+            if isinstance(meta, Resolved) and not meta.detail and meta.symbol in self.class_scopes:
+                hooks += [(meta.symbol, "__new__"), (meta.symbol, "__init__")]
+        for class_id, name in hooks:
+            hit = self.lookup_in_class(class_id, name)
+            if isinstance(hit, Resolved) and not hit.detail and hit.symbol != source:
+                self.out.edges.add(Edge(source, hit.symbol, REFERENCES, name))
+
     def escape(self, target: Resolved, *, classes: bool = True) -> None:
         """Record that ``target`` is used as a value (see _mark_escape)."""
         symbol = self.index.symbols.get(target.symbol)
@@ -2190,6 +2216,14 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
             self.visit(expr)
+        bases: list[str] = []
+        for expr in node.bases:
+            parts = _flatten_chain(expr)
+            target = self.indexer.resolve_chain(parts, self.scope) if parts else None
+            if isinstance(target, Resolved) and not target.detail:
+                if target.symbol in self.indexer.class_scopes:
+                    bases.append(target.symbol)
+        self.indexer.class_creation(self.source, bases, node.keywords, self.scope)
         outer = self._push(_LocalBindings().collect(node))
         try:
             for stmt in node.body:

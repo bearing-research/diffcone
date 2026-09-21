@@ -631,7 +631,7 @@ bound on waste, and recall is measured only by the corpora above.
 
 | repository | modules | commits | mean selected | dependency | dynamic | name match | either | unknown fixture | degraded plans |
 |---|---|---|---|---|---|---|---|---|---|
-| pallets/flask | 83 | 8 | 62 % | 43 % | 52 % | 0 % | 5 % | 0 % | 0 |
+| pallets/flask | 83 | 8 | 62 % | 44 % | 51 % | 0 % | 5 % | 0 % | 0 |
 | pallets/jinja | 60 | 8 | 96 % | 37 % | 49 % | 0 % | 13 % | 0 % | 0 |
 | pallets/werkzeug | 131 | 8 | 88 % | 40 % | 1 % | 46 % | 13 % | 0 % | 0 |
 | pallets/itsdangerous | 15 | 8 | 42 % | 41 % | 0 % | 16 % | 0 % | 43 % | 0 |
@@ -646,7 +646,7 @@ bound on waste, and recall is measured only by the corpora above.
 | pydantic/pydantic | 286 | 8 | 75 % | 65 % | 0 % | 0 % | 34 % | 0 % | 0 |
 | marshmallow-code/marshmallow | 38 | 8 | 52 % | 4 % | 2 % | 27 % | 67 % | 0 % | 0 |
 | python-attrs/cattrs | 122 | 8 | 64 % | 71 % | 23 % | 0 % | 6 % | 0 % | 0 |
-| jd/tenacity | 20 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
+| jd/tenacity | 20 | 8 | 44 % | 59 % | 0 % | 41 % | 0 % | 0 % | 0 |
 | theskumar/python-dotenv | 20 | 8 | 42 % | 26 % | 33 % | 10 % | 32 % | 0 % | 0 |
 | pytest-dev/pluggy | 27 | 8 | 47 % | 44 % | 4 % | 19 % | 33 % | 0 % | 0 |
 | pytest-dev/pytest-xdist | 32 | 8 | 66 % | 40 % | 1 % | 6 % | 53 % | 1 % | 0 |
@@ -661,24 +661,29 @@ bound on waste, and recall is measured only by the corpora above.
 | PyCQA/isort | 108 | 8 | 33 % | 79 % | 18 % | 0 % | 3 % | 0 % | 0 |
 | PyCQA/flake8 | 73 | 8 | 38 % | 20 % | 52 % | 15 % | 13 % | 0 % | 0 |
 | nedbat/coveragepy | 166 | 8 | 97 % | 42 % | 12 % | 0 % | 46 % | 0 % | 0 |
-| arrow-py/arrow | 21 | 8 | 32 % | 30 % | 8 % | 39 % | 24 % | 0 % | 0 |
+| arrow-py/arrow | 21 | 8 | 32 % | 30 % | 8 % | 38 % | 24 % | 0 % | 0 |
 | dateutil/dateutil | 38 | 8 | 5 % | 1 % | 28 % | 22 % | 49 % | 0 % | 0 |
 | more-itertools/more-itertools | 7 | 8 | 2 % | 58 % | 42 % | 0 % | 0 % | 0 % | 0 |
 | mahmoud/boltons | 65 | 8 | 14 % | 10 % | 15 % | 50 % | 25 % | 0 % | 0 |
-| python-poetry/poetry | 423 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
+| python-poetry/poetry | 423 | 8 | 78 % | 48 % | 0 % | 1 % | 41 % | 10 % | 0 |
 | psf/black | 338 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
 | sqlalchemy/alembic | 120 | 8 | 69 % | 18 % | 52 % | 0 % | 20 % | 9 % | 0 |
 | networkx/networkx | 688 | 8 | 88 % | 2 % | 85 % | 0 % | 14 % | 0 % | 0 |
-| scrapy/scrapy | 504 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
-| agronholm/anyio | 79 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
+| scrapy/scrapy | 504 | 8 | 100 % | 63 % | 25 % | 0 % | 12 % | 1 % | 0 |
+| agronholm/anyio | 79 | 8 | 50 % | 2 % | 0 % | 97 % | 0 % | 0 % | 0 |
 | python-trio/trio | 149 | 8 | 71 % | 14 % | 45 % | 2 % | 32 % | 7 % | 0 |
 | pygments/pygments | 402 | 8 | 100 % | 0 % | 0 % | 0 % | 0 % | 0 % | 8 |
 
-Across all 196 664 selections: dependency 22 %, dynamic reference 23 %,
-name match 7 %, either 14 %, unknown fixture 1 %, analysis error 33 %.
+The table is the re-run after the fixes described below (repeated class
+definitions, package bindings that shadow a submodule, class creation
+hooks). Across all 189 653 selections: dependency 34 %, dynamic
+reference 27 %, name match 9 %, either 18 %, unknown fixture 1 %,
+analysis error 11 %. The first run, before those fixes, had 196 664
+selections: dependency 22 %, dynamic reference 23 %, name match 7 %,
+either 14 %, unknown fixture 1 %, analysis error 33 %.
 
-**Analysis errors are the largest cause.** Seven repositories (17 %)
-select every test on every commit, for three reasons:
+**Analysis errors were the largest cause.** Seven repositories (17 %)
+selected every test on every commit in the first run, for three reasons:
 
 * a class defined more than once in one module (`if`/`else`
   definitions in anyio's `to_interpreter`, black's test-case data
@@ -708,11 +713,11 @@ the construct at all):
 
 | construct | selections caused | repositories (selections) | repositories (present) |
 |---|---|---|---|
-| `getattr` with a loop variable over a non-literal | 6 942 | 16 | 30 |
-| `getattr` with a parameter (call sites unbounded or escaping) | 1 695 | 16 | 31 |
-| `getattr` with a local variable | 1 046 | 9 | 25 |
-| `import_module` with a local variable | 2 098 | 6 | 10 |
-| `__import__` with a parameter | 1 383 | 4 | 6 |
+| `getattr` with a loop variable over a non-literal | 7 023 | 18 | 30 |
+| `getattr` with a parameter (call sites unbounded or escaping) | 1 696 | 17 | 31 |
+| `getattr` with a local variable | 3 979 | 11 | 25 |
+| `import_module` with a local variable | 5 030 | 8 | 10 |
+| `__import__` with a parameter | 1 291 | 4 | 6 |
 | `globals()` | 730 | 6 | 16 |
 | `getattr` with a `self` attribute | 28 724 | 1 | 11 |
 | `vars()`, `exec`, `eval` (together) | 209 | 5 to 7 each | 10 to 17 each |
@@ -721,26 +726,32 @@ The `self`-attribute row is one seed in networkx
 (`_dispatchable._call_with_backend`, a backend dispatcher whose name is
 not a constructor literal): instance-attribute tracking (built for
 hatch) bounds none of the census's cases. The widespread constructs are
-loop variables and parameters, each causing selections in 16 of 42
+loop variables and parameters, causing selections in 18 and 17 of 42
 repositories. Single seeds dominate where dynamic references are large:
 jinja's `utils.import_string` and `filters.do_round`, rich's
 `repr.auto`, tox's `Pep517VirtualEnvFrontend.__init__`, flask's
 `helpers.get_root_path` (`__import__` of a parameter).
 
-**Name matches** dominate in five repositories, through a few
+**Name matches** dominate in six repositories, through a few
 attributes on untyped receivers: `app` (fastapi 2 231, starlette 627),
-`callback` (typer 1 150), `load_cert_chain` (urllib3 758), `get`,
+`callback` (typer 1 150), anyio's task-group methods
+(`get_current_task`, `aclose`, `send`, `wait`, about 850 each, visible
+once anyio stopped degrading), `load_cert_chain` (urllib3 758), `get`,
 `headers`, `update`.
 
-**Unknown fixtures** cause 1 % of selections (urllib3's `runtime`,
-trio's `autojump_clock` and `mock_clock`, build's package fixtures):
+**Unknown fixtures** cause 1 % of selections (poetry's repository
+fixtures once poetry stopped degrading, urllib3's `runtime`, trio's
+`autojump_clock` and `mock_clock`, build's package fixtures):
 discovery completeness matters far less than the roadmap order implied.
 
 **A soundness gap found on the way.** In flask, a change to
 `flask.views.http_method_funcs` is reached only through
 `MethodView.__init_subclass__`, which runs whenever a test defines a
-subclass; diffcone does not model subclassing as calling
+subclass; diffcone did not model subclassing as calling
 `__init_subclass__`, so only the dynamic fallback selected those tests.
+Class creation now depends on the bases' `__init_subclass__` and a
+metaclass's `__new__`/`__init__` (design.md): on 2a8a38b the 12 tests
+that subclass `MethodView` are reached through a dependency path.
 
 ## Not yet exercised
 
