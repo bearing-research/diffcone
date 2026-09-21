@@ -1751,3 +1751,35 @@ def test_special_methods_reach_users_of_their_class(repo):
     plan2 = repo.plan(head, head2, targets)
     assert changes(plan2) == {"pkg.retrying.Retrying.__hash__": ("body_changed",)}
     assert selected(plan2) == {"t::test_answer", "bench.time_retry"}
+
+
+def test_methods_reached_through_unknown_or_opaque_values_are_name_bounded(repo):
+    """``client.session.send()`` on an unknown ``client`` used to record only
+    ``session``, and ``DEFAULT.send()`` on a module-level instance nothing
+    after the variable; a change to ``send`` was missed. Every name after
+    the point where resolution stops is a name-bounded reference."""
+    transport = "class Transport:\n    def send(self):\n        return {value}\n"
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/transport.py": transport.format(value=1),
+            "pkg/defaults.py": "from pkg.transport import Transport\n\nDEFAULT = Transport()\n",
+            "tests/test_chain.py": ("def test_chain(client):\n    assert client.session.send()\n"),
+            "tests/test_default.py": (
+                "from pkg.defaults import DEFAULT\n\n\n"
+                "def test_default():\n    assert DEFAULT.send()\n"
+            ),
+            "benchmarks/bench_chain.py": "def time_chain(client):\n    client.session.send()\n",
+        }
+    )
+    targets = [
+        py_target("t::test_chain", "tests.test_chain.test_chain"),
+        py_target("t::test_default", "tests.test_default.test_default"),
+        asv_target("bench.time_chain", "benchmarks.bench_chain.time_chain"),
+    ]
+    head = repo.commit({"pkg/transport.py": transport.format(value=2)})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.transport.Transport.send": ("body_changed",)}
+    assert selected(plan) == {"t::test_chain", "t::test_default", "bench.time_chain"}
+    for rid in ("t::test_chain", "t::test_default", "bench.time_chain"):
+        assert "unresolved_name_match" in rules(plan, rid), rid

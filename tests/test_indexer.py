@@ -742,6 +742,10 @@ def test_dict_literal_keys_bound_loop_variables():
         ("attribute", "NonCallableMock"),  # the receiver chain on a local
         ("attribute", "assert_called"),
         ("attribute", "assert_any_call"),
+        # Methods called on the variable's value (of unknown type to the
+        # index) are name-bounded references too.
+        ("attribute", "items"),
+        ("attribute", "keys"),
     }
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.g"}
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.h"}
@@ -785,7 +789,7 @@ def test_dict_items_only_bound_for_pair_targets():
         }
     )
     assert ("dynamic", "") in {(u.kind, u.name) for u in idx.unresolved if u.symbol == "m.single"}
-    assert {u.name for u in idx.unresolved if u.symbol == "m.keys"} == {"a"}
+    assert {u.name for u in idx.unresolved if u.symbol == "m.keys"} == {"a", "keys"}
 
 
 def test_receiver_lookups_record_in_scope_overrides():
@@ -926,7 +930,10 @@ def test_defaults_resolve_in_the_enclosing_scope_and_alias_variables():
     assert ("m.helper", "references", "") in build
     assert ("m.build", "references", "mutated_by") in edges(idx, "m.REG")
     assert ("m.build", "references", "mutated_by") not in edges(idx, "m.INFO")
-    assert not [u for u in idx.unresolved if u.symbol == "m.build"]
+    # ``reg.update`` on the aliased variable: a name-bounded method reference.
+    assert {(u.name, u.detail) for u in idx.unresolved if u.symbol == "m.build"} == {
+        ("update", "reg.update")
+    }
     assert ("m.helper", "references", "") in edges(idx, "m.annotated")
     # Module-level mutation lines belong to the variable for coverage.
     assert idx.symbols["m.REG"].line_ranges == ((2, 2), (3, 3))

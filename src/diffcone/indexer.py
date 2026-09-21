@@ -1970,6 +1970,29 @@ class Indexer:
             node = self._step(node, attr)
         return node
 
+    def resolve_chain_names(self, parts: list[str], scope: Scope) -> tuple[Node, tuple[str, ...]]:
+        """Like resolve_chain, plus the attribute names after the point where
+        resolution stopped (an unknown or opaque value: a local, a failed
+        step, a variable, a function, a class-level binding). Each is looked
+        up on a value of unknown type, so each is a name-bounded reference."""
+        node = self._lookup_base(parts[0], scope)
+        if isinstance(node, Local):
+            if len(parts) < 2:
+                return None, ()
+            return Unresolved(UNRESOLVED_ATTRIBUTE, parts[1]), tuple(parts[2:])
+        for i, attr in enumerate(parts[1:], 1):
+            if node is None or isinstance(node, External):
+                return node, ()
+            if isinstance(node, Resolved):
+                symbol = self.index.symbols.get(node.symbol)
+                opaque = node.detail or (symbol is not None and symbol.kind not in (CLASS, MODULE))
+                if opaque:
+                    return node, tuple(parts[i:])
+            node = self._step(node, attr)
+            if isinstance(node, Unresolved):
+                return node, tuple(parts[i + 1 :])
+        return node, ()
+
     def class_creation(
         self, source: str, bases: list[str], keywords: list[ast.keyword], scope: Scope
     ) -> None:
@@ -2288,8 +2311,13 @@ class _ReferenceCollector(ast.NodeVisitor):
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
     def _resolve(self, parts: list[str], kind: str = REFERENCES) -> None:
-        node = self.indexer.resolve_chain(parts, self.scope)
-        self.indexer._record(self.source, node, kind=kind, chain=".".join(parts))
+        node, rest = self.indexer.resolve_chain_names(parts, self.scope)
+        chain = ".".join(parts)
+        self.indexer._record(self.source, node, kind=kind, chain=chain)
+        for name in rest:
+            self.indexer.out.unresolved.add(
+                UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, chain)
+            )
 
     def _dynamic(self, detail: str) -> None:
         self.indexer.out.unresolved.add(

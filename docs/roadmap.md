@@ -38,7 +38,8 @@ their reproduction commands, and every miss found is fixed or recorded.
 ### Misses found so far (each gets a scenario and a fix)
 
 Fixed: special methods (tenacity, 135 missed; design.md, "Special
-methods run without being named").
+methods run without being named"), and every name after the point where
+a chain stops resolving (found while tracing that fix).
 
 
 * **Symlinked directories** (pydantic: `tests/pydantic_core ->

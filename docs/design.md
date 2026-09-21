@@ -203,8 +203,12 @@ dispatched call's site and escape status for literal propagation. Explicit
 class (`Foo(...)`, subclassing) also adds an edge to the `__init__` found
 through its MRO, so constructor changes reach callers. A step that cannot
 be taken yields an unresolved attribute reference bounded by the attribute
-name. Once a chain reaches a function or
-an opaque variable it stops there. An attribute whose base is not a name
+name. Once a chain reaches a value of unknown type (a local, a failed
+step, a variable, a function, a class-level binding) it stops there, and
+every attribute name after that point is recorded as a name-bounded
+reference too: `client.session.send()` on an unknown `client` records
+`session` and `send`, `DEFAULT.send()` on a module-level instance
+records an edge to `DEFAULT` and the name `send`. An attribute whose base is not a name
 chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
 attribute reference for `run` and the base expression is analysed on its
 own, so `Foo` still gets a reference edge.
