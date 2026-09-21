@@ -15,6 +15,55 @@ means, so the implementation can be checked against it and the census
 and corpora can measure it. Any item that can narrow selection needs a
 regression scenario (AGENTS.md).
 
+## 0. Recall validation beyond the corpora (the governing rule first)
+
+The rule every other item serves: running more tests than needed is
+acceptable, missing an affected test is not. Recall is measured on nine
+repositories only; the census plans 42 but never checks a selection, and
+the flask `__init_subclass__` gap surfaced by accident. Finding misses
+comes before any precision work.
+
+*Mechanism:* run `diffcone corpus --coverage` (outcome changes and
+per-test coverage at both snapshots) on about ten census repositories
+that differ from the recorded corpora and install cleanly (a venv per
+project with the project editable and its test dependencies), over their
+recent Python-touching commits, with the census's root heuristic. Every
+miss is triaged to a scenario plus fix, or to a documented known gap.
+*Trade-off:* hours of machine time and per-project setup; coverage
+cannot see import-time effects, so recall stays a lower bound on what
+could be missed (outcome changes are the second check). *Done when:* at
+least eight new repositories have recorded rows in evaluation.md with
+their reproduction commands, and every miss found is fixed or recorded.
+
+### Misses found so far (each gets a scenario and a fix)
+
+Fixed: special methods (tenacity, 135 missed; design.md, "Special
+methods run without being named").
+
+
+* **Symlinked directories** (pydantic: `tests/pydantic_core ->
+  ../pydantic-core/tests`, 119 test files pytest collects and diffcone
+  never saw). *Mechanism:* the snapshot readers (commit, `INDEX`,
+  `WORKTREE`) expand a tracked symlink whose target resolves inside the
+  repository: a directory link adds every file under the target at the
+  link's path, a file link adds the target's content at the link's path;
+  links inside expanded trees are not followed again (no cycles).
+  Targets outside the repository stay unseen and are reported.
+  *Done when:* a scenario with a symlinked test directory discovers and
+  selects its tests, for all three snapshot kinds.
+* **The runner runs project code** (pluggy: pytest calls pluggy's hook
+  machinery during every test; 49 missed). *Mechanism:* a documented set
+  of packages the pytest runner itself imports (`pluggy`, `_pytest`,
+  `pytest`, `iniconfig`, `packaging`, `exceptiongroup`, `tomli`,
+  `colorama`, `pygments`, plus `coverage` and `execnet` which the usual
+  plugins load); a change in a module of such a package that lies in the
+  source roots selects every pytest target through a new fallback rule
+  `runner_dependency`, listed in the report. *Trade-off:* developing
+  those packages means running their whole suite, which is what their
+  own maintainers do. *Done when:* a scenario where a source-root
+  package named `pluggy` changes selects every pytest target (and no ASV
+  target), and pluggy re-validates at 100 %.
+
 ## 1. Dynamic references: the widespread constructs
 
 The census attributes 27 % of selections to dynamic references alone

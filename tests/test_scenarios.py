@@ -1692,3 +1692,62 @@ def test_subclassing_runs_the_base_init_subclass(repo):
     plan2 = repo.plan(head, head2, targets)
     assert selected(plan2) == {"t::test_plugin"}
     assert "pkg.views.Registry.__init__" in path_ids(reason(plan2, "t::test_plugin"))
+
+
+def test_special_methods_reach_users_of_their_class(repo):
+    """Special methods run without being named: ``==`` runs ``__eq__``,
+    ``len()`` runs ``__len__``, calling an instance runs ``__call__``
+    (tenacity's ``@retry`` returns a wrapper that calls a ``Retrying``
+    instance). A class depends on its special methods, so their changes
+    reach every user of the class, including through factories."""
+    retrying = (
+        "class Retrying:\n"
+        "    def __call__(self, fn, *args):\n        return fn(*args) {op}\n\n"
+        "    def __eq__(self, other):\n        return isinstance(other, Retrying)\n\n"
+        "    def __hash__(self):\n        return 0\n\n"
+        "    def wraps(self, fn):\n"
+        "        def wrapped(*args):\n"
+        "            copy = Retrying()\n"
+        "            return copy(fn, *args)\n"
+        "        return wrapped\n\n\n"
+        "def retry(fn):\n    return Retrying().wraps(fn)\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/retrying.py": retrying.format(op="+ 0"),
+            "pkg/other.py": "def other():\n    return 1\n",
+            "tests/test_retry.py": (
+                "from pkg.retrying import retry\n\n\n"
+                "@retry\ndef answer():\n    return 42\n\n\n"
+                "def test_answer():\n    assert answer() == 42\n"
+            ),
+            "tests/test_other.py": (
+                "from pkg.other import other\n\n\ndef test_other():\n    assert other()\n"
+            ),
+            "benchmarks/bench_retry.py": (
+                "from pkg.retrying import retry\n\n\ndef time_retry():\n    retry(len)('x')\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_answer", "tests.test_retry.test_answer"),
+        py_target("t::test_other", "tests.test_other.test_other"),
+        asv_target("bench.time_retry", "benchmarks.bench_retry.time_retry"),
+    ]
+    head = repo.commit({"pkg/retrying.py": retrying.format(op="- 0")})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.retrying.Retrying.__call__": ("body_changed",)}
+    assert selected(plan) == {"t::test_answer", "bench.time_retry"}
+    assert unselected(plan) == {"t::test_other"}
+    assert path_ids(reason(plan, "t::test_answer"))[-2:] == [
+        "pkg.retrying.Retrying",
+        "pkg.retrying.Retrying.__call__",
+    ]
+    # Another special method: the same users, nothing else.
+    head2 = repo.commit(
+        {"pkg/retrying.py": retrying.format(op="- 0").replace("return 0\n", "return 1\n")}
+    )
+    plan2 = repo.plan(head, head2, targets)
+    assert changes(plan2) == {"pkg.retrying.Retrying.__hash__": ("body_changed",)}
+    assert selected(plan2) == {"t::test_answer", "bench.time_retry"}

@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 6  # 6: class creation depends on __init_subclass__ and metaclass hooks
+INDEX_FORMAT = 7  # 7: classes depend on their special methods
 
 
 def _indexer_fingerprint() -> str:

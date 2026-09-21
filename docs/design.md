@@ -218,6 +218,21 @@ recorded for the class and for what runs the statement: the module for a
 top-level class (it is created on import), the enclosing function for a
 class defined in a function body (a test that subclasses a view).
 
+Special methods run without being named: `==` runs `__eq__`, `len()`
+runs `__len__`, calling an instance runs `__call__`, `with` runs
+`__enter__`/`__exit__`, a missing attribute runs `__getattr__`. A class
+therefore depends on each special method it defines (every
+`__dunder__` method except `__init__`, `__new__` and `__init_subclass__`,
+which are reached explicitly): a `references` edge with detail
+`special_method`. Whatever references the class (constructs it,
+subclasses it, a factory returning instances) is reached by a change to
+one of them, inherited ones through the subclass-to-base edge; the edge
+does not invalidate the class's other methods (`defined_in` carries only
+structural impact). Inside `__getattr__`/`__getattribute__`,
+`getattr(x, name)` with `name` the method's own name parameter is not a
+dynamic reference: the method runs only for an access `obj.<name>`, and
+every such access records `<name>` itself.
+
 Module and class bodies are analysed without entering the definitions they
 contain; those are symbols with their own edges.
 
@@ -697,3 +712,7 @@ from the `run` and `validate` commands after a plan exists.
   select-all, even a data file that no module imports and pytest never
   collects (pygments, black and pip in the census). Python 2 is not
   supported. Choose source roots that leave such files out.
+* Special methods are reached through their class: an instance obtained
+  without any reference to its class in the source roots (from external
+  code, `pickle`, `copy`) does not connect its user to the class's
+  special methods.

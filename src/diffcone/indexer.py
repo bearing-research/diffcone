@@ -1465,6 +1465,17 @@ class Indexer:
                 # defined in several of them is one symbol too.
                 bodies = [stmt for n in nodes for stmt in n.body]
                 self._index_definitions(scope, bodies, symbol_id, cscope.members, cscope)
+                # Special methods run implicitly on instances (``==``, ``len()``,
+                # calling one, ``with``): whatever references the class may
+                # trigger them, so the class depends on them.
+                for member, member_id in sorted(cscope.members.items()):
+                    member_symbol = self.index.symbols.get(member_id)
+                    if (
+                        _is_special_method(member)
+                        and member_symbol is not None
+                        and member_symbol.kind == METHOD
+                    ):
+                        self.out.edges.add(Edge(symbol_id, member_id, REFERENCES, "special_method"))
             else:
                 nodes = funcs[name]
                 first = nodes[0]
@@ -2096,6 +2107,19 @@ def _has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> b
     return False
 
 
+# Reached explicitly: construction and class creation record their own edges.
+_EXPLICIT_SPECIAL_METHODS = frozenset({"__init__", "__new__", "__init_subclass__"})
+
+
+def _is_special_method(name: str) -> bool:
+    return (
+        len(name) > 4
+        and name.startswith("__")
+        and name.endswith("__")
+        and name not in _EXPLICIT_SPECIAL_METHODS
+    )
+
+
 def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return _has_decorator(node, "staticmethod")
 
@@ -2653,8 +2677,27 @@ class _ReferenceCollector(ast.NodeVisitor):
         )
         return True
 
+    def _forwarded_name(self, expr: ast.expr) -> bool:
+        """``getattr(x, name)`` inside ``__getattr__``/``__getattribute__``
+        with ``name`` the method's own name parameter: the method runs only
+        for an access ``obj.<name>``, and every access site records ``<name>``
+        itself (resolved, or as a name-bounded reference that reaches
+        whatever this lookup can), so it is not a dynamic reference."""
+        method = self.scope.method.rsplit(".", 1)[-1]
+        if method not in ("__getattr__", "__getattribute__") or not self.scope.self_class:
+            return False
+        params = [p for p, i in self.scope.params.items() if i == 1]
+        return (
+            isinstance(expr, ast.Name)
+            and bool(params)
+            and expr.id == params[0]
+            and expr.id not in self.scope.rebound
+        )
+
     def _getattr(self, node: ast.Call) -> None:
         if len(node.args) < 2:
+            return
+        if self._forwarded_name(node.args[1]):
             return
         names = self.scope.string_candidates(node.args[1])
         base = _flatten_chain(node.args[0])
