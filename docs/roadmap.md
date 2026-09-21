@@ -39,22 +39,10 @@ their reproduction commands, and every miss found is fixed or recorded.
 
 Fixed: special methods (tenacity, 135 missed; design.md, "Special
 methods run without being named"), every name after the point where
-a chain stops resolving (found while tracing that fix), and symlinked
-directories (pydantic; design.md, "Snapshot reader").
+a chain stops resolving (found while tracing that fix), symlinked
+directories (pydantic; design.md, "Snapshot reader"), and code the
+runner itself runs (pluggy; design.md, `runner_dependency`).
 
-
-* **The runner runs project code** (pluggy: pytest calls pluggy's hook
-  machinery during every test; 49 missed). *Mechanism:* a documented set
-  of packages the pytest runner itself imports (`pluggy`, `_pytest`,
-  `pytest`, `iniconfig`, `packaging`, `exceptiongroup`, `tomli`,
-  `colorama`, `pygments`, plus `coverage` and `execnet` which the usual
-  plugins load); a change in a module of such a package that lies in the
-  source roots selects every pytest target through a new fallback rule
-  `runner_dependency`, listed in the report. *Trade-off:* developing
-  those packages means running their whole suite, which is what their
-  own maintainers do. *Done when:* a scenario where a source-root
-  package named `pluggy` changes selects every pytest target (and no ASV
-  target), and pluggy re-validates at 100 %.
 
 ## 1. Dynamic references: the widespread constructs
 

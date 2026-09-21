@@ -18,6 +18,24 @@ from diffcone.snapshot import Snapshot
 
 RUNNERS = ("pytest", "asv")
 
+# Modules the runner's own process imports and runs, whoever the project
+# is: when one of them (or anything under it) is in the source roots, the
+# runner executes project code for every target it runs. pytest imports
+# only ``packaging.version``/``packaging.requirements`` from packaging.
+RUNNER_MODULES: dict[str, tuple[str, ...]] = {
+    "pytest": (
+        "_pytest",
+        "pytest",
+        "pluggy",
+        "iniconfig",
+        "exceptiongroup",
+        "tomli",
+        "colorama",
+        "packaging.version",
+        "packaging.requirements",
+    ),
+}
+
 
 @dataclass(frozen=True, order=True)
 class DiscoveryNote:

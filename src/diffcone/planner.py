@@ -32,7 +32,7 @@ from typing import TypeVar
 
 from diffcone.cache import IndexCache
 from diffcone.classify import DELETED, SymbolChange, classify
-from diffcone.discovery import DiscoveryOptions, DiscoveryResult, discover
+from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
@@ -61,6 +61,7 @@ RULE_DYNAMIC_REFERENCE = "dynamic_reference"
 RULE_ENTRY_UNRESOLVED = "entry_symbol_unresolved"
 RULE_LIFECYCLE_UNRESOLVED = "lifecycle_dependency_unresolved"
 RULE_ANALYSIS_ERROR = "analysis_error"
+RULE_RUNNER_DEPENDENCY = "runner_dependency"
 
 CONSERVATIVE_RULES = frozenset(
     {
@@ -69,6 +70,7 @@ CONSERVATIVE_RULES = frozenset(
         RULE_ENTRY_UNRESOLVED,
         RULE_LIFECYCLE_UNRESOLVED,
         RULE_ANALYSIS_ERROR,
+        RULE_RUNNER_DEPENDENCY,
     }
 )
 
@@ -324,6 +326,7 @@ def plan_from_indexes(
                     )
                 )
     graph.freeze()
+    fallbacks += _runner_dependency_fallbacks(targets, changes, base, head)
 
     # Backward reachability from every changed symbol.
     mode: dict[str, int] = {}
@@ -430,6 +433,48 @@ def plan_from_indexes(
         discovery=discovered,
         targets=targets,
     )
+
+
+def _runner_dependency_fallbacks(
+    targets: list[Target], changes: list[SymbolChange], base: SourceIndex, head: SourceIndex
+) -> list[Fallback]:
+    """A runner whose own process imports modules that are in the source
+    roots (pytest runs pluggy's hooks for every test) runs project code for
+    every target: a change there selects all of that runner's targets. The
+    modules are discovery's RUNNER_MODULES, those under them, and their
+    import closure."""
+    impacting = [c for c in changes if c.carries_impact]
+    if not impacting:
+        return []
+    modules = base.modules | head.modules
+    reach = _ImportReach(base, head)
+    fallbacks: list[Fallback] = []
+    for runner in sorted({t.runner for t in targets}):
+        entries = RUNNER_MODULES.get(runner, ())
+        roots = {m for m in modules if any(m == e or m.startswith(e + ".") for e in entries)}
+        if not roots:
+            continue
+        runner_modules: set[str] = set()
+        for module in roots:
+            runner_modules |= reach.closure_of(module)
+        hit = sorted(
+            c.id
+            for c in impacting
+            if (c.head or c.base).module in runner_modules  # type: ignore[union-attr]
+        )
+        if not hit:
+            continue
+        shown = ", ".join(hit[:3]) + (f" and {len(hit) - 3} more" if len(hit) > 3 else "")
+        detail = (
+            f"{shown} changed in code the {runner} runner itself imports and runs for every "
+            "target, so every target of that runner is selected"
+        )
+        for target in targets:
+            if target.runner == runner:
+                fallbacks.append(
+                    Fallback(RULE_RUNNER_DEPENDENCY, "target", detail, target=target.node_id)
+                )
+    return fallbacks
 
 
 class _ImportReach:

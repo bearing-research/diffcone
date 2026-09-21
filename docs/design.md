@@ -416,6 +416,15 @@ Unknown is never treated as unaffected:
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).
+* **Code the runner itself runs** (`runner_dependency`). pytest's own
+  process imports `_pytest`, `pytest`, `pluggy`, `iniconfig`,
+  `exceptiongroup`, `tomli`, `colorama`, and `packaging.version` /
+  `packaging.requirements` (discovery's `RUNNER_MODULES`); pytest calls
+  pluggy's hooks for every test. When those modules, anything under them
+  or their import closure are in the source roots, a changed symbol there
+  selects every target of that runner (discovered or from a manifest),
+  since no project code references what the runner calls. Other runners'
+  targets are unaffected.
 * **Analysis errors** (unparsable file, identity collision): every target is
   selected (`analysis_error`, scope `all_targets`), the report status is
   `degraded` and the CLI exits 1. An error can never produce an empty plan.

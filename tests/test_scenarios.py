@@ -1816,3 +1816,60 @@ def test_tests_in_a_symlinked_directory_are_discovered_and_selected(repo):
     assert selected(repo.plan(head, "WORKTREE", [], discover_runners=["pytest"])) == {linked}
     repo.git("add", "pkg/tz.py")
     assert selected(repo.plan(head, "INDEX", [], discover_runners=["pytest"])) == {linked}
+
+
+def test_code_the_runner_itself_runs_selects_all_of_its_targets(repo):
+    """pluggy: pytest runs pluggy's hook machinery for every test, so a
+    change there can affect any test although no test references it. The
+    same repository's ASV benchmarks are unaffected, and a packaging module
+    pytest does not import is planned normally."""
+    base = repo.commit(
+        {
+            "src/pluggy/__init__.py": "from pluggy._hooks import HookCaller\n",
+            "src/pluggy/_hooks.py": (
+                "class HookCaller:\n    def __call__(self):\n        return self.verify()\n\n"
+                "    def verify(self):\n        return True\n"
+            ),
+            "src/pluggy/_version.py": "VERSION = '1'\n",
+            "src/packaging/__init__.py": "",
+            "src/packaging/version.py": "def parse(v):\n    return v\n",
+            "src/packaging/tags.py": "def sys_tags():\n    return []\n",
+            "tests/test_version.py": (
+                "from pluggy._version import VERSION\n\n\ndef test_version():\n    assert VERSION\n"
+            ),
+            "tests/test_tags.py": (
+                "from packaging.tags import sys_tags\n\n\n"
+                "def test_tags():\n    assert sys_tags() == []\n"
+            ),
+            "benchmarks/bench_version.py": (
+                "from pluggy._version import VERSION\n\n\ndef time_version():\n    return VERSION\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_version", "tests.test_version.test_version"),
+        py_target("t::test_tags", "tests.test_tags.test_tags"),
+        asv_target("bench.time_version", "benchmarks.bench_version.time_version"),
+    ]
+    roots = ["src", "."]
+    head = repo.commit(
+        {
+            "src/pluggy/_hooks.py": (
+                "class HookCaller:\n    def __call__(self):\n        return self.verify()\n\n"
+                "    def verify(self):\n        return 1\n"
+            )
+        }
+    )
+    plan = repo.plan(base, head, targets, source_roots=roots)
+    assert selected(plan) == {"t::test_version", "t::test_tags"}
+    assert unselected(plan) == {"bench.time_version"}
+    assert rules(plan, "t::test_tags") == {"runner_dependency"}
+    # A packaging module pytest does not import: only its own users.
+    head2 = repo.commit({"src/packaging/tags.py": "def sys_tags():\n    return [1]\n"})
+    plan2 = repo.plan(head, head2, targets, source_roots=roots)
+    assert selected(plan2) == {"t::test_tags"}
+    assert rules(plan2, "t::test_tags") == {"dependency"}
+    # packaging.version is imported by pytest itself.
+    head3 = repo.commit({"src/packaging/version.py": "def parse(v):\n    return str(v)\n"})
+    plan3 = repo.plan(head2, head3, targets, source_roots=roots)
+    assert selected(plan3) == {"t::test_version", "t::test_tags"}
