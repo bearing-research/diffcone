@@ -383,6 +383,51 @@ Before the class-level `mock.patch` fix (commit 96d123c) seven tests of
 this session fell back to select-all because the class decorator's
 injected argument looked like an unknown fixture.
 
+## hatch (pypa/hatch, 2 106 discovered tests, one session over two packages)
+
+A monorepo that runs one pytest session over `src` (hatch), `backend/src`
+(hatchling) and `tests`: cross-package imports (the CLI tests build
+projects through hatchling) and one conftest tree. Suite 4 min serial;
+`src/hatch/_version.py` is build-generated and untracked, so the setup
+command copies it. Last eight commits, six touch Python. Reproduce with:
+
+```bash
+git clone --depth 100 https://github.com/pypa/hatch.git
+cd hatch && uv venv -p 3.13 .venv && uv pip install -p .venv/bin/python -e backend -e . \
+  filelock flit-core trustme editables pytest pytest-cov pytest-mock pytest-randomly \
+  pytest-rerunfailures pytest-xdist
+diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
+  --source-root src --source-root backend/src --source-root tests \
+  --command "$PWD/.venv/bin/python -m pytest -p no:cacheprovider -p no:randomly -q" \
+  --setup-command "cp $PWD/src/hatch/_version.py src/hatch/_version.py" \
+  --coverage --max 8 --jobs 3
+```
+
+| commit | subject | selected | savings | recall | precision |
+|---|---|---|---|---|---|
+| b6aaa1a | release Hatchling v1.32.1 | 2105 / 2105 | 0 % | n/a | 0 % |
+| 248141c | Use hatchling plugin manager | 2105 / 2105 | 0 % | 100 % | 1 % |
+| 6a2b14f | release Hatchling v1.32.2 | 2105 / 2105 | 0 % | n/a | 0 % |
+| 0941887 | release Hatchling v1.32.3 | 2105 / 2105 | 0 % | n/a | 0 % |
+| 5c6dc6c | Strip surrounding whitespace from version metadata | 2106 / 2106 | 0 % | 100 % | 14 % |
+| cd57f68 | Revert type changes for BuildHookInterface | 2106 / 2106 | 0 % | 100 % | 22 % |
+
+Totals: 0 outcome changes, 0 missed; recall 100 % (788 of 788); precision
+6 %; mean savings 0 %, 24 min with three jobs. Every commit selects every
+test, including three releases that change only
+`hatchling.__about__.__version__`, for one reason:
+`hatchling.plugin.manager.ClassRegister.collect` calls
+`getattr(registered_class, self.identifier, None)`, whose attribute name
+is an instance attribute set from a constructor argument, so the call is
+a dynamic reference bounded only by the module's import closure, which
+contains `__about__`; and `ClassRegister.get` is reached from
+`CoreMetadata.name`, `ProjectConfig.env` and `BuilderInterface.__init__`,
+which every test reaches. The constructor calls pass string literals
+(`ClassRegister(..., "PLUGIN_NAME", ...)`), so instance-attribute tracking
+through `__init__` (roadmap, "Resolution breadth") would bound the name
+and turn the dynamic reference into a name-bounded attribute lookup;
+that is now the measured motivation for that item.
+
 ## diffcone itself (129 tests)
 
 Last six commits at the time of writing (`corpus --range HEAD~12..HEAD
@@ -527,9 +572,8 @@ been re-stated from the re-run:
 
 ## Not yet exercised
 
-A monorepo that runs one session over several packages (hatch: `src`,
-`backend/src` and `tests` plan as one session with 2 106 discovered tests
-and no analysis errors, but its suite was not run), and a monorepo whose
-per-package test trees share module names and are collected in one
-session with `--import-mode=importlib` (roadmap, "Discovery
-completeness").
+A monorepo whose per-package test trees share module names and are
+collected in one `--import-mode=importlib` session: per-root prefixes
+plan such trees together (the opentelemetry API and SDK trees above), but
+no corpus has been run over one, and a corpus over more than one session
+of the same repository.

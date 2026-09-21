@@ -17,13 +17,6 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
   by `pytest_generate_tests` (currently reported as unresolved, so
   conservative), base classes defined in other modules, `conftest.py`
   outside the source roots, doctests.
-* **Hatch one-session monorepo corpus.** Per-root module prefixes
-  (`--source-root DIR=PREFIX`) shipped; the opentelemetry API and SDK
-  trees plan together without an analysis error. Still to record: a
-  coverage corpus on a repository that runs one session over several
-  packages (hatch: `src`, `backend/src`, `tests`, 2 625 collected tests),
-  which exercises cross-package imports and conftest layering under
-  execution, not only statically.
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare
@@ -34,8 +27,23 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
 ## 2. Resolution breadth
 
-* Instance-attribute tracking: `self.attr = Callable` in `__init__` so
-  `self.attr()` resolves; today it is name-bounded.
+* **Instance-attribute tracking.** `self.attr = <expr>` in `__init__`,
+  with the values that construction sites pass for the parameter it comes
+  from, so `self.attr()` resolves and `getattr(x, self.attr)` is bounded.
+  Measured on hatch (evaluation.md): every commit, including three
+  version-bump releases, selects all 2 105 tests because
+  `ClassRegister.collect` calls `getattr(cls, self.identifier)` and
+  `identifier` is a constructor argument that is always a string literal
+  at the call sites. *Mechanism:* in pass 2, for each class record
+  `self.<name> = <expr>` assignments in `__init__` (a parameter, a name
+  chain or a literal); resolve a chain `self.<name>` to the bound chain,
+  and treat a parameter-bound attribute like a parameter-dynamic use whose
+  call sites are the class's constructor calls (the existing literal
+  propagation machinery). *Trade-off:* attributes assigned elsewhere or
+  rebound stay unbounded; only `__init__` is read, which is where the
+  pattern lives. *Done when:* hatch's release commits select fewer than
+  a quarter of the suite at 100 % recall, and a scenario covers a
+  constructor-argument getattr and a callable attribute.
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
   rules for known dynamic patterns.
