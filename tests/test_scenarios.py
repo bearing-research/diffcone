@@ -1529,3 +1529,47 @@ def test_instance_attribute_name_bounds_a_registry_getattr(repo):
     plan4 = repo.plan(head3, head4, targets)
     assert selected(plan4) == {"t::test_builder", "t::test_version", "bench.time_builder"}
     assert rules(plan4, "bench.time_builder") == {"dynamic_reference"}
+
+
+def test_class_defined_in_both_branches_of_an_if_is_one_symbol(repo):
+    """A class defined per Python version (anyio) or twice in a data file
+    (black) used to collide on its repeated methods and degrade the plan to
+    select-all. Each method is one symbol over every definition."""
+    worker = (
+        "import sys\n\n"
+        "if sys.version_info >= (3, 13):\n"
+        "    class Worker:\n"
+        "        def __init__(self):\n            self.n = 13\n\n"
+        "        def run(self):\n            return self.n\n"
+        "else:\n"
+        "    class Worker:\n"
+        "        def __init__(self):\n            self.n = {old}\n\n"
+        "        def run(self):\n            return self.n\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/worker.py": worker.format(old=12),
+            "pkg/other.py": "def other():\n    return 1\n",
+            "tests/test_worker.py": (
+                "from pkg.worker import Worker\n\n\ndef test_run():\n    assert Worker().run()\n"
+            ),
+            "tests/test_other.py": (
+                "from pkg.other import other\n\n\ndef test_other():\n    assert other()\n"
+            ),
+            "benchmarks/bench_worker.py": (
+                "from pkg.worker import Worker\n\n\ndef time_run():\n    Worker().run()\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_run", "tests.test_worker.test_run"),
+        py_target("t::test_other", "tests.test_other.test_other"),
+        asv_target("bench.time_run", "benchmarks.bench_worker.time_run"),
+    ]
+    head = repo.commit({"pkg/worker.py": worker.format(old=11)})
+    plan = repo.plan(base, head, targets)
+    assert not plan.degraded and plan.errors == []
+    assert changes(plan) == {"pkg.worker.Worker.__init__": ("body_changed",)}
+    assert selected(plan) == {"t::test_run", "bench.time_run"}
+    assert unselected(plan) == {"t::test_other"}

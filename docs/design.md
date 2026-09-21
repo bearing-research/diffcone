@@ -63,7 +63,10 @@ Line numbers and file paths are metadata. Inserting blank lines or comments
 does not change identity or any hash. Functions defined inside functions are
 part of the enclosing function's body, not separate symbols. Several
 definitions with the same name in one scope (overloads, property setters,
-conditional definitions) are one symbol whose hashes cover all of them.
+conditional definitions) are one symbol whose hashes cover all of them;
+for a class defined more than once, the members of all its definitions
+are indexed together, so a method defined in each `if`/`else` variant is
+one symbol as well.
 
 Source roots are mapped to module names with the longest matching root
 winning; `pkg/__init__.py` is module `pkg`. A root may carry a module

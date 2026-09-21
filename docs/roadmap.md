@@ -17,20 +17,11 @@ regression scenario (AGENTS.md).
 
 ## 1. Analysis errors that force select-all
 
-Seven of 42 census repositories select every test on every commit;
-analysis errors are 33 % of all census selections, more than any
-selection rule.
+Seven of 42 census repositories selected every test on every commit;
+analysis errors were 33 % of all census selections, more than any
+selection rule. Repeated class definitions (anyio) are fixed; six
+repositories remain.
 
-* **Repeated class definitions** (anyio, black). A class defined more
-  than once in a scope (`if`/`else`, a data file) is merged into one
-  symbol, but each definition's body is indexed separately, so a method
-  defined in both collides. *Mechanism:* index the members of all
-  definitions of a class together, the way repeated functions already
-  share one symbol whose hash covers every definition. *Trade-off:*
-  none beyond what repeated functions accept (one symbol per name,
-  hashed over every definition). *Done when:* a scenario with an
-  `if`/`else` class defining the same method in both branches plans
-  without errors, and anyio and black no longer degrade in the census.
 * **A package binding that shadows a submodule** (tenacity, pip,
   poetry, scrapy): `pkg/__init__.py` binds `retry` and `pkg/retry.py`
   exists. Legal Python; at runtime `pkg.retry` is whichever binding ran
@@ -43,8 +34,8 @@ selection rule.
   the function and the module, which is conservative. *Done when:* a
   scenario covers a function shadowing a submodule with changes to each
   side, and the four repositories plan without errors.
-* **One unparseable file** (pygments' Python 2 example under
-  `tests/examplefiles`). *Mechanism:* a module that fails to parse is
+* **Unparseable files** (pygments' Python 2 example under
+  `tests/examplefiles`; black's deliberately invalid test-case files). *Mechanism:* a module that fails to parse is
   still reported as an analysis error, but the fallback is scoped:
   targets whose import closure (over both revisions) can reach the
   module, or that the module would define, are selected; others are
@@ -53,7 +44,7 @@ selection rule.
   that is imported dynamically is invisible to the closure; dynamic
   imports are already unbounded, so they still reach it. *Done when:* a
   scenario with an unparseable data file keeps other selections
-  precise, the report still lists the error, and pygments stops
+  precise, the report still lists the error, and pygments and black stop
   degrading.
 
 ## 2. Soundness: class creation hooks

@@ -683,13 +683,17 @@ select every test on every commit, for three reasons:
 * a class defined more than once in one module (`if`/`else`
   definitions in anyio's `to_interpreter`, black's test-case data
   files): the class symbols are merged but each body's methods are
-  indexed separately, so the second `__init__` collides. A diffcone bug;
+  indexed separately, so the second `__init__` collides. A diffcone bug,
+  since fixed: anyio re-planned without errors, its mean selection going
+  from 100 % to 50 %; black still degrades on its deliberately invalid
+  test-case files (the third reason);
 * a package `__init__` that binds a name which is also a submodule
   (`tenacity.retry`, `pip._internal.main`, `poetry.layouts.layout`,
   scrapy's `tests.test_utils_misc.test_walk_modules`): legal Python
   (the binding executed last wins), reported as an identity collision;
-* one file that does not parse (pygments' Python 2 example file under
-  `tests/examplefiles`, which pytest never imports).
+* files that do not parse (pygments' Python 2 example file under
+  `tests/examplefiles`, black's invalid-syntax test cases), which pytest
+  never imports.
 
 **Dynamic references** by construct (a seed with several uses splits its
 selections between them; "present" counts repositories whose index has

@@ -1440,7 +1440,11 @@ class Indexer:
                     for stmt in iter_scope_statements(n.body):
                         if not isinstance(stmt, DEF_NODES):
                             cscope.bindings |= _collect_store_names(stmt)
-                    self._index_definitions(scope, n.body, symbol_id, cscope.members, cscope)
+                # Every definition of the class (``if``/``else`` variants) is
+                # one symbol, so its members are indexed together: a method
+                # defined in several of them is one symbol too.
+                bodies = [stmt for n in nodes for stmt in n.body]
+                self._index_definitions(scope, bodies, symbol_id, cscope.members, cscope)
             else:
                 nodes = funcs[name]
                 first = nodes[0]
