@@ -204,7 +204,9 @@ The JSON report (`schema_version: 2`) contains:
 `--format text` prints the same information as a readable summary.
 
 Measured results on real repositories, with reproduction steps, are in
-[docs/evaluation.md](docs/evaluation.md).
+[docs/evaluation.md](docs/evaluation.md), including a planning-only census
+of 42 projects (`scripts/census.py`) that attributes every selection to
+its cause.
 
 ## Limitations
 
@@ -250,7 +252,7 @@ Measured results on real repositories, with reproduction steps, are in
 uv sync
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
-uv run ruff check src tests && uv run ruff format --check src tests
+uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 ```
 
 `tests/test_scenarios.py` holds the acceptance scenarios from the handoff

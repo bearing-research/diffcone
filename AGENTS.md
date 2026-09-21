@@ -62,5 +62,5 @@ re-run the corpora in `docs/evaluation.md` when selection rules change.
 ```bash
 uv sync
 uv run pytest
-uv run ruff check src tests && uv run ruff format --check src tests
+uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 ```

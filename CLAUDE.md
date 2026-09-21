@@ -19,9 +19,11 @@ uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
 uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" [--dry-run] -- -x
 uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest" [--coverage]
 uv run diffcone corpus --range main~10..main --discover pytest --command "uv run pytest" --coverage
+uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
+uv run python scripts/census.py report census.json
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
-uv run ruff check src tests && uv run ruff format --check src tests
+uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 ```
 
 Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan.
