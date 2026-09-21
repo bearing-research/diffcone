@@ -47,6 +47,16 @@ deletions; paths that are unmerged during a merge have no staged content, so
 everything), while `WORKTREE` sees the conflict markers as a parse error
 with the same effect.
 
+Symlinks: git stores a symlink as a blob holding its target, and pytest
+collects through linked directories (pydantic links
+`tests/pydantic_core -> ../pydantic-core/tests`). All three kinds expand a
+tracked symlink under the source roots whose relative target stays inside
+the repository: a file link takes its target's content at the link's
+path; a directory link adds every `.py` file under its target at the same
+relative path under the link, so its modules and targets are named as
+pytest names them. Links inside an expanded tree are not followed again,
+and absolute links or links leaving the repository are ignored.
+
 ## Symbol identity
 
 A symbol's identity is its dotted qualified name:

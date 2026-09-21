@@ -38,20 +38,11 @@ their reproduction commands, and every miss found is fixed or recorded.
 ### Misses found so far (each gets a scenario and a fix)
 
 Fixed: special methods (tenacity, 135 missed; design.md, "Special
-methods run without being named"), and every name after the point where
-a chain stops resolving (found while tracing that fix).
+methods run without being named"), every name after the point where
+a chain stops resolving (found while tracing that fix), and symlinked
+directories (pydantic; design.md, "Snapshot reader").
 
 
-* **Symlinked directories** (pydantic: `tests/pydantic_core ->
-  ../pydantic-core/tests`, 119 test files pytest collects and diffcone
-  never saw). *Mechanism:* the snapshot readers (commit, `INDEX`,
-  `WORKTREE`) expand a tracked symlink whose target resolves inside the
-  repository: a directory link adds every file under the target at the
-  link's path, a file link adds the target's content at the link's path;
-  links inside expanded trees are not followed again (no cycles).
-  Targets outside the repository stay unseen and are reported.
-  *Done when:* a scenario with a symlinked test directory discovers and
-  selects its tests, for all three snapshot kinds.
 * **The runner runs project code** (pluggy: pytest calls pluggy's hook
   machinery during every test; 49 missed). *Mechanism:* a documented set
   of packages the pytest runner itself imports (`pluggy`, `_pytest`,

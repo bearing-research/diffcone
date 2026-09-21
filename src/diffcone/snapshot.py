@@ -14,7 +14,10 @@ The last two are always reported as uncommitted state on top of ``HEAD``.
 
 from __future__ import annotations
 
+import os
+import posixpath
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -114,15 +117,68 @@ def _normalise_root(root: str) -> str:
     return split_root(root)[0]
 
 
-def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[str]:
-    roots = [_normalise_root(r) for r in source_roots]
-    args = ["ls-tree", "-r", "--name-only", "-z", commit]
-    pathspecs = [r for r in roots if r]
-    if pathspecs and "" not in roots:
+SYMLINK_MODE = "120000"
+
+
+def _ls_tree(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, str]]:
+    """(mode, path) of every blob under ``pathspecs`` (all when empty)."""
+    args = ["ls-tree", "-r", "-z", "--full-tree", commit]
+    if pathspecs:
         args += ["--", *pathspecs]
-    out = _git(repo, args)
-    paths = [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
-    return sorted(p for p in paths if p.endswith(".py"))
+    entries: list[tuple[str, str]] = []
+    for record in _git(repo, args).split(b"\0"):
+        if not record:
+            continue
+        meta, _, path = record.decode("utf-8", "surrogateescape").partition("\t")
+        entries.append((meta.split()[0], path))
+    return entries
+
+
+def _root_pathspecs(source_roots: list[str]) -> list[str]:
+    roots = [_normalise_root(r) for r in source_roots]
+    return [] if "" in roots else [r for r in roots if r]
+
+
+def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[str]:
+    entries = _ls_tree(repo, commit, _root_pathspecs(source_roots))
+    return sorted(p for m, p in entries if p.endswith(".py") and m != SYMLINK_MODE)
+
+
+def _link_target(link: str, target: str) -> str | None:
+    """The repository path a relative symlink at ``link`` points to, or None
+    when it is absolute, leaves the repository or is the repository root."""
+    if not target or target.startswith("/"):
+        return None
+    real = posixpath.normpath(posixpath.join(posixpath.dirname(link), target))
+    if real in (".", "..") or real.startswith("../"):
+        return None
+    return real
+
+
+def expand_symlinks(
+    links: dict[str, str], files_under: Callable[[str], list[str]]
+) -> dict[str, str]:
+    """Python files reached through tracked symlinks inside the repository:
+    ``{path through the link: real path}``. A file link maps itself; a
+    directory link maps every file under its target to the same relative
+    path under the link (pytest collects them there). ``files_under`` lists
+    the non-link files at or under a real path, so links inside an expanded
+    tree are not followed again."""
+    aliases: dict[str, str] = {}
+    for link, target in sorted(links.items()):
+        real = _link_target(link, target)
+        if real is None:
+            continue
+        for path in files_under(real):
+            if path == real:
+                alias = link
+            elif path.startswith(real + "/"):
+                alias = link + path[len(real) :]
+            else:
+                continue
+            if alias.endswith(".py"):
+                aliases.setdefault(alias, path)
+    return aliases
 
 
 def read_files(
@@ -177,6 +233,20 @@ def _ls_files_tagged(repo: Path, args: list[str], source_roots: list[str]) -> li
     return sorted(entries, key=lambda e: (e[1], e[0]))
 
 
+def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
+    """Stage-0 index entries under the roots: path -> mode."""
+    out = _git(repo, ["ls-files", "-z", "--stage", *_pathspec(source_roots)])
+    entries: dict[str, str] = {}
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        meta, _, path = record.decode("utf-8", "surrogateescape").partition("\t")
+        mode, _, stage = meta.split()
+        if stage == "0":
+            entries[path] = mode
+    return entries
+
+
 def _staged_config_files(repo: Path) -> dict[str, bytes]:
     out = _git(repo, ["ls-files", "-z", "--cached", "--", *CONFIG_FILES])
     names = [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
@@ -187,7 +257,21 @@ def read_commit_snapshot(
     repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
     commit = resolve_commit(repo, revision)
-    paths = list_python_files(repo, commit, source_roots)
+    entries = _ls_tree(repo, commit, _root_pathspecs(source_roots))
+    paths = sorted(p for m, p in entries if p.endswith(".py") and m != SYMLINK_MODE)
+    link_paths = [p for m, p in entries if m == SYMLINK_MODE]
+    targets = read_files(repo, commit, link_paths)
+
+    def files_under(real: str) -> list[str]:
+        return [p for m, p in _ls_tree(repo, commit, [real]) if m != SYMLINK_MODE]
+
+    aliases = expand_symlinks(
+        {k: v.decode("utf-8", "surrogateescape") for k, v in targets.items()}, files_under
+    )
+    aliases = {a: r for a, r in aliases.items() if a not in set(paths)}
+    files = read_files(repo, commit, paths)
+    real_files = read_files(repo, commit, sorted(set(aliases.values())))
+    files.update({alias: real_files[real] for alias, real in aliases.items()})
     config_files: dict[str, bytes] = {}
     if with_config:
         root = list_root_files(repo, commit)
@@ -200,7 +284,7 @@ def read_commit_snapshot(
             description=f"commit {commit[:12]} ({revision})",
         ),
         source_roots=list(source_roots),
-        files=read_files(repo, commit, paths),
+        files=dict(sorted(files.items())),
         config_files=config_files,
     )
 
@@ -229,6 +313,21 @@ def read_index_snapshot(
         elif path not in paths:
             paths.append(path)
     paths = [p for p in paths if not any(e.path == p for e in errors)]
+    staged = _ls_files_staged(repo, source_roots)
+    link_paths = [p for p, m in staged.items() if m == SYMLINK_MODE]
+    paths = [p for p in paths if staged.get(p) != SYMLINK_MODE]
+    targets = read_files(repo, "", link_paths, label=INDEX)
+
+    def files_under(real: str) -> list[str]:
+        return [p for p, m in _ls_files_staged(repo, [real]).items() if m != SYMLINK_MODE]
+
+    aliases = expand_symlinks(
+        {k: v.decode("utf-8", "surrogateescape") for k, v in targets.items()}, files_under
+    )
+    aliases = {a: r for a, r in aliases.items() if a not in set(paths)}
+    files = read_files(repo, "", paths, label=INDEX)
+    real_files = read_files(repo, "", sorted(set(aliases.values())), label=INDEX)
+    files.update({alias: real_files[real] for alias, real in aliases.items()})
     config_files = _staged_config_files(repo) if with_config else {}
     return Snapshot(
         info=SnapshotInfo(
@@ -238,7 +337,7 @@ def read_index_snapshot(
             description=f"git index (staged content) on top of commit {head[:12]}; uncommitted",
         ),
         source_roots=list(source_roots),
-        files=read_files(repo, "", paths, label=INDEX),
+        files=dict(sorted(files.items())),
         config_files=config_files,
         errors=errors,
     )
@@ -266,6 +365,21 @@ def read_worktree_snapshot(
             from_index.append(path)
         # otherwise: a tracked file deleted on disk is absent from the snapshot
     files.update(read_files(repo, "", from_index, label=INDEX))
+    # Symlinked directories (a file link was read through above).
+    links = {
+        path: os.readlink(repo / path)
+        for _, path in listed
+        if (repo / path).is_symlink() and (repo / path).is_dir()
+    }
+
+    def files_under(real: str) -> list[str]:
+        found = _ls_files_tagged(repo, ["--cached", "--others", "--exclude-standard"], [real])
+        return sorted({p for _, p in found if (repo / p).is_file() and not (repo / p).is_symlink()})
+
+    for alias, real in expand_symlinks(links, files_under).items():
+        if alias not in files:
+            files[alias] = (repo / real).read_bytes()
+    files = dict(sorted(files.items()))
     config_files: dict[str, bytes] = {}
     if with_config:
         for name in CONFIG_FILES:

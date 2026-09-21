@@ -7,6 +7,8 @@ sets and the rules/paths behind them.
 
 from __future__ import annotations
 
+import os
+
 from diffcone.testing import (
     asv_target,
     changes,
@@ -1783,3 +1785,34 @@ def test_methods_reached_through_unknown_or_opaque_values_are_name_bounded(repo)
     assert selected(plan) == {"t::test_chain", "t::test_default", "bench.time_chain"}
     for rid in ("t::test_chain", "t::test_default", "bench.time_chain"):
         assert "unresolved_name_match" in rules(plan, rid), rid
+
+
+def test_tests_in_a_symlinked_directory_are_discovered_and_selected(repo):
+    """pydantic: ``tests/pydantic_core -> ../pydantic-core/tests``. pytest
+    collects through the link; the snapshot readers used to skip the link
+    (git stores it as a blob), so those tests were never targets."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/tz.py": "def offset():\n    return 0\n",
+            "pkg-core/tests/test_tz.py": (
+                "from pkg.tz import offset\n\n\ndef test_offset():\n    assert offset() == 0\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        }
+    )
+    os.symlink("../pkg-core/tests", repo.path / "tests" / "pkg_core")
+    base = repo.commit({})
+    linked = "tests/pkg_core/test_tz.py::test_offset"
+    head = repo.commit({"pkg/tz.py": "def offset():\n    return 1\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert not plan.degraded and plan.errors == []
+    assert selected(plan) == {linked}
+    assert "tests/test_other.py::test_other" in unselected(plan)
+    entries = {d.target.runner_id: d.target.entry_symbol for d in plan.decisions}
+    assert entries[linked] == "tests.pkg_core.test_tz.test_offset"
+    # The same through the staged index and the working tree.
+    (repo.path / "pkg" / "tz.py").write_text("def offset():\n    return 2\n", "utf-8")
+    assert selected(repo.plan(head, "WORKTREE", [], discover_runners=["pytest"])) == {linked}
+    repo.git("add", "pkg/tz.py")
+    assert selected(repo.plan(head, "INDEX", [], discover_runners=["pytest"])) == {linked}
