@@ -26,6 +26,10 @@ caches described in CLAUDE.md.
 
 ## Invariants
 
+* **The governing rule: a plan may select more targets than needed, but it
+  must never miss one that the change can affect.** Soundness fixes come
+  before precision work; a narrowing rule is acceptable only when it is
+  provably conservative.
 * Symbol identity is the dotted qualified name; source locations are
   metadata. Blank-line or comment changes must produce no changed symbols.
 * Both revisions are analysed; edges that exist only in the base revision

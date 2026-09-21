@@ -3,8 +3,8 @@
 Implemented today: `diffcone plan` over two snapshots (commits, the staged
 index or the working tree), with targets from a manifest and/or static
 pytest and ASV discovery; `run`, `validate` (outcome and coverage based) and
-`corpus`; evaluation on nine public repositories and a planning-only
-census of 42 (see
+`corpus`; recall validated on nineteen public repositories and a
+planning-only census of 42 (see
 [design.md](design.md) and [evaluation.md](evaluation.md)).
 
 Everything below is planned, in the order it is worth doing. The order
@@ -15,34 +15,15 @@ means, so the implementation can be checked against it and the census
 and corpora can measure it. Any item that can narrow selection needs a
 regression scenario (AGENTS.md).
 
-## 0. Recall validation beyond the corpora (the governing rule first)
+## The governing rule
 
-The rule every other item serves: running more tests than needed is
-acceptable, missing an affected test is not. Recall is measured on nine
-repositories only; the census plans 42 but never checks a selection, and
-the flask `__init_subclass__` gap surfaced by accident. Finding misses
-comes before any precision work.
-
-*Mechanism:* run `diffcone corpus --coverage` (outcome changes and
-per-test coverage at both snapshots) on about ten census repositories
-that differ from the recorded corpora and install cleanly (a venv per
-project with the project editable and its test dependencies), over their
-recent Python-touching commits, with the census's root heuristic. Every
-miss is triaged to a scenario plus fix, or to a documented known gap.
-*Trade-off:* hours of machine time and per-project setup; coverage
-cannot see import-time effects, so recall stays a lower bound on what
-could be missed (outcome changes are the second check). *Done when:* at
-least eight new repositories have recorded rows in evaluation.md with
-their reproduction commands, and every miss found is fixed or recorded.
-
-### Misses found so far (each gets a scenario and a fix)
-
-Fixed: special methods (tenacity, 135 missed; design.md, "Special
-methods run without being named"), every name after the point where
-a chain stops resolving (found while tracing that fix), symlinked
-directories (pydantic; design.md, "Snapshot reader"), and code the
-runner itself runs (pluggy; design.md, `runner_dependency`).
-
+A plan may run more tests than needed; it must never miss one. Recall
+work comes before precision work: nineteen repositories are validated
+(evaluation.md, the corpora and "Recall validation beyond the
+corpora"), and a selection-rule change is re-planned on all of them and
+re-validated where selections move. Validating further repositories that
+differ from these (other layouts, heavy metaprogramming, frameworks with
+their own runners) is the standing way to find the next miss.
 
 ## 1. Dynamic references: the widespread constructs
 

@@ -44,15 +44,20 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| d287360 | Add frozendict signature | 33 / 186 | 82 % | 100 % | 3 % |
-| 80ddcb3 | Add tests for get_in defaults, ... | 36 / 190 | 81 % | 100 % | 11 % |
-| a1e25cb | Expose combined `__annotations__` on composed functions | 40 / 192 | 79 % | 100 % | 20 % |
-| 55ce42d | Support Python 3.15 and refresh dev tooling | 35 / 192 | 82 % | n/a | 0 % |
-| d2eba03 | Fix interpose([]) raising StopIteration | 37 / 193 | 81 % | 100 % | 5 % |
+| d287360 | Add frozendict signature | 78 / 186 | 58 % | 100 % | 1 % |
+| 80ddcb3 | Add tests for get_in defaults, ... | 81 / 190 | 57 % | 100 % | 5 % |
+| a1e25cb | Expose combined `__annotations__` on composed functions | 80 / 192 | 58 % | 100 % | 10 % |
+| 55ce42d | Support Python 3.15 and refresh dev tooling | 80 / 192 | 58 % | n/a | 0 % |
+| d2eba03 | Fix interpose([]) raising StopIteration | 81 / 193 | 58 % | 100 % | 2 % |
 | 451af60 | Add pysentry-pre-commit | 0 / 193 | 100 % | n/a | n/a |
 
 Totals: 7 outcome changes, 0 missed; recall 100 % (15 of 15); precision
-8 %; mean savings 84 %.
+4 %; mean savings 65 %. The table is from the re-run after classes came
+to depend on their special methods (see "Re-measurements"): about 45 more
+tests per commit, through `curry.__reduce__`, which imports the curried
+function's module by its runtime name (`import_module(modname)`) and so
+is an unbounded dynamic import; every test that uses `curry` now reaches
+it through the class. The notes below describe the run before that.
 
 Why the low-precision rows are low:
 
@@ -99,7 +104,7 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | 2103e15 | Forward all user's parameters set in `PAGER` | 34 / 537 | 94 % | 100 % | 62 % |
 | e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
-| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 520 / 555 | 6 % | 100 % | 81 % |
+| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 521 / 555 | 6 % | 100 % | 81 % |
 
 Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
 80 %; mean savings 66 %.
@@ -185,7 +190,8 @@ diffcone corpus --repo . --range HEAD~120..HEAD --discover pytest \
 ```
 
 Totals: 26 outcome changes, 0 missed; recall 100 % (1 869 of 1 869);
-precision 53 %; mean savings 67 %. The 16 validated commits (nine touch
+precision 52 %; mean savings 66 % (re-run after the special-method and
+chain-name changes: 4 to 8 more tests on four commits). The 16 validated commits (nine touch
 only docstrings, `typing_tests/` examples outside the source roots, or
 test-typing stubs, change no symbol with impact, and select nothing; they
 count at 100 % savings):
@@ -193,12 +199,12 @@ count at 100 % savings):
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
 | 6851ab5 | Defer imports on the cold import path | 655 / 655 | 0 % | 100 % | 83 % |
-| 97f8d17 | Fix ClassVar forward reference detection | 551 / 656 | 16 % | 100 % | 15 % |
-| 4b5b295 | Make on_setattr hooks accept generators | 555 / 667 | 17 % | 100 % | 62 % |
+| 97f8d17 | Fix ClassVar forward reference detection | 559 / 656 | 15 % | 100 % | 15 % |
+| 4b5b295 | Make on_setattr hooks accept generators | 563 / 667 | 16 % | 100 % | 61 % |
 | 5aa76a4 | Add `ne` validator | 23 / 667 | 97 % | 100 % | 22 % |
 | 9b98a73 | Drop Python 3.9 | 666 / 666 | 0 % | 100 % | 83 % |
-| 3e01de4 | docs: fix markup (removes a `from . import` binding) | 551 / 666 | 17 % | 100 % | 1 % |
-| f53fc54 | Stop evolve dunders from being modified | 551 / 667 | 17 % | 100 % | 63 % |
+| 3e01de4 | docs: fix markup (removes a `from . import` binding) | 559 / 666 | 16 % | 100 % | 1 % |
+| f53fc54 | Stop evolve dunders from being modified | 559 / 667 | 16 % | 100 % | 62 % |
 | 9 others | docstrings, `typing_tests/` examples, typing stubs | 0 | 100 % | n/a | n/a |
 
 The remaining wide rows share one cause: `attr/__init__.py` is a hub whose
@@ -298,11 +304,13 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| b83f660 | fix(upgrade): don't claim 'latest version' for local-path installs | 461 / 698 | 34 % | 100 % | 9 % |
+| b83f660 | fix(upgrade): don't claim 'latest version' for local-path installs | 468 / 698 | 33 % | 100 % | 8 % |
 | 84eaad3 | fix(reinstall): propagate returned failures in reinstall-all | 462 / 699 | 34 % | 100 % | 2 % |
 
 Totals: 0 outcome changes, 0 missed; recall 100 % (50 of 50); precision
-5 %; mean savings 34 %. No test needed `--assume-external-fixture`. The
+5 %; mean savings 33 % (re-run: b83f660 gained 7 tests when every name of
+an unresolved chain became a name-bounded reference; the counts below
+are from the run before). No test needed `--assume-external-fixture`. The
 precision is bounded by the CLI's shape, not by a resolution gap. Every
 test that drives the CLI through `run_pipx_cli` (456 of the 461 tests
 selected for b83f660, 461 of the 462 for 84eaad3) is selected under the
@@ -351,19 +359,26 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 565 / 827 | 32 % | 100 % | 14 % |
+| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 630 / 827 | 24 % | 100 % | 12 % |
 | 477ffd4 | opentelemetry-docker-tests: add Prometheus exporter docker tests | 0 / 827 | 100 % | n/a | n/a |
-| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 561 / 830 | 32 % | 100 % | 16 % |
-| cfad5eb | Fix TraceState.update to only update already existing keys | 559 / 830 | 33 % | 100 % | 0 % |
-| 34c5e5f | Added guard against negative value of max_value_len | 698 / 830 | 16 % | 100 % | 58 % |
+| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 627 / 830 | 24 % | 100 % | 14 % |
+| cfad5eb | Fix TraceState.update to only update already existing keys | 608 / 830 | 27 % | 100 % | 0 % |
+| 34c5e5f | Added guard against negative value of max_value_len | 709 / 830 | 15 % | 100 % | 57 % |
 | ee219ad | test(exporter-otlp-proto-grpc): relax timing delta ... | 0 / 830 | 100 % | n/a | n/a |
 | 5843c4e | DOC(exporter-otlp-proto-http): clarify endpoint= kwarg ... | 0 / 830 | 100 % | n/a | n/a |
-| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 658 / 830 | 21 % | 100 % | 59 % |
+| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 700 / 830 | 16 % | 100 % | 55 % |
 | 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
 | 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
 
-Totals: 11 outcome changes, 0 missed; recall 100 % (955 of 955); precision
-32 %; mean savings 63 %. Commits outside the session's packages (exporters,
+Totals: 14 outcome changes, 2 missed; recall 100 % (955 of 955); precision
+29 %; mean savings 61 %. The re-run (after the special-method and
+chain-name changes: 1 to 65 more tests on five commits) reported two
+outcome misses, both one timing test,
+`test_batch_processor.py::TestBatchProcessor::test_shutdown_allows_1_export_to_finish`,
+producing no result in one of the two runs (`None -> PASSED` on ee219ad,
+`PASSED -> None` on 9bbc005, commits that change only another package's
+tests and a docstring): a flaky test, not a selection miss. The counts in
+the notes below are from the first run. Commits outside the session's packages (exporters,
 docker tests, docs) select nothing, as they should. The two lowest rows
 (checked with `validate --coverage --format json` on the pair):
 
@@ -409,35 +424,28 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| b6aaa1a | release Hatchling v1.32.1 | 152 / 2105 | 93 % | n/a | 0 % |
-| 248141c | Use hatchling plugin manager | 253 / 2105 | 88 % | 100 % | 11 % |
-| 6a2b14f | release Hatchling v1.32.2 | 152 / 2105 | 93 % | n/a | 0 % |
-| 0941887 | release Hatchling v1.32.3 | 152 / 2105 | 93 % | n/a | 0 % |
+| b6aaa1a | release Hatchling v1.32.1 | 2105 / 2105 | 0 % | n/a | 0 % |
+| 248141c | Use hatchling plugin manager | 2105 / 2105 | 0 % | 100 % | 1 % |
+| 6a2b14f | release Hatchling v1.32.2 | 2105 / 2105 | 0 % | n/a | 0 % |
+| 0941887 | release Hatchling v1.32.3 | 2105 / 2105 | 0 % | n/a | 0 % |
 | 5c6dc6c | Strip surrounding whitespace from version metadata | 2106 / 2106 | 0 % | 100 % | 14 % |
 | cd57f68 | Revert type changes for BuildHookInterface | 2106 / 2106 | 0 % | 100 % | 22 % |
 
 Totals: 0 outcome changes, 0 missed; recall 100 % (788 of 788); precision
-16 %; mean savings 61 %, 18 min with three jobs. Before instance-attribute
-tracking every row selected every test. The three releases change only
-`hatchling.__about__.__version__`, and
-`hatchling.plugin.manager.ClassRegister.collect` called
-`getattr(registered_class, self.identifier, None)` with the attribute set
-from a constructor argument: a dynamic reference bounded only by the
-module's import closure, which contains `__about__`, in a method that
-every test reaches (`ClassRegister.get` from `CoreMetadata.name`,
-`ProjectConfig.env` and `BuilderInterface.__init__`). The one construction
-passes a literal (`ClassRegister(..., "PLUGIN_NAME", ...)`), so the lookup
-is now the name-bounded `registered_class.PLUGIN_NAME`. Of the 152 still
-selected on a release, 67 come from hatchling's CLI entry point, which
-dispatches through `vars(parser.parse_args())` (the argparse pattern of
-design.md, "Known gaps"), and 78 from the test helper
-`__load_template_module`, which imports `f"..templates.{template_name}"`
-relative to `__name__`: that resolves to the `helpers.templates.`
-modules, and the wheel templates embed
-`hatchling.__about__.__version__` in the metadata the tests compare, so
-those tests do depend on the release's change (the version is read at
-import time, so coverage cannot credit them). 248141c changes
-`PluginManager` itself.
+6 %; mean savings 0 %, 30 min with two jobs. Every row selects every test.
+The three releases change only `hatchling.__about__.__version__`, and
+every test builds a `Platform` (the `PLATFORM` conftest constant), whose
+`modules` attribute is a `LazilyLoadedModules` whose `__getattr__` calls
+`import_module(name)`: a dynamic import that can reach any module. Since
+classes depend on their special methods (see "Re-measurements"), every
+user of `Platform` reaches that `__getattr__`, so every change selects
+every test; before that rule the lookup was invisible, and the release
+rows selected 152 (after instance-attribute tracking bounded
+`ClassRegister.collect`'s `getattr(registered_class, self.identifier,
+None)`), 2 105 before it. The honest reading: `platform.modules.<name>`
+can import any module by the name of an attribute access, and diffcone
+cannot bound that without knowing which names are accessed on it.
+248141c changes `PluginManager` itself.
 The last two rows change properties that every test reaches by name
 through untyped receivers: 5c6dc6c changes `ProjectMetadata.version`
 (1 691 tests via `installed_dist.version` alone), and cd57f68 changes
@@ -559,6 +567,14 @@ been re-stated from the re-run:
   248141c went from 268 to 253 selected (recall 100 %; the 78 template
   tests on the release rows are now selected through the templates rather
   than as a dynamic reference); every other recorded commit planned identically;
+* the recall-validation fixes (special methods, every name of an
+  unresolved chain, symlinked directories, runner dependencies; see
+  "Recall validation beyond the corpora"): every recorded commit was
+  re-planned; toolz, click, attrs, pipx, opentelemetry and hatch moved and
+  were re-validated, all at recall 100 % (tables re-stated; opentelemetry
+  reported two outcome flips of one flaky timing test). hatch returned to
+  select-all through a lazy-module `__getattr__` that calls
+  `import_module`;
 * instance-attribute tracking, with call sites for constructions and
   `super()` calls, rebound parameters, `getattr`-returned functions and
   classes as escapes: every recorded commit of every corpus planned
@@ -752,6 +768,84 @@ subclass; diffcone did not model subclassing as calling
 Class creation now depends on the bases' `__init_subclass__` and a
 metaclass's `__new__`/`__init__` (design.md): on 2a8a38b the 12 tests
 that subclass `MethodView` are reached through a dependency path.
+
+## Recall validation beyond the corpora (10 census repositories)
+
+The governing rule is that a plan may run more tests than needed but must
+never miss one. The census plans but never checks, so ten census
+repositories unlike the recorded corpora were validated with
+`corpus --coverage` (outcome changes and per-test coverage at both
+snapshots), each in a Python 3.13 venv with the project editable and its
+test dependencies, source roots `src` and `.` for a `src` layout and `.`
+otherwise. The first pass found real misses in three of them; each was
+turned into a scenario and a fix, and every repository was then re-run
+on the final code:
+
+| repository (HEAD) | validated commits | first pass | final: recall | mean savings |
+|---|---|---|---|---|
+| flask (d73fa1c) | 5 | 100 % | 100 % (354 of 354) | 40 % |
+| jinja (5ef7011) | 5 | n/a | n/a (0 affected) | 4 % |
+| rich (9d8f9a3) | 18 | (id mismatch) | 100 % (1 480 of 1 480) | 26 % |
+| marshmallow (7f0792b) | 9 | 100 % | 100 % (742 of 742) | 44 % |
+| cattrs (5bf7c97) | 4 | 100 % | 100 % (51 of 51) | 48 % |
+| tenacity (3e58094) | 5 | **73 %** | 100 % (509 of 509) | 22 % |
+| pluggy (9836e54) | 4 | **79 %** | 100 % (229 of 229) | 25 % |
+| packaging (10590c1) | 4 | 100 % | 100 % (273 of 273) | 47 % |
+| boltons (961dcff) | 5 | 100 % | 100 % (37 of 37) | 78 % |
+| pydantic (915896d) | 3 | **1 missed** | 100 % (4 923 of 4 923) | 33 % |
+
+No run had an outcome miss. The misses the first pass found, all
+coverage misses (a test executed a changed symbol and was not selected):
+
+* **tenacity, 135 tests.** `@retry` returns a wrapper that runs
+  `copy = self.copy(); copy(fn, ...)`, calling a `Retrying` instance, and
+  the retry strategies are instances called as `self.stop(state)`.
+  Calling an instance runs `__call__`, which no call names; a probe showed
+  the same for `==` (`__eq__`) and `len()` (`__len__`). Fix: a class
+  depends on its special methods (design.md). Tracing that fix's widening
+  found a second gap: every name of an unresolved chain after the first
+  was dropped (`o.a.b()` recorded only `a`); every name is now recorded.
+* **pluggy, 49 tests.** pytest itself calls pluggy's hook machinery during
+  every test (with the checkout first on the path), so a change to
+  `HookCaller._verify_all_args_are_provided` ran under tests that never
+  reference it. Fix: the `runner_dependency` fallback.
+* **pydantic, 1 test (of 119 unseen files).** `tests/pydantic_core` is a
+  tracked symlink to `../pydantic-core/tests`; pytest collects through it,
+  the snapshot readers skipped it. Fix: in-repository symlinks are
+  expanded. pydantic went from 2 849 to 4 537 targets.
+
+packaging passed the first pass (76 % savings) but pays for the pluggy
+fix: pytest imports `packaging.version` and `packaging.requirements`, so
+the two commits that touch their import closure now select every test
+(`runner_dependency`), 47 % mean savings. That is the rule's intent: a
+broken `packaging.version` breaks pytest's own startup.
+
+Not misses: rich's first pass reported 0 of 27 because the command passed
+`tests` and rich has no root pytest configuration, so pytest took `tests/`
+as its rootdir and its node ids lost the prefix (`--rootdir .` fixes the
+measurement, not diffcone); jinja's commits change only import-time code
+(`__init__`, a regex constant, `docs/conf.py`), which coverage cannot
+attribute, so there is no ground truth. dateutil was dropped (its test
+dependencies require the released package). Setups that needed care:
+pluggy's shallow clone has no tags, so `SETUPTOOLS_SCM_PRETEND_VERSION`
+avoids a resolver fallback to pytest 3; cattrs needs its serialisation
+extras and `tests` on the command line (its `bench/` needs more);
+pydantic needs its `testing-extra` group plus hypothesis, dirty-equals,
+pytest-mock, pytest-benchmark, inline-snapshot, jsonschema,
+pytest-examples and pytest-timeout; tenacity's untracked `_version.py`
+is copied by `--setup-command`. The command for each (roots as above):
+
+```bash
+diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
+  --source-root src --source-root . \
+  --command "$PWD/.venv/bin/python -m pytest -p no:cacheprovider -q" \
+  --coverage --max 6 --jobs 2
+```
+
+with `--range HEAD~75..HEAD --max 30` for rich and marshmallow,
+`--rootdir . tests` appended to rich's pytest command, `tests` to
+cattrs' and pydantic's, and `--setup-command "cp $PWD/tenacity/_version.py
+tenacity/_version.py"` for tenacity.
 
 ## Not yet exercised
 
