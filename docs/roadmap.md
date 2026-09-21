@@ -44,17 +44,6 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
 
 * Instance-attribute tracking: `self.attr = Callable` in `__init__` so
   `self.attr()` resolves; today it is name-bounded.
-* Dispatch tables: a call through a value read from a literal dict of
-  callables or an argparse `set_defaults(func=...)` is dynamic today, so
-  every caller is selected on any change to any command (pipx:
-  `main._dispatch` alone accounts for nearly every selected test, 5 %
-  precision, evaluation.md; in the pipx table's first row, 456 of 461
-  selected tests). *Mechanism:* resolve `TABLE[key](...)` and
-  `args.func(...)` to the union of the callables bound in the table or in
-  `set_defaults` calls found in the same module or its imports, with an
-  edge per candidate; unbounded when any value is not a name chain.
-  *Done when:* the pipx corpus keeps 100 % recall with precision above
-  50 % on command-module commits.
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
   rules for known dynamic patterns.

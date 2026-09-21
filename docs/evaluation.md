@@ -299,14 +299,21 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 Totals: 0 outcome changes, 0 missed; recall 100 % (50 of 50); precision
 5 %; mean savings 34 %. No test needed `--assume-external-fixture`. The
-precision is bounded by one function: `pipx.main._dispatch` invokes the
-subcommand through a dynamic reference, so every test that drives the CLI
-through `run_pipx_cli` is selected under the `dynamic_reference` rule
-whenever any command module changes: 456 of the 461 tests selected for
-b83f660 and 461 of the 462 selected for 84eaad3.
-That is the documented trade-off for dynamic dispatch (bounded by the
-import closure, not resolved), and the place where a dispatch-table
-resolution rule would pay off most.
+precision is bounded by the CLI's shape, not by a resolution gap. Every
+test that drives the CLI through `run_pipx_cli` (456 of the 461 tests
+selected for b83f660, 461 of the 462 for 84eaad3) is selected under the
+`dynamic_reference` rule, because `get_command_parser` and
+`run_pipx_command` call `vars(args)` on the argparse namespace. Removing
+`vars` from the dynamic calls in an experiment selected exactly the same
+tests through a static chain instead: `get_command_parser` registers
+every subcommand handler with `set_defaults(func=_cmd_<name>)`, so it
+references all of them, each `_cmd_<name>` calls its `commands.<name>`,
+and every CLI test calls the parser builder. Which subcommand a test
+actually invokes is decided by the argument strings it passes, and
+argument-sensitive analysis is out of scope (AGENTS.md), so a CLI whose
+entry point registers every handler stays total on command changes.
+(Treating `vars(x)` as non-dynamic is not safe either: toolz passes
+module objects through loop variables, `for mod in ...: vars(mod)`.)
 
 ## opentelemetry-python, SDK session (monorepo, 830 tests, `src` layouts)
 

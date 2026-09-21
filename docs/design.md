@@ -602,3 +602,9 @@ from the `run` and `validate` commands after a plan exists.
 * Decorators that rewrite the decorated function are treated as ordinary
   references.
 * Parameterised targets are selected as a whole.
+* Argument-insensitive: a CLI entry point that registers every subcommand
+  handler (argparse `set_defaults(func=...)`, a dict of callables)
+  references all of them, so every test that drives the CLI is selected
+  on any command change regardless of the arguments it passes (pipx in
+  evaluation.md). Which handler a test reaches is a property of its
+  argument strings, which are not analysed.
