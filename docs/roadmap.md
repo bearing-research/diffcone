@@ -17,6 +17,21 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
   by `pytest_generate_tests` (currently reported as unresolved, so
   conservative), base classes defined in other modules, `conftest.py`
   outside the source roots, doctests.
+* **Monorepos with same-named test modules in one session.** Two files
+  mapping to one module name are an analysis error today, which matches
+  pytest's default import mode but not `--import-mode=importlib`, where
+  `opentelemetry-api/tests/trace/test_globals.py` and
+  `opentelemetry-sdk/tests/trace/test_globals.py` collect side by side
+  (evaluation.md plans that repository per session instead). *Mechanism:*
+  a per-root module prefix, `--source-root DIR=PREFIX`, so each test tree
+  gets its own namespace (`api_tests.trace.test_globals`) while package
+  roots keep theirs; discovery emits node ids from the path, unaffected.
+  *Trade-off:* a prefixed name is diffcone's, not Python's, so it must
+  never be used to resolve an import (imports of a prefixed module are
+  impossible in importlib mode anyway). *Done when:* the opentelemetry
+  API and SDK trees plan together without an analysis error and a hatch
+  style one-session monorepo corpus (`src`, `backend/src`, `tests`, 2 106
+  tests) is recorded.
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare
@@ -32,8 +47,9 @@ Any item that can narrow selection needs a regression scenario (AGENTS.md).
 * Dispatch tables: a call through a value read from a literal dict of
   callables or an argparse `set_defaults(func=...)` is dynamic today, so
   every caller is selected on any change to any command (pipx:
-  `main._dispatch` alone accounts for 456 of 461 selected tests, 5 %
-  precision, evaluation.md). *Mechanism:* resolve `TABLE[key](...)` and
+  `main._dispatch` alone accounts for nearly every selected test, 5 %
+  precision, evaluation.md; in the pipx table's first row, 456 of 461
+  selected tests). *Mechanism:* resolve `TABLE[key](...)` and
   `args.func(...)` to the union of the callables bound in the table or in
   `set_defaults` calls found in the same module or its imports, with an
   edge per candidate; unbounded when any value is not a name chain.

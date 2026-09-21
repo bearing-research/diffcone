@@ -64,10 +64,15 @@ Why the low-precision rows are low:
   understated there by construction.
 * **A dynamic `exec` helper.** `tests/test_inspect_args.py::make_func`
   builds functions with `exec`, and its module imports all of toolz, so its
-  import closure is the whole package: about 10 tests are selected on every
+  import closure is the whole package: about 17 tests are selected on every
   production change. `_signatures.create_signature_registry` uses
-  `import_module` with a runtime name (unbounded by design) and costs
-  another 5.
+  `import_module` with a runtime name (unbounded by design), and since
+  module-level variables became symbols it is the writer (`mutated_by`)
+  of the `_signatures.signatures` registry that `has_keywords`, hence
+  `memoize` and `curry`, read: another 15 tests in `test_functoolz.py`
+  and `test_signatures.py` reach it on every production change. d2eba03
+  (a one-line `interpose` fix) selects 37 tests for that reason alone; 2
+  of them execute the change.
 * a1e25cb changed `Compose` structurally (new members), which invalidates
   every `Compose` method; only 8 tests execute `Compose` at all.
 
@@ -122,9 +127,9 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | e26945d | fix: PytestRemovedIn10Warning | 3 / 516 | 99 % | 100 % | 67 % |
 | d8e321a | Use built-in product | 34 / 516 | 93 % | 100 % | 100 % |
-| 73393f3 | Better bankruptcy | 48 / 517 | 91 % | 100 % | 87 % |
+| 73393f3 | Better bankruptcy | 48 / 517 | 91 % | 100 % | 88 % |
 
-Totals: 1 outcome change, 0 missed; recall 100 % (77 of 77); precision
+Totals: 1 outcome change, 0 missed; recall 100 % (78 of 78); precision
 92 %; mean savings 95 %.
 
 The first structlog run reported two outcome misses for
@@ -270,8 +275,10 @@ plugins: `mocker` (pytest-mock) in 152 tests and `fake_process`
 (commit 69581fe) those 153 tests fell back to select-all on every change;
 now both names are assumed and reported. The suite installs packages into
 throwaway venvs (12 min serial, 27 min for this corpus with two jobs), so
-the `--setup-command` links the project's pre-populated package cache
-into each checkout and copies the build-generated `version.py`. Last four
+the `--setup-command` copies the project's pre-populated package cache
+(160 MB; the session fixture runs the cache update script against it, so
+parallel checkouts must not share one) into each checkout along with the
+build-generated `version.py`. Last four
 commits, two touch Python. Reproduce with:
 
 ```bash
@@ -281,7 +288,7 @@ cd pipx && uv venv .venv && uv pip install -p .venv/bin/python -e . --group test
 diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
   --source-root src --source-root tests \
   --command "$PWD/.venv/bin/python -m pytest -p no:cacheprovider -q" \
-  --setup-command "ln -s $PWD/.pipx_tests .pipx_tests && cp $PWD/src/pipx/version.py src/pipx/version.py" \
+  --setup-command "cp -R $PWD/.pipx_tests .pipx_tests && cp $PWD/src/pipx/version.py src/pipx/version.py" \
   --coverage --max 4 --jobs 2
 ```
 
@@ -294,8 +301,9 @@ Totals: 0 outcome changes, 0 missed; recall 100 % (50 of 50); precision
 5 %; mean savings 34 %. No test needed `--assume-external-fixture`. The
 precision is bounded by one function: `pipx.main._dispatch` invokes the
 subcommand through a dynamic reference, so every test that drives the CLI
-through `run_pipx_cli` (456 and 461 of the selected tests) is selected
-under the `dynamic_reference` rule whenever any command module changes.
+through `run_pipx_cli` is selected under the `dynamic_reference` rule
+whenever any command module changes: 456 of the 461 tests selected for
+b83f660 and 461 of the 462 selected for 84eaad3.
 That is the documented trade-off for dynamic dispatch (bounded by the
 import closure, not resolved), and the place where a dispatch-table
 resolution rule would pay off most.
@@ -344,16 +352,21 @@ Totals: 11 outcome changes, 0 missed; recall 100 % (955 of 955); precision
 docker tests, docs) select nothing, as they should. The two lowest rows
 (checked with `validate --coverage --format json` on the pair):
 
-* cfad5eb changes one method, `TraceState.update`; one test executed it
-  and 557 were selected, because `update` is also what every dict on an
-  unresolved receiver is called with and an unresolved `.update(...)`
-  matches every in-scope symbol of that name (the name-bounded fallback,
-  design.md "Uncertainty and fallbacks"). Precision 0 % is rounding of
-  1 in 557.
+* cfad5eb changes one method, `TraceState.update`; of the 559 selected
+  tests, 557 ran under coverage and one executed it, because `update` is
+  also what every dict on an unresolved receiver is called with and an
+  unresolved `.update(...)` matches every in-scope symbol of that name
+  (the name-bounded fallback, design.md "Uncertainty and fallbacks").
+  Precision 0 % is 1 in 557 rounded.
 * 5aa2f8f adds `enabled` to the API's `Logger`, `NoOpLogger` and
   `ProxyLogger` classes: a structural class change invalidates every
-  member, and the SDK's logger tests construct these classes, so 563 tests
-  are selected of which 78 executed a changed symbol.
+  member, and the SDK's logger tests construct these classes, so 565
+  tests are selected, 563 of which ran under coverage and 78 executed a
+  changed symbol.
+
+(Precision's denominator is the selected tests that ran under coverage,
+as defined at the top; the table's *selected* column counts every
+selected target.)
 
 Before the class-level `mock.patch` fix (commit 96d123c) seven tests of
 this session fell back to select-all because the class decorator's
@@ -363,11 +376,14 @@ injected argument looked like an unknown fixture.
 
 Last six commits at the time of writing (`corpus --range HEAD~12..HEAD
 --max 6 --jobs 2 --coverage`, 14 min): 0 outcome changes, 0 missed;
-recall 100 % (344 of 344); precision 56 %; mean savings 18 %. Five of the
+recall 100 % (344 of 344); precision 56 %; mean savings 18 %. Four of the
 six commits changed the indexer, the cache or discovery, which nearly
-every test exercises (114 of 121 up to 122 of 129 selected); the commit
-that changed only the execution module selected 26 of 128 tests at 58 %
-precision.
+every test exercises (114 of 121 up to 119 of 127 selected). Of the two
+commits that changed only the execution module, 314cb71 selected 26 of
+128 tests at 58 % precision, and 6836992 selected 122 of 129 at 14 %:
+it changed `validate_pytest`, which the scenario fixture's cache check
+and every validation test reach, and added a helper that the whole
+execution module's tests import.
 
 ## How the numbers moved
 
@@ -470,12 +486,24 @@ been re-stated from the re-run:
   and last of those commits toolz temporarily lost one affected test
   (recall 93 %), which is what drove the follow-ups;
 * base-side coverage attribution (commit 6836992, a measurement change,
-  not a selection change): toolz re-run identical in totals (15 of 15
-  affected, 10 % precision, 87 % savings). The re-run also showed that the
+  not a selection change): every table in this file was re-run under the
+  new definition. toolz (15 of 15 affected), click (441 of 441),
+  pytest-mock (5 of 5) and attrs (1 869 of 1 869) are identical row by
+  row; structlog gained one affected test (78 of 78, "Better bankruptcy"
+  87 % to 88 % precision; a test that executed a symbol deleted in that
+  commit) and its table is re-stated; the pytest pair re-validated
+  identically (3 485 of 3 486 selected, 1 490 of 1 490 affected, 43 %
+  precision) and the six-pair pytest corpus reproduced its 4 960 affected
+  tests, 24 % pooled precision and 0 % to 53 % per commit, with 16 outcome
+  changes instead of 17 (one timing-sensitive test flipped differently
+  under the tracer this time; recall was 100 % both times); the pipx
+  corpus re-ran identically with the cache copied per checkout instead of
+  linked. The toolz re-run also showed that the
   toolz table had not been re-stated after module-level variables became
   symbols, contrary to the note below: d287360 now selects 33 (was 37),
-  a1e25cb 40 (was 43), 55ce42d 35 (was 38) and d2eba03 37 (was 22, the
-  `interpose` fix also changing a module-level variable's mutators). The
+  a1e25cb 40 (was 43), 55ce42d 35 (was 38) and d2eba03 37 (was 22: the
+  `signatures` registry's writer edge now leads every `memoize`/`curry`
+  user to the dynamic registry builder, see the toolz bullets). The
   table above is from the re-run;
 * prefix-bounded dynamic names (commit 042f611): toolz, click, pytest-mock
   and attrs unchanged (attrs' lazy loader had already stopped being a seed
@@ -488,8 +516,9 @@ been re-stated from the re-run:
 
 ## Not yet exercised
 
-A full corpus on a multi-minute suite (one pytest pair is measured above;
-`corpus --jobs` makes it practical but it has not been recorded), and a
-monorepo that runs one session over several packages (hatch: `src`,
+A monorepo that runs one session over several packages (hatch: `src`,
 `backend/src` and `tests` plan as one session with 2 106 discovered tests
-and no analysis errors, but its suite was not run).
+and no analysis errors, but its suite was not run), and a monorepo whose
+per-package test trees share module names and are collected in one
+session with `--import-mode=importlib` (roadmap, "Discovery
+completeness").
