@@ -331,3 +331,27 @@ def module_name_for(path: str, source_roots: list[str]) -> str | None:
     if (not parts and not prefix) or not all(p.isidentifier() for p in parts):
         return None
     return ".".join([*prefix.split("."), *parts] if prefix else parts)
+
+
+def child_modules(snapshot: Snapshot) -> dict[str, frozenset[str]]:
+    """Immediate submodule names per module, from the files present
+    (whether or not they parse): what a package binding can shadow."""
+    children: dict[str, set[str]] = {}
+    for path in snapshot.files:
+        module = module_name_for(path, snapshot.source_roots) if path.endswith(".py") else None
+        if module is None:
+            continue
+        parent, _, child = module.rpartition(".")
+        if parent:
+            children.setdefault(parent, set()).add(child)
+    return {k: frozenset(v) for k, v in children.items()}
+
+
+def member_symbol_id(module: str, name: str, submodules: frozenset[str] | set[str]) -> str:
+    """Identity of the top-level binding ``name`` of ``module``. When the
+    module is a package with a submodule of that name (``pkg/__init__.py``
+    defining ``retry`` next to ``pkg/retry.py``) the module keeps
+    ``pkg.retry`` and the binding is ``pkg.__init__.retry``."""
+    if name in submodules:
+        return f"{module}.__init__.{name}"
+    return f"{module}.{name}"

@@ -52,7 +52,13 @@ from diffcone.model import (
     Symbol,
     UnresolvedReference,
 )
-from diffcone.snapshot import Snapshot, module_name_for, split_root
+from diffcone.snapshot import (
+    Snapshot,
+    child_modules,
+    member_symbol_id,
+    module_name_for,
+    split_root,
+)
 
 BUILTIN_NAMES = frozenset(dir(builtins))
 DYNAMIC_CALLS = frozenset({"eval", "exec", "__import__", "globals", "vars"})
@@ -291,6 +297,9 @@ class Resolved:
     # (symbol id, detail) pairs; detail is "" for a method, "attribute:NAME"
     # for a class-attribute rebinding.
     overrides: tuple[tuple[str, str], ...] = ()
+    # Modules the name may also denote: ``pkg.retry`` when ``pkg`` binds
+    # ``retry`` and has a submodule ``retry`` (see member_symbol_id).
+    also: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -855,6 +864,9 @@ class Indexer:
             for path in sorted(self.snapshot.files)
             if (module := module_name_for(path, self.snapshot.source_roots)) is not None
         ]
+        # Submodule names per package: a top-level binding of that name gets
+        # a distinct identity (member_symbol_id).
+        self._children = child_modules(self.snapshot)
         keys: dict[str, str] = {}  # path -> cache key; every record is loaded in one query
         if cache is not None:
             keys = {p: cache.key(m, p, self.snapshot.files[p]) for p, m in candidates}
@@ -998,6 +1010,11 @@ class Indexer:
         edges = {Edge(*e) for e in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):
             return False
+        # Top-level identities depend on which submodules exist: a record
+        # made before a shadowed submodule was added (or removed) is stale.
+        for name, symbol_id in [*members.items(), *variables.items()]:
+            if symbol_id != self._member_id(scope.name, name):
+                return False
         scope.imports, scope.star_imports, scope.bindings = imports, star_imports, bindings
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
         scope.env_digest = env_digest
@@ -1319,7 +1336,7 @@ class Indexer:
         for name, stmt in variable_stmts.items():
             if name in scope.members:
                 continue  # also a def/class: Python's last binding wins; stay conservative
-            symbol_id = f"{scope.name}.{name}"
+            symbol_id = self._member_id(scope.name, name)
             value = stmt.value  # type: ignore[attr-defined]
             symbol = Symbol(
                 id=symbol_id,
@@ -1382,7 +1399,10 @@ class Indexer:
             if stmt.name not in order:
                 order.append(stmt.name)
         for name in order:
-            symbol_id = f"{container_id}.{name}"
+            if class_scope is None and container_id == scope.name:
+                symbol_id = self._member_id(scope.name, name)
+            else:
+                symbol_id = f"{container_id}.{name}"
             if name in classes:
                 nodes = classes[name]
                 first = nodes[0]
@@ -1486,6 +1506,9 @@ class Indexer:
                     continue
                 members[name] = symbol_id
                 self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+
+    def _member_id(self, module: str, name: str) -> str:
+        return member_symbol_id(module, name, self._children.get(module, frozenset()))
 
     def modules_with_prefix(self, prefix: str) -> tuple[str, ...]:
         return tuple(sorted(m for m in self.scopes if m.startswith(prefix)))
@@ -1887,9 +1910,17 @@ class Indexer:
         """Resolve one attribute access on a resolved node."""
         if isinstance(node, ModuleNode):
             sub = f"{node.module}.{attr}"
-            if self._module_in_scope(sub):
-                return ModuleNode(sub)
             target = self.scopes.get(node.module)
+            if self._module_in_scope(sub):
+                # A package binding of the same name wins at runtime once the
+                # package has run (it binds after importing the submodule);
+                # either may be meant, so the attribute denotes both.
+                shadow = None
+                if target is not None:
+                    shadow = target.members.get(attr) or target.variables.get(attr)
+                if shadow is not None and sub in self.scopes:
+                    return Resolved(shadow, also=(sub,))
+                return ModuleNode(sub)
             if target is None:
                 return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
             found = self._lookup_in_module(target, attr, set())
@@ -1954,6 +1985,9 @@ class Indexer:
                 if symbol_id != source:
                     label = f"override:{detail}" if detail else "override"
                     self.out.edges.add(Edge(source, symbol_id, kind, label))
+            for module in node.also:
+                if module != source:
+                    self.out.edges.add(Edge(source, module, kind, "module"))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 init = self.lookup_in_class(node.symbol, "__init__")

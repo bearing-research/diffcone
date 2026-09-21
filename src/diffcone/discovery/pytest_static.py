@@ -619,7 +619,7 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
     body = parsed.tree.body
     for func in scope_functions(body):
         is_fixture, explicit, autouse = _is_fixture(func)
-        symbol = f"{parsed.module}.{func.name}"
+        symbol = parsed.member_id(func.name)
         if is_fixture:
             name = explicit or func.name
             facts.fixtures[name] = Fixture(name, symbol, autouse, _fixture_requests(func, False))
@@ -649,10 +649,10 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
         autouse_node = keyword_value(call, "autouse")
         autouse = isinstance(autouse_node, ast.Constant) and bool(autouse_node.value)
         facts.fixtures[fixture_name] = Fixture(
-            fixture_name, f"{parsed.module}.{func.name}", autouse, _fixture_requests(func, False)
+            fixture_name, parsed.member_id(func.name), autouse, _fixture_requests(func, False)
         )
     for cls in scope_classes(body):
-        _collect_class_fixtures(facts, cls, f"{parsed.module}.{cls.name}")
+        _collect_class_fixtures(facts, cls, parsed.member_id(cls.name))
     facts.plugins = _plugins_from_body(body)
     facts.usefixtures = _usefixtures_from_pytestmark(body)
     return facts
@@ -920,7 +920,7 @@ def discover_pytest(
         module_deps += facts.setup_functions
         for owner in (facts, *conftests):
             for name in MODULE_LEVEL_PYTEST_NAMES:
-                symbol = f"{owner.parsed.module}.{name}"
+                symbol = owner.parsed.member_id(name)
                 if symbol in index.symbols:
                     module_deps.append(symbol)
         _collect_module_tests(result, facts, resolver, config, module_deps, index)
@@ -981,7 +981,7 @@ def _collect_module_tests(
             continue
         marks = module_marks + _marks_from_expressions(func.decorator_list)
         requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
-        add(f"{parsed.path}::{func.name}", f"{parsed.module}.{func.name}", [], requests, [])
+        add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [])
 
     def mro(cls: ast.ClassDef, nodeid: str) -> list[tuple[ast.ClassDef, str]]:
         """In-module base classes, nearest first, with their symbol ids."""
@@ -997,7 +997,7 @@ def _collect_module_tests(
             seen.add(name)
             if name in module_classes and name != cls.name:
                 base_cls = module_classes[name]
-                chain.append((base_cls, f"{parsed.module}.{name}"))
+                chain.append((base_cls, parsed.member_id(name)))
                 queue.extend(base_cls.bases)
             elif not name.endswith("TestCase"):
                 result.notes.append(
@@ -1016,7 +1016,7 @@ def _collect_module_tests(
         unittest_style = _is_unittest_class(cls)
         if not (unittest_style or _matches(classes, cls.name)) or _has_init(cls):
             return
-        class_id = f"{prefix_ids[-1] if prefix_ids else parsed.module}.{cls.name}"
+        class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
         nodeid = f"{nodeid_prefix}::{cls.name}"
         bases = mro(cls, nodeid)
         # Fixture lookup: this class, then its in-module bases, then outer classes.

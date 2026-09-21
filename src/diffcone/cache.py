@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 4  # 4: instance attributes, construction and super() call sites
+INDEX_FORMAT = 5  # 5: package bindings that shadow a submodule are pkg.__init__.name
 
 
 def _indexer_fingerprint() -> str:

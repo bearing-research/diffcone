@@ -19,23 +19,13 @@ regression scenario (AGENTS.md).
 
 Seven of 42 census repositories selected every test on every commit;
 analysis errors were 33 % of all census selections, more than any
-selection rule. Repeated class definitions (anyio) are fixed; six
-repositories remain.
+selection rule. Repeated class definitions (anyio) and package bindings
+that shadow a submodule (tenacity, poetry, scrapy) are fixed; three
+repositories remain, all on unparseable files.
 
-* **A package binding that shadows a submodule** (tenacity, pip,
-  poetry, scrapy): `pkg/__init__.py` binds `retry` and `pkg/retry.py`
-  exists. Legal Python; at runtime `pkg.retry` is whichever binding ran
-  last (normally the `__init__` one, since importing the submodule sets
-  the attribute first). *Mechanism:* keep the module's identity
-  (`pkg.retry` stays the module) and give the shadowing binding a
-  distinct identity for the index (a documented suffix), resolving the
-  attribute `pkg.retry` to *both* (an edge to each), so either reading
-  is covered. *Trade-off:* a reference to `pkg.retry` depends on both
-  the function and the module, which is conservative. *Done when:* a
-  scenario covers a function shadowing a submodule with changes to each
-  side, and the four repositories plan without errors.
 * **Unparseable files** (pygments' Python 2 example under
-  `tests/examplefiles`; black's deliberately invalid test-case files). *Mechanism:* a module that fails to parse is
+  `tests/examplefiles`; black's deliberately invalid test-case files;
+  pip's non-UTF-8 test data file). *Mechanism:* a module that fails to parse is
   still reported as an analysis error, but the fallback is scoped:
   targets whose import closure (over both revisions) can reach the
   module, or that the module would define, are selected; others are
@@ -44,8 +34,8 @@ repositories remain.
   that is imported dynamically is invisible to the closure; dynamic
   imports are already unbounded, so they still reach it. *Done when:* a
   scenario with an unparseable data file keeps other selections
-  precise, the report still lists the error, and pygments and black stop
-  degrading.
+  precise, the report still lists the error, and pygments, black and
+  pip stop degrading.
 
 ## 2. Soundness: class creation hooks
 

@@ -66,7 +66,15 @@ definitions with the same name in one scope (overloads, property setters,
 conditional definitions) are one symbol whose hashes cover all of them;
 for a class defined more than once, the members of all its definitions
 are indexed together, so a method defined in each `if`/`else` variant is
-one symbol as well.
+one symbol as well. A package whose `__init__.py` binds a name that is
+also one of its submodules (`pkg/__init__.py` defining `retry` next to
+`pkg/retry.py`) keeps `pkg.retry` for the module and gives the binding
+the identity `pkg.__init__.retry` (manifests name it that way too). The
+attribute `pkg.retry`, and `from pkg import retry`, resolve to both the
+binding and the module (an edge to each, the one to the module with
+detail `module`), since the binding normally wins at runtime but either
+may be meant; `import pkg.retry` and `from pkg.retry import x` are the
+module.
 
 Source roots are mapped to module names with the longest matching root
 winning; `pkg/__init__.py` is module `pkg`. A root may carry a module

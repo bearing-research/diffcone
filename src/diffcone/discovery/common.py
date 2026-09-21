@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from diffcone.indexer import DEF_NODES, FUNC_NODES, iter_scope_statements
-from diffcone.snapshot import Snapshot, module_name_for
+from diffcone.snapshot import Snapshot, child_modules, member_symbol_id, module_name_for
 
 
 @dataclass
@@ -15,12 +15,19 @@ class ParsedModule:
     path: str
     module: str
     tree: ast.Module
+    # Submodule names of this module (a package): see member_symbol_id.
+    submodules: frozenset[str] = field(default_factory=frozenset)
+
+    def member_id(self, name: str) -> str:
+        """The index identity of this module's top-level ``name``."""
+        return member_symbol_id(self.module, name, self.submodules)
 
 
 def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModule], list[str]]:
     """Parse the given snapshot paths. Returns (parsed, failed paths)."""
     parsed: list[ParsedModule] = []
     failed: list[str] = []
+    children = child_modules(snapshot)
     for path in sorted(paths):
         module = module_name_for(path, snapshot.source_roots)
         if module is None:
@@ -31,7 +38,7 @@ def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModu
         except (SyntaxError, UnicodeDecodeError, ValueError):
             failed.append(path)
             continue
-        parsed.append(ParsedModule(path, module, tree))
+        parsed.append(ParsedModule(path, module, tree, children.get(module, frozenset())))
     return parsed, failed
 
 

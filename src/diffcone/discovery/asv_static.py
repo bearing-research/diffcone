@@ -133,7 +133,7 @@ def discover_asv(
         bench_module = ".".join(parts)
         body = pm.tree.body
         module_deps = [pm.module] + [
-            f"{pm.module}.{f.name}" for f in scope_functions(body) if f.name in LIFECYCLE_NAMES
+            pm.member_id(f.name) for f in scope_functions(body) if f.name in LIFECYCLE_NAMES
         ]
 
         def add(runner_id: str, entry: str, deps: list[str]) -> None:
@@ -147,11 +147,11 @@ def discover_asv(
 
         for func in scope_functions(body):
             if _is_benchmark(func.name):
-                add(f"{bench_module}.{func.name}", f"{pm.module}.{func.name}", module_deps)
+                add(f"{bench_module}.{func.name}", pm.member_id(func.name), module_deps)
         for cls in scope_classes(body):
             if cls.name.startswith("_"):
                 continue
-            class_id = f"{pm.module}.{cls.name}"
+            class_id = pm.member_id(cls.name)
             deps = module_deps + [
                 f"{class_id}.{f.name}"
                 for f in scope_functions(cls.body)

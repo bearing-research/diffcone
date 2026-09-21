@@ -125,7 +125,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 4
+    assert cache_mod.INDEX_FORMAT == 5
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -169,28 +169,57 @@ def test_module_cache_reindexes_only_what_changed(repo, tmp_path):
 
 
 def test_module_cache_keeps_symbol_collision_errors(repo, tmp_path):
-    """A class ``b`` in ``pkg/a/__init__.py`` and a module ``pkg/a/b.py`` share
-    an identity; the error is reported the same whether facts came from the
-    cache (the colliding module is indexed afresh) or not."""
+    """``retry`` in ``pkg/__init__.py`` shadows ``pkg/retry.py`` and so is
+    ``pkg.__init__.retry``, which a module ``pkg/__init__/retry.py`` also
+    names; the error is reported the same whether facts came from the cache
+    (the colliding module is indexed afresh) or not."""
     from diffcone.cache import ModuleCache
     from diffcone.indexer import build_index
     from diffcone.snapshot import read_snapshot
 
     mc = ModuleCache(tmp_path / "c")
     clean = repo.commit(
-        {"pkg/__init__.py": "", "pkg/a/__init__.py": "", "pkg/a/b.py": "def f():\n    return 1\n"}
+        {
+            "pkg/__init__.py": "",
+            "pkg/retry.py": "",
+            "pkg/__init__/__init__.py": "",
+            "pkg/__init__/retry.py": "def f():\n    return 1\n",
+        }
     )
-    build_index(read_snapshot(repo.path, clean, ["."]), module_cache=mc)  # caches pkg.a.b's facts
-    base = repo.commit({"pkg/a/__init__.py": "class b:\n    pass\n"})
+    build_index(read_snapshot(repo.path, clean, ["."]), module_cache=mc)  # caches every module
+    base = repo.commit({"pkg/__init__.py": "def retry():\n    pass\n"})
     snap = read_snapshot(repo.path, base, ["."])
     plain = build_index(snap)
     assert any("collides" in e.message for e in plain.errors)
     for _ in range(2):
         mc = ModuleCache(tmp_path / "c")
         assert index_to_dict(build_index(snap, module_cache=mc)) == index_to_dict(plain)
-    # pkg.a.b's cached facts hit but collide, so it is indexed afresh (and
-    # its colliding record is never stored); the other two are served.
-    assert (mc.facts_hits, mc.facts_misses) == (3, 0)
+    # pkg.__init__.retry's cached facts hit but collide, so it is indexed
+    # afresh (and its colliding record is never stored); the rest are served.
+    assert (mc.facts_hits, mc.facts_misses) == (4, 0)
+
+
+def test_module_cache_renames_a_binding_when_a_shadowed_submodule_appears(repo, tmp_path):
+    """A package's cached facts name its binding ``pkg.a.b``; once
+    ``pkg/a/b.py`` exists the binding is ``pkg.a.__init__.b``, so the stale
+    record must not be applied although the file did not change."""
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    mc = ModuleCache(tmp_path / "c")
+    before = repo.commit(
+        {"pkg/__init__.py": "", "pkg/a/__init__.py": "class b:\n    def m(self):\n        pass\n"}
+    )
+    first = build_index(read_snapshot(repo.path, before, ["."]), module_cache=mc)
+    assert "pkg.a.b.m" in first.symbols
+    after = repo.commit({"pkg/a/b.py": "X = 1\n"})
+    snap = read_snapshot(repo.path, after, ["."])
+    plain = build_index(snap)
+    assert plain.errors == []
+    assert {"pkg.a.__init__.b", "pkg.a.__init__.b.m", "pkg.a.b", "pkg.a.b.X"} <= set(plain.symbols)
+    cached = build_index(snap, module_cache=ModuleCache(tmp_path / "c"))
+    assert index_to_dict(cached) == index_to_dict(plain)
 
 
 def test_worktree_plan_reresolves_one_module_after_a_body_edit(repo, tmp_path):

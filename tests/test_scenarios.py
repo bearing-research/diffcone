@@ -1573,3 +1573,58 @@ def test_class_defined_in_both_branches_of_an_if_is_one_symbol(repo):
     assert changes(plan) == {"pkg.worker.Worker.__init__": ("body_changed",)}
     assert selected(plan) == {"t::test_run", "bench.time_run"}
     assert unselected(plan) == {"t::test_other"}
+
+
+def test_package_binding_that_shadows_a_submodule(repo):
+    """tenacity, pip, poetry: ``pkg/__init__.py`` binds ``retry`` next to
+    ``pkg/retry.py``. Both used to claim the identity ``pkg.retry`` and the
+    plan degraded to select-all. The module keeps ``pkg.retry``, the binding
+    is ``pkg.__init__.retry``, and the attribute ``pkg.retry`` denotes both.
+    scrapy's variant is a test function shadowing a test module."""
+    retry = "import os\n\nos.environ.setdefault('DELAY', '{delay}')\n\n\n"
+    retry += "def backoff(f):\n    return f\n\n\ndef jitter():\n    return {value}\n"
+    init = "from pkg.retry import backoff\n\n\ndef retry(f):\n    return {body}\n"
+    base = repo.commit(
+        {
+            "pkg/__init__.py": init.format(body="backoff(f)"),
+            "pkg/retry.py": retry.format(delay=1, value=0),
+            "tests/test_attr.py": "import pkg\n\n\ndef test_attr():\n    assert pkg.retry(1)\n",
+            "tests/test_jitter.py": (
+                "from pkg.retry import jitter\n\n\ndef test_jitter():\n    assert jitter() == 0\n"
+            ),
+            "tests/test_walk/__init__.py": "def test_walk():\n    assert True\n",
+            "tests/test_walk/test_walk.py": "def test_inner():\n    assert True\n",
+            "benchmarks/bench_retry.py": (
+                "from pkg import retry\n\n\ndef time_retry():\n    retry(1)\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_attr", "tests.test_attr.test_attr"),
+        py_target("t::test_jitter", "tests.test_jitter.test_jitter"),
+        asv_target("bench.time_retry", "benchmarks.bench_retry.time_retry"),
+    ]
+    # The binding changes: its users are selected, the submodule's are not.
+    head = repo.commit({"pkg/__init__.py": init.format(body="f")})
+    plan = repo.plan(base, head, targets)
+    assert not plan.degraded and plan.errors == []
+    assert set(changes(plan)) == {"pkg.__init__.retry"}
+    assert selected(plan) == {"t::test_attr", "bench.time_retry"}
+    assert unselected(plan) == {"t::test_jitter"}
+    # A function of the submodule changes: only its own users.
+    head2 = repo.commit({"pkg/retry.py": retry.format(delay=1, value=1)})
+    assert selected(repo.plan(head, head2, targets)) == {"t::test_jitter"}
+    # The submodule's own init code changes: ``pkg.retry`` may denote the
+    # module, so the attribute's users are selected; test_jitter only imports
+    # a function that does not read module state (design.md, module bodies).
+    head3 = repo.commit({"pkg/retry.py": retry.format(delay=2, value=1)})
+    plan3 = repo.plan(head2, head3, targets)
+    assert changes(plan3) == {"pkg.retry": ("body_changed",)}
+    assert selected(plan3) == {"t::test_attr", "bench.time_retry"}
+    # scrapy: a test function in ``tests/test_walk/__init__.py`` (which pytest
+    # does not collect) shadows the test module next to it.
+    discovered = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert not discovered.degraded and discovered.errors == []
+    entries = {d.target.runner_id: d.target.entry_symbol for d in discovered.decisions}
+    inner = "tests/test_walk/test_walk.py::test_inner"
+    assert entries[inner] == "tests.test_walk.test_walk.test_inner"

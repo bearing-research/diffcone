@@ -690,7 +690,11 @@ select every test on every commit, for three reasons:
 * a package `__init__` that binds a name which is also a submodule
   (`tenacity.retry`, `pip._internal.main`, `poetry.layouts.layout`,
   scrapy's `tests.test_utils_misc.test_walk_modules`): legal Python
-  (the binding executed last wins), reported as an identity collision;
+  (the binding executed last wins), reported as an identity collision.
+  Since fixed (the binding is `pkg.__init__.retry`): tenacity now selects
+  44 % on average, poetry 78 %, scrapy still 100 % but through
+  dependencies; pip then degrades on a test data file that is not UTF-8
+  (the third reason);
 * files that do not parse (pygments' Python 2 example file under
   `tests/examplefiles`, black's invalid-syntax test cases), which pytest
   never imports.
