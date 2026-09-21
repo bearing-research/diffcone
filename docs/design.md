@@ -247,6 +247,16 @@ structural impact). Inside `__getattr__`/`__getattribute__`,
 dynamic reference: the method runs only for an access `obj.<name>`, and
 every such access records `<name>` itself.
 
+A class with a base outside the source roots (directly or anywhere in
+its in-scope MRO, or the subscripted base of `Base[T]`) may have any of
+its methods called by that code: httpx calls a transport's
+`handle_request`, `logging` calls a handler's `emit`, `json` calls an
+encoder's `default`. Such a class depends on every method it defines
+(edge detail `external_base`), so whatever references the class is
+reached. Bases that only add structure do not count: builtins (`object`,
+`dict`, `Exception`), `abc.ABC`, and `Generic`, `Protocol`, `NamedTuple`
+and `TypedDict` from `typing` or `typing_extensions`.
+
 Module and class bodies are analysed without entering the definitions they
 contain; those are symbols with their own edges.
 
@@ -739,3 +749,7 @@ from the `run` and `validate` commands after a plan exists.
   without any reference to its class in the source roots (from external
   code, `pickle`, `copy`) does not connect its user to the class's
   special methods.
+* External code calling methods by protocol without inheritance: an
+  object with no base outside the source roots but handed to external
+  code (a file-like object passed to `json.load`, a callback object)
+  has the methods that code calls reached only through name matches.

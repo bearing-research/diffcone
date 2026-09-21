@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 8  # 8: every name after an unresolved chain step is recorded
+INDEX_FORMAT = 9  # 9: classes with external bases depend on their methods
 
 
 def _indexer_fingerprint() -> str:

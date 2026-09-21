@@ -188,6 +188,9 @@ class ClassScope:
     # Each base as a dotted name chain, or None for a non-name expression
     # (``Generic[T]``, ``namedtuple(...)``) that the collector visits instead.
     base_chains: list[list[str] | None] = field(default_factory=list)
+    # Each base as written, for deciding whether it is external: the name
+    # chain, or the subscripted name of ``Generic[T]``-style bases.
+    base_names: list[list[str] | None] = field(default_factory=list)
     bases: list[str] = field(default_factory=list)  # in-scope base class ids, in order
     complete: bool = True  # False when some base is external/dynamic/unresolved
     # No decorators and no class keywords (metaclass=...): nothing but the
@@ -196,6 +199,9 @@ class ClassScope:
     # Some base is external, dynamic or unresolved, other than a plain
     # ``object``: attributes may be written by code that is not visible.
     opaque: bool = False
+    # Some base is outside the source roots and may call this class's
+    # methods (not a builtin or a purely structural typing/abc base).
+    external_base: bool = False
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising
@@ -806,6 +812,7 @@ def _facts_to_dict(
                 "members": dict(c.members),
                 "bindings": sorted(c.bindings),
                 "base_chains": c.base_chains,
+                "base_names": c.base_names,
                 "plain": c.plain,
             }
             for c in classes
@@ -932,6 +939,7 @@ class Indexer:
             self._ensure_bases(class_id)
         self._bases_final = True  # MROs may be memoised from here on
         self._build_descendants()
+        self._external_callers()
         fingerprint = self._environment_fingerprint() if cache is not None else ""
         loaded = cache.load_resolved(list(keys.values()), fingerprint) if cache else {}
         for module in sorted(self.scopes):
@@ -1005,6 +1013,7 @@ class Indexer:
                 members=dict(data["members"]),
                 bindings=set(data["bindings"]),
                 base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
+                base_names=[list(c) if c is not None else None for c in data["base_names"]],
                 plain=bool(data["plain"]),
             )
         edges = {Edge(*e) for e in record["edges"]}
@@ -1454,6 +1463,10 @@ class Indexer:
                 cscope.plain = len(nodes) == 1 and not (first.decorator_list or first.keywords)
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
+                    cscope.base_names.extend(
+                        _flatten_chain(b.value if isinstance(b, ast.Subscript) else b)
+                        for b in n.bases
+                    )
                 self.class_scopes[symbol_id] = cscope
                 self._added_classes.append(cscope)
                 for n in nodes:
@@ -1552,7 +1565,31 @@ class Indexer:
                 cscope.complete = False  # external, dynamic (``Generic[T]``) or unknown
                 if not (parts == ["object"] and node is None):
                     cscope.opaque = True
+        for name in cscope.base_names:
+            if self._calls_back(name, cscope):
+                cscope.external_base = True
         cscope.bases_state = 2
+
+    def _calls_back(self, name: list[str] | None, cscope: ClassScope) -> bool:
+        """Whether a base (as written) is code outside the source roots that
+        may call the subclass's methods: not an in-scope class (its own
+        status is inherited through the MRO), not a builtin, not a purely
+        structural typing/abc base. An unknown expression counts."""
+        if name is None:
+            return True
+        node = self._resolve_base_expr(name, cscope)
+        if isinstance(node, Resolved) and not node.detail and node.symbol in self.class_scopes:
+            return False
+        head = name[0]
+        binding = cscope.module.imports.get(head)
+        if binding is None:
+            if node is None and head in BUILTIN_NAMES and len(name) == 1:
+                return False
+            canonical = ".".join(name)
+        else:
+            base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+            canonical = ".".join([base, *name[1:]])
+        return canonical not in _STRUCTURAL_BASES
 
     def _resolve_base_expr(self, parts: list[str] | None, cscope: ClassScope) -> Node:
         """A base name is looked up in the enclosing class body (for nested
@@ -1635,6 +1672,30 @@ class Indexer:
             if not cscope.complete:
                 uncertain = True
         return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+
+    def _external_callers(self) -> None:
+        """A class whose MRO has a base outside the source roots (a
+        transport, a handler, a visitor) may have any method called by that
+        code, which nothing in the source roots shows: the class depends on
+        every method it defines, like its special methods. The generic
+        bases of ``Base[T]`` are not in the MRO; their status counts too."""
+        for class_id in sorted(self.class_scopes):
+            cscope = self.class_scopes[class_id]
+            related = set(self._mro(class_id))
+            for chain, name in zip(cscope.base_chains, cscope.base_names, strict=True):
+                if chain is None and name is not None:  # ``Base[T]``
+                    node = self._resolve_base_expr(name, cscope)
+                    if isinstance(node, Resolved) and node.symbol in self.class_scopes:
+                        related |= set(self._mro(node.symbol))
+            if not any(self.class_scopes[c].external_base for c in related):
+                continue
+            for member, member_id in sorted(cscope.members.items()):
+                symbol = self.index.symbols.get(member_id)
+                if symbol is None or symbol.kind != METHOD or _is_special_method(member):
+                    continue
+                if member in _EXPLICIT_SPECIAL_METHODS:
+                    continue
+                self.out.edges.add(Edge(class_id, member_id, REFERENCES, "external_base"))
 
     def _build_descendants(self) -> None:
         subclasses: dict[str, set[str]] = defaultdict(set)
@@ -2129,6 +2190,22 @@ def _has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> b
             return True
     return False
 
+
+# Bases outside the source roots that only add structure and never call
+# a subclass's methods.
+_STRUCTURAL_BASES = frozenset(
+    {
+        "abc.ABC",
+        "typing.Generic",
+        "typing.Protocol",
+        "typing.NamedTuple",
+        "typing.TypedDict",
+        "typing_extensions.Generic",
+        "typing_extensions.Protocol",
+        "typing_extensions.NamedTuple",
+        "typing_extensions.TypedDict",
+    }
+)
 
 # Reached explicitly: construction and class creation record their own edges.
 _EXPLICIT_SPECIAL_METHODS = frozenset({"__init__", "__new__", "__init_subclass__"})

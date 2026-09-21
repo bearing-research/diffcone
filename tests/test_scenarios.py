@@ -1873,3 +1873,54 @@ def test_code_the_runner_itself_runs_selects_all_of_its_targets(repo):
     head3 = repo.commit({"src/packaging/version.py": "def parse(v):\n    return str(v)\n"})
     plan3 = repo.plan(head2, head3, targets, source_roots=roots)
     assert selected(plan3) == {"t::test_version", "t::test_tags"}
+
+
+def test_methods_of_classes_with_external_bases_are_reached_through_the_class(repo):
+    """starlette: ``TestClient`` is an ``httpx.Client`` built around
+    ``_TestClientTransport(httpx.BaseTransport)``, and httpx calls
+    ``handle_request`` for every request; nothing in the source roots calls
+    it. A class with a base outside the source roots depends on every
+    method it defines; structural bases (``abc.ABC``, ``Generic[T]``,
+    builtins) do not count."""
+    client = (
+        "import abc\n\nimport httpx\n\n\n"
+        "class Transport(httpx.BaseTransport):\n"
+        "    def handle_request(self, request):\n        return {value}\n\n\n"
+        "class Client(httpx.Client):\n"
+        "    def __init__(self):\n        super().__init__(transport=Transport())\n\n\n"
+        "class Shape(abc.ABC):\n"
+        "    def area(self):\n        return {area}\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/client.py": client.format(value=1, area=0),
+            "tests/test_client.py": (
+                "from pkg.client import Client\n\n\n"
+                "def test_get():\n    assert Client().get('http://x/')\n"
+            ),
+            "tests/test_shape.py": (
+                "from pkg.client import Shape\n\n\ndef test_shape():\n    assert Shape\n"
+            ),
+            "benchmarks/bench_client.py": (
+                "from pkg.client import Client\n\n\ndef time_get():\n    Client().get('http://x/')\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_get", "tests.test_client.test_get"),
+        py_target("t::test_shape", "tests.test_shape.test_shape"),
+        asv_target("bench.time_get", "benchmarks.bench_client.time_get"),
+    ]
+    head = repo.commit({"pkg/client.py": client.format(value=2, area=0)})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.client.Transport.handle_request": ("body_changed",)}
+    assert selected(plan) == {"t::test_get", "bench.time_get"}
+    assert unselected(plan) == {"t::test_shape"}
+    assert path_ids(reason(plan, "t::test_get"))[-2:] == [
+        "pkg.client.Transport",
+        "pkg.client.Transport.handle_request",
+    ]
+    # An abc.ABC subclass's plain method is not reached through the class.
+    head2 = repo.commit({"pkg/client.py": client.format(value=2, area=1)})
+    assert selected(repo.plan(head, head2, targets)) == set()
