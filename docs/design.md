@@ -825,10 +825,13 @@ from the `run` and `validate` commands after a plan exists.
   registry by unresolved name, code outside the source roots) passes
   arguments that are not counted.
 * Any file under a source root that does not parse (invalid syntax,
-  Python 2 code, a non-UTF-8 file) is an analysis error and forces
-  select-all, even a data file that no module imports and pytest never
-  collects (pygments, black and pip in the census). Python 2 is not
-  supported. Choose source roots that leave such files out.
+  Python 2 code) is an analysis error and forces select-all, even a data
+  file that no module imports and pytest never collects (pygments and
+  black in the census). Python 2 is not supported. Choose source roots
+  that leave such files out. A file is read in the encoding it declares:
+  a PEP 263 coding cookie or a BOM, UTF-8 otherwise, as Python itself
+  reads it (`tokenize.detect_encoding`), so a legitimately latin-1 file
+  is analysed rather than failing to decode.
 * Special methods are reached through their class: an instance obtained
   without any reference to its class in the source roots (from external
   code, `pickle`, `copy`) does not connect its user to the class's

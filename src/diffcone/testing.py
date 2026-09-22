@@ -60,15 +60,20 @@ class FixtureRepo:
             raise RuntimeError(proc.stderr)
         return proc.stdout.strip()
 
-    def commit(self, files: dict[str, str | None], message: str = "snapshot") -> str:
-        """Write (or delete, for ``None``) files and commit. Returns the sha."""
+    def commit(self, files: dict[str, str | bytes | None], message: str = "snapshot") -> str:
+        """Write (or delete, for ``None``) files and commit. Returns the sha.
+        ``bytes`` content is written as given, for a file whose encoding is
+        the point (a PEP 263 coding cookie)."""
         for rel, content in files.items():
             target = self.path / rel
             if content is None:
                 target.unlink()
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, "utf-8")
+                if isinstance(content, bytes):
+                    target.write_bytes(content)
+                else:
+                    target.write_text(content, "utf-8")
         self.git("add", "-A")
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")

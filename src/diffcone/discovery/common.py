@@ -6,7 +6,7 @@ import ast
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from diffcone.indexer import DEF_NODES, FUNC_NODES, iter_scope_statements
+from diffcone.indexer import DEF_NODES, FUNC_NODES, decode_source, iter_scope_statements
 from diffcone.snapshot import Snapshot, child_modules, member_symbol_id, module_name_for
 
 
@@ -34,7 +34,7 @@ def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModu
             failed.append(path)
             continue
         try:
-            tree = ast.parse(snapshot.files[path].decode("utf-8"), filename=path)
+            tree = ast.parse(decode_source(snapshot.files[path]), filename=path)
         except (SyntaxError, UnicodeDecodeError, ValueError):
             failed.append(path)
             continue

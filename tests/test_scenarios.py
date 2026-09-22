@@ -2618,3 +2618,37 @@ def test_a_mutated_table_keeps_its_items_loop_dynamic(repo):
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"t::test_cli", "bench_cli.Load.time_load"}
     assert [u for u in plan.unresolved if u.kind == "dynamic"]
+
+
+def test_a_module_is_read_in_the_encoding_it_declares(repo):
+    """A coding cookie (PEP 263) is how Python reads a file that is not
+    UTF-8; such a module is analysed, not an analysis error that selects
+    everything (pip's latin-1 test package)."""
+    latin = (
+        "# -*- coding: latin-1 -*-\nSUFFIX = 'ú'\n\n\ndef label(name):\n    return name + SUFFIX\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/latin.py": latin.encode("latin-1"),
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_latin.py": (
+                "from pkg.latin import label\n\n\ndef test_latin():\n    assert label('a')\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/latin.py": latin.replace("name + SUFFIX", "SUFFIX + name").encode("latin-1")}
+    )
+    targets = [
+        py_target("t::test_latin", "tests.test_latin.test_latin"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert not plan.degraded and plan.errors == []
+    assert changes(plan) == {"pkg.latin.label": ("body_changed",)}
+    assert selected(plan) == {"t::test_latin"}

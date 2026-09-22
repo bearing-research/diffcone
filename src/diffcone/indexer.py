@@ -30,7 +30,9 @@ import ast
 import builtins
 import copy
 import hashlib
+import io
 import json
+import tokenize
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -69,6 +71,14 @@ FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
 # --------------------------------------------------------------------------- hashing
+
+
+def decode_source(data: bytes) -> str:
+    """A source file as text, in the encoding it declares. Python reads a
+    coding cookie (PEP 263) or a BOM before it reads the source, and a file
+    that declares one is not UTF-8 (pip's latin-1 test package)."""
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(data).readline)
+    return data.decode(encoding)
 
 
 def _digest(text: str) -> str:
@@ -1123,7 +1133,7 @@ class Indexer:
 
     def _parse(self, path: str, module: str) -> ast.Module | None:
         try:
-            source = self.snapshot.files[path].decode("utf-8")
+            source = decode_source(self.snapshot.files[path])
             return ast.parse(source, filename=path)
         except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
             self._error(path, f"cannot parse: {exc}")

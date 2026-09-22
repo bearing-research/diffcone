@@ -881,6 +881,18 @@ nothing may have attached an unseen attribute to the receiver, and a
 test suite) exists in 34 of the 44 repositories measured. The roadmap
 records the shape and leaves it unbuilt.
 
+## A degraded census repository, explained
+
+pip degrades on every census commit, so its 100 % selection is an
+analysis error rather than a judgement. The error is one file:
+`tests/data/packages/SetupPyLatin1/setup.py`, which declares `# -*-
+coding: latin-1 -*-` and is deliberately not UTF-8. Python reads the
+declared encoding before it reads the source, and diffcone did not; it
+now does (design.md). With that file analysed, the same commit plans
+`complete` and selects 6 of 1939 targets instead of all of them. The
+remaining degraded repositories (pygments, black) hold files that are not
+Python at all.
+
 ## Recall validation beyond the corpora (10 census repositories)
 
 The governing rule is that a plan may run more tests than needed but must
