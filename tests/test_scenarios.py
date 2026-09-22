@@ -2254,3 +2254,22 @@ def test_a_package_importing_a_missing_submodule_of_itself_does_not_recurse(repo
     head = repo.commit({"pkg/mod.py": "def f():\n    return 2\n"})
     plan = repo.plan(base, head, [py_target("t::test_f", "tests.test_f.test_f")])
     assert not plan.degraded and selected(plan) == {"t::test_f"}
+
+
+def test_a_class_named_in_an_annotation_may_be_built_by_a_framework(repo):
+    """injector builds ``Service()`` from ``App.__init__``'s annotation with
+    the default argument, which no visible call passes; bounding
+    ``self.name`` by the visible ``Service('a')`` missed ``mod.evil``."""
+    core = (
+        "from pkg import mod\n\n\n"
+        "class Service:\n    def __init__(self, name: str = 'evil'):\n        self.name = name\n\n"
+        "    def run(self):\n        return getattr(mod, self.name)()\n\n\n"
+        "class App:\n    def __init__(self, service: Service):\n"
+        "        self.service = service\n\n\n"
+        "def manual():\n    return Service('a')\n"
+    )
+    test = (
+        "from injector import Injector\nfrom pkg.core import App\n\n\n"
+        "def test_s():\n    assert Injector().get(App).service.run() == 2\n"
+    )
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}

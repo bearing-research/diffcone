@@ -584,7 +584,7 @@ def test_instance_attributes_bound_by_constructor_arguments():
         "    def collect(self):\n        return getattr(hooks, self.identifier)\n\n"
         "    def run(self):\n        return self.handler()\n\n"
         "    @classmethod\n    def default(cls):\n        return cls('sdist')\n\n"
-        "def make() -> Register:\n    return Register('wheel')\n\n"
+        "def make():\n    return Register('wheel')\n\n"
         "def check(x):\n    return isinstance(x, (int, Register))\n"
     )
     hooks = "def wheel():\n    pass\n\ndef sdist():\n    pass\n\ndef other():\n    pass\n"
@@ -633,6 +633,8 @@ def test_instance_attributes_bound_by_constructor_arguments():
         "write through another receiver": "\ndef poke(r):\n    r.identifier = 'x'\n",
         "setattr through another receiver": "\ndef poke(r, n):\n    setattr(r, n, 1)\n",
         "class used as a value": "\nFACTORIES = [Register]\n",
+        # A framework may build it from an annotation (injector, FastAPI).
+        "class named in an annotation": "\ndef build(r: Register):\n    return r\n",
         "non-literal constructor argument": "\ndef n(x):\n    return Register(x)\n",
         "subclass with a non-literal super call": (
             "\nclass Sub(Register):\n    def __init__(self, i):\n        super().__init__(i)\n"

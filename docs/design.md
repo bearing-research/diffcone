@@ -304,9 +304,10 @@ for an `m` that follows K in the MRO of K or of one of its subclasses);
 if it is an `__init__` and a class that inherits it escapes; or if it has
 no resolved call site or any call site is unbounded (`*args`, a
 non-literal). A class escapes when it is referenced other than as a
-callee, a base class or in a type position (an annotation, the second
-argument of the builtin `isinstance`/`issubclass`, the first of
-`typing.cast`); `cls` as a
+callee, a base class, the second argument of the builtin
+`isinstance`/`issubclass` or the first of `typing.cast`. Annotations
+count as escapes: injector, FastAPI's `Depends()` and pydantic build
+instances from them with arguments no call shows; `cls` as a
 value in a classmethod, `type(self)` and `self.__class__` make the class
 and every in-scope subclass escape. Expanding a `getattr` can make a
 function escape, or record a name-bounded reference (a candidate that

@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 11  # 11: review fixes (re-exports, __new__, __dict__, cast, inert decorators)
+INDEX_FORMAT = 12  # 12: classes named in annotations escape
 
 
 def _indexer_fingerprint() -> str:

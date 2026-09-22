@@ -1897,9 +1897,9 @@ class Indexer:
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
             if arg.annotation is not None:
-                outer.visit_type(arg.annotation)
+                outer.visit(arg.annotation)
         if node.returns is not None:
-            outer.visit_type(node.returns)
+            outer.visit(node.returns)
         for name, default in zip(
             positional[len(positional) - n_defaults :] + [a.arg for a in node.args.kwonlyargs],
             list(node.args.defaults) + list(node.args.kw_defaults),
@@ -2394,19 +2394,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.source = source
         self.scope = scope
         self.skip_defs = skip_defs
-        # Type positions (annotations, ``isinstance``'s second argument,
-        # ``cast``'s first): a class named there is not used as a value.
-        self._type_depth = 0
+        # Positions that name a class without constructing it (the second
+        # argument of ``isinstance``/``issubclass``, the first of
+        # ``typing.cast``). Annotations are not among them: frameworks build
+        # instances from them (injector, FastAPI's ``Depends()``, pydantic).
         self._type_nodes: set[int] = set()
         # ``self.<attr> = value`` targets in ``__init__`` -> what they bind.
         self._bindings: dict[int, list | None] = {}
-
-    def visit_type(self, node: ast.AST) -> None:
-        self._type_depth += 1
-        try:
-            self.visit(node)
-        finally:
-            self._type_depth -= 1
 
     def _push(
         self,
@@ -2450,9 +2444,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         try:
             for arg in ast.walk(node.args):
                 if isinstance(arg, ast.arg) and arg.annotation is not None:
-                    self.visit_type(arg.annotation)
+                    self.visit(arg.annotation)
             if node.returns is not None:
-                self.visit_type(node.returns)
+                self.visit(node.returns)
             for stmt in node.body:
                 self.visit(stmt)
         finally:
@@ -2727,7 +2721,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._mutation_target(node.target)
             self._stash_binding(node.target, node.value)
         self.visit(node.target)
-        self.visit_type(node.annotation)
+        self.visit(node.annotation)
         if node.value is not None:
             self.visit(node.value)
 
@@ -2868,7 +2862,8 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be
         called from anywhere with anything; so may a class (constructed), unless
-        the reference is in a type position. ``self`` as a value is an
+        it is only named by ``isinstance``/``issubclass``/``typing.cast``
+        (annotations count: frameworks construct from them). ``self`` as a value is an
         instance, not its class; ``cls``, ``type(self)`` and
         ``self.__class__`` are the class of any in-scope subclass."""
         if parts[0] == self.scope.self_name and self.scope.self_class is not None:
@@ -2881,7 +2876,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
         if node is self._call_func:
             return
-        type_position = bool(self._type_depth) or id(node) in self._type_nodes
+        type_position = id(node) in self._type_nodes
         self._escape(self.indexer.resolve_chain(parts, self.scope), classes=not type_position)
 
     def _escape(self, target: Node, *, classes: bool = True) -> None:
