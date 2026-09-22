@@ -25,19 +25,7 @@ re-validated where selections move. Validating further repositories that
 differ from these (other layouts, heavy metaprogramming, frameworks with
 their own runners) is the standing way to find the next miss.
 
-## 0. Dict-literal values bound in ``items()`` loops (precision)
-
-Sphinx selects every test on every commit: `_load_subcommand` does `for
-command, module_name in _COMMANDS.items(): import_module(module_name)`,
-and only the *keys* of a dict literal are bound, so the import is
-unbounded. *Mechanism:* bind the value variable of `for k, v in
-D.items()` to the dict literal's values when they are all strings (and
-`D` is not mutated, above), as the keys already are. *Trade-off:* needs
-the literal's values kept beside its keys in the module's literal table.
-*Done when:* sphinx's dynamic import resolves to the five command
-modules and its corpus is re-measured.
-
-## 1. Dynamic references: the widespread constructs
+## 0. Dynamic references: the widespread constructs
 
 The census attributes 27 % of selections to dynamic references alone
 (18 % more to dynamic references or name matches). The constructs that
@@ -60,7 +48,7 @@ Instance-attribute tracking (implemented) bounds none of the census's
 only in networkx); it is kept because it is sound and tested, with its
 evidence limited to hatch.
 
-## 2. Name matches
+## 1. Name matches
 
 9 % of census selections alone, dominant in six repositories through a
 few attribute names on untyped receivers (`app`, `callback`, anyio's
@@ -68,7 +56,7 @@ task-group methods, `load_cert_chain`, `get`, `headers`). Any bound needs receiv
 which are out of scope; the useful next step is measurement (how many
 of these selections the corpora's coverage confirms), before any rule.
 
-## 3. Discovery completeness (rare in the census)
+## 2. Discovery completeness (rare in the census)
 
 Unknown fixtures cause 1 % of census selections.
 
@@ -84,7 +72,7 @@ Unknown fixtures cause 1 % of census selections.
   plugin) to measure static discovery against real collection; it executes
   project code, so it stays opt-in and outside planning.
 
-## 4. Other resolution work
+## 3. Other resolution work
 
 * Configurable treatment of module-init side effects (registries, plugin
   hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
@@ -92,7 +80,7 @@ Unknown fixtures cause 1 % of census selections.
 * A `watch` loop for the developer inner loop once incremental analysis
   exists.
 
-## 5. Planner cost on large trees
+## 4. Planner cost on large trees
 
 **Status.** With the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing

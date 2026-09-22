@@ -2537,3 +2537,84 @@ def test_a_mutated_container_is_not_the_literal_it_was_assigned(repo):
     edges = {(e.source, e.target) for e in plan.head_index.edges}
     assert ("pkg.core.run_fixed", "pkg.mod.a") in edges
     assert ("pkg.core.run_fixed", "pkg.mod.evil") not in edges
+
+
+def test_dict_literal_values_bound_in_an_items_loop(repo):
+    """``for name, module in TABLE.items(): import_module(module)`` over a
+    dict display reaches only that display's values, not every module."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/cli.py": (
+                "import importlib\n\n"
+                "_COMMANDS = {'build': 'pkg.build', 'serve': 'pkg.serve'}\n\n\n"
+                "def load_all():\n"
+                "    for command, module_name in _COMMANDS.items():\n"
+                "        importlib.import_module(module_name)\n"
+            ),
+            "pkg/build.py": "STAMP = len('build')\n",
+            "pkg/serve.py": "STAMP = len('serve')\n",
+            "pkg/other.py": "STAMP = len('other')\n",
+            "tests/test_cli.py": (
+                "from pkg.cli import load_all\n\n\ndef test_cli():\n    assert load_all() is None\n"
+            ),
+            "benchmarks/bench_cli.py": (
+                "from pkg.other import STAMP\n\n\n"
+                "class Other:\n    def time_other(self):\n        return STAMP\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_cli", "tests.test_cli.test_cli"),
+        asv_target("bench_cli.Other.time_other", "benchmarks.bench_cli.Other.time_other"),
+    ]
+    other = repo.commit({"pkg/other.py": "STAMP = len('other!')\n"})
+    plan = repo.plan(base, other, targets)
+    # pkg.other is not one of the table's values, so the dynamic import does
+    # not reach it: only the benchmark importing it directly is selected.
+    assert selected(plan) == {"bench_cli.Other.time_other"}
+    assert not [u for u in plan.unresolved if u.kind == "dynamic"]
+
+    serve = repo.commit({"pkg/serve.py": "STAMP = len('serve!')\n"})
+    plan = repo.plan(other, serve, targets)
+    assert selected(plan) == {"t::test_cli"}
+    r = reason(plan, "t::test_cli", "dynamic_reference")
+    assert path_ids(r)[-2:] == ["pkg.cli.load_all", "pkg.serve"]
+
+
+def test_a_mutated_table_keeps_its_items_loop_dynamic(repo):
+    """The values are bound only while the table is the display it was
+    assigned: a table another module fills stays unbounded."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/cli.py": (
+                "import importlib\n\n"
+                "_COMMANDS = {'build': 'pkg.build'}\n\n\n"
+                "def load_all():\n"
+                "    for command, module_name in _COMMANDS.items():\n"
+                "        importlib.import_module(module_name)\n"
+            ),
+            "pkg/plugins.py": (
+                "from pkg.cli import _COMMANDS\n\n\n"
+                "def register():\n    _COMMANDS['other'] = 'pkg.other'\n"
+            ),
+            "pkg/build.py": "STAMP = len('build')\n",
+            "pkg/other.py": "STAMP = len('other')\n",
+            "tests/test_cli.py": (
+                "from pkg.cli import load_all\n\n\ndef test_cli():\n    assert load_all() is None\n"
+            ),
+            "benchmarks/bench_cli.py": (
+                "from pkg.cli import load_all\n\n\n"
+                "class Load:\n    def time_load(self):\n        return load_all()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/other.py": "STAMP = len('other!')\n"})
+    targets = [
+        py_target("t::test_cli", "tests.test_cli.test_cli"),
+        asv_target("bench_cli.Load.time_load", "benchmarks.bench_cli.Load.time_load"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_cli", "bench_cli.Load.time_load"}
+    assert [u for u in plan.unresolved if u.kind == "dynamic"]

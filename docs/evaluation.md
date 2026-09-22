@@ -978,11 +978,17 @@ Django's own test runner, which `validate` cannot drive.
   `_django_db_helper` through `request.getfixturevalue(...)` with a
   literal, which discovery did not model; the helper went from 23 to 209
   of 210 targets' dependencies, and mean savings from 96 % to 74 %.
-* **sphinx selects every test on every commit**, through
-  `_cli._load_subcommand`: `for command, module_name in _COMMANDS.items():
-  import_module(module_name)` is an unbounded dynamic import, because
-  only the *keys* of a dict literal are bound (roadmap, "Dict-literal
-  values"). Its suite also takes 75 s, so the corpus took 20 minutes.
+* **sphinx selects every test on every commit.** The first seed found was
+  `_cli._load_subcommand`'s `import_module(_COMMANDS[command_name])`,
+  unbounded because only what *iterating* a dict literal yields was bound;
+  indexing one now yields its values too (design.md), which removes that
+  seed. It does not move sphinx: eleven further dynamic seeds are genuine
+  runtime-driven imports (autodoc's `_import_module`, the extension
+  registry's `load_extension`, `util._importer.import_object`, the
+  pygments style and search-language lookups, `pycode`'s analyzer), and
+  any one of them selects everything. A tool that imports what its
+  documents name is the worst case for a static bound, not a rule gap.
+  Its suite also takes 75 s, so the corpus took 20 minutes.
 * Django's settings-driven imports and REST framework's serializer
   metaclasses raised no miss.
 
@@ -992,7 +998,10 @@ was still read as its literal, so names drawn from it were bounded to
 nothing at all; such a variable is now unbounded everywhere (design.md).
 No recorded commit of the validated repositories changed. django-rest-
 framework and sphinx were validated before that fix and before the
-`getfixturevalue` one, both of which only add dependencies.
+`getfixturevalue` one, both of which only add dependencies. The rule that
+bounds what indexing a literal table yields changed no selection either,
+on any of the 171 recorded commits: it is kept because it is sound and
+removes a whole shape of seed, not because it was measured to pay.
 
 ## Not yet exercised
 

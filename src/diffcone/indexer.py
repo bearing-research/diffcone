@@ -11,9 +11,11 @@ Supported subset (see docs/design.md):
 * bare names and dotted attribute chains rooted at a module-level definition,
   an import alias, ``self``/``cls`` inside a method, or a star import;
 * ``import``/``from ... import`` (absolute and relative) within source roots;
-* ``importlib.import_module`` / ``getattr`` with literal arguments, with
-  parameters whose call sites pass literals, and with instance attributes
-  that ``__init__`` binds to such values (``getattr(x, self.name)``);
+* ``importlib.import_module`` / ``getattr`` with literal arguments (a
+  literal table's keys, values or elements included: ``D[k]``, ``D.values()``,
+  ``for k, v in D.items()``), with parameters whose call sites pass literals,
+  and with instance attributes that ``__init__`` binds to such values
+  (``getattr(x, self.name)``);
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an
   inherited ``m``, ``Sub.m``, ``super().m``).
 
@@ -274,12 +276,17 @@ class Scope:
             names: dict[str, tuple[str, ...] | None] = {}
             if self.literal_parent is not None:
                 parent = self.literal_parent.literal_names
-                names = {k: v for k, v in parent.items() if k not in self.literal_bound}
+                names = {
+                    k: v
+                    for k, v in parent.items()
+                    if k.removesuffix(INDEXED) not in self.literal_bound
+                }
             if self.literal_node is not None:
                 names.update(
                     _collect_literal_bindings(self.literal_node, self.module.literal_names)
                 )
             names.update(self.literal_extra)
+            names.update({k + INDEXED: None for k in self.literal_extra})
             self._literal_cache = names
         return self._literal_cache
 
@@ -401,18 +408,33 @@ def _resolve_relative_name(name: str, package: str, *, prefix: bool = False) -> 
     return base
 
 
-def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
+# Synthetic key in a literal table: what *indexing* the literal bound to NAME
+# yields -- a dict display's values, a sequence display's elements -- kept
+# beside what iterating it yields (stored under NAME itself). No identifier
+# contains a bracket, so the two can never collide.
+INDEXED = "[]"
+
+
+def _constant_string(expr: ast.expr) -> str | None:
+    """The string ``expr`` is, when it is written out in the source."""
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
-        return (expr.value,)
+        return expr.value
     if isinstance(expr, ast.JoinedStr) and all(isinstance(v, ast.Constant) for v in expr.values):
-        return ("".join(str(v.value) for v in expr.values),)  # type: ignore[attr-defined]
+        return "".join(str(v.value) for v in expr.values)  # type: ignore[attr-defined]
+    return None
+
+
+def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
+    constant = _constant_string(expr)
+    if constant is not None:
+        return (constant,)
     if isinstance(expr, ast.Dict):
         # Iterating a dict yields its keys; only all-literal string keys count.
         keys: list[str] = []
         for key in expr.keys:
-            if key is None or not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            if key is None or (name := _constant_string(key)) is None:
                 return None
-            keys.append(key.value)
+            keys.append(name)
         return tuple(keys)
     if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
         out: list[str] = []
@@ -441,6 +463,48 @@ def _string_candidates(
     # yields pairs and is handled only for ``for key, value in`` targets.)
     if _is_dict_method_call(expr, "keys"):
         return _string_candidates(expr.func.value, local_literals, module_literals)  # type: ignore[attr-defined]
+    # ``D.values()`` over a dict literal with string values yields them.
+    if _is_dict_method_call(expr, "values"):
+        return _indexed(expr.func.value, local_literals, module_literals)  # type: ignore[attr-defined]
+    # ``D[key]`` / ``L[i]``: one of the literal's values (a slice is not one).
+    if isinstance(expr, ast.Subscript) and not isinstance(expr.slice, ast.Slice):
+        return _indexed(expr.value, local_literals, module_literals)
+    return None
+
+
+def _constant_strings(exprs: list[ast.expr | None]) -> tuple[str, ...] | None:
+    """The strings ``exprs`` are, or None when any of them is not written out
+    as one (a ``*``/``**`` unpacking, whose element is None, included)."""
+    out: list[str] = []
+    for expr in exprs:
+        if expr is None or (string := _constant_string(expr)) is None:
+            return None
+        out.append(string)
+    return tuple(out)
+
+
+def _indexed(
+    expr: ast.expr,
+    local_literals: dict[str, tuple[str, ...] | None],
+    module_literals: dict[str, tuple[str, ...] | None],
+) -> tuple[str, ...] | None:
+    """Every string indexing ``expr`` may yield, or None when unbounded: a
+    dict display's values, a sequence display's elements. A name is looked up
+    under its synthetic ``INDEXED`` key, which every binding of that name
+    writes, so a local shadowing a module-level table is unbounded rather
+    than that table's contents."""
+    if isinstance(expr, ast.Dict):
+        # ``{**other}`` has a None key and hides what it contributes.
+        if any(key is None for key in expr.keys):
+            return None
+        return _constant_strings(expr.values)  # type: ignore[arg-type]
+    if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+        return _constant_strings(expr.elts)  # type: ignore[arg-type]
+    if isinstance(expr, ast.Name):
+        key = expr.id + INDEXED
+        if key in local_literals:
+            return local_literals[key]
+        return module_literals.get(key)
     return None
 
 
@@ -459,14 +523,25 @@ def _collect_literal_bindings(
 ) -> dict[str, tuple[str, ...] | None]:
     """Names bound in ``node``'s scope to string literals, tuples of them, or
     loop variables over such tuples. A name with any other binding maps to
-    None (unbounded); nested scopes are not entered."""
+    None (unbounded); nested scopes are not entered. A name bound to a dict
+    or sequence display also gets what indexing it yields under
+    ``name + INDEXED``."""
     found: dict[str, tuple[str, ...] | None] = {}
 
-    def bind(name: str, values: tuple[str, ...] | None) -> None:
+    def merge(name: str, values: tuple[str, ...] | None) -> None:
         if name in found and found[name] is not None and values is not None:
             found[name] = tuple(dict.fromkeys(found[name] + values))
         else:
             found[name] = None if (name in found and found[name] is None) else values
+
+    def bind(
+        name: str, values: tuple[str, ...] | None, indexed: tuple[str, ...] | None = None
+    ) -> None:
+        merge(name, values)
+        merge(name + INDEXED, indexed)
+
+    def unbind(name: str) -> None:
+        found[name] = found[name + INDEXED] = None
 
     # Source order matters: ``names = {...}`` must be seen before the loop
     # that iterates it, so children are pushed reversed onto the LIFO stack.
@@ -477,29 +552,37 @@ def _collect_literal_bindings(
             continue
         if isinstance(n, ast.Assign):
             values = _string_candidates(n.value, found, module_literals)
+            items = _indexed(n.value, found, module_literals)
             for target in n.targets:
                 if isinstance(target, ast.Name):
-                    bind(target.id, values)
+                    bind(target.id, values, items)
         elif isinstance(n, ast.AnnAssign) and n.value is not None:
             if isinstance(n.target, ast.Name):
-                bind(n.target.id, _string_candidates(n.value, found, module_literals))
+                bind(
+                    n.target.id,
+                    _string_candidates(n.value, found, module_literals),
+                    _indexed(n.value, found, module_literals),
+                )
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
             bind(n.target.id, _string_candidates(n.iter, found, module_literals))
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Tuple):
-            # ``for key, value in D.items()``: the key is bounded, the value is not.
+            # ``for key, value in D.items()``: over a dict display both the
+            # keys and the values are bounded, anything else is not.
             elts = n.target.elts
-            keys = None
+            keys = items = None
             if _is_dict_method_call(n.iter, "items") and len(elts) == 2:
-                keys = _string_candidates(n.iter.func.value, found, module_literals)  # type: ignore[attr-defined]
+                receiver = n.iter.func.value  # type: ignore[attr-defined]
+                keys = _string_candidates(receiver, found, module_literals)
+                items = _indexed(receiver, found, module_literals)
             for i, elt in enumerate(elts):
                 if isinstance(elt, ast.Name):
-                    bind(elt.id, keys if i == 0 else None)
+                    bind(elt.id, keys if i == 0 else items)
         elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
             if n.id not in found:
-                found[n.id] = None
+                unbind(n.id)
         elif (mutated := _mutated_name(n)) is not None:
             # ``d[k] = v`` / ``d.append(x)``: the literal is not what it was.
-            found[mutated] = None
+            unbind(mutated)
         stack.extend(reversed(list(ast.iter_child_nodes(n))))
     return found
 
@@ -1121,7 +1204,7 @@ class Indexer:
         for module, name in mutated:
             target = self.scopes.get(module)
             if target is not None and name in target.literal_names:
-                target.literal_names[name] = None
+                target.literal_names[name] = target.literal_names[name + INDEXED] = None
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other

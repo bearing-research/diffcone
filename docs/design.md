@@ -278,7 +278,9 @@ unbounded.
 every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
 directly, via `.keys()`, or as the first name of a `for key, value in
-D.items()` target), a variable assigned
+D.items()` target), a dict literal's string values (`D[key]`, `D.values()`,
+or the second name of a `for key, value in D.items()` target) or a sequence
+literal's elements (`L[i]`, a slice excepted), a variable assigned
 only such values (in the function or at module level) and never mutated in
 place (a `REGISTRY = {}` that any module fills with `REGISTRY[k] = v`, an
 `append`, an `update` or a `del` is not the literal it was assigned, in
