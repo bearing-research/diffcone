@@ -363,10 +363,10 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 660 / 827 | 20 % | 100 % | 12 % |
+| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 810 / 827 | 2 % | 100 % | 10 % |
 | 477ffd4 | opentelemetry-docker-tests: add Prometheus exporter docker tests | 0 / 827 | 100 % | n/a | n/a |
-| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 739 / 830 | 11 % | 100 % | 12 % |
-| cfad5eb | Fix TraceState.update to only update already existing keys | 644 / 830 | 22 % | 100 % | 0 % |
+| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 795 / 830 | 4 % | 100 % | 11 % |
+| cfad5eb | Fix TraceState.update to only update already existing keys | 796 / 830 | 4 % | 100 % | 0 % |
 | 34c5e5f | Added guard against negative value of max_value_len | 815 / 830 | 2 % | 100 % | 50 % |
 | ee219ad | test(exporter-otlp-proto-grpc): relax timing delta ... | 0 / 830 | 100 % | n/a | n/a |
 | 5843c4e | DOC(exporter-otlp-proto-http): clarify endpoint= kwarg ... | 0 / 830 | 100 % | n/a | n/a |
@@ -374,8 +374,9 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 | 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
 | 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
 
-Totals: 12 outcome changes, 0 missed; recall 100 % (955 of 955); precision
-26 %; mean savings 56 % under the import-time rule (see "Re-measurements"); 60 % before it (the table is from that
+Totals: 14 outcome changes, 1 missed (the flaky timing test below,
+`PASSED -> None` on 477ffd4); recall 100 % (955 of 955); precision 24 %;
+mean savings 51 % after the import-time and third-batch rules (see "Re-measurements"); 60 % before it (the table is from that
 re-run; the special-method, chain-name and external-base
 changes added 1 to 70 tests on five commits). The re-run before it
 reported two outcome misses, both one timing test,
@@ -572,6 +573,14 @@ been re-stated from the re-run:
   248141c went from 268 to 253 selected (recall 100 %; the 78 template
   tests on the release rows are now selected through the templates rather
   than as a dynamic reference); every other recorded commit planned identically;
+* the third batch's rules (classes named in annotations escape, doctests
+  and imported tests are discovered, decorators, defaults and class
+  bodies are import-time code of their module): over the 171 recorded
+  commits mean selection moved from 69.7 % to 70.0 %; the five
+  repositories that moved (cattrs, opentelemetry, starlette, tenacity,
+  typer) were re-validated at recall 100 %, their tables re-stated;
+  pytest's own repository gains one always-selected text doctest target
+  per commit (its rows were already select-all);
 * inert `def` statements and annotation-only changes no longer count as
   running at import (a narrowing): four commits moved (click e1fd594
   538 to 67, one each in structlog, cattrs and trio) and those
@@ -804,7 +813,7 @@ on the final code:
 | jinja (5ef7011) | 5 | n/a | n/a (0 affected) | 0 % |
 | rich (9d8f9a3) | 18 | (id mismatch) | 100 % (1 480 of 1 480) | 22 % |
 | marshmallow (7f0792b) | 9 | 100 % | 100 % (742 of 742) | 33 % |
-| cattrs (5bf7c97) | 4 | 100 % | 100 % (51 of 51) | 47 % |
+| cattrs (5bf7c97) | 4 | 100 % | 100 % (51 of 51) | 46 % |
 | tenacity (3e58094) | 5 | **73 %** | 100 % (509 of 509) | 20 % |
 | pluggy (9836e54) | 4 | **79 %** | 100 % (229 of 229) | 24 % |
 | packaging (10590c1) | 4 | 100 % | 100 % (273 of 273) | 47 % |
@@ -874,7 +883,7 @@ validated the same way over up to 12 of their last 75 commits:
 | repository (HEAD) | validated commits | recall | mean savings (before the import-time rule, in parentheses) | notes |
 |---|---|---|---|---|
 | werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 0 % (4 %) | |
-| starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 39 % (39 %) | 64 % recall before the external-base fix |
+| starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 38 % (39 %) | 64 % recall before the external-base fix |
 | httpx (b5addb6) | 3 | 100 % (2 of 2) | 67 % (100 %) | the re-import test, missed before the import-time rule |
 | typer (a80f6e5) | 3 | 100 % (6 of 6) | 35 % (41 %) | |
 | anyio (f7df682) | 7 | 100 % (828 of 828) | 14 % (43 %) | |
@@ -905,6 +914,42 @@ ran before the external-base rule, which only adds selections.
   on stdin under the harness, so trio ran with `-k "not repl"` and
   httpx and trio with pytest-timeout (`--timeout=120`); an httpx run
   without the timeout hung.
+
+## Recall validation, third batch: annotation-driven construction
+
+The review's open question (frameworks that build classes from
+annotations) was tested on two repositories that do it:
+
+| repository (HEAD) | validated commits | first pass | final: recall | mean savings |
+|---|---|---|---|---|
+| injector (d8f707d) | 4 | **93 %** (147 of 158) | 100 % (158 of 158) | 0 % |
+| fastapi (50113da) | 15 | **99.6 %** (1 707 of 1 713) | 100 % (1 713 of 1 713) | 47 % |
+
+Each miss became a scenario and a fix:
+
+* **Classes named in annotations** (a probe written from injector's
+  documented use): injector builds `Service()` from `App.__init__`'s
+  annotation with its default argument, which no visible call passes.
+  Annotations no longer exempt a class from escaping.
+* **Doctests** (injector, 11 missed): `--doctest-modules
+  --doctest-glob=*.md` collects docstring examples and README.md, which
+  discovery did not; they are now targets (design.md, "Doctests").
+  Discovery matches pytest's 145 collected items exactly.
+* **Imported tests** (fastapi, 5 of 6 missed): tutorial tests import
+  `test_read_main` from `docs_src`, and pytest collects it in the
+  importing module; discovery now does too.
+* **Import-time code in decorators** (fastapi, the 6th):
+  `@app.get("/")` builds the route handler while `docs_src` is imported,
+  and a test reaches it through `runpy.run_module`; decorators, defaults
+  and class statements now count as the module's import-time code, and
+  `runpy.run_module` as a dynamic import.
+
+Setup: fastapi from its `uv.lock` (`uv sync --frozen --all-extras
+--group tests`; a newer anyio turns a deprecation warning into a
+collection error), with pytest-timeout; most fastapi commits touch only
+docs and translations, so the range is its last 15 Python-touching
+commits (`--range 5f25505~1..HEAD`). injector's own `addopts` run
+pytest-cov with a coverage floor, which the validation tolerates.
 
 ## Not yet exercised
 
