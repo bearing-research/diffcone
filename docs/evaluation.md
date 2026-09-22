@@ -863,7 +863,7 @@ nineteen (WSGI, ASGI and HTTP clients, a type-hint CLI, two async
 frameworks with their own pytest plugins, pure functions, datetimes),
 validated the same way over up to 12 of their last 75 commits:
 
-| repository (HEAD) | validated commits | recall | mean savings (before the import-time rule) | notes |
+| repository (HEAD) | validated commits | recall | mean savings (before the import-time rule, in parentheses) | notes |
 |---|---|---|---|---|
 | werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 0 % (4 %) | |
 | starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 39 % (39 %) | 64 % recall before the external-base fix |
