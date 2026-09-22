@@ -805,6 +805,78 @@ Class creation now depends on the bases' `__init_subclass__` and a
 metaclass's `__new__`/`__init__` (design.md): on 2a8a38b the 12 tests
 that subclass `MethodView` are reached through a dependency path.
 
+## What the dynamic references actually are
+
+The census ranks dynamic references first among the causes of selection
+(27 % of selections alone), but "dynamic reference" is a fallback, not a
+construct. Three measurements over the 42 census clones at HEAD (vendored
+`.venv`, `build` and `.tox` trees excluded) say what the constructs are
+and what a rule could bound.
+
+**The sites.** 768 `getattr` calls pass a name the indexer cannot bound.
+What the receiver is decides whether any rule could:
+
+| receiver of the unbounded `getattr` | sites | share |
+|---|---|---|
+| a parameter, a local, a call result, a chain (no type known) | 568 | 74 % |
+| `self` / `cls` (the class is known) | 128 | 16 % |
+| a name imported from a module in the source roots | 36 | 4 % |
+| a name imported from the standard library or a dependency | 35 | 4 % |
+
+324 of those names are loop variables, and what they iterate is mostly
+not a table a static rule can read:
+
+| iterable of the loop variable | sites | share |
+|---|---|---|
+| a name that is not a literal display | 102 | 31 % |
+| an attribute (`self.x`, `mod.X`) | 54 | 16 % |
+| `.items()` / `.keys()` of a non-literal | 43 | 13 % |
+| `dir()` | 34 | 10 % |
+| a literal display (already bounded) | 38 | 12 % |
+| `__slots__`, `__all__`, `__dict__` | 25 | 8 % |
+| a function result, a subscript, `zip()`, a built string | 28 | 9 % |
+
+**Why a parameter is unbounded.** Instrumenting `_param_values` over the
+42 repositories records the condition that gave up, 314 times:
+
+| condition | cases | share |
+|---|---|---|
+| no call site in scope: the function is a public entry point | 180 | 57 % |
+| a call site passes a non-literal | 74 | 24 % |
+| the function's own name is itself a dynamic candidate | 48 | 15 % |
+| the function escapes as a value | 6 | 2 % |
+| a call site passes `*args`/`**kwargs` | 4 | 1 % |
+| its class is constructed unseen | 2 | 1 % |
+
+**What causes selections.** The first two tables count sites; only the
+seeds the census attributes selections to matter. Classifying those
+34 866 selections by the shape of their seed:
+
+| seed shape | selections | share | repositories |
+|---|---|---|---|
+| `getattr` on a receiver with no known type | 24 897 | 71 % | 14 |
+| `import_module` / `__import__` (no receiver at all) | 7 502 | 22 % | 12 |
+| `getattr` on an imported module or name | 1 754 | 5 % | 6 |
+| `getattr` on `self`/`cls`, or on an instance attribute | 152 | 0.5 % | 4 |
+
+And they concentrate: the ten heaviest seeds are networkx's
+`_dispatchable._call_with_backend` (19 053 selections, 55 % of the whole
+census on its own), scrapy's `load_object`, anyio's
+`install_lazy_importer`, jinja2's `import_string` and `do_round`, tox's
+`_load_plugin`, flask's `get_root_path`, pydantic's two `import_string`s
+and uvicorn's `import_from_string`.
+
+**The conclusion.** The widespread construct is not a loop or a parameter
+shape: it is the by-name import utility (`import_string`, `load_object`,
+`import_from_string`, `_load_plugin`) and the plugin dispatcher, called
+with names that come from a user's configuration rather than from the
+code. Their parameters are unbounded for the reason the second table
+leads with -- they are public entry points, so no set of in-repository
+call sites bounds them. Bounding the 71 % needs the receiver's type,
+which is out of scope by design (AGENTS.md). The only shapes a rule could
+bound are the last two rows, 5.5 % of dynamic-caused selections; the
+roadmap keeps that one item and claims nothing more.
+
 ## Recall validation beyond the corpora (10 census repositories)
 
 The governing rule is that a plan may run more tests than needed but must

@@ -25,23 +25,31 @@ re-validated where selections move. Validating further repositories that
 differ from these (other layouts, heavy metaprogramming, frameworks with
 their own runners) is the standing way to find the next miss.
 
-## 0. Dynamic references: the widespread constructs
+## 0. `getattr` bounded by a receiver whose type is known (precision)
 
-The census attributes 27 % of selections to dynamic references alone
-(18 % more to dynamic references or name matches). The constructs that
-matter in many repositories are `getattr` with a loop variable over a
-non-literal iterable (selections in 18 repositories, present in 30) and
-`getattr` with a parameter whose call sites are unbounded or escape (17
-and 31); `getattr` and `import_module` of a local variable and
-`__import__` of a parameter follow (11, 8 and 4). Everything else is a single seed in a single
-repository (networkx's backend dispatcher, rich's `repr.auto`).
-*Mechanism:* not yet chosen. First classify a sample of the loop and
-parameter cases from the census (what the iterable is: `dir(obj)`,
-`vars(obj)`, `__dict__`, a class attribute tuple, a function result;
-why the parameter is unbounded: escape, `*args`, a non-literal
-argument), then sketch the one rule that covers the most. *Done when:*
-that classification is in evaluation.md and this item carries a
-concrete mechanism.
+The classification the previous version of this item asked for is done
+(evaluation.md, "What the dynamic references actually are"). It did not
+find a widespread construct a rule can bound: 71 % of dynamic-caused
+selections are a `getattr` on a receiver with no known type and 22 % an
+`import_module` with no receiver at all, both of which need type
+inference or the caller's configuration. What is left is small but real:
+5 % of those selections are a `getattr` on a name imported from a module,
+and 0.5 % on `self`/`cls`. *Mechanism:* when the receiver of a dynamic
+`getattr` resolves to a module or to a class (`self`/`cls` in a method,
+an import alias, a module-level name bound once), expand the name over
+that receiver's members -- the module's symbols, or the in-scope MRO's --
+instead of seeding the select-all fallback; when the receiver resolves
+outside the source roots (`getattr(sys, name)`), it reaches nothing in
+scope and seeds nothing. *Trade-off:* sound only while the receiver's
+attribute set is bounded, so a class or module the analysis has seen a
+reflective write into (`setattr` with an unbounded name, `__dict__`
+updates -- already tracked for instance attributes) must keep the
+fallback; the candidate set also has to include inherited members, which
+`lookup_in_class` already computes. *Done when:* flake8's
+`getattr(sys, filename)` and isort's `getattr(settings, name)` stop
+seeding, the census's dynamic share drops by the measured 5.5 %, no
+recorded corpus commit loses a selected target, and a regression scenario
+covers a reflective write defeating the bound.
 
 Instance-attribute tracking (implemented) bounds none of the census's
 `self`-attribute cases (present in 11 repositories, causing selections
