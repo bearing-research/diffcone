@@ -25,6 +25,18 @@ re-validated where selections move. Validating further repositories that
 differ from these (other layouts, heavy metaprogramming, frameworks with
 their own runners) is the standing way to find the next miss.
 
+## 0. Dict-literal values bound in ``items()`` loops (precision)
+
+Sphinx selects every test on every commit: `_load_subcommand` does `for
+command, module_name in _COMMANDS.items(): import_module(module_name)`,
+and only the *keys* of a dict literal are bound, so the import is
+unbounded. *Mechanism:* bind the value variable of `for k, v in
+D.items()` to the dict literal's values when they are all strings (and
+`D` is not mutated, above), as the keys already are. *Trade-off:* needs
+the literal's values kept beside its keys in the module's literal table.
+*Done when:* sphinx's dynamic import resolves to the five command
+modules and its corpus is re-measured.
+
 ## 1. Dynamic references: the widespread constructs
 
 The census attributes 27 % of selections to dynamic references alone

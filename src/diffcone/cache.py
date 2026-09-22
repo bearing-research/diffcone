@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 14  # 14: literal module constants are inert at import
+INDEX_FORMAT = 15  # 15: mutated containers are not literals
 
 
 def _indexer_fingerprint() -> str:

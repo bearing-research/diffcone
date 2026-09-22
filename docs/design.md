@@ -279,8 +279,11 @@ every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
 directly, via `.keys()`, or as the first name of a `for key, value in
 D.items()` target), a variable assigned
-only such values (in the function or at module level), or a `for` variable
-iterating over one
+only such values (in the function or at module level) and never mutated in
+place (a `REGISTRY = {}` that any module fills with `REGISTRY[k] = v`, an
+`append`, an `update` or a `del` is not the literal it was assigned, in
+the scope that mutates it and everywhere the variable is visible), or a
+`for` variable iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
 resolved like `x.<candidate>` or an import. A string built at runtime with a
 literal prefix (`f"attr.{name}"`, `"attr." + name`, `"attr.%s" % name`,

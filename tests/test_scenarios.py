@@ -2499,3 +2499,41 @@ def test_getfixturevalue_with_a_literal_is_a_fixture_request(repo):
     deps = {d.target.runner_id: d.target.lifecycle_dependencies for d in plan.decisions}
     assert "tests.conftest.helper" in deps["tests/test_db.py::test_db"]
     assert "tests.conftest.unused" not in deps["tests/test_db.py::test_db"]
+
+
+def test_a_mutated_container_is_not_the_literal_it_was_assigned(repo):
+    """``REGISTRY = {}`` filled by a decorator elsewhere was read as the
+    empty literal, so ``for name in REGISTRY: getattr(mod, name)`` bounded
+    to no names at all and a change to a registered function was missed."""
+    core = (
+        "from pkg import mod\n\n"
+        "REGISTRY = {}\n"
+        "FIXED = {'a': 1}\n\n\n"
+        "def register(name):\n    REGISTRY[name] = 1\n\n\n"
+        "def run():\n    for name in REGISTRY:\n        getattr(mod, name)()\n\n\n"
+        "def run_fixed():\n    for name in FIXED:\n        getattr(mod, name)()\n"
+    )
+    test = (
+        "from pkg.core import register, run, run_fixed\n\n\n"
+        "def test_s():\n    register('evil')\n    run()\n    run_fixed()\n"
+    )
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}
+    # The unmutated literal still bounds ``run_fixed`` to ``mod.a``.
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/mod.py": _EVIL.format(2),
+            "pkg/core.py": core,
+            "tests/test_s.py": test,
+        }
+    )
+    head = repo.commit({"pkg/mod.py": "def a():\n    return 9\n\n\ndef evil():\n    return 2\n"})
+    plan = repo.plan(base, head, [py_target("t::test_s", "tests.test_s.test_s")])
+    assert changes(plan) == {"pkg.mod.a": ("body_changed",)}
+    # ``run`` is dynamic (its registry is mutated), so it is selected through
+    # the import closure; ``run_fixed`` keeps a resolved edge to ``mod.a``
+    # from the literal it iterates, and none to ``mod.evil``.
+    assert rules(plan, "t::test_s") == {"dynamic_reference"}
+    edges = {(e.source, e.target) for e in plan.head_index.edges}
+    assert ("pkg.core.run_fixed", "pkg.mod.a") in edges
+    assert ("pkg.core.run_fixed", "pkg.mod.evil") not in edges

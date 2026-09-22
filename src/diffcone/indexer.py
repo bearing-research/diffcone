@@ -226,6 +226,9 @@ class ModuleScope:
     variable_stmts: dict[str, ast.stmt] = field(default_factory=dict)
     # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    # Names this module mutates in place anywhere (``d[k] = v``,
+    # ``d.append(x)``): such a container is not the literal it was assigned.
+    mutations: frozenset[str] = frozenset()
     # Module cache bookkeeping: the content key of the file and the digest
     # of everything other modules' resolution may read from this one.
     cache_key: str | None = None
@@ -494,12 +497,75 @@ def _collect_literal_bindings(
         elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
             if n.id not in found:
                 found[n.id] = None
+        elif (mutated := _mutated_name(n)) is not None:
+            # ``d[k] = v`` / ``d.append(x)``: the literal is not what it was.
+            found[mutated] = None
         stack.extend(reversed(list(ast.iter_child_nodes(n))))
     return found
 
 
 COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 NESTED_SCOPES = DEF_NODES + COMPREHENSIONS + (ast.Lambda,)
+
+
+# Methods that change a container in place (see also
+# _ReferenceCollector.MUTATING_METHODS, which records writer edges).
+_MUTATING_METHODS = frozenset(
+    {
+        "append",
+        "extend",
+        "insert",
+        "pop",
+        "popitem",
+        "remove",
+        "clear",
+        "update",
+        "setdefault",
+        "add",
+        "discard",
+        "sort",
+        "reverse",
+        "__setitem__",
+        "__delitem__",
+    }
+)
+
+
+def _mutated_name(node: ast.AST) -> str | None:
+    """The name a statement or call mutates in place (``d[k] = v``,
+    ``d.append(x)``, ``del d[k]``), if it is a plain name."""
+    targets: list[ast.expr] = []
+    if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+        targets = list(getattr(node, "targets", [])) or [node.target]  # type: ignore[list-item]
+    elif isinstance(node, ast.Delete):
+        targets = list(node.targets)
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _MUTATING_METHODS
+    ):
+        targets = [node.func.value]
+    for target in targets:
+        base = target
+        while isinstance(base, (ast.Subscript, ast.Attribute)):
+            base = base.value
+        if isinstance(base, ast.Name) and base is not target:
+            return base.id
+        if isinstance(base, ast.Name) and isinstance(node, ast.Call):
+            return base.id
+    return None
+
+
+def _module_mutations(tree: ast.Module) -> set[str]:
+    """Every name the module mutates in place, anywhere in it (nested scopes
+    included): such a container's contents are not the literal it was
+    assigned."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        mutated = _mutated_name(node)
+        if mutated is not None:
+            names.add(mutated)
+    return names
 
 
 def _collect_store_names(stmt: ast.AST) -> set[str]:
@@ -804,6 +870,7 @@ def _facts_to_dict(
         "literal_names": {
             k: (list(v) if v is not None else None) for k, v in scope.literal_names.items()
         },
+        "mutations": sorted(scope.mutations),
         "symbols": [dict(vars(s)) for s in symbols],  # flat and frozen: no deep copy needed
         "classes": [
             {
@@ -826,6 +893,7 @@ def _facts_to_dict(
         record["bindings"],
         record["members"],
         record["variables"],
+        record["mutations"],
         [[s.id, s.kind, s.module] for s in symbols],
         [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
     ]
@@ -937,6 +1005,7 @@ class Indexer:
                 scope.env_digest = record["env"]
                 if not self._collided and scope.cache_key is not None:
                     new_facts[scope.cache_key] = record
+        self._unbind_mutated_variables()
         for class_id in sorted(self.class_scopes):
             self._ensure_bases(class_id)
         self._bases_final = True  # MROs may be memoised from here on
@@ -998,6 +1067,7 @@ class Indexer:
         members = dict(record["members"])
         variables = dict(record["variables"])
         literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
+        mutations = frozenset(record["mutations"])
         env_digest = str(record["env"])
         symbols: list[Symbol] = []
         for data in record["symbols"]:
@@ -1028,12 +1098,30 @@ class Indexer:
                 return False
         scope.imports, scope.star_imports, scope.bindings = imports, star_imports, bindings
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
+        scope.mutations = mutations
         scope.env_digest = env_digest
         for symbol in symbols:
             self._add_symbol(symbol)
         self.class_scopes.update(classes)
         self.out.edges |= edges
         return True
+
+    def _unbind_mutated_variables(self) -> None:
+        """A module-level container that any module mutates in place is not
+        the literal it was assigned: unbind it everywhere (its own module and
+        the modules that import it), so names drawn from it stay dynamic."""
+        mutated: set[tuple[str, str]] = set()
+        for scope in self.scopes.values():
+            for name in scope.mutations:
+                if name in scope.variables:
+                    mutated.add((scope.name, name))
+                binding = scope.imports.get(name)
+                if binding is not None and binding.attr is not None:
+                    mutated.add((binding.module, binding.attr))
+        for module, name in mutated:
+            target = self.scopes.get(module)
+            if target is not None and name in target.literal_names:
+                target.literal_names[name] = None
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other
@@ -1331,6 +1419,7 @@ class Indexer:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
+        scope.mutations = frozenset(_module_mutations(scope.tree))
         imports = tuple(sorted(_canonical_imports(scope)))
         module_body_hash = hash_scope_body(
             [s for s in body if s not in variable_stmts.values()], strip_imports=True
