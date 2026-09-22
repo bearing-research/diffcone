@@ -479,8 +479,10 @@ Unknown is never treated as unaffected:
   revisions), since that is what its globals can name (rule
   `dynamic_reference`). A dynamic *import* (`__import__`,
   `importlib.import_module` with an unbounded name) can reach anything and
-  stays always-on. A project-defined function named `vars` or `getattr` is
-  not mistaken for the builtin.
+  stays always-on; the reason says which of the two fired, since "any
+  module in scope may be the one" and "reachable from its module's
+  imports" are different claims. A project-defined function named `vars`
+  or `getattr` is not mistaken for the builtin.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).
