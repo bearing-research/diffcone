@@ -374,12 +374,15 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 | 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
 | 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
 
-Totals: 14 outcome changes, 1 missed (the flaky timing test below,
-`PASSED -> None` on 477ffd4); recall 100 % (955 of 955); precision 24 %;
-mean savings 51 % after the import-time and third-batch rules (see "Re-measurements"); 60 % before it (the table is from that
-re-run; the special-method, chain-name and external-base
-changes added 1 to 70 tests on five commits). The re-run before it
-reported two outcome misses, both one timing test,
+Totals: 14 outcome changes, 1 reported as missed, which is the flaky
+timing test described below (`PASSED -> None` on 477ffd4, a commit that
+changes only docker tests and selects nothing), not a selection miss;
+recall 100 % (955 of 955); precision 24 %; mean savings 51 %. The table
+is from the re-run after the third batch's rules (see "Re-measurements");
+mean savings was 60 % before the import-time rule and 56 % under it,
+and the third batch's rules added up to 152 tests on a commit (cfad5eb:
+644 to 796). An earlier re-run reported two outcome misses, both that
+timing test,
 `test_batch_processor.py::TestBatchProcessor::test_shutdown_allows_1_export_to_finish`,
 producing no result in one of the two runs (`None -> PASSED` on ee219ad,
 `PASSED -> None` on 9bbc005, commits that change only another package's
@@ -578,7 +581,10 @@ been re-stated from the re-run:
   bodies are import-time code of their module): over the 171 recorded
   commits mean selection moved from 69.7 % to 70.0 %; the five
   repositories that moved (cattrs, opentelemetry, starlette, tenacity,
-  typer) were re-validated at recall 100 %, their tables re-stated;
+  typer) were re-validated at recall 100 %; the cattrs, opentelemetry and
+  starlette figures are re-stated, while tenacity and typer gained two
+  tests on one or two commits, which leaves their rounded savings (20 %,
+  35 %) unchanged;
   pytest's own repository gains one always-selected text doctest target
   per commit (its rows were already select-all);
 * inert `def` statements and annotation-only changes no longer count as
