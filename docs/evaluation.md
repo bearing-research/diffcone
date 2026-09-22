@@ -44,15 +44,15 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| d287360 | Add frozendict signature | 78 / 186 | 58 % | 100 % | 1 % |
-| 80ddcb3 | Add tests for get_in defaults, ... | 81 / 190 | 57 % | 100 % | 5 % |
-| a1e25cb | Expose combined `__annotations__` on composed functions | 80 / 192 | 58 % | 100 % | 10 % |
-| 55ce42d | Support Python 3.15 and refresh dev tooling | 80 / 192 | 58 % | n/a | 0 % |
-| d2eba03 | Fix interpose([]) raising StopIteration | 81 / 193 | 58 % | 100 % | 2 % |
+| d287360 | Add frozendict signature | 186 / 186 | 0 % | 100 % | 1 % |
+| 80ddcb3 | Add tests for get_in defaults, ... | 190 / 190 | 0 % | 100 % | 2 % |
+| a1e25cb | Expose combined `__annotations__` on composed functions | 192 / 192 | 0 % | 100 % | 4 % |
+| 55ce42d | Support Python 3.15 and refresh dev tooling | 192 / 192 | 0 % | n/a | 0 % |
+| d2eba03 | Fix interpose([]) raising StopIteration | 193 / 193 | 0 % | 100 % | 1 % |
 | 451af60 | Add pysentry-pre-commit | 0 / 193 | 100 % | n/a | n/a |
 
 Totals: 7 outcome changes, 0 missed; recall 100 % (15 of 15); precision
-4 %; mean savings 65 %. The table is from the re-run after classes came
+2 %; mean savings 17 % under the import-time rule (see "Re-measurements"); 65 % before it. The table is from the re-run after classes came
 to depend on their special methods (see "Re-measurements"): about 45 more
 tests per commit, through `curry.__reduce__`, which imports the curried
 function's module by its runtime name (`import_module(modname)`) and so
@@ -102,13 +102,14 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| 2103e15 | Forward all user's parameters set in `PAGER` | 34 / 537 | 94 % | 100 % | 62 % |
-| e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
-| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 528 / 555 | 5 % | 100 % | 80 % |
+| 2103e15 | Forward all user's parameters set in `PAGER` | 537 / 537 | 0 % | 100 % | 4 % |
+| e1fd594 | Add support of `pathlib.Path` to `edit` | 538 / 538 | 0 % | 100 % | 2 % |
+| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 555 / 555 | 0 % | 100 % | 76 % |
 
 Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
-79 %; mean savings 65 % (re-run after the external-base rule: 6aabf09
-gained 7 tests).
+28 %; mean savings 0 % under the import-time rule (see "Re-measurements"): every commit changes a signature or
+definition in a module that `click/__init__.py` imports, and every test
+depends on `conftest.py`, which imports `click`. 65 % before it.
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
@@ -135,12 +136,12 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| e26945d | fix: PytestRemovedIn10Warning | 3 / 516 | 99 % | 100 % | 67 % |
+| e26945d | fix: PytestRemovedIn10Warning | 34 / 516 | 93 % | 100 % | 6 % |
 | d8e321a | Use built-in product | 34 / 516 | 93 % | 100 % | 100 % |
-| 73393f3 | Better bankruptcy | 48 / 517 | 91 % | 100 % | 88 % |
+| 73393f3 | Better bankruptcy | 205 / 517 | 60 % | 100 % | 20 % |
 
 Totals: 1 outcome change, 0 missed; recall 100 % (78 of 78); precision
-92 %; mean savings 95 %.
+29 %; mean savings 82 % under the import-time rule (see "Re-measurements"); 95 % before it.
 
 The first structlog run reported two outcome misses for
 `tests/test_tracebacks.py::test_recursive`, which passed at base and
@@ -167,7 +168,7 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| a8bd0b1 | Honour resetall() arguments for non-callable mocks | 25 / 69 | 64 % | 100 % | 20 % |
+| a8bd0b1 | Honour resetall() arguments for non-callable mocks | 69 / 69 | 0 % | 100 % | 7 % |
 
 Every test depends on the plugin's hooks, so any change to the hook chain
 selects the whole suite; this commit changed one `MockerFixture` method and
@@ -191,8 +192,7 @@ diffcone corpus --repo . --range HEAD~120..HEAD --discover pytest \
 ```
 
 Totals: 26 outcome changes, 0 missed; recall 100 % (1 869 of 1 869);
-precision 52 %; mean savings 66 % (re-run after the special-method and
-chain-name changes: 4 to 8 more tests on four commits). The 16 validated commits (nine touch
+precision 45 %; mean savings 60 % under the import-time rule (see "Re-measurements"); 66 % before it. The 16 validated commits (nine touch
 only docstrings, `typing_tests/` examples outside the source roots, or
 test-typing stubs, change no symbol with impact, and select nothing; they
 count at 100 % savings):
@@ -200,12 +200,12 @@ count at 100 % savings):
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
 | 6851ab5 | Defer imports on the cold import path | 655 / 655 | 0 % | 100 % | 83 % |
-| 97f8d17 | Fix ClassVar forward reference detection | 559 / 656 | 15 % | 100 % | 15 % |
-| 4b5b295 | Make on_setattr hooks accept generators | 563 / 667 | 16 % | 100 % | 61 % |
-| 5aa76a4 | Add `ne` validator | 23 / 667 | 97 % | 100 % | 22 % |
+| 97f8d17 | Fix ClassVar forward reference detection | 656 / 656 | 0 % | 100 % | 13 % |
+| 4b5b295 | Make on_setattr hooks accept generators | 667 / 667 | 0 % | 100 % | 52 % |
+| 5aa76a4 | Add `ne` validator | 241 / 667 | 64 % | 100 % | 2 % |
 | 9b98a73 | Drop Python 3.9 | 666 / 666 | 0 % | 100 % | 83 % |
-| 3e01de4 | docs: fix markup (removes a `from . import` binding) | 559 / 666 | 16 % | 100 % | 1 % |
-| f53fc54 | Stop evolve dunders from being modified | 559 / 667 | 16 % | 100 % | 62 % |
+| 3e01de4 | docs: fix markup (removes a `from . import` binding) | 666 / 666 | 0 % | 100 % | 1 % |
+| f53fc54 | Stop evolve dunders from being modified | 667 / 667 | 0 % | 100 % | 52 % |
 | 9 others | docstrings, `typing_tests/` examples, typing stubs | 0 | 100 % | n/a | n/a |
 
 The remaining wide rows share one cause: `attr/__init__.py` is a hub whose
@@ -305,13 +305,12 @@ diffcone corpus --repo . --range HEAD~40..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| b83f660 | fix(upgrade): don't claim 'latest version' for local-path installs | 468 / 698 | 33 % | 100 % | 8 % |
-| 84eaad3 | fix(reinstall): propagate returned failures in reinstall-all | 462 / 699 | 34 % | 100 % | 2 % |
+| b83f660 | fix(upgrade): don't claim 'latest version' for local-path installs | 698 / 698 | 0 % | 100 % | 6 % |
+| 84eaad3 | fix(reinstall): propagate returned failures in reinstall-all | 699 / 699 | 0 % | 100 % | 2 % |
 
 Totals: 0 outcome changes, 0 missed; recall 100 % (50 of 50); precision
-5 %; mean savings 33 % (re-run: b83f660 gained 7 tests when every name of
-an unresolved chain became a name-bounded reference; the counts below
-are from the run before). No test needed `--assume-external-fixture`. The
+4 %; mean savings 0 % under the import-time rule (see "Re-measurements"); 33 % before it (the counts below are from
+earlier runs). No test needed `--assume-external-fixture`. The
 precision is bounded by the CLI's shape, not by a resolution gap. Every
 test that drives the CLI through `run_pipx_cli` (456 of the 461 tests
 selected for b83f660, 461 of the 462 for 84eaad3) is selected under the
@@ -360,20 +359,20 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 631 / 827 | 24 % | 100 % | 12 % |
+| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 660 / 827 | 20 % | 100 % | 12 % |
 | 477ffd4 | opentelemetry-docker-tests: add Prometheus exporter docker tests | 0 / 827 | 100 % | n/a | n/a |
-| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 628 / 830 | 24 % | 100 % | 14 % |
-| cfad5eb | Fix TraceState.update to only update already existing keys | 629 / 830 | 24 % | 100 % | 0 % |
-| 34c5e5f | Added guard against negative value of max_value_len | 710 / 830 | 14 % | 100 % | 57 % |
+| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 739 / 830 | 11 % | 100 % | 12 % |
+| cfad5eb | Fix TraceState.update to only update already existing keys | 644 / 830 | 22 % | 100 % | 0 % |
+| 34c5e5f | Added guard against negative value of max_value_len | 815 / 830 | 2 % | 100 % | 50 % |
 | ee219ad | test(exporter-otlp-proto-grpc): relax timing delta ... | 0 / 830 | 100 % | n/a | n/a |
 | 5843c4e | DOC(exporter-otlp-proto-http): clarify endpoint= kwarg ... | 0 / 830 | 100 % | n/a | n/a |
-| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 701 / 830 | 16 % | 100 % | 55 % |
+| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 815 / 830 | 2 % | 100 % | 47 % |
 | 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
 | 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
 
-Totals: 11 outcome changes, 0 missed; recall 100 % (955 of 955); precision
-29 %; mean savings 60 % (the table is from the re-run after the
-external-base rule; the special-method, chain-name and external-base
+Totals: 12 outcome changes, 0 missed; recall 100 % (955 of 955); precision
+26 %; mean savings 56 % under the import-time rule (see "Re-measurements"); 60 % before it (the table is from that
+re-run; the special-method, chain-name and external-base
 changes added 1 to 70 tests on five commits). The re-run before it
 reported two outcome misses, both one timing test,
 `test_batch_processor.py::TestBatchProcessor::test_shutdown_allows_1_export_to_finish`,
@@ -569,6 +568,14 @@ been re-stated from the re-run:
   248141c went from 268 to 253 selected (recall 100 %; the 78 template
   tests on the release rows are now selected through the templates rather
   than as a dynamic reference); every other recorded commit planned identically;
+* the import-time rule (changes that run at import reach every
+  transitive importer; adopted after measuring it, see design.md): every
+  validated repository whose selections moved was re-validated, 23 in
+  all, each at recall 100 % with no outcome miss (jinja has no ground
+  truth); the tables and per-repository savings above are from those
+  runs, with the previous savings stated beside them. The httpx and trio
+  re-import tests are now selected. flask, pydantic, packaging, hatch and
+  pytest did not move;
 * the recall-validation fixes (special methods, every name of an
   unresolved chain, symlinked directories, runner dependencies; see
   "Recall validation beyond the corpora"): every recorded commit was
@@ -783,17 +790,17 @@ otherwise. The first pass found real misses in three of them; each was
 turned into a scenario and a fix, and every repository was then re-run
 on the final code:
 
-| repository (HEAD) | validated commits | first pass | final: recall | mean savings |
+| repository (HEAD) | validated commits | first pass | final: recall | mean savings (import-time rule) |
 |---|---|---|---|---|
 | flask (d73fa1c) | 5 | 100 % | 100 % (354 of 354) | 40 % |
-| jinja (5ef7011) | 5 | n/a | n/a (0 affected) | 4 % |
-| rich (9d8f9a3) | 18 | (id mismatch) | 100 % (1 480 of 1 480) | 26 % |
-| marshmallow (7f0792b) | 9 | 100 % | 100 % (742 of 742) | 44 % |
-| cattrs (5bf7c97) | 4 | 100 % | 100 % (51 of 51) | 48 % |
-| tenacity (3e58094) | 5 | **73 %** | 100 % (509 of 509) | 22 % |
-| pluggy (9836e54) | 4 | **79 %** | 100 % (229 of 229) | 25 % |
+| jinja (5ef7011) | 5 | n/a | n/a (0 affected) | 0 % |
+| rich (9d8f9a3) | 18 | (id mismatch) | 100 % (1 480 of 1 480) | 22 % |
+| marshmallow (7f0792b) | 9 | 100 % | 100 % (742 of 742) | 33 % |
+| cattrs (5bf7c97) | 4 | 100 % | 100 % (51 of 51) | 47 % |
+| tenacity (3e58094) | 5 | **73 %** | 100 % (509 of 509) | 20 % |
+| pluggy (9836e54) | 4 | **79 %** | 100 % (229 of 229) | 24 % |
 | packaging (10590c1) | 4 | 100 % | 100 % (273 of 273) | 47 % |
-| boltons (961dcff) | 5 | 100 % | 100 % (37 of 37) | 78 % |
+| boltons (961dcff) | 5 | 100 % | 100 % (37 of 37) | 38 % |
 | pydantic (915896d) | 3 | **1 missed** | 100 % (4 923 of 4 923) | 33 % |
 
 No run had an outcome miss. The misses the first pass found, all
@@ -856,16 +863,16 @@ nineteen (WSGI, ASGI and HTTP clients, a type-hint CLI, two async
 frameworks with their own pytest plugins, pure functions, datetimes),
 validated the same way over up to 12 of their last 75 commits:
 
-| repository (HEAD) | validated commits | recall | mean savings | notes |
+| repository (HEAD) | validated commits | recall | mean savings (before the import-time rule) | notes |
 |---|---|---|---|---|
-| werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 4 % | |
-| starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 39 % | 64 % before the external-base fix |
-| httpx (b5addb6) | 3 | 1 of 2 | 100 % | the miss is a re-import test (below) |
-| typer (a80f6e5) | 3 | 100 % (6 of 6) | 41 % | |
-| anyio (f7df682) | 7 | 100 % (828 of 828) | 43 % | |
-| trio (50b9825) | 6 | 428 of 433 | 20 % | the misses are one re-import test (below); REPL tests deselected |
-| more-itertools (1da45ae) | 8 | 100 % (87 of 87) | 97 % | |
-| arrow (2224255) | 5 | 100 % (441 of 441) | 53 % | 39 outcome changes, none missed |
+| werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 0 % (4 %) | |
+| starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 39 % (39 %) | 64 % recall before the external-base fix |
+| httpx (b5addb6) | 3 | 100 % (2 of 2) | 67 % (100 %) | the re-import test, missed before the import-time rule |
+| typer (a80f6e5) | 3 | 100 % (6 of 6) | 35 % (41 %) | |
+| anyio (f7df682) | 7 | 100 % (828 of 828) | 14 % (43 %) | |
+| trio (50b9825) | 6 | 100 % (433 of 433) | 13 % (20 %) | the re-import test, missed before the import-time rule; REPL tests deselected |
+| more-itertools (1da45ae) | 8 | 100 % (87 of 87) | 46 % (97 %) | |
+| arrow (2224255) | 5 | 100 % (441 of 441) | 46 % (53 %) | 39 outcome changes, none missed |
 
 No outcome was missed. werkzeug, more-itertools, arrow, typer and anyio
 ran before the external-base rule, which only adds selections.
