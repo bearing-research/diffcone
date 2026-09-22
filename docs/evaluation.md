@@ -103,13 +103,17 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
 | 2103e15 | Forward all user's parameters set in `PAGER` | 537 / 537 | 0 % | 100 % | 4 % |
-| e1fd594 | Add support of `pathlib.Path` to `edit` | 538 / 538 | 0 % | 100 % | 2 % |
+| e1fd594 | Add support of `pathlib.Path` to `edit` | 67 / 538 | 88 % | 100 % | 13 % |
 | 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 555 / 555 | 0 % | 100 % | 76 % |
 
 Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
-28 %; mean savings 0 % under the import-time rule (see "Re-measurements"): every commit changes a signature or
-definition in a module that `click/__init__.py` imports, and every test
-depends on `conftest.py`, which imports `click`. 65 % before it.
+39 %; mean savings 29 % under the import-time rule (see "Re-measurements"),
+65 % before it. Two of the three commits still select every test: every
+test depends on `conftest.py`, which imports `click`, and 2103e15 changes
+functions decorated with `@contextlib.contextmanager` (a decorator runs
+at import) in a module with a module-level dynamic reference, 6aabf09 a
+class body; e1fd594 changes only type hints under `from __future__ import
+annotations` and selects 67.
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
@@ -138,10 +142,10 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | e26945d | fix: PytestRemovedIn10Warning | 34 / 516 | 93 % | 100 % | 6 % |
 | d8e321a | Use built-in product | 34 / 516 | 93 % | 100 % | 100 % |
-| 73393f3 | Better bankruptcy | 205 / 517 | 60 % | 100 % | 20 % |
+| 73393f3 | Better bankruptcy | 128 / 517 | 75 % | 100 % | 33 % |
 
 Totals: 1 outcome change, 0 missed; recall 100 % (78 of 78); precision
-29 %; mean savings 82 % under the import-time rule (see "Re-measurements"); 95 % before it.
+40 %; mean savings 87 % under the import-time rule (see "Re-measurements"); 95 % before it.
 
 The first structlog run reported two outcome misses for
 `tests/test_tracebacks.py::test_recursive`, which passed at base and
@@ -568,6 +572,10 @@ been re-stated from the re-run:
   248141c went from 268 to 253 selected (recall 100 %; the 78 template
   tests on the release rows are now selected through the templates rather
   than as a dynamic reference); every other recorded commit planned identically;
+* inert `def` statements and annotation-only changes no longer count as
+  running at import (a narrowing): four commits moved (click e1fd594
+  538 to 67, one each in structlog, cattrs and trio) and those
+  repositories were re-validated at recall 100 %;
 * the import-time rule (changes that run at import reach every
   transitive importer; adopted after measuring it, see design.md): every
   validated repository whose selections moved was re-validated, 23 in
@@ -870,7 +878,7 @@ validated the same way over up to 12 of their last 75 commits:
 | httpx (b5addb6) | 3 | 100 % (2 of 2) | 67 % (100 %) | the re-import test, missed before the import-time rule |
 | typer (a80f6e5) | 3 | 100 % (6 of 6) | 35 % (41 %) | |
 | anyio (f7df682) | 7 | 100 % (828 of 828) | 14 % (43 %) | |
-| trio (50b9825) | 6 | 100 % (433 of 433) | 13 % (20 %) | the re-import test, missed before the import-time rule; REPL tests deselected |
+| trio (50b9825) | 6 | 100 % (433 of 433) | 15 % (20 %) | the re-import test, missed before the import-time rule; REPL tests deselected |
 | more-itertools (1da45ae) | 8 | 100 % (87 of 87) | 46 % (97 %) | |
 | arrow (2224255) | 5 | 100 % (441 of 441) | 46 % (53 %) | 39 outcome changes, none missed |
 
