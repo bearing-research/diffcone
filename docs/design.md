@@ -412,7 +412,11 @@ decorators, class bodies, nested classes) all run when the module is
 imported, so their references are recorded for the module as well as
 for the function or class they belong to. `runpy.run_module` imports by
 name like `importlib.import_module`; `runpy.run_path` is an unbounded
-dynamic import. A `def` statement runs code at import only through its
+dynamic import. A module-level variable bound to a literal (constants,
+and tuples, lists, sets or dicts of literals) with no module-level
+mutation runs no code when the module is imported, so it does not seed
+its module and only its readers are reached; `__all__` is never inert,
+since it decides what `from m import *` binds. A `def` statement runs code at import only through its
 decorators, its defaults and its annotations when they are evaluated
 eagerly: a function whose decorators are inert (`overload`, `override`
 or `final` imported from `typing` or `typing_extensions`; a project

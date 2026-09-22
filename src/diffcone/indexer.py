@@ -1386,6 +1386,12 @@ class Indexer:
                 line_ranges=tuple(
                     (s.lineno, _end_line(s)) for s in (stmt, *mutators.get(name, []))
                 ),
+                # Binding a literal runs no code when the module is imported;
+                # only readers of the value can observe the change. ``__all__``
+                # is not inert: it decides what ``from m import *`` binds.
+                inert_definition=(
+                    name != "__all__" and not mutators.get(name) and _is_literal(value)
+                ),
             )
             if self._add_symbol(symbol):
                 scope.variables[name] = symbol_id
@@ -2344,6 +2350,10 @@ def _is_literal(node: ast.expr) -> bool:
         return _is_literal(node.operand)
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return all(_is_literal(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _is_literal(k) for k in node.keys) and all(
+            _is_literal(v) for v in node.values
+        )
     return False
 
 

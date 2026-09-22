@@ -266,8 +266,11 @@ def _runs_at_import(change: SymbolChange) -> bool:
     symbol = change.head or change.base
     if symbol is None:
         return False
-    if symbol.kind in (MODULE, VARIABLE, CLASS):
+    if symbol.kind in (MODULE, CLASS):
         return True
+    if symbol.kind == VARIABLE:
+        # Binding a literal runs nothing; a computed value does.
+        return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
     if not {ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes):
         return False
     return not all(s.inert_definition for s in (change.base, change.head) if s is not None)

@@ -376,14 +376,13 @@ def _covplan(repo, base, head, extra_ini: str = ""):
 
 def test_coverage_attributes_lines_to_the_innermost_symbol(repo):
     base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": MOD, "tests/test_ops.py": TEST_MOD})
-    # A module-level constant change: it runs at import, so every test that
-    # imports the module is selected; coverage must still not blame every
-    # function in the file.
+    # A module-level constant bound to a literal runs no code at import, so
+    # only its readers are selected; coverage must not blame every function
+    # in the file either.
     head = repo.commit({"pkg/ops.py": MOD.replace("X = 1", "X = 2")})
     plan = _covplan(repo, base, head)
     assert {d.target.runner_id for d in plan.decisions if d.selected} == {
-        "tests/test_ops.py::test_unrelated",
-        "tests/test_ops.py::test_add",
+        "tests/test_ops.py::test_unrelated"
     }
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
     assert v.coverage is not None and v.coverage.changed_symbols == ("pkg.ops.X",)

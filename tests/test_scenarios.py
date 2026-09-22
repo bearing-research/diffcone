@@ -2428,3 +2428,42 @@ def test_code_a_decorator_runs_at_import_reaches_the_modules_importers(repo):
     assert changes(plan) == {"pkg.framework.build_handler": ("body_changed",)}
     assert selected(plan) == {"t::test_routes", "t::test_main", "bench.time_routes"}
     assert unselected(plan) == {"t::test_other"}
+
+
+def test_a_literal_constant_runs_nothing_at_import(repo):
+    """hatch's releases change only ``__version__ = "1.32.1"``: binding a
+    literal runs no code when the module is imported, so only readers of the
+    value are selected. A computed value runs at import, and ``__all__``
+    decides what ``from m import *`` binds at the importer's import."""
+    about = 'VERSION = "{version}"\nNAMES = ["a"]\n__all__ = [{names}]\nSTAMP = {stamp}\n'
+    files = {
+        "pkg/__init__.py": "from pkg.about import VERSION\n",
+        "pkg/about.py": about.format(version="1.0", names='"VERSION"', stamp="1"),
+        "tests/test_version.py": (
+            "from pkg.about import VERSION\n\n\ndef test_version():\n    assert VERSION\n"
+        ),
+        "tests/test_other.py": "import pkg\n\n\ndef test_other():\n    assert pkg\n",
+        "benchmarks/bench_v.py": "import pkg\n\n\ndef time_import():\n    pkg\n",
+    }
+    base = repo.commit(files)
+    targets = [
+        py_target("t::test_version", "tests.test_version.test_version", "tests.test_version"),
+        py_target("t::test_other", "tests.test_other.test_other", "tests.test_other"),
+        asv_target("bench.time_import", "benchmarks.bench_v.time_import", "benchmarks.bench_v"),
+    ]
+    # A literal constant: its readers only.
+    head = repo.commit({"pkg/about.py": about.format(version="1.1", names='"VERSION"', stamp="1")})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.about.VERSION": ("body_changed",)}
+    assert selected(plan) == {"t::test_version"}
+    # ``__all__`` and a computed value run at import: every importer.
+    for changed in (
+        about.format(version="1.1", names='"VERSION", "NAMES"', stamp="1"),
+        about.format(version="1.1", names='"VERSION"', stamp="len('ab')"),
+    ):
+        head2 = repo.commit({"pkg/about.py": changed})
+        assert selected(repo.plan(head, head2, targets)) == {
+            "t::test_version",
+            "t::test_other",
+            "bench.time_import",
+        }, changed
