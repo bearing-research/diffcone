@@ -858,6 +858,8 @@ class Indexer:
         self._collided = False
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
+        # Import bindings being resolved (guards self-referential imports).
+        self._resolving_bindings: set[tuple[str, str]] = set()
         # Classes with an unresolved ``super().<name>``, per name (final pass).
         self._super_misses: dict[str, set[str]] = defaultdict(set)
 
@@ -1053,8 +1055,10 @@ class Indexer:
         be unknown) or has an unbounded call site stays dynamic.
 
         Expanding a ``getattr`` can itself make a function escape (its value
-        is used), which can unbound another expansion, so the candidates are
-        recomputed until the escape set is stable."""
+        is used) or record a new name-bounded reference (a name that cannot
+        be resolved on its receiver), either of which can unbound another
+        expansion, so the candidates are recomputed until both the escape
+        set and the unresolved names are stable."""
         unresolved_names = {
             u.name for u in self.index.unresolved if u.name and not u.detail.startswith("super().")
         }
@@ -1075,6 +1079,7 @@ class Indexer:
             writes[(w.cls, w.attr)].append(w)
         while True:
             escapes = set(self.out.escapes)
+            names = set(unresolved_names)
             planned: list[tuple[_ParamDynamic, list[str] | None]] = []
             for pd in self.out.param_dynamics:
                 if pd.self_class:
@@ -1085,12 +1090,19 @@ class Indexer:
                     values = self._param_values(pd.function, pd.param, unresolved_names)
                 planned.append((pd, values))
             for pd, values in planned:
-                if values is not None and pd.kind == "getattr" and pd.base is not None:
-                    for name in dict.fromkeys(values):
-                        node = self.resolve_chain(pd.base + [name], pd.scope)
-                        if isinstance(node, Resolved) and not node.detail:
-                            self.escape(node)
-            if self.out.escapes == escapes:
+                if values is None or pd.kind != "getattr":
+                    continue
+                for name in dict.fromkeys(values):
+                    if pd.base is None:
+                        unresolved_names.add(name)
+                        continue
+                    node, rest = self.resolve_chain_names(pd.base + [name], pd.scope)
+                    if isinstance(node, Resolved) and not node.detail:
+                        self.escape(node)
+                    elif isinstance(node, Unresolved) and node.name:
+                        unresolved_names.add(node.name)
+                    unresolved_names.update(rest)
+            if self.out.escapes == escapes and unresolved_names == names:
                 break
         for pd, values in planned:
             if values is None:
@@ -1113,10 +1125,15 @@ class Indexer:
                         )
                     )
                 else:
-                    node = self.resolve_chain(pd.base + [name], pd.scope)
-                    self._record(pd.function, node, chain=".".join(pd.base + [name]))
+                    chain = ".".join(pd.base + [name])
+                    node, rest = self.resolve_chain_names(pd.base + [name], pd.scope)
+                    self._record(pd.function, node, chain=chain)
+                    for extra in rest:
+                        self.out.unresolved.add(
+                            UnresolvedReference(pd.function, UNRESOLVED_ATTRIBUTE, extra, chain)
+                        )
         for ref in self.out.attr_refs:
-            bound = self._attribute_writes(ref.cls, ref.attr, writes)
+            bound = self._attribute_writes(ref.cls, ref.attr, writes, unresolved_names)
             if bound is None or any(w.binding[0] != "symbol" for w in bound):  # type: ignore[index]
                 continue
             for w in bound:
@@ -1211,7 +1228,11 @@ class Indexer:
         return False
 
     def _attribute_writes(
-        self, class_id: str, attr: str, writes: dict[tuple[str, str], list[_AttrWrite]]
+        self,
+        class_id: str,
+        attr: str,
+        writes: dict[tuple[str, str], list[_AttrWrite]],
+        unresolved_names: set[str],
     ) -> list[_AttrWrite] | None:
         """What ``self.<attr>`` may hold in a method of ``class_id``: its
         bound writes, or None when it cannot be bounded. The
@@ -1219,7 +1240,10 @@ class Indexer:
         MRO of the class or of a subclass counts; each must be plain and
         fully in scope, none may define the attribute at class level or
         customise attribute access, and every write must be a bounded
-        ``__init__`` assignment."""
+        ``__init__`` assignment. A class that escapes, or whose name occurs
+        as an unresolved reference, may have subclasses the index cannot
+        see (``class S(Base)`` with ``Base = Foo if X else Bar``), whose
+        writes are unknown."""
         unbound = self.out.attr_unbound
         if ("", "*") in unbound or ("", attr) in unbound:
             return None
@@ -1230,6 +1254,8 @@ class Indexer:
         for cid in sorted(family):
             cscope = self.class_scopes[cid]
             if not cscope.plain or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
+                return None
+            if cid in self.out.escapes or self.index.symbols[cid].name in unresolved_names:
                 return None
             if attr in cscope.members or attr in cscope.bindings:
                 return None
@@ -1248,7 +1274,7 @@ class Indexer:
         writes: dict[tuple[str, str], list[_AttrWrite]],
         unresolved_names: set[str],
     ) -> list[str] | None:
-        bound = self._attribute_writes(class_id, attr, writes)
+        bound = self._attribute_writes(class_id, attr, writes, unresolved_names)
         if bound is None:
             return None
         values: list[str] = []
@@ -1497,32 +1523,38 @@ class Indexer:
                     definition_parts: list[ast.AST] = []
                     annotation_parts: list[ast.AST] = []
                     for n in nodes:
-                        args, annotations = _split_annotations(n.args)
-                        definition_parts.append(args)
+                        definition_parts.append(n.args)
                         definition_parts += list(n.decorator_list)
-                        annotation_parts += annotations
                         if n.returns is not None:
                             annotation_parts.append(n.returns)
+                    # The definition hash excludes annotations: detach them
+                    # while hashing (no copy of the tree) and restore them.
+                    detached = [a for n in nodes for a in _annotated_args(n.args)]
+                    annotations = [a.annotation for a in detached]
+                    for a in detached:
+                        a.annotation = None
+                    try:
+                        definition = hash_nodes(definition_parts)
+                    finally:
+                        for a, annotation in zip(detached, annotations, strict=True):
+                            a.annotation = annotation
+                    annotation_parts = [*annotations, *annotation_parts]  # type: ignore[list-item]
                     return (
                         _digest(hash_nodes(annotation_parts)),
                         _digest(
                             "\n".join(hash_nodes(list(_split_docstring(n.body)[1])) for n in nodes)
                         ),
-                        _digest(
-                            hash_nodes(definition_parts)
-                            + "|"
-                            + ",".join(type(n).__name__ for n in nodes)
-                        ),
+                        _digest(definition + "|" + ",".join(type(n).__name__ for n in nodes)),
                         _docstring_hash([n.body for n in nodes]),
                     )
 
                 annotation_hash, body_hash, definition_hash, doc_hash = function_hashes()
                 deferred = (
                     _future_annotations(scope)
-                    and all(_is_inert_decorator(d) for n in nodes for d in n.decorator_list)
+                    and all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list)
                     and (class_scope is None or class_scope.plain)
                 )
-                inert = all(_inert_def(n) for n in nodes) and (
+                inert = all(_inert_def(n, scope) for n in nodes) and (
                     class_scope is None or class_scope.plain
                 )
                 inert = inert and (deferred or not any(_has_annotations(n) for n in nodes))
@@ -1995,7 +2027,16 @@ class Indexer:
             return External(binding.module)
         node: Node = ModuleNode(binding.module)
         if binding.attr is not None:
-            node = self._step(node, binding.attr)
+            # ``pkg/__init__.py: from pkg import ext`` with no ``ext`` module
+            # (a compiled extension) resolves through itself: stop there.
+            key = (binding.module, binding.attr)
+            if key in self._resolving_bindings:
+                return Unresolved(UNRESOLVED_ATTRIBUTE, binding.attr)
+            self._resolving_bindings.add(key)
+            try:
+                node = self._step(node, binding.attr)
+            finally:
+                self._resolving_bindings.discard(key)
         return node
 
     def _step(self, node: Node, attr: str) -> Node:
@@ -2007,11 +2048,20 @@ class Indexer:
                 # A package binding of the same name wins at runtime once the
                 # package has run (it binds after importing the submodule);
                 # either may be meant, so the attribute denotes both.
-                shadow = None
+                shadow: Resolved | None = None
                 if target is not None:
-                    shadow = target.members.get(attr) or target.variables.get(attr)
+                    symbol_id = target.members.get(attr) or target.variables.get(attr)
+                    if symbol_id is not None:
+                        shadow = Resolved(symbol_id)
+                    elif attr in target.imports:
+                        # ``from .main import main``: the re-exported name.
+                        bound = self._import_binding_node(target.imports[attr])
+                        if isinstance(bound, Resolved) and bound.symbol != sub:
+                            shadow = Resolved(bound.symbol, bound.detail)
+                    elif attr in target.bindings:
+                        shadow = Resolved(target.name, detail=f"attribute:{attr}")
                 if shadow is not None and sub in self.scopes:
-                    return Resolved(shadow, also=(sub,))
+                    return Resolved(shadow.symbol, shadow.detail, also=(sub,))
                 return ModuleNode(sub)
             if target is None:
                 return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
@@ -2127,9 +2177,10 @@ class Indexer:
                     self.out.edges.add(Edge(source, module, kind, "module"))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
-                init = self.lookup_in_class(node.symbol, "__init__")
-                if isinstance(init, Resolved) and init.symbol != source:
-                    self.out.edges.add(Edge(source, init.symbol, REFERENCES, "constructor"))
+                for hook in ("__init__", "__new__"):
+                    found = self.lookup_in_class(node.symbol, hook)
+                    if isinstance(found, Resolved) and found.symbol != source:
+                        self.out.edges.add(Edge(source, found.symbol, REFERENCES, "constructor"))
         elif isinstance(node, ModuleNode):
             if node.module in self.scopes and node.module != source:
                 self.out.edges.add(Edge(source, node.module, kind, "module"))
@@ -2236,25 +2287,32 @@ def _is_special_method(name: str) -> bool:
     )
 
 
-def _split_annotations(args: ast.arguments) -> tuple[ast.arguments, list[ast.AST]]:
-    """The parameters without their annotations, and the annotations."""
-    stripped = copy.deepcopy(args)
-    annotations: list[ast.AST] = []
-    params = [*stripped.posonlyargs, *stripped.args, *stripped.kwonlyargs]
-    for arg in [*params, stripped.vararg, stripped.kwarg]:
-        if arg is not None and arg.annotation is not None:
-            annotations.append(arg.annotation)
-            arg.annotation = None
-    return stripped, annotations
+def _annotated_args(args: ast.arguments) -> list[ast.arg]:
+    """The parameters that carry an annotation, in signature order."""
+    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    return [a for a in params if a is not None and a.annotation is not None]
 
 
-# Decorators that do nothing with the function's annotations.
-_INERT_DECORATORS = frozenset({"overload", "override", "final"})
+# Decorators that run no code with the function beyond returning it (or
+# recording it in typing's overload registry), by canonical name.
+_INERT_DECORATORS = frozenset(
+    f"{module}.{name}"
+    for module in ("typing", "typing_extensions")
+    for name in ("overload", "override", "final")
+)
 
 
-def _is_inert_decorator(node: ast.expr) -> bool:
-    name = node.id if isinstance(node, ast.Name) else getattr(node, "attr", None)
-    return name in _INERT_DECORATORS
+def _is_inert_decorator(node: ast.expr, scope: ModuleScope) -> bool:
+    """Only the ``typing``/``typing_extensions`` decorators, resolved through
+    the module's imports: a project decorator named ``final`` may do anything."""
+    parts = _flatten_chain(node)
+    if parts is None:
+        return False
+    binding = scope.imports.get(parts[0])
+    if binding is None:
+        return False
+    base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+    return ".".join([base, *parts[1:]]) in _INERT_DECORATORS
 
 
 def _is_literal(node: ast.expr) -> bool:
@@ -2267,11 +2325,11 @@ def _is_literal(node: ast.expr) -> bool:
     return False
 
 
-def _inert_def(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _inert_def(node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope) -> bool:
     """Whether executing the ``def`` runs no code beyond binding the name:
     inert decorators and literal defaults (annotations are checked apart)."""
     defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
-    return all(_is_inert_decorator(d) for d in node.decorator_list) and all(
+    return all(_is_inert_decorator(d, scope) for d in node.decorator_list) and all(
         _is_literal(d) for d in defaults
     )
 
@@ -2483,9 +2541,11 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if not isinstance(node.ctx, ast.Load):
             self._attribute_write(node)
-        if node.attr == "__dict__" and self._is_self(node.value):
-            # ``self.__dict__`` can read or write any attribute.
-            self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
+        if node.attr == "__dict__":
+            # ``__dict__`` can read or write any attribute; through another
+            # receiver (aliased, reassigned, ``|=``) the class is unknown.
+            owner = self.scope.self_class if self._is_self(node.value) else ""
+            self.indexer.out.attr_unbound.add((owner or "", "*"))
         parts = _flatten_chain(node)
         if parts is not None:
             self._resolve(parts)
@@ -2717,7 +2777,10 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._setattr_call(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
                 self._mark_type_node(node.args[1])
-            elif parts[-1] == "cast" and node.args:
+            elif node.args and self._canonical_name(parts) in (
+                "typing.cast",
+                "typing_extensions.cast",
+            ):
                 self._mark_type_node(node.args[0])
             self._record_call_site(node, parts)
         elif (

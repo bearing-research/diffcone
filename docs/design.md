@@ -84,7 +84,11 @@ attribute `pkg.retry`, and `from pkg import retry`, resolve to both the
 binding and the module (an edge to each, the one to the module with
 detail `module`), since the binding normally wins at runtime but either
 may be meant; `import pkg.retry` and `from pkg.retry import x` are the
-module.
+module. The same holds when the package re-exports a name of the
+submodule (`from .main import main` in `pkg/__init__.py`, a common
+pattern): `pkg.main` is the re-exported function and the module. A
+package whose `__init__` imports a submodule of itself that is not in the
+snapshot (a compiled extension) resolves that name as unresolved.
 
 Source roots are mapped to module names with the longest matching root
 winning; `pkg/__init__.py` is module `pkg`. A root may carry a module
@@ -210,8 +214,8 @@ hierarchy, or a rebinding. A change to `Sub.step` (or `Mixin.step`) reaches
 callers of `Base.run` that invoke `self.step()`. Override methods share the
 dispatched call's site and escape status for literal propagation. Explicit
 `Base.step` and `super().step` do not dispatch and get no override edges. Referencing a
-class (`Foo(...)`, subclassing) also adds an edge to the `__init__` found
-through its MRO, so constructor changes reach callers. A step that cannot
+class (`Foo(...)`, subclassing) also adds edges to the `__init__` and
+`__new__` found through its MRO, so constructor changes reach callers. A step that cannot
 be taken yields an unresolved attribute reference bounded by the attribute
 name. Once a chain reaches a value of unknown type (a local, a failed
 step, a variable, a function, a class-level binding) it stops there, and
@@ -301,11 +305,14 @@ if it is an `__init__` and a class that inherits it escapes; or if it has
 no resolved call site or any call site is unbounded (`*args`, a
 non-literal). A class escapes when it is referenced other than as a
 callee, a base class or in a type position (an annotation, the second
-argument of `isinstance`/`issubclass`, the first of `cast`); `cls` as a
+argument of the builtin `isinstance`/`issubclass`, the first of
+`typing.cast`); `cls` as a
 value in a classmethod, `type(self)` and `self.__class__` make the class
 and every in-scope subclass escape. Expanding a `getattr` can make a
-function escape, which can unbound another expansion, so expansion is
-repeated until the escape set is stable.
+function escape, or record a name-bounded reference (a candidate that
+does not resolve on its receiver, or a name after a chain stops), either
+of which can unbound another expansion, so expansion is repeated until
+both the escape set and the unresolved names are stable.
 
 The name can also be an instance attribute: `getattr(hooks,
 self.identifier)` in a method of class C is expanded over what
@@ -322,7 +329,11 @@ other receiver (`obj.identifier = ...`), `setattr(obj, "identifier",
 ...)` / `monkeypatch.setattr` / `patch.object` naming it, or one of those
 with an unbounded name, or a write into another object's `__dict__`,
 leaves the attribute (or every attribute) unbounded everywhere, since the
-receiver's type is unknown. A parameter binding takes the literals of the
+receiver's type is unknown; so does any use of another object's
+`__dict__` (aliased, reassigned, `|=`). A class in that hierarchy that
+escapes, or whose name occurs as an unresolved reference, may have
+subclasses the index cannot see (`class S(Base)` with `Base = Foo if X
+else Bar`), so it leaves the attribute unbounded too. A parameter binding takes the literals of the
 `__init__`'s call sites as above. When every write binds a symbol
 (`self.handler = process`), `self.handler` and `self.handler.x` also get
 edges (detail `self.handler`) to that symbol, alongside the name-bounded
@@ -395,8 +406,9 @@ imports it. A function body change does not run at import; when
 import-time code calls the function, the module's edge to it carries the
 change. A `def` statement runs code at import only through its
 decorators, its defaults and its annotations when they are evaluated
-eagerly: a function whose decorators are inert (`typing.overload`,
-`override`, `final`), whose defaults are literals, whose annotations are
+eagerly: a function whose decorators are inert (`overload`, `override`
+or `final` imported from `typing` or `typing_extensions`; a project
+decorator of the same name is not), whose defaults are literals, whose annotations are
 absent or deferred (`from __future__ import annotations`), and which is
 module-level or in a plain class, only binds its name, so adding,
 deleting or redefining it does not seed its module (deleting or rebinding

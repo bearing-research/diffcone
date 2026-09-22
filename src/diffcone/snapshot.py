@@ -262,13 +262,19 @@ def read_commit_snapshot(
     link_paths = [p for m, p in entries if m == SYMLINK_MODE]
     targets = read_files(repo, commit, link_paths)
 
+    tree: list[str] | None = None
+
     def files_under(real: str) -> list[str]:
-        return [p for m, p in _ls_tree(repo, commit, [real]) if m != SYMLINK_MODE]
+        nonlocal tree
+        if tree is None:  # one listing of the whole tree, only when there are links
+            tree = [p for m, p in _ls_tree(repo, commit, []) if m != SYMLINK_MODE]
+        return [p for p in tree if p == real or p.startswith(real + "/")]
 
     aliases = expand_symlinks(
         {k: v.decode("utf-8", "surrogateescape") for k, v in targets.items()}, files_under
     )
-    aliases = {a: r for a, r in aliases.items() if a not in set(paths)}
+    listed = set(paths)
+    aliases = {a: r for a, r in aliases.items() if a not in listed}
     files = read_files(repo, commit, paths)
     real_files = read_files(repo, commit, sorted(set(aliases.values())))
     files.update({alias: real_files[real] for alias, real in aliases.items()})
@@ -318,13 +324,19 @@ def read_index_snapshot(
     paths = [p for p in paths if staged.get(p) != SYMLINK_MODE]
     targets = read_files(repo, "", link_paths, label=INDEX)
 
+    staged_all: list[str] | None = None
+
     def files_under(real: str) -> list[str]:
-        return [p for p, m in _ls_files_staged(repo, [real]).items() if m != SYMLINK_MODE]
+        nonlocal staged_all
+        if staged_all is None:
+            staged_all = [p for p, m in _ls_files_staged(repo, []).items() if m != SYMLINK_MODE]
+        return [p for p in staged_all if p == real or p.startswith(real + "/")]
 
     aliases = expand_symlinks(
         {k: v.decode("utf-8", "surrogateescape") for k, v in targets.items()}, files_under
     )
-    aliases = {a: r for a, r in aliases.items() if a not in set(paths)}
+    listed = set(paths)
+    aliases = {a: r for a, r in aliases.items() if a not in listed}
     files = read_files(repo, "", paths, label=INDEX)
     real_files = read_files(repo, "", sorted(set(aliases.values())), label=INDEX)
     files.update({alias: real_files[real] for alias, real in aliases.items()})

@@ -2073,3 +2073,184 @@ def test_an_inert_def_runs_nothing_at_import_but_a_default_does(repo):
         "t::test_pkg",
         "bench.time_page",
     }
+
+
+# Review findings (a714b78..01cd1c4): each is a way a change reached a test
+# that the plan did not select. The changed symbol is always ``pkg.mod.evil``
+# and the test reaches it only through the construct under test.
+
+_EVIL = "def a():\n    return 1\n\n\ndef evil():\n    return {}\n"
+
+
+def _evil_reaches(repo, core: str, test: str, extra: dict | None = None) -> set[str]:
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/mod.py": _EVIL.format(2),
+        "pkg/core.py": core,
+        "tests/test_s.py": test,
+        "benchmarks/bench_s.py": "def time_nothing():\n    pass\n",
+        **(extra or {}),
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/mod.py": _EVIL.format(3)})
+    targets = [
+        py_target("t::test_s", "tests.test_s.test_s"),
+        asv_target("bench.time_nothing", "benchmarks.bench_s.time_nothing"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert "bench.time_nothing" in unselected(plan)
+    return selected(plan)
+
+
+def test_attribute_writes_of_a_subclass_of_an_escaping_class_unbound_it(repo):
+    core = (
+        "from pkg import mod\n\n\nclass Foo:\n    def __init__(self):\n        self.name = 'a'\n\n"
+        "    def run(self):\n        return getattr(mod, self.name)()\n\n\n"
+        "class Bar:\n    pass\n\n\nBase = Foo if True else Bar\n\n\n"
+        "class S(Base):\n    def __init__(self):\n        self.name = 'evil'\n"
+    )
+    test = "from pkg.core import S\n\n\ndef test_s():\n    assert S().run() == 2\n"
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}
+
+
+def test_names_recorded_by_one_expansion_unbound_another(repo):
+    core = (
+        "from pkg import mod\n\n\nclass Handler:\n    def handle(self, name):\n"
+        "        return getattr(mod, name)()\n\n\n"
+        "class Disp:\n    def __init__(self):\n        self.meth = 'handle'\n\n"
+        "    def go(self, h):\n        return getattr(h, self.meth)('evil')\n\n\n"
+        "def main():\n    return Handler.handle(Handler(), 'a')\n"
+    )
+    test = (
+        "from pkg.core import Disp, Handler\n\n\n"
+        "def test_s():\n    assert Disp().go(Handler()) == 2\n"
+    )
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}
+
+
+def test_a_project_function_named_cast_is_not_a_type_position(repo):
+    core = (
+        "from pkg import mod\n\n\ndef cast(kind, value):\n    return kind(value)\n\n\n"
+        "class Foo:\n    def __init__(self, name):\n        self.name = name\n\n"
+        "    def run(self):\n        return getattr(mod, self.name)()\n\n\n"
+        "def default():\n    return Foo('a')\n\n\n"
+        "def special():\n    return cast(Foo, 'evil')\n"
+    )
+    test = "from pkg.core import special\n\n\ndef test_s():\n    assert special().run() == 2\n"
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}
+
+
+def test_writes_through_another_objects_dict_unbound_attributes(repo):
+    test = (
+        "from pkg.core import Foo, tweak\n\n\ndef test_s():\n    assert tweak(Foo()).run() == 2\n"
+    )
+    for body in (
+        "    d = obj.__dict__\n    d['name'] = 'evil'\n",
+        "    obj.__dict__ = {'name': 'evil'}\n",
+        "    obj.__dict__ |= {'name': 'evil'}\n",
+    ):
+        core = (
+            "from pkg import mod\n\n\nclass Foo:\n"
+            "    def __init__(self):\n        self.name = 'a'\n\n"
+            "    def run(self):\n        return getattr(mod, self.name)()\n\n\n"
+            f"def tweak(obj):\n{body}    return obj\n"
+        )
+        assert _evil_reaches(repo, core, test) == {"t::test_s"}, body
+
+
+def test_deferred_getattr_records_names_after_a_stopped_chain(repo):
+    core = (
+        "from pkg import mod\n\n\nclass Holder:\n"
+        "    def __init__(self):\n        self.inner = mod\n\n\n"
+        "def call(h, name):\n    return getattr(h.inner, name)()\n\n\n"
+        "def special():\n    return call(Holder(), 'evil')\n"
+    )
+    test = "from pkg.core import special\n\n\ndef test_s():\n    assert special() == 2\n"
+    assert _evil_reaches(repo, core, test) == {"t::test_s"}
+
+
+def test_a_package_re_export_of_its_submodules_function_is_both(repo):
+    """``pkg/__init__.py: from .main import main``: ``pkg.main`` and ``from
+    pkg import main`` are the function (and possibly the module)."""
+    main = "def main():\n    return {}\n"
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "from .main import main\n",
+            "pkg/main.py": main.format(1),
+            "tests/test_a.py": "from pkg import main\n\n\ndef test_a():\n    assert main() == 1\n",
+            "tests/test_c.py": "import pkg\n\n\ndef test_c():\n    assert pkg.main() == 1\n",
+            "benchmarks/bench_m.py": "import pkg\n\n\ndef time_main():\n    pkg.main()\n",
+        }
+    )
+    head = repo.commit({"pkg/main.py": main.format(2)})
+    targets = [
+        py_target("t::test_a", "tests.test_a.test_a"),
+        py_target("t::test_c", "tests.test_c.test_c"),
+        asv_target("bench.time_main", "benchmarks.bench_m.time_main"),
+    ]
+    assert selected(repo.plan(base, head, targets)) == {"t::test_a", "t::test_c", "bench.time_main"}
+
+
+def test_constructing_a_class_reaches_its_new(repo):
+    core = (
+        "class Foo:\n    def __new__(cls):\n        inst = super().__new__(cls)\n"
+        "        inst.v = {}\n        return inst\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/core.py": core.format(1),
+            "tests/test_f.py": (
+                "from pkg.core import Foo\n\n\ndef test_f():\n    assert Foo().v == 1\n"
+            ),
+            "benchmarks/bench_f.py": "from pkg.core import Foo\n\n\ndef time_f():\n    Foo()\n",
+        }
+    )
+    head = repo.commit({"pkg/core.py": core.format(2)})
+    targets = [
+        py_target("t::test_f", "tests.test_f.test_f"),
+        asv_target("bench.time_f", "benchmarks.bench_f.time_f"),
+    ]
+    assert selected(repo.plan(base, head, targets)) == {"t::test_f", "bench.time_f"}
+
+
+def test_a_project_decorator_named_final_is_not_inert(repo):
+    reg = (
+        "REG = {}\n\n\ndef final(f):\n"
+        "    REG[f.__name__] = (f.__defaults__, f.__annotations__)\n    return f\n"
+    )
+    plugins = (
+        "from __future__ import annotations\n\nfrom pkg.reg import final\n\n\n"
+        "@final\ndef handler(x: {hint} = {default}):\n    return x\n"
+    )
+    test = (
+        "import pkg.plugins\nfrom pkg.reg import REG\n\n\n"
+        "def test_r():\n    assert REG['handler'][0] == (1,)\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/reg.py": reg,
+            "pkg/plugins.py": plugins.format(hint="int", default=1),
+            "tests/test_r.py": test,
+        }
+    )
+    targets = [py_target("t::test_r", "tests.test_r.test_r", "tests.test_r")]
+    for hint, default in (("int", 2), ("str", 1)):
+        head = repo.commit({"pkg/plugins.py": plugins.format(hint=hint, default=default)})
+        assert selected(repo.plan(base, head, targets)) == {"t::test_r"}, (hint, default)
+
+
+def test_a_package_importing_a_missing_submodule_of_itself_does_not_recurse(repo):
+    """``pkg/__init__.py: from pkg import ext`` with no ``ext`` module (a
+    compiled extension, as in pandas) used to recurse without end."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "from pkg import ext\n",
+            "pkg/mod.py": "def f():\n    return 1\n",
+            "tests/test_f.py": "from pkg.mod import f\n\n\ndef test_f():\n    assert f()\n",
+        }
+    )
+    head = repo.commit({"pkg/mod.py": "def f():\n    return 2\n"})
+    plan = repo.plan(base, head, [py_target("t::test_f", "tests.test_f.test_f")])
+    assert not plan.degraded and selected(plan) == {"t::test_f"}
