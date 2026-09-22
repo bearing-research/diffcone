@@ -104,10 +104,11 @@ diffcone corpus --repo . --range HEAD~60..HEAD --discover pytest \
 |---|---|---|---|---|---|
 | 2103e15 | Forward all user's parameters set in `PAGER` | 34 / 537 | 94 % | 100 % | 62 % |
 | e1fd594 | Add support of `pathlib.Path` to `edit` | 11 / 538 | 98 % | 100 % | 80 % |
-| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 521 / 555 | 6 % | 100 % | 81 % |
+| 6aabf09 | Stable (a 30-file squash: `Option` restructured, tests reorganised) | 528 / 555 | 5 % | 100 % | 80 % |
 
 Totals: 54 outcome changes, 0 missed; recall 100 % (441 of 441); precision
-80 %; mean savings 66 %.
+79 %; mean savings 65 % (re-run after the external-base rule: 6aabf09
+gained 7 tests).
 
 The squash commit is wide because `click.core.Option` changed structurally
 (a method was added), which invalidates every `Option` method and hence
@@ -359,21 +360,22 @@ diffcone corpus --repo . --range HEAD~80..HEAD --discover pytest \
 
 | commit | subject | selected | savings | recall | precision |
 |---|---|---|---|---|---|
-| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 630 / 827 | 24 % | 100 % | 12 % |
+| 5aa2f8f | logs: add Enabled support to Logger API, SDK, and LogRecordProcessor | 631 / 827 | 24 % | 100 % | 12 % |
 | 477ffd4 | opentelemetry-docker-tests: add Prometheus exporter docker tests | 0 / 827 | 100 % | n/a | n/a |
-| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 627 / 830 | 24 % | 100 % | 14 % |
-| cfad5eb | Fix TraceState.update to only update already existing keys | 608 / 830 | 27 % | 100 % | 0 % |
-| 34c5e5f | Added guard against negative value of max_value_len | 709 / 830 | 15 % | 100 % | 57 % |
+| ab22674 | fix(opentelemetry-sdk): keep synchronous gauge values across cumulative collections | 628 / 830 | 24 % | 100 % | 14 % |
+| cfad5eb | Fix TraceState.update to only update already existing keys | 629 / 830 | 24 % | 100 % | 0 % |
+| 34c5e5f | Added guard against negative value of max_value_len | 710 / 830 | 14 % | 100 % | 57 % |
 | ee219ad | test(exporter-otlp-proto-grpc): relax timing delta ... | 0 / 830 | 100 % | n/a | n/a |
 | 5843c4e | DOC(exporter-otlp-proto-http): clarify endpoint= kwarg ... | 0 / 830 | 100 % | n/a | n/a |
-| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 700 / 830 | 16 % | 100 % | 55 % |
+| b599a00 | opentelemetry-sdk: don't read other resource attributes ... | 701 / 830 | 16 % | 100 % | 55 % |
 | 9bbc005 | docs(sdk): fix typos in SpanLimits docstring | 0 / 830 | 100 % | n/a | n/a |
 | 5321c60 | docs(sdk): remove stale trace_config TODO | 0 / 830 | 100 % | n/a | n/a |
 
-Totals: 14 outcome changes, 2 missed; recall 100 % (955 of 955); precision
-29 %; mean savings 61 %. The re-run (after the special-method and
-chain-name changes: 1 to 65 more tests on five commits) reported two
-outcome misses, both one timing test,
+Totals: 11 outcome changes, 0 missed; recall 100 % (955 of 955); precision
+29 %; mean savings 60 % (the table is from the re-run after the
+external-base rule; the special-method, chain-name and external-base
+changes added 1 to 70 tests on five commits). The re-run before it
+reported two outcome misses, both one timing test,
 `test_batch_processor.py::TestBatchProcessor::test_shutdown_allows_1_export_to_finish`,
 producing no result in one of the two runs (`None -> PASSED` on ee219ad,
 `PASSED -> None` on 9bbc005, commits that change only another package's
@@ -846,6 +848,48 @@ with `--range HEAD~75..HEAD --max 30` for rich and marshmallow,
 `--rootdir . tests` appended to rich's pytest command, `tests` to
 cattrs' and pydantic's, and `--setup-command "cp $PWD/tenacity/_version.py
 tenacity/_version.py"` for tenacity.
+
+## Recall validation, second batch (8 more repositories)
+
+Eight more census repositories, chosen to differ from the first
+nineteen (WSGI, ASGI and HTTP clients, a type-hint CLI, two async
+frameworks with their own pytest plugins, pure functions, datetimes),
+validated the same way over up to 12 of their last 75 commits:
+
+| repository (HEAD) | validated commits | recall | mean savings | notes |
+|---|---|---|---|---|
+| werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 4 % | |
+| starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 39 % | 64 % before the external-base fix |
+| httpx (b5addb6) | 3 | 1 of 2 | 100 % | the miss is a re-import test (below) |
+| typer (a80f6e5) | 3 | 100 % (6 of 6) | 41 % | |
+| anyio (f7df682) | 7 | 100 % (828 of 828) | 43 % | |
+| trio (50b9825) | 6 | 428 of 433 | 20 % | the misses are one re-import test (below); REPL tests deselected |
+| more-itertools (1da45ae) | 8 | 100 % (87 of 87) | 97 % | |
+| arrow (2224255) | 5 | 100 % (441 of 441) | 53 % | 39 outcome changes, none missed |
+
+No outcome was missed. werkzeug, more-itertools, arrow, typer and anyio
+ran before the external-base rule, which only adds selections.
+
+* **starlette, 421 tests: a real miss, fixed.** `TestClient` is an
+  `httpx.Client` around `_TestClientTransport(httpx.BaseTransport)`;
+  httpx calls `handle_request` for every request and nothing in the
+  source roots does. Classes with external bases now depend on every
+  method they define (design.md).
+* **httpx and trio: tests that re-import the package.**
+  `test_httpcore_lazy_loading` and `test_trio_import` delete the package
+  from `sys.modules` and import it again inside the test, so coverage
+  credits them with import-time code: an `__all__` assignment in httpx;
+  the `trio._sync` and `trio.socket` module bodies, a `deprecated` helper
+  and `__version__` in trio. By design a module's import-time code
+  reaches only code that reads its state (design.md, module bodies);
+  these tests read none of it. trio's other credited symbols
+  (`WorkerThread._handle_job`, `MemorySendChannel.send_nowait`,
+  `KqueueIOManager.notify_closing`) ran on background threads while the
+  test's coverage context was active: coverage contexts are process-wide.
+* Setup: trio's REPL tests start `python -m trio` subprocesses that wait
+  on stdin under the harness, so trio ran with `-k "not repl"` and
+  httpx and trio with pytest-timeout (`--timeout=120`); an httpx run
+  without the timeout hung.
 
 ## Not yet exercised
 
