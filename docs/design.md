@@ -650,9 +650,25 @@ assumption never hides a real dependency. Measured on pipx (699 tests):
 before the table, 153 tests were selected on every change because of
 `mocker` and `fake_process` alone.
 
+Doctests, as pytest collects them (injector: `--doctest-modules
+--doctest-glob=*.md`). With `--doctest-modules` in `addopts`, every
+docstring with examples in a collected module (outside `norecursedirs`,
+not `setup.py` or `__main__.py`) is a target named as pytest names it,
+`path::module.Qualified.name`, with the owning symbol as entry. Examples
+run with the module's globals, so each doctest has the lifecycle
+dependency `dynamic:<module>` (and one per in-scope module an example
+imports); the planner treats `dynamic:<module>` like a dynamic reference,
+affected by any impact-carrying change in the module's import closure. A
+docstring-only change of a target's entry symbol selects the target
+(`entry_docstring_changed`; for a doctest the docstring is the test). Text
+files matching `--doctest-glob` (default `test*.txt`) that contain
+examples are targets whose entry is not a symbol, so they are always
+selected: the index does not read them, and a change to them is invisible.
+
 Not modelled: dynamic `request.getfixturevalue`, fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
-fixtures of plugins outside the well-known table, doctests, base classes
+fixtures of plugins outside the well-known table, doctests of objects
+added through `__test__` or assigned rather than defined, base classes
 defined in other modules,
 and `conftest.py` files outside the source roots.
 

@@ -33,6 +33,15 @@ Lifecycle dependencies attached to each test:
 * for tests inherited from a base class defined in the same module, the
   collecting class itself. Bases defined elsewhere are reported.
 
+Doctests, as pytest collects them: with ``--doctest-modules`` in
+``addopts``, every docstring with examples in a collected module (the
+module's, its functions', classes', and their methods' and nested classes'),
+named ``path::module.Qualified.name`` with the owning symbol as entry and a
+``dynamic:<module>`` lifecycle dependency (examples run with the module's
+globals; plus one per in-scope module an example imports); text files
+matching ``--doctest-glob`` (default ``test*.txt``) become targets whose
+entry is not a symbol, so they are always selected.
+
 Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
 (``@pytest.fixture``, ``@pytest.fixture(name=...)``, ``@fixture``,
 ``@pytest_asyncio.fixture``). Overriding follows nearest-scope-wins.
@@ -51,6 +60,7 @@ from __future__ import annotations
 
 import ast
 import configparser
+import doctest
 import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
@@ -70,6 +80,7 @@ from diffcone.discovery.common import (
     string_literals,
 )
 from diffcone.indexer import iter_scope_statements, resolve_relative_module
+from diffcone.manifest import Target
 from diffcone.model import SourceIndex
 from diffcone.snapshot import Snapshot
 
@@ -310,6 +321,9 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         "testpaths": (),
         "entry_point_plugins": (),  # pytest11 entry points defined by the project itself
         "addopts_plugins": (),  # ``-p name`` entries in addopts
+        "doctest_modules": False,  # ``--doctest-modules`` in addopts
+        "doctest_globs": ("test*.txt",),  # ``--doctest-glob`` patterns
+        "norecursedirs": DEFAULT_NORECURSEDIRS,
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
@@ -340,12 +354,23 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         if section is not None:
             config["source"] = "setup.cfg"
     if section:
-        for key in ("python_files", "python_classes", "python_functions", "testpaths"):
+        for key in (
+            "python_files",
+            "python_classes",
+            "python_functions",
+            "testpaths",
+            "norecursedirs",
+        ):
             if key in section:
                 values = _split(section[key])
                 if values:
                     config[key] = values
-        config["addopts_plugins"] = tuple(_addopts_plugins(_split(section.get("addopts", ""))))
+        addopts = _split(section.get("addopts", ""))
+        config["addopts_plugins"] = tuple(_addopts_plugins(addopts))
+        config["doctest_modules"] = "--doctest-modules" in addopts
+        globs = _option_values(addopts, "--doctest-glob")
+        if globs:
+            config["doctest_globs"] = tuple(globs)
     config["entry_point_plugins"] = tuple(_entry_point_plugins(files))
     return config
 
@@ -375,6 +400,38 @@ def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
 
 
 BUILTIN_PLUGINS = frozenset({"pytester", "pytest", "_pytest"})
+
+
+# pytest's default ``norecursedirs``.
+DEFAULT_NORECURSEDIRS = (
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+)
+
+
+def _collected_dir(path: str, norecursedirs: tuple[str, ...]) -> bool:
+    """Whether pytest recurses into every directory on ``path``."""
+    directories = PurePosixPath(path).parts[:-1]
+    return not any(fnmatch(part, pattern) for part in directories for pattern in norecursedirs)
+
+
+def _option_values(addopts: tuple[str, ...], option: str) -> list[str]:
+    """Values of ``--option=value`` / ``--option value`` in addopts."""
+    values: list[str] = []
+    tokens = list(addopts)
+    for i, token in enumerate(tokens):
+        if token.startswith(option + "="):
+            values.append(token.split("=", 1)[1])
+        elif token == option and i + 1 < len(tokens):
+            values.append(tokens[i + 1])
+    return values
 
 
 def _addopts_plugins(addopts: tuple[str, ...]) -> list[str]:
@@ -925,6 +982,8 @@ def discover_pytest(
                     module_deps.append(symbol)
         _collect_module_tests(result, facts, resolver, config, module_deps, index)
 
+    _collect_doctests(result, snapshot, index, config, facts_by_path)
+
     for name, count in sorted(unresolved.items()):
         result.notes.append(
             DiscoveryNote(
@@ -952,6 +1011,111 @@ def discover_pytest(
     return result
 
 
+def _collect_doctests(
+    result: DiscoveryResult,
+    snapshot: Snapshot,
+    index: SourceIndex,
+    config: dict[str, Any],
+    facts_by_path: dict[str, ModuleFacts],
+) -> None:
+    """Doctest targets (see the module docstring)."""
+    testpaths = tuple(config["testpaths"])
+    norecurse = tuple(config["norecursedirs"])
+    parser = doctest.DocTestParser()
+    for path, content in sorted(snapshot.text_files.items()):
+        name = PurePosixPath(path).name
+        if not (
+            _under_testpaths(path, testpaths)
+            and _collected_dir(path, norecurse)
+            and any(fnmatch(name, g) for g in config["doctest_globs"])
+        ):
+            continue
+        try:
+            has_examples = bool(parser.get_examples(content.decode("utf-8", "replace")))
+        except ValueError:
+            has_examples = True  # pytest reports a malformed file as a failing item
+        if has_examples:
+            # Not Python: a change to it is invisible, so it is always selected.
+            result.targets.append(Target(RUNNER, f"{path}::{name}", f"doctest-file:{path}", ()))
+    if not config["doctest_modules"]:
+        return
+    paths = [
+        p
+        for p in snapshot.files
+        if _under_testpaths(p, testpaths)
+        and _collected_dir(p, norecurse)
+        and PurePosixPath(p).name not in ("setup.py", "__main__.py")
+    ]
+    parsed, _ = parse_modules(snapshot, sorted(paths))
+    for pm in parsed:
+        conftests = _conftest_chain(pm.path, facts_by_path)
+        base_deps = [c.parsed.module for c in conftests] + [h for c in conftests for h in c.hooks]
+        for qualname, symbol, docstring in _docstrings(pm):
+            try:
+                examples = parser.get_examples(docstring)
+            except ValueError:
+                examples = None  # pytest reports it as a failing item
+            if examples == []:
+                continue
+            deps = [*base_deps, f"dynamic:{pm.module}"]
+            if examples is None:
+                deps.append("doctest:unparsed")
+            else:
+                for module in _example_imports(examples):
+                    if module is None:
+                        deps.append("doctest:unparsed")
+                    elif module in index.modules:
+                        deps.append(f"dynamic:{module}")
+            name = pm.module if not qualname else f"{pm.module}.{qualname}"
+            result.targets.append(
+                Target(RUNNER, f"{pm.path}::{name}", symbol, tuple(sorted(set(deps))))
+            )
+
+
+def _docstrings(pm: ParsedModule) -> list[tuple[str, str, str]]:
+    """(qualified name, symbol id, docstring) of every object doctest's finder
+    visits: the module, its functions and classes, and recursively their
+    methods and nested classes."""
+    found: list[tuple[str, str, str]] = []
+    doc = ast.get_docstring(pm.tree, clean=False)
+    if doc:
+        found.append(("", pm.module, doc))
+
+    def walk(body: list[ast.stmt], prefix: str, container: str | None) -> None:
+        for node in body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            qual = f"{prefix}.{node.name}" if prefix else node.name
+            symbol = f"{container}.{node.name}" if container else pm.member_id(node.name)
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                found.append((qual, symbol, doc))
+            if isinstance(node, ast.ClassDef):
+                walk(node.body, qual, symbol)
+
+    walk(pm.tree.body, "", None)
+    return found
+
+
+def _example_imports(examples: list[doctest.Example]) -> list[str | None]:
+    """Absolute modules the examples import; None for an example that does
+    not parse (what it uses is unknown)."""
+    modules: list[str | None] = []
+    for example in examples:
+        try:
+            tree = ast.parse(example.source)
+        except SyntaxError:
+            modules.append(None)
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                modules += [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                modules.append(node.module)
+                modules += [f"{node.module}.{a.name}" for a in node.names]
+    return modules
+
+
 def _collect_module_tests(
     result: DiscoveryResult,
     facts: ModuleFacts,
@@ -960,7 +1124,6 @@ def _collect_module_tests(
     module_deps: list[str],
     index: SourceIndex,
 ) -> None:
-    from diffcone.manifest import Target
 
     parsed = facts.parsed
     functions = tuple(config["python_functions"])

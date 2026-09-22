@@ -141,7 +141,10 @@ installed plugin when a well-known plugin provides it (`mocker`,
 lists every such assumption; `--no-well-known-fixtures` turns this off) or
 when it is passed with `--assume-external-fixture NAME`; any other unknown
 fixture becomes the dependency `fixture:<name>`, which the planner cannot
-resolve, so the test is selected conservatively.
+resolve, so the test is selected conservatively. Doctests are discovered as
+pytest collects them (`--doctest-modules`, `--doctest-glob`): a docstring
+doctest depends on everything its module's globals can reach, and a
+text-file doctest is always selected.
 
 **ASV** ([details](docs/design.md#asv)): `benchmark_dir` from
 `asv.conf.json`; `time_`/`timeraw_`/`mem_`/`peakmem_`/`track_` functions and

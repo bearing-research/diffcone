@@ -38,7 +38,14 @@ from pathlib import Path
 from typing import TypeVar
 
 from diffcone.cache import IndexCache
-from diffcone.classify import ADDED, DEFINITION_CHANGED, DELETED, SymbolChange, classify
+from diffcone.classify import (
+    ADDED,
+    DEFINITION_CHANGED,
+    DELETED,
+    DOCSTRING_CHANGED,
+    SymbolChange,
+    classify,
+)
 from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
@@ -71,6 +78,12 @@ RULE_ENTRY_UNRESOLVED = "entry_symbol_unresolved"
 RULE_LIFECYCLE_UNRESOLVED = "lifecycle_dependency_unresolved"
 RULE_ANALYSIS_ERROR = "analysis_error"
 RULE_RUNNER_DEPENDENCY = "runner_dependency"
+RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
+
+# A lifecycle dependency ``dynamic:<module>`` says the target runs code with
+# that module's globals (a doctest): it is affected by any impact-carrying
+# change in the module's import closure, as a dynamic reference is.
+DYNAMIC_DEPENDENCY = "dynamic:"
 
 CONSERVATIVE_RULES = frozenset(
     {
@@ -328,6 +341,7 @@ def plan_from_indexes(
         pending_unresolved.append((ref, revs))
 
     # Targets join the graph as nodes with explicit dependency edges.
+    dynamic_deps: dict[str, list[str]] = defaultdict(list)
     for target in targets:
         if target.entry_symbol in known_symbols:
             graph.add(Edge(target.node_id, target.entry_symbol, ENTRY), ("manifest",))
@@ -341,7 +355,10 @@ def plan_from_indexes(
                 )
             )
         for dep in target.lifecycle_dependencies:
-            if dep in known_symbols:
+            module = dep[len(DYNAMIC_DEPENDENCY) :] if dep.startswith(DYNAMIC_DEPENDENCY) else None
+            if module is not None and module in known_symbols:
+                dynamic_deps[target.node_id].append(module)
+            elif dep in known_symbols:
                 graph.add(Edge(target.node_id, dep, LIFECYCLE), ("manifest",))
             else:
                 fallbacks.append(
@@ -376,9 +393,9 @@ def plan_from_indexes(
     # A dynamic reference (eval/exec/getattr with an unbounded name) can reach
     # whatever its module's globals can reach: the module itself and every
     # module it imports, transitively. A dynamic *import* can reach anything.
+    changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
+    reach = _ImportReach(base, head)
     if impacting:
-        changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
-        reach = _ImportReach(base, head)
         for symbol in sorted(dynamic_symbols):
             if symbol in mode:
                 continue
@@ -440,6 +457,25 @@ def plan_from_indexes(
             reasons.append(Reason(fb.rule, fb.detail))
         for fb in global_fallbacks:
             reasons.append(Reason(fb.rule, fb.detail))
+        for module in dynamic_deps.get(target.node_id, ()):
+            if reach.closure_of(module) & changed_modules:
+                reasons.append(
+                    Reason(
+                        RULE_DYNAMIC_REFERENCE,
+                        f"the target runs code with the globals of {module}, and a change lies "
+                        "in that module's import closure",
+                    )
+                )
+        entry_change = change_by_id.get(target.entry_symbol)
+        if entry_change is not None and DOCSTRING_CHANGED in entry_change.changes:
+            # For a doctest the docstring is the test; for anything else
+            # re-running a target whose own docstring changed is cheap.
+            reasons.append(
+                Reason(
+                    RULE_ENTRY_DOCSTRING,
+                    f"the docstring of the entry symbol {target.entry_symbol} changed",
+                )
+            )
         affected = sorted(
             dep for dep in (target.entry_symbol, *target.lifecycle_dependencies) if dep in mode
         )

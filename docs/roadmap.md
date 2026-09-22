@@ -63,7 +63,7 @@ Unknown fixtures cause 1 % of census selections.
 * pytest: `request.getfixturevalue("name")` with a literal, names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
   conservative), base classes defined in other modules, `conftest.py`
-  outside the source roots, doctests.
+  outside the source roots.
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare

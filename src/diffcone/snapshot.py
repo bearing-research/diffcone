@@ -49,6 +49,11 @@ class Snapshot:
     config_files: dict[str, bytes] = field(default_factory=dict)
     # Problems reading the snapshot itself (e.g. unmerged index entries).
     errors: list[AnalysisError] = field(default_factory=list)
+    # Paths of the other (non-Python) files under the source roots, names
+    # only, and (read only with ``with_config``) the content of the text
+    # files among them that pytest could collect as doctests.
+    other_paths: tuple[str, ...] = ()
+    text_files: dict[str, bytes] = field(default_factory=dict)
 
     @property
     def revision(self) -> str:
@@ -137,6 +142,14 @@ def _ls_tree(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, s
 def _root_pathspecs(source_roots: list[str]) -> list[str]:
     roots = [_normalise_root(r) for r in source_roots]
     return [] if "" in roots else [r for r in roots if r]
+
+
+# Suffixes of files pytest's ``--doctest-glob`` commonly collects.
+TEXT_DOCTEST_SUFFIXES = (".txt", ".rst", ".md")
+
+
+def _text_paths(paths: list[str] | tuple[str, ...]) -> list[str]:
+    return [p for p in paths if p.endswith(TEXT_DOCTEST_SUFFIXES)]
 
 
 def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[str]:
@@ -292,6 +305,12 @@ def read_commit_snapshot(
         source_roots=list(source_roots),
         files=dict(sorted(files.items())),
         config_files=config_files,
+        other_paths=tuple(sorted(p for m, p in entries if not p.endswith(".py"))),
+        text_files=read_files(
+            repo, commit, _text_paths([p for m, p in entries if m != SYMLINK_MODE])
+        )
+        if with_config
+        else {},
     )
 
 
@@ -352,6 +371,12 @@ def read_index_snapshot(
         files=dict(sorted(files.items())),
         config_files=config_files,
         errors=errors,
+        other_paths=tuple(sorted(p for p in staged if not p.endswith(".py"))),
+        text_files=read_files(
+            repo, "", _text_paths([p for p, m in staged.items() if m != SYMLINK_MODE]), label=INDEX
+        )
+        if with_config
+        else {},
     )
 
 
@@ -411,6 +436,16 @@ def read_worktree_snapshot(
         source_roots=list(source_roots),
         files=files,
         config_files=config_files,
+        other_paths=tuple(
+            sorted({p for _, p in listed if not p.endswith(".py") and (repo / p).is_file()})
+        ),
+        text_files={
+            p: (repo / p).read_bytes()
+            for p in _text_paths(sorted({p for _, p in listed}))
+            if (repo / p).is_file()
+        }
+        if with_config
+        else {},
     )
 
 

@@ -2273,3 +2273,71 @@ def test_a_class_named_in_an_annotation_may_be_built_by_a_framework(repo):
         "def test_s():\n    assert Injector().get(App).service.run() == 2\n"
     )
     assert _evil_reaches(repo, core, test) == {"t::test_s"}
+
+
+def test_doctests_collected_by_pytest_are_targets(repo):
+    """injector runs ``--doctest-modules --doctest-glob=*.md``: pytest
+    collects docstring examples and README.md, discovery did not, so they
+    could never be selected. A doctest runs with its module's globals, so it
+    depends on the module's import closure; its docstring is the test; a
+    text file is not read by the index, so it is always selected."""
+    helpers = (
+        '"""Helpers.\n\n>>> from pkg.helpers import double\n>>> double(2)\n4\n"""\n\n'
+        "from pkg import core\n\n\n"
+        'def double(x):\n    """Double it.\n\n    >>> double(3)\n    6\n    """\n'
+        "    return core.times(x, 2)\n\n\n"
+        'def plain():\n    """No examples."""\n    return 1\n'
+    )
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\naddopts = --doctest-modules --doctest-glob=*.md\n",
+            "pkg/__init__.py": "",
+            "pkg/core.py": "def times(a, b):\n    return a * b\n",
+            "pkg/other.py": "def other():\n    return 1\n",
+            "pkg/helpers.py": helpers,
+            "README.md": "Usage:\n\n>>> 1 + 1\n2\n",
+            "NOTES.md": "No examples here.\n",
+            "tests/test_other.py": (
+                "from pkg.other import other\n\n\ndef test_other():\n    assert other()\n"
+            ),
+        }
+    )
+    discovered = {
+        d.target.runner_id: d.target
+        for d in repo.plan(base, base, [], discover_runners=["pytest"]).decisions
+    }
+    assert set(discovered) == {
+        "pkg/helpers.py::pkg.helpers",
+        "pkg/helpers.py::pkg.helpers.double",
+        "README.md::README.md",
+        "tests/test_other.py::test_other",
+    }
+    assert discovered["pkg/helpers.py::pkg.helpers.double"].entry_symbol == "pkg.helpers.double"
+
+    def plan_for(head):
+        return repo.plan(
+            base,
+            head,
+            [asv_target("bench.time_x", "pkg.other.other")],
+            discover_runners=["pytest"],
+        )
+
+    # A change in the doctests' import closure: both module doctests, and
+    # README (always); not the unrelated test or benchmark.
+    head = repo.commit({"pkg/core.py": "def times(a, b):\n    return b * a\n"})
+    plan = plan_for(head)
+    assert selected(plan) == {
+        "pkg/helpers.py::pkg.helpers",
+        "pkg/helpers.py::pkg.helpers.double",
+        "README.md::README.md",
+    }
+    # A docstring-only change: the doctest whose docstring it is.
+    head2 = repo.commit(
+        {
+            "pkg/core.py": "def times(a, b):\n    return a * b\n",
+            "pkg/helpers.py": helpers.replace("double(3)\n    6", "double(4)\n    8"),
+        }
+    )
+    plan2 = repo.plan(head, head2, [], discover_runners=["pytest"])
+    assert "pkg/helpers.py::pkg.helpers.double" in selected(plan2)
+    assert "tests/test_other.py::test_other" not in selected(plan2)
