@@ -856,7 +856,15 @@ def test_corpus_jobs_matches_serial_and_overlaps_suites(repo, monkeypatch):
     parallel = execution.corpus_validation(
         repo.path, f"{c1}..{c5}", make, command=PYTEST, coverage=True, jobs=2
     )
-    assert execution.corpus_to_dict(parallel) == execution.corpus_to_dict(serial)
+    got, want = execution.corpus_to_dict(parallel), execution.corpus_to_dict(serial)
+    # Report a transient failure (a suite that could not run) as itself, and
+    # a real difference per commit: a whole-report diff is unreadable.
+    assert [
+        (e["commit"], e["error"]) for r in (want, got) for e in r["entries"] if e["error"]
+    ] == []
+    for expected, actual in zip(want["entries"], got["entries"], strict=True):
+        assert actual == expected, f"{expected['commit']}: parallel differs from serial"
+    assert got == want
     # Serial: five distinct snapshots, each once. Two jobs over four pairs:
     # workers take second pairs, so at most one extra run per pair...
     assert serial_runs == 5 and 5 <= len(spans) <= 9
