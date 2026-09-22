@@ -576,6 +576,10 @@ been re-stated from the re-run:
   248141c went from 268 to 253 selected (recall 100 %; the 78 template
   tests on the release rows are now selected through the templates rather
   than as a dynamic reference); every other recorded commit planned identically;
+* literal module constants are inert at import (a narrowing): only
+  boltons moved (38 % to 42 % mean savings over its five commits,
+  re-validated at recall 100 %); hatch's release rows are unaffected,
+  since they select everything through a lazy-module `__getattr__`;
 * the third batch's rules (classes named in annotations escape, doctests
   and imported tests are discovered, decorators, defaults and class
   bodies are import-time code of their module): over the 171 recorded
@@ -823,7 +827,7 @@ on the final code:
 | tenacity (3e58094) | 5 | **73 %** | 100 % (509 of 509) | 20 % |
 | pluggy (9836e54) | 4 | **79 %** | 100 % (229 of 229) | 24 % |
 | packaging (10590c1) | 4 | 100 % | 100 % (273 of 273) | 47 % |
-| boltons (961dcff) | 5 | 100 % | 100 % (37 of 37) | 38 % |
+| boltons (961dcff) | 5 | 100 % | 100 % (37 of 37) | 42 % |
 | pydantic (915896d) | 3 | **1 missed** | 100 % (4 923 of 4 923) | 33 % |
 
 No run had an outcome miss. The misses the first pass found, all
