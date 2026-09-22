@@ -14,9 +14,16 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
   change, or itself structurally invalidated by its own container). A plain
   body change of a module does not invalidate every member; members that use
   module state carry their own ``references`` edges.
-* ``imports``/``imports_name``: module-level imports break only when the
-  imported module or name is deleted; then the importing module and every
-  member of it are invalidated.
+* ``imports``: importing a module runs its import-time code, so any impact
+  on the imported module reaches the importer (behaviour-level); deleting
+  it invalidates the importer and every member of it (structural).
+* ``imports_name``: only a deletion of the imported name propagates
+  (structural); the accompanying ``imports`` edge to the module carries
+  import-time impact.
+
+A change that runs at import (a module body change, a variable, a class, a
+function's decorators or defaults, an added or deleted definition) also
+seeds its module, so every module that transitively imports it is reached.
 
 Every selection is backed by a concrete edge path or an explicit fallback
 rule. See docs/design.md.
@@ -31,11 +38,12 @@ from pathlib import Path
 from typing import TypeVar
 
 from diffcone.cache import IndexCache
-from diffcone.classify import DELETED, SymbolChange, classify
+from diffcone.classify import ADDED, DEFINITION_CHANGED, DELETED, SymbolChange, classify
 from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
+    CLASS,
     DEFINED_IN,
     ENTRY,
     IMPORTS,
@@ -44,6 +52,7 @@ from diffcone.model import (
     MODULE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
+    VARIABLE,
     AnalysisError,
     Edge,
     SnapshotInfo,
@@ -229,8 +238,21 @@ def _propagate(edge: Edge, target_mode: int, target_change: SymbolChange | None)
     if edge.kind in (IMPORTS, IMPORTS_NAME):
         if target_change is not None and DELETED in target_change.changes:
             return STRUCTURAL
-        return None
+        # Importing a module runs its import-time code.
+        return BEHAVIOR if edge.kind == IMPORTS else None
     return BEHAVIOR
+
+
+def _runs_at_import(change: SymbolChange) -> bool:
+    """Module bodies, variable initialisers, class bodies, and a function's
+    definition (decorators, defaults) run at import; a function body does
+    not (what import-time code calls is reached through its edges)."""
+    symbol = change.head or change.base
+    if symbol is None:
+        return False
+    if symbol.kind in (MODULE, VARIABLE, CLASS):
+        return True
+    return bool({ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes))
 
 
 # --------------------------------------------------------------------------- planning
@@ -337,6 +359,15 @@ def plan_from_indexes(
         mode[change.id] = STRUCTURAL if change.structural else BEHAVIOR
         via[change.id] = None
         queue.append(change.id)
+    # A change that runs when its module is imported affects the module's
+    # import, hence (through ``imports`` edges) every importer.
+    for change in impacting:
+        symbol = change.head or change.base
+        assert symbol is not None
+        if symbol.module not in mode and _runs_at_import(change):
+            mode[symbol.module] = BEHAVIOR
+            via[symbol.module] = None
+            queue.append(symbol.module)
     # A dynamic reference (eval/exec/getattr with an unbounded name) can reach
     # whatever its module's globals can reach: the module itself and every
     # module it imports, transitively. A dynamic *import* can reach anything.

@@ -1025,7 +1025,7 @@ def test_adding_an_import_binding_is_not_structural(repo):
     assert "b.time_a" in unselected(plan2)
 
 
-def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
+def test_a_new_test_reselects_its_module_but_an_added_import_does_not_by_itself(repo):
     base = repo.commit(
         {
             "pkg/tools.py": "def a():\n    return 1\n\n\ndef c():\n    return 3\n",
@@ -1053,8 +1053,9 @@ def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
         "tests.test_tools": ("imports_added", "dependencies_added"),
         "tests.test_tools.test_c": ("added",),
     }
-    assert selected(plan) == {"tests/test_tools.py::test_c"}
-    assert unselected(plan) == {"tests/test_tools.py::test_a"}
+    # The added import is not structural; the added definition runs when the
+    # test module is imported, so the module's other test is selected too.
+    assert selected(plan) == {"tests/test_tools.py::test_c", "tests/test_tools.py::test_a"}
 
     # A module *body* change (pytestmark) still reaches every test through it.
     head2 = repo.commit(
@@ -1683,8 +1684,10 @@ def test_subclassing_runs_the_base_init_subclass(repo):
     head = repo.commit({"pkg/views.py": views.format(methods="'get'", registered=True)})
     plan = repo.plan(base, head, targets)
     assert changes(plan) == {"pkg.views.HTTP": ("body_changed",)}
-    assert selected(plan) == {"t::test_nested", "bench.time_define"}
-    assert unselected(plan) == {"t::test_plugin", "t::test_other"}
+    # HTTP runs at import: test_meta imports pkg.views, so test_plugin (which
+    # depends on its module) is selected too; test_other imports nothing.
+    assert selected(plan) == {"t::test_nested", "bench.time_define", "t::test_plugin"}
+    assert unselected(plan) == {"t::test_other"}
     assert path_ids(reason(plan, "t::test_nested"))[-3:] == [
         "tests.test_nested.test_nested",
         "pkg.views.MethodView.__init_subclass__",
@@ -1923,4 +1926,56 @@ def test_methods_of_classes_with_external_bases_are_reached_through_the_class(re
     ]
     # An abc.ABC subclass's plain method is not reached through the class.
     head2 = repo.commit({"pkg/client.py": client.format(value=2, area=1)})
+    assert selected(repo.plan(head, head2, targets)) == set()
+
+
+def test_import_time_changes_reach_every_transitive_importer(repo):
+    """httpx and trio re-import their package in a test, and every test
+    imports at collection: a change to code that runs at import (a
+    module-level statement, a constant, a function that import-time code
+    calls) reaches every target whose module imports the changed module,
+    directly or through other modules. A plain function body change does
+    not run at import and reaches only its callers."""
+    registry = (
+        "REGISTRY = {{}}\n\n\n"
+        "def register(name):\n    REGISTRY[name] = {value}\n\n\n"
+        "def lookup(name):\n    return REGISTRY.get(name)\n\n\n"
+        "register('default')\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/registry.py": registry.format(value=1),
+            "pkg/api.py": "from pkg import registry\n\n\ndef ping():\n    return 'pong'\n",
+            "tests/test_api.py": (
+                "from pkg.api import ping\n\n\ndef test_ping():\n    assert ping() == 'pong'\n"
+            ),
+            "tests/test_plain.py": "def test_plain():\n    assert True\n",
+            "benchmarks/bench_api.py": (
+                "from pkg.api import ping\n\n\ndef time_ping():\n    ping()\n"
+            ),
+        }
+    )
+    targets = [
+        # Discovery makes each test depend on its own module.
+        py_target("t::test_ping", "tests.test_api.test_ping", "tests.test_api"),
+        py_target("t::test_plain", "tests.test_plain.test_plain", "tests.test_plain"),
+        asv_target("bench.time_ping", "benchmarks.bench_api.time_ping", "benchmarks.bench_api"),
+    ]
+    # ``register`` runs at import: test_api imports pkg.api, which imports
+    # pkg.registry, so its tests are selected though ping never touches it.
+    head = repo.commit({"pkg/registry.py": registry.format(value=2)})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.registry.register": ("body_changed",)}
+    assert selected(plan) == {"t::test_ping", "bench.time_ping"}
+    assert unselected(plan) == {"t::test_plain"}
+    assert path_ids(reason(plan, "t::test_ping"))[-3:] == [
+        "pkg.api",
+        "pkg.registry",
+        "pkg.registry.register",
+    ]
+    # ``lookup`` does not run at import and nothing calls it.
+    head2 = repo.commit(
+        {"pkg/registry.py": registry.format(value=2).replace("REGISTRY.get(name)", "None")}
+    )
     assert selected(repo.plan(head, head2, targets)) == set()

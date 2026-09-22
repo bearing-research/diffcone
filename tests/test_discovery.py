@@ -8,7 +8,7 @@ from diffcone.cli import main
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
-from diffcone.testing import asv_target, py_target, reason, selected, unselected
+from diffcone.testing import asv_target, py_target, reason, rules, selected, unselected
 
 
 def run_discovery(repo, rev, runner, roots=None, **opts):
@@ -525,10 +525,14 @@ def test_pytest_inherited_test_methods(repo):
         }
     )
     plan = repo.plan(base, head2, [], discover_runners=["pytest"])
+    # A class body runs when its module is imported, so the module's other
+    # tests (which depend on their module) are selected too.
     assert selected(plan) == {
         "tests/test_inherit.py::TestJson::test_roundtrip",
         "tests/test_inherit.py::TestJson::test_overridden",
+        "tests/test_inherit.py::TestExternal::test_own",
     }
+    assert rules(plan, "tests/test_inherit.py::TestJson::test_roundtrip") == {"dependency"}
 
 
 def test_pytest_testpaths_globs_and_dot_prefix(repo):

@@ -235,11 +235,12 @@ its cause.
   module** (adding one does not), and any change to a class body
   (attributes, member list, bases, decorators) invalidates every method of
   that class. This is conservative by design.
-* **Module-level side effects are only partially tracked.** A module's
-  top-level statements are hashed, and functions that use module-level state
-  get edges to the module, but a body change in a module's init code does not
-  by itself invalidate every function defined in it or every importer.
-  Declare the module as a lifecycle dependency when it should.
+* **Import-time changes select every importer.** A change that runs when
+  a module is imported (a top-level statement, a module-level constant, a
+  class body, a decorator, a function that import-time code calls) selects
+  every target whose module imports that module, directly or through
+  others. This is deliberately broad: a plan may select more tests than
+  needed, never fewer.
 * **A file that does not parse forces select-all.** Any file under a
   source root with invalid syntax (including Python 2 code, which is not
   supported) or that is not UTF-8 is an analysis error, even a test data

@@ -378,10 +378,24 @@ two modes:
   carries its own `dependencies_changed`. Class bodies are structural because
   class-level attributes such as ASV `params`, pytest marks, or registries
   shape how every method runs without being referenced textually. Module
-  bodies are not: making every constant edit invalidate a whole module and
-  all its importers would make the plan useless; members that use module
-  state carry their own edges, and a runner may declare the module as a
-  lifecycle dependency of a target when module-level state governs it.
+  bodies are not structural (a constant edit does not invalidate every
+  function of the module), but they run at import (below).
+
+Import time. Importing a module runs its top-level statements, variable
+initialisers, class bodies, decorators and defaults, and whatever those
+call; tests import at collection, and some re-import a package inside a
+test (httpx, trio). So a change that runs at import (a module body change,
+a variable, a class, a function's definition, an added or deleted
+definition) seeds its module, and an `imports` edge carries
+behaviour-level impact from the imported module to the importer: every
+module and function that imports it, transitively, is affected, and
+through each test's dependency on its own module, every test that
+imports it. A function body change does not run at import; when
+import-time code calls the function, the module's edge to it carries the
+change. Measured before adoption (evaluation.md, roadmap history): mean
+selection rose from 58 % to 70 % over 171 validated commits and from 63 %
+to 71 % over the census; the rule follows the governing rule that a plan
+may select more than needed but must not miss.
 
 Edge rules (impact flows from the edge's target back to its source):
 
@@ -389,14 +403,15 @@ Edge rules (impact flows from the edge's target back to its source):
 |---|---|---|
 | `references`, `entry`, `lifecycle`, `unresolved_name_match` | always | behaviour |
 | `defined_in` | container is structurally affected | structural |
-| `imports`, `imports_name` | imported module/name was **deleted** | structural |
+| `imports` | imported module affected (import-time code) | behaviour (structural if deleted) |
+| `imports_name` | imported name was **deleted** | structural |
 
 So: changing a function body reaches its callers and their callers; adding a
 method or editing a class attribute invalidates all methods of the class;
 deleting a symbol that a test module imports at module level invalidates
-every test in that module; editing a module-level constant reaches only the
-functions that reference it (or targets that declare the module as a
-lifecycle dependency).
+every test in that module; editing a module-level constant reaches the
+functions that reference it and every target whose module imports the
+module (it runs at import).
 
 ## Uncertainty and fallbacks
 
@@ -720,9 +735,9 @@ from the `run` and `validate` commands after a plan exists.
   overrides; overrides in classes outside the source roots cannot be seen,
   and a call through an unknown receiver stays name-bounded. The MRO is an approximation of C3
   and ignores metaclasses and `__getattr__`.
-* Module init side effects: a body change in module init does not invalidate
-  the module's own members or importers that do not reference its state.
-  Use a module lifecycle dependency where that matters.
+* Import-time effects on the module's own members: a module body change
+  reaches importers, but does not invalidate every function defined in
+  the same module (functions that read module state have their own edges).
 * Walrus assignments inside comprehensions bind in the enclosing scope in
   Python but are treated as comprehension-local here.
 * Decorators that rewrite the decorated function are treated as ordinary
