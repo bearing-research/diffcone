@@ -889,9 +889,18 @@ analysis error rather than a judgement. The error is one file:
 coding: latin-1 -*-` and is deliberately not UTF-8. Python reads the
 declared encoding before it reads the source, and diffcone did not; it
 now does (design.md). With that file analysed, the same commit plans
-`complete` and selects 6 of 1939 targets instead of all of them. The
-remaining degraded repositories (pygments, black) hold files that are not
-Python at all.
+`complete` and selects 6 of 1939 targets instead of all of them. The two
+repositories that still degrade hold files that are deliberately
+unparseable, as data for the tool under test: pygments'
+`tests/examplefiles/python/unicodedoc.py` (a Python 2 `ur""` string) and
+twelve of black's `tests/data/cases` (future syntax, `async` as an
+identifier, an invalid header). Nothing imports them and pytest collects
+none of them, so only the census's blanket `--source-root .` puts them in
+scope; a project would exclude them. Re-scoping the fallback to the
+targets that actually depend on an unparseable file was considered and
+dropped; this is the evidence for how often it would matter -- 2
+repositories of 44, both of them tools whose fixtures are broken Python
+on purpose.
 
 ## Recall validation beyond the corpora (10 census repositories)
 
