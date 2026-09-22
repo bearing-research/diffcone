@@ -25,6 +25,34 @@ re-validated where selections move. Validating further repositories that
 differ from these (other layouts, heavy metaprogramming, frameworks with
 their own runners) is the standing way to find the next miss.
 
+## 0. Import-time changes and the governing rule (measure, then decide)
+
+Today a module's import-time code (its top-level statements, variable
+initialisers, class bodies, decorators and defaults, and whatever those
+call) reaches only code that reads the module's state (design.md, module
+bodies). Tests import at collection, so an import-time change that broke
+or altered the import affects every test that (transitively) imports the
+module, and none is selected for it. Found by the second validation
+batch (httpx and trio tests that re-import their package).
+
+*Mechanism (prototype, behind an internal switch until decided):* an
+`imports` edge carries behaviour-level impact, so a module reached by
+the backward search affects every module and function that imports it;
+and every change that executes at import (a module body change, a
+variable, a class, a function's definition) also seeds its module.
+*Measurement:* re-plan every validated repository's recorded commits
+and the census with the switch on and off and report the difference.
+*Measured (prototype, not merged):* over the 171 recorded commits of
+the 28 validated repositories, mean selection goes from 58 % to 70 %
+(95 commits widen; click +65 points, pytest-mock +64, more-itertools
++51, toolz +48, boltons +36, pipx +33, httpx +33, anyio +28; eight
+repositories move under 2 points); over the census's 332 plans, from
+63 % to 71 % (18 of 42 repositories move under 2 points). It selects the
+httpx and trio re-import tests the second batch found. *Decision:* the
+user chooses between adopting it (sound under the governing rule,
+broader) and keeping today's rule as a documented exception; this item
+is then rewritten or dropped.
+
 ## 1. Dynamic references: the widespread constructs
 
 The census attributes 27 % of selections to dynamic references alone
