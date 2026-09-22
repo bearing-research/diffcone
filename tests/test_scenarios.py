@@ -2652,3 +2652,42 @@ def test_a_module_is_read_in_the_encoding_it_declares(repo):
     assert not plan.degraded and plan.errors == []
     assert changes(plan) == {"pkg.latin.label": ("body_changed",)}
     assert selected(plan) == {"t::test_latin"}
+
+
+def test_a_runtime_named_import_says_so_in_its_reason(repo):
+    """The two dynamic fallbacks are different rules and say which fired: a
+    name looked up on an object reaches what its module imports, while an
+    import of a runtime name reaches any module in scope."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/loader.py": (
+                "import importlib\n\n\ndef load(name):\n    return importlib.import_module(name)\n"
+            ),
+            "pkg/probe.py": (
+                "from pkg import model\n\n\ndef probe(name):\n    return getattr(model, name)\n"
+            ),
+            "pkg/model.py": "def value():\n    return 1\n",
+            "pkg/far.py": "def far():\n    return 2\n",
+            "tests/test_load.py": (
+                "import os\n\nfrom pkg.loader import load\n\n\n"
+                "def test_load():\n    assert load(os.environ['MODULE'])\n"
+            ),
+            "benchmarks/bench_probe.py": (
+                "from pkg.probe import probe\n\n\n"
+                "class Probe:\n    def time_probe(self):\n        return probe('value')\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/far.py": "def far():\n    return 3\n"})
+    targets = [
+        py_target("t::test_load", "tests.test_load.test_load"),
+        asv_target("bench_probe.Probe.time_probe", "benchmarks.bench_probe.Probe.time_probe"),
+    ]
+    plan = repo.plan(base, head, targets)
+    # pkg.far is not imported by pkg.probe's module, so the getattr seed does
+    # not fire; the runtime-named import may name any module, so it does.
+    assert selected(plan) == {"t::test_load"}
+    detail = reason(plan, "t::test_load", "dynamic_reference").detail
+    assert detail.startswith("pkg.loader.load imports a module named at runtime (base, head)")
+    assert "any module in scope may be the one" in detail

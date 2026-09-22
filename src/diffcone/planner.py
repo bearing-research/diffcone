@@ -455,7 +455,9 @@ def plan_from_indexes(
     for target in targets:
         reasons: list[Reason] = []
         if target.node_id in mode:
-            reasons.append(_explain(target.node_id, via, change_by_id, dynamic_symbols))
+            reasons.append(
+                _explain(target.node_id, via, change_by_id, dynamic_symbols, unbounded_dynamic)
+            )
         for fb in target_fallbacks.get(target.node_id, ()):
             reasons.append(Reason(fb.rule, fb.detail))
         for fb in global_fallbacks:
@@ -602,6 +604,7 @@ def _explain(
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None],
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
+    unbounded_dynamic: set[str],
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -632,6 +635,14 @@ def _explain(
         return Reason(rule, detail, tuple(steps), current, change.changes)
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
+    if current in unbounded_dynamic:
+        return Reason(
+            RULE_DYNAMIC_REFERENCE,
+            f"{current} imports a module named at runtime ({', '.join(revs)}); "
+            "any module in scope may be the one, so its dependencies cannot be "
+            "bounded statically",
+            tuple(steps),
+        )
     return Reason(
         RULE_DYNAMIC_REFERENCE,
         f"{current} uses a dynamic import/attribute access ({', '.join(revs)}); "
