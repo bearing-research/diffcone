@@ -349,6 +349,7 @@ identity and reports:
 | `dependencies_added` | outgoing edges were only added (a new import binding, a new call); non-structural |
 | `imports_added` | a module gained import bindings and lost none; non-structural |
 | `docstring_changed` | only the docstring differs; non-structural, no impact |
+| `annotations_changed` | only a function's annotations differ and they are never evaluated at import (see Import time); behaviour-level, non-structural |
 
 A symbol whose only changes are `imports_added`, `dependencies_added`
 and/or `docstring_changed` is reported but seeds no impact: nothing an existing dependent can observe
@@ -392,7 +393,20 @@ module and function that imports it, transitively, is affected, and
 through each test's dependency on its own module, every test that
 imports it. A function body change does not run at import; when
 import-time code calls the function, the module's edge to it carries the
-change. Measured before adoption (evaluation.md, roadmap history): mean
+change. A `def` statement runs code at import only through its
+decorators, its defaults and its annotations when they are evaluated
+eagerly: a function whose decorators are inert (`typing.overload`,
+`override`, `final`), whose defaults are literals, whose annotations are
+absent or deferred (`from __future__ import annotations`), and which is
+module-level or in a plain class, only binds its name, so adding,
+deleting or redefining it does not seed its module (deleting or rebinding
+the name reaches its users through deletion and resolution edges). An
+annotation-only change to such a function is `annotations_changed`:
+behaviour-level for its callers and referrers (typer, FastAPI and
+pydantic read annotations when called), neither structural nor
+import-time. Measured on the validated repositories: mean selection
+70.3 % to 69.7 % over 171 commits; it also keeps a new test in a test
+module from re-selecting the module's other tests. Measured before adoption (evaluation.md, roadmap history): mean
 selection rose from 58 % to 70 % over 171 validated commits and from 63 %
 to 71 % over the census; the rule follows the governing rule that a plan
 may select more than needed but must not miss.

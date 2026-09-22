@@ -1025,7 +1025,7 @@ def test_adding_an_import_binding_is_not_structural(repo):
     assert "b.time_a" in unselected(plan2)
 
 
-def test_a_new_test_reselects_its_module_but_an_added_import_does_not_by_itself(repo):
+def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
     base = repo.commit(
         {
             "pkg/tools.py": "def a():\n    return 1\n\n\ndef c():\n    return 3\n",
@@ -1053,9 +1053,10 @@ def test_a_new_test_reselects_its_module_but_an_added_import_does_not_by_itself(
         "tests.test_tools": ("imports_added", "dependencies_added"),
         "tests.test_tools.test_c": ("added",),
     }
-    # The added import is not structural; the added definition runs when the
-    # test module is imported, so the module's other test is selected too.
-    assert selected(plan) == {"tests/test_tools.py::test_c", "tests/test_tools.py::test_a"}
+    # The added import is not structural, and the added ``def`` is inert (no
+    # decorators, defaults or annotations): it runs nothing at import.
+    assert selected(plan) == {"tests/test_tools.py::test_c"}
+    assert unselected(plan) == {"tests/test_tools.py::test_a"}
 
     # A module *body* change (pytestmark) still reaches every test through it.
     head2 = repo.commit(
@@ -1979,3 +1980,96 @@ def test_import_time_changes_reach_every_transitive_importer(repo):
         {"pkg/registry.py": registry.format(value=2).replace("REGISTRY.get(name)", "None")}
     )
     assert selected(repo.plan(head, head2, targets)) == set()
+
+
+def test_annotation_only_changes_do_not_run_at_import_under_future_annotations(repo):
+    """click: a type-hint change in a module that ``click/__init__.py``
+    imports selected every test under the import-time rule. With ``from
+    __future__ import annotations`` annotations are never evaluated at
+    import, so an annotation-only change reaches the function's callers
+    (typer and pydantic read annotations when called) but not every
+    importer. Without the future import, or with a decorator that could
+    read them, it still runs at import."""
+    lazy = (
+        "from __future__ import annotations\n\n\n"
+        "def edit(text: {hint}) -> str:\n    return text\n\n\n"
+        "def other() -> int:\n    return 1\n"
+    )
+    eager = lazy.replace("from __future__ import annotations\n\n\n", "")
+    decorated = lazy.replace("def edit", "def register(f):\n    return f\n\n\n@register\ndef edit")
+    tests = {
+        "tests/test_edit.py": (
+            "from pkg.termui import edit\n\n\ndef test_edit():\n    assert edit('x') == 'x'\n"
+        ),
+        "tests/test_other.py": (
+            "from pkg.termui import other\n\n\ndef test_other():\n    assert other() == 1\n"
+        ),
+        "benchmarks/bench_edit.py": (
+            "from pkg.termui import edit\n\n\ndef time_edit():\n    edit('x')\n"
+        ),
+    }
+    targets = [
+        py_target("t::test_edit", "tests.test_edit.test_edit", "tests.test_edit"),
+        py_target("t::test_other", "tests.test_other.test_other", "tests.test_other"),
+        asv_target("bench.time_edit", "benchmarks.bench_edit.time_edit", "benchmarks.bench_edit"),
+    ]
+    everything = {"t::test_edit", "t::test_other", "bench.time_edit"}
+    for source, expected, kind in (
+        (lazy, {"t::test_edit", "bench.time_edit"}, "annotations_changed"),
+        (eager, everything, "definition_changed"),
+        (decorated, everything, "definition_changed"),
+    ):
+        base = repo.commit(
+            {"pkg/__init__.py": "", "pkg/termui.py": source.format(hint="str"), **tests}
+        )
+        head = repo.commit({"pkg/termui.py": source.format(hint="str | bytes")})
+        plan = repo.plan(base, head, targets)
+        assert changes(plan) == {"pkg.termui.edit": (kind,)}, kind
+        assert selected(plan) == expected, kind
+
+
+def test_an_inert_def_runs_nothing_at_import_but_a_default_does(repo):
+    """click 2103e15 added a plain helper and changed another's parameters in
+    a module every test imports. A ``def`` with inert decorators, literal
+    defaults and no evaluated annotations only binds its name, so it does
+    not seed the module; a default expression runs at import and does."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "from pkg import pager\n",
+            "pkg/pager.py": "def page(text):\n    return text\n",
+            "tests/test_page.py": (
+                "from pkg.pager import page\n\n\ndef test_page():\n    assert page('x') == 'x'\n"
+            ),
+            "tests/test_pkg.py": "import pkg\n\n\ndef test_pkg():\n    assert pkg\n",
+            "benchmarks/bench_page.py": (
+                "from pkg.pager import page\n\n\ndef time_page():\n    page('x')\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_page", "tests.test_page.test_page", "tests.test_page"),
+        py_target("t::test_pkg", "tests.test_pkg.test_pkg", "tests.test_pkg"),
+        asv_target("bench.time_page", "benchmarks.bench_page.time_page", "benchmarks.bench_page"),
+    ]
+    # A new plain helper and a new literal-default parameter: callers only.
+    head = repo.commit(
+        {
+            "pkg/pager.py": (
+                "def page(text, raw=False):\n    return text\n\n\n"
+                "def uses_raw_mode():\n    return False\n"
+            )
+        }
+    )
+    plan = repo.plan(base, head, targets)
+    assert set(changes(plan)) == {"pkg.pager.page", "pkg.pager.uses_raw_mode"}
+    assert selected(plan) == {"t::test_page", "bench.time_page"}
+    assert unselected(plan) == {"t::test_pkg"}
+    # A default that calls something runs at import: every importer.
+    head2 = repo.commit(
+        {"pkg/pager.py": "import os\n\n\ndef page(text, raw=os.getpid()):\n    return text\n"}
+    )
+    assert selected(repo.plan(head, head2, targets)) == {
+        "t::test_page",
+        "t::test_pkg",
+        "bench.time_page",
+    }

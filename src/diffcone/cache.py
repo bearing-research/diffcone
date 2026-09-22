@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 9  # 9: classes with external bases depend on their methods
+INDEX_FORMAT = 10  # 10: annotation hash and deferred-annotation flag on symbols
 
 
 def _indexer_fingerprint() -> str:

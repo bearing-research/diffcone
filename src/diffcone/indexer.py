@@ -1495,12 +1495,16 @@ class Indexer:
 
                 def function_hashes(nodes=nodes):
                     definition_parts: list[ast.AST] = []
+                    annotation_parts: list[ast.AST] = []
                     for n in nodes:
-                        definition_parts.append(n.args)
+                        args, annotations = _split_annotations(n.args)
+                        definition_parts.append(args)
                         definition_parts += list(n.decorator_list)
+                        annotation_parts += annotations
                         if n.returns is not None:
-                            definition_parts.append(n.returns)
+                            annotation_parts.append(n.returns)
                     return (
+                        _digest(hash_nodes(annotation_parts)),
                         _digest(
                             "\n".join(hash_nodes(list(_split_docstring(n.body)[1])) for n in nodes)
                         ),
@@ -1512,7 +1516,16 @@ class Indexer:
                         _docstring_hash([n.body for n in nodes]),
                     )
 
-                body_hash, definition_hash, doc_hash = function_hashes()
+                annotation_hash, body_hash, definition_hash, doc_hash = function_hashes()
+                deferred = (
+                    _future_annotations(scope)
+                    and all(_is_inert_decorator(d) for n in nodes for d in n.decorator_list)
+                    and (class_scope is None or class_scope.plain)
+                )
+                inert = all(_inert_def(n) for n in nodes) and (
+                    class_scope is None or class_scope.plain
+                )
+                inert = inert and (deferred or not any(_has_annotations(n) for n in nodes))
                 symbol = Symbol(
                     id=symbol_id,
                     kind=METHOD if class_scope is not None else FUNCTION,
@@ -1525,6 +1538,9 @@ class Indexer:
                     definition_hash=definition_hash,
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
+                    annotation_hash=annotation_hash,
+                    deferred_annotations=deferred,
+                    inert_definition=inert,
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -2218,6 +2234,57 @@ def _is_special_method(name: str) -> bool:
         and name.endswith("__")
         and name not in _EXPLICIT_SPECIAL_METHODS
     )
+
+
+def _split_annotations(args: ast.arguments) -> tuple[ast.arguments, list[ast.AST]]:
+    """The parameters without their annotations, and the annotations."""
+    stripped = copy.deepcopy(args)
+    annotations: list[ast.AST] = []
+    params = [*stripped.posonlyargs, *stripped.args, *stripped.kwonlyargs]
+    for arg in [*params, stripped.vararg, stripped.kwarg]:
+        if arg is not None and arg.annotation is not None:
+            annotations.append(arg.annotation)
+            arg.annotation = None
+    return stripped, annotations
+
+
+# Decorators that do nothing with the function's annotations.
+_INERT_DECORATORS = frozenset({"overload", "override", "final"})
+
+
+def _is_inert_decorator(node: ast.expr) -> bool:
+    name = node.id if isinstance(node, ast.Name) else getattr(node, "attr", None)
+    return name in _INERT_DECORATORS
+
+
+def _is_literal(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return _is_literal(node.operand)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_literal(e) for e in node.elts)
+    return False
+
+
+def _inert_def(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether executing the ``def`` runs no code beyond binding the name:
+    inert decorators and literal defaults (annotations are checked apart)."""
+    defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
+    return all(_is_inert_decorator(d) for d in node.decorator_list) and all(
+        _is_literal(d) for d in defaults
+    )
+
+
+def _has_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return node.returns is not None or any(
+        isinstance(a, ast.arg) and a.annotation is not None for a in ast.walk(node.args)
+    )
+
+
+def _future_annotations(scope: ModuleScope) -> bool:
+    binding = scope.imports.get("annotations")
+    return binding is not None and binding.module == "__future__"
 
 
 def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

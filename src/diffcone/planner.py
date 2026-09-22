@@ -244,15 +244,20 @@ def _propagate(edge: Edge, target_mode: int, target_change: SymbolChange | None)
 
 
 def _runs_at_import(change: SymbolChange) -> bool:
-    """Module bodies, variable initialisers, class bodies, and a function's
-    definition (decorators, defaults) run at import; a function body does
-    not (what import-time code calls is reached through its edges)."""
+    """Module bodies, variable initialisers and class bodies run at import;
+    so does a ``def`` statement's decorators, defaults and (when evaluated
+    eagerly) annotations. A function body does not (what import-time code
+    calls is reached through its edges), and an inert ``def`` at both
+    revisions only binds a name (removing or rebinding it reaches its users
+    through deletion and resolution edges)."""
     symbol = change.head or change.base
     if symbol is None:
         return False
     if symbol.kind in (MODULE, VARIABLE, CLASS):
         return True
-    return bool({ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes))
+    if not {ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes):
+        return False
+    return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
 
 
 # --------------------------------------------------------------------------- planning

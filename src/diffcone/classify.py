@@ -15,6 +15,10 @@ IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
 DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
 DEPENDENCIES_ADDED = "dependencies_added"  # edges were only added
 DOCSTRING_CHANGED = "docstring_changed"  # only the docstring differs
+# Only a function's annotations differ and they are never evaluated at import
+# (see Symbol.deferred_annotations): behaviour-level, not structural, not
+# import-time (introspection such as typer's happens when called).
+ANNOTATIONS_CHANGED = "annotations_changed"
 
 # Changes that invalidate everything defined inside the symbol (and, for
 # deletions, everything that imports it), not just direct references.
@@ -100,6 +104,9 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
                 kinds.append(IMPORTS_ADDED)
             else:
                 kinds.append(DEFINITION_CHANGED)
+        if b.annotation_hash != h.annotation_hash and DEFINITION_CHANGED not in kinds:
+            deferred = b.deferred_annotations and h.deferred_annotations
+            kinds.append(ANNOTATIONS_CHANGED if deferred else DEFINITION_CHANGED)
         before = base_deps.get(symbol_id, empty)
         after = head_deps.get(symbol_id, empty)
         if before != after:

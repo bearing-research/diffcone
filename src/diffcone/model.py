@@ -50,6 +50,17 @@ class Symbol:
     # Hash of the docstring alone; body_hash excludes it. A docstring-only edit
     # is reported as docstring_changed and carries no impact.
     docstring_hash: str = ""
+    # Functions: hash of the parameter and return annotations, which
+    # definition_hash excludes, and whether they are never evaluated at
+    # import (``from __future__ import annotations``, no decorator that could
+    # read them, a plain class): an annotation-only change then does not run
+    # at import (annotations_changed).
+    annotation_hash: str = ""
+    deferred_annotations: bool = False
+    # Functions: the ``def`` statement runs no code at import beyond binding
+    # the name (inert decorators, literal defaults, deferred or no
+    # annotations, a plain class for methods).
+    inert_definition: bool = False
 
     def covers_line(self, line: int) -> bool:
         return any(start <= line <= end for start, end in self.line_ranges)

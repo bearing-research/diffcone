@@ -125,7 +125,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 9
+    assert cache_mod.INDEX_FORMAT == 10
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
