@@ -650,6 +650,14 @@ assumption never hides a real dependency. Measured on pipx (699 tests):
 before the table, 153 tests were selected on every change because of
 `mocker` and `fake_process` alone.
 
+Imported tests: pytest collects every module attribute that matches the
+naming rules, so a function or class imported into a test module is a
+test of that module (fastapi's tutorial tests import `test_read_main` from
+`docs_src`). It is named by the bound name, its entry is the defining
+symbol, and its fixtures resolve from the importing module; a name imported
+from outside the source roots becomes a target whose entry is not a
+symbol, so it is always selected.
+
 Doctests, as pytest collects them (injector: `--doctest-modules
 --doctest-glob=*.md`). With `--doctest-modules` in `addopts`, every
 docstring with examples in a collected module (outside `norecursedirs`,

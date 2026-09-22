@@ -11,6 +11,10 @@ Collected:
   ``test``), methods of classes matching ``python_classes`` (default prefix
   ``Test``) that have no ``__init__``, nested test classes, and methods of
   classes whose bases end in ``TestCase``;
+* functions and classes imported into a test module (``from docs_src.app
+  import test_read_main``) that match the naming rules, named by the bound
+  name, with the defining symbol as entry; a name imported from outside the
+  source roots is a target whose entry is not a symbol (always selected);
 * configuration from ``pytest.ini``, ``pyproject.toml``
   (``[tool.pytest.ini_options]``), ``tox.ini`` or ``setup.cfg`` at the
   repository root.
@@ -79,7 +83,7 @@ from diffcone.discovery.common import (
     scope_functions,
     string_literals,
 )
-from diffcone.indexer import iter_scope_statements, resolve_relative_module
+from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
 from diffcone.manifest import Target
 from diffcone.model import SourceIndex
 from diffcone.snapshot import Snapshot
@@ -980,7 +984,7 @@ def discover_pytest(
                 symbol = owner.parsed.member_id(name)
                 if symbol in index.symbols:
                     module_deps.append(symbol)
-        _collect_module_tests(result, facts, resolver, config, module_deps, index)
+        _collect_module_tests(result, facts, resolver, config, module_deps, index, module_facts)
 
     _collect_doctests(result, snapshot, index, config, facts_by_path)
 
@@ -1123,8 +1127,8 @@ def _collect_module_tests(
     config: dict[str, Any],
     module_deps: list[str],
     index: SourceIndex,
+    module_facts: Any = None,
 ) -> None:
-
     parsed = facts.parsed
     functions = tuple(config["python_functions"])
     classes = tuple(config["python_classes"])
@@ -1145,6 +1149,53 @@ def _collect_module_tests(
         marks = module_marks + _marks_from_expressions(func.decorator_list)
         requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
         add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [])
+
+    # pytest collects every module attribute matching the naming rules,
+    # including functions and classes imported from elsewhere (fastapi's
+    # tutorial tests import ``test_read_main`` from ``docs_src``).
+    defined = {n.name for n in parsed.tree.body if isinstance(n, DEF_NODES)}
+    for stmt in iter_scope_statements(parsed.tree.body):
+        if not isinstance(stmt, ast.ImportFrom):
+            continue
+        source = _absolute_module(parsed, stmt)
+        for alias in stmt.names:
+            bound = alias.asname or alias.name
+            if bound in defined or alias.name == "*":
+                continue
+            is_function = _matches(functions, bound)
+            is_class = _matches(classes, bound)
+            if not (is_function or is_class):
+                continue
+            origin = module_facts(source) if module_facts is not None else None
+            node = None
+            if origin is not None:
+                node = next(
+                    (
+                        n
+                        for n in origin.parsed.tree.body
+                        if isinstance(n, DEF_NODES) and n.name == alias.name
+                    ),
+                    None,
+                )
+            nodeid = f"{parsed.path}::{bound}"
+            if node is None:
+                # Outside the source roots (or not a definition there): pytest
+                # still collects it, and what it runs is unknown.
+                unknown = f"imported-test:{source}.{alias.name}"
+                result.targets.append(Target(RUNNER, nodeid, unknown, tuple(module_deps)))
+                continue
+            entry = origin.parsed.member_id(alias.name)
+            if isinstance(node, ast.ClassDef):
+                if not is_class or _has_init(node):
+                    continue
+                for method in scope_functions(node.body):
+                    if _matches(functions, method.name) and not _is_fixture(method)[0]:
+                        requests = list(_fixture_requests(method, True, module_marks))
+                        add(f"{nodeid}::{method.name}", f"{entry}.{method.name}", [], requests, [])
+            elif is_function and not _is_fixture(node)[0]:
+                marks = module_marks + _marks_from_expressions(node.decorator_list)
+                requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
+                add(nodeid, entry, [], requests, [origin.parsed.module])
 
     def mro(cls: ast.ClassDef, nodeid: str) -> list[tuple[ast.ClassDef, str]]:
         """In-module base classes, nearest first, with their symbol ids."""

@@ -2341,3 +2341,39 @@ def test_doctests_collected_by_pytest_are_targets(repo):
     plan2 = repo.plan(head, head2, [], discover_runners=["pytest"])
     assert "pkg/helpers.py::pkg.helpers.double" in selected(plan2)
     assert "tests/test_other.py::test_other" not in selected(plan2)
+
+
+def test_test_functions_imported_into_a_test_module_are_collected(repo):
+    """fastapi's tutorial tests do ``from docs_src.app import client,
+    test_read_main``: pytest collects the imported function as a test of the
+    importing module, discovery did not, so it could never be selected."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/core.py": "def handler():\n    return 1\n",
+            "docs_src/__init__.py": "",
+            "docs_src/app.py": (
+                "from pkg.core import handler\n\n\n"
+                "def test_read_main():\n    assert handler() == 1\n\n\n"
+                "class TestApp:\n    def test_app(self):\n        assert handler()\n"
+            ),
+            "tests/test_tutorial.py": (
+                "from docs_src.app import TestApp, test_read_main\n"
+                "from external_lib import test_external\n\n\n"
+                "def test_local():\n    assert True\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/core.py": "def handler():\n    return 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    entries = {d.target.runner_id: d.target.entry_symbol for d in plan.decisions}
+    assert entries["tests/test_tutorial.py::test_read_main"] == "docs_src.app.test_read_main"
+    assert entries["tests/test_tutorial.py::TestApp::test_app"] == "docs_src.app.TestApp.test_app"
+    # A name from outside the source roots is collected too; what it runs
+    # is unknown, so it is always selected.
+    assert selected(plan) == {
+        "tests/test_tutorial.py::test_read_main",
+        "tests/test_tutorial.py::TestApp::test_app",
+        "tests/test_tutorial.py::test_external",
+    }
+    assert unselected(plan) == {"tests/test_tutorial.py::test_local"}
