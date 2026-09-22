@@ -961,6 +961,39 @@ docs and translations, so the range is its last 15 Python-touching
 commits (`--range 5f25505~1..HEAD`). injector's own `addopts` run
 pytest-cov with a coverage floor, which the validation tolerates.
 
+## Recall validation, fourth batch: frameworks with their own conventions
+
+Three projects of kinds not covered before: a pytest plugin for Django, a
+Django framework tested with pytest, and a plugin-heavy documentation
+tool. django-debug-toolbar was dropped: it runs its suite through
+Django's own test runner, which `validate` cannot drive.
+
+| repository (HEAD) | validated commits | first pass | final: recall | mean savings |
+|---|---|---|---|---|
+| pytest-django (67f9798) | 4 | **35 %** (26 of 75) | 100 % (75 of 75) | 74 % |
+| django-rest-framework (fe26559) | 5 | 100 % (591 of 591) | 100 % | 21 % |
+| sphinx (b04a210) | 7 | 100 % (258 of 258) | 100 % | 0 % |
+
+* **pytest-django, 49 tests.** Its autouse `_django_db_marker` reaches
+  `_django_db_helper` through `request.getfixturevalue(...)` with a
+  literal, which discovery did not model; the helper went from 23 to 209
+  of 210 targets' dependencies, and mean savings from 96 % to 74 %.
+* **sphinx selects every test on every commit**, through
+  `_cli._load_subcommand`: `for command, module_name in _COMMANDS.items():
+  import_module(module_name)` is an unbounded dynamic import, because
+  only the *keys* of a dict literal are bound (roadmap, "Dict-literal
+  values"). Its suite also takes 75 s, so the corpus took 20 minutes.
+* Django's settings-driven imports and REST framework's serializer
+  metaclasses raised no miss.
+
+Found while tracing sphinx's dynamic import, and fixed: a container that
+any module mutates in place (`REGISTRY = {}` filled by `REGISTRY[k] = v`)
+was still read as its literal, so names drawn from it were bounded to
+nothing at all; such a variable is now unbounded everywhere (design.md).
+No recorded commit of the validated repositories changed. django-rest-
+framework and sphinx were validated before that fix and before the
+`getfixturevalue` one, both of which only add dependencies.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
