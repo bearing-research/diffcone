@@ -25,31 +25,30 @@ re-validated where selections move. Validating further repositories that
 differ from these (other layouts, heavy metaprogramming, frameworks with
 their own runners) is the standing way to find the next miss.
 
-## 0. `getattr` bounded by a receiver whose type is known (precision)
+## 0. Dynamic references: measured, and left alone
 
-The classification the previous version of this item asked for is done
-(evaluation.md, "What the dynamic references actually are"). It did not
-find a widespread construct a rule can bound: 71 % of dynamic-caused
-selections are a `getattr` on a receiver with no known type and 22 % an
-`import_module` with no receiver at all, both of which need type
-inference or the caller's configuration. What is left is small but real:
-5 % of those selections are a `getattr` on a name imported from a module,
-and 0.5 % on `self`/`cls`. *Mechanism:* when the receiver of a dynamic
-`getattr` resolves to a module or to a class (`self`/`cls` in a method,
-an import alias, a module-level name bound once), expand the name over
-that receiver's members -- the module's symbols, or the in-scope MRO's --
-instead of seeding the select-all fallback; when the receiver resolves
-outside the source roots (`getattr(sys, name)`), it reaches nothing in
-scope and seeds nothing. *Trade-off:* sound only while the receiver's
-attribute set is bounded, so a class or module the analysis has seen a
-reflective write into (`setattr` with an unbounded name, `__dict__`
-updates -- already tracked for instance attributes) must keep the
-fallback; the candidate set also has to include inherited members, which
-`lookup_in_class` already computes. *Done when:* flake8's
-`getattr(sys, filename)` and isort's `getattr(settings, name)` stop
-seeding, the census's dynamic share drops by the measured 5.5 %, no
-recorded corpus commit loses a selected target, and a regression scenario
-covers a reflective write defeating the bound.
+The classification this item once asked for is done (evaluation.md, "What
+the dynamic references actually are"), and it closes the item rather than
+sharpening it. 71 % of dynamic-caused selections are a `getattr` on a
+receiver with no known type and 22 % an `import_module` with no receiver
+at all; both need type inference or the caller's configuration, which are
+out of scope (AGENTS.md). The heaviest seeds are by-name import utilities
+(`import_string`, `load_object`, `import_from_string`, `_load_plugin`)
+and plugin dispatchers, called with names that come from a user's
+configuration.
+
+That leaves the 5.5 % whose receiver resolves to a module or a class,
+where the candidates could be the receiver's members instead of the
+select-all fallback. It is not worth building: the bound is sound only
+while nothing may have attached an unseen attribute to that receiver, and
+a `setattr` with a name the indexer cannot bound -- `monkeypatch.setattr`
+in a test suite, almost always -- exists in 34 of the 44 measured
+repositories, so the rule would stay switched off in three quarters of
+them for a share of selections that is already small. Reopen this only
+with a repository where the receiver-bounded shape is measured to
+dominate, or after the pool of reflectively written values is tracked
+(the values, not just the names, of unknown-receiver writes), which is
+the piece that would make the guard cheap.
 
 Instance-attribute tracking (implemented) bounds none of the census's
 `self`-attribute cases (present in 11 repositories, causing selections

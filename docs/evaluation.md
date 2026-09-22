@@ -874,8 +874,12 @@ code. Their parameters are unbounded for the reason the second table
 leads with -- they are public entry points, so no set of in-repository
 call sites bounds them. Bounding the 71 % needs the receiver's type,
 which is out of scope by design (AGENTS.md). The only shapes a rule could
-bound are the last two rows, 5.5 % of dynamic-caused selections; the
-roadmap keeps that one item and claims nothing more.
+bound are the last two rows, 5.5 % of dynamic-caused selections, and even
+that bound is unavailable in most repositories: it holds only while
+nothing may have attached an unseen attribute to the receiver, and a
+`setattr` whose name the indexer cannot bound (`monkeypatch.setattr` in a
+test suite) exists in 34 of the 44 repositories measured. The roadmap
+records the shape and leaves it unbuilt.
 
 ## Recall validation beyond the corpora (10 census repositories)
 
