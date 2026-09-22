@@ -613,6 +613,14 @@ pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.
 
+A plugin may collect what these rules do not: SQLAlchemy's testing plugin
+collects `<Name>Test`, so alembic's suite is 2387 tests of which these
+rules find 23. Discovery does not guess, and does not stay silent either:
+a class that defines test methods but does not match `python_classes` is
+reported (`uncollected_test_class`), so a plan over such a project shows
+that its target list is not the suite. Targets a plugin creates have to
+come from a manifest.
+
 Fixtures are functions decorated with a dotted name ending in `fixture` or
 `yield_fixture`, or module-level bindings of the form
 `name = pytest.fixture(...)(function)`; `name=` and `autouse=True` keyword

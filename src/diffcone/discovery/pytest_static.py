@@ -15,7 +15,10 @@ Collected:
   import test_read_main``) that match the naming rules, named by the bound
   name, with the defining symbol as entry; a name imported from outside the
   source roots is reported (``imported_test_out_of_scope``), since whether
-  it yields tests is unknown (``unittest.TestCase`` yields none);
+  it yields tests is unknown (``unittest.TestCase`` yields none); a class
+  that defines test methods but does not match ``python_classes`` is
+  reported too (``uncollected_test_class``): a plugin may collect it, as
+  SQLAlchemy's testing plugin collects ``<Name>Test``;
 * configuration from ``pytest.ini``, ``pyproject.toml``
   (``[tool.pytest.ini_options]``), ``tox.ini`` or ``setup.cfg`` at the
   repository root.
@@ -1157,6 +1160,14 @@ def _collect_module_tests(
     classes = tuple(config["python_classes"])
     module_marks = _marks_from_pytestmark(parsed.tree.body)
     module_classes = {c.name: c for c in scope_classes(parsed.tree.body)}
+    # Names used as a base anywhere in the module: such a class contributes
+    # its methods through its subclasses, so it is not an uncollected class.
+    base_names = {
+        (decorator_chain(base)[0] or [""])[-1]
+        for node in ast.walk(parsed.tree)
+        if isinstance(node, ast.ClassDef)
+        for base in node.bases
+    }
 
     def add(nodeid: str, entry: str, class_ids: list[str], requests: list[str], extra: list[str]):
         if entry not in index.symbols:
@@ -1260,6 +1271,26 @@ def _collect_module_tests(
     ) -> None:
         unittest_style = _is_unittest_class(cls)
         if not (unittest_style or _matches(classes, cls.name)) or _has_init(cls):
+            # A class pytest's own rules skip, but that defines test methods,
+            # is a class some plugin collects (SQLAlchemy's testing plugin
+            # collects ``<Name>Test``): report it rather than guess either way.
+            if (
+                cls.name not in base_names
+                and not _has_init(cls)
+                and any(
+                    _matches(functions, f.name) and not _is_fixture(f)[0]
+                    for f in scope_functions(cls.body)
+                )
+            ):
+                result.notes.append(
+                    DiscoveryNote(
+                        RUNNER,
+                        "uncollected_test_class",
+                        f"{nodeid_prefix}::{cls.name}: defines test methods but does not "
+                        "match python_classes; a pytest plugin may collect it, and what it "
+                        "collects is not a target",
+                    )
+                )
             return
         class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
         nodeid = f"{nodeid_prefix}::{cls.name}"

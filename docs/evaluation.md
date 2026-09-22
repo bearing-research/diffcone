@@ -1100,6 +1100,40 @@ bounds what indexing a literal table yields changed no selection either,
 on any of the 171 recorded commits: it is kept because it is sound and
 removes a whole shape of seed, not because it was measured to pay.
 
+## Recall validation, fifth batch: a vendored installer and a plugin-collected suite
+
+Two projects of kinds not covered before: one that vendors its
+dependencies inside itself, and one whose suite is collected by another
+project's pytest plugin.
+
+| repository (HEAD) | validated commits | outcome misses | coverage recall | mean savings |
+|---|---|---|---|---|
+| pip (892d13b) | 3 | 0 | 100 % (18 of 18) | 0 % |
+| alembic (b42ebe1) | 6 | 3 | **1 % (20 of 1825)** | 28 % |
+
+* **pip could not be planned at all before this batch.** Every commit
+  degraded on `tests/data/packages/SetupPyLatin1/setup.py`, a file that
+  declares `# -*- coding: latin-1 -*-`; diffcone decoded every file as
+  UTF-8 and one failure forces select-all. Files are now read in the
+  encoding they declare (design.md).
+* **pip then selects everything anyway**, soundly: `pip._vendor.vendored`
+  calls `__import__(modulename, globals(), locals())`, and every test
+  imports `pip`. A runtime-named import may name any module, so any
+  change fires it -- including a change to a test helper, which is what
+  the three validated commits are. The reason text used to explain this
+  with the other fallback's sentence ("reachable from its module's
+  imports"); the two rules now say which fired.
+* **alembic is a recall failure, and not one the analysis could have
+  avoided.** Its suite is 2387 tests; pytest's own collection rules find
+  23 of them, because SQLAlchemy's testing plugin collects classes named
+  `<Name>Test` (and parametrises the class per backend:
+  `BatchNamingConventionTest_sqlite+pysqlite_3_47_1`). Everything the
+  corpus reports as missed is a test that was never a target. Discovery
+  cannot reproduce another project's plugin without running it, so it now
+  reports what it leaves behind: 175 `uncollected_test_class` notes for
+  alembic, against 23 targets. A plan whose target list is not the suite
+  now says so; targets a plugin creates have to come from a manifest.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

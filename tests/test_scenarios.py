@@ -2691,3 +2691,36 @@ def test_a_runtime_named_import_says_so_in_its_reason(repo):
     detail = reason(plan, "t::test_load", "dynamic_reference").detail
     assert detail.startswith("pkg.loader.load imports a module named at runtime (base, head)")
     assert "any module in scope may be the one" in detail
+
+
+def test_a_class_a_plugin_may_collect_is_reported(repo):
+    """pytest's own rules skip a class that does not match ``python_classes``,
+    but a plugin may collect it (SQLAlchemy's testing plugin collects
+    ``<Name>Test``). Discovery reports it instead of guessing either way."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class TestAdd:\n    def test_two(self):\n        assert add(1, 1) == 2\n\n\n"
+                "class AddRoundTripTest:\n"
+                "    def test_round(self):\n        assert add(2, 2) == 4\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    pytest_discovery = next(d for d in plan.discovery if d.runner == "pytest")
+    assert {t.runner_id for t in pytest_discovery.targets} == {
+        "tests/test_ops.py::TestAdd::test_two"
+    }
+    notes = [n for n in pytest_discovery.notes if n.kind == "uncollected_test_class"]
+    assert [n.detail.split(":", 2)[0] for n in notes] == ["tests/test_ops.py"]
+    assert notes[0].detail.startswith("tests/test_ops.py::AddRoundTripTest: defines test methods")
+    assert "does not match python_classes" in notes[0].detail
+    assert selected(plan) == {"tests/test_ops.py::TestAdd::test_two", "bench_ops.Add.time_add"}

@@ -115,8 +115,12 @@ def test_pytest_discovery_rules(repo):
         "plugins.shared.shared",  # via pytest_plugins
         "fixture:widget",  # unknown: conservative
     }
-    assert {(n.kind) for n in result.notes} == {"unresolved_fixture"}
-    assert "widget" in result.notes[0].detail
+    assert {(n.kind) for n in result.notes} == {"unresolved_fixture", "uncollected_test_class"}
+    assert "widget" in next(n for n in result.notes if n.kind == "unresolved_fixture").detail
+    # ``NotCollected`` has test methods but no matching name: reported, since
+    # a plugin may collect it (SQLAlchemy's testing plugin collects ``*Test``).
+    uncollected = next(n for n in result.notes if n.kind == "uncollected_test_class")
+    assert uncollected.detail.startswith("tests/test_basic.py::NotCollected: defines test methods")
 
     marked = targets["tests/test_basic.py::test_marked"]
     assert "conftest.root_db" in marked.lifecycle_dependencies
@@ -144,9 +148,10 @@ def test_pytest_discovery_rules(repo):
     result2 = run_discovery(repo, rev, "pytest", external_fixtures=frozenset({"widget"}))
     rich2 = by_id(result2)["tests/test_basic.py::test_with_fixtures"]
     assert "fixture:widget" not in rich2.lifecycle_dependencies
-    assert [n.kind for n in result2.notes] == ["external_fixture"]
-    assert "'widget' requested by 1 test(s)" in result2.notes[0].detail
-    assert "declared external" in result2.notes[0].detail
+    assert sorted(n.kind for n in result2.notes) == ["external_fixture", "uncollected_test_class"]
+    external = next(n for n in result2.notes if n.kind == "external_fixture")
+    assert "'widget' requested by 1 test(s)" in external.detail
+    assert "declared external" in external.detail
 
 
 def test_pytest_config_from_pyproject_and_ini(repo):
