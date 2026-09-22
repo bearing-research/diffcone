@@ -31,6 +31,7 @@ Lifecycle dependencies attached to each test:
   its in-module bases, module, nearest ``conftest.py`` outward, then
   ``pytest_plugins`` modules within the source roots; a fixture requesting
   its own name resolves to the next definition outward;
+* fixtures requested by literal name through ``request.getfixturevalue``;
 * ``autouse`` fixtures visible from the test;
 * the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
   path and each ``pytest_*`` hook function in those conftests;
@@ -640,7 +641,10 @@ def _fixture_requests(
     arguments injected by ``mock.patch`` decorators (``class_injected`` of
     them by decorators on the enclosing class and its bases, which
     ``unittest.mock`` applies to every ``test*`` method), and names supplied
-    by ``parametrize`` unless they are marked ``indirect``.
+    by ``parametrize`` unless they are marked ``indirect``. Fixtures the
+    body asks for by literal name (``request.getfixturevalue("db")``, how
+    pytest-django's autouse ``_django_db_marker`` reaches
+    ``_django_db_helper``) count as requests too.
     """
     args = node.args
     positional = args.posonlyargs + args.args
@@ -662,7 +666,25 @@ def _fixture_requests(
     remaining = [p for p in required if p not in skip]
     if given_positional:
         skip |= set(remaining[len(remaining) - given_positional :])
-    return tuple(p for p in required if p != "request" and p not in skip)
+    names = [p for p in required if p != "request" and p not in skip]
+    return tuple(dict.fromkeys(names + _getfixturevalue_names(node)))
+
+
+def _getfixturevalue_names(node: ast.AST) -> list[str]:
+    """Fixture names requested as ``<request>.getfixturevalue("name")`` with a
+    literal, anywhere in the body (nested functions included)."""
+    found: list[str] = []
+    for inner in ast.walk(node):
+        if (
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "getfixturevalue"
+            and inner.args
+            and isinstance(inner.args[0], ast.Constant)
+            and isinstance(inner.args[0].value, str)
+        ):
+            found.append(inner.args[0].value)
+    return found
 
 
 def _given_arguments(decorators: list[ast.expr]) -> tuple[int, set[str]]:

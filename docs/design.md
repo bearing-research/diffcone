@@ -686,7 +686,7 @@ files matching `--doctest-glob` (default `test*.txt`) that contain
 examples are targets whose entry is not a symbol, so they are always
 selected: the index does not read them, and a change to them is invisible.
 
-Not modelled: dynamic `request.getfixturevalue`, fixture visibility rules of
+Not modelled: `request.getfixturevalue` with a name that is not a literal, fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
 fixtures of plugins outside the well-known table, doctests of objects
 added through `__test__` or assigned rather than defined, base classes

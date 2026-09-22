@@ -2467,3 +2467,35 @@ def test_a_literal_constant_runs_nothing_at_import(repo):
             "t::test_other",
             "bench.time_import",
         }, changed
+
+
+def test_getfixturevalue_with_a_literal_is_a_fixture_request(repo):
+    """pytest-django's autouse ``_django_db_marker`` reaches
+    ``_django_db_helper`` through ``request.getfixturevalue(...)``: 49 tests
+    executed the helper without being selected."""
+    conftest = (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef helper():\n    return {value}\n\n\n"
+        "@pytest.fixture\ndef unused():\n    return 0\n\n\n"
+        "@pytest.fixture(autouse=True)\ndef marker(request):\n"
+        "    if request.node.get_closest_marker('needs_db'):\n"
+        "        request.getfixturevalue('helper')\n"
+    )
+    base = repo.commit(
+        {
+            "tests/conftest.py": conftest.format(value=1),
+            "tests/test_db.py": (
+                "import pytest\n\n\n@pytest.mark.needs_db\ndef test_db():\n    assert True\n"
+            ),
+            "tests/test_plain.py": "def test_plain():\n    assert True\n",
+        }
+    )
+    head = repo.commit({"tests/conftest.py": conftest.format(value=2)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert changes(plan) == {"tests.conftest.helper": ("body_changed",)}
+    # Every test has the autouse fixture, so both are selected; the point is
+    # that the helper is a dependency at all (an unused fixture is not).
+    assert selected(plan) == {"tests/test_db.py::test_db", "tests/test_plain.py::test_plain"}
+    deps = {d.target.runner_id: d.target.lifecycle_dependencies for d in plan.decisions}
+    assert "tests.conftest.helper" in deps["tests/test_db.py::test_db"]
+    assert "tests.conftest.unused" not in deps["tests/test_db.py::test_db"]

@@ -60,7 +60,7 @@ of these selections the corpora's coverage confirms), before any rule.
 
 Unknown fixtures cause 1 % of census selections.
 
-* pytest: `request.getfixturevalue("name")` with a literal, names supplied
+* pytest: names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
   conservative), base classes defined in other modules, `conftest.py`
   outside the source roots.
