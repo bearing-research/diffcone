@@ -405,7 +405,14 @@ module and function that imports it, transitively, is affected, and
 through each test's dependency on its own module, every test that
 imports it. A function body change does not run at import; when
 import-time code calls the function, the module's edge to it carries the
-change. A `def` statement runs code at import only through its
+change. Import-time code includes more than top-level statements:
+decorators (`@app.get("/")` builds a route handler), default values,
+annotations when evaluated eagerly, and class statements (bases, class
+decorators, class bodies, nested classes) all run when the module is
+imported, so their references are recorded for the module as well as
+for the function or class they belong to. `runpy.run_module` imports by
+name like `importlib.import_module`; `runpy.run_path` is an unbounded
+dynamic import. A `def` statement runs code at import only through its
 decorators, its defaults and its annotations when they are evaluated
 eagerly: a function whose decorators are inert (`overload`, `override`
 or `final` imported from `typing` or `typing_extensions`; a project
@@ -654,9 +661,11 @@ Imported tests: pytest collects every module attribute that matches the
 naming rules, so a function or class imported into a test module is a
 test of that module (fastapi's tutorial tests import `test_read_main` from
 `docs_src`). It is named by the bound name, its entry is the defining
-symbol, and its fixtures resolve from the importing module; a name imported
-from outside the source roots becomes a target whose entry is not a
-symbol, so it is always selected.
+symbol, and its fixtures resolve from the importing module. A matching
+name imported from outside the source roots is reported
+(`imported_test_out_of_scope`) rather than made a target: whether pytest
+collects anything from it is unknown (`unittest.TestCase` yields
+nothing), and what it would run is outside the index.
 
 Doctests, as pytest collects them (injector: `--doctest-modules
 --doctest-glob=*.md`). With `--doctest-modules` in `addopts`, every

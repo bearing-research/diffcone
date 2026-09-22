@@ -2369,11 +2369,62 @@ def test_test_functions_imported_into_a_test_module_are_collected(repo):
     entries = {d.target.runner_id: d.target.entry_symbol for d in plan.decisions}
     assert entries["tests/test_tutorial.py::test_read_main"] == "docs_src.app.test_read_main"
     assert entries["tests/test_tutorial.py::TestApp::test_app"] == "docs_src.app.TestApp.test_app"
-    # A name from outside the source roots is collected too; what it runs
-    # is unknown, so it is always selected.
     assert selected(plan) == {
         "tests/test_tutorial.py::test_read_main",
         "tests/test_tutorial.py::TestApp::test_app",
-        "tests/test_tutorial.py::test_external",
     }
     assert unselected(plan) == {"tests/test_tutorial.py::test_local"}
+    # A name from outside the source roots is reported, not guessed.
+    notes = [n for d in plan.discovery for n in d.notes if n.kind == "imported_test_out_of_scope"]
+    assert [n.detail.split(":")[0] for n in notes] == ["tests/test_tutorial.py"]
+
+
+def test_code_a_decorator_runs_at_import_reaches_the_modules_importers(repo):
+    """fastapi: ``@app.get("/")`` builds the route handler while the module is
+    imported (``add_api_route`` -> ``get_request_handler``). Decorators,
+    defaults and class bodies run at import, so the module depends on what
+    they call and its importers are reached; ``runpy.run_module`` imports by
+    name like ``import_module``."""
+    framework = (
+        "def build_handler(f):\n    return {body}\n\n\n"
+        "class App:\n"
+        "    def __init__(self):\n        self.routes = {{}}\n\n"
+        "    def get(self, path):\n"
+        "        def deco(f):\n"
+        "            self.routes[path] = build_handler(f)\n            return f\n"
+        "        return deco\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/framework.py": framework.format(body="f"),
+            "docs_src/__init__.py": "",
+            "docs_src/app.py": (
+                "from pkg.framework import App\n\napp = App()\n\n\n"
+                "@app.get('/')\ndef root():\n    return 'ok'\n"
+            ),
+            "tests/test_app.py": (
+                "from docs_src.app import app\n\n\n"
+                "def test_routes():\n    assert '/' in app.routes\n"
+            ),
+            "tests/test_main.py": (
+                "import runpy\n\n\n"
+                "def test_main():\n    runpy.run_module('docs_src.app', run_name='__main__')\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+            "benchmarks/bench_app.py": (
+                "from docs_src.app import app\n\n\ndef time_routes():\n    app.routes\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_routes", "tests.test_app.test_routes", "tests.test_app"),
+        py_target("t::test_main", "tests.test_main.test_main", "tests.test_main"),
+        py_target("t::test_other", "tests.test_other.test_other", "tests.test_other"),
+        asv_target("bench.time_routes", "benchmarks.bench_app.time_routes", "benchmarks.bench_app"),
+    ]
+    head = repo.commit({"pkg/framework.py": framework.format(body="(f, 'wrapped')")})
+    plan = repo.plan(base, head, targets)
+    assert changes(plan) == {"pkg.framework.build_handler": ("body_changed",)}
+    assert selected(plan) == {"t::test_routes", "t::test_main", "bench.time_routes"}
+    assert unselected(plan) == {"t::test_other"}

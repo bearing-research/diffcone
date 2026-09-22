@@ -1823,19 +1823,24 @@ class Indexer:
                     continue
                 cscope = self.class_scopes[symbol_id]
                 class_level = Scope(module=scope, locals=set(cscope.bindings))
-                collector = _ReferenceCollector(self, symbol_id, class_level, skip_defs=True)
-                # The class statement runs when its container runs: a
-                # top-level class is created when the module is imported.
-                for creator in (symbol_id, scope.name) if class_scope is None else (symbol_id,):
+                # The class statement (bases, decorators, body) runs when the
+                # module is imported, nested classes included: its references
+                # are the class's and, as import-time code, the module's.
+                collectors = [
+                    _ReferenceCollector(self, source, class_level, skip_defs=True)
+                    for source in (symbol_id, scope.name)
+                ]
+                for creator in (symbol_id, scope.name):
                     self.class_creation(creator, cscope.bases, stmt.keywords, Scope(module=scope))
                 # Name-chain bases were resolved (and recorded) by _ensure_bases;
                 # only dynamic base expressions still need their references collected.
                 dynamic_bases = [b for b in stmt.bases if _flatten_chain(b) is None]
-                for expr in dynamic_bases + list(stmt.keywords) + list(stmt.decorator_list):
-                    collector.visit(expr)
-                for inner in stmt.body:
-                    if not isinstance(inner, DEF_NODES):
-                        collector.visit(inner)
+                for collector in collectors:
+                    for expr in dynamic_bases + list(stmt.keywords) + list(stmt.decorator_list):
+                        collector.visit(expr)
+                    for inner in stmt.body:
+                        if not isinstance(inner, DEF_NODES):
+                            collector.visit(inner)
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
                 symbol_id = members.get(stmt.name)
@@ -1892,6 +1897,23 @@ class Indexer:
             locals=set(class_scope.bindings) if class_scope is not None else set(),
         )
         outer = _ReferenceCollector(self, symbol_id, outer_scope, skip_defs=True)
+        # Decorators, defaults and eagerly evaluated annotations run when the
+        # ``def`` does, i.e. when the module is imported (a decorator such as
+        # ``@app.get("/")`` calls into a framework then): the module depends on
+        # what they reference too.
+        at_import = _ReferenceCollector(self, scope.name, outer_scope, skip_defs=True)
+        for expr in (
+            node.decorator_list
+            + [d for d in node.args.defaults]
+            + [d for d in node.args.kw_defaults if d is not None]
+        ):
+            at_import.visit(expr)
+        if not _future_annotations(scope):
+            for arg in ast.walk(node.args):
+                if isinstance(arg, ast.arg) and arg.annotation is not None:
+                    at_import.visit(arg.annotation)
+            if node.returns is not None:
+                at_import.visit(node.returns)
         for dec in node.decorator_list:
             outer.visit(dec)
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
@@ -2760,8 +2782,11 @@ class _ReferenceCollector(ast.NodeVisitor):
             elif (canonical := self._canonical_name(parts)) in (
                 "importlib.import_module",
                 "importlib.__import__",
+                "runpy.run_module",
             ):
                 self._import_module(node, canonical)
+            elif canonical == "runpy.run_path":
+                self._dynamic("runpy.run_path()")  # runs a file by path: anything
             if builtin and parts[0] == "vars" and node.args and self._is_self(node.args[0]):
                 self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
             if builtin and parts[0] == "type" and len(node.args) == 1:

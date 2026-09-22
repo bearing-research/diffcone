@@ -14,7 +14,8 @@ Collected:
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
   name, with the defining symbol as entry; a name imported from outside the
-  source roots is a target whose entry is not a symbol (always selected);
+  source roots is reported (``imported_test_out_of_scope``), since whether
+  it yields tests is unknown (``unittest.TestCase`` yields none);
 * configuration from ``pytest.ini``, ``pyproject.toml``
   (``[tool.pytest.ini_options]``), ``tox.ini`` or ``setup.cfg`` at the
   repository root.
@@ -1179,10 +1180,18 @@ def _collect_module_tests(
                 )
             nodeid = f"{parsed.path}::{bound}"
             if node is None:
-                # Outside the source roots (or not a definition there): pytest
-                # still collects it, and what it runs is unknown.
-                unknown = f"imported-test:{source}.{alias.name}"
-                result.targets.append(Target(RUNNER, nodeid, unknown, tuple(module_deps)))
+                # Outside the source roots (or not a definition there): whether
+                # pytest collects anything from it is unknown (unittest's own
+                # ``TestCase`` yields nothing), so it is reported, not guessed.
+                if source.split(".")[0] != "unittest":
+                    result.notes.append(
+                        DiscoveryNote(
+                            RUNNER,
+                            "imported_test_out_of_scope",
+                            f"{nodeid}: imported from {source}, outside the source roots; "
+                            "any tests pytest collects from it are not targets",
+                        )
+                    )
                 continue
             entry = origin.parsed.member_id(alias.name)
             if isinstance(node, ast.ClassDef):
