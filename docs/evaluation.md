@@ -1134,6 +1134,39 @@ project's pytest plugin.
   alembic, against 23 targets. A plan whose target list is not the suite
   now says so; targets a plugin creates have to come from a manifest.
 
+## Recall validation, sixth batch: inherited and re-imported test suites
+
+Two more kinds: a large CLI whose plugins arrive through entry points, and
+a scientific library whose test classes are shared by inheritance. Both
+started with a recall failure, and in both cases every target was already
+selected -- the missed tests were not targets at all, so the failure was
+in discovery, not in the analysis.
+
+| repository (HEAD) | validated commits | first pass | after the fix | mean savings |
+|---|---|---|---|---|
+| poetry (94b6e35) | 1 | 96 % (139 of 145) | 100 % (145 of 145) | 0 % |
+| networkx (bd45cfe) | 3 | 88 % (3054 of 3466) | 100 % (3466 of 3466) | 0 % |
+
+* **poetry, 6 tests.** `tests/console/commands/test_sync.py` is
+  `from tests.console.commands.test_install import *` with a different
+  `command` fixture: the install suite, re-run for `sync`. Discovery
+  skipped star imports entirely. The star now binds what `__all__` lists,
+  or every name the module defines that does not start with an
+  underscore, minus what the importing module defines itself (poetry
+  redefines one test to skip it). 1546 targets became 1567.
+* **networkx, 412 tests.** `TestDiGraph(BaseGraphTester)` inherits its
+  tests from another module; discovery followed base classes only within
+  one module and reported the rest (`unknown_base_class`). A base
+  imported from a module in the source roots is now followed, with its
+  own bases resolved in the module that defines it. 4844 targets and 29
+  notes became 5529 and none.
+* **Neither repository saves anything**, for reasons already recorded:
+  networkx's `_dispatchable._call_with_backend` is the census's single
+  heaviest dynamic seed, and poetry's commit changed a symbol every test
+  reaches. The value of both was the recall check.
+* No recorded corpus changes its target count under either fix, so the
+  numbers in the sections above stand unmeasured again.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

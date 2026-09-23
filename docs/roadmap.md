@@ -69,8 +69,10 @@ Unknown fixtures cause 1 % of census selections.
 
 * pytest: names supplied
   by `pytest_generate_tests` (currently reported as unresolved, so
-  conservative), base classes defined in other modules, `conftest.py`
-  outside the source roots.
+  conservative), `conftest.py` outside the source roots, and tests a
+  runner plugin collects by its own rules (reported as
+  `uncollected_test_class`; SQLAlchemy's plugin collects alembic's 2387
+  tests, of which pytest's documented rules find 23).
 * ASV: benchmark methods inherited from base classes, `params` expansion as
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare
