@@ -465,6 +465,26 @@ def _addopts_plugins(addopts: tuple[str, ...]) -> list[str]:
     return names
 
 
+# Bases from the standard library that contribute no test methods: worth no
+# ``unknown_base_class`` note (scrapy's spiders are 133 subclasses of ``ABC``).
+NO_TEST_BASES = frozenset(
+    {
+        "ABC",
+        "ABCMeta",
+        "BaseException",
+        "Enum",
+        "Exception",
+        "Generic",
+        "IntEnum",
+        "NamedTuple",
+        "Protocol",
+        "StrEnum",
+        "TypedDict",
+        "object",
+    }
+)
+
+
 def _star_names(tree: ast.Module) -> list[str]:
     """What ``from <module> import *`` binds: ``__all__`` when it is a literal
     list of strings, otherwise every name the module defines that does not
@@ -1368,7 +1388,7 @@ def _collect_module_tests(
                     used_as_base.add(base_id)
                 chain.append((base_cls, base_id))
                 queue.extend((b, base_scope) for b in base_cls.bases)
-            elif not name.endswith("TestCase"):
+            elif not (name.endswith("TestCase") or name in NO_TEST_BASES):
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
