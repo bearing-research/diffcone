@@ -2724,3 +2724,52 @@ def test_a_class_a_plugin_may_collect_is_reported(repo):
     assert notes[0].detail.startswith("tests/test_ops.py::AddRoundTripTest: defines test methods")
     assert "does not match python_classes" in notes[0].detail
     assert selected(plan) == {"tests/test_ops.py::TestAdd::test_two", "bench_ops.Add.time_add"}
+
+
+def test_star_imported_tests_are_targets(repo):
+    """``from tests.test_install import *`` re-runs another module's tests
+    under this module's fixtures (poetry's sync command). The imported names
+    are targets whose entry is where they are defined; a name this module
+    defines itself wins."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_install.py": (
+                "from pkg.ops import add\n\n\n"
+                "def test_shared():\n    assert add(1, 1) == 2\n\n\n"
+                "def test_only_install():\n    assert add(2, 2) == 4\n\n\n"
+                "def _helper():\n    return 1\n"
+            ),
+            "tests/test_sync.py": (
+                "from tests.test_install import *  # noqa: F403\n\n\n"
+                "def test_only_install():\n    assert True\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    pytest_targets = {
+        t.runner_id: t.entry_symbol
+        for d in plan.discovery
+        if d.runner == "pytest"
+        for t in d.targets
+    }
+    assert pytest_targets == {
+        "tests/test_install.py::test_shared": "tests.test_install.test_shared",
+        "tests/test_install.py::test_only_install": "tests.test_install.test_only_install",
+        # Imported by the star: the entry is where it is defined.
+        "tests/test_sync.py::test_shared": "tests.test_install.test_shared",
+        # Redefined here, so this module's own definition is the entry.
+        "tests/test_sync.py::test_only_install": "tests.test_sync.test_only_install",
+    }
+    assert selected(plan) == {
+        "tests/test_install.py::test_shared",
+        "tests/test_install.py::test_only_install",
+        "tests/test_sync.py::test_shared",
+        "bench_ops.Add.time_add",
+    }

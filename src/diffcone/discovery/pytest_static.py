@@ -13,9 +13,13 @@ Collected:
   classes whose bases end in ``TestCase``;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
-  name, with the defining symbol as entry; a name imported from outside the
-  source roots is reported (``imported_test_out_of_scope``), since whether
-  it yields tests is unknown (``unittest.TestCase`` yields none); a class
+  name, with the defining symbol as entry; ``from <module> import *``
+  brings in what the module's ``__all__`` lists, or every name it defines
+  that does not start with an underscore (poetry's sync tests are the
+  install tests, star-imported), except names this module defines itself;
+  a name imported from outside the source roots is reported
+  (``imported_test_out_of_scope``), since whether it yields tests is
+  unknown (``unittest.TestCase`` yields none); a class
   that defines test methods but does not match ``python_classes`` is
   reported too (``uncollected_test_class``): a plugin may collect it, as
   SQLAlchemy's testing plugin collects ``<Name>Test``;
@@ -457,6 +461,27 @@ def _addopts_plugins(addopts: tuple[str, ...]) -> list[str]:
         if name and not name.startswith("no:") and name not in names:
             names.append(name)
     return names
+
+
+def _star_names(tree: ast.Module) -> list[str]:
+    """What ``from <module> import *`` binds: ``__all__`` when it is a literal
+    list of strings, otherwise every name the module defines that does not
+    start with an underscore. Names the module itself imported (which a star
+    import without ``__all__`` re-exports) are not included."""
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in stmt.targets
+        ):
+            if isinstance(stmt.value, (ast.List, ast.Tuple)):
+                names = [
+                    e.value
+                    for e in stmt.value.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                ]
+                if len(names) == len(stmt.value.elts):
+                    return names
+            return []
+    return [n.name for n in tree.body if isinstance(n, DEF_NODES) and not n.name.startswith("_")]
 
 
 def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
@@ -1192,9 +1217,25 @@ def _collect_module_tests(
         if not isinstance(stmt, ast.ImportFrom):
             continue
         source = _absolute_module(parsed, stmt)
-        for alias in stmt.names:
+        aliases = list(stmt.names)
+        if any(a.name == "*" for a in aliases):
+            # ``from tests.test_install import *`` re-runs another module's
+            # tests here (poetry's sync command does exactly this).
+            origin = module_facts(source) if module_facts is not None else None
+            if origin is None:
+                result.notes.append(
+                    DiscoveryNote(
+                        RUNNER,
+                        "imported_test_out_of_scope",
+                        f"{parsed.path}: ``from {source} import *`` names a module outside "
+                        "the source roots; any tests pytest collects through it are not targets",
+                    )
+                )
+                continue
+            aliases = [ast.alias(name=n, asname=None) for n in _star_names(origin.parsed.tree)]
+        for alias in aliases:
             bound = alias.asname or alias.name
-            if bound in defined or alias.name == "*":
+            if bound in defined:
                 continue
             is_function = _matches(functions, bound)
             is_class = _matches(classes, bound)

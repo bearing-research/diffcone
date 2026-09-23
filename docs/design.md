@@ -613,6 +613,13 @@ pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.
 
+A test module may also re-run another's tests with `from <module> import
+*`: the star binds what that module's `__all__` lists, or every name it
+defines that does not start with an underscore (names it imported itself
+are not followed), minus the names the importing module defines, and each
+one becomes a target whose entry is where it is defined. poetry's `sync`
+tests are the `install` tests imported this way.
+
 A plugin may collect what these rules do not: SQLAlchemy's testing plugin
 collects `<Name>Test`, so alembic's suite is 2387 tests of which these
 rules find 23. Discovery does not guess, and does not stay silent either:
