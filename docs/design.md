@@ -609,8 +609,11 @@ including methods inherited from base classes (own definitions win): a
 base defined in the same module, or imported from a module in the source
 roots (networkx's `TestDiGraph(BaseGraphTester)`), whose own bases then
 resolve in the module that defines it; a base that resolves to neither
-yields an `unknown_base_class` note; nested test classes; methods whose name starts
-with `test` in classes with a base ending in `TestCase`. Node ids follow
+yields an `unknown_base_class` note; nested test classes; methods whose
+name starts with `test` in classes that reach a base ending in `TestCase`
+anywhere in that chain, whatever the class itself is called (pytest's
+unittest plugin collects it: django-rest-framework's
+`XffSpoofingTests(XffTestingBase)`). Node ids follow
 pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.

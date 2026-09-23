@@ -2831,3 +2831,42 @@ def test_a_base_class_in_another_test_module_contributes_its_tests(repo):
         "tests/test_digraph.py::TestDiGraph::test_shared",
         "bench_ops.Add.time_add",
     }
+
+
+def test_a_testcase_subclass_is_collected_whatever_it_is_called(repo):
+    """pytest's unittest plugin collects a ``TestCase`` subclass whatever its
+    name, and the base that brings ``TestCase`` in may be several classes and
+    modules away (django-rest-framework's ``XffSpoofingTests``)."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/__init__.py": "",
+            "tests/bases.py": (
+                "import unittest\n\n\n"
+                "class ThrottleTestBase(unittest.TestCase):\n"
+                "    def setUp(self):\n        self.n = 1\n"
+            ),
+            "tests/test_throttling.py": (
+                "from pkg.ops import add\n"
+                "from tests.bases import ThrottleTestBase\n\n\n"
+                "class XffSpoofingTests(ThrottleTestBase):\n"
+                "    def test_spoofing(self):\n        assert add(self.n, 1) == 2\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    discovery = next(d for d in plan.discovery if d.runner == "pytest")
+    assert not [n for n in discovery.notes if n.kind == "uncollected_test_class"]
+    assert "tests/test_throttling.py::XffSpoofingTests::test_spoofing" in {
+        t.runner_id for t in discovery.targets
+    }
+    assert selected(plan) == {
+        "tests/test_throttling.py::XffSpoofingTests::test_spoofing",
+        "bench_ops.Add.time_add",
+    }

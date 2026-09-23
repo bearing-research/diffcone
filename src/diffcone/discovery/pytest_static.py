@@ -11,8 +11,9 @@ Collected:
   ``test``), methods of classes matching ``python_classes`` (default prefix
   ``Test``) that have no ``__init__``, nested test classes, methods
   inherited from base classes defined in the same module or imported from
-  one in the source roots, and methods of classes whose bases end in
-  ``TestCase``;
+  one in the source roots (an ``alias.Class`` base resolves through that
+  alias's module), and methods of classes that reach a base ending in
+  ``TestCase`` anywhere in that chain, whatever the class is called;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
   name, with the defining symbol as entry; ``from <module> import *``
@@ -1329,6 +1330,8 @@ def _collect_module_tests(
     # Module scopes reached through base classes: name -> (parsed, classes,
     # imported class names). None for a module outside the source roots.
     scopes: dict[str, tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None] = {}
+    # Per module: alias -> module it names, for a dotted base ``alias.Class``.
+    module_prefixes: dict[str, dict[str, str]] = {}
 
     def scope_for(module: str) -> tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]:
         if module in scopes:
@@ -1337,9 +1340,18 @@ def _collect_module_tests(
         facts = module_facts(module) if module_facts is not None else None
         if facts is None:
             return None  # type: ignore[return-value]
+        modules: dict[str, str] = {}
         classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
         imported: dict[str, tuple[str, str]] = {}
         for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if isinstance(stmt, ast.Import):
+                # ``import tests.queues as t``: ``t.LifoDiskQueueTest`` is that
+                # module's class, recorded under the alias as a module prefix.
+                for alias in stmt.names:
+                    modules[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+                continue
             if not isinstance(stmt, ast.ImportFrom):
                 continue
             src = _absolute_module(facts.parsed, stmt)
@@ -1350,12 +1362,14 @@ def _collect_module_tests(
                         imported.setdefault(name, (src, name))
                 else:
                     imported[alias.asname or alias.name] = (src, alias.name)
+                    modules.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
+        module_prefixes[module] = modules
         scopes[module] = (facts.parsed, classes, imported)
         return scopes[module]  # type: ignore[return-value]
 
     own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
 
-    def mro(cls: ast.ClassDef, nodeid: str) -> list[tuple[ast.ClassDef, str]]:
+    def mro(cls: ast.ClassDef, nodeid: str, quiet: bool = False) -> list[tuple[ast.ClassDef, str]]:
         """Base classes, nearest first, with their symbol ids. A base defined
         in another module in the source roots is followed too (networkx's
         ``TestDiGraph(BaseGraphTester)``), and its own bases resolve in the
@@ -1382,13 +1396,23 @@ def _collect_module_tests(
                 scope = scope_for(source)
                 if scope is not None and original in scope[1]:
                     found = (scope[1][original], scope[0].member_id(original), scope)
+            elif len(parts) > 1:
+                # ``t.LifoDiskQueueTest``: the prefix names a module.
+                prefixes = module_prefixes.get(owner.module, {})
+                head = ".".join(parts[:-1])
+                source = prefixes.get(parts[0], parts[0])
+                if len(parts) > 2:
+                    source = f"{source}.{'.'.join(parts[1:-1])}" if parts[0] in prefixes else head
+                scope = scope_for(source)
+                if scope is not None and name in scope[1]:
+                    found = (scope[1][name], scope[0].member_id(name), scope)
             if found is not None:
                 base_cls, base_id, base_scope = found
                 if used_as_base is not None:
                     used_as_base.add(base_id)
                 chain.append((base_cls, base_id))
                 queue.extend((b, base_scope) for b in base_cls.bases)
-            elif not (name.endswith("TestCase") or name in NO_TEST_BASES):
+            elif not (quiet or name.endswith("TestCase") or name in NO_TEST_BASES):
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
@@ -1403,7 +1427,12 @@ def _collect_module_tests(
     def walk_class(
         cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str, inherited: Marks
     ) -> None:
-        unittest_style = _is_unittest_class(cls)
+        # pytest's unittest plugin collects a TestCase subclass whatever it is
+        # called, and the base that brings TestCase in may be several classes
+        # and modules away (DRF's ``XffSpoofingTests(XffTestingBase)``).
+        unittest_style = _is_unittest_class(cls) or any(
+            _is_unittest_class(base) for base, _ in mro(cls, nodeid_prefix, quiet=True)
+        )
         if not (unittest_style or _matches(classes, cls.name)) or _has_init(cls):
             # A class pytest's own rules skip, but that defines test methods,
             # is a class some plugin collects (SQLAlchemy's testing plugin
