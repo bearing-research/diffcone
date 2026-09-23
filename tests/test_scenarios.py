@@ -2773,3 +2773,61 @@ def test_star_imported_tests_are_targets(repo):
         "tests/test_sync.py::test_shared",
         "bench_ops.Add.time_add",
     }
+
+
+def test_a_base_class_in_another_test_module_contributes_its_tests(repo):
+    """networkx's ``TestDiGraph(BaseGraphTester)`` inherits its tests from
+    another module; the inherited methods are targets whose entry is where
+    they are defined, and the base's own bases resolve in the base's module."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": (
+                "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/base_tester.py": (
+                "from pkg.ops import mul\n\n\n"
+                "class RootTester:\n    def test_root(self):\n        assert mul(2, 2) == 4\n"
+            ),
+            "tests/test_graph.py": (
+                "from pkg.ops import add\n"
+                "from tests.base_tester import RootTester\n\n\n"
+                "class BaseGraphTester(RootTester):\n"
+                "    def test_shared(self):\n        assert add(1, 1) == 2\n"
+            ),
+            "tests/test_digraph.py": (
+                "from tests.test_graph import BaseGraphTester\n\n\n"
+                "class TestDiGraph(BaseGraphTester):\n"
+                "    def test_own(self):\n        assert True\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/ops.py": "def add(a, b):\n    return b + a\n\n\ndef mul(a, b):\n    return a * b\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    discovery = next(d for d in plan.discovery if d.runner == "pytest")
+    assert not [n for n in discovery.notes if n.kind == "unknown_base_class"]
+    targets = {t.runner_id: t.entry_symbol for t in discovery.targets}
+    assert targets["tests/test_digraph.py::TestDiGraph::test_shared"] == (
+        "tests.test_graph.BaseGraphTester.test_shared"
+    )
+    assert targets["tests/test_digraph.py::TestDiGraph::test_root"] == (
+        "tests.base_tester.RootTester.test_root"
+    )
+    # Only what reaches the changed ``add``: the inherited ``test_root`` calls
+    # ``mul``, which did not change.
+    # ``BaseGraphTester`` does not match python_classes, so pytest collects it
+    # only through the subclass -- and it is a base, so it is not reported as
+    # a class something else may collect.
+    assert "tests/test_graph.py::BaseGraphTester::test_shared" not in targets
+    assert not [n for n in discovery.notes if n.kind == "uncollected_test_class"]
+    assert selected(plan) == {
+        "tests/test_digraph.py::TestDiGraph::test_shared",
+        "bench_ops.Add.time_add",
+    }

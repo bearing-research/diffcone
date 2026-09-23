@@ -9,8 +9,10 @@ Collected:
   the source roots, restricted to ``testpaths`` when configured;
 * module-level functions matching ``python_functions`` (default prefix
   ``test``), methods of classes matching ``python_classes`` (default prefix
-  ``Test``) that have no ``__init__``, nested test classes, and methods of
-  classes whose bases end in ``TestCase``;
+  ``Test``) that have no ``__init__``, nested test classes, methods
+  inherited from base classes defined in the same module or imported from
+  one in the source roots, and methods of classes whose bases end in
+  ``TestCase``;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
   name, with the defining symbol as entry; ``from <module> import *``
@@ -1016,6 +1018,10 @@ def discover_pytest(
 
     unresolved: Counter[str] = Counter()
     assumed: Counter[str] = Counter()
+    # Filled while walking every module: class symbols followed as a base,
+    # and (symbol, detail) for each class pytest's rules skipped.
+    used_as_base: set[str] = set()
+    uncollected: list[tuple[str, str]] = []
     for path in sorted(test_paths):
         facts = facts_by_path.get(path)
         if facts is None:
@@ -1035,7 +1041,25 @@ def discover_pytest(
                 symbol = owner.parsed.member_id(name)
                 if symbol in index.symbols:
                     module_deps.append(symbol)
-        _collect_module_tests(result, facts, resolver, config, module_deps, index, module_facts)
+        _collect_module_tests(
+            result,
+            facts,
+            resolver,
+            config,
+            module_deps,
+            index,
+            module_facts,
+            used_as_base,
+            uncollected,
+        )
+
+    # A class pytest's own rules skip is only worth reporting if nothing
+    # collected it through inheritance either, which is known once every
+    # module has been walked (networkx's ``BaseGraphTester`` is a base in
+    # another module, alembic's ``BatchApplyTest`` is a base nowhere).
+    for symbol, detail in uncollected:
+        if symbol not in used_as_base:
+            result.notes.append(DiscoveryNote(RUNNER, "uncollected_test_class", detail))
 
     _collect_doctests(result, snapshot, index, config, facts_by_path)
 
@@ -1179,6 +1203,8 @@ def _collect_module_tests(
     module_deps: list[str],
     index: SourceIndex,
     module_facts: Any = None,
+    used_as_base: set[str] | None = None,
+    uncollected: list[tuple[str, str]] | None = None,
 ) -> None:
     parsed = facts.parsed
     functions = tuple(config["python_functions"])
@@ -1280,29 +1306,76 @@ def _collect_module_tests(
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
                 add(nodeid, entry, [], requests, [origin.parsed.module])
 
+    # Module scopes reached through base classes: name -> (parsed, classes,
+    # imported class names). None for a module outside the source roots.
+    scopes: dict[str, tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None] = {}
+
+    def scope_for(module: str) -> tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]:
+        if module in scopes:
+            return scopes[module]  # type: ignore[return-value]
+        scopes[module] = None  # guards import cycles while this one is built
+        facts = module_facts(module) if module_facts is not None else None
+        if facts is None:
+            return None  # type: ignore[return-value]
+        classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
+        imported: dict[str, tuple[str, str]] = {}
+        for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if not isinstance(stmt, ast.ImportFrom):
+                continue
+            src = _absolute_module(facts.parsed, stmt)
+            for alias in stmt.names:
+                if alias.name == "*":
+                    sub_scope = scope_for(src)
+                    for name in sub_scope[1] if sub_scope else ():
+                        imported.setdefault(name, (src, name))
+                else:
+                    imported[alias.asname or alias.name] = (src, alias.name)
+        scopes[module] = (facts.parsed, classes, imported)
+        return scopes[module]  # type: ignore[return-value]
+
+    own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
+
     def mro(cls: ast.ClassDef, nodeid: str) -> list[tuple[ast.ClassDef, str]]:
-        """In-module base classes, nearest first, with their symbol ids."""
+        """Base classes, nearest first, with their symbol ids. A base defined
+        in another module in the source roots is followed too (networkx's
+        ``TestDiGraph(BaseGraphTester)``), and its own bases resolve in the
+        module that defines it, not in this one."""
         chain: list[tuple[ast.ClassDef, str]] = []
-        seen: set[str] = set()
-        queue = list(cls.bases)
+        seen: set[tuple[str, str]] = set()
+        queue = [(base, own_scope) for base in cls.bases]
         while queue:
-            base = queue.pop(0)
+            base, (owner, classes_here, imports_here) = queue.pop(0)
             parts, _ = decorator_chain(base)
             name = parts[-1] if parts else ""
-            if name in ("object", "") or name in seen:
+            if name in ("object", "") or (owner.module, name) in seen:
                 continue
-            seen.add(name)
-            if name in module_classes and name != cls.name:
-                base_cls = module_classes[name]
-                chain.append((base_cls, parsed.member_id(name)))
-                queue.extend(base_cls.bases)
+            seen.add((owner.module, name))
+            found = None
+            if name in classes_here and not (owner.module == parsed.module and name == cls.name):
+                found = (
+                    classes_here[name],
+                    owner.member_id(name),
+                    (owner, classes_here, imports_here),
+                )
+            elif name in imports_here:
+                source, original = imports_here[name]
+                scope = scope_for(source)
+                if scope is not None and original in scope[1]:
+                    found = (scope[1][original], scope[0].member_id(original), scope)
+            if found is not None:
+                base_cls, base_id, base_scope = found
+                if used_as_base is not None:
+                    used_as_base.add(base_id)
+                chain.append((base_cls, base_id))
+                queue.extend((b, base_scope) for b in base_cls.bases)
             elif not name.endswith("TestCase"):
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
                         "unknown_base_class",
-                        f"{nodeid}: base class {name!r} is not defined in this module; "
-                        "test methods it may contribute are not discovered",
+                        f"{nodeid}: base class {name!r} is not defined in this module or "
+                        "imported from one in the source roots; test methods it may "
+                        "contribute are not discovered",
                     )
                 )
         return chain
@@ -1323,15 +1396,16 @@ def _collect_module_tests(
                     for f in scope_functions(cls.body)
                 )
             ):
-                result.notes.append(
-                    DiscoveryNote(
-                        RUNNER,
-                        "uncollected_test_class",
-                        f"{nodeid_prefix}::{cls.name}: defines test methods but does not "
-                        "match python_classes; a pytest plugin may collect it, and what it "
-                        "collects is not a target",
-                    )
+                symbol = (
+                    f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
                 )
+                detail = (
+                    f"{nodeid_prefix}::{cls.name}: defines test methods but does not "
+                    "match python_classes; a pytest plugin may collect it, and what it "
+                    "collects is not a target"
+                )
+                if uncollected is not None:
+                    uncollected.append((symbol, detail))
             return
         class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
         nodeid = f"{nodeid_prefix}::{cls.name}"

@@ -605,9 +605,11 @@ Collected: files matching `python_files` under the source roots (a pattern
 without `/` matches the basename, one with `/` the repo-relative path, as
 pytest's `fnmatch_ex` does; restricted to `testpaths` if set); module-level functions matching `python_functions`;
 methods of classes matching `python_classes` that have no `__init__`,
-including methods inherited from base classes defined in the same module
-(own definitions win; a base defined elsewhere yields an
-`unknown_base_class` note); nested test classes; methods whose name starts
+including methods inherited from base classes (own definitions win): a
+base defined in the same module, or imported from a module in the source
+roots (networkx's `TestDiGraph(BaseGraphTester)`), whose own bases then
+resolve in the module that defines it; a base that resolves to neither
+yields an `unknown_base_class` note; nested test classes; methods whose name starts
 with `test` in classes with a base ending in `TestCase`. Node ids follow
 pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
