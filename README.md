@@ -76,7 +76,12 @@ root that contains it. With `--source-root src --source-root .`, the file
 `--source-root tests`, that test module would be named `test_calc` instead.
 
 Exit codes: `0` plan produced; `1` plan produced but analysis errors forced a
-select-everything fallback; `2` no plan (bad revision, bad manifest).
+select-everything fallback; `2` no plan (bad revision, bad manifest); `3` plan
+produced but discovery may be short of what the runner collects (a class a
+plugin collects by its own rules, a base class or an imported test outside the
+source roots). `1` and `3` are opposite failures -- `1` selects too much, `3`
+means the target list itself may be incomplete -- and `3` wins when both apply.
+`run` refuses to execute such a plan unless given `--allow-incomplete-discovery`.
 
 ### Running and validating
 

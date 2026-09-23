@@ -173,6 +173,13 @@ class Plan:
         return bool(self.errors)
 
     @property
+    def incomplete_discovery(self) -> list:
+        """Discovery notes saying a runner may collect tests that are not
+        targets. A degraded plan runs too much; this runs too little, so the
+        two are reported (and exited) separately."""
+        return [n for d in self.discovery for n in d.incomplete]
+
+    @property
     def base(self) -> SnapshotInfo:
         return self.base_index.snapshot
 

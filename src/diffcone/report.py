@@ -72,6 +72,9 @@ def to_dict(plan: Plan) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "degraded" if plan.degraded else "complete",
+        # A runner may collect tests that are not targets: the plan is not a
+        # judgement on those, so running only its targets would skip them.
+        "discovery_incomplete": bool(plan.incomplete_discovery),
         "analysis": {
             "repo": plan.repo,
             "base": snapshot_to_dict(plan.base),
@@ -168,6 +171,11 @@ def to_text(plan: Plan) -> str:
     lines.append(f"head: {plan.head.description}")
     lines.append(f"scope: {plan.scope_statement}")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
+    if plan.incomplete_discovery:
+        lines.append(
+            f"discovery INCOMPLETE: {len(plan.incomplete_discovery)} place(s) where a runner "
+            "may collect tests that are not targets (see the notes below)"
+        )
     lines.append("")
     lines.append(f"changed symbols ({len(plan.changes)}):")
     for c in plan.changes or []:

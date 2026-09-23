@@ -26,7 +26,7 @@ uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 ```
 
-Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan.
+Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan, 3 discovery may be short of what the runner collects (`run` refuses without `--allow-incomplete-discovery`). 1 over-selects, 3 may under-run; 3 wins when both apply.
 
 Module names come from the longest matching source root: with roots `src` and `.`, `src/calc/ops.py` is `calc.ops` and `tests/test_x.py` is `tests.test_x`. Do not document commands or manifests in README or here that are not actually wired up and verified.
 

@@ -4,10 +4,17 @@ Exit codes (plan / discover):
   0  plan produced, analysis complete
   1  plan produced, but analysis errors forced a conservative fallback
   2  no plan (bad arguments, unreadable manifest, unknown revision)
+  3  plan produced, but discovery may be short of what the runner collects
 
-``run`` exits with the runner's exit code (0 when nothing was selected or
-with --dry-run); ``validate`` exits 0 when every outcome change was selected,
-1 when some were missed, 2 on errors.
+1 and 3 are opposite failures: 1 means too much was selected (the analysis
+gave up safely), 3 means the target list itself may be incomplete, so running
+only the selected targets would skip tests. 3 wins when both apply.
+
+``run`` refuses to execute an incomplete plan (exit 3) unless
+--allow-incomplete-discovery is given; otherwise it exits with the runner's
+exit code (0 when nothing was selected or with --dry-run). ``validate`` exits
+0 when every outcome change was selected, 1 when some were missed, 2 on
+errors.
 """
 
 from __future__ import annotations
@@ -126,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
         help='runner command line (default: "python -m pytest" or "asv run"); run in --repo',
     )
     r.add_argument("--dry-run", action="store_true", help="print the command instead of running")
+    r.add_argument(
+        "--allow-incomplete-discovery",
+        action="store_true",
+        help="run even when discovery reports tests the runner may collect that are not targets",
+    )
     _add_common(r)
     r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
 
@@ -264,9 +276,27 @@ def main(argv: list[str] | None = None) -> int:
             result = build_plan()
             text = to_json(result) if args.format == "json" else to_text(result)
             code = _write(text, args.output)
-            return code if code else (1 if result.degraded else 0)
+            if code:
+                return code
+            if result.incomplete_discovery:
+                return 3
+            return 1 if result.degraded else 0
         if args.command == "run":
             result = build_plan()
+            incomplete = result.incomplete_discovery
+            if incomplete and not args.allow_incomplete_discovery:
+                print(
+                    f"diffcone: discovery reports {len(incomplete)} place(s) where "
+                    f"{args.runner} may collect tests that are not targets; running the "
+                    "selected targets would skip them. Pass --allow-incomplete-discovery "
+                    "to run anyway, or declare those tests in a manifest.",
+                    file=sys.stderr,
+                )
+                for note in incomplete[:5]:
+                    print(f"  {note.kind}: {note.detail}", file=sys.stderr)
+                if len(incomplete) > 5:
+                    print(f"  ... and {len(incomplete) - 5} more", file=sys.stderr)
+                return 3
             outcome = run_selected(
                 result,
                 args.runner,

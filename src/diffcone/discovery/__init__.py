@@ -55,12 +55,25 @@ class DiscoveryOptions:
     well_known_fixtures: bool = True
 
 
+# Note kinds that mean the target list may be short of what the runner
+# collects. The others are conservative: an unknown fixture or an unparsed
+# file makes a target's dependencies wider, never the target list shorter.
+INCOMPLETE_NOTE_KINDS = frozenset(
+    {"uncollected_test_class", "imported_test_out_of_scope", "unknown_base_class"}
+)
+
+
 @dataclass
 class DiscoveryResult:
     runner: str
     targets: list[Target] = field(default_factory=list)
     notes: list[DiscoveryNote] = field(default_factory=list)
     config: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def incomplete(self) -> list[DiscoveryNote]:
+        """Notes saying this runner may collect tests that are not targets."""
+        return [n for n in self.notes if n.kind in INCOMPLETE_NOTE_KINDS]
 
 
 def discover(

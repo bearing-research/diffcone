@@ -189,3 +189,58 @@ def test_unwritable_output_and_non_utf8_manifest(repo, capsys, tmp_path):
     )
     assert code == 2
     assert "manifest" in capsys.readouterr().err
+
+
+INCOMPLETE_TREE = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+    "tests/test_ops.py": (
+        "from pkg.ops import add\n\n\n"
+        "class TestAdd:\n    def test_two(self):\n        assert add(1, 1) == 2\n\n\n"
+        "class AddRoundTripTest:\n"
+        "    def test_round(self):\n        assert add(2, 2) == 4\n"
+    ),
+}
+
+
+def test_incomplete_discovery_exits_three_and_run_refuses(repo, capsys):
+    """A class a runner plugin may collect is not a target, so the plan is not
+    a judgement on it: ``plan`` exits 3 and ``run`` refuses to skip it."""
+    base = repo.commit(INCOMPLETE_TREE)
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    args = ["--repo", str(repo.path), "--base", base, "--head", head, "--discover", "pytest"]
+
+    code = main(["plan", *args, "--format", "text"])
+    out = capsys.readouterr().out
+    assert code == 3
+    assert "status: complete" in out
+    assert "discovery INCOMPLETE: 1 place(s)" in out
+    assert "uncollected_test_class" in out
+
+    code = main(["plan", *args, "--format", "json"])
+    assert code == 3
+    assert json.loads(capsys.readouterr().out)["discovery_incomplete"] is True
+
+    code = main(["run", *args, "--dry-run", "--command", "pytest"])
+    err = capsys.readouterr().err
+    assert code == 3
+    assert "may collect tests that are not targets" in err
+    assert "--allow-incomplete-discovery" in err
+
+    code = main(["run", *args, "--dry-run", "--allow-incomplete-discovery", "--command", "pytest"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "tests/test_ops.py::TestAdd::test_two" in captured.out
+
+
+def test_a_complete_plan_still_exits_zero(repo, capsys):
+    tree = dict(INCOMPLETE_TREE)
+    tree["tests/test_ops.py"] = (
+        "from pkg.ops import add\n\n\nclass TestAdd:\n"
+        "    def test_two(self):\n        assert add(1, 1) == 2\n"
+    )
+    base = repo.commit(tree)
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    args = ["--repo", str(repo.path), "--base", base, "--head", head, "--discover", "pytest"]
+    assert main(["plan", *args, "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["discovery_incomplete"] is False
