@@ -1167,6 +1167,41 @@ in discovery, not in the analysis.
 * No recorded corpus changes its target count under either fix, so the
   numbers in the sections above stand unmeasured again.
 
+## Recall validation, seventh batch: collection by a plugin's own rules
+
+Two projects whose suites are not what pytest's documented rules alone
+would collect.
+
+| repository (HEAD) | validated commits | first pass | after the fixes | mean savings |
+|---|---|---|---|---|
+| scrapy (b6ac785) | 2 | 98 % (2678 of 2742) | 100 % (2741 of 2742) | 0 % |
+| virtualenv (72e1906) | 3 | n/a (no test covers the changes) | same | 0 % |
+
+* **scrapy, 64 tests, two causes.** `python_files` is
+  `["test_*.py", "test_*/__init__.py"]`, and pytest matches those patterns
+  against *absolute* paths, so a pattern with a separator behaves as if
+  prefixed with `*/`; matching the repo-relative path alone missed
+  `tests/test_settings/__init__.py` and its siblings (4575 targets became
+  4663). The rest were `unittest.TestCase` subclasses reached through an
+  intermediate base (`PickleLifoDiskQueueTest(t.LifoDiskQueueTest)`),
+  which pytest's unittest plugin collects whatever they are called.
+* **The one test still missed is now declared.** `docs/conftest.py` binds
+  `pytest_collect_file` to a Sybil instance, which turns the `.rst`
+  documentation into doctests; one of them executes changed code. Nothing
+  static can enumerate what a plugin collects, so the plan reports
+  `plugin_collects_files` and exits 3 rather than looking complete.
+* **virtualenv needed `--setup-command`**, not a rule change:
+  `src/virtualenv/version.py` is generated at build time, so a temporary
+  checkout cannot import the package at all (the same shape as tenacity's
+  `_version.py`). Its suite also shares an app-data cache between
+  processes, so it is validated with `--jobs 1`. With both, three commits
+  validate clean; all three change build metadata that no test covers, so
+  coverage recall is `n/a` rather than a number.
+* The `unittest`-subclass fix is the one with reach beyond these two
+  repositories: it also added targets in django-rest-framework, dateutil
+  and marshmallow. No recorded corpus changed its target count under any
+  of these fixes.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
