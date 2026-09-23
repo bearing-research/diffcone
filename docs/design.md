@@ -602,8 +602,10 @@ order. `testpaths` entries may be directories, files or globs
 (`tests/integ*`); a leading `./` is ignored.
 
 Collected: files matching `python_files` under the source roots (a pattern
-without `/` matches the basename, one with `/` the repo-relative path, as
-pytest's `fnmatch_ex` does; restricted to `testpaths` if set); module-level functions matching `python_functions`;
+without `/` matches the basename, one with `/` the path, as pytest's
+`fnmatch_ex` does -- pytest matches absolute paths, so such a pattern is
+effectively prefixed with `*/` and scrapy's `test_*/__init__.py` collects
+`tests/test_settings/__init__.py`; restricted to `testpaths` if set); module-level functions matching `python_functions`;
 methods of classes matching `python_classes` that have no `__init__`,
 including methods inherited from base classes (own definitions win): a
 base defined in the same module, or imported from a module in the source
@@ -625,9 +627,13 @@ are not followed), minus the names the importing module defines, and each
 one becomes a target whose entry is where it is defined. poetry's `sync`
 tests are the `install` tests imported this way.
 
-Three notes mean the target list may be short of what the runner collects
--- `uncollected_test_class`, `unknown_base_class` and
-`imported_test_out_of_scope` -- as opposed to the ones that only widen a
+Four notes mean the target list may be short of what the runner collects
+-- `uncollected_test_class`, `unknown_base_class`,
+`imported_test_out_of_scope` and `plugin_collects_files` (a conftest or
+plugin that binds `pytest_collect_file`, `pytest_collect_directory` or
+`pytest_pycollect_makeitem`, as a function or a value: scrapy's
+`docs/conftest.py` binds a Sybil instance and its `.rst` files become
+doctests) -- as opposed to the ones that only widen a
 target's dependencies. The report carries `discovery_incomplete`, `plan`
 exits 3, and `run` refuses without `--allow-incomplete-discovery`: a
 degraded plan runs too much, an incomplete one would run too little, and

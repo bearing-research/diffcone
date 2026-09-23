@@ -59,7 +59,12 @@ class DiscoveryOptions:
 # collects. The others are conservative: an unknown fixture or an unparsed
 # file makes a target's dependencies wider, never the target list shorter.
 INCOMPLETE_NOTE_KINDS = frozenset(
-    {"uncollected_test_class", "imported_test_out_of_scope", "unknown_base_class"}
+    {
+        "uncollected_test_class",
+        "imported_test_out_of_scope",
+        "unknown_base_class",
+        "plugin_collects_files",
+    }
 )
 
 

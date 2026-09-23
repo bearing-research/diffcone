@@ -525,12 +525,24 @@ def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
     return dict(parser.items(name))
 
 
+# Hooks that turn files or objects into tests by a plugin's own rules, so the
+# target list cannot be the suite (scrapy's docs/conftest.py binds
+# ``pytest_collect_file`` to a Sybil instance). ``pytest_generate_tests`` is
+# not one: it multiplies a test function that is already a target.
+COLLECT_HOOKS = frozenset(
+    {"pytest_collect_file", "pytest_collect_directory", "pytest_pycollect_makeitem"}
+)
+
+
 def _matches_python_file(path: str, pattern: str) -> bool:
     """pytest's ``fnmatch_ex``: a pattern without a path separator matches the
-    basename; one with a separator matches the whole (repo-relative) path."""
+    basename; one with a separator matches the path. pytest matches absolute
+    paths and so prefixes a relative pattern with ``*/``, which is what makes
+    scrapy's ``test_*/__init__.py`` match ``tests/test_settings/__init__.py``;
+    the path here is repo-relative, so both forms are tried."""
     if "/" in pattern:
         pattern = pattern.lstrip("./")
-        return fnmatch(path, pattern)
+        return fnmatch(path, pattern) or fnmatch(path, f"*/{pattern}")
     return fnmatch(PurePosixPath(path).name, pattern)
 
 
@@ -571,6 +583,9 @@ class ModuleFacts:
     fixtures: dict[str, Fixture] = field(default_factory=dict)
     class_fixtures: dict[str, dict[str, Fixture]] = field(default_factory=dict)  # class id ->
     hooks: list[str] = field(default_factory=list)
+    # Collection hooks this module binds (as a def or an assignment): they
+    # make tests out of files or objects these rules do not model.
+    collect_hooks: list[str] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     usefixtures: tuple[str, ...] = ()
     setup_functions: list[str] = field(default_factory=list)
@@ -760,8 +775,15 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             facts.fixtures[name] = Fixture(name, symbol, autouse, _fixture_requests(func, False))
         elif func.name.startswith("pytest_"):
             facts.hooks.append(symbol)
+            if func.name in COLLECT_HOOKS:
+                facts.collect_hooks.append(func.name)
         elif func.name in MODULE_SETUP_FUNCTIONS:
             facts.setup_functions.append(symbol)
+    # ``pytest_collect_file = Sybil(...).pytest()``: a collection hook bound
+    # to a value rather than defined as a function.
+    for name, _ in scope_assignments(body):
+        if name in COLLECT_HOOKS and name not in facts.collect_hooks:
+            facts.collect_hooks.append(name)
     # ``mocker = pytest.fixture(scope="function")(_mocker)``: a fixture made by
     # calling the decorator on an in-module function and binding the result.
     functions = {f.name: f for f in scope_functions(body)}
@@ -1081,6 +1103,17 @@ def discover_pytest(
     for symbol, detail in uncollected:
         if symbol not in used_as_base:
             result.notes.append(DiscoveryNote(RUNNER, "uncollected_test_class", detail))
+
+    for facts in sorted(facts_by_path.values(), key=lambda f: f.parsed.path):
+        for hook in facts.collect_hooks:
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "plugin_collects_files",
+                    f"{facts.parsed.path}: binds {hook}, which makes tests out of files or "
+                    "objects by its own rules; what it collects is not a target",
+                )
+            )
 
     _collect_doctests(result, snapshot, index, config, facts_by_path)
 

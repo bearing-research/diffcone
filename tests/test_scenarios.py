@@ -2870,3 +2870,62 @@ def test_a_testcase_subclass_is_collected_whatever_it_is_called(repo):
         "tests/test_throttling.py::XffSpoofingTests::test_spoofing",
         "bench_ops.Add.time_add",
     }
+
+
+def test_a_python_files_pattern_with_a_directory_matches_like_pytest(repo):
+    """pytest matches ``python_files`` against absolute paths, so a pattern
+    with a separator is effectively prefixed with ``*/``: scrapy's
+    ``test_*/__init__.py`` collects ``tests/test_settings/__init__.py``."""
+    base = repo.commit(
+        {
+            "pyproject.toml": (
+                '[tool.pytest.ini_options]\npython_files = ["test_*.py", "test_*/__init__.py"]\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_settings/__init__.py": (
+                "from pkg.ops import add\n\n\n"
+                "class TestBaseSettings:\n"
+                "    def test_copy(self):\n        assert add(1, 1) == 2\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {
+        "tests/test_settings/__init__.py::TestBaseSettings::test_copy",
+        "bench_ops.Add.time_add",
+    }
+
+
+def test_a_conftest_that_collects_files_makes_the_plan_incomplete(repo):
+    """``pytest_collect_file`` makes tests out of files by a plugin's own
+    rules (scrapy's docs are Sybil doctests), so the target list is not the
+    suite and the plan says so."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "docs/conftest.py": (
+                "from sybil import Sybil\n\n\npytest_collect_file = Sybil(patterns=['*.rst'])\n"
+            ),
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    notes = [n for n in plan.incomplete_discovery if n.kind == "plugin_collects_files"]
+    assert len(notes) == 1
+    assert notes[0].detail.startswith("docs/conftest.py: binds pytest_collect_file")
+    # The targets it does know are still planned normally.
+    assert selected(plan) == {"tests/test_ops.py::test_add", "bench_ops.Add.time_add"}
