@@ -747,7 +747,13 @@ and `conftest.py` files outside the source roots.
 
 Collected: `.py` files under `benchmark_dir` (default `benchmarks`; read
 from `asv.conf.json`, whose `//` and `/* */` comments are stripped, with an
-`unparsable_config` note if it still fails to parse) whose path components
+`unparsable_config` note if it still fails to parse). ASV resolves
+`benchmark_dir` against the directory holding that file, which is usually
+not the repository root -- numpy and networkx keep both under `benchmarks/`,
+pandas under `asv_bench/` -- so the snapshot reads `asv.conf.json` up to
+three levels down and the shallowest one wins; benchmark ids stay relative
+to the real benchmark directory, as `asv run --bench` expects. Files whose
+path components
 do not start with an underscore; functions and methods of
 non-underscore classes named with `time_`, `timeraw_`, `mem_`, `peakmem_` or
 `track_`. Benchmark ids are `<module relative to benchmark_dir>.<Class>.<method>`.

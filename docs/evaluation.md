@@ -1268,6 +1268,18 @@ This is the check to run first on a new repository: it is cheap, it needs
 no commit range, and every discovery gap found by the batches above would
 have shown up in it.
 
+**ASV, the same way.** `--runner asv` asks ASV's own discovery step
+(`python -m asv.benchmark discover`, run from the directory holding
+`asv.conf.json`, as ASV runs it) and diffs the benchmark names. The three
+census repositories with an ASV suite match exactly: networkx 59,
+packaging 20, rich 32, none missing and none extra. networkx only matches
+after `benchmark_dir` began resolving against its config's directory:
+its `asv.conf.json` is in `benchmarks/`, so every benchmark had been named
+`benchmarks.<module>...` instead of `<module>...` and no `--bench` regex
+would have matched one. Benchmarks inherited from a base class are now
+targets too, though no census suite uses inheritance, so that rule is
+sound and tested but unmeasured in the wild.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

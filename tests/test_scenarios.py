@@ -3051,3 +3051,36 @@ def test_an_asv_base_class_outside_the_source_roots_is_reported(repo):
     assert len(notes) == 1
     assert notes[0].detail.startswith("bench_ops.Ops: base class 'BenchBase'")
     assert selected(plan) == {"bench_ops.Ops.time_add", "tests/test_ops.py::test_add"}
+
+
+def test_an_asv_config_beside_the_benchmarks_names_them_as_asv_does(repo):
+    """ASV resolves ``benchmark_dir`` against the directory holding
+    ``asv.conf.json``, which is usually not the repository root (numpy and
+    networkx keep both under ``benchmarks/``). The benchmark id is relative
+    to the real benchmark directory, or ``--bench`` would never match it."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "benchmarks/asv.conf.json": (
+                '{\n  // the suite lives beside this file\n  "benchmark_dir": "benchmarks"\n}\n'
+            ),
+            "benchmarks/benchmarks/__init__.py": "",
+            "benchmarks/benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Ops:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    asv = next(d for d in plan.discovery if d.runner == "asv")
+    assert asv.config["source"] == "benchmarks/asv.conf.json"
+    assert asv.config["benchmark_dir"] == "benchmarks/benchmarks"
+    assert {t.runner_id: t.entry_symbol for t in asv.targets} == {
+        "bench_ops.Ops.time_add": "benchmarks.benchmarks.bench_ops.Ops.time_add"
+    }
+    assert selected(plan) == {"bench_ops.Ops.time_add", "tests/test_ops.py::test_add"}

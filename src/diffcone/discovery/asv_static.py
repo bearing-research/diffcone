@@ -51,21 +51,33 @@ LIFECYCLE_NAMES = ("setup", "setup_cache", "teardown")
 
 
 def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
+    """``benchmark_dir`` as a repository-relative path. ASV resolves it
+    against the directory holding ``asv.conf.json``, which is usually not the
+    repository root (numpy and networkx keep both under ``benchmarks/``,
+    pandas under ``asv_bench/``); the snapshot reads those nested copies, and
+    the shallowest one wins as ASV's own search does."""
     config: dict[str, Any] = {"source": None, "benchmark_dir": "benchmarks"}
-    raw = snapshot.config_files.get("asv.conf.json")
-    if raw is None:
+    name = next(
+        (n for n in snapshot.config_files if PurePosixPath(n).name == "asv.conf.json"), None
+    )
+    if name is None:
         return config
-    text = raw.decode("utf-8", "replace")
+    here = PurePosixPath(name).parent
+    text = snapshot.config_files[name].decode("utf-8", "replace")
     try:
         data = json.loads(strip_json_comments(text))
     except json.JSONDecodeError as exc:
-        config["source"] = "asv.conf.json (unparsable, defaults used)"
+        config["source"] = f"{name} (unparsable, defaults used)"
         config["error"] = str(exc)
         return config
-    config["source"] = "asv.conf.json"
+    config["source"] = name
     bench_dir = data.get("benchmark_dir")
     if isinstance(bench_dir, str) and bench_dir.strip():
-        config["benchmark_dir"] = bench_dir.strip().strip("/")
+        resolved = (here / bench_dir.strip().strip("/")).as_posix()
+        config["benchmark_dir"] = resolved.removeprefix("./").strip("/")
+    elif str(here) != ".":
+        # No benchmark_dir: ASV's default is ``benchmarks`` beside the config.
+        config["benchmark_dir"] = (here / "benchmarks").as_posix()
     return config
 
 

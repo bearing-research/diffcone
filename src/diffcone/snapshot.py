@@ -35,6 +35,12 @@ class GitError(Exception):
 
 
 CONFIG_FILES = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", "asv.conf.json")
+# ASV projects usually keep their configuration beside the benchmarks rather
+# than at the repository root (numpy and networkx use ``benchmarks/``, pandas
+# ``asv_bench/``), and ``benchmark_dir`` is relative to it, so nested copies
+# are read too -- shallowest first, and only a few levels down.
+ASV_CONFIG = "asv.conf.json"
+ASV_CONFIG_DEPTH = 3
 
 WORKTREE = "WORKTREE"
 INDEX = "INDEX"
@@ -260,6 +266,18 @@ def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
     return entries
 
 
+def _nested_asv_configs(listing: bytes) -> list[str]:
+    """Paths of ``asv.conf.json`` below the root in a newline-separated file
+    listing, shallowest first and no deeper than ASV_CONFIG_DEPTH."""
+    found = []
+    for raw in listing.split(b"\n"):
+        path = raw.decode("utf-8", "surrogateescape").strip()
+        parts = path.split("/")
+        if len(parts) > 1 and parts[-1] == ASV_CONFIG and len(parts) <= ASV_CONFIG_DEPTH:
+            found.append(path)
+    return sorted(found, key=lambda p: (p.count("/"), p))
+
+
 def _staged_config_files(repo: Path) -> dict[str, bytes]:
     out = _git(repo, ["ls-files", "-z", "--cached", "--", *CONFIG_FILES])
     names = [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
@@ -294,7 +312,9 @@ def read_commit_snapshot(
     config_files: dict[str, bytes] = {}
     if with_config:
         root = list_root_files(repo, commit)
-        config_files = read_files(repo, commit, [n for n in CONFIG_FILES if n in root])
+        names = [n for n in CONFIG_FILES if n in root]
+        nested = _nested_asv_configs(_git(repo, ["ls-tree", "-r", "--name-only", commit]))
+        config_files = read_files(repo, commit, names + nested)
     return Snapshot(
         info=SnapshotInfo(
             revision=revision,
@@ -360,6 +380,10 @@ def read_index_snapshot(
     real_files = read_files(repo, "", sorted(set(aliases.values())), label=INDEX)
     files.update({alias: real_files[real] for alias, real in aliases.items()})
     config_files = _staged_config_files(repo) if with_config else {}
+    if with_config:
+        listing = _git(repo, ["ls-files", "-z", "--cached"]).replace(b"\0", b"\n")
+        nested = _nested_asv_configs(listing)
+        config_files.update(read_files(repo, "", nested, label=INDEX))
     return Snapshot(
         info=SnapshotInfo(
             revision=INDEX,
@@ -420,6 +444,11 @@ def read_worktree_snapshot(
     config_files: dict[str, bytes] = {}
     if with_config:
         for name in CONFIG_FILES:
+            full = repo / name
+            if full.is_file():
+                config_files[name] = full.read_bytes()
+        listing = _git(repo, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+        for name in _nested_asv_configs(listing.replace(b"\0", b"\n")):
             full = repo / name
             if full.is_file():
                 config_files[name] = full.read_bytes()
