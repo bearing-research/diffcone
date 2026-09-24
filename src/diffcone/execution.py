@@ -60,7 +60,11 @@ def build_command(
     if runner == "pytest":
         return [*base, *extra, *ids]
     if runner == "asv":
-        pattern = "^(" + "|".join(re.escape(i) for i in ids) + ")$"
+        # ASV matches --bench against the benchmark's name, and for a
+        # parameterised one against ``name(param0, param1, ...)`` instead, so
+        # a pattern anchored with ``$`` selects none of those: the name must
+        # be followed by the end of the string or its parameter list.
+        pattern = "^(" + "|".join(re.escape(i) for i in ids) + r")($|\()"
         return [*base, *extra, "--bench", pattern]
     raise ValueError(f"unknown runner {runner!r}")
 

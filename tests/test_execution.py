@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -43,8 +44,23 @@ def test_build_command():
         "run",
         "--quick",
         "--bench",
-        "^(bench\\.time_add)$",
+        "^(bench\\.time_add)($|\\()",
     ]
+
+
+def test_the_asv_pattern_selects_parameterised_benchmarks_and_nothing_else():
+    """ASV matches --bench against the benchmark's name, and for a
+    parameterised one against ``name(param0, param1, ...)`` (asv/benchmarks.py).
+    A pattern anchored with ``$`` selects none of those -- 58 of networkx's 59
+    benchmarks -- and ``run`` would report success having run nothing."""
+    pattern = build_command("asv", [TARGETS[2]], "asv run", [])[-1]
+    selects = lambda name: re.search(pattern, name) is not None  # noqa: E731
+    assert selects("bench.time_add")
+    assert selects("bench.time_add('Erdos Renyi (100, 0.1)', 2)")
+    # A longer name that merely starts with the same text is not this target.
+    assert not selects("bench.time_add_twice")
+    assert not selects("bench.time_add_twice('a')")
+    assert not selects("other.time_add")
 
 
 def test_parse_pytest_verbose_folds_parameter_cases():
@@ -157,7 +173,7 @@ def test_run_executes_only_selected_targets(repo, capsys):
         ]
     )
     assert code == 0
-    assert capsys.readouterr().out.strip() == "asv run --bench '^(bench\\.time_add)$'"
+    assert capsys.readouterr().out.strip() == "asv run --bench '^(bench\\.time_add)($|\\()'"
 
 
 def test_validate_catches_and_misses(repo, capsys):

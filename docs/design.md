@@ -873,8 +873,12 @@ nothing, since nothing would run.
 from the `run` and `validate` commands after a plan exists.
 
 * `run` builds the runner command for the selected targets: pytest node ids
-  appended to the command, or an anchored `--bench` regex for ASV. It exits
-  with the runner's exit code, 0 when nothing was selected.
+  appended to the command, or a `--bench` regex for ASV. That regex is
+  `^(name|name|...)($|\()`, not `...$`: ASV matches it against a benchmark's
+  name, and against `name(param0, param1, ...)` for a parameterised one, so
+  an anchored pattern selects none of those (58 of networkx's 59) and `run`
+  would report success having run nothing. It exits with the runner's exit
+  code, 0 when nothing was selected.
 * `validate` (pytest only) runs the full suite at base and head with `-v`
   and parses the per-test outcome lines, folding parameter cases into their
   function and keeping the worst outcome. Commits are checked out into
