@@ -3622,3 +3622,64 @@ def test_a_factory_that_picks_between_classes_binds_both(repo):
     ]
     # Both reach ``make``, whose body changed with the class it returns.
     assert selected(repo.plan(base, head, targets)) == {"t::factory", "bench_p.P.time_make"}
+
+
+def test_the_builtin_import_names_a_module_like_import_module(repo):
+    """``__import__(name)`` names a module exactly as
+    ``importlib.import_module`` does, so a bounded name bounds it. pandas
+    imports its hard dependencies this way, in a loop over a literal tuple,
+    and treating that as unbounded selected its whole suite."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": (
+                "_deps = ('pkg.needed',)\n\nfor _d in _deps:\n    __import__(_d)\n\ndel _deps, _d\n"
+            ),
+            "pkg/needed.py": "STAMP = len('needed')\n",
+            "pkg/other.py": "STAMP = len('other')\n",
+            "tests/test_pkg.py": "import pkg\n\n\ndef test_pkg():\n    assert pkg is not None\n",
+            "benchmarks/bench_other.py": (
+                "from pkg.other import STAMP\n\n\n"
+                "class Other:\n    def time_other(self):\n        return STAMP\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::pkg", "tests.test_pkg.test_pkg"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    # The import reaches pkg.needed and nothing else: a change elsewhere does
+    # not select the test through it.
+    other = repo.commit({"pkg/other.py": "STAMP = len('other!')\n"})
+    plan = repo.plan(base, other, targets)
+    assert selected(plan) == {"bench_other.Other.time_other"}
+    assert not [u for u in plan.unresolved if u.kind == "dynamic"]
+
+    needed = repo.commit({"pkg/needed.py": "STAMP = len('needed!')\n"})
+    assert selected(repo.plan(other, needed, targets)) == {"t::pkg"}
+
+
+def test_a_builtin_import_of_an_unbounded_name_still_reaches_anything(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "import os\n\n__import__(os.environ['MODULE'])\n",
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_pkg.py": "import pkg\n\n\ndef test_pkg():\n    assert pkg is not None\n",
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/other.py": "def helper():\n    return 2\n"})
+    plan = repo.plan(
+        base,
+        head,
+        [
+            py_target("t::pkg", "tests.test_pkg.test_pkg"),
+            asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+        ],
+    )
+    assert selected(plan) == {"t::pkg", "bench_other.Other.time_other"}
+    assert [u.detail for u in plan.unresolved if u.kind == "dynamic"] == [
+        "__import__(<non-literal>)"
+    ]

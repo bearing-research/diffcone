@@ -66,7 +66,12 @@ from diffcone.snapshot import (
 )
 
 BUILTIN_NAMES = frozenset(dir(builtins))
-DYNAMIC_CALLS = frozenset({"eval", "exec", "__import__", "globals", "vars"})
+# Builtins whose argument nothing can bound: what they run is a string of
+# code or the module's own namespace. ``__import__`` is not among them -- it
+# names a module, and a name is exactly what the literal machinery bounds
+# (pandas imports its hard dependencies with ``__import__`` in a loop over a
+# literal tuple, and treating that as unbounded selected its whole suite).
+DYNAMIC_CALLS = frozenset({"eval", "exec", "globals", "vars"})
 DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -3203,6 +3208,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             builtin = len(parts) == 1 and not self._is_shadowed(name)
             if builtin and parts[0] in DYNAMIC_CALLS:
                 self._dynamic(f"{name}()")
+            elif builtin and parts[0] == "__import__":
+                self._import_module(node, "__import__")
             elif builtin and parts[0] == "getattr":
                 self._getattr(node)
             elif (canonical := self._canonical_name(parts)) in (
