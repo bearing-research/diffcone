@@ -1322,6 +1322,47 @@ unbounded fallback. The sample is small -- six repositories, three commits
 each -- but it is consistent, and it is the reason roadmap item 1 closes
 with no rule.
 
+## What the caller-object rule cost
+
+Bounding a `getattr` on an object a caller supplied by the seeding module's
+imports was a miss (design.md, "Dynamic references"); removing that bound is
+what the governing rule requires, and it is expensive. Re-planning the 171
+recorded corpus commits, nothing is deselected anywhere and eleven
+repositories select more:
+
+| repository | commits | mean savings before | after |
+|---|---|---|---|
+| structlog | 3 | 87 % | **0 %** |
+| starlette | 8 | 38 % | **0 %** |
+| pluggy | 4 | 24 % | **0 %** |
+| tenacity | 5 | 19 % | **0 %** |
+| trio | 6 | 15 % | **0 %** |
+| boltons | 5 | 42 % | 8 % |
+| cattrs | 4 | 46 % | 25 % |
+| marshmallow | 9 | 33 % | 22 % |
+| attrs | 16 | 60 % | 56 % |
+| arrow | 5 | 46 % | 44 % |
+| packaging | 4 | 47 % | 44 % |
+
+Five of them stop narrowing at all: one helper that reads an attribute off
+an object its caller passed is enough, and every test reaches it. The tables
+recorded above this section were measured before the change and their
+savings columns are now optimistic by these amounts; their recall figures
+stand, since a wider selection cannot miss what a narrower one caught.
+
+The last two rows of the table are the `new_target` rule instead, which
+selects a discovered target the base snapshot did not have: a few dozen new
+tests on commits that added tests, which is what it is for.
+
+**What could win the precision back.** The receiver is usually a parameter,
+and the call sites that pass it are often resolvable -- the same way the
+*name* of a `getattr` is already bounded by the literals its call sites pass
+(design.md). Resolving the receiver across call sites and bounding the reach
+to the classes actually passed would restore most of this where the callers
+are in scope, and fall back to reaching anything only when one of them is
+unbounded. Not implemented; this section is the measurement that says what
+it would be worth.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
