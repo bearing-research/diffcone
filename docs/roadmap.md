@@ -91,7 +91,8 @@ real collection".)
 
 ## 3. Other resolution work
 
-* **Declared bounds**, the other half, are the dangerous half: telling
+* **Declared bounds** (deliberately left open, not forgotten): the dangerous
+  half of `diffcone.toml`. telling
   diffcone that a dynamic seed reaches *only* certain modules is the only
   lever that moves sphinx, pip, networkx or scrapy off select-all
   (evaluation.md, "What the dynamic references actually are"), and it lets

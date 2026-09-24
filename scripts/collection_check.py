@@ -13,6 +13,12 @@ pytest is asked with ``--collect-only``; ASV with ``python -m asv.benchmark
 discover``, which is what ASV itself runs to enumerate benchmarks (and needs
 ``asv`` and the project importable in the environment ``--command`` names).
 
+For ASV it also checks the other half: whether the ``--bench`` pattern
+``diffcone run`` builds selects exactly those targets, by replaying ASV's own
+filter (asv/benchmarks.py) over the discovered benchmarks. Naming a benchmark
+correctly is no use if the pattern that runs it does not match -- an anchored
+pattern once matched no parameterised benchmark at all.
+
 Exit code 1 when pytest collects a test that is not a target (a recall gap),
 0 otherwise. Parameter cases are collapsed: diffcone plans whole test
 functions, so ``test_x[1]`` and ``test_x[2]`` are both ``test_x``.
@@ -21,6 +27,7 @@ functions, so ``test_x[1]`` and ``test_x[2]`` are both ``test_x``.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import re
 import shlex
@@ -33,7 +40,9 @@ from pathlib import Path, PurePosixPath
 
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.discovery.asv_static import read_asv_config
+from diffcone.execution import build_command
 from diffcone.indexer import Indexer
+from diffcone.manifest import Target
 from diffcone.snapshot import read_snapshot
 
 # ``tests/test_x.py::TestC::test_m[case]`` -> node id without the case.
@@ -46,8 +55,28 @@ PARAM = re.compile(r"\[.*\]$")
 NODE_FILE = re.compile(r"^[\w./-]+\.(py|txt|rst|md)$")
 
 
-def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str]:
-    """Benchmark names ASV itself discovers, through its own discover step."""
+def asv_selection(pattern: str, records: list[dict]) -> set[str]:
+    """The benchmarks ASV's ``--bench`` filter selects with ``pattern``, by
+    its own rule: a parameterised benchmark is matched as ``name(p0, p1)``,
+    one combination at a time, and a plain one by its name."""
+    chosen: set[str] = set()
+    for record in records:
+        name = record.get("name")
+        if not name:
+            continue
+        if record.get("params"):
+            for combo in itertools.product(*record["params"]):
+                if re.search(pattern, f"{name}({', '.join(combo)})"):
+                    chosen.add(name)
+                    break
+        elif re.search(pattern, name):
+            chosen.add(name)
+    return chosen
+
+
+def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str, list[dict]]:
+    """Benchmark names ASV itself discovers, through its own discover step,
+    with the raw records: their parameters are needed to replay its filter."""
     config = read_asv_config(snapshot)
     # ASV discovers from the directory holding asv.conf.json, which is what
     # puts the benchmark package's parent on sys.path (networkx's benchmark
@@ -61,15 +90,15 @@ def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str]:
         proc = subprocess.run(argv, cwd=repo / conf_dir, capture_output=True, text=True)
         log = proc.stdout + proc.stderr
         if not out.exists():
-            return set(), log
+            return set(), log, []
         try:
             found = json.loads(out.read_text())
         except json.JSONDecodeError as exc:
             # ASV writes the file even when a benchmark module fails to
             # import; its log says which, so hand that back.
-            return set(), f"{exc}\n{log}"
-    names = {b["name"] for b in found if isinstance(b, dict) and "name" in b}
-    return {PARAM.sub("", n) for n in names}, log
+            return set(), f"{exc}\n{log}", []
+    records = [b for b in found if isinstance(b, dict) and "name" in b]
+    return {PARAM.sub("", b["name"]) for b in records}, log, records
 
 
 def collected(repo: Path, command: str, clean_addopts: bool = False) -> tuple[set[str], str]:
@@ -131,11 +160,11 @@ def main() -> int:
     repo = Path(args.repo).resolve()
     roots = args.source_roots or (["src", "."] if (repo / "src").is_dir() else ["."])
     planned, notes, snapshot = targets(repo, roots, args.rev, args.runner)
-    real, log = (
-        collected(repo, args.command, args.clean_addopts)
-        if args.runner == "pytest"
-        else asv_collected(repo, args.command, snapshot)
-    )
+    records: list[dict] = []
+    if args.runner == "pytest":
+        real, log = collected(repo, args.command, args.clean_addopts)
+    else:
+        real, log, records = asv_collected(repo, args.command, snapshot)
     if not real:
         print(f"collected nothing; is the command right?\n{log[-2000:]}", file=sys.stderr)
         return 2
@@ -157,6 +186,22 @@ def main() -> int:
         print("missing by file:")
         for path, n in files.most_common(args.limit):
             print(f"  {n:5d}  {path}")
+    if args.runner == "asv" and planned:
+        # The other half: does the pattern ``run`` would pass select them?
+        argv = build_command("asv", [Target("asv", t, t, ()) for t in sorted(planned)], None, [])
+        chosen = asv_selection(argv[-1], records)
+        known = planned & real
+        print(f"\n--bench pattern selects {len(chosen)} of the {len(known)} target(s) ASV knows")
+        for label, ids in (
+            ("PATTERN MISSES", sorted(known - chosen)),
+            ("PATTERN OVER-SELECTS", sorted(chosen - planned)),
+        ):
+            for node in ids[: args.limit]:
+                print(f"  {label} {node}")
+            if len(ids) > args.limit:
+                print(f"  ... and {len(ids) - args.limit} more {label}")
+        if known - chosen:
+            return 1
     return 1 if missing else 0
 
 

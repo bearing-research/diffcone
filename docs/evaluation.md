@@ -1274,11 +1274,20 @@ This is the check to run first on a new repository: it is cheap, it needs
 no commit range, and every discovery gap found by the batches above would
 have shown up in it.
 
-**ASV, the same way.** `--runner asv` asks ASV's own discovery step
-(`python -m asv.benchmark discover`, run from the directory holding
-`asv.conf.json`, as ASV runs it) and diffs the benchmark names. The three
-census repositories with an ASV suite match exactly: networkx 59,
-packaging 20, rich 32, none missing and none extra. networkx only matches
+**ASV, the same way, and one step further.** `--runner asv` asks ASV's own
+discovery step (`python -m asv.benchmark discover`, run from the directory
+holding `asv.conf.json`, as ASV runs it) and diffs the benchmark names, then
+replays ASV's `--bench` filter over those benchmarks to check that the
+pattern `run` builds selects exactly the targets. The three census
+repositories with an ASV suite match on both counts: networkx 59, packaging
+20, rich 32, none missing, none extra, and the pattern selecting every one.
+
+The second half exists because naming a benchmark correctly is no use if the
+pattern that runs it does not match. The pattern used to be anchored
+`^(...)$`, and ASV matches a parameterised benchmark as
+`name(param0, param1, ...)`: replayed over networkx's real discovery output,
+that pattern selects **1 of 59** benchmarks where the current one selects
+59. `run --runner asv` would have exited 0 having run nothing. networkx only matches
 after `benchmark_dir` began resolving against its config's directory:
 its `asv.conf.json` is in `benchmarks/`, so every benchmark had been named
 `benchmarks.<module>...` instead of `<module>...` and no `--bench` regex
