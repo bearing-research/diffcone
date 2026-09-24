@@ -122,3 +122,48 @@ size is in the evaluation set.
 
 **Done when.** The synthetic tree plans warm in under 0.7 s wall with a
 pending edit, and every recorded plan is byte-identical.
+
+## 5. A changed file the index does not read (soundness, first)
+
+**Status.** A miss today. A commit that changes only a non-Python file
+under a source root gets a complete, empty plan with exit 0. Verified on a
+fixture repository for a JSON file the code reads and for a Cython `.pyx`
+module. In pandas' last 81 commits, 7 touch compiled sources and 7 touch no
+`.py` file at all.
+
+**Mechanism.** The snapshot already lists those files (`other_paths`);
+read their content hashes on both sides, and let a changed one add a
+fallback (`unanalysed_file_changed`, scope all targets) with the path in
+its detail.
+
+**Trade-off.** Which files count (evidence_design.md, decision 1): every
+such file is safe, but under a `.` source root a `README.md` edit then
+selects everything; a list of inert kinds is smaller and assumes the code
+never reads them. It widens selection only, so it needs no narrowing
+scenario, but the corpora must be re-planned to state its cost.
+
+**Done when.** Scenarios for a data file, a `.pyx` file and (per the
+decision) an inert file, each with exact fallbacks, and the corpus
+re-plan recorded in evaluation.md.
+
+## 6. Execution evidence: per-test coverage as a planning input
+
+**Status.** Proposed in [evidence_design.md](evidence_design.md), pending
+the decisions listed there. Motivated by pandas, where static planning
+selects everything and measurement shows no static rule changes that.
+
+**Mechanism.** A stdlib pytest plugin records which symbols each test
+executed (plus the names it looked up dynamically, the files it opened,
+and whether it spawned a subprocess) in a real run at commit C. The plan
+selects a test when it executed a changed symbol, or a one-hop static
+reader of a non-body change. Changes that run at import escalate to
+static planning.
+
+**Trade-off.** Sound only under determinism, test isolation and an
+unchanged environment. Each has a guard or a detector, and the residuals
+are stated in the design. Opt-in; static stays the default.
+
+**Done when.** The spike clears its go/no-go (median pandas commit under a
+quarter of targets; collection under twice a plain run), and recall is
+100 % on at least 20 pandas commits and on the corpus re-planned with
+evidence.
