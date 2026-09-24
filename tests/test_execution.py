@@ -472,11 +472,14 @@ def test_read_coverage_contexts_handles_arcs_and_relative_paths(tmp_path):
     assert {1, 2, 3} <= contexts["tests/test_m.py::test_f"]["mod.py"]
 
 
-def test_coverage_with_no_contexts_is_an_error_not_ok(repo):
+def test_a_coverage_run_with_nothing_in_it_is_an_error_not_ok(repo):
+    """Whether the suite selected no test at all or ran without per-test
+    contexts, there is nothing to validate against and saying "ok" would be
+    a validation that passed by finding nothing."""
     base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": MOD, "tests/test_ops.py": TEST_MOD})
     head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "b + a")})
     plan = _covplan(repo, base, head)
-    with pytest.raises(GitError, match="no per-test contexts"):
+    with pytest.raises(GitError, match="the suite did not run"):
         validate_pytest(plan, repo=repo.path, command=f"{PYTEST} -k no_such_test", coverage=True)
 
 
@@ -805,9 +808,11 @@ def test_setup_command_runs_in_each_checkout(repo):
     )
     head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
     plan = repo.plan(base, head, [], discover_runners=["pytest"])
-    # Without the generated file the suite cannot import the package at all.
-    v = validate_pytest(plan, repo=repo.path, command=PYTEST)
-    assert all(o.base is None and o.head is None for o in v.outcomes)
+    # Without the generated file the suite cannot import the package at all,
+    # and a suite that never ran has no outcomes to compare: that is an error,
+    # not a validation that passed because it found no missed outcome change.
+    with pytest.raises(GitError, match="the suite did not run"):
+        validate_pytest(plan, repo=repo.path, command=PYTEST)
     setup = "printf 'version = \"0.0\"\\n' > pkg/_version.py"
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, setup_command=setup)
     assert {o.head for o in v.outcomes} == {"PASSED"} and v.ok  # the suite ran at both snapshots

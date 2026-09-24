@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from diffcone.model import (
     CLASS,
     DEFINED_IN,
+    DYNAMIC_ANY,
     FUNCTION,
     IMPORTS,
     IMPORTS_NAME,
@@ -3141,6 +3142,20 @@ class _ReferenceCollector(ast.NodeVisitor):
             and expr.id not in self.scope.rebound
         )
 
+    def _getattr_detail(self, receiver: ast.expr, base: list[str] | None) -> str:
+        """How far an unbounded ``getattr(x, <name>)`` reaches. Bounding it by
+        the seeding module's import closure is only sound when the object is
+        one of that module's globals: a module it can name holds attributes
+        from its own closure, which is inside ours. A receiver that came from
+        somewhere else -- a parameter, a call result, an instance whose
+        attributes a caller may have set -- can be an object of any module,
+        so the reference reaches any module (``invoke(obj, name)`` called
+        with an object the helper's module never imports)."""
+        node = self.indexer.resolve_chain(base, self.scope) if base else None
+        if isinstance(node, (ModuleNode, External)):
+            return "getattr(<non-literal>)"
+        return f"getattr(<non-literal>) on a receiver from elsewhere, so it {DYNAMIC_ANY}"
+
     def _getattr(self, node: ast.Call) -> None:
         if len(node.args) < 2:
             return
@@ -3154,8 +3169,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # ``getattr(obj, f"pytest_{name}")``: every in-scope attribute
                 # name with that prefix is a candidate, nothing else.
                 names = self.indexer.symbol_names_with_prefix(prefix)
-            elif not self._param_dynamic(node.args[1], "getattr", base, "getattr(<non-literal>)"):
-                self._dynamic("getattr(<non-literal>)")
+            elif not self._param_dynamic(
+                node.args[1], "getattr", base, self._getattr_detail(node.args[0], base)
+            ):
+                # The name is not a parameter either: nothing bounds it.
+                self._dynamic(self._getattr_detail(node.args[0], base))
                 return
             else:
                 return

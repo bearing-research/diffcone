@@ -340,10 +340,29 @@ def _run_full_pytest(
                 f"the environment that runs {argv[0]!r} (and not disabled by --no-cov)?\n"
                 f"exit code {proc.returncode}\n{log[-2000:]}"
             )
+        # pytest exits 0 when every test passed and 1 when some failed; both
+        # are suites that ran. Anything else means it did not: 2 a collection
+        # error or an interrupt, 3 an internal error, 4 a usage error, 5 no
+        # tests at all. Comparing the outcomes of a suite that never ran finds
+        # no missed outcome change and would report success.
+        if proc.returncode not in (0, 1):
+            raise GitError(
+                f"the suite did not run: {argv[0]!r} exited {proc.returncode} "
+                f"({PYTEST_EXIT.get(proc.returncode, 'unknown')}), so there are no outcomes to "
+                f"compare\n{log[-2000:]}"
+            )
         yield _SuiteRun(parse_pytest_verbose(proc.stdout), log, proc.returncode, db)
 
 
 # --------------------------------------------------------------------------- coverage
+
+
+PYTEST_EXIT = {
+    2: "interrupted, usually a collection error",
+    3: "internal error",
+    4: "usage error",
+    5: "no tests collected",
+}
 
 
 def _numbits_to_lines(blob: bytes) -> list[int]:

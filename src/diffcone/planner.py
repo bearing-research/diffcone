@@ -56,6 +56,7 @@ from diffcone.model import (
     CLASS,
     DECLARED,
     DEFINED_IN,
+    DYNAMIC_ANY,
     ENTRY,
     IMPORTS,
     IMPORTS_NAME,
@@ -407,11 +408,16 @@ def plan_from_indexes(
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
     unbounded_dynamic: set[str] = set()  # dynamic *imports*: reach anything
+    # Why each unbounded seed is unbounded, for the reason it produces.
+    dynamic_detail: dict[str, str] = {}
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
-            if "import" in ref.detail:
+            if "import" in ref.detail or DYNAMIC_ANY in ref.detail:
                 unbounded_dynamic.add(ref.symbol)
+                # An import that names anything is the widest reason there is.
+                if "import" in ref.detail or ref.symbol not in dynamic_detail:
+                    dynamic_detail[ref.symbol] = ref.detail
         elif ref.name in symbols_by_name and not _is_dunder(ref.name):
             graph.add(
                 Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
@@ -471,12 +477,22 @@ def plan_from_indexes(
     # A dynamic reference (eval/exec/getattr with an unbounded name) can reach
     # whatever its module's globals can reach: the module itself and every
     # module it imports, transitively. A dynamic *import* can reach anything.
+    # That bound holds only while the object read is one of those globals.
+    # ``def invoke(obj, name): getattr(obj, name)`` reads an object a caller
+    # supplied, which can belong to any module, so such a reference reaches
+    # anything, as a dynamic import does. Bounding it by the callers' own
+    # closures was tried and measured: identical selection on all 171
+    # recorded commits, for a graph walk per seed.
     changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
     reach = _ImportReach(base, head)
+
     if impacting:
         for symbol in sorted(dynamic_symbols):
             if symbol in mode:
                 continue
+            # A symbol can hold several dynamic references; the widest one
+            # decides, so an import that names anything is not narrowed by a
+            # getattr beside it.
             if symbol in unbounded_dynamic or reach.closure_of(symbol) & changed_modules:
                 mode[symbol] = BEHAVIOR
                 via[symbol] = None
@@ -531,7 +547,14 @@ def plan_from_indexes(
         reasons: list[Reason] = []
         if target.node_id in mode:
             reasons.append(
-                _explain(target.node_id, via, change_by_id, dynamic_symbols, unbounded_dynamic)
+                _explain(
+                    target.node_id,
+                    via,
+                    change_by_id,
+                    dynamic_symbols,
+                    unbounded_dynamic,
+                    dynamic_detail,
+                )
             )
         for fb in target_fallbacks.get(target.node_id, ()):
             reasons.append(Reason(fb.rule, fb.detail))
@@ -681,6 +704,7 @@ def _explain(
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: set[str],
+    dynamic_detail: dict[str, str],
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -718,11 +742,15 @@ def _explain(
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
     if current in unbounded_dynamic:
+        why = (
+            "imports a module named at runtime"
+            if "import" in dynamic_detail.get(current, "")
+            else "reads an attribute of an object a caller supplied"
+        )
         return Reason(
             RULE_DYNAMIC_REFERENCE,
-            f"{current} imports a module named at runtime ({', '.join(revs)}); "
-            "any module in scope may be the one, so its dependencies cannot be "
-            "bounded statically",
+            f"{current} {why} ({', '.join(revs)}); any module in scope may be behind it, "
+            "so its dependencies cannot be bounded statically",
             tuple(steps),
         )
     return Reason(

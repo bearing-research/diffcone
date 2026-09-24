@@ -477,7 +477,13 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). A dynamic *import* (`__import__`,
+  `dynamic_reference`). That bound holds only while the object read *is* one
+  of those globals: `getattr(mod, name)` on a module the seeding module
+  imports is bounded, but `def invoke(obj, name): getattr(obj, name)()` reads
+  an object a caller supplied, which can belong to any module, so it reaches
+  anything. (Bounding that case by the callers' own closures instead was
+  tried and measured: identical selection on all 171 recorded commits, for a
+  graph walk per seed.) A dynamic *import* (`__import__`,
   `importlib.import_module` with an unbounded name) can reach anything and
   stays always-on; the reason says which of the two fired, since "any
   module in scope may be the one" and "reachable from its module's

@@ -2690,7 +2690,7 @@ def test_a_runtime_named_import_says_so_in_its_reason(repo):
     assert selected(plan) == {"t::test_load"}
     detail = reason(plan, "t::test_load", "dynamic_reference").detail
     assert detail.startswith("pkg.loader.load imports a module named at runtime (base, head)")
-    assert "any module in scope may be the one" in detail
+    assert "any module in scope may be behind it" in detail
 
 
 def test_a_class_a_plugin_may_collect_is_reported(repo):
@@ -3397,3 +3397,68 @@ def test_a_declaration_is_read_from_the_index_and_the_working_tree(repo):
         ("pkg.registry.dispatch", "pkg.handlers.json_handler")
     ]
     assert selected(plan) == {"t::dispatch", "bench_other.Other.time_other"}
+
+
+def test_getattr_on_an_object_a_caller_supplied_reaches_anything(repo):
+    """``def invoke(obj, name): getattr(obj, name)()`` reads an object the
+    helper's own module never names, so bounding it by that module's imports
+    misses the caller's object entirely."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/helper.py": "def invoke(obj, name):\n    return getattr(obj, name)()\n",
+            "pkg/provider.py": "class Provider:\n    def action(self):\n        return 1\n",
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_x.py": (
+                "import os\n\nfrom pkg.helper import invoke\n"
+                "from pkg.provider import Provider\n\n\n"
+                "def test_x():\n    assert invoke(Provider(), os.environ['NAME']) == 1\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/provider.py": "class Provider:\n    def action(self):\n        return 2\n"}
+    )
+    targets = [
+        py_target("t::x", "tests.test_x.test_x"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    plan = repo.plan(base, head, targets)
+    # The benchmark never reaches the helper, so this is not a select-all.
+    assert selected(plan) == {"t::x"}
+    detail = reason(plan, "t::x", "dynamic_reference").detail
+    assert detail.startswith("pkg.helper.invoke reads an attribute of an object a caller supplied")
+
+
+def test_getattr_on_the_module_s_own_import_stays_bounded(repo):
+    """The bound still holds where it is sound: an object the seeding module
+    itself names holds attributes from its own import closure."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": (
+                "import os\n\nfrom pkg import provider\n\n\n"
+                "def read():\n    return getattr(provider, os.environ['NAME'])()\n"
+            ),
+            "pkg/provider.py": "def action():\n    return 1\n",
+            "pkg/far.py": "def far():\n    return 2\n",
+            "tests/test_r.py": (
+                "from pkg.reader import read\n\n\ndef test_r():\n    assert read() == 1\n"
+            ),
+            "benchmarks/bench_far.py": (
+                "from pkg.far import far\n\n\n"
+                "class Far:\n    def time_far(self):\n        return far()\n"
+            ),
+        }
+    )
+    # pkg.far is outside pkg.reader's import closure, so the seed does not fire.
+    head = repo.commit({"pkg/far.py": "def far():\n    return 3\n"})
+    targets = [
+        py_target("t::r", "tests.test_r.test_r"),
+        asv_target("bench_far.Far.time_far", "benchmarks.bench_far.Far.time_far"),
+    ]
+    assert selected(repo.plan(base, head, targets)) == {"bench_far.Far.time_far"}
