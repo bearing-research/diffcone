@@ -17,7 +17,10 @@ For ASV it also checks the other half: whether the ``--bench`` pattern
 ``diffcone run`` builds selects exactly those targets, by replaying ASV's own
 filter (asv/benchmarks.py) over the discovered benchmarks. Naming a benchmark
 correctly is no use if the pattern that runs it does not match -- an anchored
-pattern once matched no parameterised benchmark at all.
+pattern once matched no parameterised benchmark at all. ``--execute`` goes
+one step further and hands the pattern to ASV itself (in the existing
+environment, results thrown away), checking that it runs that many
+benchmarks: the replay is only as good as its reading of ASV's source.
 
 Exit code 1 when pytest collects a test that is not a target (a recall gap),
 0 otherwise. Parameter cases are collapsed: diffcone plans whole test
@@ -72,6 +75,28 @@ def asv_selection(pattern: str, records: list[dict]) -> set[str]:
         elif re.search(pattern, name):
             chosen.add(name)
     return chosen
+
+
+def asv_run_count(repo: Path, command: str, snapshot, pattern: str) -> tuple[int | None, str]:
+    """How many benchmarks ASV actually runs with ``pattern``. It runs them in
+    the existing environment and throws the results away: this asks whether
+    its real filter agrees with the replay above, not how fast anything is.
+    ASV elides long names in that output, so the count is what it reports."""
+    conf_dir = PurePosixPath(read_asv_config(snapshot)["source"] or ".").parent
+    argv = shlex.split(command) + [
+        "-m",
+        "asv",
+        "run",
+        "--python=same",
+        "--quick",
+        "--dry-run",
+        "--bench",
+        pattern,
+    ]
+    proc = subprocess.run(argv, cwd=repo / conf_dir, capture_output=True, text=True)
+    log = proc.stdout + proc.stderr
+    found = re.search(r"Running (\d+) total benchmarks", log)
+    return (int(found.group(1)) if found else None), log
 
 
 def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str, list[dict]]:
@@ -148,6 +173,11 @@ def main() -> int:
     )
     parser.add_argument("--runner", choices=("pytest", "asv"), default="pytest")
     parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="asv only: also run ASV with the pattern and check it runs that many benchmarks",
+    )
+    parser.add_argument(
         "--clean-addopts",
         action="store_true",
         help="collect with -o addopts= (for a project whose addopts print over the listing)",
@@ -202,6 +232,12 @@ def main() -> int:
                 print(f"  ... and {len(ids) - args.limit} more {label}")
         if known - chosen:
             return 1
+        if args.execute:
+            ran, log = asv_run_count(repo, args.command, snapshot, argv[-1])
+            print(f"asv itself runs {ran if ran is not None else '?'} benchmark(s) with it")
+            if ran != len(chosen):
+                print(f"  ASV RAN A DIFFERENT NUMBER\n{log[-1500:]}", file=sys.stderr)
+                return 1
     return 1 if missing else 0
 
 
