@@ -77,9 +77,9 @@ Unknown fixtures cause 1 % of census selections.
   parameter cases, benchmark directories outside the source roots, and
   `validate` for ASV (run `asv run --bench` at both snapshots and compare
   which benchmarks ran).
-* An optional collection-based validator (`pytest --collect-only` through a
-  plugin) to measure static discovery against real collection; it executes
-  project code, so it stays opt-in and outside planning.
+(The collection-based validator this item asked for is implemented:
+`scripts/collection_check.py`, evaluation.md, "Static discovery against
+real collection".)
 
 ## 3. Other resolution work
 

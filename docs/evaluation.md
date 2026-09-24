@@ -1230,6 +1230,44 @@ everything reaches, which is the whole difference.
   candidate commits *before* skipping the ones with no `.py` change, so
   the range had to be aimed at Python-touching commits by hand.
 
+## Static discovery against real collection (29 repositories)
+
+The recall batches found five discovery gaps in a row, each by running a
+whole suite twice under coverage. `scripts/collection_check.py` does the
+same check in seconds: it runs `pytest --collect-only` in a repository and
+diffs the node ids against the targets discovery produces for the same
+snapshot (parameter cases collapsed, since diffcone plans whole test
+functions). It executes project code, so it is a script, not part of
+planning.
+
+Over the 29 census repositories that have a working environment:
+
+| result | repositories |
+|---|---|
+| every collected test is a target | **27** |
+| tests collected that are not targets | 2 (pytest-asyncio 11, scrapy 881) |
+
+* **pytest-asyncio's 11** are the `docs/how-to-guides` files whose
+  directory cannot be a module name; `--source-root
+  docs/how-to-guides=docs_howto` makes them targets, and without it the
+  plan says so.
+* **scrapy's 881** are the two cases the plan already declares: 295 tests
+  inherited from `queuelib`'s `LifoDiskQueueTest`, a base class outside
+  the source roots (`uncollected_test_class`), and 586 Sybil doctests in
+  `docs/*.rst` (`plugin_collects_files`). Neither can be enumerated
+  without running the plugin; both exit 3.
+
+The reverse direction -- targets pytest did not collect -- is
+over-selection and safe, and it is small except where a suite is skipped
+wholesale: packaging 427 and django-debug-toolbar 336 (which runs under
+Django's own runner), then fastapi 46, networkx 40, pydantic 29, rich 26,
+poetry 20, virtualenv 7, cattrs 4, pip 3, sphinx 2. They are tests that
+this platform, Python version or optional dependency set skips.
+
+This is the check to run first on a new repository: it is cheap, it needs
+no commit range, and every discovery gap found by the batches above would
+have shown up in it.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
