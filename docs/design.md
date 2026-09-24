@@ -479,7 +479,14 @@ Unknown is never treated as unaffected:
   revisions), since that is what its globals can name (rule
   `dynamic_reference`). A dynamic *import* (`__import__`,
   `importlib.import_module` or the builtin `__import__` with an unbounded
-  name) can reach anything and
+  name) can reach anything. Such an import is attributed to the *caller that
+  named the module*, not to the helper that runs it: resolving the parameter
+  per call site means a caller passing a literal only depends on that module,
+  and only a caller passing something unbounded keeps the dynamic reference.
+  A caller that passes its own parameter on is followed a few levels further
+  out (pandas' `skip_if_no(name)` hands it to `import_optional_dependency`),
+  and where the helper escapes or has no call site in scope the callers are
+  unknown and the seed stays on the helper. An unbounded import
   stays always-on; the reason says which of the two fired, since "any
   module in scope may be the one" and "reachable from its module's
   imports" are different claims. A project-defined function named `vars`

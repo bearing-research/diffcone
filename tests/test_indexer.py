@@ -518,7 +518,10 @@ def test_parameter_driven_getattr_uses_call_site_literals():
     assert ("pkg.mods.target", "references", "") in edges(idx, "pkg.m.K.m")
     assert ("dynamic", "") not in unresolved("pkg.m.K.m")
     assert unresolved("pkg.m.with_default") == {("attribute", "mode")}
-    assert ("pkg.mods", "imports", "") in edges(idx, "pkg.m.loader")
+    # The import belongs to the caller that named the module, not to the
+    # helper that runs it: another caller of ``loader`` did not name it.
+    assert ("pkg.mods", "imports", "") in edges(idx, "pkg.m.e")
+    assert ("pkg.mods", "imports", "") not in edges(idx, "pkg.m.loader")
     assert ("dynamic", "") not in unresolved("pkg.m.loader")
     # Still dynamic: escaping as a value, an unbounded call site, never called.
     for sym in ("pkg.m.escaping", "pkg.m.unbounded_site", "pkg.m.uncalled"):

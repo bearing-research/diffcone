@@ -2689,7 +2689,11 @@ def test_a_runtime_named_import_says_so_in_its_reason(repo):
     # not fire; the runtime-named import may name any module, so it does.
     assert selected(plan) == {"t::test_load"}
     detail = reason(plan, "t::test_load", "dynamic_reference").detail
-    assert detail.startswith("pkg.loader.load imports a module named at runtime (base, head)")
+    # The seed sits on the caller that could not name the module, not on the
+    # helper: another caller passing a literal is bounded to what it named.
+    assert detail.startswith(
+        "tests.test_load.test_load imports a module named at runtime (base, head)"
+    )
     assert "any module in scope may be behind it" in detail
 
 
@@ -3683,3 +3687,82 @@ def test_a_builtin_import_of_an_unbounded_name_still_reaches_anything(repo):
     assert [u.detail for u in plan.unresolved if u.kind == "dynamic"] == [
         "__import__(<non-literal>)"
     ]
+
+
+def test_a_by_name_import_belongs_to_the_caller_that_named_it(repo):
+    """One caller passing something unbounded made the whole helper an
+    unbounded seed, and everything reaching it was selected: pandas'
+    ``import_optional_dependency`` has 124 call sites, 121 of them literal.
+    The import now belongs to the caller that named the module."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/optional.py": (
+                "import importlib\n\n\ndef need(name):\n    return importlib.import_module(name)\n"
+            ),
+            "pkg/arrow.py": "STAMP = len('arrow')\n",
+            "pkg/plot.py": "STAMP = len('plot')\n",
+            "pkg/users.py": (
+                "import os\n\nfrom pkg.optional import need\n\n\n"
+                "def use_arrow():\n    return need('pkg.arrow')\n\n\n"
+                "def use_anything():\n    return need(os.environ['NAME'])\n"
+            ),
+            "tests/test_arrow.py": (
+                "from pkg.users import use_arrow\n\n\ndef test_arrow():\n    assert use_arrow()\n"
+            ),
+            "benchmarks/bench_any.py": (
+                "from pkg.users import use_anything\n\n\n"
+                "class Any:\n    def time_any(self):\n        return use_anything()\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::arrow", "tests.test_arrow.test_arrow"),
+        asv_target("bench_any.Any.time_any", "benchmarks.bench_any.Any.time_any"),
+    ]
+    # pkg.plot is named by nobody: only the caller that cannot name its module
+    # is selected conservatively, not everything that reaches the helper.
+    plot = repo.commit({"pkg/plot.py": "STAMP = len('plot!')\n"})
+    plan = repo.plan(base, plot, targets)
+    assert selected(plan) == {"bench_any.Any.time_any"}
+    assert [u.symbol for u in plan.unresolved if u.kind == "dynamic"] == ["pkg.users.use_anything"]
+
+    # The caller that named pkg.arrow is selected when that module changes.
+    arrow = repo.commit({"pkg/arrow.py": "STAMP = len('arrow!')\n"})
+    assert selected(repo.plan(plot, arrow, targets)) == {
+        "t::arrow",
+        "bench_any.Any.time_any",
+    }
+
+
+def test_a_name_passed_on_is_followed_to_the_caller_that_knows_it(repo):
+    """pandas' ``skip_if_no(name)`` hands its parameter to the importer, so
+    the answer is one level further out; the search follows it."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/optional.py": (
+                "import importlib\n\n\n"
+                "def need(name):\n    return importlib.import_module(name)\n\n\n"
+                "def skip_if_no(name):\n    return need(name)\n"
+            ),
+            "pkg/arrow.py": "STAMP = len('arrow')\n",
+            "pkg/plot.py": "STAMP = len('plot')\n",
+            "tests/test_arrow.py": (
+                "from pkg.optional import skip_if_no\n\n\n"
+                "def test_arrow():\n    assert skip_if_no('pkg.arrow')\n"
+            ),
+            "benchmarks/bench_plot.py": (
+                "from pkg.plot import STAMP\n\n\n"
+                "class P:\n    def time_plot(self):\n        return STAMP\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::arrow", "tests.test_arrow.test_arrow"),
+        asv_target("bench_plot.P.time_plot", "benchmarks.bench_plot.P.time_plot"),
+    ]
+    plot = repo.commit({"pkg/plot.py": "STAMP = len('plot!')\n"})
+    assert selected(repo.plan(base, plot, targets)) == {"bench_plot.P.time_plot"}
+    arrow = repo.commit({"pkg/arrow.py": "STAMP = len('arrow!')\n"})
+    assert selected(repo.plan(plot, arrow, targets)) == {"t::arrow"}

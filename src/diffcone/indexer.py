@@ -72,6 +72,9 @@ BUILTIN_NAMES = frozenset(dir(builtins))
 # (pandas imports its hard dependencies with ``__import__`` in a loop over a
 # literal tuple, and treating that as unbounded selected its whole suite).
 DYNAMIC_CALLS = frozenset({"eval", "exec", "globals", "vars"})
+# How far to follow a module name passed from caller to caller before giving
+# up and leaving the dynamic reference where it is.
+IMPORT_ATTRIBUTION_DEPTH = 4
 DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -772,6 +775,29 @@ class _CallSite:
     keywords: dict[str, tuple[str, ...] | None]
     unbounded: bool  # *args / **kwargs at the call site
     receiver_bound: bool  # ``obj.m(...)`` / ``self.m(...)``: self is implicit
+    # The symbol the call sits in: a by-name import is attributed to the
+    # caller that named the module, not to the helper that imports it.
+    caller: str = ""
+    # Per argument, the caller's own parameter it is, when it is exactly
+    # that: ``skip_if_no(name)`` passes its parameter to the importer, so the
+    # answer is one level further out.
+    positional_params: list[str | None] = field(default_factory=list)
+    keyword_params: dict[str, str | None] = field(default_factory=dict)
+
+    def param_for(self, param: str, info: _FuncParams) -> str | None:
+        """The caller's parameter passed for ``param`` here, if it is one."""
+        if self.unbounded:
+            return None
+        if param in self.keyword_params:
+            return self.keyword_params[param]
+        if param in info.positional:
+            index = info.positional.index(param)
+            if info.bound and self.receiver_bound:
+                index -= 1
+            if 0 <= index < len(self.positional_params):
+                return self.positional_params[index]
+        return None
+
     # The class each argument is an instance of, where the argument says so
     # (``C()`` or ``C``); None when it does not. Used to bound what a
     # ``getattr`` on a parameter may read.
@@ -928,6 +954,9 @@ def _output_to_dict(out: _Output) -> dict:
                     s.keyword_classes,
                     s.positional_sources,
                     s.keyword_sources,
+                    s.caller,
+                    s.positional_params,
+                    s.keyword_params,
                 ]
                 for s in sites
             ]
@@ -973,6 +1002,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
                 keyword_classes=dict(keyword_classes),
                 positional_sources=list(positional_sources),
                 keyword_sources=dict(keyword_sources),
+                caller=caller,
+                positional_params=list(positional_params),
+                keyword_params=dict(keyword_params),
             )
             for (
                 positional,
@@ -983,6 +1015,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
                 keyword_classes,
                 positional_sources,
                 keyword_sources,
+                caller,
+                positional_params,
+                keyword_params,
             ) in sites
         ]
     out.escapes = set(data["escapes"])
@@ -1365,6 +1400,8 @@ class Indexer:
             if self.out.escapes == escapes and unresolved_names == names:
                 break
         for pd, values in planned:
+            if pd.kind == "import" and self._import_per_caller(pd):
+                continue
             if values is None:
                 # The name is unbounded. If the *receiver* is one the call
                 # sites name, the read is still bounded: it can only be an
@@ -1417,6 +1454,69 @@ class Indexer:
                     )
                 else:
                     self._record(ref.source, node, chain=ref.chain)
+
+    def _import_per_caller(self, pd: _ParamDynamic) -> bool:
+        """``import_optional_dependency(name)``: resolve the parameter per call
+        site rather than once for the function.
+
+        A caller that passes a literal can only cause an import of *that*
+        module, so the edge belongs to it; one that passes something unbounded
+        keeps the dynamic reference, and only what reaches that caller is
+        selected conservatively. Attributing the import to the caller rather
+        than to the helper that runs it is deliberate: a target reaching the
+        caller reaches the import, and the helper's other callers did not name
+        that module. Returns False when the callers are not known, which
+        leaves the all-or-nothing treatment in place.
+        """
+        attributed = self._attributed_imports(pd.function, pd.param, set())
+        if attributed is None:
+            return False
+        for caller, names in attributed:
+            if names is None:
+                self.out.unresolved.add(
+                    UnresolvedReference(caller, UNRESOLVED_DYNAMIC, "", pd.detail)
+                )
+                continue
+            for name in dict.fromkeys(names):
+                self._module_import_edge(caller, name)
+        return True
+
+    def _attributed_imports(
+        self, function: str, param: str, seen: set[tuple[str, str]], depth: int = 0
+    ) -> list[tuple[str, tuple[str, ...] | None]] | None:
+        """Per call site of ``function``, who imports what through ``param``.
+
+        A site that passes its own parameter answers one level further out --
+        pandas' ``skip_if_no(name)`` hands its parameter to the importer, and
+        its own callers name the module -- so the search follows it, with a
+        depth cap and a guard against a cycle. None when the callers cannot
+        be known at all."""
+        if (function, param) in seen or depth > IMPORT_ATTRIBUTION_DEPTH:
+            return None
+        seen.add((function, param))
+        info = self.out.func_params.get(function)
+        symbol = self.index.symbols.get(function)
+        sites = self.out.call_sites.get(function, [])
+        if info is None or symbol is None or not sites:
+            return None
+        if function in self.out.escapes or self._super_may_reach(symbol):
+            return None  # it may be called from somewhere unseen
+        if not all(site.caller for site in sites):
+            return None  # an older cache entry, without the caller recorded
+        found: list[tuple[str, tuple[str, ...] | None]] = []
+        for site in sites:
+            names = site.value_for(param, info)
+            if names is not None and not any(name.startswith(".") for name in names):
+                found.append((site.caller, tuple(names)))
+                continue
+            outer = site.param_for(param, info) if names is None else None
+            deeper = (
+                self._attributed_imports(site.caller, outer, seen, depth + 1)
+                if outer is not None
+                else None
+            )
+            found.extend(deeper if deeper is not None else [(site.caller, None)])
+        return found
 
     def _class_members(self, classes: set[str]) -> set[str]:
         """Every symbol inside those classes and their in-scope subclasses: an
@@ -3318,6 +3418,11 @@ class _ReferenceCollector(ast.NodeVisitor):
             keyword_sources={
                 k.arg: self._argument_source(k.value) for k in node.keywords if k.arg is not None
             },
+            caller=self.source,
+            positional_params=[self._argument_param(a) for a in node.args],
+            keyword_params={
+                k.arg: self._argument_param(k.value) for k in node.keywords if k.arg is not None
+            },
         )
         self.indexer.out.call_sites[symbol.id].append(site)
         # A dispatched call may land on any override: they share the call site.
@@ -3338,6 +3443,15 @@ class _ReferenceCollector(ast.NodeVisitor):
             return None
         symbol = self.indexer.index.symbols.get(node.symbol)
         return node.symbol if symbol is not None and symbol.kind == CLASS else None
+
+    def _argument_param(self, expr: ast.expr) -> str | None:
+        """The enclosing function's parameter an argument is, when it is
+        exactly that name and the body never rebinds it."""
+        if not isinstance(expr, ast.Name) or isinstance(expr.ctx, ast.Store):
+            return None
+        if expr.id not in self.scope.params or expr.id in self.scope.rebound:
+            return None
+        return expr.id
 
     def _argument_source(self, expr: ast.expr) -> str | None:
         """The function an argument came out of: ``make()`` directly, or a
