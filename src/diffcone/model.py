@@ -20,6 +20,7 @@ DEFINED_IN = "defined_in"  # symbol is defined inside the target container
 IMPORTS = "imports"  # module-level import of a module (init-time dependency)
 IMPORTS_NAME = "imports_name"  # module-level ``from m import name`` of a symbol
 UNRESOLVED_NAME_MATCH = "unresolved_name_match"  # conservative edge synthesised by the planner
+DECLARED = "declared"  # dependency stated in diffcone.toml, not found by analysis
 ENTRY = "entry"  # target -> its entry symbol
 LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
 

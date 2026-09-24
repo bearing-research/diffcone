@@ -83,6 +83,24 @@ source roots). `1` and `3` are opposite failures -- `1` selects too much, `3`
 means the target list itself may be incomplete -- and `3` wins when both apply.
 `run` refuses to execute such a plan unless given `--allow-incomplete-discovery`.
 
+### Declaring what the analysis cannot see
+
+Some dependencies are real but invisible to any static rule: a registry
+filled at import time, a plugin resolved through entry points. State them in
+`diffcone.toml` at the repository root and the plan follows them, explaining
+the selection with your own words:
+
+```toml
+[[edges]]
+from = "pkg.registry.dispatch"
+to = "pkg.handlers.json_handler"
+why = "handlers register themselves through entry points"
+```
+
+Declarations only add edges, so they can only select *more*, never less. An
+endpoint that exists in neither revision is an analysis error rather than a
+declaration that quietly does nothing.
+
 ### Running and validating
 
 Planning never executes project code. Two commands run things *after* a

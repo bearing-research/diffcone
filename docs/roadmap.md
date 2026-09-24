@@ -88,9 +88,13 @@ real collection".)
 
 ## 3. Other resolution work
 
-* Configurable treatment of module-init side effects (registries, plugin
-  hooks) through explicit opt-in edges, and `diffcone.toml` ignore/force
-  rules for known dynamic patterns.
+* **Declared bounds**, the other half, are the dangerous half: telling
+  diffcone that a dynamic seed reaches *only* certain modules is the only
+  lever that moves sphinx, pip, networkx or scrapy off select-all
+  (evaluation.md, "What the dynamic references actually are"), and it lets
+  a project narrow selection on its own authority. Not designed yet, and
+  not to be built without deciding how a plan that trusted a bound says
+  so.
 * A `watch` loop for the developer inner loop once incremental analysis
   exists.
 

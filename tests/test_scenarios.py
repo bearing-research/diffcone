@@ -3142,3 +3142,92 @@ def test_an_imported_test_class_brings_its_inherited_tests(repo):
         "tests/test_https.py::TestHTTPS::test_inherited",
         "tests/test_openssl.py::TestHTTPS::test_inherited",
     }
+
+
+def test_a_declared_dependency_selects_and_says_who_declared_it(repo):
+    """A registry filled at import time is a real dependency no static rule
+    can find. ``diffcone.toml`` states it; the plan follows it and explains
+    the selection with the project's own words, not as an ordinary
+    dependency."""
+    base = repo.commit(
+        {
+            "diffcone.toml": (
+                "[[edges]]\n"
+                'from = "pkg.registry.dispatch"\n'
+                'to = "pkg.handlers.json_handler"\n'
+                'why = "handlers register themselves through entry points"\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/registry.py": (
+                "HANDLERS = {}\n\n\ndef dispatch(name, payload):\n"
+                "    return HANDLERS[name](payload)\n"
+            ),
+            "pkg/handlers.py": "def json_handler(payload):\n    return payload\n",
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json', {}) == {}\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/handlers.py": "def json_handler(payload):\n    return dict(payload)\n"}
+    )
+    targets = [
+        py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert not plan.degraded and plan.errors == []
+    assert [(d.source, d.target) for d in plan.declarations] == [
+        ("pkg.registry.dispatch", "pkg.handlers.json_handler")
+    ]
+    assert selected(plan) == {"t::dispatch"}
+    r = reason(plan, "t::dispatch", "declared_dependency")
+    assert path_ids(r) == [
+        "target:pytest:t::dispatch",
+        "tests.test_dispatch.test_dispatch",
+        "pkg.registry.dispatch",
+        "pkg.handlers.json_handler",
+    ]
+    assert r.path[-1].detail == "handlers register themselves through entry points"
+
+
+def test_a_declaration_that_names_nothing_is_an_analysis_error(repo):
+    """A typo in a declaration would silently declare nothing, so it fails
+    the plan instead."""
+    base = repo.commit(
+        {
+            "diffcone.toml": (
+                '[[edges]]\nfrom = "pkg.registry.dispatch"\nto = "pkg.handlers.jsno_handler"\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/registry.py": "def dispatch(name):\n    return name\n",
+            "pkg/handlers.py": "def json_handler(payload):\n    return payload\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json') == 'json'\n"
+            ),
+            "benchmarks/bench_d.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "class D:\n    def time_d(self):\n        return dispatch('json')\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/handlers.py": "def json_handler(payload):\n    return dict(payload)\n"}
+    )
+    targets = [
+        py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+        asv_target("bench_d.D.time_d", "benchmarks.bench_d.D.time_d"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert plan.degraded
+    assert [e.path for e in plan.errors] == ["diffcone.toml"]
+    assert "'pkg.handlers.jsno_handler'" in plan.errors[0].message
+    # Degraded means everything is selected, not a quietly empty plan.
+    assert selected(plan) == {"t::dispatch", "bench_d.D.time_d"}

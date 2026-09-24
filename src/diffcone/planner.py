@@ -46,11 +46,15 @@ from diffcone.classify import (
     SymbolChange,
     classify,
 )
+from diffcone.declarations import FILENAME as DECLARATION_FILE
+from diffcone.declarations import Declaration
+from diffcone.declarations import load as load_declarations
 from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     CLASS,
+    DECLARED,
     DEFINED_IN,
     ENTRY,
     IMPORTS,
@@ -79,6 +83,7 @@ RULE_LIFECYCLE_UNRESOLVED = "lifecycle_dependency_unresolved"
 RULE_ANALYSIS_ERROR = "analysis_error"
 RULE_RUNNER_DEPENDENCY = "runner_dependency"
 RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
+RULE_DECLARED_DEPENDENCY = "declared_dependency"
 
 # A lifecycle dependency ``dynamic:<module>`` says the target runs code with
 # that module's globals (a doctest): it is affected by any impact-carrying
@@ -159,6 +164,7 @@ class Plan:
     head_index: SourceIndex = field(repr=False, default=None)  # type: ignore[assignment]
     discovery: list[DiscoveryResult] = field(default_factory=list)
     targets: list[Target] = field(default_factory=list)
+    declarations: list[Declaration] = field(default_factory=list)
 
     @property
     def selected(self) -> list[Decision]:
@@ -306,8 +312,10 @@ def plan_from_indexes(
     repo: str = "",
     source_roots: list[str] | None = None,
     discovered: list[DiscoveryResult] | None = None,
+    declarations: list[Declaration] | None = None,
 ) -> Plan:
     discovered = list(discovered or [])
+    declared = list(declarations or [])
     targets = merge_targets(manifest, discovered)
     changes = classify(base, head)
     change_by_id = {c.id: c for c in changes}
@@ -318,6 +326,26 @@ def plan_from_indexes(
     graph = _Graph()
     for edge, revs in _union(base.edges, head.edges).items():
         graph.add(edge, revs)
+
+    # Dependencies the project declares (diffcone.toml): the analysis cannot
+    # see them, and they only add edges, so they widen selection and never
+    # narrow it. An endpoint that is in neither revision is an analysis
+    # error: a declaration that silently does nothing is worth failing on.
+    for decl in declared:
+        if decl.source not in known_symbols or decl.target not in known_symbols:
+            missing = [e for e in (decl.source, decl.target) if e not in known_symbols]
+            errors.append(
+                AnalysisError(
+                    revision=head.snapshot.revision,
+                    path=DECLARATION_FILE,
+                    message=(
+                        f"declared edge {decl.source!r} -> {decl.target!r} names "
+                        f"{' and '.join(repr(m) for m in missing)}, which is in neither revision"
+                    ),
+                )
+            )
+            continue
+        graph.add(Edge(decl.source, decl.target, DECLARED, decl.why), ("declared",))
 
     # Conservative edges from unresolved references: ``obj.run()`` may be any
     # known ``run`` (function, method or class) in either revision, and
@@ -512,6 +540,7 @@ def plan_from_indexes(
         fallbacks=fallbacks,
         unresolved=sorted(unresolved_records, key=lambda r: (r.symbol, r.kind, r.name, r.detail)),
         errors=errors,
+        declarations=sorted(declared),
         base_index=base,
         head_index=head,
         discovery=discovered,
@@ -622,6 +651,10 @@ def _explain(
         if link is None:
             break
         edge, revs, nxt = link
+        if edge.kind == DECLARED:
+            # The path only holds because the project said so; say which rule
+            # carried it rather than calling it an ordinary dependency.
+            rule = RULE_DECLARED_DEPENDENCY
         if edge.kind == UNRESOLVED_NAME_MATCH:
             rule = RULE_UNRESOLVED_NAME_MATCH
             if _is_name_node(edge.target):
@@ -717,6 +750,11 @@ def plan(
     )
     if runners and head_snapshot is None:  # pragma: no cover - guarded above
         raise GitError("discovery needs the head snapshot's files")
+    declared, problems = load_declarations(repo_path, head)
+    for problem in problems:
+        head_index.errors.append(
+            AnalysisError(revision=head, path=DECLARATION_FILE, message=problem)
+        )
     discovered = [
         discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
     ]
@@ -727,4 +765,5 @@ def plan(
         repo=str(repo_path),
         source_roots=roots,
         discovered=discovered,
+        declarations=declared,
     )

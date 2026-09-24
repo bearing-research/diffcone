@@ -75,6 +75,10 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         # A runner may collect tests that are not targets: the plan is not a
         # judgement on those, so running only its targets would skip them.
         "discovery_incomplete": bool(plan.incomplete_discovery),
+        # Dependencies the project stated that the analysis cannot see.
+        "declarations": [
+            {"from": d.source, "to": d.target, "why": d.why} for d in plan.declarations
+        ],
         "analysis": {
             "repo": plan.repo,
             "base": snapshot_to_dict(plan.base),
@@ -171,6 +175,10 @@ def to_text(plan: Plan) -> str:
     lines.append(f"head: {plan.head.description}")
     lines.append(f"scope: {plan.scope_statement}")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
+    if plan.declarations:
+        lines.append(f"declared dependencies ({len(plan.declarations)}):")
+        for d in plan.declarations:
+            lines.append(f"  {d.source} -> {d.target}" + (f"  ({d.why})" if d.why else ""))
     if plan.incomplete_discovery:
         lines.append(
             f"discovery INCOMPLETE: {len(plan.incomplete_discovery)} place(s) where a runner "
