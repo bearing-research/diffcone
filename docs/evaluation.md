@@ -1373,9 +1373,16 @@ The last two rows of the table are the `new_target` rule instead, which
 selects a discovered target the base snapshot did not have: a few dozen new
 tests on commits that added tests, which is what it is for.
 
-**What is left.** Closing the factory gap means typing more receivers --
-following what a function returns, or what a name holds -- not widening the
-fallback again, which this section measured.
+**Validated, not just re-planned.** The three repositories the rule affects
+most were re-run with `corpus --coverage` under it: structlog 0 outcome
+misses and 100 % coverage recall (77 of 77) at 87 % savings, tenacity 100 %
+(507 of 507), pluggy 100 % (143 of 143) at 32 %. Binding the read to the
+classes that reach it holds up against what the suites actually execute.
+
+**What is left.** A return the analysis cannot type at all -- an object
+built by a `classmethod`, or handed back through a chain of such calls.
+Closing one means typing more receivers, not widening the fallback again,
+which this section measured.
 
 ## Not yet exercised
 
