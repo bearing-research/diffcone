@@ -799,14 +799,20 @@ gains an edge to each of its members: whoever holds one may read any
 attribute off it by a name nothing resolves, so *referring to that class
 depends on its members*, not only on its structure.
 
-This is the project's one accepted exception to the governing rule
-(AGENTS.md). A class whose instances only ever come from a factory --
-`obj = make(); invoke(obj, name)`, with no call site anywhere naming
-`Provider` -- is not reached, and a change to `Provider.action` does not
-select that test. The sound alternative is for such a read to reach any
-module, which was implemented and measured: five corpus repositories lose
-every saving they have (evaluation.md). A scenario pins the gap so that
-closing it later is a deliberate act.
+An object also reaches such code out of a factory, and nothing at that
+call site names its class: `obj = make(); invoke(obj, name)`. So a
+function whose every `return` yields a class returns those classes (both,
+when it picks between two), a call site records the function an argument
+came out of beside the class it is, and a local assigned exactly once from
+such a call carries the same answer. The two are joined once every module
+is indexed. One return that yields anything else and the function says
+nothing: binding a class that may never reach the caller would be a guess.
+
+A return the analysis cannot type is therefore still a hole -- an object
+built by a `classmethod`, or handed back through a chain of such calls --
+and the way to close one is to type more receivers, not to widen the
+fallback: the fallback version was implemented and measured, and costs
+five corpus repositories every saving they have (evaluation.md).
 
 Two narrower bounds are also computed, and are sound rather than
 heuristic: a receiver that is a parameter is whatever the call sites pass,

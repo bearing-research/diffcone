@@ -772,6 +772,10 @@ class _CallSite:
     # ``getattr`` on a parameter may read.
     positional_classes: list[str | None] = field(default_factory=list)
     keyword_classes: dict[str, str | None] = field(default_factory=dict)
+    # The function an argument came out of (``make()``, or a local assigned
+    # once from it): its return class answers once every module is indexed.
+    positional_sources: list[str | None] = field(default_factory=list)
+    keyword_sources: dict[str, str | None] = field(default_factory=dict)
 
     def class_for(self, param: str, info: _FuncParams) -> str | None:
         """The class of the argument passed for ``param`` here, if it says."""
@@ -848,6 +852,10 @@ class _Output:
     call_sites: dict[str, list[_CallSite]] = field(default_factory=lambda: defaultdict(list))
     escapes: set[str] = field(default_factory=set)
     func_params: dict[str, _FuncParams] = field(default_factory=dict)
+    # Per function: the classes its ``return`` statements yield, when every
+    # one of them yields a class. A factory is how an object reaches code
+    # that reads attributes off it by a name nothing resolves.
+    returns: dict[str, tuple[str, ...]] = field(default_factory=dict)
     param_dynamics: list[_ParamDynamic] = field(default_factory=list)
     attr_writes: list[_AttrWrite] = field(default_factory=list)
     # (class id, attribute) pairs whose value cannot be bounded; the class is
@@ -864,6 +872,7 @@ class _Output:
             self.call_sites[function].extend(sites)
         self.escapes |= other.escapes
         self.func_params.update(other.func_params)
+        self.returns.update(other.returns)
         self.param_dynamics.extend(other.param_dynamics)
         self.attr_writes.extend(other.attr_writes)
         self.attr_unbound |= other.attr_unbound
@@ -912,12 +921,15 @@ def _output_to_dict(out: _Output) -> dict:
                     s.receiver_bound,
                     s.positional_classes,
                     s.keyword_classes,
+                    s.positional_sources,
+                    s.keyword_sources,
                 ]
                 for s in sites
             ]
             for f, sites in out.call_sites.items()
         },
         "escapes": sorted(out.escapes),
+        "returns": {f: sorted(c) for f, c in sorted(out.returns.items())},
         "func_params": {
             f: [p.positional, p.bound, p.defaults, p.has_varargs]
             for f, p in out.func_params.items()
@@ -954,6 +966,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
                 receiver_bound=receiver_bound,
                 positional_classes=list(positional_classes),
                 keyword_classes=dict(keyword_classes),
+                positional_sources=list(positional_sources),
+                keyword_sources=dict(keyword_sources),
             )
             for (
                 positional,
@@ -962,9 +976,12 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
                 receiver_bound,
                 positional_classes,
                 keyword_classes,
+                positional_sources,
+                keyword_sources,
             ) in sites
         ]
     out.escapes = set(data["escapes"])
+    out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(
             positional=list(positional),
@@ -1169,11 +1186,19 @@ class Indexer:
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
+        returns = self._global.returns
         self.index.escaped_classes = {
             cls
             for sites in self._global.call_sites.values()
             for site in sites
-            for cls in [*site.positional_classes, *site.keyword_classes.values()]
+            for cls in [
+                *site.positional_classes,
+                *site.keyword_classes.values(),
+                # A factory's class counts as handed on too: every return of
+                # that function yields it, so that is what the callee holds.
+                *(c for f in site.positional_sources if f for c in returns.get(f, ())),
+                *(c for f in site.keyword_sources.values() if f for c in returns.get(f, ())),
+            ]
             if cls is not None
         }
         if cache is not None and (new_facts or new_resolved):
@@ -1776,6 +1801,37 @@ class Indexer:
                 else:
                     table[alias.asname or alias.name] = ImportBinding(base, alias.name)
 
+    def _returned_class(self, node: ast.AST, scope: Scope) -> tuple[str, ...] | None:
+        """The classes ``node`` returns, when every ``return`` in it yields
+        one: ``def make(): return Provider()`` yields that class, and a
+        factory that picks between two yields both. One return that says
+        something else, or none at all, says nothing -- a guess here would
+        bind a class that never reaches the caller."""
+        found: set[str] = set()
+        for inner in ast.walk(node):
+            if isinstance(inner, NESTED_SCOPES) and inner is not node:
+                continue
+            if not isinstance(inner, ast.Return) or inner.value is None:
+                continue
+            cls = self._expression_class(inner.value, scope)
+            if cls is None:
+                return None
+            found.add(cls)
+        return tuple(sorted(found)) or None
+
+    def _expression_class(self, expr: ast.expr, scope: Scope) -> str | None:
+        """The class an expression is an instance of, when it says so: ``C()``
+        constructs one, ``C`` is the class itself."""
+        target = expr.func if isinstance(expr, ast.Call) else expr
+        parts = _flatten_chain(target)
+        if parts is None:
+            return None
+        node = self.resolve_chain(parts, scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.index.symbols.get(node.symbol)
+        return node.symbol if symbol is not None and symbol.kind == CLASS else None
+
     def _index_definitions(
         self,
         scope: ModuleScope,
@@ -2246,6 +2302,9 @@ class Indexer:
             defaults=defaults,
             has_varargs=node.args.vararg is not None or node.args.kwarg is not None,
         )
+        returned = self._returned_class(node, fscope)
+        if returned is not None:
+            self.out.returns[symbol_id] = returned
         # Function-local imports are visible to the whole body.
         for inner in ast.walk(node):
             if isinstance(inner, (ast.Import, ast.ImportFrom)):
@@ -3248,6 +3307,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             keyword_classes={
                 k.arg: self._argument_class(k.value) for k in node.keywords if k.arg is not None
             },
+            positional_sources=[self._argument_source(a) for a in node.args],
+            keyword_sources={
+                k.arg: self._argument_source(k.value) for k in node.keywords if k.arg is not None
+            },
         )
         self.indexer.out.call_sites[symbol.id].append(site)
         # A dispatched call may land on any override: they share the call site.
@@ -3268,6 +3331,48 @@ class _ReferenceCollector(ast.NodeVisitor):
             return None
         symbol = self.indexer.index.symbols.get(node.symbol)
         return node.symbol if symbol is not None and symbol.kind == CLASS else None
+
+    def _argument_source(self, expr: ast.expr) -> str | None:
+        """The function an argument came out of: ``make()`` directly, or a
+        name this scope assigned once from such a call (``obj = make()``).
+        What that function returns is known only once every module has been
+        indexed, so the join happens at the end (see Indexer.build)."""
+        if isinstance(expr, ast.Name) and not isinstance(expr.ctx, ast.Store):
+            expr = self._local_source(expr.id) or expr
+        if not isinstance(expr, ast.Call):
+            return None
+        parts = _flatten_chain(expr.func)
+        if parts is None:
+            return None
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return node.symbol if symbol is not None and symbol.kind in (FUNCTION, METHOD) else None
+
+    def _local_source(self, name: str) -> ast.expr | None:
+        """What this scope assigns ``name``, when that is the only thing that
+        binds it. A second assignment, a loop target, a ``with ... as``, a
+        ``del`` or a parameter of the same name all say nothing: the object
+        could be either."""
+        body = self.scope.literal_node
+        if body is None or name in self.scope.params:
+            return None
+        bindings = [
+            inner
+            for inner in ast.walk(body)
+            if isinstance(inner, ast.Name)
+            and inner.id == name
+            and not isinstance(inner.ctx, ast.Load)
+        ]
+        if len(bindings) != 1:
+            return None
+        for inner in ast.walk(body):
+            if isinstance(inner, ast.Assign) and any(t is bindings[0] for t in inner.targets):
+                return inner.value
+            if isinstance(inner, ast.AnnAssign) and inner.target is bindings[0]:
+                return inner.value
+        return None
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be

@@ -3538,16 +3538,13 @@ def test_a_new_benchmark_is_selected_too(repo):
     assert reason(plan, "bench_ops.Add.time_add_twice", "new_target")
 
 
-def test_an_object_only_a_factory_makes_is_the_known_gap(repo):
-    """The accepted exception to the governing rule, pinned so it stays
-    visible: a class is bound to its members only where some call site names
-    it. When every instance comes from a factory, nothing names the class at
-    a call site, and a change to its method is not reached.
+def test_an_object_a_factory_makes_is_bound_by_what_it_returns(repo):
+    """The object never appears at a call site as a construction: the test
+    holds what ``make()`` gave it. Typing the factory's return is what binds
+    ``Provider`` to its members, so a change to one of them is reached.
 
-    Selecting this would mean an unbounded fallback again, which costs five
-    corpus repositories every saving they have (evaluation.md, "What the
-    caller-object rule cost"). If this test ever starts selecting, that is a
-    real improvement, not a break -- flip it deliberately."""
+    This case used to be the project's accepted exception to the governing
+    rule; closing it is the reason the return type is computed at all."""
     base = repo.commit(
         {
             "pkg/__init__.py": "",
@@ -3556,14 +3553,15 @@ def test_an_object_only_a_factory_makes_is_the_known_gap(repo):
                 "class Provider:\n    def action(self):\n        return 1\n\n\n"
                 "def make():\n    return Provider()\n"
             ),
+            "pkg/other.py": "def helper():\n    return 1\n",
             "tests/test_factory.py": (
                 "import os\n\nfrom pkg.helper import invoke\nfrom pkg.provider import make\n\n\n"
                 "def test_factory():\n"
                 "    obj = make()\n    assert invoke(obj, os.environ['NAME']) == 1\n"
             ),
-            "benchmarks/bench_factory.py": (
-                "from pkg.provider import make\n\n\n"
-                "class F:\n    def time_make(self):\n        return make()\n"
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
             ),
         }
     )
@@ -3577,21 +3575,50 @@ def test_an_object_only_a_factory_makes_is_the_known_gap(repo):
     )
     targets = [
         py_target("t::factory", "tests.test_factory.test_factory"),
-        asv_target("bench_factory.F.time_make", "benchmarks.bench_factory.F.time_make"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
     ]
-    assert selected(repo.plan(base, head, targets)) == set()
+    # The benchmark reaches neither the factory nor the class: not a select-all.
+    assert selected(repo.plan(base, head, targets)) == {"t::factory"}
 
-    # One call site that names the class is enough to bind it everywhere.
-    with_direct = repo.commit(
+
+def test_a_factory_that_picks_between_classes_binds_both(repo):
+    """Every return yields a class, so the object is one of them and both are
+    bound. (A return that yields something else still says nothing: binding a
+    class that may never reach the caller would be a guess.)"""
+    base = repo.commit(
         {
-            "tests/test_direct.py": (
-                "import os\n\nfrom pkg.helper import invoke\n"
-                "from pkg.provider import Provider\n\n\n"
-                "def test_direct():\n    assert invoke(Provider(), os.environ['NAME']) == 1\n"
+            "pkg/__init__.py": "",
+            "pkg/helper.py": "def invoke(obj, name):\n    return getattr(obj, name)()\n",
+            "pkg/provider.py": (
+                "class Provider:\n    def action(self):\n        return 1\n\n\n"
+                "class Other:\n    def action(self):\n        return 2\n\n\n"
+                "def make(flag):\n"
+                "    if flag:\n        return Provider()\n    return Other()\n"
+            ),
+            "tests/test_factory.py": (
+                "import os\n\nfrom pkg.helper import invoke\nfrom pkg.provider import make\n\n\n"
+                "def test_factory():\n"
+                "    obj = make(True)\n    assert invoke(obj, os.environ['NAME']) == 1\n"
+            ),
+            "benchmarks/bench_p.py": (
+                "from pkg.provider import make\n\n\n"
+                "class P:\n    def time_make(self):\n        return make(True)\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/provider.py": (
+                "class Provider:\n    def action(self):\n        return 3\n\n\n"
+                "class Other:\n    def action(self):\n        return 2\n\n\n"
+                "def make(flag):\n"
+                "    if flag:\n        return Provider()\n    return Other()\n"
             )
         }
     )
-    plan = repo.plan(
-        base, with_direct, [*targets, py_target("t::d", "tests.test_direct.test_direct")]
-    )
-    assert {"t::factory", "t::d"} <= selected(plan)
+    targets = [
+        py_target("t::factory", "tests.test_factory.test_factory"),
+        asv_target("bench_p.P.time_make", "benchmarks.bench_p.P.time_make"),
+    ]
+    # Both reach ``make``, whose body changed with the class it returns.
+    assert selected(repo.plan(base, head, targets)) == {"t::factory", "bench_p.P.time_make"}

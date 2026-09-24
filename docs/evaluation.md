@@ -1357,10 +1357,12 @@ it: arrow 46 % to 12 % and typer 35 % to 33 %, both because their classes
 are handed around widely. Nothing is deselected anywhere and the tables
 above this section stand, except for those two.
 
-The price is the project's one accepted exception to the governing rule: a
+That version's price was an accepted exception to the governing rule: a
 class whose instances only ever come from a factory is never named at a call
-site, so a change to its methods does not select what reads them. A scenario
-pins it.
+site. Typing what a factory returns closed it, and cost nothing measurable --
+the corpora are identical with and without it, because a factory's class is
+almost always named somewhere else too. What remains is the return the
+analysis cannot type at all.
 
 A sound version of the same bound -- resolve the receiver back through call
 sites, as a `getattr` *name* already is -- is implemented alongside
