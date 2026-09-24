@@ -1429,12 +1429,44 @@ single seeds, each reached by every test. Each was taken apart in turn:
 | `skip_if_no` | 20 866 | passes its own parameter to the importer | followed to its callers |
 | `TestArrowArray._cast_pointwise_result` | 22 500 | a **name match**: `DataFrame` calls `self.index.array._cast_pointwise_result(...)`, and a pytest class has a helper of that name | a class only the runner instantiates is not a candidate |
 
-**What is left is one genuine case.** `pandas.plotting._core._get_plot_backend`
-imports whatever module `config["plotting"]["backend"]` names at run time,
-and every test reaches it: root conftest, then `DataFrame`, then
-`boxplot_frame`. A name read from configuration is not something static
-analysis can bound, so pandas still selects everything; the other unbounded
-imports in the whole code base number five, two of them in the library.
+**What is left is not one seed but the model.** Peeling seeds stops
+converging: removing the root conftest's `getattr(pd.offsets, o)` hands the
+plan to `DataFrame.select_dtypes`, then `assert_attr_equal`, and so on. The
+causes were measured on the planner's own graph for pandas (one-line change
+to `is_re_compilable`, 524 888 edges), each by switching a rule off:
+
+| switched off | targets selected |
+|---|---|
+| nothing | 26 026 of 26 027 |
+| closure-bounded dynamic references | 26 026 (`_get_plot_backend`, an import named by configuration, is reached by every test) |
+| those and `_get_plot_backend` | 26 026 (class binding: `DataFrame` is handed around, so reaching it reaches every `NDFrame` method, `replace` and through it the change) |
+| every dynamic seed and all class binding | 26 007 for every one of 40 sampled library symbols (name matching) |
+| all of that and name matching | median 38, but 25 942 for a quarter or more of symbols |
+
+* **Import closures bound nothing.** 275 of 338 library modules import
+  roughly all of pandas (closure of 250+ modules), and 129 of the 132
+  library dynamic references sit in them.
+* **Reaching an untyped read is ordinary.** Requiring a target to reach a
+  `getattr(obj, <non-literal>)` site before class binding applies was
+  measured and buys nothing: with only resolved references (no class
+  binding, no name matching, no module-level references) 23 662 targets
+  (91 %) reach such a site. Resolved references alone form a
+  1 742-symbol strongly connected core containing `DataFrame.__init__`
+  and `NDFrame.__finalize__`; the 2 626 symbols reachable from it hold 38
+  untyped read sites. Their names mostly come from finite sources a richer
+  analysis could bound (literal class attributes such as `_metadata` and
+  `_attributes`, `self` receivers, closure parameters, the numpy
+  `__array_ufunc__` protocol); the open string dispatch (`agg`,
+  `transform`, `apply`) lies outside the core. Bounding `self`/`cls`
+  receivers alone frees 12 targets.
+* **Name matching is what decides.** An untyped `x.foo()` may call any
+  `foo`, and in pandas that alone connects every symbol to every test.
+  Narrowing it needs receiver types, which the analysis deliberately does
+  not infer.
+
+So pandas selects everything under the current model, and no single rule
+changes that; the table is the order in which the blockers would have to
+fall.
 
 **Validation of the narrowing.** Re-planned over every recorded corpus, the
 changes above deselect 211 targets on five commits, and each was checked
