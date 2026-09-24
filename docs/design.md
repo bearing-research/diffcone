@@ -489,6 +489,13 @@ Unknown is never treated as unaffected:
   module in scope may be the one" and "reachable from its module's
   imports" are different claims. A project-defined function named `vars`
   or `getattr` is not mistaken for the builtin.
+* **A discovered target the base snapshot did not have** is selected
+  (`new_target`), whatever its entry symbol did: `from support import
+  test_shared as test_new` adds a test while touching no symbol impact
+  would travel along. This is why discovery runs at the base snapshot as
+  well as the head; only the snapshot is read again, so the base index
+  still comes from the cache. A manifest names targets without saying when
+  they appeared, so the rule applies to discovered targets only.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).

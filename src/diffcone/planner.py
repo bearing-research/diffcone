@@ -85,6 +85,7 @@ RULE_ANALYSIS_ERROR = "analysis_error"
 RULE_RUNNER_DEPENDENCY = "runner_dependency"
 RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
 RULE_DECLARED_DEPENDENCY = "declared_dependency"
+RULE_NEW_TARGET = "new_target"
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
@@ -330,8 +331,10 @@ def plan_from_indexes(
     source_roots: list[str] | None = None,
     discovered: list[DiscoveryResult] | None = None,
     declarations: list[Declaration] | None = None,
+    base_target_ids: set[str] | None = None,
 ) -> Plan:
     discovered = list(discovered or [])
+    discovered_ids = {t.runner_id for result in discovered for t in result.targets}
     declared = list(declarations or [])
     targets = merge_targets(manifest, discovered)
     changes = classify(base, head)
@@ -569,6 +572,23 @@ def plan_from_indexes(
                         "in that module's import closure",
                     )
                 )
+        # A discovered target the base snapshot did not have is new, whatever
+        # its entry symbol did: ``from support import test_shared as
+        # test_new`` adds a test whose entry is untouched. Only discovery can
+        # answer this, and only because it runs at the base as well; a
+        # manifest names targets without saying when they appeared.
+        if (
+            base_target_ids is not None
+            and target.runner_id in discovered_ids
+            and target.runner_id not in base_target_ids
+        ):
+            reasons.append(
+                Reason(
+                    RULE_NEW_TARGET,
+                    f"{target.runner_id} is not in the base snapshot: a new target is selected "
+                    "whatever its entry symbol did",
+                )
+            )
         entry_change = change_by_id.get(target.entry_symbol)
         if entry_change is not None and DOCSTRING_CHANGED in entry_change.changes:
             # For a doctest the docstring is the test; for anything else
@@ -822,6 +842,17 @@ def plan(
         raise GitError("discovery needs the head snapshot's files")
     # Both revisions, as every other edge is: a commit that deletes a
     # declaration while changing what it pointed at must still select.
+    # Discovery at the base too, so a target the base did not have is known
+    # to be new. Only the snapshot is read again (0.1 s on the largest
+    # repositories); the base index still comes from the cache.
+    base_target_ids: set[str] | None = None
+    if runners:
+        base_snapshot = read_snapshot(repo_path, base, roots, with_config=True)
+        base_target_ids = {
+            target.runner_id
+            for runner in runners
+            for target in discover(runner, base_snapshot, base_index, discovery_options).targets
+        }
     declared: list[Declaration] = []
     for revision, index in ((base, base_index), (head, head_index)):
         found, problems = load_declarations(repo_path, revision)
@@ -842,4 +873,5 @@ def plan(
         source_roots=roots,
         discovered=discovered,
         declarations=declared,
+        base_target_ids=base_target_ids,
     )

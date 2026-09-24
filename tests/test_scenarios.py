@@ -3462,3 +3462,69 @@ def test_getattr_on_the_module_s_own_import_stays_bounded(repo):
         asv_target("bench_far.Far.time_far", "benchmarks.bench_far.Far.time_far"),
     ]
     assert selected(repo.plan(base, head, targets)) == {"bench_far.Far.time_far"}
+
+
+def test_a_target_the_base_did_not_have_is_selected(repo):
+    """A new test is selected whatever its entry symbol did. Importing an
+    existing test under a new name adds a target while touching no symbol the
+    graph would carry impact along, so discovery runs at the base too."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/__init__.py": "",
+            "tests/support.py": (
+                "from pkg.ops import add\n\n\ndef test_shared():\n    assert add(1, 1) == 2\n"
+            ),
+            "tests/test_a.py": "from tests.support import test_shared  # noqa: F401\n",
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "tests/test_a.py": (
+                "from tests.support import test_shared  # noqa: F401\n"
+                "from tests.support import test_shared as test_new  # noqa: F401\n"
+            ),
+        }
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_a.py::test_new"}
+    r = reason(plan, "tests/test_a.py::test_new", "new_target")
+    assert r.detail.startswith("tests/test_a.py::test_new is not in the base snapshot")
+    # A benchmark that existed before and changed in no way is left alone.
+    assert "bench_ops.Add.time_add" not in selected(plan)
+
+
+def test_a_new_benchmark_is_selected_too(repo):
+    """The rule is runner-independent: an ASV benchmark the base did not have
+    is selected even though nothing it depends on changed."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+            ),
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\n"
+                "class Add:\n"
+                "    def time_add(self):\n        return add(1, 1)\n\n"
+                "    def time_add_twice(self):\n        return add(1, 1) + add(2, 2)\n"
+            ),
+        }
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "bench_ops.Add.time_add_twice" in selected(plan)
+    assert reason(plan, "bench_ops.Add.time_add_twice", "new_target")
