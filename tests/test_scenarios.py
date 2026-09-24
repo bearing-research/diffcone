@@ -3084,3 +3084,61 @@ def test_an_asv_config_beside_the_benchmarks_names_them_as_asv_does(repo):
         "bench_ops.Ops.time_add": "benchmarks.benchmarks.bench_ops.Ops.time_add"
     }
     assert selected(plan) == {"bench_ops.Ops.time_add", "tests/test_ops.py::test_add"}
+
+
+def test_an_imported_test_class_brings_its_inherited_tests(repo):
+    """A test class imported into another module is collected there with
+    everything it inherits: urllib3's ``test_pyopenssl.py`` imports
+    ``TestHTTPS_TLSv1``, whose tests are nearly all defined on its bases."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": (
+                "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/test_base.py": (
+                "from pkg.ops import add\n\n\n"
+                "class TestAddBase:\n"
+                "    def test_inherited(self):\n        assert add(1, 1) == 2\n"
+            ),
+            "tests/test_https.py": (
+                "from pkg.ops import mul\n"
+                "from tests.test_base import TestAddBase\n\n\n"
+                "class TestHTTPS(TestAddBase):\n"
+                "    def test_own(self):\n        assert mul(2, 2) == 4\n"
+            ),
+            "tests/test_openssl.py": ("from tests.test_https import TestHTTPS  # noqa: F401\n"),
+            "benchmarks/bench_ops.py": (
+                "from pkg.ops import mul\n\n\n"
+                "class Mul:\n    def time_mul(self):\n        return mul(2, 2)\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {"pkg/ops.py": "def add(a, b):\n    return b + a\n\n\ndef mul(a, b):\n    return a * b\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    discovery = next(d for d in plan.discovery if d.runner == "pytest")
+    imported = {
+        t.runner_id: t.entry_symbol
+        for t in discovery.targets
+        if t.runner_id.startswith("tests/test_openssl.py")
+    }
+    assert imported == {
+        "tests/test_openssl.py::TestHTTPS::test_own": "tests.test_https.TestHTTPS.test_own",
+        # Inherited by the imported class, from a third module.
+        "tests/test_openssl.py::TestHTTPS::test_inherited": (
+            "tests.test_base.TestAddBase.test_inherited"
+        ),
+    }
+    # Only what reaches the changed ``add``: the inherited test, everywhere it
+    # is collected.
+    assert selected(plan) == {
+        "tests/test_base.py::TestAddBase::test_inherited",
+        # ``TestAddBase`` is imported into test_https.py, so pytest collects it
+        # there as well as through the subclass.
+        "tests/test_https.py::TestAddBase::test_inherited",
+        "tests/test_https.py::TestHTTPS::test_inherited",
+        "tests/test_openssl.py::TestHTTPS::test_inherited",
+    }

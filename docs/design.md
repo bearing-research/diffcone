@@ -620,6 +620,11 @@ pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.
 
+A test class imported into a module is collected there with everything it
+inherits, its bases resolved in the module that defines it (urllib3's
+`test_pyopenssl.py` imports `TestHTTPS_TLSv1`, whose tests are nearly all
+on its bases).
+
 A test module may also re-run another's tests with `from <module> import
 *`: the star binds what that module's `__all__` lists, or every name it
 defines that does not start with an underscore (names it imported itself

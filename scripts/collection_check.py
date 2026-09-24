@@ -67,22 +67,32 @@ def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str]:
     return {PARAM.sub("", n) for n in names}, log
 
 
-def collected(repo: Path, command: str) -> tuple[set[str], str]:
-    """Node ids pytest collects, with parameter cases collapsed."""
-    argv = shlex.split(command) + ["--collect-only", "-q", "--no-header", "-p", "no:cacheprovider"]
-    proc = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
-    ids = set()
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        # A node id has no whitespace once its parameter case is stripped, and
-        # starts with a file path; plugins print other lines containing "::".
-        node = PARAM.sub("", line)
-        if "::" not in node or any(c.isspace() for c in node):
-            continue
-        if not NODE_FILE.match(node.split("::")[0]):
-            continue
-        ids.add(node)
-    return ids, proc.stdout + proc.stderr
+def collected(repo: Path, command: str, clean_addopts: bool = False) -> tuple[set[str], str]:
+    """Node ids pytest collects, with parameter cases collapsed. Verbosity is
+    the fiddly part: ``--collect-only -q`` lists node ids, but a project whose
+    own ``addopts`` carry ``-v`` gets the tree format instead, and there one
+    more ``-q`` is what lists them (while on a quiet project that same second
+    ``-q`` prints per-file counts). So: try one, and if nothing that looks
+    like a node id comes back, try two."""
+    extra = ["-o", "addopts="] if clean_addopts else []
+    log = ""
+    for quiet in (["-q"], ["-q", "-q"]):
+        argv = shlex.split(command) + ["--collect-only", "--no-header", *quiet, *extra]
+        proc = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
+        log = proc.stdout + proc.stderr
+        ids = set()
+        for line in proc.stdout.splitlines():
+            # A node id has no whitespace once its parameter case is stripped,
+            # and starts with a file path; plugins print other lines with "::".
+            node = PARAM.sub("", line.strip())
+            if "::" not in node or any(c.isspace() for c in node):
+                continue
+            if not NODE_FILE.match(node.split("::")[0]):
+                continue
+            ids.add(node)
+        if ids:
+            return ids, log
+    return set(), log
 
 
 def targets(repo: Path, source_roots: list[str], rev: str, runner: str):
@@ -103,6 +113,11 @@ def main() -> int:
         help="pytest: the command to collect with; asv: the python to discover with",
     )
     parser.add_argument("--runner", choices=("pytest", "asv"), default="pytest")
+    parser.add_argument(
+        "--clean-addopts",
+        action="store_true",
+        help="collect with -o addopts= (for a project whose addopts print over the listing)",
+    )
     parser.add_argument("--source-root", action="append", dest="source_roots", default=[])
     parser.add_argument("--rev", default="WORKTREE")
     parser.add_argument("--limit", type=int, default=15, help="example node ids to print")
@@ -112,7 +127,7 @@ def main() -> int:
     roots = args.source_roots or (["src", "."] if (repo / "src").is_dir() else ["."])
     planned, notes, snapshot = targets(repo, roots, args.rev, args.runner)
     real, log = (
-        collected(repo, args.command)
+        collected(repo, args.command, args.clean_addopts)
         if args.runner == "pytest"
         else asv_collected(repo, args.command, snapshot)
     )

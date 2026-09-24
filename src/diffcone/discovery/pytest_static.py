@@ -16,7 +16,8 @@ Collected:
   ``TestCase`` anywhere in that chain, whatever the class is called;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
-  name, with the defining symbol as entry; ``from <module> import *``
+  name, with the defining symbol as entry; an imported class brings what it
+  inherits, its bases resolved in the module that defines it; ``from <module> import *``
   brings in what the module's ``__all__`` lists, or every name it defines
   that does not start with an underscore (poetry's sync tests are the
   install tests, star-imported), except names this module defines itself;
@@ -1295,6 +1296,109 @@ def _collect_module_tests(
         deps = module_deps + extra + resolver.lifecycle(class_ids, requests)
         result.targets.append(Target(RUNNER, nodeid, entry, tuple(sorted(set(deps)))))
 
+    # Module scopes reached through base classes: name -> (parsed, classes,
+    # imported class names). None for a module outside the source roots.
+    scopes: dict[str, tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None] = {}
+    # Per module: alias -> module it names, for a dotted base ``alias.Class``.
+    module_prefixes: dict[str, dict[str, str]] = {}
+
+    def scope_for(module: str) -> tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]:
+        if module in scopes:
+            return scopes[module]  # type: ignore[return-value]
+        scopes[module] = None  # guards import cycles while this one is built
+        facts = module_facts(module) if module_facts is not None else None
+        if facts is None:
+            return None  # type: ignore[return-value]
+        modules: dict[str, str] = {}
+        classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
+        imported: dict[str, tuple[str, str]] = {}
+        for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if isinstance(stmt, ast.Import):
+                # ``import tests.queues as t``: ``t.LifoDiskQueueTest`` is that
+                # module's class, recorded under the alias as a module prefix.
+                for alias in stmt.names:
+                    modules[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+                continue
+            if not isinstance(stmt, ast.ImportFrom):
+                continue
+            src = _absolute_module(facts.parsed, stmt)
+            for alias in stmt.names:
+                if alias.name == "*":
+                    sub_scope = scope_for(src)
+                    for name in sub_scope[1] if sub_scope else ():
+                        imported.setdefault(name, (src, name))
+                else:
+                    imported[alias.asname or alias.name] = (src, alias.name)
+                    modules.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
+        module_prefixes[module] = modules
+        scopes[module] = (facts.parsed, classes, imported)
+        return scopes[module]  # type: ignore[return-value]
+
+    own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
+
+    def mro(
+        cls: ast.ClassDef,
+        nodeid: str,
+        quiet: bool = False,
+        scope: tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None = None,
+    ) -> list[tuple[ast.ClassDef, str]]:
+        """Base classes, nearest first, with their symbol ids. A base defined
+        in another module in the source roots is followed too (networkx's
+        ``TestDiGraph(BaseGraphTester)``), and its own bases resolve in the
+        module that defines it, not in this one."""
+        chain: list[tuple[ast.ClassDef, str]] = []
+        seen: set[tuple[str, str]] = set()
+        start = scope or own_scope
+        queue = [(base, start) for base in cls.bases]
+        while queue:
+            base, (owner, classes_here, imports_here) = queue.pop(0)
+            parts, _ = decorator_chain(base)
+            name = parts[-1] if parts else ""
+            if name in ("object", "") or (owner.module, name) in seen:
+                continue
+            seen.add((owner.module, name))
+            found = None
+            if name in classes_here and not (owner.module == start[0].module and name == cls.name):
+                found = (
+                    classes_here[name],
+                    owner.member_id(name),
+                    (owner, classes_here, imports_here),
+                )
+            elif name in imports_here:
+                source, original = imports_here[name]
+                scope = scope_for(source)
+                if scope is not None and original in scope[1]:
+                    found = (scope[1][original], scope[0].member_id(original), scope)
+            elif len(parts) > 1:
+                # ``t.LifoDiskQueueTest``: the prefix names a module.
+                prefixes = module_prefixes.get(owner.module, {})
+                head = ".".join(parts[:-1])
+                source = prefixes.get(parts[0], parts[0])
+                if len(parts) > 2:
+                    source = f"{source}.{'.'.join(parts[1:-1])}" if parts[0] in prefixes else head
+                scope = scope_for(source)
+                if scope is not None and name in scope[1]:
+                    found = (scope[1][name], scope[0].member_id(name), scope)
+            if found is not None:
+                base_cls, base_id, base_scope = found
+                if used_as_base is not None:
+                    used_as_base.add(base_id)
+                chain.append((base_cls, base_id))
+                queue.extend((b, base_scope) for b in base_cls.bases)
+            elif not (quiet or name.endswith("TestCase") or name in NO_TEST_BASES):
+                result.notes.append(
+                    DiscoveryNote(
+                        RUNNER,
+                        "unknown_base_class",
+                        f"{nodeid}: base class {name!r} is not defined in this module or "
+                        "imported from one in the source roots; test methods it may "
+                        "contribute are not discovered",
+                    )
+                )
+        return chain
+
     for func in scope_functions(parsed.tree.body):
         if not _matches(functions, func.name) or _is_fixture(func)[0]:
             continue
@@ -1364,111 +1468,26 @@ def _collect_module_tests(
             if isinstance(node, ast.ClassDef):
                 if not is_class or _has_init(node):
                     continue
-                for method in scope_functions(node.body):
-                    if _matches(functions, method.name) and not _is_fixture(method)[0]:
+                # The class is collected here, with everything it inherits:
+                # urllib3's test_pyopenssl.py imports TestHTTPS_TLSv1, whose
+                # tests are almost all defined on its bases.
+                origin_scope = scope_for(origin.parsed.module)
+                methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
+                for owner_cls, owner_id in reversed(
+                    mro(node, nodeid, scope=origin_scope) if origin_scope else []
+                ):
+                    for f in scope_functions(owner_cls.body):
+                        methods[f.name] = (f, owner_id)
+                for f in scope_functions(node.body):
+                    methods[f.name] = (f, entry)
+                for name, (method, owner_id) in sorted(methods.items()):
+                    if _matches(functions, name) and not _is_fixture(method)[0]:
                         requests = list(_fixture_requests(method, True, module_marks))
-                        add(f"{nodeid}::{method.name}", f"{entry}.{method.name}", [], requests, [])
+                        add(f"{nodeid}::{name}", f"{owner_id}.{name}", [], requests, [])
             elif is_function and not _is_fixture(node)[0]:
                 marks = module_marks + _marks_from_expressions(node.decorator_list)
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
                 add(nodeid, entry, [], requests, [origin.parsed.module])
-
-    # Module scopes reached through base classes: name -> (parsed, classes,
-    # imported class names). None for a module outside the source roots.
-    scopes: dict[str, tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None] = {}
-    # Per module: alias -> module it names, for a dotted base ``alias.Class``.
-    module_prefixes: dict[str, dict[str, str]] = {}
-
-    def scope_for(module: str) -> tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]:
-        if module in scopes:
-            return scopes[module]  # type: ignore[return-value]
-        scopes[module] = None  # guards import cycles while this one is built
-        facts = module_facts(module) if module_facts is not None else None
-        if facts is None:
-            return None  # type: ignore[return-value]
-        modules: dict[str, str] = {}
-        classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
-        imported: dict[str, tuple[str, str]] = {}
-        for stmt in iter_scope_statements(facts.parsed.tree.body):
-            if isinstance(stmt, ast.Import):
-                # ``import tests.queues as t``: ``t.LifoDiskQueueTest`` is that
-                # module's class, recorded under the alias as a module prefix.
-                for alias in stmt.names:
-                    modules[alias.asname or alias.name.split(".")[0]] = (
-                        alias.name if alias.asname else alias.name.split(".")[0]
-                    )
-                continue
-            if not isinstance(stmt, ast.ImportFrom):
-                continue
-            src = _absolute_module(facts.parsed, stmt)
-            for alias in stmt.names:
-                if alias.name == "*":
-                    sub_scope = scope_for(src)
-                    for name in sub_scope[1] if sub_scope else ():
-                        imported.setdefault(name, (src, name))
-                else:
-                    imported[alias.asname or alias.name] = (src, alias.name)
-                    modules.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
-        module_prefixes[module] = modules
-        scopes[module] = (facts.parsed, classes, imported)
-        return scopes[module]  # type: ignore[return-value]
-
-    own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
-
-    def mro(cls: ast.ClassDef, nodeid: str, quiet: bool = False) -> list[tuple[ast.ClassDef, str]]:
-        """Base classes, nearest first, with their symbol ids. A base defined
-        in another module in the source roots is followed too (networkx's
-        ``TestDiGraph(BaseGraphTester)``), and its own bases resolve in the
-        module that defines it, not in this one."""
-        chain: list[tuple[ast.ClassDef, str]] = []
-        seen: set[tuple[str, str]] = set()
-        queue = [(base, own_scope) for base in cls.bases]
-        while queue:
-            base, (owner, classes_here, imports_here) = queue.pop(0)
-            parts, _ = decorator_chain(base)
-            name = parts[-1] if parts else ""
-            if name in ("object", "") or (owner.module, name) in seen:
-                continue
-            seen.add((owner.module, name))
-            found = None
-            if name in classes_here and not (owner.module == parsed.module and name == cls.name):
-                found = (
-                    classes_here[name],
-                    owner.member_id(name),
-                    (owner, classes_here, imports_here),
-                )
-            elif name in imports_here:
-                source, original = imports_here[name]
-                scope = scope_for(source)
-                if scope is not None and original in scope[1]:
-                    found = (scope[1][original], scope[0].member_id(original), scope)
-            elif len(parts) > 1:
-                # ``t.LifoDiskQueueTest``: the prefix names a module.
-                prefixes = module_prefixes.get(owner.module, {})
-                head = ".".join(parts[:-1])
-                source = prefixes.get(parts[0], parts[0])
-                if len(parts) > 2:
-                    source = f"{source}.{'.'.join(parts[1:-1])}" if parts[0] in prefixes else head
-                scope = scope_for(source)
-                if scope is not None and name in scope[1]:
-                    found = (scope[1][name], scope[0].member_id(name), scope)
-            if found is not None:
-                base_cls, base_id, base_scope = found
-                if used_as_base is not None:
-                    used_as_base.add(base_id)
-                chain.append((base_cls, base_id))
-                queue.extend((b, base_scope) for b in base_cls.bases)
-            elif not (quiet or name.endswith("TestCase") or name in NO_TEST_BASES):
-                result.notes.append(
-                    DiscoveryNote(
-                        RUNNER,
-                        "unknown_base_class",
-                        f"{nodeid}: base class {name!r} is not defined in this module or "
-                        "imported from one in the source roots; test methods it may "
-                        "contribute are not discovered",
-                    )
-                )
-        return chain
 
     def walk_class(
         cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str, inherited: Marks
