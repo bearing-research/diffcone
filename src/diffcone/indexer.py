@@ -1092,7 +1092,7 @@ def _facts_to_dict(
 class Indexer:
     def __init__(self, snapshot: Snapshot, module_cache=None) -> None:
         self.snapshot = snapshot
-        self.index = SourceIndex(snapshot=snapshot.info)
+        self.index = SourceIndex(snapshot=snapshot.info, other_files=dict(snapshot.other_files))
         self.index.errors.extend(snapshot.errors)
         # Optional per-module cache of first-pass facts and second-pass
         # outputs (diffcone.cache.ModuleCache). Applies to every snapshot kind.

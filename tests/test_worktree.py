@@ -93,6 +93,12 @@ def test_plan_against_worktree_and_index(repo):
         py_target("t::test_gone", "tests.test_gone.test_gone"),
         py_target("t::test_new", "tests.test_new.test_new"),
     ]
+    # The edited pytest.ini is a file the analysis does not read: everything.
+    plan = repo.plan(base, "WORKTREE", targets)
+    assert selected(plan) == {"t::test_add", "t::test_mul", "t::test_gone", "t::test_new"}
+    assert "pytest.ini" in reason(plan, "t::test_mul", "unanalysed_file_changed").detail
+    # Put it back to see the Python changes alone.
+    (repo.path / "pytest.ini").write_text("[pytest]\n")
     plan = repo.plan(base, "WORKTREE", targets)
     assert plan.uncommitted_analyzed
     assert {c.id: c.changes for c in plan.changes} == {
@@ -168,12 +174,14 @@ def test_cli_worktree_with_discovery(repo, capsys):
     # Discovery ran on the working tree: the untracked test exists, pytest.ini is the disk one.
     assert report["discovery"][0]["config"]["source"] == "pytest.ini"
     assert report["discovery"][0]["config"]["python_files"] == ["test_*.py"]
+    # The edited pytest.ini is a file the analysis does not read: everything.
     assert {t["runner_id"] for t in report["selected_targets"]} == {
         "tests/test_ops.py::test_add",
+        "tests/test_ops.py::test_mul",
         "tests/test_gone.py::test_gone",
         "tests/test_new.py::test_new",
     }
-    assert [t["runner_id"] for t in report["unselected_targets"]] == ["tests/test_ops.py::test_mul"]
+    assert [f["rule"] for f in report["fallback_decisions"]] == ["unanalysed_file_changed"]
 
     code = main(["discover", "--repo", str(repo.path), "--rev", "WORKTREE", "--discover", "pytest"])
     data = json.loads(capsys.readouterr().out)

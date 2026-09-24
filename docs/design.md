@@ -510,6 +510,23 @@ Unknown is never treated as unaffected:
   selects every target of that runner (discovered or from a manifest),
   since no project code references what the runner calls. Other runners'
   targets are unaffected.
+* **A changed file the index does not read** (`unanalysed_file_changed`,
+  scope all targets). The index parses Python only, but a data file the
+  code opens, a compiled extension's source (`.pyx`, `.pxd`, `.c`) or a
+  configuration file changes behaviour just as well, and nothing says who
+  reads it. So any non-Python file under a source root that was added,
+  deleted or edited selects every target, and the fallback names the
+  files. Files are compared by git blob id: a commit's comes from
+  `ls-tree`, the staged index's from `ls-files --stage`. For the working
+  tree, files git reports unmodified keep their staged id, and the rest
+  are hashed by `git hash-object`, which applies the same filters as
+  `git add`, so an untouched working tree matches its commit exactly.
+  This is deliberately every file: under a `.` root a `README.md` edit
+  selects everything, because the analysis cannot tell that no code reads
+  it. diffcone's own files (`.diffcone/`, `diffcone.toml`, whose
+  declarations are read from both revisions anyway) are excluded. Not
+  seen: files outside every source root. A root that leaves out a data
+  directory leaves its changes out too.
 * **Analysis errors** (unparsable file, identity collision): every target is
   selected (`analysis_error`, scope `all_targets`), the report status is
   `degraded` and the CLI exits 1. An error can never produce an empty plan.

@@ -176,6 +176,11 @@ def test_run_executes_only_selected_targets(repo, capsys):
     assert capsys.readouterr().out.strip() == "asv run --bench '^(bench\\.time_add)($|\\()'"
 
 
+# Roots that leave the repository's top-level ``data.txt`` outside the
+# analysis, so a change to it stays a miss for validation to catch.
+OUTSIDE_DATA_ROOTS = ["pkg=pkg", "tests=tests"]
+
+
 def test_validate_catches_and_misses(repo, capsys):
     base = repo.commit(
         {
@@ -192,9 +197,10 @@ def test_validate_catches_and_misses(repo, capsys):
         }
     )
     # test_add breaks (visible to the planner); test_data breaks via a data
-    # file (invisible to static analysis) -> a genuine miss.
+    # file outside the source roots (invisible to the analysis) -> a genuine
+    # miss. Under a ``.`` root the change would select everything instead.
     head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "a + b + 1"), "data.txt": "4\n"})
-    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    plan = repo.plan(base, head, [], OUTSIDE_DATA_ROOTS, discover_runners=["pytest"])
     v = validate_pytest(plan, repo=repo.path, command=PYTEST)
     assert not v.ok
     assert [(o.runner_id, o.base, o.head) for o in v.caught] == [
@@ -218,6 +224,7 @@ def test_validate_catches_and_misses(repo, capsys):
             head,
             "--discover",
             "pytest",
+            *(arg for root in OUTSIDE_DATA_ROOTS for arg in ("--source-root", root)),
             "--command",
             PYTEST,
             "--format",
@@ -609,7 +616,8 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
         report = execution.corpus_validation(
             repo.path,
             f"{c1}..{c4}",
-            lambda b, h: repo.plan(b, h, [], discover_runners=["pytest"]),
+            # data.txt lies outside these roots, so c4's change to it is a miss.
+            lambda b, h: repo.plan(b, h, [], OUTSIDE_DATA_ROOTS, discover_runners=["pytest"]),
             command=PYTEST,
             coverage=True,
         )
@@ -644,6 +652,7 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
             f"{c1}..{c4}",
             "--discover",
             "pytest",
+            *(arg for root in OUTSIDE_DATA_ROOTS for arg in ("--source-root", root)),
             "--command",
             PYTEST,
             "--format",

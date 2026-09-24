@@ -520,6 +520,90 @@ def test_analysis_error_selects_everything(repo):
     assert plan.changes == []
 
 
+_OPS_TREE = {
+    "pkg/ops.py": OPS,
+    "pkg/table.json": '{"rate": 1}\n',
+    "pkg/_fast.pyx": "def fast():\n    return 1\n",
+    "README.md": "ops\n",
+    "tests/test_ops.py": TEST_OPS,
+    "benchmarks/bench_ops.py": BENCH_OPS,
+}
+_ALL_OPS = {t.runner_id for t in OPS_TARGETS}
+
+
+def _only_unanalysed_file(plan, path):
+    assert selected(plan) == _ALL_OPS
+    assert all(rules(plan, t) == {"unanalysed_file_changed"} for t in _ALL_OPS)
+    [fallback] = plan.fallbacks
+    assert (fallback.rule, fallback.scope) == ("unanalysed_file_changed", "all_targets")
+    assert f"({path})" in fallback.detail
+    assert plan.changes == [] and not plan.degraded
+
+
+def test_a_changed_data_file_selects_everything(repo):
+    """The index reads no data file, so it cannot say who opens one."""
+    base = repo.commit(_OPS_TREE)
+    head = repo.commit({"pkg/table.json": '{"rate": 2}\n'})
+    _only_unanalysed_file(repo.plan(base, head, OPS_TARGETS), "pkg/table.json")
+
+
+def test_a_changed_compiled_extension_source_selects_everything(repo):
+    base = repo.commit(_OPS_TREE)
+    head = repo.commit({"pkg/_fast.pyx": "def fast():\n    return 2\n"})
+    _only_unanalysed_file(repo.plan(base, head, OPS_TARGETS), "pkg/_fast.pyx")
+
+
+def test_an_added_or_deleted_data_file_selects_everything(repo):
+    base = repo.commit(_OPS_TREE)
+    head = repo.commit({"pkg/extra.csv": "a,b\n"})
+    _only_unanalysed_file(repo.plan(base, head, OPS_TARGETS), "pkg/extra.csv")
+    repo.git("rm", "-q", "pkg/table.json")
+    repo.git("commit", "-q", "-m", "drop table")
+    gone = repo.git("rev-parse", "HEAD").strip()
+    _only_unanalysed_file(repo.plan(head, gone, OPS_TARGETS), "pkg/table.json")
+
+
+def test_a_documentation_file_under_the_root_selects_everything(repo):
+    """Deliberate: under a ``.`` root a README is a file like any other; the
+    analysis cannot tell that no code reads it."""
+    base = repo.commit(_OPS_TREE)
+    head = repo.commit({"README.md": "ops, documented\n"})
+    _only_unanalysed_file(repo.plan(base, head, OPS_TARGETS), "README.md")
+
+
+def test_a_file_outside_the_source_roots_is_not_seen(repo):
+    """The residual: roots that leave a file out leave its changes out too."""
+    base = repo.commit({**_OPS_TREE, "data/rates.csv": "1\n"})
+    head = repo.commit({"data/rates.csv": "2\n", "README.md": "ops, documented\n"})
+    roots = ["pkg=pkg", "tests=tests", "benchmarks=benchmarks"]
+    plan = repo.plan(base, head, OPS_TARGETS, roots)
+    assert selected(plan) == set() and plan.fallbacks == []
+
+
+def test_diffcones_own_files_are_not_project_files(repo):
+    """The cache and the declarations file belong to diffcone; the planner
+    reads the declarations from both revisions itself."""
+    base = repo.commit({**_OPS_TREE, "diffcone.toml": "# no declarations\n"})
+    head = repo.commit({".diffcone/cache/index/x.json": "{}\n", "diffcone.toml": "# still none\n"})
+    plan = repo.plan(base, head, OPS_TARGETS)
+    assert selected(plan) == set() and plan.fallbacks == []
+
+
+def test_uncommitted_data_files_are_seen(repo):
+    """A working tree or a staged index is compared by content the same way
+    a commit is: an untouched file matches its committed blob exactly."""
+    base = repo.commit(_OPS_TREE)
+    assert repo.plan(base, "WORKTREE", OPS_TARGETS).fallbacks == []
+    (repo.path / "pkg/table.json").write_text('{"rate": 3}\n')
+    _only_unanalysed_file(repo.plan(base, "WORKTREE", OPS_TARGETS), "pkg/table.json")
+    assert repo.plan(base, "INDEX", OPS_TARGETS).fallbacks == []
+    repo.git("add", "pkg/table.json")
+    _only_unanalysed_file(repo.plan(base, "INDEX", OPS_TARGETS), "pkg/table.json")
+    (repo.path / "pkg/new.dat").write_bytes(b"\x00\x01")  # untracked
+    plan = repo.plan(base, "WORKTREE", OPS_TARGETS)
+    assert "2 file(s)" in plan.fallbacks[0].detail and "pkg/new.dat" in plan.fallbacks[0].detail
+
+
 def test_unknown_entry_symbol_is_selected_by_fallback(repo):
     base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
     head = repo.commit({"pkg/ops.py": OPS})

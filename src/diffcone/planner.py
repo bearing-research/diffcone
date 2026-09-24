@@ -87,6 +87,7 @@ RULE_RUNNER_DEPENDENCY = "runner_dependency"
 RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
 RULE_DECLARED_DEPENDENCY = "declared_dependency"
 RULE_NEW_TARGET = "new_target"
+RULE_UNANALYSED_FILE = "unanalysed_file_changed"
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
@@ -104,8 +105,31 @@ CONSERVATIVE_RULES = frozenset(
         RULE_LIFECYCLE_UNRESOLVED,
         RULE_ANALYSIS_ERROR,
         RULE_RUNNER_DEPENDENCY,
+        RULE_UNANALYSED_FILE,
     }
 )
+
+# Files under the source roots that are diffcone's own, not the project's:
+# the cache, and the declarations the planner already reads from both
+# revisions.
+OWN_FILES = ("diffcone.toml",)
+OWN_DIRS = (".diffcone/",)
+UNANALYSED_PATHS_SHOWN = 5
+
+
+def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]:
+    """Non-Python files under the source roots whose content differs between
+    the snapshots (added, deleted or edited). The index reads none of them,
+    so it cannot say who depends on one: a data file the code opens, a
+    compiled extension's source, a configuration file."""
+    paths = base.other_files.keys() | head.other_files.keys()
+    return sorted(
+        p
+        for p in paths
+        if base.other_files.get(p) != head.other_files.get(p)
+        and p not in OWN_FILES
+        and not p.startswith(OWN_DIRS)
+    )
 
 
 @dataclass(frozen=True)
@@ -552,6 +576,19 @@ def plan_from_indexes(
                 )
     graph.freeze()
     fallbacks += _runner_dependency_fallbacks(targets, changes, base, head)
+    unanalysed = _changed_unanalysed_files(base, head)
+    if unanalysed:
+        shown = ", ".join(unanalysed[:UNANALYSED_PATHS_SHOWN])
+        more = len(unanalysed) - UNANALYSED_PATHS_SHOWN
+        fallbacks.append(
+            Fallback(
+                RULE_UNANALYSED_FILE,
+                "all_targets",
+                f"{len(unanalysed)} file(s) the analysis does not read changed under the source "
+                f"roots ({shown}{f', and {more} more' if more > 0 else ''}); code or tests may "
+                "read them, so every supplied target is selected",
+            )
+        )
 
     # Backward reachability from every changed symbol.
     mode: dict[str, int] = {}

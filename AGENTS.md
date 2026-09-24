@@ -38,6 +38,10 @@ caches described in CLAUDE.md.
   corpus repositories every saving they have (evaluation.md, "What the
   caller-object rule cost"), so close any remaining case the same way, by
   typing more receivers.
+* A file the index does not read is unknown, not unaffected: a change to
+  any non-Python file under a source root selects every target
+  (`unanalysed_file_changed`). Only diffcone's own files are exempt, and
+  a narrower rule needs a measured reason, like any other narrowing.
 * Symbol identity is the dotted qualified name; source locations are
   metadata. Blank-line or comment changes must produce no changed symbols.
 * Both revisions are analysed; edges that exist only in the base revision

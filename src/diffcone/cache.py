@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 16  # 16: the index carries which classes are handed to other code
+INDEX_FORMAT = 17  # 17: the index carries the blob ids of the files it does not read
 
 
 def _indexer_fingerprint() -> str:
@@ -75,6 +75,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "modules": sorted(index.modules),
         "failed_modules": sorted(index.failed_modules),
         "escaped_classes": sorted(index.escaped_classes),
+        "other_files": dict(sorted(index.other_files.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
         "edges": [asdict(e) for e in sorted(index.edges)],
         "unresolved": [asdict(u) for u in sorted(index.unresolved)],
@@ -103,6 +104,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         errors=[AnalysisError(**e) for e in data["errors"]],
         failed_modules=set(data["failed_modules"]),
         escaped_classes=set(data["escaped_classes"]),
+        other_files=dict(data["other_files"]),
     )
 
 

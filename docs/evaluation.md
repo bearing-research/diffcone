@@ -1410,6 +1410,35 @@ built by a `classmethod`, or handed back through a chain of such calls.
 Closing one means typing more receivers, not widening the fallback again,
 which this section measured.
 
+## What reading no non-Python file cost
+
+Until the `unanalysed_file_changed` fallback, a commit that changed only a
+non-Python file under a source root got an empty plan: a data file the code
+opens, a Cython module, a dependency pin. That was a miss by construction.
+The fallback selects every target for any such file (design.md), and the
+choice to count *every* file, documentation included, was deliberate.
+Re-planning all 171 recorded commits, old rules against new:
+
+* **Nothing deselected** (it only widens), and 19 commits widen, adding
+  8 017 targets. Corpus-wide savings go from 25.4 % to 19.7 %.
+* Per repository: cattrs 46 % → 0 %, typer 33 % → 0 %, tenacity 19 % → 0 %,
+  toolz 17 % → 0 %, trio 15 % → 0 %, httpx 67 % → 33 %, packaging 50 % →
+  25 %, boltons 42 % → 21 %, more-itertools 47 % → 29 %, marshmallow 33 % →
+  22 %, attrs 60 % → 56 %, starlette 38 % → 35 %, rich 22 % → 17 %.
+* What triggered it: of the 30 files, 16 are documentation (`docs/*.md`,
+  `docs/*.rst`, `CONTRIBUTING.md`), 6 are changelogs (`CHANGELOG.md`,
+  `HISTORY.md`, `changelog.d/`), 6 are CI or packaging configuration
+  (`.pre-commit-config.yaml`, `pyproject.toml`, requirements files), and
+  2 are other (`uv.lock`, a `.pyi` stub). Only the dependency pins and the
+  stub could plausibly change what a test does. Projects that require a
+  changelog entry with every change (boltons, cattrs, attrs) pay on
+  almost every commit.
+
+The recorded corpora are commits that change Python, since `corpus` skips
+the rest, so these numbers are the cost on code changes that come with
+documentation. They do not count the docs-only commits that now select
+everything too.
+
 ## pandas: the primary target
 
 pandas is far larger than anything above: 1 530 modules, 37 307 symbols,

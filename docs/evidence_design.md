@@ -1,8 +1,8 @@
 # Execution evidence: design proposal
 
-Status: **proposed, not implemented.** Nothing here is wired up. The
-open decisions at the end need an answer before any code is written, and
-two of them change the scope set in AGENTS.md.
+Status: **proposed, not implemented**, apart from step 0, which has
+shipped. Four of the five decisions at the end are answered; the fifth
+waits for the spike.
 
 ## Why
 
@@ -78,7 +78,7 @@ folds parameter cases:
 
 | record | what | mechanism |
 |---|---|---|
-| `X(T)` | symbols executed during T's setup, call and teardown | `sys.monitoring` `PY_START`, disabled per code object after its first hit and re-armed per test with `restart_events()`; `sys.setprofile` on Python 3.11 (slower, same record) |
+| `X(T)` | symbols executed during T's setup, call and teardown | `sys.monitoring` `PY_START` (Python 3.12+), disabled per code object after its first hit and re-armed per test with `restart_events()` |
 | fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup`/`pytest_fixture_post_finalizer` records each instance's window; `item.fixturenames` links tests to instances |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
 | `N(T)` | attribute names T looked up dynamically | `builtins.getattr` and `hasattr` wrapped during collection runs only |
@@ -227,26 +227,27 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
    on at least 20 pandas commits, and the 28-repository corpus re-planned
    with evidence shows no miss and states its savings against static.
 
-## Decisions needed
+## Decisions
 
-1. **Step 0, static mode.** When a non-Python file under a source root
-   changes, select everything for *any* such file (safe; a `README.md` under
-   the `.` root then selects everything), or only for files outside a list
-   of inert kinds (`.md`, `.rst`, images; smaller, but assumes the code
-   never reads them)? The list could be something the project declares in
-   `diffcone.toml`. That would be the first declaration that narrows rather
-   than widens.
-2. **The assumptions.** Evidence mode adds the residuals above (a lazy value
-   shared among three or more tests, time- or network-dependent paths,
-   module-level state), which static mode does not have. Is an opt-in mode
-   with stated and detected residuals acceptable under the governing rule?
-   The recommendation is yes, opt-in only, with the nightly miss audit as
-   part of the mode rather than advice.
-3. **Scope.** AGENTS.md lists runtime tracing as out of scope. This would
-   put it in scope for the collector only, with planning still static.
-4. **Python version for collection.** 3.12+ (`sys.monitoring`, cheap), or
-   also 3.11 through `sys.setprofile` (every call pays a callback)?
+Answered (2026-09-24):
+
+1. **Step 0: every file.** Any changed non-Python file under a source root
+   selects everything, including a `README.md` under a `.` root. It shipped
+   as the `unanalysed_file_changed` fallback (design.md), and its cost on
+   the recorded corpora is in evaluation.md.
+2. **The assumptions: opt-in only.** Evidence mode is accepted with its
+   stated residuals as an explicit opt-in. Static stays the default, and
+   the nightly miss audit is part of the mode, not advice.
+3. **Scope** follows from 2: runtime tracing moves into scope for the
+   collector only, when the mode is implemented. AGENTS.md changes with
+   that implementation, not before.
+4. **Collection needs Python 3.12+** (`sys.monitoring`). There is no 3.11
+   fallback; a collection on an older interpreter is refused.
+
+Open:
+
 5. **Where collection runs.** Nightly in CI is the natural producer for
    pandas, and developers would download that store. That makes the
    environment fingerprint the thing to get right. Local-only collection
-   is simpler, but it costs every developer a full traced run.
+   is simpler, but it costs every developer a full traced run. The spike's
+   overhead numbers decide it.

@@ -55,10 +55,11 @@ class Snapshot:
     config_files: dict[str, bytes] = field(default_factory=dict)
     # Problems reading the snapshot itself (e.g. unmerged index entries).
     errors: list[AnalysisError] = field(default_factory=list)
-    # Paths of the other (non-Python) files under the source roots, names
-    # only, and (read only with ``with_config``) the content of the text
-    # files among them that pytest could collect as doctests.
-    other_paths: tuple[str, ...] = ()
+    # The other (non-Python) files under the source roots: path -> git blob
+    # id, so a change to one is visible without reading it; and (read only
+    # with ``with_config``) the content of the text files among them that
+    # pytest could collect as doctests.
+    other_files: dict[str, str] = field(default_factory=dict)
     text_files: dict[str, bytes] = field(default_factory=dict)
 
     @property
@@ -131,18 +132,24 @@ def _normalise_root(root: str) -> str:
 SYMLINK_MODE = "120000"
 
 
-def _ls_tree(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, str]]:
-    """(mode, path) of every blob under ``pathspecs`` (all when empty)."""
+def _ls_tree_ids(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, str, str]]:
+    """(mode, blob id, path) of every blob under ``pathspecs`` (all when empty)."""
     args = ["ls-tree", "-r", "-z", "--full-tree", commit]
     if pathspecs:
         args += ["--", *pathspecs]
-    entries: list[tuple[str, str]] = []
+    entries: list[tuple[str, str, str]] = []
     for record in _git(repo, args).split(b"\0"):
         if not record:
             continue
         meta, _, path = record.decode("utf-8", "surrogateescape").partition("\t")
-        entries.append((meta.split()[0], path))
+        mode, _, oid = meta.split()
+        entries.append((mode, oid, path))
     return entries
+
+
+def _ls_tree(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, str]]:
+    """(mode, path) of every blob under ``pathspecs`` (all when empty)."""
+    return [(mode, path) for mode, _, path in _ls_tree_ids(repo, commit, pathspecs)]
 
 
 def _root_pathspecs(source_roots: list[str]) -> list[str]:
@@ -252,18 +259,56 @@ def _ls_files_tagged(repo: Path, args: list[str], source_roots: list[str]) -> li
     return sorted(entries, key=lambda e: (e[1], e[0]))
 
 
-def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
-    """Stage-0 index entries under the roots: path -> mode."""
+def _ls_files_staged_ids(repo: Path, source_roots: list[str]) -> dict[str, tuple[str, str]]:
+    """Stage-0 index entries under the roots: path -> (mode, blob id)."""
     out = _git(repo, ["ls-files", "-z", "--stage", *_pathspec(source_roots)])
-    entries: dict[str, str] = {}
+    entries: dict[str, tuple[str, str]] = {}
     for record in out.split(b"\0"):
         if not record:
             continue
         meta, _, path = record.decode("utf-8", "surrogateescape").partition("\t")
-        mode, _, stage = meta.split()
+        mode, oid, stage = meta.split()
         if stage == "0":
-            entries[path] = mode
+            entries[path] = (mode, oid)
     return entries
+
+
+def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
+    """Stage-0 index entries under the roots: path -> mode."""
+    return {path: mode for path, (mode, _) in _ls_files_staged_ids(repo, source_roots).items()}
+
+
+def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) -> dict[str, str]:
+    """The git blob id each of ``paths`` would have if added now. A file git
+    reports unmodified has its staged id; a modified or untracked one is
+    hashed by ``git hash-object``, which applies the same filters (line
+    endings, clean filters) and object format as ``git add`` would, so equal
+    content gives the id a commit has. A symbolic link is the id of its
+    target path, as git stores it."""
+    staged = _ls_files_staged_ids(repo, source_roots)
+    listed = _git(
+        repo, ["ls-files", "-z", "-m", "--others", "--exclude-standard", *_pathspec(source_roots)]
+    )
+    dirty = {p.decode("utf-8", "surrogateescape") for p in listed.split(b"\0") if p}
+    ids: dict[str, str] = {}
+    to_hash: list[str] = []
+    for path in paths:
+        full = repo / path
+        if full.is_symlink():
+            target = os.readlink(full).encode("utf-8", "surrogateescape")
+            ids[path] = _git(repo, ["hash-object", "--stdin"], stdin=target).decode().strip()
+        elif path in staged and path not in dirty:
+            ids[path] = staged[path][1]
+        elif "\n" in path:  # ``--stdin-paths`` is line-based
+            args = ["hash-object", "--stdin", f"--path={path}"]
+            ids[path] = _git(repo, args, stdin=full.read_bytes()).decode().strip()
+        else:
+            to_hash.append(path)
+    if to_hash:
+        request = "\n".join(to_hash).encode("utf-8", "surrogateescape") + b"\n"
+        out = _git(repo, ["hash-object", "--stdin-paths"], stdin=request).decode().split()
+        ids.update(zip(to_hash, out, strict=True))
+    return ids
 
 
 def _nested_asv_configs(listing: bytes) -> list[str]:
@@ -288,7 +333,8 @@ def read_commit_snapshot(
     repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
     commit = resolve_commit(repo, revision)
-    entries = _ls_tree(repo, commit, _root_pathspecs(source_roots))
+    entries_ids = _ls_tree_ids(repo, commit, _root_pathspecs(source_roots))
+    entries = [(m, p) for m, _, p in entries_ids]
     paths = sorted(p for m, p in entries if p.endswith(".py") and m != SYMLINK_MODE)
     link_paths = [p for m, p in entries if m == SYMLINK_MODE]
     targets = read_files(repo, commit, link_paths)
@@ -325,7 +371,9 @@ def read_commit_snapshot(
         source_roots=list(source_roots),
         files=dict(sorted(files.items())),
         config_files=config_files,
-        other_paths=tuple(sorted(p for m, p in entries if not p.endswith(".py"))),
+        other_files={
+            p: oid for _, oid, p in sorted(entries_ids, key=lambda e: e[2]) if not p.endswith(".py")
+        },
         text_files=read_files(
             repo, commit, _text_paths([p for m, p in entries if m != SYMLINK_MODE])
         )
@@ -395,7 +443,11 @@ def read_index_snapshot(
         files=dict(sorted(files.items())),
         config_files=config_files,
         errors=errors,
-        other_paths=tuple(sorted(p for p in staged if not p.endswith(".py"))),
+        other_files={
+            p: oid
+            for p, (_, oid) in sorted(_ls_files_staged_ids(repo, source_roots).items())
+            if not p.endswith(".py")
+        },
         text_files=read_files(
             repo, "", _text_paths([p for p, m in staged.items() if m != SYMLINK_MODE]), label=INDEX
         )
@@ -465,8 +517,21 @@ def read_worktree_snapshot(
         source_roots=list(source_roots),
         files=files,
         config_files=config_files,
-        other_paths=tuple(
-            sorted({p for _, p in listed if not p.endswith(".py") and (repo / p).is_file()})
+        other_files=_worktree_blob_ids(
+            repo,
+            sorted(
+                {
+                    p
+                    for tag, p in listed
+                    if not p.endswith(".py")
+                    and (
+                        (repo / p).is_file()
+                        or (repo / p).is_symlink()
+                        or tag == TAG_SKIP_WORKTREE  # not on disk by design: the staged id
+                    )
+                }
+            ),
+            source_roots,
         ),
         text_files={
             p: (repo / p).read_bytes()

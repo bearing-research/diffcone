@@ -133,6 +133,9 @@ class SourceIndex:
     # Classes whose instances are passed to someone else, who may then read
     # any attribute off them by a name nothing resolves.
     escaped_classes: set[str] = field(default_factory=set)
+    # The non-Python files under the source roots: path -> git blob id. The
+    # index reads none of them, so the planner compares them whole.
+    other_files: dict[str, str] = field(default_factory=dict)
 
     @property
     def revision(self) -> str:
