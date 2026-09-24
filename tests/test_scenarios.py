@@ -3766,3 +3766,110 @@ def test_a_name_passed_on_is_followed_to_the_caller_that_knows_it(repo):
     assert selected(repo.plan(base, plot, targets)) == {"bench_plot.P.time_plot"}
     arrow = repo.commit({"pkg/arrow.py": "STAMP = len('arrow!')\n"})
     assert selected(repo.plan(plot, arrow, targets)) == {"t::arrow"}
+
+
+def _runner_only_tree(test_x: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Library code calls ``obj.helper()`` on an untyped receiver; a test
+    class defines a ``helper`` of its own that reads attributes dynamically
+    (so any change in its imports makes it affected)."""
+    tree = {
+        "pkg/__init__.py": "",
+        "pkg/core.py": "def run(obj):\n    return obj.helper()\n",
+        "pkg/other.py": "def other():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_x.py": test_x,
+        "tests/test_core.py": (
+            "from pkg.core import run\n\n\n"
+            "class Real:\n    def helper(self):\n        return 1\n\n\n"
+            "def test_run():\n    assert run(Real()) == 1\n"
+        ),
+        "benchmarks/bench_other.py": (
+            "from pkg.other import other\n\n\n"
+            "class O:\n    def time_other(self):\n        return other()\n"
+        ),
+    }
+    tree.update(extra or {})
+    return tree
+
+
+_TEST_X = (
+    "import os\n\nimport pkg.other\n\n\n"
+    "class TestX:\n"
+    "    def helper(self):\n        return getattr(pkg.other, os.environ['N'])\n\n"
+    "    def test_a(self):\n        assert True\n"
+)
+_RUNNER_TARGETS = [
+    py_target("t::run", "tests.test_core.test_run"),
+    asv_target("bench_other.O.time_other", "benchmarks.bench_other.O.time_other"),
+]
+
+
+def _plan_other_change(repo, tree):
+    base = repo.commit(tree)
+    head = repo.commit({"pkg/other.py": "def other():\n    return 2\n"})
+    return repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+
+
+def test_a_name_match_cannot_land_on_a_method_only_the_runner_can_call(repo):
+    """pandas' shape: ``DataFrame`` calls ``x._cast_pointwise_result`` on an
+    untyped receiver, and a *test class* has a helper of that name holding a
+    dynamic reference. Only pytest ever holds an instance of that class, and
+    it never leaves the class, so ``run`` cannot be calling it."""
+    plan = _plan_other_change(repo, _runner_only_tree(_TEST_X))
+    assert "tests/test_core.py::test_run" not in selected(plan)
+    assert "bench_other.O.time_other" in selected(plan)
+
+
+def test_a_test_instance_handed_to_other_code_keeps_its_methods(repo):
+    """``run(self)`` passes the test instance to library code, which can then
+    call its ``helper`` by name: the rule must not apply."""
+    escaping = (
+        _TEST_X + "\n    def test_b(self):\n        from pkg.core import run\n        run(self)\n"
+    )
+    plan = _plan_other_change(repo, _runner_only_tree(escaping))
+    assert "tests/test_core.py::test_run" in selected(plan)
+
+
+def test_a_test_class_constructed_elsewhere_keeps_its_methods(repo):
+    """Something outside the class builds an instance: it is not only the
+    runner's any more."""
+    plan = _plan_other_change(
+        repo,
+        _runner_only_tree(
+            _TEST_X,
+            {
+                "pkg/uses_test.py": (
+                    "from tests.test_x import TestX\n\n\ndef make():\n    return TestX()\n"
+                )
+            },
+        ),
+    )
+    assert "tests/test_core.py::test_run" in selected(plan)
+
+
+def test_a_held_subclass_keeps_its_bases_methods(repo):
+    """An escaping subclass carries its base's methods, so the base is held."""
+    with_sub = _TEST_X + (
+        "\n\nclass TestY(TestX):\n"
+        "    def test_c(self):\n        from pkg.core import run\n        run(self)\n"
+    )
+    plan = _plan_other_change(repo, _runner_only_tree(with_sub))
+    assert "tests/test_core.py::test_run" in selected(plan)
+
+
+def test_request_instance_turns_the_rule_off(repo):
+    """``request.instance`` is pytest's own channel for handing a test
+    instance to other code; its presence anywhere disables the rule."""
+    plan = _plan_other_change(
+        repo,
+        _runner_only_tree(
+            _TEST_X,
+            {
+                "tests/conftest.py": (
+                    "import pytest\n\n\n@pytest.fixture\ndef inst(request):\n"
+                    "    return request.instance\n"
+                )
+            },
+        ),
+    )
+    assert "tests/test_core.py::test_run" in selected(plan)

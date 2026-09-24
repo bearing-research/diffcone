@@ -795,6 +795,34 @@ dependency.
 Not modelled: `params` expansion, a `benchmark_dir` outside the source roots
 (targets get `missing_symbol` notes).
 
+### A name match cannot land on a method only the test runner can call
+
+An attribute on an untyped receiver matches every symbol of that name
+(above), and that includes methods of test classes: in pandas, library code
+says `x.dtype`, `x.index`, `x.copy` thousands of times, and each matched a
+fixture or helper of the same name on some test class -- 7 007 references,
+reaching 154 test classes.
+
+Those edges are impossible when the class is only ever instantiated by the
+test runner. A call `obj.m()` reaches `C.m` only if `obj` is an instance of
+C or a subclass; pytest creates the instances of a test class to run its
+tests, and if the analysed code never constructs the class, never refers to
+it as a value and never hands an instance on, those are the only instances
+and they never leave the class's own methods. So the members of such a class
+are not name-match candidates. Calls on `self` inside it are resolved
+through the MRO and are unaffected.
+
+A class counts as runner-instantiated when it owns the entry symbol of a
+discovered pytest target or is a collecting class among a target's
+lifecycle dependencies. It keeps its members as candidates when it is
+*held*: an instance or the class is passed on (`escaped_classes`, which also
+catches `self` passed as an argument), a symbol outside every runner class
+refers to it, or a held subclass inherits from it. pytest's `request.instance`
+hands a test instance to other code, so any read of an attribute named
+`instance` turns the rule off for the whole plan. The residual assumption
+is that a test instance is not stored somewhere outside its class by other
+means (`GLOBAL = self`).
+
 ### Attributes read off an object
 
 `def invoke(obj, name): getattr(obj, name)()` reads an object its own module

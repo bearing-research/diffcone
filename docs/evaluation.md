@@ -1410,6 +1410,42 @@ built by a `classmethod`, or handed back through a chain of such calls.
 Closing one means typing more receivers, not widening the fallback again,
 which this section measured.
 
+## pandas: the primary target
+
+pandas is far larger than anything above: 1 530 modules, 37 307 symbols,
+168 925 edges, 24 839 pytest and 1 188 ASV targets. It indexes with no
+analysis error; a plan takes 112 s cold and 41 s warm. Its tests live inside
+the package (`pandas.tests.*`) and its ASV suite uses a nested
+`asv_bench/asv.conf.json`, both of which it exercised for the first time.
+
+**It selected everything** -- 26 026 of 26 027 targets for a three-symbol
+change -- and the cause was not many small things but a short chain of
+single seeds, each reached by every test. Each was taken apart in turn:
+
+| seed | targets it selected | what it was | now |
+|---|---|---|---|
+| `pandas/__init__.py` | 22 512 | `for _dependency in ("numpy", "dateutil"): __import__(_dependency)` -- the builtin was classed with `eval` and never bounded | bounded like `import_module` |
+| `import_optional_dependency` | 21 317 | 124 call sites, 121 literal; three unbounded made the helper a seed for everything | the import belongs to the caller that named it |
+| `skip_if_no` | 20 866 | passes its own parameter to the importer | followed to its callers |
+| `TestArrowArray._cast_pointwise_result` | 22 500 | a **name match**: `DataFrame` calls `self.index.array._cast_pointwise_result(...)`, and a pytest class has a helper of that name | a class only the runner instantiates is not a candidate |
+
+**What is left is one genuine case.** `pandas.plotting._core._get_plot_backend`
+imports whatever module `config["plotting"]["backend"]` names at run time,
+and every test reaches it: root conftest, then `DataFrame`, then
+`boxplot_frame`. A name read from configuration is not something static
+analysis can bound, so pandas still selects everything; the other unbounded
+imports in the whole code base number five, two of them in the library.
+
+**Validation of the narrowing.** Re-planned over every recorded corpus, the
+changes above deselect 211 targets on five commits, and each was checked
+against the suite with `validate --coverage`: more-itertools at 100 % recall
+on all three (10, 9 and 14 tests executed a changed symbol, all selected,
+precision 90 % and 91 % on two), and packaging selecting nothing on two
+commits that changed only a nox session, which **0 of 969** tests execute.
+The packaging drop comes from the `__import__` fix: `_get_manylinux_module`
+does `__import__("_manylinux")`, a literal that used to select 95 tests on
+any change at all.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

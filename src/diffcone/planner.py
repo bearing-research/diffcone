@@ -60,6 +60,7 @@ from diffcone.model import (
     IMPORTS,
     IMPORTS_NAME,
     LIFECYCLE,
+    METHOD,
     MODULE,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
@@ -322,6 +323,88 @@ def _members_by_container(symbols: set[str]) -> dict[str, list[str]]:
     return members
 
 
+def _runner_only_classes(
+    base: SourceIndex,
+    head: SourceIndex,
+    discovered: list[DiscoveryResult],
+    edges: dict[Edge, tuple[str, ...]],
+) -> set[str]:
+    """Test classes whose instances only the test runner ever holds.
+
+    A call ``obj.m()`` reaches ``C.m`` only if ``obj`` is an instance of C or
+    of a subclass. pytest instantiates a test class to run its tests; if the
+    analysed code never constructs it, never refers to it as a value and
+    never hands an instance on, those are the only instances, and they never
+    leave the class's own methods. Nothing outside it can be holding one, so
+    no name-matched call from outside can land on its members. (Calls on
+    ``self`` inside it are resolved through the MRO and are not name matches.)
+
+    pandas is why this matters: its library code says ``x.dtype``,
+    ``x.index``, ``x.copy`` thousands of times, and every one of those matched
+    a fixture or helper of the same name on some test class -- one of which
+    held a dynamic reference that every test reached through ``DataFrame``.
+
+    A class counts as runner-instantiated when it owns the entry of a pytest
+    target, or is the collecting class a target lists among its lifecycle
+    dependencies. It is *held* -- and keeps its members as candidates -- when
+    an instance or the class is passed on (``escaped_classes``), when a
+    symbol outside every runner class refers to it, or when a held class
+    inherits from it. A read of an attribute named ``instance`` anywhere is
+    pytest's ``request.instance``, the one channel that hands a test instance
+    to other code, and turns the rule off."""
+    symbols = {**base.symbols, **head.symbols}
+    runner: set[str] = set()
+    for result in discovered:
+        if result.runner != "pytest":
+            continue
+        for target in result.targets:
+            entry = symbols.get(target.entry_symbol)
+            if entry is not None and entry.kind == METHOD and entry.container:
+                runner.add(entry.container)
+            for dep in target.lifecycle_dependencies:
+                owner = symbols.get(dep)
+                if owner is not None and owner.kind == CLASS:
+                    runner.add(dep)
+    if not runner:
+        return set()
+    for index in (base, head):
+        if any(u.kind != UNRESOLVED_DYNAMIC and u.name == "instance" for u in index.unresolved):
+            return set()
+
+    def within_runner(symbol_id: str) -> bool:
+        return _inside(symbol_id, runner, base, head)
+
+    held = (base.escaped_classes | head.escaped_classes) & runner
+    for edge in edges:
+        if edge.kind == REFERENCES and edge.target in runner and not within_runner(edge.source):
+            held.add(edge.target)
+    # A held subclass holds its bases too: its instances carry their methods.
+    changed = True
+    while changed:
+        changed = False
+        for edge in edges:
+            if (
+                edge.kind == REFERENCES
+                and edge.source in held
+                and edge.target in runner
+                and edge.target not in held
+            ):
+                held.add(edge.target)
+                changed = True
+    return runner - held
+
+
+def _inside(symbol_id: str, classes: set[str], base: SourceIndex, head: SourceIndex) -> bool:
+    """Whether ``symbol_id`` is one of ``classes`` or sits inside one."""
+    current: str | None = symbol_id
+    while current:
+        if current in classes:
+            return True
+        symbol = head.symbols.get(current) or base.symbols.get(current)
+        current = symbol.container if symbol is not None else None
+    return False
+
+
 def plan_from_indexes(
     base: SourceIndex,
     head: SourceIndex,
@@ -344,7 +427,8 @@ def plan_from_indexes(
     errors = sorted(base.errors + head.errors)
 
     graph = _Graph()
-    for edge, revs in _union(base.edges, head.edges).items():
+    union = _union(base.edges, head.edges)
+    for edge, revs in union.items():
         graph.add(edge, revs)
 
     # An instance handed to someone else can have any attribute read off it by
@@ -413,9 +497,12 @@ def plan_from_indexes(
     # nothing; constructors are reached through explicit class references.
     # Dynamic references are pseudo-seeds.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
+    runner_only = _runner_only_classes(base, head, discovered, union)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
         if symbol.kind != MODULE and not _is_dunder(symbol.name):
+            if _inside(symbol_id, runner_only, base, head):
+                continue  # only the test runner can hold an instance: see below
             symbols_by_name[symbol.name].append(symbol_id)
     for name, symbols in symbols_by_name.items():
         for symbol_id in symbols:
