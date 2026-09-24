@@ -2929,3 +2929,52 @@ def test_a_conftest_that_collects_files_makes_the_plan_incomplete(repo):
     assert notes[0].detail.startswith("docs/conftest.py: binds pytest_collect_file")
     # The targets it does know are still planned normally.
     assert selected(plan) == {"tests/test_ops.py::test_add", "bench_ops.Add.time_add"}
+
+
+def test_a_test_file_that_cannot_be_named_is_reported_and_nameable(repo):
+    """pytest imports a test file by its basename, so it collects one under a
+    directory whose name is not a Python identifier (pytest-asyncio's
+    ``docs/how-to-guides``). Such a file cannot be named from a plain source
+    root: the plan says so, and a ``DIR=PREFIX`` root fixes it."""
+    tree = {
+        "pyproject.toml": (
+            "[tool.pytest.ini_options]\n"
+            'python_files = ["test_*.py", "*_example.py"]\n'
+            'testpaths = ["docs", "tests"]\n'
+        ),
+        "pkg/__init__.py": "",
+        "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+        "docs/how-to-guides/loop_example.py": (
+            "from pkg.ops import add\n\n\ndef test_example():\n    assert add(1, 1) == 2\n"
+        ),
+        "tests/test_ops.py": (
+            "from pkg.ops import add\n\n\ndef test_add():\n    assert add(2, 2) == 4\n"
+        ),
+        "benchmarks/bench_ops.py": (
+            "from pkg.ops import add\n\n\n"
+            "class Add:\n    def time_add(self):\n        return add(1, 1)\n"
+        ),
+    }
+    base = repo.commit(tree)
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    notes = [n for n in plan.incomplete_discovery if n.kind == "unparsed_file"]
+    assert len(notes) == 1
+    assert "cannot be named from any source root" in notes[0].detail
+    assert "DIR=PREFIX" in notes[0].detail
+    assert selected(plan) == {"tests/test_ops.py::test_add", "bench_ops.Add.time_add"}
+
+    named = repo.plan(
+        base,
+        head,
+        [],
+        source_roots=["docs/how-to-guides=docs_howto", "."],
+        discover_runners=["pytest", "asv"],
+    )
+    assert not named.incomplete_discovery
+    assert selected(named) == {
+        "docs/how-to-guides/loop_example.py::test_example",
+        "tests/test_ops.py::test_add",
+        "bench_ops.Add.time_add",
+    }

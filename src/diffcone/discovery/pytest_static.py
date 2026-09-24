@@ -98,7 +98,7 @@ from diffcone.discovery.common import (
 from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
 from diffcone.manifest import Target
 from diffcone.model import SourceIndex
-from diffcone.snapshot import Snapshot
+from diffcone.snapshot import Snapshot, module_name_for
 
 RUNNER = "pytest"
 
@@ -1002,9 +1002,22 @@ def discover_pytest(
     conftest_paths = [p for p in snapshot.files if PurePosixPath(p).name == "conftest.py"]
     parsed, failed = parse_modules(snapshot, sorted(set(test_paths + conftest_paths)))
     for path in failed:
-        result.notes.append(
-            DiscoveryNote(RUNNER, "unparsed_file", f"{path}: not parsed or outside source roots")
+        # Two reasons, and they need different answers: a file that does not
+        # parse is also an analysis error (the plan degrades and selects
+        # everything), while one that cannot be named is dropped silently --
+        # pytest imports it by its basename, so its tests are collected and
+        # are not targets (pytest-asyncio's ``docs/how-to-guides``).
+        nameable = module_name_for(path, snapshot.source_roots) is not None
+        detail = (
+            f"{path}: did not parse"
+            if nameable
+            else (
+                f"{path}: cannot be named from any source root (a directory component is not a "
+                "Python identifier), so pytest collects it and it is not a target; name it with "
+                "a DIR=PREFIX source root"
+            )
         )
+        result.notes.append(DiscoveryNote(RUNNER, "unparsed_file", detail))
     facts_by_path = {pm.path: _collect_facts(pm) for pm in parsed}
     facts_by_module = {f.parsed.module: f for f in facts_by_path.values()}
 

@@ -64,6 +64,9 @@ INCOMPLETE_NOTE_KINDS = frozenset(
         "imported_test_out_of_scope",
         "unknown_base_class",
         "plugin_collects_files",
+        # A file pytest collects that could not be parsed or named: whatever
+        # tests it holds are not targets.
+        "unparsed_file",
     }
 )
 

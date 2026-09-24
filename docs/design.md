@@ -629,7 +629,7 @@ tests are the `install` tests imported this way.
 
 Four notes mean the target list may be short of what the runner collects
 -- `uncollected_test_class`, `unknown_base_class`,
-`imported_test_out_of_scope` and `plugin_collects_files` (a conftest or
+`imported_test_out_of_scope`, `unparsed_file` and `plugin_collects_files` (a conftest or
 plugin that binds `pytest_collect_file`, `pytest_collect_directory` or
 `pytest_pycollect_makeitem`, as a function or a value: scrapy's
 `docs/conftest.py` binds a Sybil instance and its `.rst` files become
@@ -638,6 +638,15 @@ target's dependencies. The report carries `discovery_incomplete`, `plan`
 exits 3, and `run` refuses without `--allow-incomplete-discovery`: a
 degraded plan runs too much, an incomplete one would run too little, and
 only the second can miss.
+
+`unparsed_file` covers two cases. A file that does not parse is also an
+analysis error, so the plan degrades and selects everything. A file that
+cannot be named from any source root -- a directory component that is not
+a Python identifier, such as pytest-asyncio's `docs/how-to-guides` -- is
+dropped instead: pytest imports a test file by its basename and collects
+it regardless, so its tests are not targets. Naming that directory with a
+`DIR=PREFIX` source root makes them targets (197 of pytest-asyncio's
+tests become 208).
 
 A plugin may collect what these rules do not: SQLAlchemy's testing plugin
 collects `<Name>Test`, so alembic's suite is 2387 tests of which these
