@@ -752,14 +752,22 @@ do not start with an underscore; functions and methods of
 non-underscore classes named with `time_`, `timeraw_`, `mem_`, `peakmem_` or
 `track_`. Benchmark ids are `<module relative to benchmark_dir>.<Class>.<method>`.
 
-Lifecycle dependencies: the module, module-level `setup`/`setup_cache`/
-`teardown`, and the class's `setup`/`setup_cache`/`teardown`. Class
-attributes (`params`, `timeout`, ...) reach every method through the
-structural class-body rule; module attributes through the module dependency.
+ASV reads a benchmark class's attributes, inherited ones included, so base
+classes count: one defined in the same module, or imported from any module
+in the source roots (a shared base often lives in the package under test,
+not under `benchmark_dir`), is followed with the subclass's own definitions
+winning. The benchmark is named after the subclass and entered at the
+method that defines it. A base that resolves to neither is an
+`unknown_base_class` note, which counts as incomplete discovery.
 
-Not modelled: `params` expansion, benchmark methods inherited from base
-classes, a `benchmark_dir` outside the source roots (targets get
-`missing_symbol` notes).
+Lifecycle dependencies: the module, module-level `setup`/`setup_cache`/
+`teardown`, and the class's `setup`/`setup_cache`/`teardown`, inherited ones
+included. Class attributes (`params`, `timeout`, ...) reach every method
+through the structural class-body rule; module attributes through the module
+dependency.
+
+Not modelled: `params` expansion, a `benchmark_dir` outside the source roots
+(targets get `missing_symbol` notes).
 
 ## Execution and validation
 

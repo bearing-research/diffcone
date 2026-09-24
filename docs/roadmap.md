@@ -73,10 +73,9 @@ Unknown fixtures cause 1 % of census selections.
   runner plugin collects by its own rules (reported as
   `uncollected_test_class`; SQLAlchemy's plugin collects alembic's 2387
   tests, of which pytest's documented rules find 23).
-* ASV: benchmark methods inherited from base classes, `params` expansion as
-  parameter cases, benchmark directories outside the source roots, and
-  `validate` for ASV (run `asv run --bench` at both snapshots and compare
-  which benchmarks ran).
+* ASV: `params` expansion as parameter cases, benchmark
+  directories outside the source roots, and `validate` for ASV (run `asv
+  run --bench` at both snapshots and compare which benchmarks ran).
 (The collection-based validator this item asked for is implemented:
 `scripts/collection_check.py`, evaluation.md, "Static discovery against
 real collection".)

@@ -2978,3 +2978,76 @@ def test_a_test_file_that_cannot_be_named_is_reported_and_nameable(repo):
         "tests/test_ops.py::test_add",
         "bench_ops.Add.time_add",
     }
+
+
+def test_asv_benchmarks_inherited_from_a_base_class(repo):
+    """ASV reads a benchmark class's attributes, inherited ones included: a
+    benchmark defined on a base class in another module is a target of the
+    subclass, with the base's method as its entry symbol."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": (
+                "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+            ),
+            "pkg/benchbase.py": (
+                "from pkg.ops import mul\n\n\n"
+                "class MulBase:\n"
+                "    def setup(self):\n        self.n = 2\n\n"
+                "    def time_mul(self):\n        return mul(self.n, self.n)\n"
+            ),
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench_ops.py": (
+                "from pkg.benchbase import MulBase\n"
+                "from pkg.ops import add\n\n\n"
+                "class Ops(MulBase):\n"
+                "    def time_add(self):\n        return add(self.n, self.n)\n"
+            ),
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+        }
+    )
+    plan = repo.plan(base, base, [], discover_runners=["pytest", "asv"])
+    asv = next(d for d in plan.discovery if d.runner == "asv")
+    assert {t.runner_id: t.entry_symbol for t in asv.targets} == {
+        "bench_ops.Ops.time_add": "benchmarks.bench_ops.Ops.time_add",
+        # Inherited: named after the subclass, entered where it is defined.
+        "bench_ops.Ops.time_mul": "pkg.benchbase.MulBase.time_mul",
+    }
+    inherited = next(t for t in asv.targets if t.runner_id == "bench_ops.Ops.time_mul")
+    assert "pkg.benchbase.MulBase.setup" in inherited.lifecycle_dependencies
+    assert not [n for n in asv.notes if n.kind == "unknown_base_class"]
+
+    # Only the benchmark that reaches the changed function is selected.
+    head = repo.commit(
+        {"pkg/ops.py": "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return b * a\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"bench_ops.Ops.time_mul"}
+
+
+def test_an_asv_base_class_outside_the_source_roots_is_reported(repo):
+    """A base class diffcone cannot see may contribute benchmarks it cannot
+    list, so the plan says so rather than looking complete."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "benchmarks/bench_ops.py": (
+                "from external_suite import BenchBase\n"
+                "from pkg.ops import add\n\n\n"
+                "class Ops(BenchBase):\n"
+                "    def time_add(self):\n        return add(1, 1)\n"
+            ),
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    notes = [n for n in plan.incomplete_discovery if n.kind == "unknown_base_class"]
+    assert len(notes) == 1
+    assert notes[0].detail.startswith("bench_ops.Ops: base class 'BenchBase'")
+    assert selected(plan) == {"bench_ops.Ops.time_add", "tests/test_ops.py::test_add"}
