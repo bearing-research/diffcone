@@ -125,7 +125,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 15
+    assert cache_mod.INDEX_FORMAT == 16
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -323,3 +323,34 @@ def test_index_cache_removes_the_legacy_hash_directory(tmp_path):
     (tmp_path / "c" / "hashes" / "x.json").write_text("{}")
     IndexCache(tmp_path / "c")
     assert not (tmp_path / "c" / "hashes").exists()
+
+
+def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
+    """Every field of the index must go through the per-commit cache. This
+    walks the dataclass rather than a list of names, so a field added to
+    SourceIndex without being stored fails here: the cache-invisible check in
+    the scenario fixtures deletes the whole-index entries on purpose (the
+    module cache is what it exercises), so nothing else covers this."""
+    import dataclasses
+
+    from diffcone.indexer import build_index
+    from diffcone.model import SourceIndex
+    from diffcone.snapshot import read_snapshot
+
+    rev = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "class Handler:\n    def handle(self):\n        return 1\n",
+            "pkg/run.py": (
+                "from pkg.ops import Handler\n\n\n"
+                "def go(obj, name):\n    return getattr(obj, name)()\n\n\n"
+                "def main():\n    return go(Handler(), 'handle')\n"
+            ),
+            "tests/test_ops.py": "from pkg.run import main\n\n\ndef test_x():\n    assert main()\n",
+        }
+    )
+    index = build_index(read_snapshot(repo.path, rev, ["."], with_config=True))
+    assert index.escaped_classes, "the fixture should hand a class to other code"
+    restored = index_from_dict(index_to_dict(index))
+    for field in dataclasses.fields(SourceIndex):
+        assert getattr(restored, field.name) == getattr(index, field.name), field.name

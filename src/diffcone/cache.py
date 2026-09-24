@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 15  # 15: mutated containers are not literals
+INDEX_FORMAT = 16  # 16: the index carries which classes are handed to other code
 
 
 def _indexer_fingerprint() -> str:
@@ -74,6 +74,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "snapshot": asdict(index.snapshot),
         "modules": sorted(index.modules),
         "failed_modules": sorted(index.failed_modules),
+        "escaped_classes": sorted(index.escaped_classes),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
         "edges": [asdict(e) for e in sorted(index.edges)],
         "unresolved": [asdict(u) for u in sorted(index.unresolved)],
@@ -101,6 +102,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         external={ExternalReference(**x) for x in data["external"]},
         errors=[AnalysisError(**e) for e in data["errors"]],
         failed_modules=set(data["failed_modules"]),
+        escaped_classes=set(data["escaped_classes"]),
     )
 
 
