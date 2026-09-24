@@ -28,10 +28,6 @@ LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
 UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
 UNRESOLVED_ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
 UNRESOLVED_DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
-# Marker in a dynamic reference's detail: this one is not bounded by the
-# seeding module's import closure, because the object it reads is not one of
-# that module's globals (it came from a caller, or an import names anything).
-DYNAMIC_ANY = "reaches any module"
 
 
 @dataclass(frozen=True, order=True)

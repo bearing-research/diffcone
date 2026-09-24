@@ -576,10 +576,9 @@ def plan_from_indexes(
     # module it imports, transitively. A dynamic *import* can reach anything.
     # That bound holds only while the object read is one of those globals.
     # ``def invoke(obj, name): getattr(obj, name)`` reads an object a caller
-    # supplied, which can belong to any module, so such a reference reaches
-    # anything, as a dynamic import does. Bounding it by the callers' own
-    # closures was tried and measured: identical selection on all 171
-    # recorded commits, for a graph walk per seed.
+    # supplied, which can belong to any module; the index binds that read at
+    # the other end instead (a class whose instances are handed around gains
+    # an edge to each of its members), and the closure check stays as well.
     changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
     reach = _ImportReach(base, head)
 
