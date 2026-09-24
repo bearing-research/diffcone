@@ -477,13 +477,7 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). That bound holds only while the object read *is* one
-  of those globals: `getattr(mod, name)` on a module the seeding module
-  imports is bounded, but `def invoke(obj, name): getattr(obj, name)()` reads
-  an object a caller supplied, which can belong to any module, so it reaches
-  anything. (Bounding that case by the callers' own closures instead was
-  tried and measured: identical selection on all 171 recorded commits, for a
-  graph walk per seed.) A dynamic *import* (`__import__`,
+  `dynamic_reference`). A dynamic *import* (`__import__`,
   `importlib.import_module` with an unbounded name) can reach anything and
   stays always-on; the reason says which of the two fired, since "any
   module in scope may be the one" and "reachable from its module's
@@ -792,6 +786,34 @@ dependency.
 
 Not modelled: `params` expansion, a `benchmark_dir` outside the source roots
 (targets get `missing_symbol` notes).
+
+### Attributes read off an object
+
+`def invoke(obj, name): getattr(obj, name)()` reads an object its own module
+never names, so the import-closure bound above does not cover it: the object
+comes from a caller and may belong to any module. What bounds it instead is
+the other end. The index records, per call site, the class each argument is
+an instance of where the argument says so (`C()` passes an instance of `C`,
+`C` passes the class), and a class whose instances are handed to other code
+gains an edge to each of its members: whoever holds one may read any
+attribute off it by a name nothing resolves, so *referring to that class
+depends on its members*, not only on its structure.
+
+This is the project's one accepted exception to the governing rule
+(AGENTS.md). A class whose instances only ever come from a factory --
+`obj = make(); invoke(obj, name)`, with no call site anywhere naming
+`Provider` -- is not reached, and a change to `Provider.action` does not
+select that test. The sound alternative is for such a read to reach any
+module, which was implemented and measured: five corpus repositories lose
+every saving they have (evaluation.md). A scenario pins the gap so that
+closing it later is a deliberate act.
+
+Two narrower bounds are also computed, and are sound rather than
+heuristic: a receiver that is a parameter is whatever the call sites pass,
+and a receiver that is `self.<attr>` is what `__init__` bound it to,
+recursing into the constructions. Both are precise and neither recovered
+anything measurable on the corpora, because real receivers arrive through
+several hops.
 
 ### Declared dependencies
 

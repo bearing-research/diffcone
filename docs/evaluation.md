@@ -1344,24 +1344,36 @@ repositories select more:
 | arrow | 5 | 46 % | 44 % |
 | packaging | 4 | 47 % | 44 % |
 
-Five of them stop narrowing at all: one helper that reads an attribute off
-an object its caller passed is enough, and every test reaches it. The tables
-recorded above this section were measured before the change and their
-savings columns are now optimistic by these amounts; their recall figures
-stand, since a wider selection cannot miss what a narrower one caught.
+Five of them stopped narrowing at all: one helper that reads an attribute
+off an object its caller passed is enough, and every test reaches it.
+
+**That version is not what shipped.** Binding the read to the classes that
+call sites name (design.md, "Attributes read off an object") returns 26 of
+the 28 repositories to the savings in the first column -- structlog to 87 %,
+starlette to 38 %, cattrs to 46 %, boltons to 42 %, attrs to 60 %, pluggy,
+tenacity and trio to theirs -- while still catching the miss, now as an
+ordinary dependency path rather than a fallback. Two repositories pay for
+it: arrow 46 % to 12 % and typer 35 % to 33 %, both because their classes
+are handed around widely. Nothing is deselected anywhere and the tables
+above this section stand, except for those two.
+
+The price is the project's one accepted exception to the governing rule: a
+class whose instances only ever come from a factory is never named at a call
+site, so a change to its methods does not select what reads them. A scenario
+pins it.
+
+A sound version of the same bound -- resolve the receiver back through call
+sites, as a `getattr` *name* already is -- is implemented alongside
+(`_receiver_classes`) and recovered nothing measurable: real receivers
+arrive through several hops before anything names a class.
 
 The last two rows of the table are the `new_target` rule instead, which
 selects a discovered target the base snapshot did not have: a few dozen new
 tests on commits that added tests, which is what it is for.
 
-**What could win the precision back.** The receiver is usually a parameter,
-and the call sites that pass it are often resolvable -- the same way the
-*name* of a `getattr` is already bounded by the literals its call sites pass
-(design.md). Resolving the receiver across call sites and bounding the reach
-to the classes actually passed would restore most of this where the callers
-are in scope, and fall back to reaching anything only when one of them is
-unbounded. Not implemented; this section is the measurement that says what
-it would be worth.
+**What is left.** Closing the factory gap means typing more receivers --
+following what a function returns, or what a name holds -- not widening the
+fallback again, which this section measured.
 
 ## Not yet exercised
 

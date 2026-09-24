@@ -30,6 +30,14 @@ caches described in CLAUDE.md.
   must never miss one that the change can affect.** Soundness fixes come
   before precision work; a narrowing rule is acceptable only when it is
   provably conservative.
+* **The one accepted exception**, decided deliberately and pinned by
+  `test_an_object_only_a_factory_makes_is_the_known_gap`: an attribute read
+  off an object by a name nothing resolves (`getattr(obj, name)`) is bounded
+  by the classes that call sites name. A class whose instances only ever come
+  from a factory is therefore not reached. The sound alternative -- such a
+  read reaches any module -- costs five corpus repositories every saving they
+  have (evaluation.md, "What the caller-object rule cost"). Do not close this
+  by widening the fallback; close it by typing more receivers.
 * Symbol identity is the dotted qualified name; source locations are
   metadata. Blank-line or comment changes must produce no changed symbols.
 * Both revisions are analysed; edges that exist only in the base revision

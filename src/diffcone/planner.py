@@ -56,7 +56,6 @@ from diffcone.model import (
     CLASS,
     DECLARED,
     DEFINED_IN,
-    DYNAMIC_ANY,
     ENTRY,
     IMPORTS,
     IMPORTS_NAME,
@@ -424,16 +423,11 @@ def plan_from_indexes(
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
     unbounded_dynamic: set[str] = set()  # dynamic *imports*: reach anything
-    # Why each unbounded seed is unbounded, for the reason it produces.
-    dynamic_detail: dict[str, str] = {}
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
             if "import" in ref.detail:
                 unbounded_dynamic.add(ref.symbol)
-                # An import that names anything is the widest reason there is.
-                if "import" in ref.detail or ref.symbol not in dynamic_detail:
-                    dynamic_detail[ref.symbol] = ref.detail
         elif ref.name in symbols_by_name and not _is_dunder(ref.name):
             graph.add(
                 Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
@@ -569,7 +563,6 @@ def plan_from_indexes(
                     change_by_id,
                     dynamic_symbols,
                     unbounded_dynamic,
-                    dynamic_detail,
                 )
             )
         for fb in target_fallbacks.get(target.node_id, ()):
@@ -737,7 +730,6 @@ def _explain(
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: set[str],
-    dynamic_detail: dict[str, str],
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -775,15 +767,10 @@ def _explain(
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
     if current in unbounded_dynamic:
-        why = (
-            "imports a module named at runtime"
-            if "import" in dynamic_detail.get(current, "")
-            else "reads an attribute of an object a caller supplied"
-        )
         return Reason(
             RULE_DYNAMIC_REFERENCE,
-            f"{current} {why} ({', '.join(revs)}); any module in scope may be behind it, "
-            "so its dependencies cannot be bounded statically",
+            f"{current} imports a module named at runtime ({', '.join(revs)}); any module in "
+            "scope may be behind it, so its dependencies cannot be bounded statically",
             tuple(steps),
         )
     return Reason(

@@ -3536,3 +3536,62 @@ def test_a_new_benchmark_is_selected_too(repo):
     plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
     assert "bench_ops.Add.time_add_twice" in selected(plan)
     assert reason(plan, "bench_ops.Add.time_add_twice", "new_target")
+
+
+def test_an_object_only_a_factory_makes_is_the_known_gap(repo):
+    """The accepted exception to the governing rule, pinned so it stays
+    visible: a class is bound to its members only where some call site names
+    it. When every instance comes from a factory, nothing names the class at
+    a call site, and a change to its method is not reached.
+
+    Selecting this would mean an unbounded fallback again, which costs five
+    corpus repositories every saving they have (evaluation.md, "What the
+    caller-object rule cost"). If this test ever starts selecting, that is a
+    real improvement, not a break -- flip it deliberately."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/helper.py": "def invoke(obj, name):\n    return getattr(obj, name)()\n",
+            "pkg/provider.py": (
+                "class Provider:\n    def action(self):\n        return 1\n\n\n"
+                "def make():\n    return Provider()\n"
+            ),
+            "tests/test_factory.py": (
+                "import os\n\nfrom pkg.helper import invoke\nfrom pkg.provider import make\n\n\n"
+                "def test_factory():\n"
+                "    obj = make()\n    assert invoke(obj, os.environ['NAME']) == 1\n"
+            ),
+            "benchmarks/bench_factory.py": (
+                "from pkg.provider import make\n\n\n"
+                "class F:\n    def time_make(self):\n        return make()\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "pkg/provider.py": (
+                "class Provider:\n    def action(self):\n        return 2\n\n\n"
+                "def make():\n    return Provider()\n"
+            )
+        }
+    )
+    targets = [
+        py_target("t::factory", "tests.test_factory.test_factory"),
+        asv_target("bench_factory.F.time_make", "benchmarks.bench_factory.F.time_make"),
+    ]
+    assert selected(repo.plan(base, head, targets)) == set()
+
+    # One call site that names the class is enough to bind it everywhere.
+    with_direct = repo.commit(
+        {
+            "tests/test_direct.py": (
+                "import os\n\nfrom pkg.helper import invoke\n"
+                "from pkg.provider import Provider\n\n\n"
+                "def test_direct():\n    assert invoke(Provider(), os.environ['NAME']) == 1\n"
+            )
+        }
+    )
+    plan = repo.plan(
+        base, with_direct, [*targets, py_target("t::d", "tests.test_direct.test_direct")]
+    )
+    assert {"t::factory", "t::d"} <= selected(plan)
