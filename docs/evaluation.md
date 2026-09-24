@@ -992,14 +992,22 @@ validated the same way over up to 12 of their last 75 commits:
 | werkzeug (a7cad31) | 10 | 100 % (867 of 867) | 0 % (4 %) | |
 | starlette (57de5fa) | 8 | 100 % (1 163 of 1 163) | 38 % (39 %) | 64 % recall before the external-base fix |
 | httpx (b5addb6) | 3 | 100 % (2 of 2) | 67 % (100 %) | the re-import test, missed before the import-time rule |
-| typer (a80f6e5) | 3 | 100 % (6 of 6) | 35 % (41 %) | |
+| typer (a80f6e5) | 3 | 100 % (6 of 6) | 35 % (41 %) | 33 % since classes handed to other code bind their members |
 | anyio (f7df682) | 7 | 100 % (828 of 828) | 14 % (43 %) | |
 | trio (50b9825) | 6 | 100 % (433 of 433) | 15 % (20 %) | the re-import test, missed before the import-time rule; REPL tests deselected |
 | more-itertools (1da45ae) | 8 | 100 % (87 of 87) | 46 % (97 %) | |
-| arrow (2224255) | 5 | 100 % (441 of 441) | 46 % (53 %) | 39 outcome changes, none missed |
+| arrow (2224255) | 5 | 100 % (441 of 441) | 46 % (53 %) | 39 outcome changes, none missed; **12 %** since classes handed to other code bind their members |
 
 No outcome was missed. werkzeug, more-itertools, arrow, typer and anyio
 ran before the external-base rule, which only adds selections.
+
+Two of these rows have moved since, and only in the savings column: binding
+a class handed to other code to its members (design.md, "Attributes read off
+an object") costs arrow 46 % to 12 % and typer 35 % to 33 %, the two
+repositories that hand their classes around most. Both were re-validated
+after that change on their current commits -- arrow 0 outcome misses and
+100 % coverage recall (99 of 99), typer 0 misses and 100 % (6 of 6) -- so
+what moved is what the plan costs, not what it catches.
 
 * **starlette, 421 tests: a real miss, fixed.** `TestClient` is an
   `httpx.Client` around `_TestClientTransport(httpx.BaseTransport)`;
