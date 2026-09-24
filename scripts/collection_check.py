@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import warnings
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
@@ -36,6 +37,10 @@ from diffcone.indexer import Indexer
 from diffcone.snapshot import read_snapshot
 
 # ``tests/test_x.py::TestC::test_m[case]`` -> node id without the case.
+# Parsing a project's test *data* can warn (black keeps deliberately invalid
+# escapes under tests/data); that is the project's business, not ours.
+warnings.filterwarnings("ignore", category=SyntaxWarning)
+
 PARAM = re.compile(r"\[.*\]$")
 # The file part of a node id: a path with an extension pytest can collect.
 NODE_FILE = re.compile(r"^[\w./-]+\.(py|txt|rst|md)$")

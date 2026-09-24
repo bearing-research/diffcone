@@ -1240,22 +1240,28 @@ snapshot (parameter cases collapsed, since diffcone plans whole test
 functions). It executes project code, so it is a script, not part of
 planning.
 
-Over the 29 census repositories that have a working environment:
+Over all 48 census repositories, once each had an environment:
 
 | result | repositories |
 |---|---|
-| every collected test is a target | **27** |
-| tests collected that are not targets | 2 (pytest-asyncio 11, scrapy 881) |
+| every collected test is a target | **45** |
+| tests collected that are not targets | 3, all of them declared |
 
-* **pytest-asyncio's 11** are the `docs/how-to-guides` files whose
-  directory cannot be a module name; `--source-root
-  docs/how-to-guides=docs_howto` makes them targets, and without it the
-  plan says so.
-* **scrapy's 881** are the two cases the plan already declares: 295 tests
-  inherited from `queuelib`'s `LifoDiskQueueTest`, a base class outside
-  the source roots (`uncollected_test_class`), and 586 Sybil doctests in
-  `docs/*.rst` (`plugin_collects_files`). Neither can be enumerated
-  without running the plugin; both exit 3.
+* **alembic's 1587, scrapy's 881 and pygments' 850** are the cases the
+  plan declares and exits 3 for: SQLAlchemy's plugin collecting
+  `<Name>Test`; a base class in the external `queuelib` plus Sybil
+  doctests in `docs/*.rst`; and pygments' `pytest_collect_file`, which
+  makes a test of every file under `tests/examplefiles`. None can be
+  enumerated without running the plugin.
+* **Two repositories need a source root to be exact**, and say so without
+  one: pytest-asyncio's `docs/how-to-guides` (a directory that cannot be a
+  module name) and itsdangerous, whose test modules import each other as
+  `test_itsdangerous.test_serializer`, which only `--source-root tests`
+  names.
+* **The sweep found one real gap**, in the two repositories that import
+  test classes from their siblings: only the class's own methods became
+  targets, so urllib3 missed 216 of 1299 tests and itsdangerous 96 of 133.
+  An imported class now contributes its whole MRO, and both are exact.
 
 The reverse direction -- targets pytest did not collect -- is
 over-selection and safe, and it is small except where a suite is skipped
