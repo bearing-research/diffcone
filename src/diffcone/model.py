@@ -134,6 +134,9 @@ class SourceIndex:
     errors: list[AnalysisError] = field(default_factory=list)
     # Modules that failed to parse; their symbols are unknown in this revision.
     failed_modules: set[str] = field(default_factory=set)
+    # Classes whose instances are passed to someone else, who may then read
+    # any attribute off them by a name nothing resolves.
+    escaped_classes: set[str] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

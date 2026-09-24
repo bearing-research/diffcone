@@ -62,6 +62,7 @@ from diffcone.model import (
     IMPORTS_NAME,
     LIFECYCLE,
     MODULE,
+    REFERENCES,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
     VARIABLE,
@@ -347,6 +348,18 @@ def plan_from_indexes(
     for edge, revs in _union(base.edges, head.edges).items():
         graph.add(edge, revs)
 
+    # An instance handed to someone else can have any attribute read off it by
+    # a name nothing resolves (``invoke(obj, name)``), and no static rule can
+    # say which. So referring to such a class depends on its members, not only
+    # on its structure.
+    class_members = _members_by_container(set(base.symbols) | set(head.symbols))
+    for cls in sorted(base.escaped_classes | head.escaped_classes):
+        for member in class_members.get(cls, ()):
+            graph.add(
+                Edge(cls, member, REFERENCES, "attribute of a class passed to other code"),
+                ("base", "head"),
+            )
+
     # Dependencies the project declares (diffcone.toml): the analysis cannot
     # see them, and they only add edges, so they widen selection and never
     # narrow it. An endpoint that is in neither revision is an analysis
@@ -416,7 +429,7 @@ def plan_from_indexes(
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
-            if "import" in ref.detail or DYNAMIC_ANY in ref.detail:
+            if "import" in ref.detail:
                 unbounded_dynamic.add(ref.symbol)
                 # An import that names anything is the widest reason there is.
                 if "import" in ref.detail or ref.symbol not in dynamic_detail:

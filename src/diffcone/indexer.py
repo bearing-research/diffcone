@@ -767,6 +767,25 @@ class _CallSite:
     keywords: dict[str, tuple[str, ...] | None]
     unbounded: bool  # *args / **kwargs at the call site
     receiver_bound: bool  # ``obj.m(...)`` / ``self.m(...)``: self is implicit
+    # The class each argument is an instance of, where the argument says so
+    # (``C()`` or ``C``); None when it does not. Used to bound what a
+    # ``getattr`` on a parameter may read.
+    positional_classes: list[str | None] = field(default_factory=list)
+    keyword_classes: dict[str, str | None] = field(default_factory=dict)
+
+    def class_for(self, param: str, info: _FuncParams) -> str | None:
+        """The class of the argument passed for ``param`` here, if it says."""
+        if self.unbounded:
+            return None
+        if param in self.keyword_classes:
+            return self.keyword_classes[param]
+        if param in info.positional:
+            index = info.positional.index(param)
+            if info.bound and self.receiver_bound:
+                index -= 1
+            if 0 <= index < len(self.positional_classes):
+                return self.positional_classes[index]
+        return None
 
     def value_for(self, param: str, info: _FuncParams) -> tuple[str, ...] | None:
         if self.unbounded:
@@ -885,7 +904,17 @@ def _output_to_dict(out: _Output) -> dict:
         "unresolved": [[u.symbol, u.kind, u.name, u.detail] for u in sorted(out.unresolved)],
         "external": [[x.symbol, x.module] for x in sorted(out.external)],
         "call_sites": {
-            f: [[s.positional, s.keywords, s.unbounded, s.receiver_bound] for s in sites]
+            f: [
+                [
+                    s.positional,
+                    s.keywords,
+                    s.unbounded,
+                    s.receiver_bound,
+                    s.positional_classes,
+                    s.keyword_classes,
+                ]
+                for s in sites
+            ]
             for f, sites in out.call_sites.items()
         },
         "escapes": sorted(out.escapes),
@@ -923,8 +952,17 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
                 keywords={k: _tuples(v) for k, v in keywords.items()},
                 unbounded=unbounded,
                 receiver_bound=receiver_bound,
+                positional_classes=list(positional_classes),
+                keyword_classes=dict(keyword_classes),
             )
-            for positional, keywords, unbounded, receiver_bound in sites
+            for (
+                positional,
+                keywords,
+                unbounded,
+                receiver_bound,
+                positional_classes,
+                keyword_classes,
+            ) in sites
         ]
     out.escapes = set(data["escapes"])
     out.func_params = {
@@ -1128,6 +1166,16 @@ class Indexer:
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
         self._resolve_param_dynamics()
+        # Classes whose instances (or the class itself) are handed to someone
+        # else: whoever holds one may read any attribute off it by a name
+        # nothing resolves, so holding it depends on its members.
+        self.index.escaped_classes = {
+            cls
+            for sites in self._global.call_sites.values()
+            for site in sites
+            for cls in [*site.positional_classes, *site.keyword_classes.values()]
+            if cls is not None
+        }
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
@@ -1288,6 +1336,17 @@ class Indexer:
                 break
         for pd, values in planned:
             if values is None:
+                # The name is unbounded. If the *receiver* is one the call
+                # sites name, the read is still bounded: it can only be an
+                # attribute of those classes, so depend on their members
+                # rather than on everything (see _receiver_classes).
+                classes = self._receiver_classes(pd, writes) if pd.kind == "getattr" else None
+                if classes:
+                    for member in sorted(self._class_members(classes)):
+                        self.out.edges.add(
+                            Edge(pd.function, member, REFERENCES, "attribute read dynamically")
+                        )
+                    continue
                 self.out.unresolved.add(
                     UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
                 )
@@ -1328,6 +1387,121 @@ class Indexer:
                     )
                 else:
                     self._record(ref.source, node, chain=ref.chain)
+
+    def _class_members(self, classes: set[str]) -> set[str]:
+        """Every symbol inside those classes and their in-scope subclasses: an
+        instance of one may be an instance of the other."""
+        family = set(classes)
+        for cls in classes:
+            family.update(self._descendants.get(cls, ()))
+        return {
+            symbol
+            for symbol in self.index.symbols
+            for cls in family
+            if symbol.startswith(cls + ".")
+        }
+
+    def _receiver_classes(
+        self, pd: _ParamDynamic, writes: dict[tuple[str, str], list[_AttrWrite]]
+    ) -> set[str] | None:
+        """The classes the receiver of ``getattr(receiver, <unbounded>)`` may
+        be an instance of, or None when nothing says.
+
+        Two shapes carry the answer. A receiver that is a parameter is
+        whatever the call sites pass (``invoke(Provider(), name)``). A
+        receiver that is ``self.<attr>`` is what ``__init__`` bound it to,
+        which is usually a parameter of its own, so the constructions answer
+        instead (structlog's ``getattr(self._logger, method_name)``)."""
+        if pd.base is None or pd.self_class:
+            return None
+        info = self.out.func_params.get(pd.function)
+        if info is None:
+            return None
+        if len(pd.base) == 1 and pd.base[0] in info.positional:
+            return self._passed_classes(pd.function, pd.base[0])
+        if (
+            len(pd.base) == 2
+            and pd.scope.self_class
+            and pd.base[0] == pd.scope.self_name
+            and not pd.scope.self_is_class
+        ):
+            return self._attribute_classes(pd.scope.self_class, pd.base[1], writes)
+        return None
+
+    def _passed_classes(self, function: str, param: str) -> set[str] | None:
+        """The classes every resolved call site passes for ``param``; None
+        when the function may be called from somewhere unseen or a site says
+        nothing about what it passes."""
+        info = self.out.func_params.get(function)
+        symbol = self.index.symbols.get(function)
+        sites = self.out.call_sites.get(function, [])
+        if (
+            info is None
+            or symbol is None
+            or not sites
+            or function in self.out.escapes
+            or self._super_may_reach(symbol)
+        ):
+            return None
+        found: set[str] = set()
+        for site in sites:
+            cls = site.class_for(param, info)
+            if cls is None:
+                return None
+            found.add(cls)
+        return found or None
+
+    def _attribute_classes(
+        self, class_id: str, attr: str, writes: dict[tuple[str, str], list[_AttrWrite]]
+    ) -> set[str] | None:
+        """What ``self.<attr>`` holds, as classes: every write must assign a
+        class, or a parameter whose constructions all pass one.
+
+        The guards are this rule's own, not ``_attribute_writes``'s. Both
+        refuse when the attribute is written through a receiver whose type is
+        unknown, is a class-level name, or the class customises attribute
+        access. This one does not refuse merely because the class escapes:
+        an unseen subclass lives in code outside the source roots, and what
+        such code puts in the attribute comes from there too. A construction
+        we *can* see whose argument says nothing still gives up (below), which
+        is the case that matters -- a factory inside the project."""
+        unbound = self.out.attr_unbound
+        if ("", "*") in unbound or ("", attr) in unbound:
+            return None
+        family: set[str] = set()
+        for cid in (class_id, *self._descendants.get(class_id, ())):
+            family.update(self._mro(cid))
+        bound: list[_AttrWrite] = []
+        for cid in sorted(family):
+            cscope = self.class_scopes.get(cid)
+            if cscope is None or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
+                return None
+            if attr in cscope.members or attr in cscope.bindings:
+                return None
+            if _ATTRIBUTE_HOOKS & cscope.members.keys():
+                return None
+            for w in writes.get((cid, attr), ()):
+                if w.binding is None:
+                    return None
+                bound.append(w)
+        if not bound:
+            return None
+        found: set[str] = set()
+        for w in bound:
+            kind, value = w.binding  # type: ignore[misc]
+            if kind == "symbol":
+                symbol = self.index.symbols.get(value)
+                if symbol is None or symbol.kind != CLASS:
+                    return None
+                found.add(value)
+            elif kind == "param":
+                passed = self._passed_classes(w.method, value)
+                if passed is None:
+                    return None
+                found |= passed
+            else:
+                return None
+        return found or None
 
     def _param_values(
         self, function: str, param: str, unresolved_names: set[str]
@@ -3070,12 +3244,30 @@ class _ReferenceCollector(ast.NodeVisitor):
             },
             unbounded=unbounded,
             receiver_bound=receiver_bound,
+            positional_classes=[self._argument_class(a) for a in node.args],
+            keyword_classes={
+                k.arg: self._argument_class(k.value) for k in node.keywords if k.arg is not None
+            },
         )
         self.indexer.out.call_sites[symbol.id].append(site)
         # A dispatched call may land on any override: they share the call site.
         for override_id, detail in target.overrides:
             if not detail:
                 self.indexer.out.call_sites[override_id].append(site)
+
+    def _argument_class(self, expr: ast.expr) -> str | None:
+        """The class an argument is an instance of, when the argument says so:
+        ``C()`` passes an instance of C, ``C`` passes the class itself. A name
+        holding an instance, or anything a function returns, says nothing."""
+        target = expr.func if isinstance(expr, ast.Call) else expr
+        parts = _flatten_chain(target)
+        if parts is None:
+            return None
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return node.symbol if symbol is not None and symbol.kind == CLASS else None
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be

@@ -3430,8 +3430,16 @@ def test_getattr_on_an_object_a_caller_supplied_reaches_anything(repo):
     plan = repo.plan(base, head, targets)
     # The benchmark never reaches the helper, so this is not a select-all.
     assert selected(plan) == {"t::x"}
-    detail = reason(plan, "t::x", "dynamic_reference").detail
-    assert detail.startswith("pkg.helper.invoke reads an attribute of an object a caller supplied")
+    # The call sites say what ``obj`` is, so the read is bounded to that
+    # class's members rather than to every module.
+    r = reason(plan, "t::x")
+    assert path_ids(r) == [
+        "target:pytest:t::x",
+        "tests.test_x.test_x",
+        "pkg.helper.invoke",
+        "pkg.provider.Provider.action",
+    ]
+    assert r.path[-1].detail == "attribute read dynamically"
 
 
 def test_getattr_on_the_module_s_own_import_stays_bounded(repo):
