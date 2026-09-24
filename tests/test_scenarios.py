@@ -3353,3 +3353,47 @@ def test_a_declaration_file_that_declares_nothing_is_an_error(repo):
     )
     assert plan.degraded
     assert "unknown top-level key(s) edge" in plan.errors[0].message
+
+
+def test_a_declaration_is_read_from_the_index_and_the_working_tree(repo):
+    """A declaration written but not yet committed applies to the snapshot
+    that has it: staged for ``INDEX``, on disk for ``WORKTREE``."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/registry.py": "def dispatch(name):\n    return name\n",
+            "pkg/handlers.py": "def json_handler(payload):\n    return payload\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json') == 'json'\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.handlers import json_handler\n\n\n"
+                "class Other:\n    def time_other(self):\n        return json_handler({})\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    # Without the declaration the test does not depend on the handler.
+    (repo.path / "pkg" / "handlers.py").write_text(
+        "def json_handler(payload):\n    return dict(payload)\n", "utf-8"
+    )
+    plan = repo.plan(base, "WORKTREE", targets)
+    assert selected(plan) == {"bench_other.Other.time_other"}
+
+    declaration = '[[edges]]\nfrom = "pkg.registry.dispatch"\nto = "pkg.handlers.json_handler"\n'
+    (repo.path / "diffcone.toml").write_text(declaration, "utf-8")
+    plan = repo.plan(base, "WORKTREE", targets)
+    assert not plan.degraded
+    assert selected(plan) == {"t::dispatch", "bench_other.Other.time_other"}
+
+    repo.git("add", "-A")
+    plan = repo.plan(base, "INDEX", targets)
+    assert not plan.degraded
+    assert [(d.source, d.target) for d in plan.declarations] == [
+        ("pkg.registry.dispatch", "pkg.handlers.json_handler")
+    ]
+    assert selected(plan) == {"t::dispatch", "bench_other.Other.time_other"}

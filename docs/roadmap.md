@@ -2,28 +2,31 @@
 
 Implemented today: `diffcone plan` over two snapshots (commits, the staged
 index or the working tree), with targets from a manifest and/or static
-pytest and ASV discovery; `run`, `validate` (outcome and coverage based) and
-`corpus`; recall validated on nineteen public repositories and a
+pytest and ASV discovery and dependencies the project declares in
+`diffcone.toml`; `run`, `validate` (outcome and coverage based) and
+`corpus`; recall validated on thirty-four public repositories, discovery
+checked against what pytest and ASV really collect in 48, and a
 planning-only census of 42 (see
 [design.md](design.md) and [evaluation.md](evaluation.md)).
 
-Everything below is planned, in the order it is worth doing. The order
-comes from the selection census (evaluation.md, "Selection census"):
-where selections come from across 42 repositories, not the worst case in
-one corpus. Each item states the mechanism, the trade-off and what "done"
-means, so the implementation can be checked against it and the census
-and corpora can measure it. Any item that can narrow selection needs a
-regression scenario (AGENTS.md).
+What is left is short, and three of the items below are closed by
+measurement rather than by code: the census and the corpora were asked
+whether a rule would pay, and said no. Each item states the mechanism,
+the trade-off and what "done" means, so the implementation can be checked
+against it. Any item that can narrow selection needs a regression
+scenario (AGENTS.md).
 
 ## The governing rule
 
 A plan may run more tests than needed; it must never miss one. Recall
-work comes before precision work: nineteen repositories are validated
-(evaluation.md, the corpora and "Recall validation beyond the
-corpora"), and a selection-rule change is re-planned on all of them and
-re-validated where selections move. Validating further repositories that
-differ from these (other layouts, heavy metaprogramming, frameworks with
-their own runners) is the standing way to find the next miss.
+work comes before precision work, and a selection-rule change is
+re-planned on every recorded corpus and re-validated where selections
+move. Two checks carry this now, and the cheap one comes first:
+`scripts/collection_check.py` compares static discovery against what the
+runner really collects in seconds and needs no commit range, while the
+corpora run whole suites at both snapshots under coverage. Every miss
+found since the third batch was a discovery gap the first check would
+have caught, which is why it is the thing to run on a new repository.
 
 ## 0. Dynamic references: measured, and left alone
 

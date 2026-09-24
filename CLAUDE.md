@@ -38,6 +38,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/indexer.py` parses modules, assigns symbol identities, hashes bodies/definitions, resolves references into `Edge`s and records `UnresolvedReference`s. This is where the supported subset lives.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
+- `src/diffcone/declarations.py` reads `diffcone.toml` (dependencies the project states that the analysis cannot see) from both revisions; declarations only add edges, and anything wrong with the file is an analysis error rather than a declaration that silently does nothing.
 - `src/diffcone/report.py` renders JSON (`schema_version` 2) and text.
 - `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate` after a plan exists; keep it that way.
 - `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.

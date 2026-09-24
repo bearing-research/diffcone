@@ -239,11 +239,18 @@ its cause.
 * **Uncommitted analysis is explicit.** A `WORKTREE` or `INDEX` snapshot is
   named as such in the report (`analysis.head.kind`, `uncommitted_analyzed`).
   Results for a working tree are only as stable as the working tree.
-* **Discovery is static and partial.** `request.getfixturevalue`, fixtures
-  from installed plugins, test base classes defined in other modules,
-  inherited ASV benchmark methods and `params` expansion into cases are not
-  modelled; see `docs/design.md` for the exact subset. Unknown fixtures are
-  reported and selected conservatively.
+* **Discovery is static, and says where it stops.** It reproduces pytest's
+  and ASV's documented collection rules -- including tests inherited from
+  base classes in other modules, star-imported test suites, `TestCase`
+  subclasses whatever they are named, and inherited ASV benchmarks -- but it
+  cannot reproduce what a runner *plugin* collects by its own rules
+  (SQLAlchemy's `<Name>Test`, a Sybil doctest in a `.rst` file), and it does
+  not expand `params` or `pytest_generate_tests` into separate cases. What
+  it cannot see it reports: unknown fixtures are selected conservatively,
+  and a plan whose target list may be short of the suite exits 3 rather than
+  looking complete. `scripts/collection_check.py` checks all of this against
+  what the runner really collects; see `docs/design.md` for the exact
+  subset.
 * **Narrow, documented resolution subset** (see
   [docs/design.md](docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source
