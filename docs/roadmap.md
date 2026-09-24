@@ -55,13 +55,19 @@ Instance-attribute tracking (implemented) bounds none of the census's
 only in networkx); it is kept because it is sound and tested, with its
 evidence limited to hatch.
 
-## 1. Name matches
+## 1. Name matches: measured, and left alone
 
-9 % of census selections alone, dominant in six repositories through a
-few attribute names on untyped receivers (`app`, `callback`, anyio's
-task-group methods, `load_cert_chain`, `get`, `headers`). Any bound needs receiver types,
-which are out of scope; the useful next step is measurement (how many
-of these selections the corpora's coverage confirms), before any rule.
+9 % of census selections alone, through a few attribute names on untyped
+receivers (`app`, `callback`, anyio's task-group methods,
+`load_cert_chain`, `get`, `headers`). Any bound needs receiver types,
+which are out of scope, so this item asked for a measurement first. It is
+done (evaluation.md, "Are name-match selections worth their cost?") and it
+closes the item: in the six repositories measured the name-match bucket is
+a handful of selections, the volume sits in `dependency` and in `dynamic
+or name match` -- and the latter means the target is reachable both ways,
+so bounding name matches would deselect none of it. Reopen only with a
+repository where name matching alone is measured to cause selections that
+coverage says were not needed.
 
 ## 2. Discovery completeness (rare in the census)
 

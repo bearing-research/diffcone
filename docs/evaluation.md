@@ -1286,6 +1286,42 @@ would have matched one. Benchmarks inherited from a base class are now
 targets too, though no census suite uses inheritance, so that rule is
 sound and tested but unmeasured in the wild.
 
+## Are name-match selections worth their cost?
+
+The census attributes 9 % of selections to name matches alone, and the
+roadmap asked for a measurement before any rule.
+`scripts/cause_precision.py` answers it: it takes the census's cause for
+every selected target and the per-test coverage `validate --coverage`
+already collects, and reports, per cause, how many selected tests actually
+executed a changed symbol. Three Python-touching commits per repository:
+
+| repository | dependency | name match | dynamic | either |
+|---|---|---|---|---|
+| rich | 32 of 684 (5 %) | -- | -- | 29 of 1329 (2 %) |
+| typer | 6 of 934 (1 %) | 0 of 9 | 0 of 11 | 0 of 866 |
+| starlette | 523 of 1059 (49 %) | 0 of 1 | -- | -- |
+| werkzeug | 455 of 1702 (27 %) | -- | -- | -- |
+| virtualenv | -- | 0 of 266 | -- | 0 of 487 |
+| marshmallow | 1 of 1 | -- | -- | -- |
+
+**A name-match rule would not pay.** Where the bucket exists at all it is
+tiny -- typer 9 selections, starlette 1 -- and the large buckets are
+`dependency` and `dynamic or name match`. The second of those is the
+decisive one: it means the target is reachable *both* ways, so bounding
+name matches would not deselect a single test in it. virtualenv is the one
+repository where name matching alone causes real volume (266 selections),
+and its three commits change build metadata that no test covers, so
+nothing was worth selecting there by any cause -- a degenerate denominator
+rather than evidence against name matching.
+
+What the table does show is that the cost of a selection has little to do
+with its cause: the same `dependency` bucket is worth 49 % in starlette,
+27 % in werkzeug and 1 % in typer. That spread is the import-time rule
+(design.md), the trade-off chosen deliberately after measuring, not an
+unbounded fallback. The sample is small -- six repositories, three commits
+each -- but it is consistent, and it is the reason roadmap item 1 closes
+with no rule.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

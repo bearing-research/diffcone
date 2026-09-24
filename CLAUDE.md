@@ -22,6 +22,7 @@ uv run diffcone corpus --range main~10..main --discover pytest --command "uv run
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json
 uv run python scripts/collection_check.py --repo DIR --command CMD  # discovery vs real collection
+uv run python scripts/cause_precision.py --repo DIR --command CMD --commit SHA  # is a cause worth it
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
