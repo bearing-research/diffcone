@@ -1202,6 +1202,34 @@ would collect.
   and marshmallow. No recorded corpus changed its target count under any
   of these fixes.
 
+## Recall validation, eighth batch: two suites that actually narrow
+
+| repository (HEAD) | validated commits | outcome misses | coverage recall | mean savings |
+|---|---|---|---|---|
+| isort (131f4ad) | 4 | 0 | 100 % (401 of 401) | **75 %** |
+| pytest-asyncio (01ff313) | 2 | 0 | 100 % (2 of 2) | **100 %** |
+
+The first repositories since the third batch where the plan narrows
+anything: isort selects 2 of 585 targets on three of its four commits,
+pytest-asyncio 1 of 208 on both of its. Neither has a dynamic seed that
+everything reaches, which is the whole difference.
+
+* **pytest-asyncio had to be told how to name a directory.** Its
+  `testpaths` include `docs` and its `python_files` include
+  `*_example.py`, so pytest collects eleven files under
+  `docs/how-to-guides` -- a directory whose name is not a Python
+  identifier, so no plain source root can name it and diffcone dropped
+  them silently. They are now reported (`unparsed_file`, incomplete
+  discovery, exit 3) with the fix in the message: with
+  `--source-root docs/how-to-guides=docs_howto`, 197 targets become 208
+  and the plan is complete. The numbers above use that root.
+* **isort needed nothing.** Its `--max 5` sample included three commits
+  that touch only `__main__` handling and its test, which is exactly the
+  shape the engine is for.
+* pytest-asyncio's recent history is dependency bumps, and `--max` caps
+  candidate commits *before* skipping the ones with no `.py` change, so
+  the range had to be aimed at Python-touching commits by hand.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
