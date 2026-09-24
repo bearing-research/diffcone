@@ -82,6 +82,9 @@ plugin collects by its own rules, a base class or an imported test outside the
 source roots). `1` and `3` are opposite failures -- `1` selects too much, `3`
 means the target list itself may be incomplete -- and `3` wins when both apply.
 `run` refuses to execute such a plan unless given `--allow-incomplete-discovery`.
+It also refuses when the working tree it would run differs, under the source
+roots, from the snapshot the plan analysed (`--allow-mismatched-worktree` to
+run anyway): the plan describes the code it read, not whatever is checked out.
 
 ### Declaring what the analysis cannot see
 

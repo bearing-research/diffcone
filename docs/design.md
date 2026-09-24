@@ -833,6 +833,14 @@ implemented; see the roadmap.
 
 ## Execution and validation
 
+`run` executes the checkout, so a plan made from a commit or the index only
+describes what will run while the checkout holds that code: it refuses (exit
+2) when any `.py` file under the source roots differs between the analysed
+snapshot and the working tree, unless `--allow-mismatched-worktree` says to
+go ahead. Differences elsewhere (a manifest, a README, an extra commit that
+touches neither) do not block it, and neither does a plan that selected
+nothing, since nothing would run.
+
 `diffcone/execution.py` is the only module that runs project code, and only
 from the `run` and `validate` commands after a plan exists.
 

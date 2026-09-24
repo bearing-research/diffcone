@@ -92,6 +92,49 @@ class RunResult:
     returncode: int | None  # None when nothing was run (dry run or empty selection)
 
 
+def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
+    """Why the working tree is not what the plan analysed, if it is not.
+
+    ``run`` executes the checkout, so a plan made from a commit only
+    describes what will run while the checkout *is* that commit, unmodified.
+    Running a different tree turns the plan's guarantee into a guess about
+    code that was never analysed.
+    """
+    if plan.head.kind == KIND_WORKTREE:
+        return None
+    # What matters is the code, not the commit: a checkout carrying an extra
+    # commit that only adds a manifest runs the analysed code, while one
+    # uncommitted edit to a source file does not.
+    against = ["diff", "--name-only"] + (
+        [plan.head.commit] if plan.head.kind == KIND_COMMIT else []
+    )
+    try:
+        differing = _git(repo, against).decode("utf-8", "surrogateescape").split("\n")
+        untracked = (
+            _git(repo, ["ls-files", "--others", "--exclude-standard"])
+            .decode("utf-8", "surrogateescape")
+            .split("\n")
+        )
+    except GitError as exc:
+        return f"cannot tell what the working tree holds: {exc}"
+    roots = [split_root(r)[0] for r in plan.source_roots]
+    in_scope = sorted(
+        path
+        for path in {p.strip() for p in differing + untracked if p.strip()}
+        if path.endswith(".py")
+        and any(root in ("", ".") or path.startswith(root + "/") for root in roots)
+    )
+    if not in_scope:
+        return None
+    analysed = (
+        f"commit {plan.head.commit[:12]}" if plan.head.kind == KIND_COMMIT else "the staged index"
+    )
+    return (
+        f"the plan analysed {analysed}, and the working tree it would run has "
+        f"{len(in_scope)} differing Python file(s) under the source roots (e.g. {in_scope[0]})"
+    )
+
+
 def run_selected(
     plan: Plan,
     runner: str,

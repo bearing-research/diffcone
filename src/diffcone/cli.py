@@ -11,8 +11,10 @@ gave up safely), 3 means the target list itself may be incomplete, so running
 only the selected targets would skip tests. 3 wins when both apply.
 
 ``run`` refuses to execute an incomplete plan (exit 3) unless
---allow-incomplete-discovery is given; otherwise it exits with the runner's
-exit code (0 when nothing was selected or with --dry-run). ``validate`` exits
+--allow-incomplete-discovery is given, and refuses (exit 2) when the working
+tree it would run differs, under the source roots, from the snapshot the plan
+analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
+the runner's exit code (0 when nothing was selected or with --dry-run). ``validate`` exits
 0 when every outcome change was selected, 1 when some were missed, 2 on
 errors.
 """
@@ -35,6 +37,7 @@ from diffcone.execution import (
     validate_pytest,
     validation_to_dict,
     validation_to_text,
+    worktree_mismatch,
 )
 from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
@@ -133,6 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
         help='runner command line (default: "python -m pytest" or "asv run"); run in --repo',
     )
     r.add_argument("--dry-run", action="store_true", help="print the command instead of running")
+    r.add_argument(
+        "--allow-mismatched-worktree",
+        action="store_true",
+        help="run even when the checkout is not the snapshot the plan analysed",
+    )
     r.add_argument(
         "--allow-incomplete-discovery",
         action="store_true",
@@ -283,6 +291,17 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if result.degraded else 0
         if args.command == "run":
             result = build_plan()
+            will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
+            # Only worth refusing when something would actually execute.
+            mismatch = worktree_mismatch(Path(args.repo), result) if will_run else None
+            if mismatch and not args.allow_mismatched_worktree:
+                print(
+                    f"diffcone: {mismatch}; running it would execute code the plan never "
+                    "analysed. Plan with --head WORKTREE, check the snapshot out, or pass "
+                    "--allow-mismatched-worktree.",
+                    file=sys.stderr,
+                )
+                return 2
             incomplete = result.incomplete_discovery
             if incomplete and not args.allow_incomplete_discovery:
                 print(

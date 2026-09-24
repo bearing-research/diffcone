@@ -244,3 +244,36 @@ def test_a_complete_plan_still_exits_zero(repo, capsys):
     args = ["--repo", str(repo.path), "--base", base, "--head", head, "--discover", "pytest"]
     assert main(["plan", *args, "--format", "json"]) == 0
     assert json.loads(capsys.readouterr().out)["discovery_incomplete"] is False
+
+
+def test_run_refuses_a_working_tree_that_is_not_what_was_planned(repo, capsys):
+    """``run`` executes the checkout, so a plan made from a commit only
+    describes what will run while the checkout is that code."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_ops.py": (
+                "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    args = ["--repo", str(repo.path), "--base", base, "--head", head, "--discover", "pytest"]
+    # The checkout is the analysed commit: nothing to complain about.
+    assert main(["run", *args, "--dry-run", "--command", "pytest"]) == 0
+
+    (repo.path / "pkg" / "ops.py").write_text("def add(a, b):\n    return b + a + 1\n", "utf-8")
+    code = main(["run", *args, "--dry-run", "--command", "pytest"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "differing Python file(s) under the source roots" in err
+    assert "pkg/ops.py" in err and "--allow-mismatched-worktree" in err
+
+    code = main(["run", *args, "--dry-run", "--allow-mismatched-worktree", "--command", "pytest"])
+    assert code == 0
+
+    # A difference outside the source roots is not one the plan cares about.
+    (repo.path / "pkg" / "ops.py").write_text("def add(a, b):\n    return b + a\n", "utf-8")
+    (repo.path / "notes.md").write_text("hello\n", "utf-8")
+    assert main(["run", *args, "--dry-run", "--command", "pytest"]) == 0
