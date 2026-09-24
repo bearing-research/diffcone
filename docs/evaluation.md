@@ -1468,6 +1468,33 @@ So pandas selects everything under the current model, and no single rule
 changes that; the table is the order in which the blockers would have to
 fall.
 
+**Annotations would not change it either.** pandas is heavily annotated, so
+trusting annotations as receiver types (`def f(other: DataFrame)` limits
+`other.foo()` to `DataFrame`'s hierarchy: its bases, every subclass and
+their bases) was measured before being proposed. Resolving annotations as
+pandas writes them (strings, unions, `Self`, `TypeVar` bounds, the aliases
+in `pandas._typing`, class-level attribute annotations, locals assigned
+once from an annotated call or a constructor) types 33.5 % of the
+library's 24 676 name-matched references: `self` 19.2 %, annotated
+parameters and locals 9.4 %, annotated attributes 4.9 %. That narrows 7 412
+of 70 312 name-match edges, since test code is essentially unannotated, and
+with every dynamic seed and all class binding also switched off the
+selection moves from 26 007 to 25 990. The bound on any typing, however
+good, is removing name matching outright:
+
+| name matching removed from | 41 sampled library symbols select |
+|---|---|
+| nowhere | 26 007 for all but one |
+| the library | median 1 544; 18 still select 26 003 |
+| the library and the tests | median 38; 17 still select 25 942 |
+
+The residue is real: those symbols are reached from the 1 742-symbol
+`DataFrame` core through resolved calls and `self` dispatch to overrides,
+and a function-level plan without argument sensitivity cannot tell which
+test's DataFrame takes which path. Annotation trust would have added an
+assumption to the governing rule for no measurable gain, so it is not
+proposed.
+
 **Validation of the narrowing.** Re-planned over every recorded corpus, the
 changes above deselect 211 targets on five commits, and each was checked
 against the suite with `validate --coverage`: more-itertools at 100 % recall
