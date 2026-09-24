@@ -237,6 +237,9 @@ def _without(p, drop) -> set[str]:
         repo=p.repo,
         source_roots=p.source_roots,
         discovered=p.discovery,
+        # Without these, every target selected through a declared edge looks
+        # like one that dynamic references or name matches caused.
+        declarations=p.declarations,
     )
     # Only targets reached through the graph: fallbacks (unknown fixtures,
     # analysis errors) select regardless of what was removed.

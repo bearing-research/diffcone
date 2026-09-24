@@ -784,9 +784,10 @@ Not modelled: `params` expansion, a `benchmark_dir` outside the source roots
 
 A registry filled at import time, a plugin resolved through entry points, a
 handler named in a data file: the dependency is real and no static rule can
-find it, so the project states it in `diffcone.toml` at the repository root,
-read from the head snapshot (a declaration is versioned with the code it
-describes).
+find it, so the project states it in `diffcone.toml` at the repository root.
+It is read from *both* revisions, as every other edge is, so a commit that
+deletes a declaration while changing what it pointed at still selects what
+depended on it.
 
 ```toml
 [[edges]]
@@ -795,14 +796,23 @@ to = "pkg.handlers.json_handler"
 why = "handlers register themselves through entry points"
 ```
 
-Each edge joins the union graph with its own kind, and a selection whose
-path crosses one is explained by the `declared_dependency` rule with the
-project's `why` on the step, never as an ordinary dependency. Declarations
-only *add* edges, so they can only widen selection: a wrong one costs a test
-that runs anyway, and no declaration can make the plan miss. A file that
-does not parse, an unknown key, or an endpoint that is in neither revision
-is an analysis error, so the plan degrades and selects everything -- a
-declaration that silently does nothing is the outcome worth failing on.
+An endpoint may name a module or a class, which stands for everything in
+it: the edge is added between every member of each side, since a change to
+one member is what such a declaration is about and the container node alone
+would never see it. Each edge joins the union graph with its own kind, and a
+selection whose path crosses one is explained by the `declared_dependency`
+rule with the project's `why` on the step, never as an ordinary dependency
+(a name match anywhere on the path outranks it: that one is diffcone's
+guess, this one is the project's statement).
+
+Declarations only *add* edges, so they can only widen selection: a wrong one
+costs a test that runs anyway, and no declaration can make the plan miss.
+These are analysis errors, so the plan degrades and selects everything,
+because a declaration that silently does nothing is the outcome worth
+failing on: a file that does not parse, an unknown key at any level (a
+singular `[[edge]]` declares nothing), a file that exists but cannot be
+read, an endpoint that is in neither revision, and a pair of containers
+whose members would join more than 5 000 pairs.
 
 Telling diffcone that a dynamic reference reaches *only* certain modules is
 the opposite trade (it narrows on the project's authority) and is not

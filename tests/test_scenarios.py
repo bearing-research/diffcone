@@ -3194,7 +3194,9 @@ def test_a_declared_dependency_selects_and_says_who_declared_it(repo):
         "pkg.registry.dispatch",
         "pkg.handlers.json_handler",
     ]
-    assert r.path[-1].detail == "handlers register themselves through entry points"
+    assert r.path[-1].detail == (
+        "declared in diffcone.toml: handlers register themselves through entry points"
+    )
 
 
 def test_a_declaration_that_names_nothing_is_an_analysis_error(repo):
@@ -3231,3 +3233,123 @@ def test_a_declaration_that_names_nothing_is_an_analysis_error(repo):
     assert "'pkg.handlers.jsno_handler'" in plan.errors[0].message
     # Degraded means everything is selected, not a quietly empty plan.
     assert selected(plan) == {"t::dispatch", "bench_d.D.time_d"}
+
+
+def test_a_declaration_may_name_a_module_or_a_class(repo):
+    """``to = "pkg.handlers"`` means everything in it: a change to any member
+    is what such a declaration is about, and the container node alone would
+    never see it."""
+    base = repo.commit(
+        {
+            "diffcone.toml": (
+                '[[edges]]\nfrom = "pkg.registry.dispatch"\nto = "pkg.handlers"\n'
+                'why = "every handler registers itself"\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/registry.py": "def dispatch(name):\n    return name\n",
+            "pkg/handlers.py": (
+                "def json_handler(payload):\n    return payload\n\n\n"
+                "class Xml:\n    def handle(self, payload):\n        return payload\n"
+            ),
+            "pkg/other.py": "def helper():\n    return 1\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json') == 'json'\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import helper\n\n\n"
+                "class Other:\n    def time_other(self):\n        return helper()\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    # A function in the declared module, and a method of a class in it.
+    for change in (
+        "def json_handler(payload):\n    return dict(payload)\n\n\n"
+        "class Xml:\n    def handle(self, payload):\n        return payload\n",
+        "def json_handler(payload):\n    return payload\n\n\n"
+        "class Xml:\n    def handle(self, payload):\n        return str(payload)\n",
+    ):
+        head = repo.commit({"pkg/handlers.py": change})
+        plan = repo.plan(base, head, targets)
+        assert not plan.degraded
+        assert selected(plan) == {"t::dispatch"}
+        assert (
+            reason(plan, "t::dispatch", "declared_dependency")
+            .path[-1]
+            .detail.startswith("declared in diffcone.toml")
+        )
+
+
+def test_a_declaration_deleted_by_the_head_commit_still_counts(repo):
+    """Declarations are read from both revisions, as every other edge is: a
+    commit that removes the file while changing what it pointed at must still
+    select what depended on it."""
+    base = repo.commit(
+        {
+            "diffcone.toml": (
+                '[[edges]]\nfrom = "pkg.registry.dispatch"\nto = "pkg.handlers.json_handler"\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/registry.py": "def dispatch(name):\n    return name\n",
+            "pkg/handlers.py": "def json_handler(payload):\n    return payload\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json') == 'json'\n"
+            ),
+            "benchmarks/bench_d.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "class D:\n    def time_d(self):\n        return dispatch('json')\n"
+            ),
+        }
+    )
+    head = repo.commit(
+        {
+            "diffcone.toml": None,
+            "pkg/handlers.py": "def json_handler(payload):\n    return dict(payload)\n",
+        }
+    )
+    plan = repo.plan(
+        base,
+        head,
+        [
+            py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+            asv_target("bench_d.D.time_d", "benchmarks.bench_d.D.time_d"),
+        ],
+    )
+    assert not plan.degraded
+    assert selected(plan) == {"t::dispatch", "bench_d.D.time_d"}
+
+
+def test_a_declaration_file_that_declares_nothing_is_an_error(repo):
+    """A singular ``[[edge]]`` would otherwise parse to no declarations at
+    all, quietly."""
+    base = repo.commit(
+        {
+            "diffcone.toml": '[[edge]]\nfrom = "pkg.registry.dispatch"\nto = "pkg.handlers.j"\n',
+            "pkg/__init__.py": "",
+            "pkg/registry.py": "def dispatch(name):\n    return name\n",
+            "tests/test_dispatch.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "def test_dispatch():\n    assert dispatch('json') == 'json'\n"
+            ),
+            "benchmarks/bench_d.py": (
+                "from pkg.registry import dispatch\n\n\n"
+                "class D:\n    def time_d(self):\n        return dispatch('json')\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/registry.py": "def dispatch(name):\n    return str(name)\n"})
+    plan = repo.plan(
+        base,
+        head,
+        [
+            py_target("t::dispatch", "tests.test_dispatch.test_dispatch"),
+            asv_target("bench_d.D.time_d", "benchmarks.bench_d.D.time_d"),
+        ],
+    )
+    assert plan.degraded
+    assert "unknown top-level key(s) edge" in plan.errors[0].message

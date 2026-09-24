@@ -84,6 +84,9 @@ RULE_ANALYSIS_ERROR = "analysis_error"
 RULE_RUNNER_DEPENDENCY = "runner_dependency"
 RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
 RULE_DECLARED_DEPENDENCY = "declared_dependency"
+# A declared endpoint that names a container stands for everything in it;
+# beyond this many pairs the declaration is too coarse to be useful.
+DECLARATION_FANOUT = 5000
 
 # A lifecycle dependency ``dynamic:<module>`` says the target runs code with
 # that module's globals (a doctest): it is affected by any impact-carrying
@@ -304,6 +307,19 @@ def merge_targets(manifest: Manifest | None, discovered: list[DiscoveryResult]) 
     return sorted(merged.values())
 
 
+def _members_by_container(symbols: set[str]) -> dict[str, list[str]]:
+    """Symbols inside each module or class, by qualified name. Identity is the
+    dotted path, so a container's members are the symbols under its prefix."""
+    members: dict[str, list[str]] = defaultdict(list)
+    for symbol in symbols:
+        prefix = symbol
+        while "." in prefix:
+            prefix = prefix.rsplit(".", 1)[0]
+            if prefix in symbols:
+                members[prefix].append(symbol)
+    return members
+
+
 def plan_from_indexes(
     base: SourceIndex,
     head: SourceIndex,
@@ -331,9 +347,14 @@ def plan_from_indexes(
     # see them, and they only add edges, so they widen selection and never
     # narrow it. An endpoint that is in neither revision is an analysis
     # error: a declaration that silently does nothing is worth failing on.
+    # An endpoint that names a module or a class means everything in it, so
+    # it expands to that container's members -- a change to one of them is
+    # what the declaration is about, and the container node alone would
+    # never see it.
+    members = _members_by_container(known_symbols)
     for decl in declared:
-        if decl.source not in known_symbols or decl.target not in known_symbols:
-            missing = [e for e in (decl.source, decl.target) if e not in known_symbols]
+        missing = [e for e in (decl.source, decl.target) if e not in known_symbols]
+        if missing:
             errors.append(
                 AnalysisError(
                     revision=head.snapshot.revision,
@@ -345,7 +366,26 @@ def plan_from_indexes(
                 )
             )
             continue
-        graph.add(Edge(decl.source, decl.target, DECLARED, decl.why), ("declared",))
+        from_side = [decl.source, *members.get(decl.source, ())]
+        to_side = [decl.target, *members.get(decl.target, ())]
+        if len(from_side) * len(to_side) > DECLARATION_FANOUT:
+            errors.append(
+                AnalysisError(
+                    revision=head.snapshot.revision,
+                    path=DECLARATION_FILE,
+                    message=(
+                        f"declared edge {decl.source!r} -> {decl.target!r} joins "
+                        f"{len(from_side)} and {len(to_side)} symbols, more than "
+                        f"{DECLARATION_FANOUT} pairs; declare the symbols that depend "
+                        "on each other instead"
+                    ),
+                )
+            )
+            continue
+        for source in from_side:
+            for target in to_side:
+                if source != target:
+                    graph.add(Edge(source, target, DECLARED, decl.detail), ("declared",))
 
     # Conservative edges from unresolved references: ``obj.run()`` may be any
     # known ``run`` (function, method or class) in either revision, and
@@ -651,12 +691,14 @@ def _explain(
         if link is None:
             break
         edge, revs, nxt = link
-        if edge.kind == DECLARED:
+        if edge.kind == DECLARED and rule == RULE_DEPENDENCY:
             # The path only holds because the project said so; say which rule
-            # carried it rather than calling it an ordinary dependency.
+            # carried it rather than calling it an ordinary dependency. A name
+            # match anywhere on the path outranks it: that one is our guess,
+            # this one is the project's statement.
             rule = RULE_DECLARED_DEPENDENCY
         if edge.kind == UNRESOLVED_NAME_MATCH:
-            rule = RULE_UNRESOLVED_NAME_MATCH
+            rule = RULE_UNRESOLVED_NAME_MATCH  # outranks a declared edge
             if _is_name_node(edge.target):
                 pending = (edge.source, edge.detail, revs)  # collapse the pseudo-node
                 current = nxt
@@ -750,11 +792,17 @@ def plan(
     )
     if runners and head_snapshot is None:  # pragma: no cover - guarded above
         raise GitError("discovery needs the head snapshot's files")
-    declared, problems = load_declarations(repo_path, head)
-    for problem in problems:
-        head_index.errors.append(
-            AnalysisError(revision=head, path=DECLARATION_FILE, message=problem)
-        )
+    # Both revisions, as every other edge is: a commit that deletes a
+    # declaration while changing what it pointed at must still select.
+    declared: list[Declaration] = []
+    for revision, index in ((base, base_index), (head, head_index)):
+        found, problems = load_declarations(repo_path, revision)
+        declared += found
+        for problem in problems:
+            index.errors.append(
+                AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
+            )
+    declared = sorted(set(declared))
     discovered = [
         discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
     ]

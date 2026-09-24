@@ -41,16 +41,30 @@ class Declaration:
         return f"declared in {FILENAME}" + (f": {self.why}" if self.why else "")
 
 
+class Unreadable(Exception):
+    """The file is there (or the snapshot cannot be read) but we could not
+    get at it. Distinct from absent, which is the normal case: silently
+    treating a read failure as "no declarations" narrows the plan."""
+
+
 def read_file(repo: Path, revision: str) -> bytes | None:
     """``diffcone.toml`` as the given snapshot has it, or None when absent."""
+    if revision == WORKTREE:
+        path = repo / FILENAME
+        if not path.is_file():
+            return None
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise Unreadable(f"{FILENAME}: {exc}") from exc
     try:
-        if revision == WORKTREE:
-            path = repo / FILENAME
-            return path.read_bytes() if path.is_file() else None
         commit = "" if revision == INDEX else resolve_commit(repo, revision)
+    except GitError as exc:  # an unknown revision is the caller's problem
+        raise Unreadable(f"{FILENAME}: {exc}") from exc
+    try:
         return read_files(repo, commit, [FILENAME], label=revision).get(FILENAME)
-    except (GitError, OSError):
-        return None
+    except GitError:
+        return None  # not in this snapshot: the ordinary case
 
 
 def parse(raw: bytes) -> tuple[list[Declaration], list[str]]:
@@ -61,6 +75,11 @@ def parse(raw: bytes) -> tuple[list[Declaration], list[str]]:
         return [], [f"{FILENAME}: {exc}"]
     problems: list[str] = []
     edges: list[Declaration] = []
+    unknown_tables = sorted(set(data) - {"edges"})
+    if unknown_tables:
+        # A singular ``[[edge]]`` or a capitalisation slip would otherwise
+        # declare nothing at all, quietly.
+        problems.append(f"{FILENAME}: unknown top-level key(s) {', '.join(unknown_tables)}")
     entries = data.get("edges", [])
     if not isinstance(entries, list):
         return [], [f"{FILENAME}: 'edges' must be a list of tables"]
@@ -84,5 +103,8 @@ def parse(raw: bytes) -> tuple[list[Declaration], list[str]]:
 
 
 def load(repo: Path, revision: str) -> tuple[list[Declaration], list[str]]:
-    raw = read_file(repo, revision)
+    try:
+        raw = read_file(repo, revision)
+    except Unreadable as exc:
+        return [], [str(exc)]
     return parse(raw) if raw is not None else ([], [])
