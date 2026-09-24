@@ -1295,7 +1295,16 @@ pattern that runs it does not match. The pattern used to be anchored
 `^(...)$`, and ASV matches a parameterised benchmark as
 `name(param0, param1, ...)`: replayed over networkx's real discovery output,
 that pattern selects **1 of 59** benchmarks where the current one selects
-59. `run --runner asv` would have exited 0 having run nothing. networkx only matches
+59. `run --runner asv` would have exited 0 having run nothing.
+
+`--execute` closes the loop by handing the pattern to ASV itself, in the
+existing environment with the results thrown away, and checking that it runs
+that many benchmarks: a replay is only as good as its reading of ASV's
+source. All three agree -- packaging 20, rich 32, networkx 59 -- which is
+the ASV half of the engine validated end to end, from discovery through the
+command `run` builds. It is the slow check of the three, since the
+benchmarks really run (seconds for packaging and rich, minutes for
+networkx), so the replay is the one to run routinely. networkx only matches
 after `benchmark_dir` began resolving against its config's directory:
 its `asv.conf.json` is in `benchmarks/`, so every benchmark had been named
 `benchmarks.<module>...` instead of `<module>...` and no `--bench` regex
