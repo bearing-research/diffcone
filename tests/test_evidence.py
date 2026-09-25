@@ -243,3 +243,50 @@ def test_collect_and_evidence_commands(repo, capsys):
     assert "1 started a subprocess" in err
     assert main(["evidence", "--repo", str(repo.path)]) == 0
     assert "8 tests" in capsys.readouterr().out
+
+
+def _edited_add(repo):
+    repo.commit(FILES)
+    ev = repo.collect()
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    return ev, head
+
+
+def test_run_with_evidence_runs_only_the_tests_that_executed_the_change(repo, capfd):
+    ev, head = _edited_add(repo)
+    command = f"{sys.executable} -m pytest"
+    args = ["run", "--repo", str(repo.path), "--base", ev.commit, "--head", head]
+    args += ["--discover", "pytest", "--command", command, "--evidence", "auto", "--no-cache"]
+    assert main(args + ["--", "-q"]) == 0
+    out, err = capfd.readouterr()
+    assert "2 of 8 pytest target(s) selected" in err  # test_add, and test_subprocess
+    assert "3 passed" in out  # test_add's two cases and test_subprocess
+    assert "environment differs" not in err
+
+
+def test_run_falls_back_to_static_planning_in_another_environment(repo, capsys, monkeypatch):
+    from diffcone import execution
+    from diffcone.testing import selected
+
+    ev, head = _edited_add(repo)
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert selected(plan) == {T + "test_add", T + "test_subprocess"}
+    plan.evidence["environment_hash"] = "0" * 16  # recorded somewhere else
+    static = repo.plan(ev.commit, head, [], discover_runners=["pytest"])
+    run = execution.run_with_evidence(
+        plan, lambda: static, cwd=repo.path, command=f"{sys.executable} -m pytest", extra=["-q"]
+    )
+    assert run.mismatch is not None and run.mismatch["python"] == ev.environment["python"]
+    assert run.result.returncode != 0  # stopped before any test ran
+    assert run.static is not None and run.static.returncode == 0
+    assert {t.runner_id for t in run.static.selected} == selected(static)
+
+
+def test_validate_with_evidence(repo):
+    from diffcone.execution import validate_pytest
+
+    ev, head = _edited_add(repo)
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    v = validate_pytest(plan, repo=repo.path, command=f"{sys.executable} -m pytest", coverage=True)
+    assert v.ok
+    assert v.coverage is not None and not v.coverage.missed

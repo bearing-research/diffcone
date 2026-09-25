@@ -128,8 +128,10 @@ pending edit, and every recorded plan is byte-identical.
 **Status.** Designed in [evidence_design.md](evidence_design.md); the
 pandas spike passed its go/no-go. On 79 pandas commits the median plan
 selects 6.4 % of tests (static: 100 % on every one), and recording costs
-1.25–1.45× a plain run with identical outcomes. Implementation started
-2026-09-25, in the stages below.
+1.25–1.45× a plain run with identical outcomes. Stages 1–3 are
+implemented (2026-09-25); stage 4, the recall check, is what remains. Not
+built yet: advancing a store to head from a partial run (`run --collect`,
+evidence_design.md "Advancing without a full run").
 
 **Mechanism.** A stdlib pytest plugin records which symbols each test
 executed (plus the files it opened, stat'ed or listed, which import ran

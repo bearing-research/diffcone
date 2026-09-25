@@ -343,7 +343,12 @@ def _checkout_env(cwd: Path, source_roots: list[str]) -> dict[str, str]:
 
 @contextmanager
 def _run_full_pytest(
-    cwd: Path, command: str | None, *, coverage: bool = False, source_roots: list[str] = ()
+    cwd: Path,
+    command: str | None,
+    *,
+    coverage: bool = False,
+    source_roots: list[str] = (),
+    hash_seed: str | None = None,
 ) -> Iterator[_SuiteRun]:
     """Run the whole suite once with ``-v``; with ``coverage`` the same run
     also records per-test coverage contexts into a temporary database that
@@ -358,6 +363,9 @@ def _run_full_pytest(
     ]
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
         env = _checkout_env(cwd, list(source_roots))
+        if hash_seed is not None:
+            # An evidence plan assumed the recorded hash seed; check it under that.
+            env["PYTHONHASHSEED"] = hash_seed
         db: Path | None = None
         if coverage:
             db = Path(tmp) / ".coverage"
@@ -599,8 +607,12 @@ def merge_coverage(
     )
 
 
-class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
-    """(commit sha, ran under coverage) -> per-test outcomes, plus the
+# (commit sha, ran under coverage, PYTHONHASHSEED an evidence plan pinned)
+_OutcomeKey = tuple[str, bool, str | None]
+
+
+class OutcomeCache(dict[_OutcomeKey, dict[str, str]]):
+    """(commit sha, ran under coverage, hash seed) -> per-test outcomes, plus the
     coverage database of every snapshot that ran under coverage (copied into
     a temporary directory that lives until ``close``), so a base that is not
     run again can still be attributed for a later pair.
@@ -619,10 +631,10 @@ class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.Lock()
-        self._databases: dict[tuple[str, bool], tuple[Path, Path]] = {}  # key -> (db, checkout)
+        self._databases: dict[_OutcomeKey, tuple[Path, Path]] = {}  # key -> (db, checkout)
         self._directory: tempfile.TemporaryDirectory | None = None
 
-    def keep_coverage(self, key: tuple[str, bool], db: Path, checkout: Path) -> None:
+    def keep_coverage(self, key: _OutcomeKey, db: Path, checkout: Path) -> None:
         """Copy a run's coverage database so it outlives its worktree
         (``checkout`` is remembered to resolve the paths it recorded)."""
         with self._lock:
@@ -630,11 +642,11 @@ class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
                 return
             if self._directory is None:
                 self._directory = tempfile.TemporaryDirectory(prefix="diffcone-basecov-")
-            copy = Path(self._directory.name) / f"{key[0]}-{int(key[1])}.coverage"
+            copy = Path(self._directory.name) / f"{key[0]}-{int(key[1])}-{key[2]}.coverage"
             shutil.copyfile(db, copy)
             self._databases[key] = (copy, checkout)
 
-    def coverage_of(self, key: tuple[str, bool]) -> tuple[Path, Path] | None:
+    def coverage_of(self, key: _OutcomeKey) -> tuple[Path, Path] | None:
         with self._lock:
             return self._databases.get(key)
 
@@ -645,15 +657,15 @@ class OutcomeCache(dict[tuple[str, bool], dict[str, str]]):
                 self._directory = None
             self._databases.clear()
 
-    def lookup(self, key: tuple[str, bool]) -> dict[str, str] | None:
+    def lookup(self, key: _OutcomeKey) -> dict[str, str] | None:
         with self._lock:
             return self.get(key)
 
-    def offer(self, key: tuple[str, bool], value: dict[str, str]) -> None:
+    def offer(self, key: _OutcomeKey, value: dict[str, str]) -> None:
         with self._lock:
             self.setdefault(key, value)
 
-    def reuse_or_run(self, key: tuple[str, bool], run) -> dict[str, str]:
+    def reuse_or_run(self, key: _OutcomeKey, run) -> dict[str, str]:
         value = self.lookup(key)
         if value is not None:
             return value
@@ -699,7 +711,8 @@ def _validate_pytest(
     setup_command: str | None,
     selected: set[str],
 ) -> Validation:
-    base_key = (plan.base.commit, coverage)
+    seed = (plan.evidence or {}).get("hash_seed")
+    base_key = (plan.base.commit, coverage, seed)
     base_log = ""
 
     def run_base() -> dict[str, str]:
@@ -709,7 +722,11 @@ def _validate_pytest(
         nonlocal base_log
         with _Checkout(repo, plan.base.kind, plan.base.commit, setup_command) as base_dir:
             with _run_full_pytest(
-                base_dir, command, coverage=coverage, source_roots=plan.source_roots
+                base_dir,
+                command,
+                coverage=coverage,
+                source_roots=plan.source_roots,
+                hash_seed=seed,
             ) as base_run:
                 base_log = base_run.log
                 if coverage and base_run.coverage_db is not None:
@@ -725,17 +742,21 @@ def _validate_pytest(
     # outcomes are offered to the cache for pairs that use it as a base.
     with _Checkout(repo, plan.head.kind, plan.head.commit, setup_command) as head_dir:
         with _run_full_pytest(
-            head_dir, command, coverage=coverage, source_roots=plan.source_roots
+            head_dir,
+            command,
+            coverage=coverage,
+            source_roots=plan.source_roots,
+            hash_seed=seed,
         ) as head_run:
             head_outcomes, head_log = head_run.outcomes, head_run.log
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
                 if head_run.coverage_db is not None and plan.head.kind == KIND_COMMIT:
                     cache.keep_coverage(
-                        (plan.head.commit, coverage), head_run.coverage_db, head_dir
+                        (plan.head.commit, coverage, seed), head_run.coverage_db, head_dir
                     )
     if plan.head.kind == KIND_COMMIT:
-        cache.offer((plan.head.commit, coverage), head_outcomes)
+        cache.offer((plan.head.commit, coverage, seed), head_outcomes)
     if cov is not None:
         kept = cache.coverage_of(base_key)
         base_cov: CoverageValidation | None = None

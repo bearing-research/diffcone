@@ -43,7 +43,9 @@ from diffcone.execution import (
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
+    environment_differences,
     run_selected,
+    run_with_evidence,
     validate_pytest,
     validation_to_dict,
     validation_to_text,
@@ -168,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="run even when discovery reports tests the runner may collect that are not targets",
     )
     _add_common(r)
+    _add_evidence(r)
     r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
 
     v = sub.add_parser(
@@ -200,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
         "build-generated files such as a setuptools-scm _version.py)",
     )
     _add_common(v)
+    _add_evidence(v)
     v.add_argument("--format", choices=("json", "text"), default="text")
 
     c = sub.add_parser(
@@ -232,6 +236,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     c.add_argument(
         "--max", type=int, dest="max_commits", help="only the last N commits of the range"
+    )
+    c.add_argument(
+        "--evidence",
+        metavar="auto|PATH",
+        help="plan every pair with execution evidence: a fixed store, or auto for the store "
+        "at the nearest ancestor of each commit",
     )
     c.add_argument(
         "--jobs",
@@ -417,7 +427,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
             return 1 if result.degraded else 0
         if args.command == "run":
-            result = build_plan()
+            evidence = load_evidence()
+            result = build_plan(evidence)
             will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
             # Only worth refusing when something would actually execute.
             mismatch = worktree_mismatch(Path(args.repo), result) if will_run else None
@@ -443,14 +454,35 @@ def main(argv: list[str] | None = None) -> int:
                 if len(incomplete) > 5:
                     print(f"  ... and {len(incomplete) - 5} more", file=sys.stderr)
                 return 3
-            outcome = run_selected(
-                result,
-                args.runner,
-                cwd=Path(args.repo),
-                command=args.runner_command,
-                extra=args.runner_args,
-                dry_run=args.dry_run,
-            )
+            if evidence is not None and args.runner == "pytest":
+                checked = run_with_evidence(
+                    result,
+                    lambda: build_plan(None),
+                    cwd=Path(args.repo),
+                    command=args.runner_command,
+                    extra=args.runner_args,
+                    dry_run=args.dry_run,
+                )
+                outcome = checked.result
+                if checked.mismatch is not None:
+                    recorded = load_store(Path(result.evidence["store"])).environment
+                    print(
+                        "diffcone: the environment differs from the one the evidence was "
+                        "recorded in, so it says nothing here; ran the static plan instead:",
+                        file=sys.stderr,
+                    )
+                    for line in environment_differences(recorded, checked.mismatch)[:8]:
+                        print(f"  {line}", file=sys.stderr)
+                    outcome = checked.static  # type: ignore[assignment]
+            else:
+                outcome = run_selected(
+                    result,
+                    args.runner,
+                    cwd=Path(args.repo),
+                    command=args.runner_command,
+                    extra=args.runner_args,
+                    dry_run=args.dry_run,
+                )
             status = "degraded" if result.degraded else "complete"
             print(
                 f"diffcone: {len(outcome.selected)} of {outcome.total} {args.runner} target(s) "
@@ -464,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
                 return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
             return outcome.returncode or 0
         if args.command == "validate":
-            result = build_plan()
+            result = build_plan(load_evidence())
             validation = validate_pytest(
                 result,
                 repo=Path(args.repo),
@@ -483,8 +515,15 @@ def main(argv: list[str] | None = None) -> int:
             if not args.targets and not args.discover:
                 parser.error("corpus requires --targets and/or --discover")
             manifest = load_manifest(args.targets) if args.targets else None
+            fixed = load_store(Path(args.evidence)) if args.evidence not in (None, "auto") else None
 
             def make_plan(base: str, head: str):
+                evidence = fixed
+                if args.evidence == "auto":
+                    roots = list(
+                        args.source_roots or (manifest.source_roots if manifest else None) or ["."]
+                    )
+                    evidence = load_store(find_store(Path(args.repo), "auto", roots, head))
                 return plan(
                     Path(args.repo),
                     base,
@@ -494,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
                     discover_runners=args.discover or (),
                     discovery_options=options,
                     cache=cache,
+                    evidence=evidence,
                 )
 
             def progress(entry) -> None:

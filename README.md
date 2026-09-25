@@ -171,6 +171,14 @@ rule each time:
 - tests with no record, an unstable record or a subprocess;
 - compiled sources and configuration.
 
+`run --evidence` runs such a plan with the recorded `PYTHONHASHSEED`, and
+first checks inside the test process, before any test runs, that the
+interpreter, the installed distributions and a few variables match the
+recording. If they don't, the evidence says nothing about this
+environment, so it runs the static plan instead and says why. `validate`
+and `corpus` take `--evidence` too, so a plan's recall can be measured
+with the same machinery.
+
 ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
 still missing are in [docs/evidence_design.md](docs/evidence_design.md).

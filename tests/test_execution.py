@@ -816,10 +816,10 @@ def test_coverage_validation_instruments_both_snapshots(repo, monkeypatch):
     cache = execution.OutcomeCache()
     validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True, outcome_cache=cache)
     assert [("--cov-context=test" in a) for a in argvs] == [True, True]
-    assert set(cache) == {(base, True), (head, True)}
+    assert set(cache) == {(base, True, None), (head, True, None)}
     # A plain validation does not reuse coverage-mode outcomes.
     validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=False, outcome_cache=cache)
-    assert (base, False) in cache and len(argvs) == 4
+    assert (base, False, None) in cache and len(argvs) == 4
 
 
 def test_setup_command_runs_in_each_checkout(repo):
