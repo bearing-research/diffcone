@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from diffcone.cache import IndexCache
+from diffcone.evidence import Evidence
 from diffcone.manifest import Manifest, Target, parse_manifest
 from diffcone.planner import Plan, Reason, plan
 from diffcone.report import to_dict
@@ -114,6 +116,28 @@ class FixtureRepo:
             got = json.dumps(to_dict(again), sort_keys=True)
             assert got == expected, f"{'warm' if warm else 'cold'} cached plan differs"
 
+    def collect(
+        self,
+        rev: str | None = None,
+        *,
+        source_roots: list[str] | None = None,
+        reverse_check: bool = False,
+        command: str | None = None,
+        extra: list[str] | None = None,
+    ) -> Evidence:
+        """Record execution evidence (``diffcone collect``) at ``rev`` (default:
+        the clean checkout), running the suite with this interpreter's pytest."""
+        from diffcone.execution import collect_evidence  # runs project code
+
+        return collect_evidence(
+            self.path,
+            command=command or f"{sys.executable} -m pytest",
+            source_roots=source_roots or ["."],
+            rev=rev,
+            reverse_check=reverse_check,
+            extra=extra,
+        ).evidence
+
     def write_manifest(self, targets: list[dict], name: str = "targets.json") -> Path:
         path = self.path.parent / name
         path.write_text(json.dumps({"targets": targets}), "utf-8")
@@ -157,6 +181,16 @@ def path_ids(reason: Reason) -> list[str]:
     if not reason.path:
         return []
     return [reason.path[0].source] + [s.target for s in reason.path]
+
+
+def executed(evidence: Evidence, test_id: str) -> set[str]:
+    """The symbols a test executed in the evidence run."""
+    return evidence.executed(evidence.tests[test_id])
+
+
+def touched(evidence: Evidence, test_id: str) -> set[str]:
+    """The repository paths a test opened, stat'ed or listed in the evidence run."""
+    return evidence.touched(evidence.tests[test_id])
 
 
 def changes(plan: Plan) -> dict[str, tuple[str, ...]]:

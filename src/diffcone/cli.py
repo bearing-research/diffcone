@@ -25,11 +25,14 @@ import argparse
 import json
 import shlex
 import sys
+import time
 from pathlib import Path
 
 from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
+from diffcone.evidence import FLAG_SUBPROCESS, FLAG_UNSTABLE, EvidenceError, list_stores
 from diffcone.execution import (
+    collect_evidence,
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
@@ -222,6 +225,50 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(c)
     c.add_argument("--format", choices=("json", "text"), default="text")
 
+    e = sub.add_parser(
+        "collect",
+        help="run the whole pytest suite under the evidence recorder and store what each "
+        "test executed",
+        description=(
+            "Execution evidence (opt-in): run the whole suite once with diffcone's recorder "
+            "(Python 3.12+) and write .diffcone/evidence/<commit>-<environment>.sqlite: the "
+            "symbols each test executed and the repository files it touched, at a commit. "
+            "Without --rev the repository itself runs and must be clean. Arguments after "
+            "`--` are passed to pytest."
+        ),
+    )
+    e.add_argument("--repo", default=".", help="path to the git repository (default: .)")
+    e.add_argument(
+        "--source-root",
+        action="append",
+        dest="source_roots",
+        metavar="DIR[=PREFIX]",
+        help="as for plan (repeatable; default: .)",
+    )
+    e.add_argument(
+        "--rev", help="collect at this commit, in a temporary worktree (default: the clean HEAD)"
+    )
+    e.add_argument(
+        "--command",
+        dest="runner_command",
+        help='pytest command line (default: "python -m pytest")',
+    )
+    e.add_argument(
+        "--setup-command", help="shell command run inside the temporary checkout (with --rev)"
+    )
+    e.add_argument(
+        "--reverse-check",
+        action="store_true",
+        help="run the suite a second time in reverse order; tests whose records differ are "
+        "marked unstable and always selected",
+    )
+    e.add_argument("--no-cache", action="store_true", help="do not use the index cache")
+    e.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
+    e.add_argument("runner_args", nargs="*", help="extra pytest arguments (after --)")
+
+    ls = sub.add_parser("evidence", help="list the evidence stores of a repository")
+    ls.add_argument("--repo", default=".", help="path to the git repository (default: .)")
+
     d = sub.add_parser(
         "discover",
         help="statically discover targets in a snapshot and emit a manifest",
@@ -250,9 +297,61 @@ def _write(text: str, output: str | None) -> int:
     return 0
 
 
+def _list_evidence(repo: Path) -> int:
+    stores = list_stores(repo)
+    if not stores:
+        print("no evidence stores (diffcone collect writes one)")
+        return 0
+    for store in stores:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(store.created))
+        print(
+            f"{store.commit[:12]}  env {store.environment_hash}  python {store.python}  "
+            f"{store.tests} tests  roots {','.join(store.source_roots)}  {when}  {store.path}"
+        )
+    return 0
+
+
+def _collect(args: argparse.Namespace) -> int:
+    repo = Path(args.repo)
+    cache = None
+    if not args.no_cache:
+        cache = IndexCache(Path(args.cache_dir) if args.cache_dir else default_cache_dir(repo))
+    try:
+        result = collect_evidence(
+            repo,
+            command=args.runner_command,
+            source_roots=args.source_roots or ["."],
+            rev=args.rev,
+            setup_command=args.setup_command,
+            reverse_check=args.reverse_check,
+            extra=args.runner_args,
+            cache=cache,
+        )
+    except (GitError, EvidenceError) as exc:
+        print(f"diffcone: error: {exc}", file=sys.stderr)
+        return 2
+    ev = result.evidence
+    flags = [r.flags for r in ev.tests.values()]
+    print(
+        f"diffcone: recorded {len(ev.tests)} tests at {ev.commit[:12]} "
+        f"(environment {ev.environment_hash}): {len(ev.symbols)} symbols executed, "
+        f"{sum(1 for f in flags if f & FLAG_SUBPROCESS)} started a subprocess"
+        + (
+            f", {sum(1 for f in flags if f & FLAG_UNSTABLE)} unstable" if ev.reverse_checked else ""
+        ),
+        file=sys.stderr,
+    )
+    print(str(result.store))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "evidence":
+        return _list_evidence(Path(args.repo))
+    if args.command == "collect":
+        return _collect(args)
     options = DiscoveryOptions(
         external_fixtures=frozenset(args.external_fixtures),
         well_known_fixtures=not args.no_well_known_fixtures,

@@ -33,10 +33,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone.cache import IndexCache
+from diffcone.evidence import EVIDENCE_DIR, Evidence, EvidenceError, fold, write_store
 from diffcone.manifest import Target
-from diffcone.model import KIND_COMMIT, KIND_WORKTREE
-from diffcone.planner import Plan
-from diffcone.snapshot import GitError, _git, split_root
+from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
+from diffcone.planner import Plan, _index_snapshot
+from diffcone.snapshot import GitError, _git, resolve_commit, split_root
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
 
@@ -1129,3 +1131,150 @@ def corpus_to_text(report: CorpusReport) -> str:
                         f"{', '.join(h.executed_changed)}"
                     )
     return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------- evidence
+
+# The recorder's module name inside the project's process (see plugin_environment).
+PLUGIN = "diffcone_collect"
+
+
+def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str]:
+    """The names Python imports the indexed modules by (a prefixed source
+    root names modules diffcone's way, not Python's)."""
+    names = set()
+    dirs = sorted((split_root(r)[0] for r in source_roots), key=len, reverse=True)
+    for symbol in index.symbols.values():
+        if symbol.kind != MODULE:
+            continue
+        for d in dirs:
+            if d in ("", ".") or symbol.path.startswith(d + "/"):
+                rel = symbol.path if d in ("", ".") else symbol.path[len(d) + 1 :]
+                parts = rel[: -len(".py")].split("/")
+                if parts[-1] == "__init__":
+                    parts.pop()
+                if parts:
+                    names.add(".".join(parts))
+                break
+    return names
+
+
+def _dirty(repo: Path) -> list[str]:
+    status = _git(repo, ["status", "--porcelain", "--untracked-files=normal"]).decode(
+        "utf-8", "surrogateescape"
+    )
+    return [
+        line[3:]
+        for line in status.splitlines()
+        if line[3:] and not line[3:].startswith(str(EVIDENCE_DIR.parts[0]) + "/")
+    ]
+
+
+def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> dict[str, str]:
+    """``base`` plus what loading ``-p diffcone_collect`` needs: the recorder
+    importable as a module of its own (a link to ``collect.py`` in a
+    directory of its own, so neither diffcone's package nor anything else of
+    its environment is imported into the project's process), and the
+    recorder's settings. The caller removes the directory (the last
+    ``PYTHONPATH`` entry) when the run ends."""
+    env = dict(base)
+    link_dir = Path(tempfile.mkdtemp(prefix="diffcone-plugin-"))
+    (link_dir / f"{PLUGIN}.py").symlink_to(Path(__file__).parent / "collect.py")
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join([*([existing] if existing else []), str(link_dir)])
+    env["DIFFCONE_COLLECT_ROOT"] = str(root)
+    if out is not None:
+        env["DIFFCONE_COLLECT_OUT"] = str(out)
+    return env
+
+
+@dataclass
+class CollectResult:
+    evidence: Evidence
+    store: Path
+    command: list[str]
+    returncode: int
+    log: str
+
+
+def collect_evidence(
+    repo: Path,
+    *,
+    command: str | None,
+    source_roots: list[str],
+    rev: str | None = None,
+    setup_command: str | None = None,
+    reverse_check: bool = False,
+    extra: list[str] | None = None,
+    cache: IndexCache | None = None,
+) -> CollectResult:
+    """Run the whole suite under the recorder at a commit and write a store.
+
+    Without ``rev`` the repository itself is run, and it must be clean: the
+    evidence is keyed by a commit, so it must describe that commit's code.
+    With ``rev`` a temporary worktree is checked out (and ``setup_command``
+    run in it). ``PYTHONHASHSEED`` is pinned to 0 when unset, and recorded.
+    With ``reverse_check`` the suite runs a second time in reverse order;
+    tests whose records differ are marked unstable and always selected."""
+    commit = resolve_commit(repo, rev or "HEAD")
+    if rev is None:
+        dirty = _dirty(repo)
+        if dirty:
+            raise GitError(
+                f"the working tree has {len(dirty)} change(s) (e.g. {dirty[0]}); evidence "
+                "describes a commit, so collect from a clean checkout or pass --rev"
+            )
+    index, _ = _index_snapshot(repo, commit, source_roots, with_config=False, cache=cache)
+    if index.errors:
+        raise EvidenceError(
+            f"{len(index.errors)} analysis error(s) at {commit[:12]} (e.g. "
+            f"{index.errors[0].path}: {index.errors[0].message}); code in those modules "
+            "could not be mapped to symbols"
+        )
+    modules = _python_module_names(index, source_roots)
+    argv = [
+        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+        "-p",
+        PLUGIN,
+        "-p",
+        "no:cacheprovider",
+        *(extra or []),
+    ]
+    kind = KIND_COMMIT if rev is not None else KIND_WORKTREE
+    with (
+        _Checkout(repo, kind, commit, setup_command) as cwd,
+        tempfile.TemporaryDirectory(prefix="diffcone-collect-") as tmp,
+    ):
+        base_env = _checkout_env(cwd, source_roots)
+        base_env.setdefault("PYTHONHASHSEED", "0")
+        base_env["DIFFCONE_COLLECT_PACKAGES"] = ",".join(sorted({m.split(".")[0] for m in modules}))
+        runs = [Path(tmp) / "forward"] + ([Path(tmp) / "reverse"] if reverse_check else [])
+        logs, returncode = [], 0
+        for out in runs:
+            env = plugin_environment(base_env, out, cwd)
+            if out.name == "reverse":
+                env["DIFFCONE_COLLECT_REVERSE"] = "1"
+            try:
+                proc = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, env=env)
+            except OSError as exc:
+                raise GitError(f"cannot run {argv[0]!r}: {exc}") from exc
+            finally:
+                shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+            log = proc.stdout + proc.stderr
+            logs.append(log)
+            if proc.returncode not in (0, 1):
+                raise EvidenceError(
+                    f"the suite did not run: {argv[0]!r} exited {proc.returncode} "
+                    f"({PYTEST_EXIT.get(proc.returncode, 'unknown')})\n{log[-2000:]}"
+                )
+            returncode = max(returncode, proc.returncode)
+        evidence = fold(
+            runs,
+            index,
+            commit=commit,
+            source_roots=source_roots,
+            command=shlex.join(argv),
+            project_modules=modules,
+        )
+    store = write_store(evidence, repo / EVIDENCE_DIR)
+    return CollectResult(evidence, store, argv, returncode, "\n".join(logs))
