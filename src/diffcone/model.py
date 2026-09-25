@@ -149,6 +149,10 @@ class SourceIndex:
     # hashes every other statement of the body (a loop, a call, a ``del``),
     # ``CLASS_STATEMENT`` the bases, keywords and decorators.
     class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Class -> the in-scope classes its statement names as bases (resolved).
+    # Evidence mode walks class hierarchies with it; static planning does not
+    # use it.
+    class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def revision(self) -> str:

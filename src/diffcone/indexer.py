@@ -89,7 +89,15 @@ REFLECTIVE_CALLS = frozenset(
     }
 )
 REFLECTIVE_ATTRIBUTES = frozenset(
-    {"__dict__", "__annotations__", "__signature__", "__code__", "__defaults__", "__kwdefaults__"}
+    {
+        "__dict__",
+        "__annotations__",
+        "__signature__",
+        "__code__",
+        "__defaults__",
+        "__kwdefaults__",
+        "modules",  # sys.modules: any module, found by name
+    }
 )
 # How far to follow a module name passed from caller to caller before giving
 # up and leaving the dynamic reference where it is.
@@ -915,6 +923,7 @@ class _Output:
     attr_refs: list[_AttrRef] = field(default_factory=list)
     reflection: set[tuple[str, str]] = field(default_factory=set)
     class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
+    class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -931,6 +940,7 @@ class _Output:
         self.attr_refs.extend(other.attr_refs)
         self.reflection |= other.reflection
         self.class_attributes.update(other.class_attributes)
+        self.class_bases.update(other.class_bases)
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -987,6 +997,7 @@ def _output_to_dict(out: _Output) -> dict:
         },
         "escapes": sorted(out.escapes),
         "reflection": sorted(list(r) for r in out.reflection),
+        "class_bases": {c: list(b) for c, b in sorted(out.class_bases.items())},
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -1050,6 +1061,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.escapes = set(data["escapes"])
     out.reflection = {(s, d) for s, d in data["reflection"]}
     out.class_attributes = {c: dict(a) for c, a in data["class_attributes"].items()}
+    out.class_bases = {c: tuple(b) for c, b in data["class_bases"].items()}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(
@@ -1139,6 +1151,7 @@ class Indexer:
             external=self.index.external,
             reflection=self.index.reflection,
             class_attributes=self.index.class_attributes,
+            class_bases=self.index.class_bases,
         )
         self.out = self._global
         # Symbols and class scopes added by the module being indexed, and
@@ -2406,6 +2419,7 @@ class Indexer:
                             previous.get(name, "") + "|" + attributes.get(name, "")
                         )
                 self.out.class_attributes[symbol_id] = attributes
+                self.out.class_bases[symbol_id] = tuple(sorted(set(cscope.bases)))
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
                 symbol_id = members.get(stmt.name)

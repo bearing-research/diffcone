@@ -292,8 +292,10 @@ def test_a_fixture_decorator_change_selects_every_test_in_its_scope(repo):
     conftest = FIXTURES["tests/conftest.py"].replace('scope="session"', 'scope="module"')
     head = repo.commit({"tests/conftest.py": conftest})
     plan = _plan(repo, base, head, ev)
+    # The decorator runs at import, so the conftest is planned statically
+    # too, which reaches every test under it.
     assert selected(plan) == {X, Y, Z, ADD, MUL}
-    assert "test_scope" in rules(plan, Z)
+    assert "test_scope" in rules(plan, X)
 
 
 def test_a_pytest_hook_change_selects_everything(repo):
@@ -465,3 +467,125 @@ def test_a_skipped_test_whose_mark_is_removed_is_selected(repo):
     plan = _plan(repo, base, head, ev)
     assert "tests/test_skip.py::test_later" in selected(plan)
     assert "changed_target" in rules(plan, "tests/test_skip.py::test_later")
+
+
+BASE_TESTS = {
+    **BASE,
+    "tests/base.py": """\
+import pytest
+
+
+class Base:
+    @pytest.fixture
+    def value(self):
+        return 1
+
+    def test_value(self, value):
+        assert value == 1
+
+    def check(self, name):
+        return getattr(self, name)
+""",
+    "tests/test_sub.py": """\
+from tests.base import Base
+
+
+class TestSub(Base):
+    def test_lookup(self):
+        assert self.check("test_" + "value")
+""",
+    "tests/test_other.py": """\
+def lookup(obj, name):
+    return getattr(obj, name, None)
+
+
+def test_other():
+    assert lookup(object(), "x" + "y") is None
+""",
+}
+SUB_VALUE, SUB_LOOKUP = (
+    "tests/test_sub.py::TestSub::test_value",
+    "tests/test_sub.py::TestSub::test_lookup",
+)
+OTHER = "tests/test_other.py::test_other"
+
+
+def test_a_test_class_member_is_seen_only_by_lookups_in_its_hierarchy(repo):
+    base, ev = _collected(repo, BASE_TESTS)
+    changed = BASE_TESTS["tests/base.py"].replace(
+        "def test_value(self, value):", "def test_value(self, value, extra=None):"
+    )
+    head = repo.commit({"tests/base.py": changed})
+    plan = _plan(repo, base, head, ev)
+    # Only pytest holds a TestSub; test_other's unbounded lookup cannot meet one.
+    assert selected(plan) == {SUB_VALUE, SUB_LOOKUP}
+    assert "changed_target" in rules(plan, SUB_VALUE)
+    assert "lookup_site" in rules(plan, SUB_LOOKUP)
+
+
+def test_a_fixture_on_a_base_class_reaches_the_tests_that_list_it(repo):
+    base, ev = _collected(repo, BASE_TESTS)
+    changed = BASE_TESTS["tests/base.py"].replace(
+        "    @pytest.fixture\n", "    @pytest.fixture(params=[1])\n"
+    )
+    head = repo.commit({"tests/base.py": changed})
+    plan = _plan(repo, base, head, ev)
+    assert SUB_VALUE in selected(plan) and OTHER not in selected(plan)
+    assert "test_scope" in rules(plan, SUB_VALUE)
+
+
+def test_an_unresolved_fixture_needs_no_fallback_when_no_fixture_changed(repo):
+    base, ev = _collected(repo, BASE_TESTS)
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = _plan(repo, base, head, ev)
+    # Discovery cannot resolve `value` (a fixture on a base class in another
+    # file), but the record holds what the test ran, and no module that uses
+    # pytest changed a definition.
+    assert selected(plan) == {ADD, "bench_ops.TimeOps.time_add"}
+    static = repo.plan(base, head, ASV, discover_runners=["pytest"])
+    assert "lifecycle_dependency_unresolved" in rules(static, SUB_VALUE)
+
+
+COMBINED = {
+    **BASE,
+    "tests/base.py": """\
+class BaseOne:
+    def test_one(self):
+        assert self.helper() == 1
+
+    def helper(self):
+        return 1
+
+
+class BaseTwo:
+    def test_two(self):
+        assert True
+
+
+class AllTests(BaseOne, BaseTwo):
+    pass
+""",
+    "tests/test_all.py": """\
+from tests.base import AllTests
+
+
+class TestAll(AllTests):
+    pass
+""",
+    "tests/test_other.py": BASE_TESTS["tests/test_other.py"],
+}
+
+
+def test_a_class_that_only_combines_base_tests_does_not_hold_them(repo):
+    base, ev = _collected(repo, COMBINED)
+    changed = COMBINED["tests/base.py"].replace(
+        "    def helper(self):", "    def helper(self, extra=None):"
+    )
+    head = repo.commit({"tests/base.py": changed})
+    plan = _plan(repo, base, head, ev)
+    # Only pytest holds a TestAll, so test_other's lookup cannot meet one.
+    # (test_two is in the changed class's scope: it could use a fixture there.)
+    assert selected(plan) == {
+        "tests/test_all.py::TestAll::test_one",
+        "tests/test_all.py::TestAll::test_two",
+    }

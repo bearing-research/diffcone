@@ -329,14 +329,44 @@ selection or states something the tables left implicit; none narrows it.
   (`inspect.signature`, `get_type_hints`). The indexer records these sites
   in a field static planning does not use, and they join the lookup sites
   for added, deleted and redefined names.
-* **Test code.** Test modules are the modules holding a pytest target;
-  conftests are test code too. Any change in test code other than a
-  function body also selects the tests in scope: the module's tests, or
-  every test under a conftest's directory. That covers `pytestmark`,
-  fixture decorators and parameters, and fixture shadowing, none of which
-  has a static reader. `pytest_plugins`, `collect_ignore` and
+* **Test code.** Test modules are the modules holding a pytest target, or
+  the entry of one; conftests are test code too. Any change in test code
+  other than a function body also selects the tests in its scope. That
+  covers `pytestmark`, fixture decorators and parameters, and fixture
+  shadowing, none of which has a static reader. The scope is:
+  - the tests listing the symbol as a lifecycle dependency (a fixture as
+    discovery resolves it at head, autouse included);
+  - the tests collected from its class or a subclass;
+  - for a test module's variable (`pytestmark`), the module's tests.
+
+  A fixture's old users ran it, so their records hold it. `pytest_plugins`, `collect_ignore` and
   `collect_ignore_glob` in a conftest, and any function named `pytest_*`,
   select everything.
+* **Test classes only pytest holds.** Names on a test class, and on a test
+  module, are looked up by very few sites. On pandas, a one-line test edit
+  otherwise selected 6 588 tests through every unbounded lookup in the test
+  tree. Three bounds apply:
+  - *A test class.* A member of a class whose instances only pytest holds
+    is seen only by lookup sites inside that class, its bases and its
+    subclasses. This is the planner's runner-only rule with two changes:
+    - a class that is only ever a base of test classes counts too, since
+      its instances are the test classes' instances (pandas'
+      `ExtensionTests` combines a dozen `Base*Tests`);
+    - a `.instance` or `.cls` read does not turn the rule off. The tests
+      that executed such a read are selected instead, because a test
+      object handed on is used within that test. (pandas' IPython tests
+      read `ip.instance`, which turns the static rule off for all of
+      pandas.)
+  - *A test module or conftest.* A module-level name there is seen only
+    by lookup sites that import the module, plus the tests that executed a
+    `.module` or `sys.modules` read.
+  - *A test's own change* reaches the targets it is the entry of, not its
+    class's scope.
+* **Unresolved fixtures.** Static mode selects every test with a fixture
+  discovery cannot resolve. In evidence mode that test's record holds the
+  fixture it ran. The fallback therefore applies only when a module that
+  uses pytest added, deleted or redefined a function or class, which could
+  be a fixture discovery doesn't see.
 * **Skipped tests.** A test skipped by a mark never runs its body, so its
   record lacks its own entry. A test is therefore also selected when its
   entry symbol, or a class or module containing it, changed

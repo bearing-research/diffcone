@@ -40,7 +40,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 18  # 18: reflection sites and class attributes (evidence mode)
+INDEX_FORMAT = 18  # 18: reflection sites, class attributes and bases (evidence mode)
 
 
 def _indexer_fingerprint() -> str:
@@ -85,6 +85,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(index.class_attributes.items())
         },
+        "class_bases": {c: list(b) for c, b in sorted(index.class_bases.items())},
     }
 
 
@@ -111,6 +112,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},
         class_attributes={c: dict(a) for c, a in data["class_attributes"].items()},
+        class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
     )
 
 

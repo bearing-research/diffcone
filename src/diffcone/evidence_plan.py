@@ -32,9 +32,11 @@ observed by"), and a test is selected when its record meets E:
 * a non-Python file: the tests that touched it or a directory above it;
   everything when it is compiled source, build or pytest configuration, or
   was touched outside every test;
-* test code other than a function body: every test in its scope as well
-  (the module's tests, or every test under a conftest), since pytest
-  reads marks, fixtures and parameters without a static reader.
+* test code other than a function body: the tests that list the symbol as
+  a lifecycle dependency (a fixture) or are collected from its class or a
+  subclass, and for a test module's variable (``pytestmark``) every test
+  of the module, since pytest reads marks, fixtures and parameters without
+  a static reader.
 
 "Escalated" means planned by the static planner from exactly those seeds,
 without dynamic-reference pseudo-seeds: a test that executed a dynamic
@@ -77,6 +79,7 @@ from diffcone.model import (
     MODULE,
     OPAQUE_ATTRIBUTE,
     REFERENCES,
+    UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     SourceIndex,
@@ -89,6 +92,7 @@ from diffcone.planner import (
     RULE_ESCALATED,
     RULE_EXECUTED_CHANGED,
     RULE_EXECUTED_READER,
+    RULE_LIFECYCLE_UNRESOLVED,
     RULE_LOOKUP_SITE,
     RULE_NEW_TARGET,
     RULE_NO_EVIDENCE,
@@ -107,6 +111,7 @@ from diffcone.planner import (
     _changed_unanalysed_files,
     _decision,
     _ImportReach,
+    _inside,
     _is_dunder,
     _members_by_container,
     _runner_dependency_fallbacks,
@@ -214,10 +219,15 @@ class _TestCode:
         self.tests_by_file: dict[str, list[str]] = defaultdict(list)
         self.entries: set[str] = set()
         self.modules: set[str] = set()
+        # Symbol -> the tests listing it as a lifecycle dependency (fixtures,
+        # setup functions, conftest hooks: discovery's fixture chain).
+        self.users: dict[str, list[str]] = defaultdict(list)
         for target in targets:
             file = target.runner_id.split("::", 1)[0]
             self.tests_by_file[file].append(target.runner_id)
             self.entries.add(target.entry_symbol)
+            for dep in target.lifecycle_dependencies:
+                self.users[dep].append(target.runner_id)
             if file in self.module_of_path:
                 self.modules.add(self.module_of_path[file])
         self.conftests = {m for p, m in self.module_of_path.items() if _is_conftest(p)}
@@ -231,16 +241,82 @@ class _TestCode:
     def is_test_code(self, module: str) -> bool:
         return module in self.modules or module in self.conftests
 
-    def scope(self, module: str) -> list[str]:
-        """The tests a change in ``module`` reaches without a static reader:
-        the module's own tests, or every test under a conftest's directory."""
-        path = self.path_of_module.get(module, "")
-        if module in self.conftests:
-            prefix = path[: -len("conftest.py")]
-            return sorted(
-                t for f, tests in self.tests_by_file.items() if f.startswith(prefix) for t in tests
-            )
-        return sorted(self.tests_by_file.get(path, ()))
+    def scope(self, symbol: Symbol, classes: set[str], *, whole_module: bool) -> list[str]:
+        """The tests a change to ``symbol`` in test code reaches without a
+        static reader:
+        - every test listing the symbol among its lifecycle dependencies
+          (a fixture, as discovery resolves it at head, autouse included);
+        - every test collected from ``classes``, the class holding the
+          symbol and its subclasses (a fixture or mark on a base test class
+          in another file reaches every subclass's tests);
+        - with ``whole_module``, every test of the module (``pytestmark``).
+        Tests that ran a fixture at C have it in their record, which covers
+        one that was deleted or stopped applying to them."""
+        tests = set(self.users.get(symbol.id, ()))
+        for cls in classes:
+            tests.update(self.users.get(cls, ()))
+        if whole_module:
+            tests.update(self.tests_by_file.get(self.path_of_module.get(symbol.module, ""), ()))
+        return sorted(tests)
+
+
+def _class_graph(
+    indexes: Iterable[SourceIndex],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Bases and subclasses of every class, over both revisions."""
+    bases: dict[str, set[str]] = defaultdict(set)
+    subclasses: dict[str, set[str]] = defaultdict(set)
+    for index in indexes:
+        for cls, names in index.class_bases.items():
+            for base in names:
+                bases[cls].add(base)
+                subclasses[base].add(cls)
+    return bases, subclasses
+
+
+def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]) -> set[str]:
+    """Test classes (with the bases they inherit from) whose instances only
+    pytest ever holds: planner._runner_only_classes, with two differences.
+    A class that is only ever a base of test classes (pandas' ExtensionTests
+    combines a dozen Base*Tests) counts too, since its instances are the
+    test classes' instances. And a read of ``.instance`` does not turn the
+    rule off: the tests that executed one are selected instead (see
+    ``_Observers._sites``)."""
+    symbols = {**c_index.symbols, **other.symbols}
+    bases, _ = _class_graph((c_index, other))
+    runner: set[str] = set()
+    for target in targets:
+        entry = symbols.get(target.entry_symbol)
+        if entry is not None and entry.kind == METHOD and entry.container:
+            runner.add(entry.container)
+        for dep in target.lifecycle_dependencies:
+            owner = symbols.get(dep)
+            if owner is not None and owner.kind == CLASS:
+                runner.add(dep)
+    stack = list(runner)
+    while stack:
+        for base in bases.get(stack.pop(), ()):
+            if base not in runner:
+                runner.add(base)
+                stack.append(base)
+    if not runner:
+        return set()
+    held = (c_index.escaped_classes | other.escaped_classes) & runner
+    for index in (c_index, other):
+        for edge in index.edges:
+            if (
+                edge.kind == REFERENCES
+                and edge.target in runner
+                and not _inside(edge.source, runner, c_index, other)
+            ):
+                held.add(edge.target)
+    stack = list(held)
+    while stack:  # a held subclass holds its bases: its instances carry their methods
+        for base in bases.get(stack.pop(), ()):
+            if base in runner and base not in held:
+                held.add(base)
+                stack.append(base)
+    return runner - held
 
 
 def _is_conftest(path: str) -> bool:
@@ -257,8 +333,10 @@ class _Observers:
         evidence: Evidence,
         test_code: _TestCode,
         declarations: list[Declaration],
+        runner_only: set[str],
     ) -> None:
         self.c, self.other = c_index, other
+        self.runner_only = runner_only
         self.evidence = evidence
         self.test_code = test_code
         self.symbols: dict[str, Symbol] = {**c_index.symbols, **other.symbols}
@@ -285,28 +363,49 @@ class _Observers:
                 self.sites.append((symbol, SITE_ANY))
         for decl in declarations:
             self.readers_of[decl.target].add(decl.source)
+        self.hands_on = {
+            ref.symbol
+            for index in (c_index, other)
+            for ref in index.unresolved
+            if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name in ("instance", "cls")
+        }
+        self.module_hands_on = {
+            ref.symbol
+            for index in (c_index, other)
+            for ref in index.unresolved
+            if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name == "module"
+        } | {
+            symbol
+            for index in (c_index, other)
+            for symbol, detail in index.reflection
+            if detail == ".modules"
+        }
+        self.module_hands_on = {
+            s
+            for s in self.module_hands_on
+            if s in self.symbols and test_code.is_test_code(self.symbols[s].module)
+        }
         self.sites = sorted(set(self.sites))
         self.members = _members_by_container(set(self.symbols))
         self.reach = _ImportReach(c_index, other)
-        self.subclasses: dict[str, set[str]] = defaultdict(set)
-        self.bases: dict[str, set[str]] = defaultdict(set)
-        for index in (c_index, other):
-            for edge in index.edges:
-                source = self.symbols.get(edge.source)
-                target = self.symbols.get(edge.target)
-                if (
-                    edge.kind == REFERENCES
-                    and not edge.detail
-                    and source is not None
-                    and target is not None
-                    and source.kind == CLASS
-                    and target.kind == CLASS
-                ):
-                    # Over-approximates bases (any class the class statement
-                    # names), which only widens E.
-                    self.bases[edge.source].add(edge.target)
-                    self.subclasses[edge.target].add(edge.source)
+        self.bases, self.subclasses = _class_graph((c_index, other))
 
+        # Whether a module that uses pytest added, deleted or redefined a
+        # function or class: a fixture (or a class holding them) could have
+        # changed where discovery does not see it.
+        pytest_modules = {
+            self.symbols[x.symbol].module
+            for index in (c_index, other)
+            for x in index.external
+            if x.symbol in self.symbols and x.module.split(".")[0] in ("pytest", "_pytest")
+        }
+        self.fixture_sources_changed = any(
+            c.carries_impact
+            and (c.head or c.base).kind in (FUNCTION, METHOD, CLASS)  # type: ignore[union-attr]
+            and (c.head or c.base).module in pytest_modules  # type: ignore[union-attr]
+            and {ADDED, DELETED, DEFINITION_CHANGED} & set(c.changes)
+            for c in self.changes
+        )
         self.E: dict[str, Reason] = {}
         self.direct: dict[str, Reason] = {}
         self.fallbacks: list[Fallback] = []
@@ -332,7 +431,26 @@ class _Observers:
         self.fallbacks.append(Fallback(rule, "all_targets", detail))
 
     def _scope(self, symbol: Symbol, change: SymbolChange) -> None:
-        for test in self.test_code.scope(symbol.module):
+        classes: set[str] = set()
+        current: str | None = symbol.id if symbol.kind == CLASS else symbol.container
+        while current:
+            holder = self.symbols.get(current)
+            if holder is None:
+                break
+            if holder.kind == CLASS:
+                stack = [current]
+                while stack:
+                    cls = stack.pop()
+                    if cls not in classes:
+                        classes.add(cls)
+                        stack.extend(self.subclasses.get(cls, ()))
+            current = holder.container
+        whole_module = (
+            symbol.kind == VARIABLE
+            and symbol.container == symbol.module
+            and symbol.module not in self.test_code.conftests
+        )
+        for test in self.test_code.scope(symbol, classes, whole_module=whole_module):
             self.direct.setdefault(
                 test,
                 Reason(
@@ -384,7 +502,9 @@ class _Observers:
             DEPENDENCIES_CHANGED,
             DOCSTRING_CHANGED,
         }
-        if test and not body_only:
+        if test and not body_only and change.id not in self.test_code.entries:
+            # A test's own change reaches the targets it is the entry of
+            # (changed_target); anything else in test code reaches its scope.
             self._scope(symbol, change)
         if symbol.kind == MODULE:
             if kinds & {ADDED, DELETED}:
@@ -556,14 +676,29 @@ class _Observers:
                 self.seed_nodes[symbol_id] = reason
 
     def _escalate_change(self, change: SymbolChange, why: str) -> None:
+        """Plan the change statically (it runs at import). What it built is
+        seen through the namespace holding it: a module-level change through
+        the module, a decorated member through its class, so the lookup
+        sites are those that can see that namespace."""
         self.seed_changes.add(change.id)
         symbol = change.head or change.base
         assert symbol is not None
-        self._escalate_module(symbol.module, why, seed=False)
+        self._module_symbols(symbol.module, why)
+        self._sites(symbol, change, why, imports=symbol.kind == MODULE)
 
-    def _escalate_module(self, module: str, why: str, *, seed: bool = True) -> None:
-        if seed and module not in self.seed_nodes:
+    def _escalate_module(self, module: str, why: str) -> None:
+        """Plan the module's import statically, as if its top-level code
+        changed: what ran during it (or what it read) did."""
+        if module not in self.seed_nodes:
             self.seed_nodes[module] = why
+        self._module_symbols(module, why)
+        module_symbol = self.symbols.get(module)
+        if module_symbol is not None:
+            self._sites(module_symbol, None, why, imports=True)
+
+    def _module_symbols(self, module: str, why: str) -> None:
+        """Every symbol of a module whose import-time state may differ: code
+        running there can read that state without naming it."""
         if module in self.escalated_modules:
             return
         self.escalated_modules.add(module)
@@ -575,9 +710,6 @@ class _Observers:
                     f"{symbol.id} is in {module}, whose import-time state may differ: {why}",
                     None,
                 )
-        module_symbol = self.symbols.get(module)
-        if module_symbol is not None:
-            self._sites(module_symbol, None, why, imports=True)
 
     def _sites(
         self, symbol: Symbol, change: SymbolChange | None, label: str, *, imports: bool = False
@@ -588,16 +720,26 @@ class _Observers:
         module is in the site's import closure; a module named at run time
         for a module-level namespace, when ``imports``. For test code only
         sites in test code count: nothing else holds a test module or a test
-        class the runner instantiates."""
+        class the runner instantiates. A member of a class only the runner
+        ever instantiates (planner._runner_only_classes) is seen only by sites
+        inside that class, its bases and its subclasses: no other code can
+        hold one of its instances."""
         namespace = symbol.module
         test = self.test_code.is_test_code(namespace)
+        family = self._runner_family(symbol.id)
+        # A test module or conftest is held by pytest and by its importers.
+        # Only code that imports it, or is handed it (below), can look a
+        # module-level name up on it.
+        module_name = test and (symbol.kind == MODULE or symbol.container == namespace)
         for site, kind in self.sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
                 continue
             if test and not self.test_code.is_test_code(site_symbol.module):
                 continue
-            if kind == SITE_CLOSURE:
+            if family is not None and not _inside(site, family, self.c, self.other):
+                continue  # but see the handing-on sites below
+            if kind == SITE_CLOSURE or module_name:
                 if namespace not in self.reach.closure_of(site):
                     continue
             elif kind == SITE_IMPORT:
@@ -609,6 +751,49 @@ class _Observers:
                 f"{site} looks names up by a name nothing bounds and can see {namespace}; {label}",
                 change,
             )
+        if module_name:
+            # ``request.module`` hands a test module on, and ``sys.modules``
+            # finds one by name: the reader stands in for what follows.
+            for site in sorted(self.module_hands_on):
+                self._observe(
+                    site,
+                    RULE_LOOKUP_SITE,
+                    f"{site} reads .module or sys.modules and may hand a test module on to "
+                    f"a lookup that can see {namespace}; {label}",
+                    change,
+                )
+        if family is not None:
+            # ``request.instance``, ``item.instance`` and ``request.cls`` hand
+            # a test object to other code, which may then look anything up on
+            # it. That happens within the test that read it, so its record
+            # holds the read: the reader stands in for every lookup after it.
+            for site in sorted(self.hands_on):
+                self._observe(
+                    site,
+                    RULE_LOOKUP_SITE,
+                    f"{site} reads .instance or .cls and may hand a test object on to a lookup "
+                    f"that can see {namespace}; {label}",
+                    change,
+                )
+
+    def _runner_family(self, symbol_id: str) -> set[str] | None:
+        """The runner-only class holding ``symbol_id`` with its bases and
+        subclasses, or None when no runner-only class holds it."""
+        current: str | None = symbol_id
+        while current:
+            if current in self.runner_only:
+                family = {current}
+                for graph in (self.bases, self.subclasses):
+                    stack = [current]
+                    while stack:
+                        for nxt in graph.get(stack.pop(), ()):
+                            if nxt not in family:
+                                family.add(nxt)
+                                stack.append(nxt)
+                return family
+            symbol = self.symbols.get(current)
+            current = symbol.container if symbol is not None else None
+        return None
 
     def _file(self, path: str, what: str, *, names: bool) -> None:
         """A changed file the index does not read. Its content is observed by
@@ -683,7 +868,8 @@ def plan_with_evidence(
     changed_ids: set[str] = {c.id for c in changes if c.carries_impact}
     docstring_ids: set[str] = {c.id for c in changes if DOCSTRING_CHANGED in c.changes}
     for side, other in pairs:
-        obs = _Observers(evidence_index, other, evidence, test_code, declared)
+        runner_only = _runner_only(evidence_index, other, pytest_targets)
+        obs = _Observers(evidence_index, other, evidence, test_code, declared, runner_only)
         obs.run()
         observed.append(obs)
         fallbacks += obs.fallbacks
@@ -786,8 +972,16 @@ def _evidence_decision(
     if target.runner != "pytest":
         return static_other[target.node_id]
     reasons: list[Reason] = [Reason(fb.rule, fb.detail) for fb in _dedupe(fallbacks)]
-    reasons += list(dict.fromkeys(target_fallbacks.get(target.node_id, ())))
     record = evidence.tests.get(target.runner_id)
+    fixture_sources = any(obs.fixture_sources_changed for obs in observed)
+    for r in dict.fromkeys(target_fallbacks.get(target.node_id, ())):
+        if r.rule == RULE_LIFECYCLE_UNRESOLVED and record is not None and not fixture_sources:
+            # A fixture discovery could not resolve still ran, so the record
+            # holds it. Only one added or redefined where discovery cannot
+            # see it could reach the test unrecorded, and a fixture needs
+            # pytest: nothing that uses pytest defined a function differently.
+            continue
+        reasons.append(r)
     short = evidence.commit[:12]
     if record is None:
         reasons.append(

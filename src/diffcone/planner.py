@@ -414,7 +414,8 @@ def _runner_only_classes(
     symbol outside every runner class refers to it, or when a held class
     inherits from it. A read of an attribute named ``instance`` anywhere is
     pytest's ``request.instance``, the one channel that hands a test instance
-    to other code, and turns the rule off."""
+    to other code, and turns the rule off. (Evidence mode has its own
+    version, evidence_plan._runner_only.)"""
     symbols = {**base.symbols, **head.symbols}
     runner: set[str] = set()
     for result in discovered:
