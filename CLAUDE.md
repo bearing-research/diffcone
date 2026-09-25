@@ -19,6 +19,9 @@ uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
 uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" [--dry-run] -- -x
 uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest" [--coverage]
 uv run diffcone corpus --range main~10..main --discover pytest --command "uv run pytest" --coverage
+uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] -- -n 8  # record evidence (3.12+)
+uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto  # plan on it
+uv run diffcone evidence                        # list evidence stores
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json
 uv run python scripts/collection_check.py --repo DIR --command CMD  # discovery vs real collection
@@ -40,8 +43,12 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.
 - `src/diffcone/declarations.py` reads `diffcone.toml` (dependencies the project states that the analysis cannot see) from both revisions; declarations only add edges, and anything wrong with the file is an analysis error rather than a declaration that silently does nothing.
-- `src/diffcone/report.py` renders JSON (`schema_version` 2) and text.
-- `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate` after a plan exists; keep it that way.
+- `src/diffcone/report.py` renders JSON (`schema_version` 3) and text.
+- `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate`/`collect`; keep it that way.
+- Execution evidence (opt-in, roadmap item 5, `docs/evidence_design.md`):
+  - `src/diffcone/collect.py` is the pytest plugin that records what each test executed. It is loaded into the project's process as `-p diffcone_collect` and imports nothing of diffcone.
+  - `src/diffcone/evidence.py` folds raw records onto the index and reads and writes `.diffcone/evidence/<commit>-<env>.sqlite`.
+  - `src/diffcone/evidence_plan.py` turns changes into the symbols that would notice them, and escalates the rest through `plan_from_indexes(seeds=...)`.
 - `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.
 - `src/diffcone/testing.py` is the public scenario-test toolkit: `FixtureRepo` (throwaway git repo built from dicts, `commit`/`plan`/`git`/`try_git`), target constructors and plan assertion helpers. Tests import from `diffcone.testing`, never from other test files; `tests/conftest.py` only defines the `repo` fixture.
 
@@ -74,7 +81,7 @@ Git snapshot reader
 - **New or changed targets are always selected**, even with no dependency edges.
 - **Every selection reason maps to a real dependency edge or an explicit fallback rule.** Never fabricate call paths.
 - **An analysis error must not become a successful empty selection.**
-- Method identity and method-call resolution are separate: recognizing `Class.method` as a symbol does not mean `obj.method()` calls are resolved. Dispatch is modelled only for `self`/`cls` receivers, as the MRO hit plus in-scope overrides; there is no type inference, no dispatch on receivers of unknown type, no branch- or argument-sensitive analysis, runtime tracing, or ML ranking. Unsupported constructs stay visible in the output.
+- Method identity and method-call resolution are separate: recognizing `Class.method` as a symbol does not mean `obj.method()` calls are resolved. Dispatch is modelled only for `self`/`cls` receivers, as the MRO hit plus in-scope overrides; there is no type inference, no dispatch on receivers of unknown type, no branch- or argument-sensitive analysis, or ML ranking. Runtime tracing exists only in the opt-in evidence recorder, never in planning. Unsupported constructs stay visible in the output.
 
 Supported subset: module-level functions and methods; direct statically resolvable calls/references; ordinary imports and imported-name aliases within configured source roots; transitive dependencies; manifest-declared target and lifecycle dependencies.
 

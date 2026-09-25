@@ -30,7 +30,14 @@ from pathlib import Path
 
 from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
-from diffcone.evidence import FLAG_SUBPROCESS, FLAG_UNSTABLE, EvidenceError, list_stores
+from diffcone.evidence import (
+    FLAG_SUBPROCESS,
+    FLAG_UNSTABLE,
+    EvidenceError,
+    find_store,
+    list_stores,
+    load_store,
+)
 from diffcone.execution import (
     collect_evidence,
     corpus_to_dict,
@@ -46,7 +53,7 @@ from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
 from diffcone.planner import plan
 from diffcone.report import snapshot_to_dict, to_json, to_text
-from diffcone.snapshot import GitError, read_snapshot
+from diffcone.snapshot import GitError, read_snapshot, resolve_commit
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
@@ -92,6 +99,16 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
 
 
+def _add_evidence(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--evidence",
+        metavar="auto|PATH",
+        help="opt-in execution evidence (see `diffcone collect`): select pytest targets on "
+        "what each test executed when recorded. auto picks the store at the nearest ancestor "
+        "commit; other runners' targets are planned statically",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="diffcone",
@@ -118,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--targets", help="path to a JSON target manifest")
     _add_common(p)
+    _add_evidence(p)
     p.add_argument("--format", choices=("json", "text"), default="json")
 
     r = sub.add_parser(
@@ -363,7 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.cache_dir) if args.cache_dir else default_cache_dir(Path(args.repo))
         )
 
-    def build_plan():
+    def build_plan(evidence=None):
         if not args.targets and not args.discover:
             parser.error(f"{args.command} requires --targets and/or --discover")
         manifest = load_manifest(args.targets) if args.targets else None
@@ -376,11 +394,21 @@ def main(argv: list[str] | None = None) -> int:
             discover_runners=args.discover or (),
             discovery_options=options,
             cache=cache,
+            evidence=evidence,
         )
+
+    def load_evidence():
+        if not getattr(args, "evidence", None):
+            return None
+        manifest_roots = load_manifest(args.targets).source_roots if args.targets else None
+        roots = list(args.source_roots or manifest_roots or ["."])
+        head = args.head if args.head not in ("WORKTREE", "INDEX") else "HEAD"
+        reference = resolve_commit(Path(args.repo), head)
+        return load_store(find_store(Path(args.repo), args.evidence, roots, reference))
 
     try:
         if args.command == "plan":
-            result = build_plan()
+            result = build_plan(load_evidence())
             text = to_json(result) if args.format == "json" else to_text(result)
             code = _write(text, args.output)
             if code:
@@ -513,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
                 ],
             }
             return _write(json.dumps(data, indent=2) + "\n", args.output)
-    except (ManifestError, GitError) as exc:
+    except (ManifestError, GitError, EvidenceError) as exc:
         print(f"diffcone: error: {exc}", file=sys.stderr)
         return 2
     parser.error("unknown command")  # pragma: no cover

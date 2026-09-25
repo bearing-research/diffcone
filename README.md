@@ -146,6 +146,35 @@ suite) and requires every test that *executed* a changed symbol to have been
 selected, reporting recall and precision against that dynamic ground truth.
 It exits 1 on any miss.
 
+### Execution evidence (opt-in, in progress)
+
+Static planning cannot tell which tests of a large, tightly connected
+library reach a change: in pandas nearly every change selects nearly every
+test. Evidence mode adds one fact that reading the code cannot supply,
+which functions each test actually executed in a recorded run. It needs
+Python 3.12+ in the project's environment.
+
+```bash
+# record, at a clean HEAD, what every test executed (arguments after -- go to pytest)
+uv run diffcone collect --command "uv run pytest" -- -n 8
+uv run diffcone evidence                       # list the stores
+# plan on the nearest recorded ancestor
+uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
+```
+
+A test is selected when its record meets a change: it executed a changed
+function, a reader of a changed definition or value, or a lookup that could
+see a changed name, or it touched a changed file. What evidence cannot
+bound is planned statically or selects everything, and the report names the
+rule each time:
+- changes that run at import;
+- tests with no record, an unstable record or a subprocess;
+- compiled sources and configuration.
+
+ASV targets keep static selection. The rules, the assumptions they rest on
+(the same environment, deterministic tests, test isolation) and what is
+still missing are in [docs/evidence_design.md](docs/evidence_design.md).
+
 ### Static discovery
 
 Discovery never imports or runs project code; it reproduces a documented
@@ -217,11 +246,11 @@ JSON:
 
 ### Report
 
-The JSON report (`schema_version: 2`) contains:
+The JSON report (`schema_version: 3`) contains:
 
 | Section | Contents |
 |---|---|
-| `analysis` | both snapshots (`revision`, `commit`, `kind`, `uncommitted`, `description`), source roots, `working_tree_analyzed` / `uncommitted_analyzed`, the supported scope with a one-sentence `analyzed` statement, counts |
+| `analysis` | both snapshots (`revision`, `commit`, `kind`, `uncommitted`, `description`), source roots, `working_tree_analyzed` / `uncommitted_analyzed`, the supported scope with a one-sentence `analyzed` statement, counts, and `evidence` (the store an evidence plan used, or `null`) |
 | `changed_symbols` | every symbol that differs, with its change kinds |
 | `selected_targets` | targets to run, the rules that selected them, whether any rule is conservative |
 | `unselected_targets` | targets with no path to a change |

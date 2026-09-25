@@ -38,12 +38,14 @@ from dataclasses import dataclass, field
 
 from diffcone.model import (
     CLASS,
+    CLASS_STATEMENT,
     DEFINED_IN,
     FUNCTION,
     IMPORTS,
     IMPORTS_NAME,
     METHOD,
     MODULE,
+    OPAQUE_ATTRIBUTE,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
@@ -71,6 +73,24 @@ BUILTIN_NAMES = frozenset(dir(builtins))
 # (pandas imports its hard dependencies with ``__import__`` in a loop over a
 # literal tuple, and treating that as unbounded selected its whole suite).
 DYNAMIC_CALLS = frozenset({"eval", "exec", "globals", "vars"})
+# Reflection that observes names or signatures without naming them. Recorded
+# for evidence mode only (SourceIndex.reflection); static planning ignores it.
+REFLECTIVE_BUILTINS = frozenset({"dir", "hasattr", "vars"})
+REFLECTIVE_CALLS = frozenset(
+    {
+        "inspect.getmembers",
+        "inspect.getmembers_static",
+        "inspect.signature",
+        "inspect.getfullargspec",
+        "inspect.getcallargs",
+        "inspect.get_annotations",
+        "typing.get_type_hints",
+        "annotationlib.get_annotations",
+    }
+)
+REFLECTIVE_ATTRIBUTES = frozenset(
+    {"__dict__", "__annotations__", "__signature__", "__code__", "__defaults__", "__kwdefaults__"}
+)
 # How far to follow a module name passed from caller to caller before giving
 # up and leaving the dynamic reference where it is.
 IMPORT_ATTRIBUTION_DEPTH = 4
@@ -893,6 +913,8 @@ class _Output:
     # for every attribute.
     attr_unbound: set[tuple[str, str]] = field(default_factory=set)
     attr_refs: list[_AttrRef] = field(default_factory=list)
+    reflection: set[tuple[str, str]] = field(default_factory=set)
+    class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -907,6 +929,8 @@ class _Output:
         self.attr_writes.extend(other.attr_writes)
         self.attr_unbound |= other.attr_unbound
         self.attr_refs.extend(other.attr_refs)
+        self.reflection |= other.reflection
+        self.class_attributes.update(other.class_attributes)
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -962,6 +986,10 @@ def _output_to_dict(out: _Output) -> dict:
             for f, sites in out.call_sites.items()
         },
         "escapes": sorted(out.escapes),
+        "reflection": sorted(list(r) for r in out.reflection),
+        "class_attributes": {
+            c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
+        },
         "returns": {f: sorted(c) for f, c in sorted(out.returns.items())},
         "func_params": {
             f: [p.positional, p.bound, p.defaults, p.has_varargs]
@@ -1020,6 +1048,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
             ) in sites
         ]
     out.escapes = set(data["escapes"])
+    out.reflection = {(s, d) for s, d in data["reflection"]}
+    out.class_attributes = {c: dict(a) for c, a in data["class_attributes"].items()}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(
@@ -1104,7 +1134,11 @@ class Indexer:
         # Where writes go: the global output is backed by the index; pass 2
         # swaps in a per-module output so it can be cached (see _Output).
         self._global = _Output(
-            edges=self.index.edges, unresolved=self.index.unresolved, external=self.index.external
+            edges=self.index.edges,
+            unresolved=self.index.unresolved,
+            external=self.index.external,
+            reflection=self.index.reflection,
+            class_attributes=self.index.class_attributes,
         )
         self.out = self._global
         # Symbols and class scopes added by the module being indexed, and
@@ -2364,6 +2398,14 @@ class Indexer:
                     for inner in stmt.body:
                         if not isinstance(inner, DEF_NODES):
                             collector.visit(inner)
+                attributes = _class_attributes(stmt)
+                previous = self.out.class_attributes.get(symbol_id)
+                if previous is not None:  # a conditional second definition
+                    for name in previous.keys() | attributes.keys():
+                        attributes[name] = _digest(
+                            previous.get(name, "") + "|" + attributes.get(name, "")
+                        )
+                self.out.class_attributes[symbol_id] = attributes
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
                 symbol_id = members.get(stmt.name)
@@ -2754,6 +2796,39 @@ def _canonical_imports(scope: ModuleScope) -> set[str]:
     return out
 
 
+def _class_attributes(node: ast.ClassDef) -> dict[str, str]:
+    """Each name a class body binds by plain assignment, with a hash of the
+    statements binding it; every other non-definition statement (a loop, a
+    call, a ``del``, a conditional binding) is hashed under OPAQUE_ATTRIBUTE,
+    and the class statement itself (bases, keywords, decorators) under
+    CLASS_STATEMENT.
+    The docstring is not an attribute here: it has its own hash."""
+    parts: dict[str, list[str]] = defaultdict(list)
+    body = node.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if isinstance(body[0].value.value, str):
+            body = body[1:]
+    for stmt in body:
+        if isinstance(stmt, DEF_NODES):
+            continue
+        dumped = ast.dump(stmt)
+        names: list[str] = []
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            for target in targets:
+                elements = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
+                if not all(isinstance(e, ast.Name) for e in elements):
+                    names = []
+                    break
+                names += [e.id for e in elements]  # type: ignore[attr-defined]
+        for name in names or [OPAQUE_ATTRIBUTE]:
+            parts[name].append(dumped)
+    parts[CLASS_STATEMENT] = [
+        ast.dump(n) for n in [*node.bases, *node.keywords, *node.decorator_list]
+    ]
+    return {name: _digest("\n".join(dumps)) for name, dumps in sorted(parts.items())}
+
+
 def _start_line(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> int:
     """First line of a definition including its decorators, which belong to
     the definition (they are part of its definition hash)."""
@@ -3087,6 +3162,8 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if not isinstance(node.ctx, ast.Load):
             self._attribute_write(node)
+        elif node.attr in REFLECTIVE_ATTRIBUTES:
+            self.indexer.out.reflection.add((self.source, f".{node.attr}"))
         if node.attr == "__dict__":
             # ``__dict__`` can read or write any attribute; through another
             # receiver (aliased, reassigned, ``|=``) the class is unknown.
@@ -3305,6 +3382,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         if parts is not None:
             name = ".".join(parts)
             builtin = len(parts) == 1 and not self._is_shadowed(name)
+            if (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
+                not builtin and self._canonical_name(parts) in REFLECTIVE_CALLS
+            ):
+                self.indexer.out.reflection.add((self.source, f"{name}()"))
             if builtin and parts[0] in DYNAMIC_CALLS:
                 self._dynamic(f"{name}()")
             elif builtin and parts[0] == "__import__":

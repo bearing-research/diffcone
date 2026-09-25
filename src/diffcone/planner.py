@@ -50,6 +50,7 @@ from diffcone.declarations import FILENAME as DECLARATION_FILE
 from diffcone.declarations import Declaration
 from diffcone.declarations import load as load_declarations
 from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
+from diffcone.evidence import Evidence, EvidenceError
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
@@ -88,6 +89,21 @@ RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
 RULE_DECLARED_DEPENDENCY = "declared_dependency"
 RULE_NEW_TARGET = "new_target"
 RULE_UNANALYSED_FILE = "unanalysed_file_changed"
+# Evidence mode (evidence_plan.py). ``escalated`` is a selection made by
+# static planning of a change that evidence cannot bound.
+RULE_ESCALATED = "escalated"
+RULE_EXECUTED_CHANGED = "executed_changed"
+RULE_EXECUTED_READER = "executed_reader"
+RULE_LOOKUP_SITE = "lookup_site"
+RULE_TOUCHED_FILE = "touched_file"
+RULE_TEST_SCOPE = "test_scope"
+RULE_CHANGED_TARGET = "changed_target"
+RULE_NO_EVIDENCE = "no_evidence"
+RULE_UNSTABLE = "unstable"
+RULE_SUBPROCESS = "subprocess"
+RULE_PYTEST_HOOK = "pytest_hook_changed"
+RULE_UNOBSERVED_FILE = "unobserved_file_changed"
+RULE_UNINDEXED_IMPORT = "unindexed_import"
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
@@ -106,6 +122,13 @@ CONSERVATIVE_RULES = frozenset(
         RULE_ANALYSIS_ERROR,
         RULE_RUNNER_DEPENDENCY,
         RULE_UNANALYSED_FILE,
+        RULE_LOOKUP_SITE,
+        RULE_NO_EVIDENCE,
+        RULE_UNSTABLE,
+        RULE_SUBPROCESS,
+        RULE_PYTEST_HOOK,
+        RULE_UNOBSERVED_FILE,
+        RULE_UNINDEXED_IMPORT,
     }
 )
 
@@ -130,6 +153,19 @@ def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]
         and p not in OWN_FILES
         and not p.startswith(OWN_DIRS)
     )
+
+
+@dataclass(frozen=True)
+class Seeds:
+    """Where a restricted search starts (evidence mode's escalation): the
+    changes to plan from, plus other nodes with the reason each one is a
+    starting point (a module whose import ran changed code). A restricted
+    search adds no dynamic-reference pseudo-seeds, no unanalysed-file
+    fallback and no target-level rules (new target, entry docstring,
+    ``dynamic:`` dependencies): the caller decides those."""
+
+    changes: frozenset[str] = frozenset()
+    nodes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -195,6 +231,9 @@ class Plan:
     discovery: list[DiscoveryResult] = field(default_factory=list)
     targets: list[Target] = field(default_factory=list)
     declarations: list[Declaration] = field(default_factory=list)
+    # Evidence mode: which store planned the pytest targets, and from where
+    # (evidence_plan._summary); None for a static plan.
+    evidence: dict | None = None
 
     @property
     def selected(self) -> list[Decision]:
@@ -439,6 +478,7 @@ def plan_from_indexes(
     discovered: list[DiscoveryResult] | None = None,
     declarations: list[Declaration] | None = None,
     base_target_ids: set[str] | None = None,
+    seeds: Seeds | None = None,
 ) -> Plan:
     discovered = list(discovered or [])
     discovered_ids = {t.runner_id for result in discovered for t in result.targets}
@@ -575,8 +615,9 @@ def plan_from_indexes(
                     )
                 )
     graph.freeze()
-    fallbacks += _runner_dependency_fallbacks(targets, changes, base, head)
-    unanalysed = _changed_unanalysed_files(base, head)
+    seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]
+    fallbacks += _runner_dependency_fallbacks(targets, seeded, base, head)
+    unanalysed = _changed_unanalysed_files(base, head) if seeds is None else []
     if unanalysed:
         shown = ", ".join(unanalysed[:UNANALYSED_PATHS_SHOWN])
         more = len(unanalysed) - UNANALYSED_PATHS_SHOWN
@@ -594,7 +635,7 @@ def plan_from_indexes(
     mode: dict[str, int] = {}
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None] = {}
     queue: deque[str] = deque()
-    impacting = [c for c in changes if c.carries_impact]
+    impacting = [c for c in seeded if c.carries_impact]
     for change in impacting:
         mode[change.id] = STRUCTURAL if change.structural else BEHAVIOR
         via[change.id] = None
@@ -608,6 +649,12 @@ def plan_from_indexes(
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
             queue.append(symbol.module)
+    seed_reasons = dict(seeds.nodes) if seeds is not None else {}
+    for node in sorted(seed_reasons):
+        if node not in mode:
+            mode[node] = BEHAVIOR
+            via[node] = None
+            queue.append(node)
     # A dynamic reference (eval/exec/getattr with an unbounded name) can reach
     # whatever its module's globals can reach: the module itself and every
     # module it imports, transitively. A dynamic *import* can reach anything.
@@ -619,7 +666,7 @@ def plan_from_indexes(
     changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
     reach = _ImportReach(base, head)
 
-    if impacting:
+    if impacting and seeds is None:
         for symbol in sorted(dynamic_symbols):
             if symbol in mode:
                 continue
@@ -686,12 +733,16 @@ def plan_from_indexes(
                     change_by_id,
                     dynamic_symbols,
                     unbounded_dynamic,
+                    seed_reasons,
                 )
             )
         for fb in target_fallbacks.get(target.node_id, ()):
             reasons.append(Reason(fb.rule, fb.detail))
         for fb in global_fallbacks:
             reasons.append(Reason(fb.rule, fb.detail))
+        if seeds is not None:
+            decisions.append(_decision(target, reasons, mode))
+            continue
         for module in dynamic_deps.get(target.node_id, ()):
             if reach.closure_of(module) & changed_modules:
                 reasons.append(
@@ -728,21 +779,7 @@ def plan_from_indexes(
                     f"the docstring of the entry symbol {target.entry_symbol} changed",
                 )
             )
-        affected = sorted(
-            dep for dep in (target.entry_symbol, *target.lifecycle_dependencies) if dep in mode
-        )
-        selected = bool(reasons)
-        decisions.append(
-            Decision(
-                target=target,
-                selected=selected,
-                reasons=reasons,
-                affected_dependencies=affected,
-                unselected_reason=None
-                if selected
-                else "no dependency path from this target to a changed symbol in either revision",
-            )
-        )
+        decisions.append(_decision(target, reasons, mode))
 
     return Plan(
         repo=repo,
@@ -757,6 +794,22 @@ def plan_from_indexes(
         head_index=head,
         discovery=discovered,
         targets=targets,
+    )
+
+
+def _decision(target: Target, reasons: list[Reason], mode: dict[str, int]) -> Decision:
+    affected = sorted(
+        dep for dep in (target.entry_symbol, *target.lifecycle_dependencies) if dep in mode
+    )
+    selected = bool(reasons)
+    return Decision(
+        target=target,
+        selected=selected,
+        reasons=reasons,
+        affected_dependencies=affected,
+        unselected_reason=None
+        if selected
+        else "no dependency path from this target to a changed symbol in either revision",
     )
 
 
@@ -853,6 +906,7 @@ def _explain(
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: set[str],
+    seed_reasons: dict[str, str] | None = None,
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -887,6 +941,8 @@ def _explain(
     if change is not None:
         detail = f"{current} {'/'.join(change.changes)}"
         return Reason(rule, detail, tuple(steps), current, change.changes)
+    if seed_reasons and current in seed_reasons:
+        return Reason(RULE_ESCALATED, seed_reasons[current], tuple(steps))
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
     if current in unbounded_dynamic:
@@ -943,13 +999,16 @@ def plan(
     discover_runners: Iterable[str] = (),
     discovery_options: DiscoveryOptions | None = None,
     cache: IndexCache | None = None,
+    evidence: Evidence | None = None,
 ) -> Plan:
     """Analyse two committed revisions and produce a selection plan.
 
     Targets come from the manifest, from static discovery of the head
     snapshot for each runner in ``discover_runners``, or both. ``base`` and
     ``head`` are git revisions, ``INDEX`` or ``WORKTREE``; the plan records
-    which kind each one was.
+    which kind each one was. With ``evidence`` (recorded by ``diffcone
+    collect``) pytest targets are selected on what each test executed
+    (evidence_plan.py); the evidence's source roots must match.
     """
     repo_path = Path(repo)
     manifest_roots = manifest.source_roots if manifest is not None else None
@@ -988,6 +1047,29 @@ def plan(
     discovered = [
         discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
     ]
+    if evidence is not None:
+        from diffcone.evidence_plan import plan_with_evidence
+
+        if sorted(evidence.source_roots) != sorted(roots):
+            raise EvidenceError(
+                f"the evidence was recorded with source roots {evidence.source_roots}, the plan "
+                f"uses {roots}: symbols would not line up"
+            )
+        evidence_index, _ = _index_snapshot(
+            repo_path, evidence.commit, roots, with_config=False, cache=cache
+        )
+        return plan_with_evidence(
+            base_index,
+            head_index,
+            evidence,
+            evidence_index,
+            manifest,
+            repo=str(repo_path),
+            source_roots=roots,
+            discovered=discovered,
+            declarations=declared,
+            base_target_ids=base_target_ids,
+        )
     return plan_from_indexes(
         base_index,
         head_index,

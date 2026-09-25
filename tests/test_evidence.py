@@ -97,6 +97,7 @@ def test_subprocess():
 """
 
 FILES = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
     "pkg/__init__.py": "",
     "pkg/ops.py": OPS,
     "pkg/data.json": "[1]",
@@ -120,7 +121,7 @@ def test_each_test_records_what_it_executed_and_touched(repo):
     assert "pkg/data.json" not in touched(ev, T + "test_add")
     # A stat of a file that does not exist yet, and a directory listing.
     assert "pkg/extra.txt" in touched(ev, T + "test_exists")
-    assert "pkg" in touched(ev, T + "test_listing")
+    assert "pkg" in ev.listed(ev.tests[T + "test_listing"])
     flags = {t: r.flags for t, r in ev.tests.items()}
     assert {t for t, f in flags.items() if f & FLAG_SUBPROCESS} == {T + "test_subprocess"}
     assert not any(f & FLAG_UNSTABLE for f in flags.values())

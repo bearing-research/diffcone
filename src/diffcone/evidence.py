@@ -19,11 +19,13 @@ import json
 import os
 import sqlite3
 import struct
+import subprocess
 import tempfile
 import time
 import zlib
 from bisect import bisect_right
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -47,7 +49,8 @@ class TestRecord:
     __test__ = False  # not a pytest class
 
     symbols: frozenset[int]
-    paths: frozenset[int]
+    paths: frozenset[int]  # opened or stat'ed (indices into Evidence.paths)
+    dirs: frozenset[int] = frozenset()  # listed
     flags: int = 0
 
 
@@ -67,8 +70,14 @@ class Evidence:
     # Symbol -> the modules whose import ran it (``path:<file>`` for a module
     # outside the index).
     import_by: dict[str, frozenset[str]] = field(default_factory=dict)
-    # Paths opened, stat'ed or listed outside every test window.
-    import_paths: frozenset[str] = frozenset()
+    # Symbols executed outside every test window while no import was running
+    # (session hooks, collection, pytest_generate_tests).
+    hook_phase: frozenset[str] = frozenset()
+    # Paths project code opened or stat'ed outside every test window
+    # -> the modules being imported then ("" for none: a hook or collection;
+    # ``path:<file>`` for a module outside the index).
+    import_paths: dict[str, frozenset[str]] = field(default_factory=dict)
+    import_dirs: dict[str, frozenset[str]] = field(default_factory=dict)  # listed, likewise
     # Something outside every test window started a subprocess.
     import_subprocess: bool = False
     reverse_checked: bool = False
@@ -88,7 +97,12 @@ class Evidence:
         return {self.symbols[i] for i in record.symbols}
 
     def touched(self, record: TestRecord) -> set[str]:
+        """Paths the test opened or stat'ed."""
         return {self.paths[i] for i in record.paths}
+
+    def listed(self, record: TestRecord) -> set[str]:
+        """Directories the test listed."""
+        return {self.paths[i] for i in record.dirs}
 
 
 # --------------------------------------------------------------------------- folding
@@ -132,10 +146,12 @@ class _Owners:
 
 @dataclass
 class _Raw:
-    tests: dict[str, tuple[set[str], set[str], int]]
+    tests: dict[str, tuple[set[str], set[str], set[str], int]]
     import_phase: set[str]
+    hook_phase: set[str]
     import_by: dict[str, set[str]]
-    import_paths: set[str]
+    import_paths: dict[str, set[str]]
+    import_dirs: dict[str, set[str]]
     import_subprocess: bool
     environment: dict
     environment_hash: str
@@ -148,7 +164,9 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             "the suite wrote no evidence: was the plugin loaded (-p diffcone_collect), "
             "and did pytest run at all?"
         )
-    raw = _Raw({}, set(), defaultdict(set), set(), False, {}, "")
+    raw = _Raw(
+        {}, set(), set(), defaultdict(set), defaultdict(set), defaultdict(set), False, {}, ""
+    )
     environments: list[dict] = []
     seen_pids = set()
     for process_file in processes:
@@ -185,8 +203,15 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             if symbol_of[i] is not None:
                 raw.import_phase.add(symbol_of[i])
             elif file_of[i] is not None:
-                raw.import_paths.add(file_of[i])
-        raw.import_paths.update(data["import_paths"])
+                raw.import_paths[file_of[i]].add("")
+        for i in data["hook_phase"]:
+            if symbol_of[i] is not None:
+                raw.hook_phase.add(symbol_of[i])
+        for key, seen in (("import_paths", raw.import_paths), ("import_dirs", raw.import_dirs)):
+            for path, modules in data[key].items():
+                for module_path in modules:
+                    module = owners.module_of_path.get(module_path) if module_path else ""
+                    seen[path].add(module if module is not None else UNINDEXED_MODULE + module_path)
         raw.import_subprocess |= bool(data["import_flags"] & FLAG_SUBPROCESS)
         for key, modules in data["import_by"].items():
             symbol = symbol_of[int(key)]
@@ -208,14 +233,15 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 i += n
                 record = json.loads(zlib.decompress(blob[i : i + m]))
                 i += m
-                symbols, paths, flags = raw.tests.setdefault(name, (set(), set(), 0))
+                symbols, paths, dirs, flags = raw.tests.setdefault(name, (set(), set(), set(), 0))
                 for c in record["codes"]:
                     if symbol_of[c] is not None:
                         symbols.add(symbol_of[c])
                     elif file_of[c] is not None:
                         paths.add(file_of[c])
                 paths.update(record["paths"])
-                raw.tests[name] = (symbols, paths, flags | record["flags"])
+                dirs.update(record["dirs"])
+                raw.tests[name] = (symbols, paths, dirs, flags | record["flags"])
     orphans = [
         p
         for p in glob.glob(str(directory / "tests-*.bin"))
@@ -251,26 +277,31 @@ def fold(
     if len(raws) > 1 and raws[1].environment != raws[0].environment:
         raise EvidenceError("the two collections ran in different environments")
     unstable: set[str] = set()
-    tests: dict[str, tuple[set[str], set[str], int]] = {}
+    tests: dict[str, tuple[set[str], set[str], set[str], int]] = {}
     # Stability is judged on symbols and tracked data files. pytest stats
     # package directories and ``__init__`` files lazily, during whichever
     # test runs first, and that is not the test's own behaviour.
     data_files = set(index.other_files)
     for raw in raws:
-        for name, (symbols, paths, flags) in raw.tests.items():
+        for name, (symbols, paths, dirs, flags) in raw.tests.items():
             if name in tests:
                 before = tests[name]
                 if before[0] != symbols or (before[1] ^ paths) & data_files:
                     unstable.add(name)
-                tests[name] = (before[0] | symbols, before[1] | paths, before[2] | flags)
+                tests[name] = (
+                    before[0] | symbols,
+                    before[1] | paths,
+                    before[2] | dirs,
+                    before[3] | flags,
+                )
             else:
                 if len(raws) > 1 and raw is not raws[0]:
                     unstable.add(name)  # ran in one order only
-                tests[name] = (set(symbols), set(paths), flags)
+                tests[name] = (set(symbols), set(paths), set(dirs), flags)
     if len(raws) > 1:
         unstable |= set(raws[0].tests) - set(raws[1].tests)
-    symbol_table = sorted({s for symbols, _, _ in tests.values() for s in symbols})
-    path_table = sorted({p for _, paths, _ in tests.values() for p in paths})
+    symbol_table = sorted({s for symbols, _, _, _ in tests.values() for s in symbols})
+    path_table = sorted({p for _, paths, dirs, _ in tests.values() for p in paths | dirs})
     sid = {s: i for i, s in enumerate(symbol_table)}
     pid = {p: i for i, p in enumerate(path_table)}
     shared: dict[frozenset[int], frozenset[int]] = {}
@@ -282,14 +313,11 @@ def fold(
         name: TestRecord(
             intern(frozenset(sid[s] for s in symbols)),
             intern(frozenset(pid[p] for p in paths)),
+            intern(frozenset(pid[p] for p in dirs)),
             flags | (FLAG_UNSTABLE if name in unstable else 0),
         )
-        for name, (symbols, paths, flags) in sorted(tests.items())
+        for name, (symbols, paths, dirs, flags) in sorted(tests.items())
     }
-    import_by: dict[str, set[str]] = defaultdict(set)
-    for raw in raws:
-        for symbol, modules in raw.import_by.items():
-            import_by[symbol] |= modules
     return Evidence(
         commit=commit,
         source_roots=list(source_roots),
@@ -301,11 +329,21 @@ def fold(
         paths=path_table,
         tests=records,
         import_phase=frozenset().union(*(r.import_phase for r in raws)),
-        import_by={s: frozenset(m) for s, m in sorted(import_by.items())},
-        import_paths=frozenset().union(*(r.import_paths for r in raws)),
+        hook_phase=frozenset().union(*(r.hook_phase for r in raws)),
+        import_by=_merged(r.import_by for r in raws),
+        import_paths=_merged(r.import_paths for r in raws),
+        import_dirs=_merged(r.import_dirs for r in raws),
         import_subprocess=any(r.import_subprocess for r in raws),
         reverse_checked=len(raws) > 1,
     )
+
+
+def _merged(maps: Iterable[dict[str, set[str]]]) -> dict[str, frozenset[str]]:
+    out: dict[str, set[str]] = defaultdict(set)
+    for mapping in maps:
+        for key, values in mapping.items():
+            out[key] |= values
+    return {k: frozenset(v) for k, v in sorted(out.items())}
 
 
 # --------------------------------------------------------------------------- store
@@ -342,7 +380,7 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 CREATE TABLE sets (id INTEGER PRIMARY KEY, data BLOB NOT NULL);
                 CREATE TABLE tests (
                     target TEXT PRIMARY KEY, symbols INTEGER NOT NULL,
-                    paths INTEGER NOT NULL, flags INTEGER NOT NULL);
+                    paths INTEGER NOT NULL, dirs INTEGER NOT NULL, flags INTEGER NOT NULL);
                 CREATE TABLE import_by (symbol TEXT NOT NULL, module TEXT NOT NULL);
                 """
             )
@@ -355,7 +393,9 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "command": evidence.command,
                 "created": evidence.created,
                 "import_phase": sorted(evidence.import_phase),
-                "import_paths": sorted(evidence.import_paths),
+                "hook_phase": sorted(evidence.hook_phase),
+                "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
+                "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
                 "import_subprocess": evidence.import_subprocess,
                 "reverse_checked": evidence.reverse_checked,
             }
@@ -368,13 +408,13 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
             rows = []
             for name, record in evidence.tests.items():
                 ids = []
-                for s in (record.symbols, record.paths):
+                for s in (record.symbols, record.paths, record.dirs):
                     if id(s) not in set_ids:
                         set_ids[id(s)] = len(set_ids)
                         db.execute("INSERT INTO sets VALUES (?, ?)", (set_ids[id(s)], _pack(s)))
                     ids.append(set_ids[id(s)])
-                rows.append((name, ids[0], ids[1], record.flags))
-            db.executemany("INSERT INTO tests VALUES (?, ?, ?, ?)", rows)
+                rows.append((name, *ids, record.flags))
+            db.executemany("INSERT INTO tests VALUES (?, ?, ?, ?, ?)", rows)
             db.executemany(
                 "INSERT INTO import_by VALUES (?, ?)",
                 [(s, m) for s, modules in evidence.import_by.items() for m in sorted(modules)],
@@ -408,8 +448,10 @@ def load_store(path: Path) -> Evidence:
         paths = [p for _, p in db.execute("SELECT id, path FROM paths ORDER BY id")]
         sets = {i: _unpack(blob) for i, blob in db.execute("SELECT id, data FROM sets")}
         tests = {
-            name: TestRecord(sets[s], sets[p], flags)
-            for name, s, p, flags in db.execute("SELECT target, symbols, paths, flags FROM tests")
+            name: TestRecord(sets[s], sets[p], sets[d], flags)
+            for name, s, p, d, flags in db.execute(
+                "SELECT target, symbols, paths, dirs, flags FROM tests"
+            )
         }
         import_by: dict[str, set[str]] = defaultdict(set)
         for symbol, module in db.execute("SELECT symbol, module FROM import_by"):
@@ -429,8 +471,10 @@ def load_store(path: Path) -> Evidence:
         paths=paths,
         tests=tests,
         import_phase=frozenset(meta["import_phase"]),
+        hook_phase=frozenset(meta["hook_phase"]),
         import_by={s: frozenset(m) for s, m in import_by.items()},
-        import_paths=frozenset(meta["import_paths"]),
+        import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
+        import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
         import_subprocess=meta["import_subprocess"],
         reverse_checked=meta["reverse_checked"],
         location=path,
@@ -446,6 +490,45 @@ class StoreInfo:
     created: float
     tests: int
     python: str
+
+
+def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -> Path:
+    """The store ``spec`` names: a path, or ``auto`` for the store (with these
+    source roots) whose commit is the nearest ancestor of ``reference``, the
+    commit being planned towards; the newest one on a tie. Evidence from any
+    ancestor is sound (changes are planned from its commit), and a nearer one
+    has fewer changes to plan."""
+    if spec != "auto":
+        path = Path(spec)
+        if not path.exists():
+            raise EvidenceError(f"no evidence store at {spec}")
+        return path
+    best: tuple[int, float, Path] | None = None
+    for store in list_stores(repo):
+        if sorted(store.source_roots) != sorted(source_roots):
+            continue
+        if subprocess.run(
+            ["git", "merge-base", "--is-ancestor", store.commit, reference],
+            cwd=repo,
+            capture_output=True,
+        ).returncode:
+            continue
+        count = subprocess.run(
+            ["git", "rev-list", "--count", f"{store.commit}..{reference}"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        distance = int(count.stdout.strip() or 0)
+        key = (distance, -store.created, store.path)
+        if best is None or key < best:
+            best = key
+    if best is None:
+        raise EvidenceError(
+            f"no evidence store with source roots {source_roots} at an ancestor of "
+            f"{reference[:12]}; record one with `diffcone collect`"
+        )
+    return best[2]
 
 
 def list_stores(repo: Path) -> list[StoreInfo]:

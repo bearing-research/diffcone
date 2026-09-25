@@ -9,9 +9,9 @@ from typing import Any
 from diffcone.model import SnapshotInfo
 from diffcone.planner import Decision, Plan, Reason
 
-SCHEMA_VERSION = (
-    2  # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
-)
+# 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
+# 3: analysis.evidence (null for a static plan) and the evidence reason rules
+SCHEMA_VERSION = 3
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
@@ -87,6 +87,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
             "working_tree_analyzed": plan.working_tree_analyzed,
             "uncommitted_analyzed": plan.uncommitted_analyzed,
             "scope": SCOPE_DESCRIPTION | {"analyzed": plan.scope_statement},
+            "evidence": plan.evidence,
             "counts": {
                 "modules_base": len(plan.base_index.modules),
                 "modules_head": len(plan.head_index.modules),
@@ -175,6 +176,18 @@ def to_text(plan: Plan) -> str:
     lines.append(f"head: {plan.head.description}")
     lines.append(f"scope: {plan.scope_statement}")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
+    if plan.evidence is not None:
+        ev = plan.evidence
+        lines.append(
+            f"evidence: {ev['tests']} tests recorded at {ev['commit'][:12]} "
+            f"(environment {ev['environment_hash']}, PYTHONHASHSEED={ev['hash_seed']}); "
+            f"planned {', '.join(ev['planned'])}"
+        )
+        if ev["changes_outside_range"]:
+            lines.append(
+                f"  {len(ev['changes_outside_range'])} change(s) since the evidence lie outside "
+                "base..head and were planned too"
+            )
     if plan.declarations:
         lines.append(f"declared dependencies ({len(plan.declarations)}):")
         for d in plan.declarations:

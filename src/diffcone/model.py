@@ -28,6 +28,8 @@ LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
 UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
 UNRESOLVED_ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
 UNRESOLVED_DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
+OPAQUE_ATTRIBUTE = "*"  # SourceIndex.class_attributes: class-body code binding nothing by name
+CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
 
 @dataclass(frozen=True, order=True)
@@ -136,6 +138,17 @@ class SourceIndex:
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)
+    # (symbol, detail): code that observes names or signatures reflectively
+    # without naming them (``dir``, ``hasattr``, ``inspect.signature``, a
+    # ``__dict__`` read). Static planning does not use these; evidence mode
+    # counts them as sites that notice an added, deleted or redefined name.
+    reflection: set[tuple[str, str]] = field(default_factory=set)
+    # Class -> {attribute bound in the class body: hash of its statements}.
+    # Class attributes are not symbols; evidence mode compares these to find
+    # which attribute names a class-body change touched. ``OPAQUE_ATTRIBUTE``
+    # hashes every other statement of the body (a loop, a call, a ``del``),
+    # ``CLASS_STATEMENT`` the bases, keywords and decorators.
+    class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @property
     def revision(self) -> str:

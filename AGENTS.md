@@ -20,9 +20,16 @@ must:
 
 Out of scope until the roadmap says otherwise: type inference, dispatch on
 receivers of unknown type (`self`/`cls` dispatch to in-scope overrides is in
-scope), branch- or argument-sensitive analysis, runtime tracing, machine
-learning ranking, and persistent caching beyond the index and module
-caches described in CLAUDE.md.
+scope), branch- or argument-sensitive analysis, machine learning ranking,
+and persistent caching beyond the index, module and evidence stores
+described in CLAUDE.md.
+
+Runtime tracing is in scope for one thing only: the opt-in evidence
+recorder (`diffcone collect`, `src/diffcone/collect.py`, roadmap item 5).
+It runs inside the project's own test process, started from
+`execution.py`, and never during planning. `plan --evidence` reads the
+store it wrote as data, the way it reads a manifest. Static planning stays
+the default and the reference.
 
 ## Invariants
 
@@ -56,6 +63,13 @@ caches described in CLAUDE.md.
   never yield an empty selection.
 * New or changed targets are always selected.
 * Reports are deterministic.
+* Evidence narrows only pytest targets that have a record. Anything a record
+  cannot vouch for falls back to static planning or selects the target:
+  - a test with no record, an unstable record, or a subprocess;
+  - a change that ran at import, or a module-level change;
+  - a file no test's record sees.
+  The recorder must never change a test's outcome: it prints nothing, and
+  its own errors invalidate the store rather than reach the suite.
 
 ## Changing selection behaviour
 

@@ -1006,6 +1006,42 @@ from the `run` and `validate` commands after a plan exists.
   that have not started. Suites that write to shared locations (a
   hard-coded temp path) can interfere, so the default is 1.
 
+## Evidence mode (opt-in)
+
+The rules and their justification are in [evidence_design.md](evidence_design.md);
+`src/diffcone/evidence_plan.py`'s docstring is the authoritative list of what
+is implemented. In short:
+
+* `diffcone collect` runs the whole pytest suite once under a recorder
+  (`src/diffcone/collect.py`, Python 3.12+ `sys.monitoring`). The recorder
+  keeps, per test (parameter cases folded), the symbols executed and the
+  repository paths opened, `stat`ed or listed. Outside tests it keeps what
+  imports, collection and hooks ran, and which module's import ran it. The
+  store is `.diffcone/evidence/<commit>-<environment>.sqlite`. Collection
+  refuses a dirty tree, an installed copy of the project, a crashed worker
+  and any error inside the recorder.
+* `plan --evidence auto|PATH` plans C → base and C → head from the store's
+  commit C and selects their union. For each change it computes E, the
+  symbols whose execution would notice the change, and selects the tests
+  whose record meets E. A non-body change adds one hop of static readers.
+  Values are followed through variables that captured them, and names
+  through unbounded lookup and reflection sites. What ran at import
+  escalates the importing module to static planning (`plan_from_indexes`
+  with explicit `Seeds`, without dynamic pseudo-seeds).
+* A pytest target is always selected, whatever E says, when:
+  - it has no record, or its record is unstable or started a subprocess
+    (`no_evidence`, `unstable`, `subprocess`);
+  - its entry or a container of it changed (`changed_target`);
+  - a conftest or fixture change puts it in scope (`test_scope`);
+  - a hook, compiled source or configuration file changed
+    (`pytest_hook_changed`, `unobserved_file_changed`).
+* ASV targets, which have no evidence, keep their static decision.
+
+The index carries two fields only evidence mode reads: `reflection`
+(sites that observe names or signatures without naming them) and
+`class_attributes` (per-attribute hashes of class bodies). Static planning
+ignores both, so static plans are unchanged.
+
 ## Known gaps (by design)
 
 * Dynamic dispatch: `self.m()` resolves to the MRO definition plus in-scope

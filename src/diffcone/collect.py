@@ -23,8 +23,9 @@ What it records, per test (parameter cases folded into their function, as
 * whether it started a subprocess.
 
 Outside every test window it records the code and paths of imports,
-collection and hooks, and for each code object run by an import, the
-innermost module whose top-level code was running (``import_by``).
+collection and hooks; for each code object run by an import, the innermost
+module whose top-level code was running (``import_by``); and the code that
+ran outside every window while no import was running (hooks, collection).
 ``functools`` caches of project code are cleared before each test so a
 value one test computed is recomputed, and recorded, by the next.
 
@@ -142,6 +143,7 @@ _root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 ROOTS = tuple(sorted({os.path.abspath(_root) + os.sep, os.path.realpath(_root) + os.sep}))
 PACKAGES = frozenset(p for p in os.environ.get("DIFFCONE_COLLECT_PACKAGES", "").split(",") if p)
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
+INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
 
 errors: list[str] = []
 codes: dict[object, int] = {}
@@ -149,6 +151,10 @@ table: list[list] = []
 active: list[dict] = []  # open windows, innermost last
 importing: list[str] = []  # modules whose top-level code is running, innermost last
 import_by: dict[int, set[str]] = {}
+hook_codes: set[int] = set()  # ran outside every test window with no import running
+# Opened or stat'ed, and listed, by project code outside every test window.
+import_paths: dict[str, set[str]] = {}
+import_dirs: dict[str, set[str]] = {}
 fixture_windows: dict[tuple[str, str, str], dict] = {}
 used_fixtures: dict[str, list] = {}
 caches: list = []
@@ -156,7 +162,7 @@ recording = False
 
 
 def _window() -> dict:
-    return {"codes": set(), "paths": set(), "flags": 0}
+    return {"codes": set(), "paths": set(), "dirs": set(), "flags": 0}
 
 
 import_window = _window()
@@ -172,10 +178,16 @@ def _error(where: str, exc: BaseException) -> None:
 
 
 def _relative(path: str) -> str | None:
+    """The checkout-relative path, "" for the root itself; None outside the
+    checkout, and for an environment kept inside it (``.venv``)."""
     for root in ROOTS:
+        if path + os.sep == root:
+            return ""
         if path.startswith(root):
             rel = path[len(root) :]
-            return None if rel.startswith(IGNORED_DIRS) else rel
+            if rel.startswith(IGNORED_DIRS) or any(p in rel for p in INSTALLED):
+                return None
+            return rel
     return None
 
 
@@ -195,6 +207,8 @@ def _on_start(code, offset):
             table.append([rel, code.co_firstlineno, code.co_qualname])
         for w in _windows():
             w["codes"].add(i)
+        if not active and not importing and code.co_name != "<module>":
+            hook_codes.add(i)
         if code.co_name == "<module>":
             # Credit what this import runs to this module: watch for its end,
             # and re-arm so code that already ran elsewhere is seen again.
@@ -233,7 +247,23 @@ def _on_unwind(code, offset, exc):
 # --------------------------------------------------------------------------- paths
 
 
-def _touch(path) -> None:
+def _actor() -> str:
+    """Who touched a path: ``import`` when the import system did (it finds
+    modules, which the index covers), ``project`` when project code is on
+    the stack above it, ``other`` for pytest or a library acting alone
+    (collection walks and stats every directory and file)."""
+    frame = sys._getframe(2)
+    while frame is not None:
+        name = frame.f_code.co_filename
+        if name.startswith("<frozen importlib"):
+            return "import"
+        if _relative(name) is not None:
+            return "project"
+        frame = frame.f_back
+    return "other"
+
+
+def _touch(path, listing: bool = False) -> None:
     if isinstance(path, int) or path is None:
         return
     try:
@@ -241,9 +271,22 @@ def _touch(path) -> None:
     except TypeError:
         return
     rel = _relative(os.path.abspath(path))
-    if rel is not None:
-        for w in _windows():
-            w["paths"].add(rel)
+    if rel is None:
+        return
+    actor = _actor()
+    if actor == "import":
+        return
+    if active:
+        # Inside a test anything counts: a library or plugin reading a file
+        # for the test (a data-directory fixture copying files) included.
+        for w in active:
+            w["dirs" if listing else "paths"].add(rel)
+    elif actor == "project":
+        # Outside every test: project code at import (a parametrize list
+        # globbed from a directory) or in a hook, credited to the module
+        # being imported ("" for none).
+        seen = import_dirs if listing else import_paths
+        seen.setdefault(rel, set()).add(importing[-1] if importing else "")
 
 
 def _audit(event, args):
@@ -252,7 +295,7 @@ def _audit(event, args):
             if args:
                 _touch(args[0])
         elif event in LISTING_EVENTS:
-            _touch(args[0] if args and args[0] is not None else ".")
+            _touch(args[0] if args and args[0] is not None else ".", listing=True)
         elif event in SUBPROCESS_EVENTS:
             for w in _windows():
                 w["flags"] |= FLAG_SUBPROCESS
@@ -333,6 +376,7 @@ class _Writer:
             self.current = test_id
         self.acc["codes"] |= w["codes"]
         self.acc["paths"] |= w["paths"]
+        self.acc["dirs"] |= w["dirs"]
         self.acc["flags"] |= w["flags"]
 
     def flush(self) -> None:
@@ -342,6 +386,7 @@ class _Writer:
             {
                 "codes": sorted(self.acc["codes"]),
                 "paths": sorted(self.acc["paths"]),
+                "dirs": sorted(self.acc["dirs"]),
                 "flags": self.acc["flags"],
             }
         ).encode()
@@ -502,6 +547,7 @@ def pytest_runtest_protocol(item, nextitem):
                     if shared:
                         mine["codes"] |= shared["codes"]
                         mine["paths"] |= shared["paths"]
+                        mine["dirs"] |= shared["dirs"]
                         mine["flags"] |= shared["flags"]
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
@@ -534,9 +580,11 @@ def pytest_unconfigure(config):
         "pid": os.getpid(),
         "table": table,
         "import_phase": sorted(import_window["codes"]),
-        "import_paths": sorted(import_window["paths"]),
+        "import_paths": {p: sorted(m) for p, m in sorted(import_paths.items())},
+        "import_dirs": {p: sorted(m) for p, m in sorted(import_dirs.items())},
         "import_flags": import_window["flags"],
         "import_by": {str(k): sorted(v) for k, v in import_by.items()},
+        "hook_phase": sorted(hook_codes),
         "outside_modules": sorted(outside),
         "environment": env,
         "environment_hash": environment_hash(env),

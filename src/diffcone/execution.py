@@ -18,6 +18,7 @@ commands, in a subprocess, with a command the user controls.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -149,6 +150,7 @@ def run_selected(
     command: str | None = None,
     extra: list[str] | None = None,
     dry_run: bool = False,
+    env: dict[str, str] | None = None,
 ) -> RunResult:
     selected = [d.target for d in plan.decisions if d.selected and d.target.runner == runner]
     total = sum(1 for d in plan.decisions if d.target.runner == runner)
@@ -156,7 +158,7 @@ def run_selected(
     result = RunResult(runner, argv, selected, total, None)
     if dry_run or not selected:
         return result
-    proc = subprocess.run(argv, cwd=cwd)
+    proc = subprocess.run(argv, cwd=cwd, env=env)
     result.returncode = proc.returncode
     return result
 
@@ -1278,3 +1280,79 @@ def collect_evidence(
         )
     store = write_store(evidence, repo / EVIDENCE_DIR)
     return CollectResult(evidence, store, argv, returncode, "\n".join(logs))
+
+
+@dataclass
+class EvidenceRun:
+    result: RunResult
+    # The environment the run met, when it differed from the evidence's:
+    # the evidence plan was then not run, and the static one was.
+    mismatch: dict | None = None
+    static: RunResult | None = None
+
+
+def evidence_env(plan: Plan) -> dict[str, str]:
+    """What a run relying on an evidence plan changes in the environment:
+    ``PYTHONHASHSEED`` as recorded (the records assumed it)."""
+    env = dict(os.environ)
+    seed = (plan.evidence or {}).get("hash_seed")
+    if seed is not None:
+        env["PYTHONHASHSEED"] = seed
+    return env
+
+
+def run_with_evidence(
+    plan: Plan,
+    static_plan,
+    *,
+    cwd: Path,
+    command: str | None = None,
+    extra: list[str] | None = None,
+    dry_run: bool = False,
+) -> EvidenceRun:
+    """Run an evidence plan's pytest selection with the recorder in check
+    mode: before any test runs, it compares the environment with the one the
+    evidence was recorded in. On a mismatch the session stops, the evidence
+    says nothing about this environment, and ``static_plan()`` (a static plan
+    of the same snapshots) is run instead."""
+    assert plan.evidence is not None
+    with tempfile.TemporaryDirectory(prefix="diffcone-check-") as tmp:
+        report = Path(tmp) / "environment.json"
+        env = plugin_environment(evidence_env(plan), None, cwd)
+        env["DIFFCONE_CHECK_ENV"] = plan.evidence["environment_hash"]
+        env["DIFFCONE_CHECK_REPORT"] = str(report)
+        try:
+            result = run_selected(
+                plan,
+                "pytest",
+                cwd=cwd,
+                command=command,
+                extra=["-p", PLUGIN, *(extra or [])],
+                dry_run=dry_run,
+                env=env,
+            )
+        finally:
+            shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+        if not report.exists():
+            return EvidenceRun(result)
+        met = json.loads(report.read_text("utf-8"))
+    static = static_plan()
+    fallback = run_selected(static, "pytest", cwd=cwd, command=command, extra=extra)
+    return EvidenceRun(result, met, fallback)
+
+
+def environment_differences(recorded: dict, met: dict) -> list[str]:
+    """Human-readable differences between two recorder environments."""
+    out = []
+    for key in ("implementation", "python", "platform", "machine"):
+        if recorded.get(key) != met.get(key):
+            out.append(f"{key}: {recorded.get(key)!r} recorded, {met.get(key)!r} now")
+    before, after = set(recorded.get("distributions", ())), set(met.get("distributions", ()))
+    for dist in sorted(before - after)[:5]:
+        out.append(f"distribution {dist} recorded, not installed now")
+    for dist in sorted(after - before)[:5]:
+        out.append(f"distribution {dist} installed now, not recorded")
+    for name, value in sorted(recorded.get("variables", {}).items()):
+        if met.get("variables", {}).get(name) != value:
+            out.append(f"{name}: {value!r} recorded, {met['variables'].get(name)!r} now")
+    return out

@@ -259,16 +259,31 @@ selection or states something the tables left implicit; none narrows it.
   selection is their union. The tables' "C → head" alone is not enough:
   a head that reverts a change made between C and base shows no change
   C → head at all.
-* **Files a test touched, not only opened.** `F(T)` becomes `R(T)`, the
-  repository paths T opened, `stat`ed or listed. Opens come from the audit
-  hook. Directory listings come from the `os.listdir`, `os.scandir` and
-  `glob.glob` audit events. `os.stat` and `os.lstat` are wrapped: they never
-  warn, so the wrapper's frame cannot move a warning's `stacklevel` the way
-  wrapping `getattr` did. A changed path selects the tests with the path, or
-  any directory above it, in `R(T)`. That covers `os.path.exists` on a file
-  that was absent at C, and a directory walk that meets a new file.
-  Added and deleted `.py` files go through the same rule, since a package
-  scan finds modules by listing.
+* **Files a test touched, not only opened.** `F(T)` becomes two sets:
+  - the repository paths T opened or `stat`ed. Opens come from the audit
+    hook. `os.stat` and `os.lstat` are wrapped: they never warn, so the
+    wrapper's frame cannot move a warning's `stacklevel` the way wrapping
+    `getattr` did.
+  - the directories T listed, from the `os.listdir` and `os.scandir` audit
+    events.
+
+  An edited file selects the tests that opened or `stat`ed it. An added or
+  deleted file also selects the tests that listed a directory above it. That
+  covers `os.path.exists` on a file that was absent at C, and a directory
+  walk that meets a new file. Added and deleted `.py` files go through the
+  same rule, since a package scan finds modules by listing.
+* **Who touched a path.** The import system lists and `stat`s package
+  directories, and pytest's collection walks and `stat`s every file. Neither
+  is the test's behaviour, and outside the test windows they would make
+  every file look read at import. So the recorder looks at the stack:
+  - events raised under the import system (`<frozen importlib…>`) are
+    dropped; modules are the index's business;
+  - inside a test window everything else counts, because a library or a
+    plugin fixture may read a file for the test;
+  - outside every window, an event counts only when project code is on the
+    stack. It is credited to the module being imported (a parametrize list
+    globbed at import escalates that module), or to no module when it
+    happens in a hook, which selects everything.
 * **Readers are followed through values.** A reader of a changed thing is
   handled by its kind:
   - a function is added to E;
@@ -295,6 +310,19 @@ selection or states something the tables left implicit; none narrows it.
   the callee is not in the caller's record. A changed signature, default,
   decorator or annotation therefore adds the unbounded lookup sites that
   can see the namespace, as an added or deleted name does.
+* **Class attributes are not symbols.** A class-attribute edit shows up
+  only as the class's `body_changed`. So the index records, per class, a hash
+  of each plainly assigned attribute, of the other body statements together,
+  and of the class statement itself (bases, keywords, decorators), in a field
+  static planning does not use. A changed attribute reaches the readers of
+  its name: resolved `self.x` edges and name matches, plus lookup and
+  reflection sites. A changed statement, an opaque body statement or a
+  dunder attribute escalates. The class's `definition_changed` also fires
+  when a member is only added or deleted, since the member list is part of
+  that hash. That case is the member's own change, because code notices a
+  new or missing attribute only by looking it up. A special method (`__eq__`)
+  is used without being named, so a change to one reaches every member of
+  the class's hierarchy.
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures
