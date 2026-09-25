@@ -127,12 +127,14 @@ pending edit, and every recorded plan is byte-identical.
 
 **Status.** Designed in [evidence_design.md](evidence_design.md); the
 pandas spike passed its go/no-go. On 79 pandas commits the median plan
-selects 6.9 % of tests (static: 100 % on every one), and recording costs
-1.25× a plain run with identical outcomes. Not implemented.
+selects 6.4 % of tests (static: 100 % on every one), and recording costs
+1.25–1.45× a plain run with identical outcomes. Not implemented.
 
 **Mechanism.** A stdlib pytest plugin records which symbols each test
-executed (plus the names it looked up dynamically, the files it opened,
-and whether it spawned a subprocess) in a real run at commit C. The plan
+executed (plus the files it opened, which import ran what, and whether
+it spawned a subprocess) in a real run at commit C. Names looked up
+dynamically cannot be recorded without changing outcomes, so tests that
+executed an unbounded lookup site stand in for them. The plan
 selects a test when it executed a changed symbol, or a one-hop static
 reader of a non-body change. Changes that run at import escalate to
 static planning.

@@ -72,6 +72,11 @@ def is_test_module(path: str) -> bool:
     return path.startswith("pandas/tests/") and not path.endswith("conftest.py")
 
 
+def is_test_code(path: str) -> bool:
+    """Test modules and the conftests beside them."""
+    return path.startswith("pandas/tests/")
+
+
 # ---- evidence ---------------------------------------------------------------------
 by_path = collections.defaultdict(list)
 for sym in head_index.symbols.values():
@@ -180,25 +185,48 @@ def parsed(commit: str, path: str):
     return _src_cache[key]
 
 
-def decorators(commit: str, sym) -> list[str] | None:
+def _defs_named(node, name: str) -> list:
+    """Every def/class called ``name`` directly in ``node``'s body, looking
+    through ``if``/``try``/``with``/loops (``if TYPE_CHECKING:``) but not into
+    other definitions, in source order (``@overload`` stubs included)."""
+    found = []
+    stack = list(reversed(getattr(node, "body", [])))
+    while stack:
+        n = stack.pop()
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if n.name == name:
+                found.append(n)
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers"):
+            stack.extend(reversed(getattr(n, field, []) or []))
+    return found
+
+
+def decorators(commit: str, sym) -> list[list[str]] | None:
+    """The decorator lists of every definition of ``sym`` (all overloads and
+    conditional variants), or None when the source cannot be read."""
     tree = parsed(commit, sym.path)
     if tree is None:
         return None
-    qual = sym.id[len(sym.module) + 1 :].split(".")
-    node = tree
-    for name in qual:
-        node = next(
-            (
-                n
-                for n in ast.iter_child_nodes(node)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                and n.name == name
-            ),
-            None,
-        )
-        if node is None:
+    nodes = [tree]
+    for name in sym.id[len(sym.module) + 1 :].split("."):
+        nodes = [d for n in nodes for d in _defs_named(n, name)]
+        if not nodes:
             return None
-    return [ast.unparse(d) for d in node.decorator_list]
+    return [[ast.unparse(d) for d in n.decorator_list] for n in nodes]
+
+
+def is_fixture(decs) -> bool:
+    return any("fixture" in d for variant in decs or () for d in variant)
+
+
+def tests_in_scope(path: str) -> set[str]:
+    """Tests that can see a fixture defined in ``path``: a conftest's directory
+    and below, or the test module itself."""
+    if path.endswith("conftest.py"):
+        prefix = path[: -len("conftest.py")]
+        return {t for t in ALL if t.startswith(prefix)}
+    return {t for t in ALL if t.split("::", 1)[0] == path}
 
 
 def static_select(c: str, ids: set[str]) -> set[str]:
@@ -259,59 +287,91 @@ def analyse(c: str) -> dict:
             escalate.add(sym_id)
             notes.append(f"{sym_id} ran outside any test")
 
+    def import_time_readers(rs: set[str], sym_id: str) -> None:
+        """Readers that run at import: module or class top-level code (the
+        recorder never credits ``<module>`` code to an importer), or code an
+        import ran. Their results are baked into objects."""
+        for r in rs:
+            rsym = h.symbols.get(r) or b.symbols.get(r)
+            if rsym is None:
+                continue
+            if rsym.kind in (MODULE, CLASS):
+                if is_test_module(rsym.path):
+                    direct.update(tests_of_module.get(rsym.path, set()))
+                else:
+                    escalate.add(sym_id)
+                    notes.append(f"{sym_id} read at import by {r}")
+            for mod_path in import_by.get(r, ()):
+                if is_test_module(mod_path):
+                    direct.update(tests_of_module.get(mod_path, set()))
+                else:
+                    escalate.add(sym_id)
+                    notes.append(f"{sym_id} read by {r}, run importing {mod_path}")
+
+    def name_sites(sym, method: bool) -> set[str]:
+        if is_test_code(sym.path):
+            # Found by the runner and by test code, not by library lookups.
+            return {x for x in (dyn_method | dyn_module) if x.startswith("pandas.tests.")}
+        return dyn_method if method else dyn_module
+
     for ch in classify(b, h):
         sym = ch.head or ch.base
         kinds = set(ch.changes)
         if not ch.carries_impact and kinds != {"docstring_changed"}:
             continue
-        in_tests = sym.path.startswith("pandas/tests/")
         if sym.kind in (FUNCTION, METHOD):
+            if sym.name.startswith("pytest_") and sym.path.endswith("conftest.py"):
+                select_all.append(f"{sym.id} (pytest hook)")
+                continue
+            base_decs = decorators(base_c, ch.base) if ch.base else None
+            head_decs = decorators(head_c, ch.head) if ch.head else None
+            fixture = is_test_code(sym.path) and is_fixture((base_decs or []) + (head_decs or []))
             if kinds & {"added", "deleted"}:
-                E |= readers(sym.id, sym.name) | {sym.id}
-                if in_tests:
-                    # Test functions and test-class methods are found by the
-                    # runner and by test code, not by library lookups.
-                    E |= {x for x in (dyn_method | dyn_module) if x.startswith("pandas.tests.")}
-                else:
-                    E |= dyn_method if sym.kind == METHOD else dyn_module
+                E |= readers(sym.id, sym.name) | {sym.id} | name_sites(sym, sym.kind == METHOD)
+                if fixture:  # a new fixture can shadow a same-named one in its scope
+                    direct |= tests_in_scope(sym.path)
                 continue
             E.add(sym.id)
-            if kinds <= {"body_changed", "docstring_changed"}:
-                if kinds != {"docstring_changed"}:
-                    import_effect(sym.id)
-                continue
-            E |= readers(sym.id, sym.name)
-            if not in_tests and decorators(base_c, ch.base or sym) != decorators(
-                head_c, ch.head or sym
-            ):
-                escalate.add(sym.id)
-                notes.append(f"{sym.id} decorators changed")
+            if kinds != {"docstring_changed"}:
+                # Whatever else changed with it (a body edit usually adds or
+                # redirects calls too): code an import ran is import-time.
+                import_effect(sym.id)
+            if kinds & {"definition_changed", "annotations_changed"}:
+                E |= readers(sym.id, sym.name)
+            if base_decs != head_decs:
+                if fixture:  # autouse, scope, params, name: its whole scope
+                    direct |= tests_in_scope(sym.path)
+                elif not is_test_module(sym.path):
+                    escalate.add(sym.id)
+                    notes.append(f"{sym.id} decorators changed")
         elif sym.kind == VARIABLE:
             rs = readers(sym.id, sym.name)
             E |= rs | {sym.id}
-            if not in_tests and any(
-                any(not is_test_module(m) for m in import_by.get(r, ())) for r in rs
-            ):
-                escalate.add(sym.id)
-                notes.append(f"{sym.id} read at import")
+            if kinds & {"added", "deleted"}:
+                E |= name_sites(
+                    sym,
+                    method=bool(
+                        sym.container
+                        and (h.symbols.get(sym.container) or b.symbols.get(sym.container)).kind
+                        == CLASS
+                    ),
+                )
+            import_time_readers(rs, sym.id)
         elif sym.kind == CLASS:
             if kinds == {"docstring_changed"}:
                 continue
             if kinds & {"added", "deleted"}:
-                E |= readers(sym.id, sym.name) | {sym.id}
-                E |= (
-                    {x for x in dyn_module if x.startswith("pandas.tests.")}
-                    if in_tests
-                    else dyn_module
-                )
+                E |= readers(sym.id, sym.name) | {sym.id} | name_sites(sym, method=False)
                 continue
             # Spike approximation: the class's own members and readers; the
             # design also takes its bases' and subclasses' members.
             members = {s for index in (b, h) for s in index.symbols if s.startswith(sym.id + ".")}
-            E |= members | readers(sym.id, sym.name) | {sym.id}
-            if not in_tests and decorators(base_c, ch.base or sym) != decorators(
-                head_c, ch.head or sym
-            ):
+            rs = readers(sym.id, sym.name)
+            E |= members | rs | {sym.id}
+            import_time_readers(rs, sym.id)
+            base_decs = decorators(base_c, ch.base) if ch.base else None
+            head_decs = decorators(head_c, ch.head) if ch.head else None
+            if base_decs != head_decs and not is_test_module(sym.path):
                 escalate.add(sym.id)
                 notes.append(f"{sym.id} class decorators changed")
         elif kinds & {"added", "deleted"}:
@@ -333,7 +393,9 @@ def analyse(c: str) -> dict:
         # elsewhere, and, for a library module, imports named at runtime.
         reach = _ImportReach(b, h)
         esc_modules = {(h.symbols.get(x) or b.symbols.get(x)).module for x in escalate}
-        library = any(not m.startswith("pandas.tests.") for m in esc_modules)
+        esc_paths = {(h.symbols.get(m) or b.symbols.get(m)).path for m in esc_modules}
+        # conftests count as library here: their objects reach every test in scope
+        library = any(not is_test_module(path) for path in esc_paths)
         for index in (b, h):
             for u in index.unresolved:
                 if u.kind != UNRESOLVED_DYNAMIC:
@@ -348,9 +410,8 @@ def analyse(c: str) -> dict:
                     # while its own tests run (selected below) or through its
                     # importers (static planning).
                     E.add(u.symbol)
-        for m in esc_modules:
-            if m.startswith("pandas.tests."):
-                path = (h.symbols.get(m) or b.symbols.get(m)).path
+        for path in esc_paths:
+            if is_test_module(path):
                 direct.update(tests_of_module.get(path, set()))
     if select_all:
         selected = set(ALL)
@@ -376,7 +437,21 @@ for c in commits:
     try:
         r = analyse(c)
     except Exception as exc:
-        print(f"{c[:10]} skipped: {type(exc).__name__}: {exc}", flush=True)
+        # Counted as selecting everything, so a failure cannot flatter the numbers.
+        print(f"{c[:10]} FAILED, counted as select-all: {type(exc).__name__}: {exc}", flush=True)
+        r = {
+            "commit": c,
+            "selected": len(ALL),
+            "of": len(ALL),
+            "E": 0,
+            "escalated": [],
+            "n_escalated": 0,
+            "select_all": [f"analysis failed: {type(exc).__name__}"],
+            "notes": [],
+            "evidence_only": len(ALL),
+            "failed": True,
+        }
+        rows.append(r)
         continue
     rows.append(r)
     tag = (

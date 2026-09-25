@@ -12,7 +12,10 @@ DIFFCONE_SPIKE_OUT to a directory. Writes per process:
 A test's record is everything executed in its setup, call and teardown,
 plus the setup of every non-function-scoped fixture it uses (credited to
 every user, not just the first). functools caches are cleared before each
-test so a cached value is recomputed, and recorded, by each test.
+test so a cached value is recomputed, and recorded, by each test: those that
+exist at collection and those made later (``functools.lru_cache`` is wrapped
+at plugin load to register them). Shared fixtures are credited through the
+fixtures a test actually activated, ``request.getfixturevalue`` included.
 Opened files come from an audit hook. Looked-up names are not recorded:
 wrapping ``getattr`` changed pandas test outcomes (docs/evidence_design.md).
 """
@@ -157,6 +160,26 @@ class _Writer:
 writer: _Writer | None = None
 
 
+_lru_cache = functools.lru_cache
+
+
+def _tracking_lru_cache(*args, **kwargs):
+    """``functools.lru_cache`` that remembers every cache it makes, so caches
+    created after collection (lazy imports) are cleared before each test too.
+    Only decoration goes through here; calls to a cached function do not."""
+    made = _lru_cache(*args, **kwargs)
+    if isinstance(made, functools._lru_cache_wrapper):
+        lru_wrappers.append(made)
+        return made
+
+    def decorate(func):
+        wrapper = made(func)
+        lru_wrappers.append(wrapper)
+        return wrapper
+
+    return decorate
+
+
 def _start() -> None:
     """Start at import of this plugin: ``-p`` plugins load before the initial
     conftests, which import the project, so its import-time code is seen."""
@@ -167,6 +190,7 @@ def _start() -> None:
     mon.set_events(TOOL, mon.events.PY_START | (mon.events.PY_UNWIND if IMPORT_BY else 0))
     if AUDIT:
         sys.addaudithook(_audit)
+    functools.lru_cache = _tracking_lru_cache  # functools.cache goes through it too
 
 
 def pytest_configure(config):
@@ -176,7 +200,13 @@ def pytest_configure(config):
 
 
 def pytest_collection_finish(session):
-    lru_wrappers.extend(o for o in gc.get_objects() if isinstance(o, functools._lru_cache_wrapper))
+    # Caches made before this plugin loaded; later ones register themselves.
+    known = {id(w) for w in lru_wrappers}
+    lru_wrappers.extend(
+        o
+        for o in gc.get_objects()
+        if isinstance(o, functools._lru_cache_wrapper) and id(o) not in known
+    )
 
 
 @pytest.hookimpl(wrapper=True)
@@ -186,10 +216,25 @@ def pytest_fixture_setup(fixturedef, request):
     key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
     w = fixture_windows.setdefault(key, _window())
     active.append(w)
+    # Code this test already ran is disabled; re-arm so the fixture's own
+    # window sees everything its setup runs.
+    mon.restart_events()
     try:
         return (yield)
     finally:
         _drop(w)
+
+
+used_fixtures: dict[str, list] = {}
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    # Every fixture the test activated, ``request.getfixturevalue`` included;
+    # pytest drops the request once the protocol ends, so read it now.
+    request = getattr(item, "_request", None)
+    if request:
+        used_fixtures[item.nodeid] = list(request._fixture_defs.values())
 
 
 @pytest.hookimpl(wrapper=True)
@@ -208,13 +253,15 @@ def pytest_runtest_protocol(item, nextitem):
     finally:
         _drop(mine)
         mon.restart_events()
+        defs_used = list(used_fixtures.pop(item.nodeid, ()))
         for name in getattr(item, "fixturenames", ()):
-            for defs in item._fixtureinfo.name2fixturedefs.get(name, ()):
-                if defs.scope != "function":
-                    shared = fixture_windows.get((defs.baseid, defs.argname, defs.scope))
-                    if shared:
-                        for k in mine:
-                            mine[k] |= shared[k]
+            defs_used.extend(item._fixtureinfo.name2fixturedefs.get(name, ()))
+        for defs in defs_used:
+            if defs.scope != "function":
+                shared = fixture_windows.get((defs.baseid, defs.argname, defs.scope))
+                if shared:
+                    for k in mine:
+                        mine[k] |= shared[k]
         writer.add(_fold(item.nodeid), mine)
 
 

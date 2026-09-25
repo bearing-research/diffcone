@@ -79,7 +79,7 @@ folds parameter cases:
 | record | what | mechanism |
 |---|---|---|
 | `X(T)` | symbols executed during T's setup, call and teardown | `sys.monitoring` `PY_START` (Python 3.12+), disabled per code object after its first hit and re-armed per test with `restart_events()` |
-| fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup`/`pytest_fixture_post_finalizer` records each instance's window; `item.fixturenames` links tests to instances |
+| fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup` records each instance's setup window, re-arming the tracer as it opens (code the test already ran is otherwise disabled and would be missing from the fixture's window); teardown windows are still to be designed. A test is credited with every fixture it *activated*, read from its request during teardown (`request.getfixturevalue` included, which `item.fixturenames` misses) |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
 | import attribution | for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running) | a stack of modules pushed at a `<module>` code object's `PY_START` and popped at its `PY_RETURN` (a local event) or `PY_UNWIND` (an import that raises, such as `pytest.importorskip` at module level); events re-armed at each push and pop |
 | `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`) |
@@ -120,13 +120,13 @@ For each change diffcone classifies between C and head:
 | body changed, `f` | `{f}` | when a library or conftest import ran `f`: its result is baked into objects built at import. When a *test* module's import ran it, the tests that executed that module's code instead |
 | docstring changed | the doctest target (as today) + static readers of `__doc__` (`inspect.getdoc`, `.__doc__`) | when read at import (`@doc`, `Appender`) |
 | signature or defaults changed | `{f}` + its static callers (resolved references and name matches of its name) + introspection sites (`inspect.signature`) | — |
-| decorators changed | as a signature change | library code: always, since decorators run at import and may register. Test code: never, since what a test's decorators do reaches only that test |
+| decorators changed | as a signature change; for a fixture (in a test module or a conftest), every test in its scope, since `autouse`, `scope`, `params` and `name` change who runs it | library code and conftests' non-fixture functions: always, since decorators run at import and may register. A test function's own decorators: never, since they reach only that test |
 | added or deleted name `n` in module or class N | static readers of `n` (resolved, imported, name-matched), enumeration sites (`dir`, `vars`, `__dict__`, `inspect.getmembers`, star imports), the symbol itself, and the unbounded lookup sites that can see N: for a method, reads off objects from elsewhere; for a module-level name, reads off modules and `globals()`/`vars()`. For test code, only lookup sites in test code: nothing else holds a test module or a runner-only test instance | — |
 | added or deleted fixture | the tests in its visibility scope that request that name: a new fixture can shadow a conftest one they used (static discovery knows which) | — |
 | added, deleted or changed pytest hook (`pytest_*` in a conftest or plugin) | everything | — |
 | added or deleted module | static readers (importers) | — (only code that names it reaches it, and that code changed too) |
 | added or deleted special method (`__eq__`, `__len__`…) in class C | members of C's hierarchy + static readers of C and of its subclasses (whoever builds or checks an instance) | — |
-| variable value changed, `v` | static readers of `v` (by name too, which covers `getattr(obj, "v")` with a literal), enumeration sites | when a library import reads `v` |
+| variable value changed, `v` | static readers of `v` (by name too, which covers `getattr(obj, "v")` with a literal), enumeration sites; added or deleted, also the unbounded lookup sites that can see its namespace | when a library or conftest import reads `v`: module or class top-level code reading it (`Y = DEFAULT * 2`), or code an import ran. A test module's top-level read selects that module's tests |
 | class structure changed (bases, metaclass, class decorators, class body) | every member of C, its bases and its subclasses + static readers of those classes | class decorators and metaclasses: always |
 | module-level statements or imports changed | — | always: they run at import |
 | a test or fixture changed | selected (`changed_target`, as today) | — |
@@ -165,7 +165,7 @@ static selection.
 |---|---|---|---|
 | same environment | a different numpy, a missing optional dependency, another Python | the environment fingerprint must match the run; if it doesn't, fall back to static | — |
 | determinism | hash-seed-dependent ordering, time, randomness | `PYTHONHASHSEED` pinned to the recorded value in `run`; `TZ` in the fingerprint | optional second collection in reverse order: tests whose `X(T)` differs are **unstable** and always selected |
-| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection; shared fixture instances credited to every user (8 of pandas' 1 051 fixtures) | the reverse-order collection also catches order dependence between two tests |
+| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures) | the reverse-order collection also catches order dependence between two tests |
 | complete observation | subprocesses, threads outliving their test, code run from strings | `P(T)` → always selected; strings run by `exec` belong to the function that ran them, which is in `X(T)` | — |
 | fresh evidence | evidence from an old C | changes are always C → head, so older evidence selects more, never less | age reported |
 
@@ -184,7 +184,7 @@ reported as a miss.
 `meta` (commit, environment, command, diffcone version, time), `symbols`
 (index to symbol id), `sets` (deduplicated compressed bitmaps over the
 symbol table: parametrized tests share sets), `tests` (target id, set id,
-flags: subprocess, unstable), `names`, `files`, `import_phase`. Expected
+flags: subprocess, unstable), `files`, `import_phase`, `import_by`. Expected
 size for pandas: about 26 000 targets over about 37 000 symbols, which is
 tens of megabytes before deduplication. That has to be measured (spike).
 
@@ -222,7 +222,8 @@ an inferred path:
 
 * `executed_changed`: "T executed `f` in the evidence run at C; `f` changed".
 * `executed_reader`: "T executed `g`; `g` references `v` (edge); `v` changed".
-* `looked_up_name`: "T looked up `n` dynamically; `n` was added to N".
+* `lookup_site`: "T executed `g`, which looks attributes up by a name nothing
+  bounds and can see N; `n` was added to N".
 * `opened_file`: "T opened `pandas/tests/io/data/x.csv`; it changed".
 * `escalated`: "`f` ran at import: static planning for this change".
 
@@ -249,14 +250,19 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
 
 A prototype recorder and analysis (`scripts/evidence_spike/`, kept as the
 starting point, not as the implementation) ran on
-pandas at `3f57341`. The recorder is the table above, minus names; pandas
+pandas at `3f57341`. The recorder is the table above without fixture
+teardown windows, `P(T)` or the environment capture, so the cost below is
+for that subset (the missing parts are per session or per fixture, not per
+call); pandas
 was built in place with Python 3.13, with pandas' CI marker
 filter (`not slow and not network and not db and not single_cpu`) on
 8 workers.
 
-**Cost.** 194 s traced against 155 s plain: **1.25×** wall time, 1.49× CPU.
-The outcomes were identical: 187 615 passed and the same 13 failed. The
-record is 27 MB for 22 258 folded tests. A test executes a median of 134
+**Cost.** Each measured against a plain run straight after it on the same
+machine: the recorder before the review fixes took 194 s against 155 s
+(**1.25×** wall, 1.49× CPU), the corrected one 194 s against 134 s
+(**1.45×** wall, 1.41× CPU). Plain runs varied more than traced ones. The outcomes were identical every time: 187 615 passed
+and the same 13 failed. The record is 27 MB for 22 258 folded tests. A test executes a median of 134
 pandas symbols (p90 328) of the 37 307. `test_round` executes 121, where
 static reach said all of them.
 
@@ -267,19 +273,43 @@ recall claim.
 
 | selection | commits |
 |---|---|
-| under 1 % | 10 |
+| under 1 % | 11 |
 | 1–5 % | 20 |
-| 5–25 % | 19 |
-| 25–75 % | 7 |
-| 75–100 % | 23 |
+| 5–25 % | 20 |
+| 25–75 % | 4 |
+| 75–100 % | 24 |
 
-Median **6.9 %** (p25 4.4 %, p75 84 %), against 100 % for static planning on
-every one of them. Of the 23 commits over 75 %: 11 escalate a library change
-(module-level edits in `pandas.core.frame` and `pandas.core.missing`,
-changed class decorators, library code run by the root conftest), 8 change
-a compiled source, a template or a lockfile, and 4 are broad on evidence
-alone (an added library method must count every read off an object from
-elsewhere; a `DataFrame` class change takes all its members).
+Median **6.4 %** (p25 4.4 %, p75 99.7 %), against 100 % for static planning
+on every one of them; 51 of 79 select under a quarter. Of the 24 commits
+over 75 %: 13 escalate a library change (module-level edits in
+`pandas.core.frame` and `pandas.core.missing`, a variable read by
+`config_init`'s top-level code, `DataFrame` or `SparseArray` read at import,
+library code run by a conftest), 8 change a compiled source, a template or
+a lockfile, 1 changes pytest hooks in the root conftest, and 2 are broad on
+evidence alone. No commit failed to analyse (a failure would count as
+selecting everything).
+
+**Review corrections.** A code review of the first version of these
+numbers found gaps, all now fixed, and re-ran them (the first version
+reported a median of 6.9 %, 49 under a quarter):
+- import-time escalation was skipped for body edits that also add or
+  redirect calls;
+- a variable read by module or class top-level code never escalated;
+- decorator comparison read only the first `@overload` stub and missed
+  definitions under `if`/`try`;
+- added or deleted variables skipped the lookup-site rule;
+- fixture decorator changes in test code were treated like a test's own
+  decorators, and conftests under `pandas/tests/` like test modules;
+- in the recorder, a shared fixture's window missed code the test had
+  already run, fixtures obtained with `getfixturevalue` were never
+  credited, and caches created after collection were never cleared.
+
+Fixing these moved 25 commits: 9 up (the import-time and hook cases) and
+16 down. The downward moves come from dropping an over-broad rule. The
+first version added a function's callers whenever a body edit also added
+a call, but callers see new behaviour only by executing the function,
+which puts it in their record already. Callers now count only when the
+definition itself changes.
 
 **What the spike corrected in this design** (each is folded into the
 tables above): names cannot be recorded by wrapping; the tracer must start
@@ -289,8 +319,8 @@ functions do not escalate; added modules do not escalate. It also found
 two rows the design lacked: fixture shadowing and pytest hooks.
 
 **Not measured by the spike**: recall (step 3), the bases and subclasses
-of a changed class (members of the class itself only), fixture shadowing
-and hooks, subprocess and unstable tests, and ASV.
+of a changed class (members of the class itself only), fixture teardown,
+subprocess and unstable tests, environment capture, and ASV.
 
 ## Decisions
 
@@ -315,5 +345,5 @@ Open:
    pandas, and developers would download that store. That makes the
    environment fingerprint the thing to get right. Local-only collection
    is simpler, but it costs every developer a full traced run. The spike
-   measured 1.25× a plain run for pandas (3 minutes on 8 workers), which
+   measured 1.25–1.45× a plain run for pandas (3 minutes on 8 workers), which
    makes local collection affordable. The fingerprint question stays open.
