@@ -1,8 +1,8 @@
 # Execution evidence: design proposal
 
 Status: **proposed, not implemented**, apart from step 0, which has
-shipped. Four of the five decisions at the end are answered; the fifth
-waits for the spike.
+shipped. The spike on pandas passed its go/no-go ("Spike results"). Four
+of the five decisions at the end are answered.
 
 ## Why
 
@@ -81,10 +81,22 @@ folds parameter cases:
 | `X(T)` | symbols executed during T's setup, call and teardown | `sys.monitoring` `PY_START` (Python 3.12+), disabled per code object after its first hit and re-armed per test with `restart_events()` |
 | fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup`/`pytest_fixture_post_finalizer` records each instance's window; `item.fixturenames` links tests to instances |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
-| `N(T)` | attribute names T looked up dynamically | `builtins.getattr` and `hasattr` wrapped during collection runs only |
+| import attribution | for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running) | a stack of modules pushed at a `<module>` code object's `PY_START` and popped at its `PY_RETURN` (a local event) or `PY_UNWIND` (an import that raises, such as `pytest.importorskip` at module level); events re-armed at each push and pop |
 | `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`) |
 | `P(T)` | T started a subprocess | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork` |
 | environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside the test process at session start |
+
+The tracer starts when the plugin module is imported, not in
+`pytest_configure`: `-p` plugins load before the initial conftests, and a
+root conftest usually imports the project, whose import-time code (for
+pandas, its decorators and registrations) would otherwise go unrecorded.
+
+**Names looked up dynamically are not recorded.** The spike wrapped
+`getattr` and `hasattr` to record them, and that changed test outcomes: the
+wrapper's frame moves the `stacklevel` of warnings, and pandas checks it.
+No pure-Python wrapper avoids that frame, so the name-based rows below use
+the static stand-in: the tests that *executed* an unbounded lookup site
+that can see the namespace in question.
 
 Code objects map to symbols by file and first line, against diffcone's own
 index of commit C (innermost symbol whose line range contains the code
@@ -105,21 +117,34 @@ For each change diffcone classifies between C and head:
 
 | change | E, what is selected | escalates to static |
 |---|---|---|
-| body changed, `f` | `{f}` | when `f ∈ X_import`: its result is baked into objects built at import |
+| body changed, `f` | `{f}` | when a library or conftest import ran `f`: its result is baked into objects built at import. When a *test* module's import ran it, the tests that executed that module's code instead |
 | docstring changed | the doctest target (as today) + static readers of `__doc__` (`inspect.getdoc`, `.__doc__`) | when read at import (`@doc`, `Appender`) |
 | signature or defaults changed | `{f}` + its static callers (resolved references and name matches of its name) + introspection sites (`inspect.signature`) | — |
-| decorators changed | as a signature change | always: decorators run at import and may register |
-| added or deleted name `n` in module or class N | static readers of `n` (resolved, imported, name-matched), tests with `n ∈ N(T)`, enumeration sites (`dir`, `vars`, `__dict__`, `inspect.getmembers`, star imports) and, for a deletion, the symbol itself | — |
+| decorators changed | as a signature change | library code: always, since decorators run at import and may register. Test code: never, since what a test's decorators do reaches only that test |
+| added or deleted name `n` in module or class N | static readers of `n` (resolved, imported, name-matched), enumeration sites (`dir`, `vars`, `__dict__`, `inspect.getmembers`, star imports), the symbol itself, and the unbounded lookup sites that can see N: for a method, reads off objects from elsewhere; for a module-level name, reads off modules and `globals()`/`vars()`. For test code, only lookup sites in test code: nothing else holds a test module or a runner-only test instance | — |
+| added or deleted fixture | the tests in its visibility scope that request that name: a new fixture can shadow a conftest one they used (static discovery knows which) | — |
+| added, deleted or changed pytest hook (`pytest_*` in a conftest or plugin) | everything | — |
+| added or deleted module | static readers (importers) | — (only code that names it reaches it, and that code changed too) |
 | added or deleted special method (`__eq__`, `__len__`…) in class C | members of C's hierarchy + static readers of C and of its subclasses (whoever builds or checks an instance) | — |
-| variable value changed, `v` | static readers of `v`, tests with `name(v) ∈ N(T)`, enumeration sites | when `v` is read at import |
+| variable value changed, `v` | static readers of `v` (by name too, which covers `getattr(obj, "v")` with a literal), enumeration sites | when a library import reads `v` |
 | class structure changed (bases, metaclass, class decorators, class body) | every member of C, its bases and its subclasses + static readers of those classes | class decorators and metaclasses: always |
 | module-level statements or imports changed | — | always: they run at import |
 | a test or fixture changed | selected (`changed_target`, as today) | — |
 | changed file the index does not read | tests with the file in `F(T)`, or with code from it in `X(T)` (a `.py` outside the source roots) | when opened or executed at import; compiled sources always (see below) |
 
-"Escalates to static" means that one change is planned the way it is today
-(for pandas: everything), and the rest of the commit still uses evidence.
-Selection is the union over all changes.
+"Escalates to static" means that one change is planned statically and the
+rest of the commit still uses evidence; selection is the union over all
+changes. The static half runs **without dynamic seeds**. A dynamic
+reference a test executed is in its record through the code it reached, so
+the executed lookup sites that can see the escalated module are added to E
+instead: closure-bounded ones whose module's import closure holds it, reads
+off objects from elsewhere, and, for a library module, imports named at
+run time. A test module's import-time objects reach library code only
+while its own tests run, and those tests are selected, or through its
+importers, which static planning follows. So a test module escalates to its
+own tests plus static reach, not to every lookup site. Without that, one
+unbounded import in pandas (`_get_plot_backend`) made every escalation
+select everything.
 
 **Compiled code.** A `.pyx` change is invisible to a Python tracer. The
 first version escalates it. The follow-up maps a changed `.pyx`/`.pxd` to
@@ -206,14 +231,7 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
 
 ## How it will be checked
 
-1. **Spike (go/no-go, before anything else is built).** Build pandas in a
-   virtual environment and write the minimal `PY_START` plugin. Collect
-   `X(T)` on the whole suite and measure the overhead against a plain run.
-   Then compute, on pandas' recent commits, how many targets would be
-   selected from body changes alone. **Go** if the median commit selects
-   under a quarter of the targets and collection costs under twice a plain
-   run. **No-go** means pandas' tests really do all run the same code, and
-   the answer is recorded, as the static measurements were.
+1. **Spike (go/no-go): done, and it passed.** See "Spike results" below.
 2. **Scenarios** for every row of both tables above, mixing pytest and ASV
    targets (ASV falling back to static), each asserting exact targets and
    reasons: a change seen only through a dynamic name, through an opened
@@ -226,6 +244,53 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
    test whose outcome changes, must be selected. **Done when** that holds
    on at least 20 pandas commits, and the 28-repository corpus re-planned
    with evidence shows no miss and states its savings against static.
+
+## Spike results (2026-09-24)
+
+A prototype recorder and analysis (`scripts/evidence_spike/`, kept as the
+starting point, not as the implementation) ran on
+pandas at `3f57341`. The recorder is the table above, minus names; pandas
+was built in place with Python 3.13, with pandas' CI marker
+filter (`not slow and not network and not db and not single_cpu`) on
+8 workers.
+
+**Cost.** 194 s traced against 155 s plain: **1.25×** wall time, 1.49× CPU.
+The outcomes were identical: 187 615 passed and the same 13 failed. The
+record is 27 MB for 22 258 folded tests. A test executes a median of 134
+pandas symbols (p90 328) of the 37 307. `test_round` executes 121, where
+static reach said all of them.
+
+**Selection.** The 79 commits before `3f57341` were replayed against that
+record, with E and escalation as in the tables above. Evidence at the head
+stood in for evidence at each parent, which estimates size but is not a
+recall claim.
+
+| selection | commits |
+|---|---|
+| under 1 % | 10 |
+| 1–5 % | 20 |
+| 5–25 % | 19 |
+| 25–75 % | 7 |
+| 75–100 % | 23 |
+
+Median **6.9 %** (p25 4.4 %, p75 84 %), against 100 % for static planning on
+every one of them. Of the 23 commits over 75 %: 11 escalate a library change
+(module-level edits in `pandas.core.frame` and `pandas.core.missing`,
+changed class decorators, library code run by the root conftest), 8 change
+a compiled source, a template or a lockfile, and 4 are broad on evidence
+alone (an added library method must count every read off an object from
+elsewhere; a `DataFrame` class change takes all its members).
+
+**What the spike corrected in this design** (each is folded into the
+tables above): names cannot be recorded by wrapping; the tracer must start
+at plugin import; imports that raise end with an unwind; escalation must
+leave dynamic seeds to the evidence; test code's decorators and added test
+functions do not escalate; added modules do not escalate. It also found
+two rows the design lacked: fixture shadowing and pytest hooks.
+
+**Not measured by the spike**: recall (step 3), the bases and subclasses
+of a changed class (members of the class itself only), fixture shadowing
+and hooks, subprocess and unstable tests, and ASV.
 
 ## Decisions
 
@@ -249,5 +314,6 @@ Open:
 5. **Where collection runs.** Nightly in CI is the natural producer for
    pandas, and developers would download that store. That makes the
    environment fingerprint the thing to get right. Local-only collection
-   is simpler, but it costs every developer a full traced run. The spike's
-   overhead numbers decide it.
+   is simpler, but it costs every developer a full traced run. The spike
+   measured 1.25× a plain run for pandas (3 minutes on 8 workers), which
+   makes local collection affordable. The fingerprint question stays open.

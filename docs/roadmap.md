@@ -125,9 +125,10 @@ pending edit, and every recorded plan is byte-identical.
 
 ## 5. Execution evidence: per-test coverage as a planning input
 
-**Status.** Proposed in [evidence_design.md](evidence_design.md), pending
-the decisions listed there. Motivated by pandas, where static planning
-selects everything and measurement shows no static rule changes that.
+**Status.** Designed in [evidence_design.md](evidence_design.md); the
+pandas spike passed its go/no-go. On 79 pandas commits the median plan
+selects 6.9 % of tests (static: 100 % on every one), and recording costs
+1.25× a plain run with identical outcomes. Not implemented.
 
 **Mechanism.** A stdlib pytest plugin records which symbols each test
 executed (plus the names it looked up dynamically, the files it opened,
@@ -140,7 +141,7 @@ static planning.
 unchanged environment. Each has a guard or a detector, and the residuals
 are stated in the design. Opt-in; static stays the default.
 
-**Done when.** The spike clears its go/no-go (median pandas commit under a
-quarter of targets; collection under twice a plain run), and recall is
-100 % on at least 20 pandas commits and on the corpus re-planned with
-evidence.
+**Done when.** Recall is 100 % on at least 20 pandas commits (evidence
+collected at an older commit, whole suite run at each commit under
+`validate --coverage`), and the corpus re-planned with evidence shows no
+miss and states its savings against static.
