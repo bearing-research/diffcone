@@ -72,6 +72,13 @@ def main() -> int:
     start, end = args.revision_range.split("..")
     commits = git(repo, "rev-list", "--first-parent", "--reverse", f"{start}..{end}").split()
     commits = [git(repo, "rev-parse", start)] + commits
+    # Coverage measures only the Python files the range changes: the oracle
+    # asks which tests executed a changed symbol, and per-test contexts over
+    # all of pandas fill a disk.
+    changed_files = sorted(
+        set(git(repo, "log", "--format=", "--name-only", f"{start}..{end}", "--", "*.py").split())
+    )
+    print(f"{len(commits)} commits, {len(changed_files)} changed Python files", flush=True)
     results = out / "recall.jsonl"
     done = set()
     if results.exists():
@@ -96,7 +103,13 @@ def main() -> int:
             outcomes = json.loads(outcomes_file.read_text())
         else:
             t = time.time()
-            with _run_full_pytest(repo, args.command, coverage=True, source_roots=roots) as run:
+            with _run_full_pytest(
+                repo,
+                args.command,
+                coverage=True,
+                source_roots=roots,
+                coverage_include=changed_files,
+            ) as run:
                 outcomes = run.outcomes
                 shutil.copy(run.coverage_db, cov_db)
                 (out / f"log-{short}.txt").write_text(run.log[-200_000:])

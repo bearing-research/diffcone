@@ -49,6 +49,12 @@ DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
 _PYTEST_LINE = re.compile(
     r"^(?P<nodeid>\S+::.*?) (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s|$)"
 )
+# pytest-xdist puts the worker and the outcome first: ``[gw3] PASSED a.py::t``
+# (``[gw3] [ 12%] PASSED ...`` in some versions).
+_XDIST_LINE = re.compile(
+    r"^\[gw\d+\](?: \[\s*\d+%\])? (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS) "
+    r"(?P<nodeid>\S+::.*?)\s*$"
+)
 
 
 # --------------------------------------------------------------------------- run
@@ -260,7 +266,7 @@ def parse_pytest_verbose(output: str) -> dict[str, str]:
     rank = {"PASSED": 0, "SKIPPED": 0, "XFAIL": 0, "XPASS": 1, "FAILED": 2, "ERROR": 3}
     outcomes: dict[str, str] = {}
     for line in output.splitlines():
-        m = _PYTEST_LINE.match(line.strip())
+        m = _PYTEST_LINE.match(line.strip()) or _XDIST_LINE.match(line.strip())
         if not m:
             continue
         nodeid = fold_nodeid(m.group("nodeid"))
@@ -349,6 +355,7 @@ def _run_full_pytest(
     coverage: bool = False,
     source_roots: list[str] = (),
     hash_seed: str | None = None,
+    coverage_include: list[str] | None = None,
 ) -> Iterator[_SuiteRun]:
     """Run the whole suite once with ``-v``; with ``coverage`` the same run
     also records per-test coverage contexts into a temporary database that
@@ -375,8 +382,19 @@ def _run_full_pytest(
             # (typically excluding tests) would blind attribution, and
             # ``parallel``/``branch`` change the database layout.
             rc = Path(tmp) / "coveragerc"
-            rc.write_text("[run]\nbranch = false\nparallel = false\nrelative_files = false\n")
-            argv += ["--cov=.", "--cov-context=test", "--cov-report=", f"--cov-config={rc}"]
+            config = "[run]\nbranch = false\nparallel = false\nrelative_files = false\n"
+            if coverage_include is not None:
+                # Measure only these checkout-relative files: on a suite the
+                # size of pandas, per-test contexts over every file make a
+                # database of many gigabytes. (``include`` is ignored when a
+                # source is given, so ``--cov`` names none.)
+                paths = "".join(f"\n    {cwd.resolve() / p}" for p in coverage_include)
+                config += f"include ={paths}\n"
+                argv += ["--cov"]
+            else:
+                argv += ["--cov=."]
+            rc.write_text(config)
+            argv += ["--cov-context=test", "--cov-report=", f"--cov-config={rc}"]
             env["COVERAGE_FILE"] = str(db)
             # coverage.py 7.x defaults to the sys.monitoring core on Python
             # 3.12+, which disables a line after its first hit: with per-test

@@ -1038,3 +1038,27 @@ def test_validate_with_prefixed_roots_in_importlib_mode(repo):
         ("a/tests/test_core.py::test_run", "PASSED", "PASSED", False),
         ("b/tests/test_core.py::test_run", "PASSED", "FAILED", True),
     ]
+
+
+def test_coverage_can_be_restricted_to_some_files(repo):
+    from diffcone.execution import _run_full_pytest, read_coverage_contexts
+
+    repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    with _run_full_pytest(
+        repo.path, PYTEST, coverage=True, source_roots=["."], coverage_include=["pkg/ops.py"]
+    ) as run:
+        contexts = read_coverage_contexts(run.coverage_db, repo.path, set())
+    assert {f for files in contexts.values() for f in files} == {"pkg/ops.py"}
+    assert set(contexts) == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}
+
+
+def test_parse_pytest_verbose_reads_xdist_lines():
+    out = (
+        "[gw6] PASSED tests/test_a.py::test_x[5-mean] \n"
+        "[gw0] [ 12%] FAILED tests/test_a.py::test_x[6-sum]\n"
+        "[gw2] SKIPPED tests/test_b.py::TestB::test_y \n"
+    )
+    assert parse_pytest_verbose(out) == {
+        "tests/test_a.py::test_x": "FAILED",
+        "tests/test_b.py::TestB::test_y": "SKIPPED",
+    }
