@@ -1,8 +1,10 @@
 # Execution evidence: design proposal
 
-Status: **proposed, not implemented**, apart from step 0, which has
-shipped. The spike on pandas passed its go/no-go ("Spike results"). Four
-of the five decisions at the end are answered.
+Status: **being implemented** (roadmap item 5 lists the stages). Step 0
+has shipped. The spike on pandas passed its go/no-go ("Spike results").
+Four of the five decisions at the end are answered. "Refinements for the
+implementation" records where the implementation departs from the tables
+below, and why.
 
 ## Why
 
@@ -245,6 +247,91 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
    test whose outcome changes, must be selected. **Done when** that holds
    on at least 20 pandas commits, and the 28-repository corpus re-planned
    with evidence shows no miss and states its savings against static.
+
+## Refinements for the implementation (2026-09-25)
+
+Working the tables above into code turned up the following. Each one widens
+selection or states something the tables left implicit; none narrows it.
+
+* **Evidence at C for a plan base → head.** A test that runs identically at C
+  and at base, and identically at C and at head, runs identically at base
+  and head. So evidence from any C plans C → base and C → head, and the
+  selection is their union. The tables' "C → head" alone is not enough:
+  a head that reverts a change made between C and base shows no change
+  C → head at all.
+* **Files a test touched, not only opened.** `F(T)` becomes `R(T)`, the
+  repository paths T opened, `stat`ed or listed. Opens come from the audit
+  hook. Directory listings come from the `os.listdir`, `os.scandir` and
+  `glob.glob` audit events. `os.stat` and `os.lstat` are wrapped: they never
+  warn, so the wrapper's frame cannot move a warning's `stacklevel` the way
+  wrapping `getattr` did. A changed path selects the tests with the path, or
+  any directory above it, in `R(T)`. That covers `os.path.exists` on a file
+  that was absent at C, and a directory walk that meets a new file.
+  Added and deleted `.py` files go through the same rule, since a package
+  scan finds modules by listing.
+* **Readers are followed through values.** A reader of a changed thing is
+  handled by its kind:
+  - a function is added to E;
+  - a variable (its initialiser captured the thing) is treated as changed
+    itself, recursively;
+  - a module's or class's top-level code escalates: that module is planned
+    statically as if its import-time code had changed.
+
+  The spike checked module and class readers only for variables; the
+  implementation applies the rule to every change kind, because a changed
+  signature stored in a module-level dispatch table is read at import too.
+* **Import effects seed the importing module.** When changed code (or a
+  reader) ran during the import of module M, M is escalated as a module-level
+  change: planned statically, with every symbol of M added to E. That covers
+  a test module and a library module the same way. A test module's static
+  reach is its own tests (their lifecycle dependency on it) and its
+  importers. The spike credited only the tests that executed M's code, which
+  missed another test module importing a value M built. Code that ran
+  outside any test and outside any import (session hooks, collection) is
+  escalated itself. An importing module outside the source roots selects
+  everything.
+* **Definition changes reach dynamic callers.** A call through `getattr`
+  with an unbounded name fails to bind at C before the callee starts, so
+  the callee is not in the caller's record. A changed signature, default,
+  decorator or annotation therefore adds the unbounded lookup sites that
+  can see the namespace, as an added or deleted name does.
+* **Reflection sites.** An unbounded lookup is not the only way to observe
+  names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
+  `inspect.getmembers`), test for them (`hasattr`), or read signatures
+  (`inspect.signature`, `get_type_hints`). The indexer records these sites
+  in a field static planning does not use, and they join the lookup sites
+  for added, deleted and redefined names.
+* **Test code.** Test modules are the modules holding a pytest target;
+  conftests are test code too. Any change in test code other than a
+  function body also selects the tests in scope: the module's tests, or
+  every test under a conftest's directory. That covers `pytestmark`,
+  fixture decorators and parameters, and fixture shadowing, none of which
+  has a static reader. `pytest_plugins`, `collect_ignore` and
+  `collect_ignore_glob` in a conftest, and any function named `pytest_*`,
+  select everything.
+* **Skipped tests.** A test skipped by a mark never runs its body, so its
+  record lacks its own entry. A test is therefore also selected when its
+  entry symbol, or a class or module containing it, changed
+  (`changed_target`).
+* **Fixture teardown.** A generator fixture's teardown is the same code
+  object as its setup, so it is already credited to every user.
+  A finalizer registered with `addfinalizer` runs in the last user's
+  window, and a run that selects only that user tears the fixture down
+  there too. No separate teardown window is needed.
+* **Files that no Python-level event reports.** Some files are read before
+  the plugin starts or by a build step: pytest's configuration (`pytest.ini`,
+  `pyproject.toml`, `tox.ini`, `setup.cfg`), build and dependency
+  descriptions, and compiled sources. A change to one of these selects
+  everything. A file read only by compiled code (an HDF5 library opening a
+  path in C) is not observed. That is a stated residual.
+* **Environment.** The fingerprint covers:
+  - the Python implementation and version, and the platform;
+  - every installed distribution and its version, except the project's own
+    editable installs, whose version string changes with each commit;
+  - `PYTHONHASHSEED`, `TZ`, `LANG` and `LC_ALL`.
+
+  `collect` pins `PYTHONHASHSEED` to 0 when it is unset, and `run
+  --evidence` sets the recorded value.
 
 ## Spike results (2026-09-24)
 

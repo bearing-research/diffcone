@@ -128,16 +128,43 @@ pending edit, and every recorded plan is byte-identical.
 **Status.** Designed in [evidence_design.md](evidence_design.md); the
 pandas spike passed its go/no-go. On 79 pandas commits the median plan
 selects 6.4 % of tests (static: 100 % on every one), and recording costs
-1.25–1.45× a plain run with identical outcomes. Not implemented.
+1.25–1.45× a plain run with identical outcomes. Implementation started
+2026-09-25, in the stages below.
 
 **Mechanism.** A stdlib pytest plugin records which symbols each test
-executed (plus the files it opened, which import ran what, and whether
-it spawned a subprocess) in a real run at commit C. Names looked up
-dynamically cannot be recorded without changing outcomes, so tests that
-executed an unbounded lookup site stand in for them. The plan
-selects a test when it executed a changed symbol, or a one-hop static
-reader of a non-body change. Changes that run at import escalate to
-static planning.
+executed (plus the files it opened, stat'ed or listed, which import ran
+what, and whether it spawned a subprocess) in a real run at commit C.
+Names looked up dynamically cannot be recorded without changing outcomes,
+so tests that executed an unbounded lookup or reflection site stand in for
+them. The plan selects a test when it executed a changed symbol, or a
+one-hop static reader of a non-body change. Changes that run at import
+escalate to static planning.
+
+**Stages** (each lands with its tests and is pushed on its own):
+
+1. *Recorder and store.* `src/diffcone/collect.py` is the plugin, loaded
+   with `-p diffcone.collect`; it writes raw per-process records.
+   `diffcone collect` (in `execution.py`, the only module that runs project
+   code) runs the suite at a clean HEAD or at `--rev` in a temporary
+   worktree. It maps code objects to symbols against diffcone's own index
+   of C and writes `.diffcone/evidence/<commit>-<env>.sqlite`. `diffcone
+   evidence` lists the stores. Refusals: Python older than 3.12, a
+   monitoring tool id already in use, a dirty tree, a suite that ran an
+   installed copy of the project, and any exception inside the plugin.
+2. *Planning.* `plan --evidence auto|PATH` (`src/diffcone/evidence_plan.py`)
+   computes E per change kind and selects on it. It escalates the rest
+   through `plan_from_indexes` restricted to explicit seeds without
+   dynamic pseudo-seeds. Report `schema_version` 3 adds
+   `analysis.evidence` and the reason rules in the design. Evidence taken
+   at C plans C → base and C → head and selects their union. A test that
+   runs identically at C and at both snapshots cannot differ between them,
+   so any C works, and C = base is the precise case.
+3. *Running.* `run --evidence` pins `PYTHONHASHSEED` to the recorded
+   value and loads the plugin in check mode, which compares the
+   environment fingerprint before any test runs. On a mismatch, `run`
+   re-plans statically and runs that instead. `validate` and `corpus`
+   take `--evidence` so recall is measured with the same machinery.
+4. *Recall.* The pandas check and the corpus re-plan below.
 
 **Trade-off.** Sound only under determinism, test isolation and an
 unchanged environment. Each has a guard or a detector, and the residuals
