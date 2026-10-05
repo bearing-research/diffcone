@@ -72,7 +72,7 @@ def test_parse_pytest_verbose_folds_parameter_cases():
         "some other line\n"
     )
     assert parse_pytest_verbose(out) == {
-        "tests/test_a.py::test_x": "FAILED",
+        "tests/test_a.py::test_x": "PASSED+FAILED",
         "tests/test_a.py::TestK::test_m": "PASSED",
         "tests/test_a.py::test_e": "ERROR",
     }
@@ -793,7 +793,7 @@ def test_parsers_cope_with_spaces_pipes_and_brackets_in_parameter_ids():
         "tests/test_o.py::test_plain PASSED\n"
     )
     assert parse_pytest_verbose(out) == {
-        "tests/test_o.py::test_choice": "FAILED",
+        "tests/test_o.py::test_choice": "PASSED+FAILED",
         "tests/test_o.py::test_plain": "PASSED",
     }
     context = "tests/test_o.py::test_choice[choices4-[TEXT: a|b]]|run"
@@ -1057,8 +1057,12 @@ def test_parse_pytest_verbose_reads_xdist_lines():
         "[gw6] PASSED tests/test_a.py::test_x[5-mean] \n"
         "[gw0] [ 12%] FAILED tests/test_a.py::test_x[6-sum]\n"
         "[gw2] SKIPPED tests/test_b.py::TestB::test_y \n"
+        "[gw3] PASSED tests/test_b.py::TestB::test_y[1] \n"
     )
     assert parse_pytest_verbose(out) == {
-        "tests/test_a.py::test_x": "FAILED",
-        "tests/test_b.py::TestB::test_y": "SKIPPED",
+        "tests/test_a.py::test_x": "PASSED+FAILED",
+        "tests/test_b.py::TestB::test_y": "PASSED+SKIPPED",
     }
+    # Workers finish cases in any order; the fold must not depend on it.
+    lines = out.splitlines(keepends=True)
+    assert parse_pytest_verbose("".join(reversed(lines))) == parse_pytest_verbose(out)

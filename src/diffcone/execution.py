@@ -268,19 +268,19 @@ def fold_nodeid(nodeid: str) -> str:
 
 def parse_pytest_verbose(output: str) -> dict[str, str]:
     """Map pytest node ids (parameter cases folded into their function) to
-    the worst outcome observed for that function."""
-    rank = {"PASSED": 0, "SKIPPED": 0, "XFAIL": 0, "XPASS": 1, "FAILED": 2, "ERROR": 3}
-    outcomes: dict[str, str] = {}
+    the outcomes observed for that function, in a fixed order and joined
+    with ``+`` (``PASSED+SKIPPED``). The fold must not depend on the order
+    the cases ran in: under pytest-xdist that order varies from run to run,
+    and a fold that kept the first or last case would report changes that
+    never happened."""
+    order = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
+    seen: dict[str, set[str]] = {}
     for line in output.splitlines():
         m = _PYTEST_LINE.match(line.strip()) or _XDIST_LINE.match(line.strip())
         if not m:
             continue
-        nodeid = fold_nodeid(m.group("nodeid"))
-        outcome = m.group("outcome")
-        current = outcomes.get(nodeid)
-        if current is None or rank[outcome] > rank[current]:
-            outcomes[nodeid] = outcome
-    return outcomes
+        seen.setdefault(fold_nodeid(m.group("nodeid")), set()).add(m.group("outcome"))
+    return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
 
 
 class _Checkout:
