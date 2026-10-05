@@ -129,7 +129,10 @@ pending edit, and every recorded plan is byte-identical.
 pandas spike passed its go/no-go. On 79 pandas commits the median plan
 selects 6.4 % of tests (static: 100 % on every one), and recording costs
 1.25–1.45× a plain run with identical outcomes. Stages 1–3 are
-implemented (2026-09-25); stage 4, the recall check, is what remains. Not
+implemented (2026-09-25). Stage 4's pandas check passed (2026-10-05):
+100 % recall on 20 commit pairs, with evidence selecting 10.7-90 % on half
+of them where static selects everything (evaluation.md, "pandas: recall
+of evidence plans"); the corpus re-plan is what remains. Not
 built yet: advancing a store to head from a partial run (`run --collect`,
 evidence_design.md "Advancing without a full run").
 
@@ -166,7 +169,7 @@ escalate to static planning.
    environment fingerprint before any test runs. On a mismatch, `run`
    re-plans statically and runs that instead. `validate` and `corpus`
    take `--evidence` so recall is measured with the same machinery.
-4. *Recall.* The pandas check and the corpus re-plan below.
+4. *Recall.* The pandas check (done) and the corpus re-plan below.
 
 **Trade-off.** Sound only under determinism, test isolation and an
 unchanged environment. Each has a guard or a detector, and the residuals

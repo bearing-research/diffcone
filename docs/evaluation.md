@@ -1534,6 +1534,64 @@ The packaging drop comes from the `__import__` fix: `_get_manylinux_module`
 does `__import__("_manylinux")`, a literal that used to select 95 tests on
 any change at all.
 
+## pandas: recall of evidence plans (20 commit pairs)
+
+Execution evidence (`docs/evidence_design.md`) was checked for recall on the
+25 first-parent commits `ebbcd61` .. `3f57341` with
+`scripts/evidence_recall.py`. Evidence was recorded at every sixth commit
+(`ebbcd61`, `474e826`, `8f68498`, `9f54350`, `3f57341`), and each of the
+other 20 commits was planned from the nearest recording before it, 1 to 5
+commits back. The suite was run whole at every commit under per-test
+coverage (`pytest -n 8 -m 'not slow and not network and not db and not
+single_cpu'`, 22 206 to 22 258 folded tests, 440-576 s each), and a plan
+counts as a miss when it leaves out a test whose outcome changed or a test
+that executed a changed symbol at either side.
+
+**Recall is 100 %.** Over the 20 pairs, 146 outcome changes and 9 575
+tests executing a changed symbol (summed per pair) were all selected. Ten
+more outcome changes are two tests that `8f11807` deletes, counted once
+per later pair; nothing can select a deleted test.
+
+| selection by evidence | pairs |
+|---|---|
+| 10.7-12.5 % | 4 |
+| 71-90 % | 6 |
+| everything | 10 |
+
+Static planning selects everything on 19 of the 20 (the twentieth is a
+docstring-only edit, where it selects 254). The floor of about 10.7 % is
+the ~2 660 targets the marker-filtered run never executed: a target with no
+record is always selected (`no_evidence`). The 71 % pairs are readers of a
+non-body change (`executed_reader`: 14 761 tests on `aad6b6a`). Of the ten that select
+everything, eight follow an edit to a compiled source in the same window
+(`aggregations.pyx`, `tzconversion.pyx`: `unobserved_file_changed`, which
+every later pair planned from that recording inherits) and two escalate a
+change to `pandas/conftest.py`. Recording more often shortens how long a
+compiled edit keeps a window at 100 %; the spike's median of 6.4 % planned
+each commit against its own parent's code.
+
+**What the check found** (each fixed, with a test, before the numbers
+above):
+
+* the recorder wrote each process's record at `pytest_unconfigure`, after
+  pytest-xdist had reported the worker done and started its ten-second
+  exit timeout, so on a loaded machine a record could be cut short and the
+  collection refused; the record now closes in a `trylast`
+  `pytest_sessionfinish`;
+* outcomes of a parametrized test were folded by worst outcome with
+  `PASSED`, `SKIPPED` and `XFAIL` tied, so the case that finished first won
+  and xdist's ordering reported changes that never happened; a test's
+  outcome is now the set of its cases' outcomes;
+* pytest discovery did not follow a base class a package re-exports
+  (`class Test2DCompat(base.NDArrayBacked2DTests)`, where
+  `tests/extension/base/__init__.py` imports it from `dim2.py`). It
+  reported `unknown_base_class`, so `run` would have refused, but 17 tests
+  executing a change in `e267441` had no target. Following re-exports
+  adds 85 targets in six classes and leaves no such note;
+* validation parsed no outcomes from xdist's `[gw3] PASSED <nodeid>`
+  lines, and per-test coverage over all of pandas filled the disk; the
+  harness now measures only the files the range changes.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

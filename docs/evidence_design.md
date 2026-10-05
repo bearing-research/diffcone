@@ -247,6 +247,8 @@ Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
    test whose outcome changes, must be selected. **Done when** that holds
    on at least 20 pandas commits, and the 28-repository corpus re-planned
    with evidence shows no miss and states its savings against static.
+   The pandas half is done (2026-10-05): 100 % recall on 20 commit pairs,
+   evaluation.md "pandas: recall of evidence plans".
 
 ## Refinements for the implementation (2026-09-25)
 
