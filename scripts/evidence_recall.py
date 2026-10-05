@@ -16,6 +16,12 @@ A before it (``plan A -> c`` with that evidence) and checked the way
 
 Each commit's coverage run is reused as the base run of the pairs after it.
 
+With ``--advance`` evidence is recorded at the first commit only, and the
+chain checks ``run --collect`` (roadmap item 6): each commit is planned from
+the store advanced at its parent, checked as above, and then its selection
+is run under the recorder to advance the store to it. Full stores to compare
+the advanced ones with can be kept in ``--compare DIR``.
+
 Usage:
   uv run python scripts/evidence_recall.py --repo DIR --command CMD --out DIR \\
       --range A..B [--every 6] [--setup CMD]
@@ -29,7 +35,9 @@ clean; it is left at B. Results: one JSON line per commit in
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,10 +49,12 @@ from diffcone.evidence import load_store
 from diffcone.execution import (
     _run_full_pytest,
     _SuiteRun,
+    advance_refusal,
     collect_evidence,
     coverage_validation,
     fold_nodeid,
     merge_coverage,
+    run_with_evidence,
 )
 from diffcone.planner import plan
 
@@ -64,6 +74,7 @@ def main() -> int:
     p.add_argument("--every", type=int, default=6)
     p.add_argument("--setup", help="shell command run after each checkout (a build step)")
     p.add_argument("--source-root", action="append", dest="roots")
+    p.add_argument("--advance", action="store_true", help="chain run --collect (see above)")
     args = p.parse_args()
     repo, out = args.repo.resolve(), args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -88,7 +99,7 @@ def main() -> int:
     anchor = None
     for i, commit in enumerate(commits):
         short = commit[:10]
-        is_anchor = i % args.every == 0
+        is_anchor = i == 0 if args.advance else i % args.every == 0
         cov_db = out / f"cov-{short}.db"
         outcomes_file = out / f"outcomes-{short}.json"
         if commit in done and not is_anchor:
@@ -195,6 +206,28 @@ def main() -> int:
             "fallbacks": [f"{f.rule}: {f.detail[:160]}" for f in planned.fallbacks][:5],
             "plan_seconds": round(plan_seconds, 1),
         }
+        if args.advance:
+            t = time.time()
+            argv = args.command.split(" -m pytest", 1)
+            extra = _split(argv[1]) if len(argv) > 1 else []
+            refusal = advance_refusal(repo, planned, evidence, argv[0] + " -m pytest", extra)
+            if refusal:
+                raise SystemExit(f"{short}: cannot advance: {refusal}")
+            with (out / f"advance-{short}.log").open("w") as log, redirect_fd(log):
+                checked = run_with_evidence(
+                    planned,
+                    lambda static=static: static,
+                    cwd=repo,
+                    command=argv[0] + " -m pytest",
+                    extra=extra,
+                    advance_from=evidence,
+                )
+            if checked.advanced is None:
+                raise SystemExit(f"{short}: not advanced: {checked.not_advanced or 'environment'}")
+            stores[commit] = checked.advanced
+            anchor = commit
+            row["advance_seconds"] = round(time.time() - t, 1)
+            row["advance_returncode"] = checked.result.returncode
         with results.open("a") as f:
             f.write(json.dumps(row) + "\n")
         print(
@@ -205,6 +238,26 @@ def main() -> int:
             flush=True,
         )
     return 0
+
+
+@contextlib.contextmanager
+def redirect_fd(log):
+    """Send this process's stdout and stderr (and so pytest's, which
+    inherits them) to ``log`` for the duration."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved = os.dup(1), os.dup(2)
+    os.dup2(log.fileno(), 1)
+    os.dup2(log.fileno(), 2)
+    try:
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved[0], 1)
+        os.dup2(saved[1], 2)
+        os.close(saved[0])
+        os.close(saved[1])
 
 
 def _split(text: str) -> list[str]:

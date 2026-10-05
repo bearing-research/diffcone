@@ -515,6 +515,13 @@ def main(argv: list[str] | None = None) -> int:
                     extra=args.runner_args,
                     dry_run=args.dry_run,
                 )
+            if outcome.missing:
+                print(
+                    f"diffcone: warning: pytest did not collect {len(outcome.missing)} selected "
+                    f"target(s), so they did not run (e.g. {outcome.missing[0]}); discovery "
+                    "and collection disagree",
+                    file=sys.stderr,
+                )
             status = "degraded" if result.degraded else "complete"
             print(
                 f"diffcone: {len(outcome.selected)} of {outcome.total} {args.runner} target(s) "

@@ -109,6 +109,9 @@ class RunResult:
     selected: list[Target]
     total: int
     returncode: int | None  # None when nothing was run (dry run or empty selection)
+    # Selected pytest targets that pytest did not collect (discovery and
+    # collection disagree): a node id on the command line used to fail loudly.
+    missing: list[str] = field(default_factory=list)
 
 
 def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
@@ -164,14 +167,43 @@ def run_selected(
     dry_run: bool = False,
     env: dict[str, str] | None = None,
 ) -> RunResult:
+    """Run the selected targets of ``runner``. ``--dry-run`` reports the
+    equivalent command (pytest node ids appended); a real pytest run instead
+    collects from pytest's own starting points and keeps the selection with
+    ``-p diffcone_select`` (``selection.py`` says why), so conftests load as
+    in a full run."""
     selected = [d.target for d in plan.decisions if d.selected and d.target.runner == runner]
     total = sum(1 for d in plan.decisions if d.target.runner == runner)
     argv = build_command(runner, selected, command, list(extra or [])) if selected else []
     result = RunResult(runner, argv, selected, total, None)
     if dry_run or not selected:
         return result
-    proc = subprocess.run(argv, cwd=cwd, env=env)
-    result.returncode = proc.returncode
+    if runner != "pytest":
+        result.returncode = subprocess.run(argv, cwd=cwd, env=env).returncode
+        return result
+    with tempfile.TemporaryDirectory(prefix="diffcone-select-") as tmp:
+        own = env is None
+        run_env = plugin_environment(dict(os.environ), None, cwd) if own else dict(env)
+        run_env["DIFFCONE_SELECT"] = tmp
+        Path(tmp, "selected").write_text(
+            "".join(f"{t.runner_id}\n" for t in selected), encoding="utf-8"
+        )
+        result.command = [
+            *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+            "-p",
+            SELECT_PLUGIN,
+            *(extra or []),
+        ]
+        try:
+            result.returncode = subprocess.run(result.command, cwd=cwd, env=run_env).returncode
+        finally:
+            if own:
+                shutil.rmtree(run_env["PYTHONPATH"].split(os.pathsep)[-1], ignore_errors=True)
+        reports = [
+            set(f.read_text("utf-8").split("\n")) - {""} for f in Path(tmp).glob("missing-*")
+        ]
+        if reports:
+            result.missing = sorted(set.intersection(*reports))
     return result
 
 
@@ -1184,6 +1216,7 @@ def corpus_to_text(report: CorpusReport) -> str:
 
 # The recorder's module name inside the project's process (see plugin_environment).
 PLUGIN = "diffcone_collect"
+SELECT_PLUGIN = "diffcone_select"
 
 
 def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str]:
@@ -1269,6 +1302,7 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     env = dict(base)
     link_dir = Path(tempfile.mkdtemp(prefix="diffcone-plugin-"))
     (link_dir / f"{PLUGIN}.py").symlink_to(Path(__file__).parent / "collect.py")
+    (link_dir / f"{SELECT_PLUGIN}.py").symlink_to(Path(__file__).parent / "selection.py")
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join([*([existing] if existing else []), str(link_dir)])
     env["DIFFCONE_COLLECT_ROOT"] = str(root)
@@ -1455,6 +1489,12 @@ def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: 
         run.not_advanced = (
             f"pytest exited {result.returncode} "
             f"({PYTEST_EXIT.get(result.returncode or 0, 'unknown')}), so the records may be partial"
+        )
+        return
+    if result.selected and not any(out.glob("process-*.json")):
+        run.not_advanced = (
+            f"pytest exited {result.returncode} before any test process finished its "
+            "session (see its output above), so it recorded nothing"
         )
         return
     head = resolve_commit(repo, "HEAD")

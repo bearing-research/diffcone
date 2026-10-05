@@ -928,8 +928,19 @@ nothing, since nothing would run.
 `diffcone/execution.py` is the only module that runs project code, and only
 from the `run` and `validate` commands after a plan exists.
 
-* `run` builds the runner command for the selected targets: pytest node ids
-  appended to the command, or a `--bench` regex for ASV. That regex is
+* `run` builds the runner command for the selected targets. For pytest it
+  does not name them on the command line: pytest imports the conftests of
+  command-line paths while parsing its configuration, and a conftest that
+  skips at module level (`pytest.importorskip`, as in pandas'
+  `tests/io/pytables`) then kills the session instead of skipping its
+  directory. So pytest collects from its own starting points, as in a full
+  run, and the plugin `-p diffcone_select` (`selection.py`) deselects every
+  item whose test is not selected, matching it by the file relative to the
+  repository and the rest of the node id. A selected target pytest did not
+  collect (outside a directory or module that skipped) is reported as a
+  warning, since a node id on the command line used to fail loudly. The
+  cost is one full collection. `--dry-run` prints the equivalent command
+  with node ids appended. ASV gets a `--bench` regex. That regex is
   `^(name|name|...)($|\()`, not `...$`: ASV matches it against a benchmark's
   name, and against `name(param0, param1, ...)` for a parameterised one, so
   an anchored pattern selects none of those (58 of networkx's 59) and `run`

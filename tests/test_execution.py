@@ -1066,3 +1066,48 @@ def test_parse_pytest_verbose_reads_xdist_lines():
     # Workers finish cases in any order; the fold must not depend on it.
     lines = out.splitlines(keepends=True)
     assert parse_pytest_verbose("".join(reversed(lines))) == parse_pytest_verbose(out)
+
+
+def test_run_selects_under_a_conftest_that_skips_its_directory(repo, capfd):
+    # pytest imports the conftests of command-line paths while parsing its
+    # configuration, where a module-level importorskip kills the session
+    # (pandas' tests/io/pytables). Collected the ordinary way, it skips.
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/ops.py": OPS,
+        "tests/test_ops.py": TEST_OPS,
+        "tests/opt/conftest.py": 'import pytest\n\npytest.importorskip("no_such_module_xyz")\n',
+        "tests/opt/test_opt.py": (
+            "from pkg.ops import add\n\n\ndef test_opt():\n    assert add(1, 1)\n"
+        ),
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    ran = run_selected(plan, "pytest", cwd=repo.path, command=PYTEST, extra=["-q"])
+    assert {t.runner_id for t in ran.selected} == {
+        "tests/test_ops.py::test_add",
+        "tests/opt/test_opt.py::test_opt",
+    }
+    assert ran.returncode == 0
+    out = capfd.readouterr().out
+    assert "1 passed, 1 skipped, 1 deselected" in out  # test_mul deselected
+    assert "Traceback" not in out
+    assert ran.missing == []  # skipped with its directory, not missing
+
+
+def test_run_warns_about_selected_targets_pytest_did_not_collect(repo, capsys):
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    gone = py_target("tests/test_ops.py::test_gone", "tests.test_ops.test_add")
+    manifest = repo.write_manifest(
+        [
+            {"runner": t.runner, "runner_id": t.runner_id, "entry_symbol": t.entry_symbol}
+            for t in [*TARGETS[:2], gone]
+        ]
+    )
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", head]
+    assert main([*args, "--targets", str(manifest), "--command", PYTEST, "--", "-q"]) == 0
+    err = capsys.readouterr().err
+    assert "pytest did not collect 1 selected target(s)" in err
+    assert "tests/test_ops.py::test_gone" in err
