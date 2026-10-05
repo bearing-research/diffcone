@@ -271,9 +271,17 @@ extension types' instances a test touched, which the tracer cannot see
 cheaply. The spike measures how big the gap is before anything is built.
 
 **Spike.**
-1. Build pandas with Cython line tracing (`linetrace`, `CYTHON_TRACE`) and
-   run the suite under coverage's Cython plugin with per-test contexts: the
-   oracle of which tests executed which `.pyx` lines.
+1. Build pandas with Cython line tracing and run the suite under
+   coverage's Cython plugin with per-test contexts: the oracle of which
+   tests executed which `.pyx` lines. Checked on a toy extension (Python
+   3.13, Cython 3.3, coverage 7.16): it works only with Cython's legacy
+   tracing (`-X linetrace=True`, `-DCYTHON_TRACE=1
+   -DCYTHON_USE_SYS_MONITORING=0`) and coverage's `ctrace` core
+   (`COVERAGE_CORE=ctrace`; the plugin is unsupported under `sysmon`, the
+   default from 3.14). It attributes slot-based execution (an `__add__`
+   reached by `+`, a property) to the test, so it can measure the gap
+   below. pandas' meson files take both through `add_project_arguments`
+   (`language: 'cython'` and `'c'`).
 2. Record the CALL-based module sets on the same commit.
 3. For each compiled edit among recent commits, compare the tests the rule
    would select with the tests whose oracle shows they executed a changed
