@@ -234,3 +234,58 @@ in a chain, each from the store advanced at its parent, with 100 % recall
 against the recorded full-suite coverage runs; and at the commits where a
 full collection exists, every test's advanced record matches the full
 one (differences explained).
+
+## 7. Compiled sources under evidence (Cython)
+
+**Status.** Proposed (2026-10-05); the spike below has not run. Today any
+change to a compiled source or build file selects everything under evidence
+(`unobserved_file_changed`). In pandas that is 86 of the last 500
+first-parent commits before `3f57341` (17 %), 13 of them touching nothing
+else. Edits concentrate in a few modules: `parsers.pyx` 14, `timedeltas.pyx`
+12, `offsets.pyx` 10, `testing.pyx` 8, `tzconversion.pyx` 7.
+
+**What a change reaches, statically.** A `.pyx` edit changes its module and,
+through the C functions its `.pxd` declares, every module that `cimport`s
+that `.pxd`, transitively. `.pxi`/`.pxi.in` files reach the modules that
+`include` them. Over pandas' 41 extension modules: `parsers`, `testing`,
+`window.aggregations` and `tslib` reach only themselves; `timedeltas` and
+`tzconversion` 6; `conversion` 7; `offsets` 12; `np_datetime` 18. Anything
+reaching `lib` or `index` (`offsets`, `conversion`, `period`, `np_datetime`)
+is probably reached by nearly every test, so the gain is in the narrow
+modules.
+
+**Mechanism (to be validated).** The recorder also records, per test, the
+extension modules whose callables the test's Python code called
+(`sys.monitoring` CALL events: the callable's `__module__`, or its
+`__objclass__`'s for a method descriptor, or the type's for a constructor).
+A changed compiled source selects the tests that called into any module it
+reaches. Build files (`meson.build`), C sources outside Cython, and anything
+unmapped still select everything.
+
+**The soundness gap, which decides it.** CALL events do not see slot-based
+execution on extension types: operators (`ts + td`), attribute and property
+access (`ts.year`), hashing, comparison and iteration run Cython code with
+no call. A test that received a `Timestamp` and only used its slots never
+"called into" `timestamps`. Closing it might need recording which
+extension types' instances a test touched, which the tracer cannot see
+cheaply. The spike measures how big the gap is before anything is built.
+
+**Spike.**
+1. Build pandas with Cython line tracing (`linetrace`, `CYTHON_TRACE`) and
+   run the suite under coverage's Cython plugin with per-test contexts: the
+   oracle of which tests executed which `.pyx` lines.
+2. Record the CALL-based module sets on the same commit.
+3. For each compiled edit among recent commits, compare the tests the rule
+   would select with the tests whose oracle shows they executed a changed
+   line (or a line of a module the edit reaches). Report misses and size.
+4. Cost: the recorder with CALL events on, against today's recorder.
+
+**Trade-off.** Any miss here is a miss in compiled code, which coverage
+validation does not see. The rule ships only if the spike shows no miss,
+or a guard that closes each one (for example, treating a module whose
+types escape to Python as reached by every test that touched pandas
+objects of those types).
+
+**Done when.** The spike has run, and either the rule is shown sound on
+the recent compiled edits with its savings stated, or the gap is measured
+and the item is closed as measured and left alone, like items 0 and 1.
