@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from diffcone.cache import IndexCache
-from diffcone.evidence import EVIDENCE_DIR, Evidence, EvidenceError, fold, write_store
+from diffcone.evidence import EVIDENCE_DIR, Evidence, EvidenceError, advance, fold, write_store
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
@@ -1206,6 +1206,48 @@ def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str
     return names
 
 
+def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
+    """The suite under the recorder, as a store's ``command`` records it."""
+    return [
+        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+        "-p",
+        PLUGIN,
+        "-p",
+        "no:cacheprovider",
+        *(extra or []),
+    ]
+
+
+def advance_refusal(
+    repo: Path, plan: Plan, evidence: Evidence, command: str | None, extra: list[str] | None
+) -> str | None:
+    """Why ``run --collect`` cannot advance ``evidence`` to the plan's head,
+    if it cannot (roadmap item 6). A store names a commit, so head must be
+    the clean checkout; and a fresh record replaces an old one only if the
+    same arguments selected the same cases."""
+    dirty = _dirty(repo)
+    if dirty:
+        return (
+            f"the working tree has {len(dirty)} change(s) (e.g. {dirty[0]}); a store "
+            "describes a commit, so commit them first"
+        )
+    if plan.head.kind == KIND_COMMIT and plan.head.commit != resolve_commit(repo, "HEAD"):
+        return f"head {plan.head.revision} is not the checked-out commit"
+    if sorted(plan.source_roots) != sorted(evidence.source_roots):
+        return (
+            f"the plan's source roots {plan.source_roots} differ from the store's "
+            f"{evidence.source_roots}"
+        )
+    wanted = shlex.join(_collect_argv(command, extra))
+    if wanted != evidence.command:
+        return (
+            "the pytest command and arguments differ from the ones the store was "
+            f"collected with, so a new record could cover other cases:\n  store: "
+            f"{evidence.command}\n  now:   {wanted}"
+        )
+    return None
+
+
 def _dirty(repo: Path) -> list[str]:
     status = _git(repo, ["status", "--porcelain", "--untracked-files=normal"]).decode(
         "utf-8", "surrogateescape"
@@ -1279,14 +1321,7 @@ def collect_evidence(
             "could not be mapped to symbols"
         )
     modules = _python_module_names(index, source_roots)
-    argv = [
-        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
-        "-p",
-        PLUGIN,
-        "-p",
-        "no:cacheprovider",
-        *(extra or []),
-    ]
+    argv = _collect_argv(command, extra)
     kind = KIND_COMMIT if rev is not None else KIND_WORKTREE
     with (
         _Checkout(repo, kind, commit, setup_command) as cwd,
@@ -1343,6 +1378,9 @@ class EvidenceRun:
     # the evidence plan was then not run, and the static one was.
     mismatch: dict | None = None
     static: RunResult | None = None
+    # With ``advance``: the store written for head, or why none was.
+    advanced: Path | None = None
+    not_advanced: str | None = None
 
 
 def evidence_env(plan: Plan) -> dict[str, str]:
@@ -1363,36 +1401,78 @@ def run_with_evidence(
     command: str | None = None,
     extra: list[str] | None = None,
     dry_run: bool = False,
+    advance_from: Evidence | None = None,
 ) -> EvidenceRun:
     """Run an evidence plan's pytest selection with the recorder in check
     mode: before any test runs, it compares the environment with the one the
     evidence was recorded in. On a mismatch the session stops, the evidence
     says nothing about this environment, and ``static_plan()`` (a static plan
-    of the same snapshots) is run instead."""
+    of the same snapshots) is run instead.
+
+    With ``advance_from`` (the plan's store; the caller has checked
+    :func:`advance_refusal`) the recorder also records, and the store is
+    advanced to head: the run's records for the selected tests, the old ones
+    for the rest."""
     assert plan.evidence is not None
     with tempfile.TemporaryDirectory(prefix="diffcone-check-") as tmp:
         report = Path(tmp) / "environment.json"
-        env = plugin_environment(evidence_env(plan), None, cwd)
+        out = Path(tmp) / "records" if advance_from is not None else None
+        env = plugin_environment(evidence_env(plan), out, cwd)
         env["DIFFCONE_CHECK_ENV"] = plan.evidence["environment_hash"]
         env["DIFFCONE_CHECK_REPORT"] = str(report)
+        plugins = ["-p", PLUGIN]
+        if advance_from is not None:
+            modules = _python_module_names(plan.head_index, plan.source_roots)
+            env["DIFFCONE_COLLECT_PACKAGES"] = ",".join(sorted({m.split(".")[0] for m in modules}))
+            plugins += ["-p", "no:cacheprovider"]
         try:
             result = run_selected(
                 plan,
                 "pytest",
                 cwd=cwd,
                 command=command,
-                extra=["-p", PLUGIN, *(extra or [])],
+                extra=[*plugins, *(extra or [])],
                 dry_run=dry_run,
                 env=env,
             )
         finally:
             shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
         if not report.exists():
-            return EvidenceRun(result)
+            run = EvidenceRun(result)
+            if advance_from is not None and not dry_run:
+                _advance(run, plan, advance_from, out, cwd)  # type: ignore[arg-type]
+            return run
         met = json.loads(report.read_text("utf-8"))
     static = static_plan()
     fallback = run_selected(static, "pytest", cwd=cwd, command=command, extra=extra)
     return EvidenceRun(result, met, fallback)
+
+
+def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: Path) -> None:
+    """Write the store for head after ``run`` (roadmap item 6), or say why not."""
+    result = run.result
+    if result.selected and result.returncode not in (0, 1):
+        run.not_advanced = (
+            f"pytest exited {result.returncode} "
+            f"({PYTEST_EXIT.get(result.returncode or 0, 'unknown')}), so the records may be partial"
+        )
+        return
+    head = resolve_commit(repo, "HEAD")
+    rerun = {t.runner_id for t in result.selected}
+    fresh = None
+    try:
+        if result.selected:
+            fresh = fold(
+                [out],
+                plan.head_index,
+                commit=head,
+                source_roots=previous.source_roots,
+                command=previous.command,
+                project_modules=_python_module_names(plan.head_index, plan.source_roots),
+            )
+        run.advanced = write_store(advance(previous, fresh, rerun, head), repo / EVIDENCE_DIR)
+    except EvidenceError as exc:
+        run.not_advanced = str(exc)
 
 
 def environment_differences(recorded: dict, met: dict) -> list[str]:

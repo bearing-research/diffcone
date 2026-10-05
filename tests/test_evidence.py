@@ -8,6 +8,7 @@ touched.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -15,13 +16,16 @@ from diffcone.cli import main
 from diffcone.evidence import (
     FLAG_SUBPROCESS,
     FLAG_UNSTABLE,
+    Evidence,
     EvidenceError,
+    TestRecord,
+    advance,
     list_stores,
     load_store,
     write_store,
 )
 from diffcone.snapshot import GitError
-from diffcone.testing import executed, touched
+from diffcone.testing import executed, selected, touched
 
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
 
@@ -311,3 +315,170 @@ def test_validate_with_evidence(repo):
     v = validate_pytest(plan, repo=repo.path, command=f"{sys.executable} -m pytest", coverage=True)
     assert v.ok
     assert v.coverage is not None and not v.coverage.missed
+
+
+# --------------------------------------------------------------------------- advancing
+
+
+def _run_collect(repo, base, head, *extra):
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", head]
+    args += ["--discover", "pytest", "--command", f"{sys.executable} -m pytest"]
+    return main(args + ["--evidence", "auto", "--collect", "--no-cache", *extra])
+
+
+def test_run_collect_advances_the_store_to_head(repo, capfd):
+    repo.commit(FILES)
+    ev = repo.collect()
+    helper = OPS.replace(
+        "def add(a, b):\n    return a + b",
+        "def _plus(a, b):\n    return a + b\n\n\ndef add(a, b):\n    return _plus(a, b)",
+    )
+    head = repo.commit({"pkg/ops.py": helper})
+    assert _run_collect(repo, ev.commit, head) == 0
+    err = capfd.readouterr().err
+    assert "2 of 8 pytest target(s) selected" in err  # test_add, and test_subprocess
+    assert "2 test(s) recorded afresh" in err
+    stores = {s.commit: s for s in list_stores(repo.path)}
+    head_commit = repo.git("rev-parse", head).strip()
+    assert set(stores) == {ev.commit, head_commit}
+    assert (stores[head_commit].advanced_from, stores[head_commit].full_commit) == (
+        ev.commit,
+        ev.commit,
+    )
+    advanced = load_store(stores[head_commit].path)
+    assert set(advanced.tests) == set(ev.tests)
+    # The selected test's record is new; the others carry over unchanged.
+    assert executed(advanced, T + "test_add") == {
+        "pkg.ops._plus",
+        "pkg.ops.add",
+        "tests.test_ops.test_add",
+    }
+    for test in set(ev.tests) - {T + "test_add", T + "test_subprocess"}:
+        assert executed(advanced, test) == executed(ev, test)
+        assert touched(advanced, test) == touched(ev, test)
+    assert advanced.tests[T + "test_subprocess"].flags & FLAG_SUBPROCESS
+
+    # The next plan starts from the advanced store, so it sees only its own change.
+    later = repo.commit(
+        {"pkg/ops.py": helper.replace("return json.load(f)", "return list(json.load(f))")}
+    )
+    plan = repo.plan(head, later, [], discover_runners=["pytest"], evidence=advanced)
+    assert plan.evidence["commit"] == head_commit
+    assert selected(plan) == {T + "test_load", T + "test_subprocess"}
+    assert main(["evidence", "--repo", str(repo.path)]) == 0
+    assert f"advanced from {ev.commit[:12]}" in capfd.readouterr().out
+
+
+def test_run_collect_with_nothing_selected_relabels_the_store(repo, capfd):
+    # A test that starts a subprocess is always selected: leave it out.
+    tests = TESTS[: TESTS.index("\n\ndef test_subprocess")] + "\n"
+    repo.commit({**FILES, "tests/test_ops.py": tests})
+    ev = repo.collect()
+    repo.git("commit", "--allow-empty", "-q", "-m", "empty")
+    head = repo.git("rev-parse", "HEAD").strip()
+    assert _run_collect(repo, ev.commit, head) == 0
+    assert "nothing selected" in capfd.readouterr().err
+    head_commit = repo.git("rev-parse", head).strip()
+    (advanced,) = [s for s in list_stores(repo.path) if s.commit == head_commit]
+    relabelled = load_store(advanced.path)
+    assert {t: executed(relabelled, t) for t in relabelled.tests} == {
+        t: executed(ev, t) for t in ev.tests
+    }
+
+
+def test_run_collect_refusals(repo, capsys):
+    repo.commit(FILES)
+    ev = repo.collect()
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    # Other pytest arguments could deselect cases the old record covered.
+    assert _run_collect(repo, ev.commit, head, "--", "-q") == 2
+    assert "differ from the ones the store was collected with" in capsys.readouterr().err
+    (repo.path / "pkg" / "ops.py").write_text(OPS + "\n# edited\n", "utf-8")
+    assert _run_collect(repo, ev.commit, "WORKTREE") == 2
+    assert "a store describes a commit" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["run", "--repo", str(repo.path), "--base", ev.commit, "--head", head])
+    with pytest.raises(SystemExit):
+        main(["run", "--repo", str(repo.path), "--base", "HEAD", "--head", "HEAD", "--collect"])
+
+
+def test_run_collect_in_another_environment_does_not_advance(repo):
+    from diffcone import execution
+
+    repo.commit(FILES)
+    ev = repo.collect()
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    plan.evidence["environment_hash"] = "0" * 16  # recorded somewhere else
+    static = repo.plan(ev.commit, head, [], discover_runners=["pytest"])
+    run = execution.run_with_evidence(
+        plan,
+        lambda: static,
+        cwd=repo.path,
+        command=f"{sys.executable} -m pytest",
+        advance_from=ev,
+    )
+    assert run.mismatch is not None and run.advanced is None
+    assert [s.commit for s in list_stores(repo.path)] == [ev.commit]
+
+
+def _evidence(commit, tests, **process):
+    symbols = sorted({s for symbols, _ in tests.values() for s in symbols})
+    paths = sorted({p for _, paths in tests.values() for p in paths})
+    return Evidence(
+        commit=commit,
+        source_roots=["."],
+        environment={},
+        environment_hash="e",
+        command="pytest",
+        created=0.0,
+        symbols=symbols,
+        paths=paths,
+        tests={
+            name: TestRecord(
+                frozenset(symbols.index(s) for s in syms),
+                frozenset(paths.index(p) for p in ps),
+                frozenset(),
+                flags,
+            )
+            for name, ((syms, ps), flags) in (
+                (n, (v, process.get("flags", {}).get(n, 0))) for n, v in tests.items()
+            )
+        },
+        import_phase=frozenset(process.get("import_phase", ())),
+        import_by=process.get("import_by", {}),
+    )
+
+
+def test_advance_merges_records_by_name():
+    previous = _evidence(
+        "c",
+        {
+            "t::kept": ({"m.a", "m.b"}, {"data.json"}),
+            "t::rerun": ({"m.a"}, set()),
+            "t::gone": ({"m.c"}, set()),
+        },
+        flags={"t::rerun": FLAG_UNSTABLE},
+        import_phase={"m"},
+        import_by={"m.a": frozenset({"m"})},
+    )
+    fresh = _evidence(
+        "h",
+        {"t::rerun": ({"m.z"}, {"other.txt"}), "t::new": ({"m.b"}, set())},
+        import_phase={"n"},
+        import_by={"m.a": frozenset({"n"})},
+    )
+    out = advance(previous, fresh, {"t::rerun", "t::gone", "t::new"}, "h")
+    # Unselected: carried. Rerun: the new record, still unstable. Selected but
+    # not recorded: dropped, so it has no evidence from here on.
+    assert set(out.tests) == {"t::kept", "t::rerun", "t::new"}
+    assert out.executed(out.tests["t::kept"]) == {"m.a", "m.b"}
+    assert out.touched(out.tests["t::kept"]) == {"data.json"}
+    assert out.executed(out.tests["t::rerun"]) == {"m.z"}
+    assert out.touched(out.tests["t::rerun"]) == {"other.txt"}
+    assert out.tests["t::rerun"].flags & FLAG_UNSTABLE
+    assert out.import_phase == {"m", "n"}
+    assert out.import_by == {"m.a": frozenset({"m", "n"})}
+    assert (out.commit, out.advanced_from, out.full_commit) == ("h", "c", "c")
+    with pytest.raises(EvidenceError, match="environment"):
+        advance(previous, replace(fresh, environment_hash="x"), set(), "h")

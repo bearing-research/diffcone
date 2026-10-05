@@ -21,6 +21,7 @@ uv run diffcone validate --base main --head HEAD --discover pytest --command "uv
 uv run diffcone corpus --range main~10..main --discover pytest --command "uv run pytest" --coverage
 uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] -- -n 8  # record evidence (3.12+)
 uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto  # plan on it
+uv run diffcone run --base main --head HEAD --discover pytest --command "uv run pytest" --evidence auto --collect -- -n 8  # run, advance the store
 uv run diffcone evidence                        # list evidence stores
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json
@@ -47,7 +48,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate`/`collect`; keep it that way.
 - Execution evidence (opt-in, roadmap item 5, `docs/evidence_design.md`):
   - `src/diffcone/collect.py` is the pytest plugin that records what each test executed. It is loaded into the project's process as `-p diffcone_collect` and imports nothing of diffcone.
-  - `src/diffcone/evidence.py` folds raw records onto the index and reads and writes `.diffcone/evidence/<commit>-<env>.sqlite`.
+  - `src/diffcone/evidence.py` folds raw records onto the index, advances a store to a later commit (`run --collect`), and reads and writes `.diffcone/evidence/<commit>-<env>.sqlite`.
   - `src/diffcone/evidence_plan.py` turns changes into the symbols that would notice them, and escalates the rest through `plan_from_indexes(seeds=...)`.
 - `src/diffcone/discovery/` turns the head snapshot into targets without importing project code: `pytest_static.py` (config, collection rules, fixture chain) and `asv_static.py`. Each module's docstring is the authoritative list of what it models; keep it in sync with `docs/design.md`.
 - `src/diffcone/testing.py` is the public scenario-test toolkit: `FixtureRepo` (throwaway git repo built from dicts, `commit`/`plan`/`git`/`try_git`), target constructors and plan assertion helpers. Tests import from `diffcone.testing`, never from other test files; `tests/conftest.py` only defines the `repo` fixture.

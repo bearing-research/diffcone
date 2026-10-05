@@ -39,6 +39,7 @@ from diffcone.evidence import (
     load_store,
 )
 from diffcone.execution import (
+    advance_refusal,
     collect_evidence,
     corpus_to_dict,
     corpus_to_text,
@@ -171,6 +172,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(r)
     _add_evidence(r)
+    r.add_argument(
+        "--collect",
+        action="store_true",
+        help="with --evidence: record the selected tests too and advance the store to head "
+        "(their new records, the old ones for every other test); needs a clean checkout of "
+        "head and the pytest arguments the store was collected with",
+    )
     r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
 
     v = sub.add_parser(
@@ -336,6 +344,11 @@ def _list_evidence(repo: Path) -> int:
             f"{store.commit[:12]}  env {store.environment_hash}  python {store.python}  "
             f"{store.tests} tests  roots {','.join(store.source_roots)}  {when}  {store.path}"
         )
+        if store.advanced_from:
+            print(
+                f"    advanced from {store.advanced_from[:12]}; last full collection "
+                f"{(store.full_commit or '')[:12]}"
+            )
     return 0
 
 
@@ -427,6 +440,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 3
             return 1 if result.degraded else 0
         if args.command == "run":
+            if args.collect and (not args.evidence or args.runner != "pytest" or args.dry_run):
+                parser.error("--collect needs --evidence and the pytest runner, without --dry-run")
             evidence = load_evidence()
             result = build_plan(evidence)
             will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
@@ -455,6 +470,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  ... and {len(incomplete) - 5} more", file=sys.stderr)
                 return 3
             if evidence is not None and args.runner == "pytest":
+                if args.collect:
+                    refusal = advance_refusal(
+                        Path(args.repo), result, evidence, args.runner_command, args.runner_args
+                    )
+                    if refusal:
+                        print(f"diffcone: cannot advance the evidence: {refusal}", file=sys.stderr)
+                        return 2
                 checked = run_with_evidence(
                     result,
                     lambda: build_plan(None),
@@ -462,7 +484,17 @@ def main(argv: list[str] | None = None) -> int:
                     command=args.runner_command,
                     extra=args.runner_args,
                     dry_run=args.dry_run,
+                    advance_from=evidence if args.collect else None,
                 )
+                if checked.advanced is not None:
+                    print(
+                        f"diffcone: evidence advanced to {checked.advanced.name} "
+                        f"({len(checked.result.selected)} test(s) recorded afresh)",
+                        file=sys.stderr,
+                    )
+                elif args.collect:
+                    reason = checked.not_advanced or "the environment differs from the store's"
+                    print(f"diffcone: evidence not advanced: {reason}", file=sys.stderr)
                 outcome = checked.result
                 if checked.mismatch is not None:
                     recorded = load_store(Path(result.evidence["store"])).environment

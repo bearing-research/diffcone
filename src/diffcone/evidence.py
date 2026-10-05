@@ -81,6 +81,10 @@ class Evidence:
     # Something outside every test window started a subprocess.
     import_subprocess: bool = False
     reverse_checked: bool = False
+    # The store this one was advanced from (``run --collect``), and the commit
+    # of the last full collection in its line (its own commit when it is one).
+    advanced_from: str | None = None
+    full_commit: str | None = None
     location: Path | None = None
 
     def __post_init__(self) -> None:
@@ -338,6 +342,74 @@ def fold(
     )
 
 
+def advance(previous: Evidence, fresh: Evidence | None, rerun: set[str], commit: str) -> Evidence:
+    """The evidence for ``commit`` after a run of the tests ``rerun`` there,
+    from ``previous`` (evidence at an ancestor C whose plan selected
+    ``rerun``) and ``fresh`` (what that run recorded; None when nothing ran).
+
+    A test the plan did not select runs identically at C and at ``commit``,
+    so its record carries over. A rerun test takes its fresh record, keeping
+    an ``unstable`` flag a partial run cannot re-check; one that recorded
+    nothing is dropped and has no evidence from here on. Process-wide data
+    is the union of both: the run imported only what its tests needed, and a
+    stale entry only escalates more (roadmap item 6)."""
+    if fresh is not None:
+        if fresh.environment_hash != previous.environment_hash:
+            raise EvidenceError("the run's environment differs from the store's")
+        if sorted(fresh.source_roots) != sorted(previous.source_roots):
+            raise EvidenceError("the run's source roots differ from the store's")
+    sources = [previous] + ([fresh] if fresh is not None else [])
+    tests: dict[str, tuple[Evidence, TestRecord, int]] = {
+        name: (previous, record, 0) for name, record in previous.tests.items() if name not in rerun
+    }
+    for name, record in (fresh.tests if fresh is not None else {}).items():
+        old = previous.tests.get(name)
+        tests[name] = (fresh, record, old.flags & FLAG_UNSTABLE if old else 0)  # type: ignore[assignment]
+    symbol_table = sorted({ev.symbols[i] for ev, r, _ in tests.values() for i in r.symbols})
+    path_table = sorted({ev.paths[i] for ev, r, _ in tests.values() for i in r.paths | r.dirs})
+    sid = {s: i for i, s in enumerate(symbol_table)}
+    pid = {p: i for i, p in enumerate(path_table)}
+    # Keyed by the table as well as the set: fold interns equal sets across
+    # symbols and paths, and records share sets, which the store keeps once.
+    shared: dict[tuple[int, int], frozenset[int]] = {}
+
+    def remap(ids: frozenset[int], table: list[str], new: dict[str, int]) -> frozenset[int]:
+        key = (id(table), id(ids))
+        if key not in shared:
+            shared[key] = frozenset(new[table[i]] for i in ids)
+        return shared[key]
+
+    records = {
+        name: TestRecord(
+            remap(r.symbols, ev.symbols, sid),
+            remap(r.paths, ev.paths, pid),
+            remap(r.dirs, ev.paths, pid),
+            r.flags | carried,
+        )
+        for name, (ev, r, carried) in sorted(tests.items())
+    }
+    return Evidence(
+        commit=commit,
+        source_roots=list(previous.source_roots),
+        environment=previous.environment,
+        environment_hash=previous.environment_hash,
+        command=previous.command,
+        created=time.time(),
+        symbols=symbol_table,
+        paths=path_table,
+        tests=records,
+        import_phase=frozenset().union(*(e.import_phase for e in sources)),
+        hook_phase=frozenset().union(*(e.hook_phase for e in sources)),
+        import_by=_merged(e.import_by for e in sources),
+        import_paths=_merged(e.import_paths for e in sources),
+        import_dirs=_merged(e.import_dirs for e in sources),
+        import_subprocess=any(e.import_subprocess for e in sources),
+        reverse_checked=previous.reverse_checked,
+        advanced_from=previous.commit,
+        full_commit=previous.full_commit or previous.commit,
+    )
+
+
 def _merged(maps: Iterable[dict[str, set[str]]]) -> dict[str, frozenset[str]]:
     out: dict[str, set[str]] = defaultdict(set)
     for mapping in maps:
@@ -398,6 +470,8 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
                 "import_subprocess": evidence.import_subprocess,
                 "reverse_checked": evidence.reverse_checked,
+                "advanced_from": evidence.advanced_from,
+                "full_commit": evidence.full_commit or evidence.commit,
             }
             db.executemany(
                 "INSERT INTO meta VALUES (?, ?)", [(k, json.dumps(v)) for k, v in meta.items()]
@@ -477,6 +551,8 @@ def load_store(path: Path) -> Evidence:
         import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
         import_subprocess=meta["import_subprocess"],
         reverse_checked=meta["reverse_checked"],
+        advanced_from=meta.get("advanced_from"),
+        full_commit=meta.get("full_commit") or meta["commit"],
         location=path,
     )
 
@@ -490,6 +566,8 @@ class StoreInfo:
     created: float
     tests: int
     python: str
+    advanced_from: str | None = None
+    full_commit: str | None = None
 
 
 def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -> Path:
@@ -555,6 +633,8 @@ def list_stores(repo: Path) -> list[StoreInfo]:
                 meta["created"],
                 count,
                 meta["environment"]["python"].split()[0],
+                meta.get("advanced_from"),
+                meta.get("full_commit") or meta["commit"],
             )
         )
     return sorted(found, key=lambda s: -s.created)

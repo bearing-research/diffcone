@@ -196,6 +196,8 @@ without running the rest. By the argument above, an unselected test runs
 identically at head, so its C record *is* its head record. Selected tests
 get their fresh head records. That is how evidence stays fresh without a
 full suite per commit, and the nightly full run resets any drift.
+Implemented as `run --collect` (2026-10-05); the rules for records the run
+did not produce, process-wide data and refusals are in roadmap item 6.
 
 ## Interface and architecture
 

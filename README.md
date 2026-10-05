@@ -179,6 +179,18 @@ environment, so it runs the static plan instead and says why. `validate`
 and `corpus` take `--evidence` too, so a plan's recall can be measured
 with the same machinery.
 
+With `--collect`, `run` also records the tests it runs and writes a store
+for head: their new records, and the old ones for every test the plan did
+not select (it runs identically at head). The next plan then starts from
+head, without a full suite run per commit. It needs a clean checkout of
+head and the pytest arguments the store was collected with, and writes
+nothing if the environment differs or pytest stops early:
+
+```bash
+uv run diffcone run --base main --head HEAD --discover pytest \
+    --command "uv run pytest" --evidence auto --collect -- -n 8
+```
+
 ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
 still missing are in [docs/evidence_design.md](docs/evidence_design.md).

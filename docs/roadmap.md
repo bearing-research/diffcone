@@ -133,8 +133,7 @@ implemented (2026-09-25). Stage 4's pandas check passed (2026-10-05):
 100 % recall on 20 commit pairs, with evidence selecting 10.7-90 % on half
 of them where static selects everything (evaluation.md, "pandas: recall
 of evidence plans"); the corpus re-plan is what remains. Not
-built yet: advancing a store to head from a partial run (`run --collect`,
-evidence_design.md "Advancing without a full run").
+built yet: advancing a store to head from a partial run (item 6).
 
 **Mechanism.** A stdlib pytest plugin records which symbols each test
 executed (plus the files it opened, stat'ed or listed, which import ran
@@ -179,3 +178,59 @@ are stated in the design. Opt-in; static stays the default.
 collected at an older commit, whole suite run at each commit under
 `validate --coverage`), and the corpus re-planned with evidence shows no
 miss and states its savings against static.
+
+## 6. Advancing an evidence store (`run --collect`)
+
+**Status.** Implemented (2026-10-05): `run --collect`, `evidence.advance`,
+tested on the fixture repository. The pandas chain below is what remains.
+The pandas recall run
+showed why it matters: planned from a store up to five commits old, one
+compiled-source edit or root conftest change kept every later pair of its
+window at 100 %, and selection drifted from 71 % to 90 % inside a window.
+A store at the base of every plan avoids both, but a full recording per
+commit costs a full suite run.
+
+**Mechanism.** `run --evidence auto --collect` runs the evidence plan's
+selection with the recorder in check *and* record mode, then writes a
+store for head:
+
+* *Unselected tests keep their records.* The plan from the store's commit
+  C selects the union of C → base and C → head; a test outside it runs
+  identically at C and at head, so its C record is its head record
+  (evidence_design.md, "Advancing without a full run").
+* *Selected tests get the fresh record*, folded against head's index. A
+  selected test that produced none (not collected, an error before its
+  protocol) is dropped from the store, so the next plan selects it as
+  `no_evidence`. Its `unstable` flag is carried over: a partial run cannot
+  re-check order dependence.
+* *Process-wide data is the union* of C's and the run's (import phase,
+  hook phase, importing modules, paths read at import, subprocesses at
+  import): the run imported only the modules its tests needed, and a
+  stale entry only escalates more.
+* *Symbol and path tables* are rebuilt from the names, so records of both
+  commits share one table.
+* *Nothing selected*: no run, and the store is C's relabelled to head
+  (every test runs identically). The store records the commit it was
+  advanced from and the commit of the last full collection in its line,
+  and `diffcone evidence` shows both.
+
+Refusals, all before anything runs: a dirty tree or a head that is not the
+checked-out `HEAD` (the store names a commit); a pytest command or
+arguments that differ from the store's (the same arguments deselect the
+same cases, so a fresh record covers what the old one did); `--dry-run`.
+No store is written when the environment check fails (the static plan
+runs, as today), when pytest exits with anything but 0 or 1 (interrupted,
+collection error, usage error), or when folding refuses the records.
+
+**Trade-off.** Correctness rests on the plan being sound, the assumption
+evidence planning already makes; an unsound plan would now also leave a
+stale record behind, so a miss can outlive its commit. A full `collect`
+resets the line, and the union of process-wide data only grows until
+one does (more escalation, never less). The run uses
+`-p no:cacheprovider`, as `collect` does.
+
+**Done when.** On pandas, the 24 commits of the recall range are planned
+in a chain, each from the store advanced at its parent, with 100 % recall
+against the recorded full-suite coverage runs; and at the commits where a
+full collection exists, every test's advanced record matches the full
+one (differences explained).
