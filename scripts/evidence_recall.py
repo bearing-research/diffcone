@@ -231,7 +231,7 @@ def main() -> int:
         with results.open("a") as f:
             f.write(json.dumps(row) + "\n")
         print(
-            f"{short} vs {anchor[:10]} (+{row['distance']}): select {row['selected']}/"
+            f"{short} vs {row['anchor'][:10]} (+{row['distance']}): select {row['selected']}/"
             f"{row['targets']} (static {row['static_selected']}), outcome changes "
             f"{len(changed)} missed {len(outcome_missed)}, coverage affected "
             f"{row['coverage_affected']} missed {len(cov.missed) if cov else '-'}",
