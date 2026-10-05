@@ -12,7 +12,9 @@ Collected:
   ``Test``) that have no ``__init__``, nested test classes, methods
   inherited from base classes defined in the same module or imported from
   one in the source roots (an ``alias.Class`` base resolves through that
-  alias's module), and methods of classes that reach a base ending in
+  alias's module; a class a module only imports, as pandas's
+  ``tests/extension/base/__init__.py`` re-exports its submodules' classes,
+  is followed to the module that defines it), and methods of classes that reach a base ending in
   ``TestCase`` anywhere in that chain, whatever the class is called;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
@@ -1338,6 +1340,23 @@ def _collect_module_tests(
 
     own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
 
+    def class_in(module: str, name: str) -> tuple[ast.ClassDef, str, Any] | None:
+        """The class ``name`` names in ``module``: defined there, or imported
+        there from a module in the source roots (pandas's
+        ``tests/extension/base/__init__.py`` re-exports the classes of its
+        submodules), followed to the module that defines it."""
+        visited: set[tuple[str, str]] = set()
+        scope = scope_for(module)
+        while scope is not None and (module, name) not in visited:
+            visited.add((module, name))
+            if name in scope[1]:
+                return scope[1][name], scope[0].member_id(name), scope
+            if name not in scope[2]:
+                return None
+            module, name = scope[2][name]
+            scope = scope_for(module)
+        return None
+
     def mro(
         cls: ast.ClassDef,
         nodeid: str,
@@ -1367,10 +1386,7 @@ def _collect_module_tests(
                     (owner, classes_here, imports_here),
                 )
             elif name in imports_here:
-                source, original = imports_here[name]
-                scope = scope_for(source)
-                if scope is not None and original in scope[1]:
-                    found = (scope[1][original], scope[0].member_id(original), scope)
+                found = class_in(*imports_here[name])
             elif len(parts) > 1:
                 # ``t.LifoDiskQueueTest``: the prefix names a module.
                 prefixes = module_prefixes.get(owner.module, {})
@@ -1378,9 +1394,7 @@ def _collect_module_tests(
                 source = prefixes.get(parts[0], parts[0])
                 if len(parts) > 2:
                     source = f"{source}.{'.'.join(parts[1:-1])}" if parts[0] in prefixes else head
-                scope = scope_for(source)
-                if scope is not None and name in scope[1]:
-                    found = (scope[1][name], scope[0].member_id(name), scope)
+                found = class_in(source, name)
             if found is not None:
                 base_cls, base_id, base_scope = found
                 if used_as_base is not None:

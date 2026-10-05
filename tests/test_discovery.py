@@ -971,3 +971,59 @@ def test_class_level_mock_patch_injects_into_every_test_method(repo):
     )
     assert "tests.conftest.db" in deps["tests/test_cls.py::TestUnpatched::test_needs"]
     assert [n.kind for n in result.notes] == []
+
+
+def test_pytest_base_classes_re_exported_by_a_package(repo):
+    # pandas's extension tests: ``base/__init__.py`` re-exports the classes of
+    # its submodules, and test modules inherit ``base.Backed2DTests`` or
+    # import the name from the package.
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/ops.py": "def dup(x):\n    return x * 2\n",
+            "tests/__init__.py": "",
+            "tests/ext/__init__.py": "",
+            "tests/ext/base/__init__.py": (
+                "from tests.ext.base.dim2 import Backed2DTests, Dim2Tests\n"
+            ),
+            "tests/ext/base/dim2.py": (
+                "from pkg.ops import dup\n\n\n"
+                "class Dim2Tests:\n"
+                "    def test_shift_2d(self):\n        assert dup(1)\n\n\n"
+                "class Backed2DTests(Dim2Tests):\n"
+                "    def test_copy_order(self):\n        pass\n"
+            ),
+            "tests/ext/test_dt.py": (
+                "from tests.ext import base\n\n\n"
+                "class Test2DCompat(base.Backed2DTests):\n    pass\n"
+            ),
+            "tests/ext/test_np.py": (
+                "from tests.ext.base import Dim2Tests\n\n\nclass TestNp(Dim2Tests):\n    pass\n"
+            ),
+            # Re-exports that lead in a circle name no class: reported, not a hang.
+            "tests/ext/loop.py": "from tests.ext.loop2 import Ghost\n",
+            "tests/ext/loop2.py": "from tests.ext.loop import Ghost\n",
+            "tests/ext/test_loop.py": (
+                "from tests.ext.loop import Ghost\n\n\n"
+                "class TestLoop(Ghost):\n    def test_own(self):\n        pass\n"
+            ),
+        }
+    )
+    result = run_discovery(repo, base, "pytest")
+    targets = by_id(result)
+    assert set(targets) == {
+        "tests/ext/test_dt.py::Test2DCompat::test_shift_2d",
+        "tests/ext/test_dt.py::Test2DCompat::test_copy_order",
+        "tests/ext/test_np.py::TestNp::test_shift_2d",
+        "tests/ext/test_loop.py::TestLoop::test_own",
+    }
+    shift = targets["tests/ext/test_dt.py::Test2DCompat::test_shift_2d"]
+    assert shift.entry_symbol == "tests.ext.base.dim2.Dim2Tests.test_shift_2d"
+    assert [(n.kind, "Ghost" in n.detail) for n in result.notes] == [("unknown_base_class", True)]
+
+    head = repo.commit({"pkg/ops.py": "def dup(x):\n    return x + x\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {
+        "tests/ext/test_dt.py::Test2DCompat::test_shift_2d",
+        "tests/ext/test_np.py::TestNp::test_shift_2d",
+    }

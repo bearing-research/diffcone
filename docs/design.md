@@ -641,8 +641,11 @@ effectively prefixed with `*/` and scrapy's `test_*/__init__.py` collects
 methods of classes matching `python_classes` that have no `__init__`,
 including methods inherited from base classes (own definitions win): a
 base defined in the same module, or imported from a module in the source
-roots (networkx's `TestDiGraph(BaseGraphTester)`), whose own bases then
-resolve in the module that defines it; a base that resolves to neither
+roots (networkx's `TestDiGraph(BaseGraphTester)`) or named through one
+(`base.NDArrayBacked2DTests`), whose own bases then resolve in the module
+that defines it; a class such a module only imports is followed to the
+module that defines it (pandas's `tests/extension/base/__init__.py`
+re-exports its submodules' classes); a base that resolves to neither
 yields an `unknown_base_class` note; nested test classes; methods whose
 name starts with `test` in classes that reach a base ending in `TestCase`
 anywhere in that chain, whatever the class itself is called (pytest's
