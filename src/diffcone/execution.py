@@ -49,6 +49,12 @@ DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
 _PYTEST_LINE = re.compile(
     r"^(?P<nodeid>\S+::.*?) (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s|$)"
 )
+# pytest-xdist's report of a worker that died mid-run, and the interpreter's
+# own last words.
+_CRASH_LINE = re.compile(
+    r"node down|crashed while running|replacing crashed worker|Fatal Python error|"
+    r"Segmentation fault|Bus error|Killed"
+)
 # pytest-xdist puts the worker and the outcome first: ``[gw3] PASSED a.py::t``
 # (``[gw3] [ 12%] PASSED ...`` in some versions).
 _XDIST_LINE = re.compile(
@@ -1309,14 +1315,23 @@ def collect_evidence(
                     f"({PYTEST_EXIT.get(proc.returncode, 'unknown')})\n{log[-2000:]}"
                 )
             returncode = max(returncode, proc.returncode)
-        evidence = fold(
-            runs,
-            index,
-            commit=commit,
-            source_roots=source_roots,
-            command=shlex.join(argv),
-            project_modules=modules,
-        )
+        try:
+            evidence = fold(
+                runs,
+                index,
+                commit=commit,
+                source_roots=source_roots,
+                command=shlex.join(argv),
+                project_modules=modules,
+            )
+        except EvidenceError as exc:
+            # What the runner said about a process that did not finish.
+            crashes = [
+                line for log in logs for line in log.splitlines() if _CRASH_LINE.search(line)
+            ]
+            if crashes:
+                raise EvidenceError(f"{exc}\n" + "\n".join(crashes[:10])) from exc
+            raise
     store = write_store(evidence, repo / EVIDENCE_DIR)
     return CollectResult(evidence, store, argv, returncode, "\n".join(logs))
 

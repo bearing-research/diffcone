@@ -303,7 +303,11 @@ selection or states something the tables left implicit; none narrows it.
   importers. The spike credited only the tests that executed M's code, which
   missed another test module importing a value M built. Code that ran
   outside any test and outside any import (session hooks, collection) is
-  escalated itself. An importing module outside the source roots selects
+  escalated itself. The record closes when the session finishes, after
+  session fixtures are torn down: code that runs later (terminal summary,
+  unconfigure) runs after every test, so no outcome depends on it, and
+  pytest-xdist kills a worker that has not exited ten seconds after it
+  reported done, which would cut a later record short. An importing module outside the source roots selects
   everything.
 * **Definition changes reach dynamic callers.** A call through `getattr`
   with an unbounded name fails to bind at C before the callee starts, so

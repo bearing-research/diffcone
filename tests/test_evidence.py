@@ -209,6 +209,27 @@ def test_collection_at_an_older_commit_uses_a_temporary_worktree(repo):
     assert executed(ev, T + "test_add") == {"pkg.ops.add", "tests.test_ops.test_add"}
 
 
+def test_the_record_is_finished_before_the_session_reports_done(repo):
+    # pytest-xdist reports a worker done after its session finishes and then
+    # kills workers that take more than ten seconds to exit, so the record
+    # must not wait for unconfigure. This conftest's unconfigure runs before
+    # the recorder's (pluggy calls later registrations first).
+    conftest = (
+        CONFTEST
+        + """
+
+def pytest_unconfigure(config):
+    import os
+
+    out = os.environ["DIFFCONE_COLLECT_OUT"]
+    assert os.path.exists(os.path.join(out, f"process-{os.getpid()}.json"))
+"""
+    )
+    repo.commit({**FILES, "tests/conftest.py": conftest})
+    ev = repo.collect()
+    assert executed(ev, T + "test_add") == {"pkg.ops.add", "tests.test_ops.test_add"}
+
+
 def test_a_dirty_tree_is_refused(repo):
     repo.commit(FILES)
     (repo.path / "pkg" / "ops.py").write_text(OPS + "\n# edited\n", "utf-8")

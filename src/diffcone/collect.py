@@ -151,6 +151,7 @@ table: list[list] = []
 active: list[dict] = []  # open windows, innermost last
 importing: list[str] = []  # modules whose top-level code is running, innermost last
 import_by: dict[int, set[str]] = {}
+finished = False  # the process record is written
 hook_codes: set[int] = set()  # ran outside every test window with no import running
 # Opened or stat'ed, and listed, by project code outside every test window.
 import_paths: dict[str, set[str]] = {}
@@ -555,9 +556,26 @@ def pytest_runtest_protocol(item, nextitem):
             _error("runtest_protocol", exc)
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session):
+    # After pytest's own teardown of session fixtures (an ordinary hook), and
+    # before pytest-xdist's wrapper reports the worker finished: the
+    # controller then gives each worker ten seconds to exit and kills the
+    # rest, so a record written at unconfigure could be cut short on a
+    # loaded machine. What runs later (terminal summary, unconfigure) runs
+    # after every test and is not recorded.
+    _finish()
+
+
 def pytest_unconfigure(config):
-    if OUT is None:
+    _finish()  # a session that never started (usage error) still reports
+
+
+def _finish():
+    global finished
+    if OUT is None or finished:
         return
+    finished = True
     if recording:
         mon.set_events(TOOL, 0)
         for event in (mon.events.PY_START, mon.events.PY_RETURN, mon.events.PY_UNWIND):
