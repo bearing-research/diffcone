@@ -112,7 +112,7 @@ def main() -> int:
             ) as run:
                 outcomes = run.outcomes
                 shutil.copy(run.coverage_db, cov_db)
-                (out / f"log-{short}.txt").write_text(run.log[-200_000:])
+                (out / f"log-{short}.txt").write_text(run.log)
             outcomes_file.write_text(json.dumps(outcomes))
             print(f"{short} coverage run {time.time() - t:.0f}s, {len(outcomes)} tests", flush=True)
         runs[commit] = (outcomes, cov_db)
