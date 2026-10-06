@@ -342,7 +342,13 @@ def fold(
     )
 
 
-def advance(previous: Evidence, fresh: Evidence | None, rerun: set[str], commit: str) -> Evidence:
+def advance(
+    previous: Evidence,
+    fresh: Evidence | None,
+    rerun: set[str],
+    commit: str,
+    alive: set[str] | None = None,
+) -> Evidence:
     """The evidence for ``commit`` after a run of the tests ``rerun`` there,
     from ``previous`` (evidence at an ancestor C whose plan selected
     ``rerun``) and ``fresh`` (what that run recorded; None when nothing ran).
@@ -352,7 +358,11 @@ def advance(previous: Evidence, fresh: Evidence | None, rerun: set[str], commit:
     an ``unstable`` flag a partial run cannot re-check; one that recorded
     nothing is dropped and has no evidence from here on. Process-wide data
     is the union of both: the run imported only what its tests needed, and a
-    stale entry only escalates more (roadmap item 6)."""
+    stale entry only escalates more (roadmap item 6).
+
+    With ``alive`` (the tests that are targets at ``commit``) a carried record
+    of any other test, one deleted since C, is dropped. Dropping is always
+    safe: a test without a record is selected."""
     if fresh is not None:
         if fresh.environment_hash != previous.environment_hash:
             raise EvidenceError("the run's environment differs from the store's")
@@ -360,7 +370,9 @@ def advance(previous: Evidence, fresh: Evidence | None, rerun: set[str], commit:
             raise EvidenceError("the run's source roots differ from the store's")
     sources = [previous] + ([fresh] if fresh is not None else [])
     tests: dict[str, tuple[Evidence, TestRecord, int]] = {
-        name: (previous, record, 0) for name, record in previous.tests.items() if name not in rerun
+        name: (previous, record, 0)
+        for name, record in previous.tests.items()
+        if name not in rerun and (alive is None or name in alive)
     }
     for name, record in (fresh.tests if fresh is not None else {}).items():
         old = previous.tests.get(name)

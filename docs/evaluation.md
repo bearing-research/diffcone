@@ -1628,8 +1628,9 @@ of the 126 differing symbols are the same, and the rest are of the same
 kind. A carried record could only be stale if its test executed changed
 code, and coverage found no unselected test that did at any of the 24
 commits, so the differences are run-to-run order dependence, which
-`collect --reverse-check` exists to flag. The only other difference is two
-records of tests `8f11807` deleted, carried along unused.
+`collect --reverse-check` exists to flag. The only other difference was two
+records of tests `8f11807` deleted, carried along unused; advancing now
+drops the record of a test that is no longer a target.
 
 ## Not yet exercised
 

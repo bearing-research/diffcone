@@ -469,6 +469,9 @@ def test_advance_merges_records_by_name():
         import_by={"m.a": frozenset({"n"})},
     )
     out = advance(previous, fresh, {"t::rerun", "t::gone", "t::new"}, "h")
+    # A carried record of a test that is no longer a target is dropped.
+    pruned = advance(previous, fresh, {"t::rerun"}, "h", alive={"t::rerun", "t::new"})
+    assert set(pruned.tests) == {"t::rerun", "t::new"}
     # Unselected: carried. Rerun: the new record, still unstable. Selected but
     # not recorded: dropped, so it has no evidence from here on.
     assert set(out.tests) == {"t::kept", "t::rerun", "t::new"}
@@ -482,3 +485,17 @@ def test_advance_merges_records_by_name():
     assert (out.commit, out.advanced_from, out.full_commit) == ("h", "c", "c")
     with pytest.raises(EvidenceError, match="environment"):
         advance(previous, replace(fresh, environment_hash="x"), set(), "h")
+
+
+def test_run_collect_drops_the_records_of_deleted_tests(repo, capfd):
+    repo.commit(FILES)
+    ev = repo.collect()
+    assert T + "test_listing" in ev.tests
+    listing = '\n\ndef test_listing():\n    assert "data.json" in os.listdir("pkg")\n'
+    head = repo.commit({"tests/test_ops.py": TESTS.replace(listing, "")})
+    assert _run_collect(repo, ev.commit, head) == 0
+    capfd.readouterr()
+    head_commit = repo.git("rev-parse", head).strip()
+    (store,) = [s for s in list_stores(repo.path) if s.commit == head_commit]
+    advanced = load_store(store.path)
+    assert set(advanced.tests) == set(ev.tests) - {T + "test_listing"}

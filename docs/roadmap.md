@@ -200,7 +200,9 @@ store for head:
 * *Unselected tests keep their records.* The plan from the store's commit
   C selects the union of C → base and C → head; a test outside it runs
   identically at C and at head, so its C record is its head record
-  (evidence_design.md, "Advancing without a full run").
+  (evidence_design.md, "Advancing without a full run"). A record of a test
+  that is no longer a target at head (deleted since C) is dropped, which
+  only ever widens a later plan.
 * *Selected tests get the fresh record*, folded against head's index. A
   selected test that produced none (not collected, an error before its
   protocol) is dropped from the store, so the next plan selects it as

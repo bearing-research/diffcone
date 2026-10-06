@@ -1510,7 +1510,9 @@ def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: 
                 command=previous.command,
                 project_modules=_python_module_names(plan.head_index, plan.source_roots),
             )
-        run.advanced = write_store(advance(previous, fresh, rerun, head), repo / EVIDENCE_DIR)
+        alive = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
+        advanced = advance(previous, fresh, rerun, head, alive)
+        run.advanced = write_store(advanced, repo / EVIDENCE_DIR)
     except EvidenceError as exc:
         run.not_advanced = str(exc)
 
