@@ -381,3 +381,19 @@ def test_planning_suspends_the_cyclic_collector_and_restores_it(repo):
     finally:
         planner.plan_from_indexes = original
         gc.enable()
+
+
+def test_a_cache_hit_reports_the_revision_it_was_asked_for(repo, tmp_path):
+    from diffcone.cache import IndexCache
+    from diffcone.planner import plan
+    from diffcone.report import to_json
+
+    repo.commit({"pkg/__init__.py": "", "pkg/ops.py": "def f():\n    return 1\n"})
+    repo.commit({"pkg/ops.py": "def f():\n    return 2\n"})
+    sha = repo.git("rev-parse", "HEAD~1").strip()
+    cache = IndexCache(tmp_path / "c")
+    plan(repo.path, sha, "HEAD", source_roots=["."], cache=cache)  # caches the base by its sha
+    hit = plan(repo.path, "HEAD~1", "HEAD", source_roots=["."], cache=cache)
+    miss = plan(repo.path, "HEAD~1", "HEAD", source_roots=["."])
+    assert hit.base.description == f"commit {sha[:12]} (HEAD~1)"
+    assert to_json(hit) == to_json(miss)

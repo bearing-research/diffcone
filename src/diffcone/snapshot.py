@@ -332,6 +332,11 @@ def _staged_config_files(repo: Path) -> dict[str, bytes]:
     return read_files(repo, "", names, label=INDEX)
 
 
+def commit_description(commit: str, revision: str) -> str:
+    """How a report describes a committed snapshot."""
+    return f"commit {commit[:12]} ({revision})"
+
+
 def read_commit_snapshot(
     repo: Path, revision: str, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
@@ -369,7 +374,7 @@ def read_commit_snapshot(
             revision=revision,
             commit=commit,
             kind=KIND_COMMIT,
-            description=f"commit {commit[:12]} ({revision})",
+            description=commit_description(commit, revision),
         ),
         source_roots=list(source_roots),
         files=dict(sorted(files.items())),

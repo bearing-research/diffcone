@@ -75,7 +75,15 @@ from diffcone.model import (
     SourceIndex,
     UnresolvedReference,
 )
-from diffcone.snapshot import INDEX, WORKTREE, GitError, Snapshot, read_snapshot, resolve_commit
+from diffcone.snapshot import (
+    INDEX,
+    WORKTREE,
+    GitError,
+    Snapshot,
+    commit_description,
+    read_snapshot,
+    resolve_commit,
+)
 
 BEHAVIOR = 1
 STRUCTURAL = 2
@@ -987,7 +995,14 @@ def _index_snapshot(
         if commit is not None:
             cached = cache.load(commit, roots)
             if cached is not None:
-                cached = replace(cached, snapshot=replace(cached.snapshot, revision=revision))
+                # The cached index was built for whatever spelling of this
+                # commit came first; the report shows this one.
+                info = replace(
+                    cached.snapshot,
+                    revision=revision,
+                    description=commit_description(commit, revision),
+                )
+                cached = replace(cached, snapshot=info)
                 return cached, None
     snapshot = read_snapshot(repo_path, revision, roots, with_config=with_config)
     index = build_index(snapshot, module_cache=cache.modules if cache is not None else None)
