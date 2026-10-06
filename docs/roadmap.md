@@ -242,7 +242,8 @@ one (differences explained).
 
 ## 7. Compiled sources under evidence (Cython)
 
-**Status.** Proposed (2026-10-05); the spike below has not run. Today any
+**Status.** Spike run (2026-10-06, `scripts/cython_spike/`); the mechanism
+holds with the refinements below and is not built. Today any
 change to a compiled source or build file selects everything under evidence
 (`unobserved_file_changed`). In pandas that is 86 of the last 500
 first-parent commits before `3f57341` (17 %), 13 of them touching nothing
@@ -305,6 +306,46 @@ tests executed them.
    function (lines mapped to functions, as coverage validation does for
    Python). Report misses and size.
 4. Cost: recording against the profiled build, against today's recorder.
+
+**Spike results** (pandas `3f57341`, one profiled and one line-traced
+build, the whole suite under `-n 8`):
+
+* *Soundness.* Of 1 254 Cython functions the oracle saw run, 1 075 are
+  covered by their own start events and 105 through their Cython callers.
+  155 (function, test) pairs remain missed, spread over a handful of tests
+  that parametrize over many indexes. Rerunning just those tests in the
+  same order in both builds, all but 10 disappear (order noise, as between
+  two full Python recordings), and the 10 left (`BlockPlacement.__iter__`,
+  `Interval.__richcmp__`) are seen when their test runs alone.
+* *Three refinements it took*, each found as a miss: (1) a function's span
+  starts at its first decorator, where a code object's first line is;
+  (2) nested functions belong to their parent, as in the Python index (a
+  nested `def` line runs with the parent); (3) the caller rule covers
+  `cpdef` as well as `nogil`: a `cpdef`'s C body raises no start when
+  called with `skip_dispatch`, which an explicit `Base.method(self, ...)`
+  does (pandas' engines' `get_loc`), and callers are every function that
+  *names* it, which also covers functions taken as pointers (`period.pyx`'s
+  `get_asfreq_func`).
+* *Profiling can crash.* `profile=True` makes `parsers.pyx` segfault on
+  constructing its `TextReader`; it had to be excluded
+  (`# cython: profile=False`). A module that cannot be profiled has no
+  evidence, so its edits keep selecting everything, and `parsers.pyx` is
+  the most edited Cython file.
+* *Size.* Of 86 commits in the last 500 that touch a compiled source or
+  build file, 33 change only Cython function bodies; the rule selects a
+  median of 607 tests (2.7 %) on them, with 1 oracle miss. 15 change only
+  C, build files or templates and 38 change Cython outside function bodies
+  (class attribute declarations, `cimport`s, constants), which the spike
+  counted as select-all; telling additive module-level edits apart is the
+  next gain.
+* *Cost.* The profiled build ran the suite with the start probe in 252 s
+  and the same 13 failures as the ordinary build.
+
+**Before building.** A Cython reader in diffcone (the spike's
+`cyblocks.py` is the prototype), recorder support for Cython code objects
+(matched by file and first line), the caller rule, an exclusion list for
+modules that cannot be profiled, and a module-level classification finer
+than the spike's.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,
