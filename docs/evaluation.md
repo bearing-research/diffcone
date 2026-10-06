@@ -1651,8 +1651,8 @@ selected.
 
 | selection | commits |
 |---|---|
-| 10.7-15 % | 13 |
-| 15-50 % | 7 |
+| 10.7-15 % | 11 |
+| 15-50 % | 9 |
 | everything | 5 |
 
 Median 19 % of 24 924 targets, of which about 2 660 are the tests this
