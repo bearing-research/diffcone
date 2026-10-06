@@ -477,8 +477,12 @@ dropped is explained.
 
 ## 9. GitHub Actions: record at night, plan during the day (pandas trial)
 
-**Status.** Planned (2026-10-06). The first step toward real use: run
-diffcone beside an unchanged CI and measure it against what CI finds.
+**Status.** In progress (2026-10-06). Done: `diffcone check` (1 below)
+and discovery completeness settled by the recording (2): a pandas
+evidence plan no longer exits 3, with its one note settled against a
+recording of 22 566 collected tests, none of them outside the targets.
+The first step toward real use: run diffcone beside an unchanged CI and
+measure it against what CI finds.
 Decided: a separate job runs alongside the existing ones and is monitored,
 not trusted; environments are pinned (pandas installs from `pixi.lock`);
 the trial covers one Linux job (`ubuntu-24.04`, `py313`, the `not
