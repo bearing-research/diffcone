@@ -17,8 +17,10 @@ inputs:
     description: Fail the step when the plan missed a failure.
     default: "false"
   diffcone-ref:
-    description: The diffcone git ref to install.
-    default: main
+    description: >-
+      Install diffcone from this git ref instead of from the action's own copy
+      (by default the version of diffcone is the version of the action).
+    default: ""
 runs:
   using: composite
   steps:
@@ -27,9 +29,15 @@ runs:
       env:
         REF: ${{ inputs.diffcone-ref }}
       run: |
+        # The runner has this action's repository at the action's ref in
+        # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
         python3 -m venv "$RUNNER_TEMP/diffcone"
-        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet \
-          "git+https://github.com/bearing-research/diffcone@$REF"
+        if [ -n "$REF" ]; then
+          source="git+https://github.com/bearing-research/diffcone@$REF"
+        else
+          source="$GITHUB_ACTION_PATH/../.."
+        fi
+        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet "$source"
     - name: Check
       shell: bash
       env:

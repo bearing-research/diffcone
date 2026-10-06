@@ -5,13 +5,16 @@ It maps changes in application code to the tests and benchmarks that can
 observe them, and explains every selection with a concrete dependency path or
 an explicit fallback rule.
 
-**Status: early prototype.** `diffcone plan` (milestone 1), static
-pytest/ASV target discovery (milestone 2), working-tree analysis
-(milestone 3), inheritance-aware resolution (milestone 4) and execution /
-validation commands (milestone 5) are implemented and covered by acceptance
-scenarios. Analysis never runs project code; `run` and `validate` execute
-the runner only after a plan exists. See [Limitations](#limitations) and
-[docs/roadmap.md](docs/roadmap.md) before relying on it.
+**Status: alpha (0.1).** Planning between commits, the staged index or the
+working tree; static pytest and ASV discovery; running, validating and
+checking a plan; and opt-in execution evidence (what each test executed,
+recorded once and planned on) are implemented and covered by acceptance
+scenarios, and recall has been measured on 34 public repositories and on
+pandas. Analysis never runs project code; `run`, `validate` and `collect`
+execute the runner only after a plan exists. See
+[Limitations](#limitations) and [docs/roadmap.md](https://github.com/bearing-research/diffcone/blob/main/docs/roadmap.md) before
+relying on it, and [CHANGELOG.md](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md) for what each release
+contains.
 
 ## What it does
 
@@ -35,7 +38,19 @@ discovery modules that produce those targets.
 
 ## Install and run
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.11+ and git; no other dependency. Install the command
+from PyPI, or from this repository:
+
+```bash
+uv tool install diffcone        # or: pipx install diffcone, pip install diffcone
+uv tool install git+https://github.com/bearing-research/diffcone
+diffcone --version
+```
+
+Execution evidence (below) records inside the project's own test process,
+which needs Python 3.12+ there (3.13+ to record Cython code); diffcone
+itself may run on another interpreter. The examples below run from a
+checkout of diffcone with [uv](https://docs.astral.sh/uv/):
 
 ```bash
 uv sync
@@ -215,7 +230,7 @@ sources or build files still select everything.
 
 ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
-still missing are in [docs/evidence_design.md](docs/evidence_design.md).
+still missing are in [docs/evidence_design.md](https://github.com/bearing-research/diffcone/blob/main/docs/evidence_design.md).
 
 For a cache shipped between CI runs, `prune` keeps only what planning at
 the given commits reads (their indexes and discovery results, and the
@@ -229,7 +244,7 @@ uv run diffcone prune --keep HEAD
 ### Checking a plan against a full run
 
 GitHub Actions to record nightly and check pull requests are in
-[docs/ci.md](docs/ci.md) (not yet run on GitHub).
+[docs/ci.md](https://github.com/bearing-research/diffcone/blob/main/docs/ci.md) (not yet run on GitHub).
 
 `check` compares a plan with the JUnit XML of a full pytest run (`pytest
 --junitxml=full.xml`) and reports every test that failed or errored there
@@ -252,7 +267,7 @@ Discovery never imports or runs project code; it reproduces a documented
 subset of each runner's collection rules from the AST and reports what it
 cannot resolve.
 
-**pytest** ([details](docs/design.md#pytest)): `python_files`,
+**pytest** ([details](https://github.com/bearing-research/diffcone/blob/main/docs/design.md#pytest)): `python_files`,
 `python_classes`, `python_functions` and `testpaths` from `pytest.ini`,
 `pyproject.toml`, `tox.ini` or `setup.cfg`; test functions, `Test*` classes
 (without `__init__`), nested classes and `unittest.TestCase` methods. Each
@@ -272,7 +287,7 @@ pytest collects them (`--doctest-modules`, `--doctest-glob`): a docstring
 doctest depends on everything its module's globals can reach, and a
 text-file doctest is always selected.
 
-**ASV** ([details](docs/design.md#asv)): `benchmark_dir` from
+**ASV** ([details](https://github.com/bearing-research/diffcone/blob/main/docs/design.md#asv)): `benchmark_dir` from
 `asv.conf.json`; `time_`/`timeraw_`/`mem_`/`peakmem_`/`track_` functions and
 methods; lifecycle dependencies are the class and module `setup`,
 `setup_cache` and `teardown` plus the module itself. Class attributes such
@@ -333,7 +348,7 @@ The JSON report (`schema_version: 3`) contains:
 `--format text` prints the same information as a readable summary.
 
 Measured results on real repositories, with reproduction steps, are in
-[docs/evaluation.md](docs/evaluation.md), including a planning-only census
+[docs/evaluation.md](https://github.com/bearing-research/diffcone/blob/main/docs/evaluation.md), including a planning-only census
 of 42 projects (`scripts/census.py`) that attributes every selection to
 its cause.
 
@@ -355,7 +370,7 @@ its cause.
   what the runner really collects; see `docs/design.md` for the exact
   subset.
 * **Narrow, documented resolution subset** (see
-  [docs/design.md](docs/design.md)): direct names and attribute chains rooted
+  [docs/design.md](https://github.com/bearing-research/diffcone/blob/main/docs/design.md)): direct names and attribute chains rooted
   at module-level definitions, import aliases, star imports within source
   roots, or `self`/`cls`, with class attributes looked up through the
   in-scope MRO (including `super()`) and `self`/`cls` calls dispatching to
@@ -400,9 +415,9 @@ uv run ruff check src tests scripts && uv run ruff format --check src tests scri
 document and `tests/test_discovery.py` the discovery rules; each builds a
 small git repository with before/after commits (via `diffcone.testing`,
 which is public so integrators can write the same kind of scenarios) and
-asserts exact target sets and reasons. See [AGENTS.md](AGENTS.md) for the rules that apply when
+asserts exact target sets and reasons. See [AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md) for the rules that apply when
 changing selection behaviour.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/bearing-research/diffcone/blob/main/LICENSE).

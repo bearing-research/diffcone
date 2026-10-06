@@ -23,8 +23,10 @@ inputs:
       commit (what the pull request changes on top of its target branch).
     default: "HEAD^1"
   diffcone-ref:
-    description: The diffcone git ref to install.
-    default: main
+    description: >-
+      Install diffcone from this git ref instead of from the action's own copy
+      (by default the version of diffcone is the version of the action).
+    default: ""
 outputs:
   selected:
     description: How many tests the plan selected.
@@ -37,12 +39,18 @@ runs:
       env:
         REF: ${{ inputs.diffcone-ref }}
       run: |
+        # The runner has this action's repository at the action's ref in
+        # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
         python3 -m venv "$RUNNER_TEMP/diffcone"
-        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet \
-          "git+https://github.com/bearing-research/diffcone@$REF"
+        if [ -n "$REF" ]; then
+          source="git+https://github.com/bearing-research/diffcone@$REF"
+        else
+          source="$GITHUB_ACTION_PATH/../.."
+        fi
+        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet "$source"
         echo "$RUNNER_TEMP/diffcone/bin" >> "$GITHUB_PATH"
     - name: Restore the evidence
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: .diffcone
         key: ${{ inputs.key-prefix }}-${{ github.sha }}

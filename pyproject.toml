@@ -1,11 +1,35 @@
 [project]
 name = "diffcone"
-version = "0.1.0.dev0"
-description = "Static-first, function-level change-impact engine for Python"
+version = "0.1.0"
+description = "Static-first, function-level change-impact engine for Python: which tests and benchmarks a change can affect, and why"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Bearing Research" }]
 requires-python = ">=3.11"
 dependencies = []
+keywords = ["test selection", "test impact analysis", "change impact", "pytest", "asv", "ci"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.urls]
+Homepage = "https://github.com/bearing-research/diffcone"
+Repository = "https://github.com/bearing-research/diffcone"
+Issues = "https://github.com/bearing-research/diffcone/issues"
+Changelog = "https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md"
 
 [project.scripts]
 diffcone = "diffcone.cli:main"

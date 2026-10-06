@@ -119,6 +119,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="diffcone",
         description="Static-first, function-level change-impact planning for Python.",
     )
+    from diffcone import __version__
+
+    parser.add_argument("--version", action="version", version=f"diffcone {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser(

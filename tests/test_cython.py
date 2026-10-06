@@ -398,16 +398,27 @@ setup(ext_modules=cythonize("pkg/_fast.pyx"))
 """
 
 
-def _built_extension(repo, profile=True):
-    """A fixture repository with a Cython extension built in place, profiled
-    unless ``profile`` is false."""
+def _needs_a_build(profile: bool) -> None:
+    """Skip unless an extension can be built and recorded here: evidence
+    needs sys.monitoring (3.12+), and a profiled Cython build reports its
+    calls through it only from 3.13 (on 3.12 it uses the legacy profiler,
+    so the store holds no Cython record and every Cython edit selects all)."""
     import shutil
-    import subprocess
 
+    if sys.version_info < ((3, 13) if profile else (3, 12)):
+        pytest.skip("a profiled Cython build reports to sys.monitoring from Python 3.13")
     pytest.importorskip("Cython")
     pytest.importorskip("setuptools")
     if shutil.which("cc") is None and shutil.which("gcc") is None:
         pytest.skip("no C compiler")
+
+
+def _built_extension(repo, profile=True):
+    """A fixture repository with a Cython extension built in place, profiled
+    unless ``profile`` is false."""
+    import subprocess
+
+    _needs_a_build(profile)
     repo.commit(
         {
             ".gitignore": "__pycache__/\n.diffcone/\nbuild/\n*.c\n*.so\n*.pyd\n",
@@ -543,13 +554,9 @@ def test_a_c_global_its_pxd_declares_reaches_the_modules_cimporting_it(repo):
     """``_scale.pyx`` initialises a global its ``.pxd`` declares, and
     ``_use.pyx`` cimports it: changing the value reaches ``_use``'s readers,
     although the edit is in a ``.pyx`` (regression for roadmap item 8)."""
-    import shutil
     import subprocess
 
-    pytest.importorskip("Cython")
-    pytest.importorskip("setuptools")
-    if shutil.which("cc") is None and shutil.which("gcc") is None:
-        pytest.skip("no C compiler")
+    _needs_a_build(profile=True)
     repo.commit(
         {
             ".gitignore": "__pycache__/\n.diffcone/\nbuild/\n*.c\n*.so\n*.pyd\n",

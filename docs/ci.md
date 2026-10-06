@@ -13,10 +13,19 @@ run can tell.
 
 ## The three actions
 
-All three install diffcone from this repository (it is not on PyPI) into
-a virtual environment of the runner's own Python; the project's tests run
-in the project's environment through `command`. Pin `diffcone-ref` (and the
-`@ref` of the action) to a commit for a reproducible trial.
+All three install diffcone into a virtual environment of the runner's own
+Python, from the copy of this repository the runner downloaded for the
+action (`GITHUB_ACTION_PATH`), so `actions/record@v0.1.0` runs diffcone
+0.1.0; `diffcone-ref` installs another git ref instead. The project's tests
+run in the project's environment through `command`. Reference the actions
+by a release tag (or a commit), never by a branch: the recording and the
+pull-request runs must use the same diffcone.
+
+Caches follow GitHub's rules: a scheduled run on the default branch is a
+trusted trigger and saves the recording; a pull request, a fork's
+included, restores caches of the default branch read-only and can never
+overwrite them. `cache-mode` (per workflow or job) grants each job only
+what it needs: `write` for the recording, `read` for pull-request jobs.
 
 * `bearing-research/diffcone/actions/record` (nightly, default branch):
   `diffcone collect` with the job's pytest command and arguments, plus
@@ -56,7 +65,9 @@ installs from `pixi.lock`, so nightly and pull-request environments match
 unless the lock changes, and its editable build is not part of the
 fingerprint. `PANDAS_FUTURE`, `PYTHONDEVMODE` and `PYTHONWARNDEFAULTENCODING`
 change what tests do, so they are recorded and checked. Cython edits select
-everything: the build is the ordinary one, without `profile=True`.
+everything: the build is the ordinary one, without `profile=True` (Cython
+evidence also needs Python 3.13+, where a profiled build reports to
+`sys.monitoring`).
 
 ### `.github/workflows/diffcone-record.yml` (new)
 
@@ -71,6 +82,7 @@ permissions:
 jobs:
   record:
     runs-on: ubuntu-24.04
+    cache-mode: write
     timeout-minutes: 240
     env:
       LANG: C.UTF-8
@@ -82,14 +94,14 @@ jobs:
       PANDAS_MOTO_URL: "http://localhost:5000"
     # services: the same mysql, postgres and moto services as unit-tests.yml's ubuntu job
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-pixi
         with:
           environment: py313
       - run: pixi run --environment py313 build-pandas --editable
-      - uses: bearing-research/diffcone/actions/record@main
+      - uses: bearing-research/diffcone/actions/record@v0.1.0
         with:
           key-prefix: pandas-ubuntu-24.04-py313
           command: pixi run --environment py313 python -m pytest
@@ -114,7 +126,7 @@ jobs:
    and after it:
 
    ```yaml
-   - uses: actions/upload-artifact@v4
+   - uses: actions/upload-artifact@v7
      if: >-
        always() && matrix.platform == 'ubuntu-24.04'
        && matrix.environment == 'py313' && !matrix.name
@@ -129,15 +141,16 @@ jobs:
    ```yaml
    diffcone:
      runs-on: ubuntu-24.04
+     cache-mode: read
      # env, services, checkout, setup-pixi and build as in the record job
      steps:
        # ...
-       - uses: bearing-research/diffcone/actions/run@main
+       - uses: bearing-research/diffcone/actions/run@v0.1.0
          with:
            key-prefix: pandas-ubuntu-24.04-py313
            command: pixi run --environment py313 python -m pytest
            pytest-args: -r fE --numprocesses=auto --dist=worksteal -m "not single_cpu" pandas
-       - uses: actions/upload-artifact@v4
+       - uses: actions/upload-artifact@v7
          if: always()
          with:
            name: diffcone-results
@@ -152,15 +165,15 @@ jobs:
      if: always()
      runs-on: ubuntu-24.04
      steps:
-       - uses: actions/download-artifact@v4
+       - uses: actions/download-artifact@v8
          with:
            name: full-junit
            path: full
-       - uses: actions/download-artifact@v4
+       - uses: actions/download-artifact@v8
          with:
            name: diffcone-results
            path: diffcone-results
-       - uses: bearing-research/diffcone/actions/check@main
+       - uses: bearing-research/diffcone/actions/check@v0.1.0
          with:
            full: full/full.xml
    ```
