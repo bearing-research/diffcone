@@ -40,7 +40,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 ## Code layout
 
 - `src/diffcone/snapshot.py` reads a commit from git objects (`ls-tree` + `cat-file --batch`), the staged `INDEX`, or the `WORKTREE` from disk (via `ls-files --exclude-standard`); the snapshot `kind` travels through the index into the report.
-- `src/diffcone/cython.py` reads `.pyx`/`.pxd`/`.pxi` files at function level (a tolerant indentation reader; stdlib only) and diffs them (`cython_changes`); the index carries the result in `index.cython`. Only evidence mode uses it (roadmap item 7).
+- `src/diffcone/cython.py` reads `.pyx`/`.pxd`/`.pxi` files at function level (a tolerant indentation reader) and, outside functions, as statements and the names they bind (Python's `tokenize`); stdlib only. `cython_changes` diffs them into changed function bodies, changed names and file-level changes; the index carries the result in `index.cython`. Only evidence mode uses it (roadmap items 7 and 8).
 - `src/diffcone/indexer.py` parses modules, assigns symbol identities, hashes bodies/definitions, resolves references into `Edge`s and records `UnresolvedReference`s. This is where the supported subset lives.
 - `src/diffcone/classify.py` diffs two indexes into `SymbolChange`s (added, deleted, body_changed, definition_changed, dependencies_changed).
 - `src/diffcone/planner.py` builds the union graph of both revisions, adds target nodes and conservative edges, runs the backward search with the propagation rules in its docstring, and produces `Decision`s with `Reason` paths and `Fallback`s.

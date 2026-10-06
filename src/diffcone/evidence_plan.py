@@ -64,7 +64,17 @@ from diffcone.classify import (
     SymbolChange,
     classify,
 )
-from diffcone.cython import CythonFunction, cython_changes, is_cython, symbol_id
+from diffcone.cython import CLASS as CYTHON_CLASS
+from diffcone.cython import IMPORT as CYTHON_IMPORT
+from diffcone.cython import (
+    CythonFunction,
+    CythonName,
+    cython_changes,
+    is_cython,
+    names_module,
+    pxd_stem,
+    symbol_id,
+)
 from diffcone.declarations import Declaration
 from diffcone.discovery import DiscoveryResult
 from diffcone.evidence import FLAG_SUBPROCESS, FLAG_UNSTABLE, UNINDEXED_MODULE, Evidence
@@ -519,45 +529,176 @@ class _Observers:
         }
         for path, name in changes.functions:
             label = f"{symbol_id(path, name)} body_changed (Cython)"
-            if path not in recorded:
-                self._select_all(
-                    RULE_UNOBSERVED_FILE,
-                    f"{label}: the evidence holds no Cython record from {path} (collected "
-                    "without a profile=True build of it?)",
-                )
-                continue
             function = self.c.cython[path].by_name()[name]
-            self._observe(symbol_id(path, name), RULE_EXECUTED_CHANGED, label, None)
-            self._cython_import_effect(symbol_id(path, name), label)
-            if function.nogil or function.cpdef:
-                kind = "nogil" if function.nogil else "cpdef"
-                for caller in self._cython_callers(path, name):
-                    self._observe(
-                        caller,
-                        RULE_CYTHON_CALLER,
-                        f"{caller} names {symbol_id(path, name)}, a {kind} function a profiled "
-                        f"build does not always report; {label}",
-                        None,
-                    )
-                    self._cython_import_effect(caller, label)
+            self._cython_ran(path, function, RULE_EXECUTED_CHANGED, label, label, recorded)
+        for changed in changes.names:
+            self._cython_name(changed, recorded)
         return paths
 
-    def _cython_callers(self, path: str, name: str) -> list[str]:
-        """The Cython functions at C that name ``path::name``, and through
-        any of them that is itself ``nogil`` or ``cpdef``, theirs."""
+    def _cython_ran(
+        self,
+        path: str,
+        function: CythonFunction,
+        rule: str,
+        detail: str,
+        label: str,
+        recorded: set[str],
+    ) -> None:
+        """The tests that executed ``function`` at C observe the change;
+        when it is ``nogil`` or ``cpdef``, which a profiled build does not
+        always report, so do those that executed a Cython function naming
+        it."""
+        sid = symbol_id(path, function.name)
+        if path not in recorded:
+            self._select_all(
+                RULE_UNOBSERVED_FILE,
+                f"{label}: the evidence holds no Cython record from {path} (collected "
+                "without a profile=True build of it?)",
+            )
+            return
+        self._observe(sid, rule, detail, None)
+        self._cython_import_effect(sid, label)
+        if function.nogil or function.cpdef:
+            kind = "nogil" if function.nogil else "cpdef"
+            for caller in self._cython_callers(path, function.name):
+                self._observe(
+                    caller,
+                    RULE_CYTHON_CALLER,
+                    f"{caller} names {sid}, a {kind} function a profiled build does not "
+                    f"always report; {label}",
+                    None,
+                )
+                self._cython_import_effect(caller, label)
+
+    def _cython_name(self, changed: CythonName, recorded: set[str]) -> None:
+        """A name bound outside every function body changed (roadmap item
+        8): the Cython functions that can see it and mention it, and for a
+        name Python can see, the Python code reading it by that name and the
+        lookup and reflection sites. A class attribute also reaches
+        everything holding an instance."""
+        qualified = f"{changed.scope}.{changed.name}" if changed.scope else changed.name
+        label = f"{changed.path}::{qualified} {changed.change} (Cython, outside functions)"
+        seers = self._cython_seers(changed.path, changed.visible)
+        for path, function in self._cython_mentioning(changed.name):
+            if seers is None or path in seers:
+                self._cython_ran(
+                    path,
+                    function,
+                    RULE_EXECUTED_READER,
+                    f"{symbol_id(path, function.name)} names {changed.name}; {label}",
+                    label,
+                    recorded,
+                )
+        if changed.attribute:
+            self._cython_instances(changed.scope.split(".")[-1], label, recorded)
+        if changed.visible:
+            readers = self.by_name.get(changed.name, set())
+            if changed.scope:
+                readers = readers | self.attribute_readers.get(changed.name, set())
+            for reader in sorted(readers):
+                self._reader(reader, None, label)
+            # A lookup by a name nothing bounds may find it, and read its
+            # value as well as notice it come or go.
+            for site, kind in self.sites:
+                if kind != SITE_IMPORT and site in self.symbols:
+                    self._observe(
+                        site,
+                        RULE_LOOKUP_SITE,
+                        f"{site} looks names up by a name nothing bounds and may see "
+                        f"{changed.path}; {label}",
+                        None,
+                    )
+
+    def _cython_instances(self, cls: str, label: str, recorded: set[str]) -> None:
+        """A class attribute declaration changes the layout and the generated
+        pickling of every instance of the class and its subclasses: the
+        tests that ran their methods or a function naming one of them (where
+        instances come from), and the Python code naming one."""
+        family, stack = {cls}, [cls]
+        while stack:
+            base = stack.pop()
+            for module in (*self.c.cython.values(), *self.other.cython.values()):
+                for statement in module.statements or ():
+                    name = statement.names[0] if statement.names else ""
+                    if statement.kind == CYTHON_CLASS and base in statement.bases:
+                        if name not in family:
+                            family.add(name)
+                            stack.append(name)
+        for path, module in self.c.cython.items():
+            for function in module.functions:
+                if function.scope.split(".")[-1] in family:
+                    self._cython_ran(
+                        path,
+                        function,
+                        RULE_EXECUTED_READER,
+                        f"{symbol_id(path, function.name)} is a method of {cls} or a "
+                        f"subclass; {label}",
+                        label,
+                        recorded,
+                    )
+        for name in sorted(family):
+            for path, function in self._cython_mentioning(name):
+                self._cython_ran(
+                    path,
+                    function,
+                    RULE_EXECUTED_READER,
+                    f"{symbol_id(path, function.name)} names {name}, whose instances "
+                    f"changed; {label}",
+                    label,
+                    recorded,
+                )
+            for reader in sorted(self.by_name.get(name, ())):
+                self._reader(reader, None, label)
+
+    def _cython_mentioning(self, name: str) -> list[tuple[str, CythonFunction]]:
+        """The Cython functions at C whose header or body mentions ``name``."""
         if self._cython_mentions is None:
             self._cython_mentions = defaultdict(list)
             for p, module in self.c.cython.items():
                 for function in module.functions:
                     for mentioned in function.names:
                         self._cython_mentions[mentioned].append((p, function))
-        by_name = self._cython_mentions
+        return self._cython_mentions.get(name, [])
+
+    def _cython_seers(self, path: str, visible: bool) -> set[str] | None:
+        """The Cython files whose functions can see a name bound in ``path``,
+        or None for every file. A name Python can see may be imported
+        anywhere, and a ``.pxi`` file is included anywhere; a ``.pyx``
+        file's C names stay in it (and in the ``.pxi`` files it may include);
+        a ``.pxd`` file's reach its ``.pyx`` and every file that cimports
+        from it, transitively through other ``.pxd`` files."""
+        if visible or path.endswith(".pxi"):
+            return None
+        modules = {**self.c.cython, **self.other.cython}
+        seen = {path} | {p for p in modules if p.endswith(".pxi")}
+        if path.endswith(".pyx"):
+            return seen
+        seen.add(path[: -len(".pxd")] + ".pyx")
+        frontier = [path]
+        while frontier:
+            stem = pxd_stem(frontier.pop())
+            for p in sorted(modules):
+                if p in seen:
+                    continue
+                statements = modules[p].statements
+                if statements is None or any(
+                    s.kind == CYTHON_IMPORT and not s.visible and names_module(s, stem)
+                    for s in statements
+                ):
+                    seen.add(p)
+                    if p.endswith(".pxd"):
+                        frontier.append(p)
+        return seen
+
+    def _cython_callers(self, path: str, name: str) -> list[str]:
+        """The Cython functions at C that name ``path::name``, and through
+        any of them that is itself ``nogil`` or ``cpdef``, theirs."""
         found: set[str] = set()
         stack = [(path, name)]
         while stack:
             p, n = stack.pop()
             simple = n.split(".")[-1].split("#")[0]
-            for caller_path, caller in by_name.get(simple, ()):
+            for caller_path, caller in self._cython_mentioning(simple):
                 caller_id = symbol_id(caller_path, caller.name)
                 if caller_id in found or (caller_path, caller.name) == (path, name):
                     continue
@@ -720,16 +861,17 @@ class _Observers:
             if c != cls and c in self.subclasses.get(cls, set()):
                 self._readers(c, change, label)
 
-    def _readers(self, target: str, change: SymbolChange, label: str) -> None:
+    def _readers(self, target: str, change: SymbolChange | None, label: str) -> None:
         readers = set(self.readers_of.get(target, ()))
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
             readers |= self.by_name.get(name, set())
         readers.discard(target)
         for reader in sorted(readers):
-            self._reader(reader, change, label if target == change.id else f"{label} via {target}")
+            own = change is not None and target == change.id
+            self._reader(reader, change, label if own else f"{label} via {target}")
 
-    def _reader(self, reader: str, change: SymbolChange, label: str) -> None:
+    def _reader(self, reader: str, change: SymbolChange | None, label: str) -> None:
         symbol = self.symbols.get(reader)
         if symbol is None:
             return
@@ -757,7 +899,7 @@ class _Observers:
             else:
                 self._observe(importer, RULE_EXECUTED_READER, f"{importer} imports {label}", change)
 
-    def _import_effect(self, symbol_id: str, change: SymbolChange, label: str) -> None:
+    def _import_effect(self, symbol_id: str, change: SymbolChange | None, label: str) -> None:
         """Code that ran at C while a module was imported built that module's
         import-time state; code that ran outside every test and import ran in
         a hook or during collection."""
@@ -774,7 +916,7 @@ class _Observers:
                 )
         if symbol_id in self.evidence.hook_phase:
             reason = f"{symbol_id} ran outside every test (a hook or collection); {label}"
-            if symbol_id == change.id:
+            if change is not None and symbol_id == change.id:
                 self._escalate_change(change, reason)
             elif symbol_id not in self.seed_nodes:
                 self.seed_nodes[symbol_id] = reason

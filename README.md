@@ -194,10 +194,15 @@ uv run diffcone run --base main --head HEAD --discover pytest \
 Compiled Cython code (`.pyx`, `.pxd`, `.pxi`) is covered at function level
 when the evidence was recorded against a build with Cython's
 `profile=True` directive (the runs themselves use the ordinary build): an
-edit to a function's body selects the tests that executed it. diffcone does
-not build the project, so building that way is up to you; a module without
-Cython records, an edit outside function bodies, and C sources or build
-files still select everything.
+edit to a function's body selects the tests that executed it. An edit
+outside function bodies (an import, a declaration, a constant, a class
+attribute, a function added) selects the tests that executed a Cython
+function naming what it changed, and for a name Python can see, the tests
+that ran Python code reading it. diffcone does not build the project, so
+building that way is up to you. A module without Cython records, code
+outside functions that binds nothing by name (a bare call, a docstring, a
+compiler directive, `include`), a deleted name Python can see, and C
+sources or build files still select everything.
 
 ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is

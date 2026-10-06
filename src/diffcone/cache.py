@@ -29,7 +29,7 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from diffcone.cython import CythonFunction, CythonModule
+from diffcone.cython import CythonFunction, CythonModule, CythonStatement
 from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
 from diffcone.manifest import Target
 from diffcone.model import (
@@ -43,7 +43,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 19  # 19: Cython sources at function level (evidence mode)
+INDEX_FORMAT = 20  # 20: Cython statements outside functions (evidence mode)
 
 
 def _indexer_fingerprint() -> str:
@@ -93,6 +93,9 @@ def index_to_dict(index: SourceIndex) -> dict:
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
                 "outside_hash": module.outside_hash,
+                "statements": None
+                if module.statements is None
+                else [asdict(st) for st in module.statements],
             }
             for path, module in sorted(index.cython.items())
         },
@@ -131,6 +134,18 @@ def index_from_dict(data: dict) -> SourceIndex:
                     for f in module["functions"]
                 ),
                 module["outside_hash"],
+                None
+                if module["statements"] is None
+                else tuple(
+                    CythonStatement(
+                        **{
+                            **st,
+                            "names": tuple(st["names"]),
+                            "bases": tuple(st["bases"]),
+                        }
+                    )
+                    for st in module["statements"]
+                ),
             )
             for path, module in data["cython"].items()
         },

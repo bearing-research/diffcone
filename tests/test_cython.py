@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from diffcone.cache import index_from_dict, index_to_dict
-from diffcone.cython import cython_changes, read
+from diffcone.cython import CythonChanges, cython_changes, read
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
 from diffcone.testing import executed, rules, selected
@@ -120,25 +120,189 @@ def test_changes_are_function_level_when_only_bodies_change():
         return cython_changes(before, {"pkg/_ext.pyx": read("pkg/_ext.pyx", text)})
 
     body = changed(PYX.replace("return self.v * k", "return k * self.v"))
-    assert body.functions == (("pkg/_ext.pyx", "Box.scaled"),) and body.files == ()
+    assert body.functions == (("pkg/_ext.pyx", "Box.scaled"),)
+    assert body.files == () and body.names == ()
     # Comments, blank lines and moving a function down are not changes.
-    moved = PYX.replace("cdef class Box:", "\n\n# A box.\ncdef class Box:")
-    assert changed(moved).functions == () and changed(moved).files == ()
-    # Anything outside a function is not attributed to one.
-    outside = changed(PYX.replace("cdef int LIMIT = 10", "cdef int LIMIT = 11"))
-    assert outside.files == (("pkg/_ext.pyx", "changed outside its functions"),)
+    moved = changed(PYX.replace("cdef class Box:", "\n\n# A box.\ncdef class Box:"))
+    assert moved == CythonChanges()
     # A compiler directive is a comment that changes every function.
     for text in (
         PYX.replace("language_level=3", "language_level=3, cdivision=True"),
         "# cython: boundscheck=False\n" + PYX,
         "# distutils: language = c++\n" + PYX,
     ):
-        assert changed(text).files == (("pkg/_ext.pyx", "changed outside its functions"),)
-    # A new function (an override changes dispatch) is a file-level change.
-    added = changed(PYX + "\n\ndef extra():\n    return 1\n")
-    assert added.files == (("pkg/_ext.pyx", "functions added or deleted (extra added)"),)
+        (path, why), *_ = changed(text).files
+        assert path == "pkg/_ext.pyx" and "a compiler directive" in why
     gone = cython_changes(before, {})
     assert gone.files == (("pkg/_ext.pyx", "deleted"),)
+
+
+OUTSIDE = """\
+\"\"\"A module docstring.\"\"\"
+# cython: language_level=3
+cimport numpy as cnp
+from libc.math cimport (
+    isnan,
+    sqrt as root,
+)
+import numpy as np
+from pkg.util import helper
+from .np_datetime cimport npy_datetimestruct
+from pandas._libs cimport util
+
+cdef extern from "fast.h" nogil:
+    int fast_add(int a, int b)
+    ctypedef struct pair_t:
+        int left
+        int right
+
+ctypedef (int, int) span_t
+ctypedef int (*cmp_t)(int, int)
+DEF WIDTH = 8
+
+cdef:
+    double SCALE = 2.0
+    int[16] TABLE
+
+cdef enum Colour:
+    RED
+    GREEN = 3
+
+cpdef enum Shape:
+    SQUARE
+
+cdef int64_t **rows = NULL
+LIMIT = 10
+A = B = 1
+COUNTS[0] += 1
+
+cnp.import_array()
+
+cdef class Box(Base):
+    \"\"\"A box.\"\"\"
+    cdef public double v
+    cdef readonly int n
+    cdef object _cache
+    __array_priority__ = 100
+    kind = "box"
+
+    def get(self):
+        return self.v
+
+
+IF UNAME_SYSNAME == "Windows":
+    include "windows.pxi"
+"""
+
+
+def test_the_reader_finds_what_statements_bind():
+    module = read("pkg/_ext.pyx", OUTSIDE)
+    got = [(s.scope, s.kind, s.names, s.visible, s.why) for s in module.statements]
+    assert got == [
+        ("", "code", (), False, "a compiler directive"),
+        ("", "code", (), False, "a docstring"),
+        ("", "import", ("cnp",), False, ""),
+        ("", "import", ("isnan",), False, ""),
+        ("", "import", ("root",), False, ""),
+        ("", "import", ("np",), True, ""),
+        ("", "import", ("helper",), True, ""),
+        ("", "import", ("npy_datetimestruct",), False, ""),
+        ("", "import", ("util",), False, ""),
+        ("", "declaration", ("fast_add",), False, ""),
+        ("", "type", ("left", "pair_t", "right"), False, ""),
+        ("", "declaration", ("span_t",), False, ""),
+        ("", "declaration", ("cmp_t",), False, ""),
+        ("", "declaration", ("WIDTH",), False, ""),
+        ("", "declaration", ("SCALE",), False, ""),
+        ("", "declaration", ("TABLE",), False, ""),
+        ("", "type", ("Colour", "GREEN", "RED"), False, ""),
+        ("", "type", ("SQUARE", "Shape"), True, ""),
+        ("", "declaration", ("rows",), False, ""),
+        ("", "assignment", ("LIMIT",), True, ""),
+        ("", "assignment", ("A", "B"), True, ""),
+        ("", "assignment", ("COUNTS",), True, ""),
+        ("", "code", (), False, "an expression statement that runs at import"),
+        ("", "class", ("Box",), True, ""),
+        ("Box", "code", (), False, "a docstring"),
+        ("Box", "declaration", ("v",), True, ""),
+        ("Box", "declaration", ("n",), True, ""),
+        ("Box", "declaration", ("_cache",), False, ""),
+        ("Box", "code", (), False, "binds a special name (__array_priority__)"),
+        ("Box", "assignment", ("kind",), True, ""),
+        ("", "code", (), False, "compile-time IF"),
+        ("", "code", (), False, "include"),
+    ]
+    box = next(s for s in module.statements if s.kind == "class")
+    assert box.bases == ("Base",)
+    imports = [s.module for s in module.statements if s.kind == "import"]
+    assert imports[-2:] == [".np_datetime npy_datetimestruct", "pandas._libs util"]
+    # Statements inside functions are the functions' own.
+    assert [f.name for f in module.functions] == ["Box.get"]
+    # A file tokenize cannot read has no statements.
+    assert read("pkg/_bad.pyx", 'X = """never closed\n').statements is None
+
+
+def test_outside_changes_are_the_names_whose_binding_changed():
+    before = {"pkg/_ext.pyx": read("pkg/_ext.pyx", OUTSIDE)}
+
+    def changed(text, path="pkg/_ext.pyx"):
+        return cython_changes(before, {path: read(path, text)})
+
+    def names(text):
+        result = changed(text)
+        assert result.files == (), result.files
+        return {(n.scope, n.name, n.change, n.visible, n.attribute) for n in result.names}
+
+    # Reformatting an import list changes nothing; adding to it, only that name.
+    assert names(OUTSIDE.replace("    isnan,\n", "    isinf,\n    isnan,\n")) == {
+        ("", "isinf", "added", False, False)
+    }
+    assert names(OUTSIDE.replace("(\n    isnan,\n    sqrt as root,\n)", "isnan, sqrt as root")) == (
+        set()
+    )
+    assert names(OUTSIDE.replace("double SCALE = 2.0", "double SCALE = 3.0")) == {
+        ("", "SCALE", "changed", False, False)
+    }
+    assert names(OUTSIDE.replace("LIMIT = 10", "LIMIT = 11")) == {
+        ("", "LIMIT", "changed", True, False)
+    }
+    # A struct, enum or union is one statement: member order is layout and value.
+    assert names(OUTSIDE.replace("    RED\n    GREEN = 3", "    GREEN = 3\n    RED")) == {
+        ("", n, "changed", False, False) for n in ("Colour", "GREEN", "RED")
+    }
+    # A class attribute.
+    assert names(OUTSIDE.replace("cdef object _cache", "cdef dict _cache")) == {
+        ("Box", "_cache", "changed", False, True)
+    }
+    # Functions added or deleted are names too: def visible, cdef not.
+    assert names(OUTSIDE + "\n\ndef extra():\n    return 1\n") == {
+        ("", "extra", "added", True, False)
+    }
+    assert names(OUTSIDE.replace("    def get(self):", "    cdef get(self):")) == {
+        ("Box", "get", "changed", True, False)
+    }
+
+    def file_level(text, path="pkg/_ext.pyx"):
+        (got_path, why), *_ = changed(text, path).files
+        assert got_path == path
+        return why
+
+    # Code that binds nothing by name, a special name, a class statement.
+    assert "an expression statement" in file_level(OUTSIDE.replace("cnp.import_array()", "f()"))
+    assert "a docstring" in file_level(OUTSIDE.replace("A box.", "A big box."))
+    assert "special name" in file_level(OUTSIDE.replace("= 100", "= 200"))
+    assert "class statement of Box" in file_level(OUTSIDE.replace("Box(Base)", "Box(Other)"))
+    assert "a star import" in file_level(OUTSIDE.replace("cimport util", "cimport *"))
+    # Reordering statements can change a value read at import.
+    swapped = OUTSIDE.replace("LIMIT = 10\nA = B = 1", "A = B = 1\nLIMIT = 10")
+    assert file_level(swapped).endswith("statements reordered")
+    # A deleted name Python can see may be imported from the module by
+    # Python code, which diffcone does not index.
+    assert "LIMIT deleted" in file_level(OUTSIDE.replace("LIMIT = 10\n", ""))
+    # ... while a .pxd file's declarations are names even when it is added.
+    added = cython_changes({}, {"pkg/_ext.pxd": read("pkg/_ext.pxd", PXD)})
+    assert added.files == ()
+    assert {n.name for n in added.names} == {"_add", "scaled", "is_small"}
 
 
 def test_snapshots_and_the_cache_carry_cython_modules(repo):
@@ -161,6 +325,11 @@ def test_snapshots_and_the_cache_carry_cython_modules(repo):
 
 FAST = """\
 # cython: profile=True
+from libc.math cimport sqrt
+
+cdef double OFFSET = 1
+LABEL = "box"
+
 
 cdef class Box:
     cdef public double v
@@ -177,7 +346,7 @@ cdef class Box:
 
 cdef class Big(Box):
     cpdef double scaled(self, double k):
-        return Box.scaled(self, k) + 1
+        return Box.scaled(self, k) + OFFSET
 
 
 cdef double _fast(double x) noexcept nogil:
@@ -192,6 +361,7 @@ def tripled(double x):
 """
 
 FAST_TESTS = """\
+from pkg import _fast
 from pkg._fast import Big, Box, tripled
 
 
@@ -209,6 +379,15 @@ def test_big():
 
 def test_plain():
     assert 1 + 1 == 2
+
+
+def test_label():
+    assert _fast.LABEL == "box"
+
+
+def test_lookup():
+    name = "".join(["LA", "BEL"])
+    assert getattr(_fast, name) == "box"
 """
 
 SETUP = """\
@@ -253,7 +432,7 @@ def test_a_profiled_build_records_cython_functions(repo):
     T = "tests/test_fast.py::"
     cy = {
         t: {s for s in executed(ev, T + "test_" + t) if ".pyx::" in s}
-        for t in ("add", "tripled", "big", "plain")
+        for t in ("add", "tripled", "big", "plain", "label", "lookup")
     }
     # A slot reached by `+` and the constructor it calls.
     assert cy["add"] == {"pkg/_fast.pyx::Box.__init__", "pkg/_fast.pyx::Box.__add__"}
@@ -262,7 +441,7 @@ def test_a_profiled_build_records_cython_functions(repo):
     # A cpdef's C body called with skip_dispatch (Box.scaled(self, k)) raises
     # none either; the caller rule covers both (roadmap item 7).
     assert cy["big"] == {"pkg/_fast.pyx::Box.__init__", "pkg/_fast.pyx::Big.scaled"}
-    assert cy["plain"] == set()
+    assert cy["plain"] == cy["label"] == cy["lookup"] == set()
 
 
 # --------------------------------------------------------------------------- planning
@@ -282,7 +461,7 @@ def test_a_body_change_selects_the_tests_that_executed_the_function(repo):
     assert not plan.fallbacks
     # Static planning cannot connect a test to a Cython function.
     static = repo.plan(ev.commit, plan.head.commit, [], discover_runners=["pytest"])
-    assert len(selected(static)) == 4
+    assert len(selected(static)) == 6
 
 
 def test_nogil_and_cpdef_functions_are_found_through_their_callers(repo):
@@ -298,20 +477,61 @@ def test_nogil_and_cpdef_functions_are_found_through_their_callers(repo):
     assert selected(plan) == {"tests/test_fast.py::test_big"}
 
 
-def test_other_cython_edits_select_everything_or_nothing(repo):
+def test_outside_edits_select_the_readers_of_the_names_they_change(repo):
     _built_extension(repo)
     ev = repo.collect()
+    T = "tests/test_fast.py::"
     # A comment is not a change.
     plan = _plan(repo, ev, FAST.replace("cdef class Big(Box):", "# Bigger.\ncdef class Big(Box):"))
     assert selected(plan) == set() and not plan.fallbacks
-    # A compiler directive changes how every function is compiled.
-    plan = _plan(repo, ev, FAST.replace("profile=True", "profile=True, cdivision=True"))
-    assert len(selected(plan)) == 4
-    assert [f.rule for f in plan.fallbacks] == ["unobserved_file_changed"]
-    # A change outside every function is not attributed to one.
+    # A C global: the Cython functions naming it.
+    plan = _plan(repo, ev, FAST.replace("OFFSET = 1", "OFFSET = 2"))
+    assert selected(plan) == {T + "test_big"}
+    assert rules(plan, T + "test_big") == {"executed_reader"}
+    assert not plan.fallbacks
+    # A name Python can see: the Python code reading it by that name, and
+    # the lookups by a name nothing bounds.
+    plan = _plan(repo, ev, FAST.replace('LABEL = "box"', 'LABEL = "crate"'))
+    assert selected(plan) == {T + "test_label", T + "test_lookup"}
+    assert rules(plan, T + "test_lookup") == {"lookup_site"}
+    assert not plan.fallbacks
+    plan = _plan(repo, ev, FAST + "\n\ndef extra():\n    return 1\n")
+    assert selected(plan) == {T + "test_lookup"} and not plan.fallbacks
+    # A class attribute: whatever holds an instance of the class or a
+    # subclass, and (a public one) the lookups.
     plan = _plan(repo, ev, FAST.replace("cdef public double v", "cdef public double v, w"))
-    assert len(selected(plan)) == 4
-    assert [f.rule for f in plan.fallbacks] == ["unobserved_file_changed"]
+    assert selected(plan) == {T + "test_add", T + "test_big", T + "test_lookup"}
+    assert not plan.fallbacks
+    plan = _plan(
+        repo, ev, FAST.replace("cdef public double v", "cdef public double v\n    cdef int w")
+    )
+    assert selected(plan) == {T + "test_add", T + "test_big"}
+    # A C name nothing mentions yet: nothing.
+    for text in (
+        FAST.replace("cimport sqrt", "cimport fabs, sqrt"),
+        FAST.replace("LABEL = ", "cdef int UNUSED = 0\nLABEL = "),
+        FAST + "\n\ncdef double _slow(double x):\n    return x\n",
+    ):
+        plan = _plan(repo, ev, text)
+        assert selected(plan) == set() and not plan.fallbacks
+
+
+def test_outside_edits_nothing_bounds_select_everything(repo):
+    _built_extension(repo)
+    ev = repo.collect()
+    for text, why in (
+        (FAST.replace("profile=True", "profile=True, cdivision=True"), "a compiler directive"),
+        (
+            FAST.replace("cdef class Big(Box):", 'cdef class Big(Box):\n    """Big."""'),
+            "a docstring",
+        ),
+        (FAST.replace('LABEL = "box"\n', 'LABEL = "box"\nprint(LABEL)\n'), "an expression"),
+        (FAST.replace("def tripled", "def _tripled"), "tripled deleted"),
+    ):
+        plan = _plan(repo, ev, text)
+        assert len(selected(plan)) == 6
+        assert [f.rule for f in plan.fallbacks] == ["unobserved_file_changed"]
+        assert why in plan.fallbacks[0].detail
 
 
 def test_a_store_without_cython_records_selects_everything(repo):
@@ -323,5 +543,5 @@ def test_a_store_without_cython_records_selects_everything(repo):
         ev,
         FAST.replace("# cython: profile=True\n", "").replace("return x * 3", "return 3 * x"),
     )
-    assert len(selected(plan)) == 4
+    assert len(selected(plan)) == 6
     assert "profile=True" in plan.fallbacks[0].detail
