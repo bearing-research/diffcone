@@ -259,21 +259,34 @@ reaching `lib` or `index` (`offsets`, `conversion`, `period`, `np_datetime`)
 is probably reached by nearly every test, so the gain is in the narrow
 modules.
 
-**Mechanism (to be validated).** The recorder also records, per test, the
-extension modules whose callables the test's Python code called
-(`sys.monitoring` CALL events: the callable's `__module__`, or its
-`__objclass__`'s for a method descriptor, or the type's for a constructor).
-A changed compiled source selects the tests that called into any module it
-reaches. Build files (`meson.build`), C sources outside Cython, and anything
-unmapped still select everything.
+**Mechanism (to be validated): function level, like Python.** No branch or
+line analysis: the question is which Cython functions changed, and which
+tests executed them.
 
-**The soundness gap, which decides it.** CALL events do not see slot-based
-execution on extension types: operators (`ts + td`), attribute and property
-access (`ts.year`), hashing, comparison and iteration run Cython code with
-no call. A test that received a `Timestamp` and only used its slots never
-"called into" `timestamps`. Closing it might need recording which
-extension types' instances a test touched, which the tracer cannot see
-cheaply. The spike measures how big the gap is before anything is built.
+* *What changed.* A Cython indexer finds `def`, `cdef` and `cpdef`
+  functions, methods and `cdef class` blocks in `.pyx`, `.pxd` and `.pxi`
+  files and hashes their bodies, as the Python indexer does. diffcone is
+  stdlib only, so it is a tolerant, indentation-based block reader, not
+  Cython's parser. An edit outside every function (`cimport`, `ctypedef`,
+  structs, module constants, `include`) is a module-level change that
+  reaches other modules through the `cimport` graph above. A `.pxi.in`
+  template, a `meson.build` file or a hand-written C source keeps selecting
+  everything.
+* *Who executed it.* Evidence is recorded against a build with Cython's
+  `profile=True` directive. Checked on a toy extension (Python 3.13, Cython
+  3.3): every profiled function then raises the same `sys.monitoring`
+  `PY_START` the recorder already handles, with the `.pyx` file and the
+  function's first line. That covers `def`, `cpdef` and `cdef` functions,
+  and slots reached without a call: an `__add__` run by `+`, a property's
+  `__get__`, a `cdef public` attribute. (`co_qualname` lacks the class, so
+  symbols are matched by file and line.) Runs keep the ordinary build:
+  profiling does not change what executes.
+* *The gap.* `nogil` functions emit nothing. They run only when a traced
+  function calls them, so a change to one selects the tests that executed
+  any of its Cython callers, through a static call graph over Cython
+  function names (within the module and through `cimport`ed `.pxd`
+  declarations). `inline` functions in `.pxd` files are still to be
+  checked.
 
 **Spike.**
 1. Build pandas with Cython line tracing and run the suite under
@@ -284,20 +297,18 @@ cheaply. The spike measures how big the gap is before anything is built.
    -DCYTHON_USE_SYS_MONITORING=0`) and coverage's `ctrace` core
    (`COVERAGE_CORE=ctrace`; the plugin is unsupported under `sysmon`, the
    default from 3.14). It attributes slot-based execution (an `__add__`
-   reached by `+`, a property) to the test, so it can measure the gap
-   below. pandas' meson files take both through `add_project_arguments`
+   reached by `+`, a property) to the test. pandas' meson files take both through `add_project_arguments`
    (`language: 'cython'` and `'c'`).
-2. Record the CALL-based module sets on the same commit.
+2. Record evidence against a `profile=True` build of the same commit.
 3. For each compiled edit among recent commits, compare the tests the rule
    would select with the tests whose oracle shows they executed a changed
-   line (or a line of a module the edit reaches). Report misses and size.
-4. Cost: the recorder with CALL events on, against today's recorder.
+   function (lines mapped to functions, as coverage validation does for
+   Python). Report misses and size.
+4. Cost: recording against the profiled build, against today's recorder.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,
-or a guard that closes each one (for example, treating a module whose
-types escape to Python as reached by every test that touched pandas
-objects of those types).
+or a guard that closes each one (the `nogil` caller rule is the first).
 
 **Done when.** The spike has run, and either the rule is shown sound on
 the recent compiled edits with its savings stated, or the gap is measured
