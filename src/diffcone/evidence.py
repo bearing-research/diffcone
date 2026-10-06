@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
 STORE_FORMAT = 1
@@ -119,6 +120,7 @@ class _Owners:
     symbol, as coverage validation maps lines."""
 
     def __init__(self, index: SourceIndex) -> None:
+        self.cython = index.cython
         self.module_of_path: dict[str, str] = {}
         spans: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         for symbol in index.symbols.values():
@@ -133,6 +135,14 @@ class _Owners:
     def __call__(self, path: str, line: int, qualname: str) -> str | None:
         key = (path, line, qualname)
         if key in self.memo:
+            return self.memo[key]
+        cython = self.cython.get(path)
+        if cython is not None:
+            # A profiled Cython build: the function whose span holds the code
+            # object's first line (its first decorator); module-level code
+            # maps to no symbol and stays a path the test touched.
+            function = cython.function_at(line)
+            self.memo[key] = symbol_id(path, function.name) if function else None
             return self.memo[key]
         found = self.module_of_path.get(path)
         if qualname != "<module>" and path in self.spans:

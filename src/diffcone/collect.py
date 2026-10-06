@@ -192,6 +192,20 @@ def _relative(path: str) -> str | None:
     return None
 
 
+CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
+
+
+def _code_path(name: str) -> str | None:
+    """A code object's checkout-relative file. A profiled Cython build names
+    its source relative to the directory it was built from, the checkout
+    root, rather than by an absolute path."""
+    if not os.path.isabs(name) and name.endswith(CYTHON_SUFFIXES):
+        name = os.path.normpath(os.path.join(ROOTS[0], name))
+        if not os.path.isfile(name):
+            return None
+    return _relative(name)
+
+
 # --------------------------------------------------------------------------- monitoring
 
 mon = getattr(sys, "monitoring", None)
@@ -199,7 +213,7 @@ mon = getattr(sys, "monitoring", None)
 
 def _on_start(code, offset):
     try:
-        rel = _relative(code.co_filename)
+        rel = _code_path(code.co_filename)
         if rel is None:
             return mon.DISABLE
         i = codes.get(code)
@@ -238,7 +252,7 @@ def _on_unwind(code, offset, exc):
     if code.co_name != "<module>" or not importing:
         return
     try:
-        if importing[-1] == _relative(code.co_filename):
+        if importing[-1] == _code_path(code.co_filename):
             importing.pop()
             mon.restart_events()
     except Exception as err:

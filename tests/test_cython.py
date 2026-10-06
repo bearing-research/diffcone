@@ -4,10 +4,15 @@ cache carrying them."""
 
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from diffcone.cache import index_from_dict, index_to_dict
 from diffcone.cython import cython_changes, read
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
+from diffcone.testing import executed
 
 PYX = '''\
 # cython: language_level=3
@@ -143,3 +148,110 @@ def test_snapshots_and_the_cache_carry_cython_modules(repo):
     repo.git("add", "pkg/_ext.pyx")
     staged = build_index(read_snapshot(repo.path, "INDEX", ["."]))
     assert staged.cython == worktree.cython
+
+
+# --------------------------------------------------------------------------- recording
+
+FAST = """\
+# cython: profile=True
+
+cdef class Box:
+    cdef public double v
+
+    def __init__(self, v):
+        self.v = v
+
+    def __add__(self, other):
+        return Box(self.v + other.v)
+
+    cpdef double scaled(self, double k):
+        return self.v * k
+
+
+cdef class Big(Box):
+    cpdef double scaled(self, double k):
+        return Box.scaled(self, k) + 1
+
+
+cdef double _fast(double x) noexcept nogil:
+    return x * 3
+
+
+def tripled(double x):
+    cdef double r
+    with nogil:
+        r = _fast(x)
+    return r
+"""
+
+FAST_TESTS = """\
+from pkg._fast import Big, Box, tripled
+
+
+def test_add():
+    assert (Box(1) + Box(2)).v == 3
+
+
+def test_tripled():
+    assert tripled(2) == 6
+
+
+def test_big():
+    assert Big(1).scaled(2) == 3
+
+
+def test_plain():
+    assert 1 + 1 == 2
+"""
+
+SETUP = """\
+from setuptools import setup
+from Cython.Build import cythonize
+
+setup(ext_modules=cythonize("pkg/_fast.pyx"))
+"""
+
+
+def _built_extension(repo):
+    """A fixture repository with a profiled Cython extension built in place."""
+    import shutil
+    import subprocess
+
+    pytest.importorskip("Cython")
+    pytest.importorskip("setuptools")
+    if shutil.which("cc") is None and shutil.which("gcc") is None:
+        pytest.skip("no C compiler")
+    repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\nbuild/\n*.c\n*.so\n*.pyd\n",
+            "setup.py": SETUP,
+            "pkg/__init__.py": "",
+            "pkg/_fast.pyx": FAST,
+            "tests/__init__.py": "",
+            "tests/test_fast.py": FAST_TESTS,
+        }
+    )
+    subprocess.run(
+        [sys.executable, "setup.py", "-q", "build_ext", "--inplace"],
+        cwd=repo.path,
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_a_profiled_build_records_cython_functions(repo):
+    _built_extension(repo)
+    ev = repo.collect()
+    T = "tests/test_fast.py::"
+    cy = {
+        t: {s for s in executed(ev, T + "test_" + t) if ".pyx::" in s}
+        for t in ("add", "tripled", "big", "plain")
+    }
+    # A slot reached by `+` and the constructor it calls.
+    assert cy["add"] == {"pkg/_fast.pyx::Box.__init__", "pkg/_fast.pyx::Box.__add__"}
+    # A nogil function raises no start: only its (traced) caller is recorded.
+    assert cy["tripled"] == {"pkg/_fast.pyx::tripled"}
+    # A cpdef's C body called with skip_dispatch (Box.scaled(self, k)) raises
+    # none either; the caller rule covers both (roadmap item 7).
+    assert cy["big"] == {"pkg/_fast.pyx::Box.__init__", "pkg/_fast.pyx::Big.scaled"}
+    assert cy["plain"] == set()

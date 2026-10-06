@@ -16,9 +16,11 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "cython>=3.1",  # tests that build a profiled extension (evidence over Cython)
     "pytest>=8",
     "pytest-cov>=5",
     "ruff>=0.5",
+    "setuptools",  # builds those extensions
 ]
 
 [tool.ruff]

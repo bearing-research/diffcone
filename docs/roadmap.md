@@ -352,7 +352,7 @@ build, the whole suite under `-n 8`):
    `cython_changes` diffs two indexes. Static planning is unchanged: a
    compiled edit still selects everything, since nothing static connects
    a Python test to a Cython function.
-2. *Recorder and store.* `fold` maps a code object whose file is a Cython
+2. *Recorder and store* (done 2026-10-06). `fold` maps a code object whose file is a Cython
    source to the outermost function holding its first line, named
    `<path>::<qualname>`. Collection needs a build with `profile=True`;
    diffcone does not build, so that is documented, not enforced.
