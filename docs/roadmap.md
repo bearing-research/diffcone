@@ -474,3 +474,67 @@ reverse-applied there) are checked against the line-traced oracle: every
 test whose traced lines fall in a function mentioning a name on a
 changed line must be selected, and any flagged name that the rules
 dropped is explained.
+
+## 9. GitHub Actions: record at night, plan during the day (pandas trial)
+
+**Status.** Planned (2026-10-06). The first step toward real use: run
+diffcone beside an unchanged CI and measure it against what CI finds.
+Decided: a separate job runs alongside the existing ones and is monitored,
+not trusted; environments are pinned (pandas installs from `pixi.lock`);
+the trial covers one Linux job (`ubuntu-24.04`, `py313`, the `not
+single_cpu` step), on a fork of pandas first, never upstream without
+asking.
+
+**Mechanism.**
+
+* *Nightly recording* (a scheduled workflow on `main`, plus a manual
+  trigger). Check out `main` at C, set up the job's pixi environment, build
+  pandas the ordinary way (no `profile=True`: Cython edits then select
+  everything, which is rare and safe), and run `diffcone collect` with the
+  job's pytest command and markers. Plan C -> C once so the index and
+  discovery caches for C exist, prune every cache entry not for C, and save
+  `.diffcone/` with `actions/cache` under `diffcone-<job>-<C>`. A broken
+  recording saves nothing, and PRs keep yesterday's. `actions/cache` fits:
+  pull requests, forks included, read the default branch's caches but cannot
+  write them, so a PR cannot plant evidence; unused entries expire after
+  seven days; a pandas store is 20 MB and C's caches about 450 MB before
+  compression.
+* *PR job* (beside the existing jobs). Restore the newest
+  `diffcone-<job>-` entry by prefix, set up the same environment, and
+  `diffcone run --base <merge-base> --head HEAD --evidence auto` with the
+  job's command and `--junitxml`. A PR that changes `pixi.lock` no longer
+  matches the recorded environment and runs everything, as it should. Plan
+  JSON and JUnit are uploaded.
+* *Verdict.* The existing `py313` job also writes `--junitxml` (the one
+  change to it). A job that needs both compares them: every test that
+  failed or errored in the full run must be in the plan, and a selected
+  test's outcome must agree in both runs. It writes the verdict and the
+  time saved to the step summary and never fails the workflow during the
+  trial.
+
+**What diffcone needs.**
+
+1. `diffcone check`: read a plan and JUnit XML (pytest's `classname` and
+   `name` mapped back to node IDs, parameters folded as targets are) and
+   report misses and outcome disagreements, as Markdown and JSON.
+2. Cache pruning to one commit's index, discovery and module entries.
+3. Project variables in the environment fingerprint: pandas' behaviour
+   depends on `PANDAS_FUTURE`, which the recorder does not read today. The
+   store must say which variables it recorded, so planning compares the
+   same ones.
+4. A plain error naming the commit to fetch when the evidence commit is not
+   in the checkout (the pandas job fetches full history, but a shallow
+   checkout needs only `git fetch --depth=1 origin <C>`).
+5. Cold and warm plan times on a 4-core GitHub runner.
+6. The workflows themselves, as composite actions in this repository and
+   documented examples.
+
+**Trade-off.** Nightly compute (the suite under the recorder) and about
+0.5 GB of cache a day. The store ages through the day: the later a PR's
+base, the more C -> base adds to every plan.
+
+**Done when.** On the fork, the workflows run on real pull requests (how
+to get PR traffic onto a fork is open: replaying upstream PR heads means
+pushing to the user's GitHub account, which needs the user's approval) for
+long enough to see failures: each miss is fixed or explained, and the
+selection size and time saved are recorded in evaluation.md.
