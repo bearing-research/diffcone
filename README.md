@@ -228,6 +228,9 @@ uv run diffcone prune --keep HEAD
 
 ### Checking a plan against a full run
 
+GitHub Actions to record nightly and check pull requests are in
+[docs/ci.md](docs/ci.md) (not yet run on GitHub).
+
 `check` compares a plan with the JUnit XML of a full pytest run (`pytest
 --junitxml=full.xml`) and reports every test that failed or errored there
 but was not selected. It runs nothing, so it fits beside an existing CI job.

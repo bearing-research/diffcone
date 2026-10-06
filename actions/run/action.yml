@@ -1,0 +1,79 @@
+name: diffcone run
+description: >-
+  Restore the newest evidence saved by diffcone record for this job, plan
+  the pull request against it and run only the selected tests, writing the
+  plan and the run's JUnit XML to diffcone-results/ (upload it for
+  diffcone check). Needs the same environment as the recording.
+inputs:
+  key-prefix:
+    description: The key prefix diffcone record saved under.
+    required: true
+  command:
+    description: The pytest command line, without arguments, exactly as recorded.
+    required: true
+  pytest-args:
+    description: Arguments passed to pytest, as one shell-quoted string, exactly as recorded.
+    default: ""
+  source-roots:
+    description: Space-separated source roots, as recorded.
+    default: "."
+  base:
+    description: >-
+      The base revision; default: the first parent of a pull request's merge
+      commit (what the pull request changes on top of its target branch).
+    default: "HEAD^1"
+  diffcone-ref:
+    description: The diffcone git ref to install.
+    default: main
+outputs:
+  selected:
+    description: How many tests the plan selected.
+    value: ${{ steps.run.outputs.selected }}
+runs:
+  using: composite
+  steps:
+    - name: Install diffcone
+      shell: bash
+      env:
+        REF: ${{ inputs.diffcone-ref }}
+      run: |
+        python3 -m venv "$RUNNER_TEMP/diffcone"
+        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet \
+          "git+https://github.com/bearing-research/diffcone@$REF"
+        echo "$RUNNER_TEMP/diffcone/bin" >> "$GITHUB_PATH"
+    - name: Restore the evidence
+      uses: actions/cache/restore@v4
+      with:
+        path: .diffcone
+        key: ${{ inputs.key-prefix }}-${{ github.sha }}
+        restore-keys: ${{ inputs.key-prefix }}-
+    - name: Plan and run
+      id: run
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+        ROOTS: ${{ inputs.source-roots }}
+        BASE: ${{ inputs.base }}
+      run: |
+        roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
+        eval "args=($PYTEST_ARGS)"
+        mkdir -p diffcone-results
+        store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
+        evidence=()
+        if [ -n "$store" ]; then
+          commit=$(basename "$store" | cut -d- -f1)
+          # A shallow checkout may lack the recorded commit.
+          git cat-file -e "$commit^{commit}" 2>/dev/null || git fetch --quiet --depth=1 origin "$commit"
+          evidence=(--evidence "$store")
+        else
+          echo "::warning::no diffcone evidence restored; planning statically"
+        fi
+        cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
+        diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
+          "${evidence[@]}" -o diffcone-results/plan.json || [ $? -le 3 ]
+        python3 -c "import json; p = json.load(open('diffcone-results/plan.json')); \
+          print('selected=%d' % len(p['selected_targets']))" >> "$GITHUB_OUTPUT"
+        diffcone run --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
+          "${evidence[@]}" --command "$COMMAND" -- \
+          "${args[@]}" --junitxml=diffcone-results/diffcone.xml

@@ -1,0 +1,71 @@
+name: diffcone record
+description: >-
+  Record execution evidence for the checked-out commit (diffcone collect),
+  warm and prune the cache to that commit, and save .diffcone/ with
+  actions/cache for pull requests to restore. Run it on the default branch,
+  on a schedule, in the environment the pull-request job uses.
+inputs:
+  key-prefix:
+    description: Cache key prefix naming the job this evidence stands for (one per environment).
+    required: true
+  command:
+    description: The pytest command line, without arguments (e.g. "pixi run -e py313 python -m pytest").
+    required: true
+  pytest-args:
+    description: Arguments passed to pytest (markers, -n, paths), as one shell-quoted string.
+    default: ""
+  env-vars:
+    description: Space-separated environment variables that change what tests do (recorded and checked).
+    default: ""
+  source-roots:
+    description: Space-separated source roots, as for diffcone plan.
+    default: "."
+  junit:
+    description: Also write the recording run's JUnit XML here (kept in .diffcone/ as the baseline).
+    default: ".diffcone/baseline.xml"
+  diffcone-ref:
+    description: The diffcone git ref to install.
+    default: main
+runs:
+  using: composite
+  steps:
+    - name: Install diffcone
+      shell: bash
+      env:
+        REF: ${{ inputs.diffcone-ref }}
+      run: |
+        python3 -m venv "$RUNNER_TEMP/diffcone"
+        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet \
+          "git+https://github.com/bearing-research/diffcone@$REF"
+        echo "$RUNNER_TEMP/diffcone/bin" >> "$GITHUB_PATH"
+    - name: Record
+      shell: bash
+      env:
+        PREFIX: ${{ inputs.key-prefix }}
+        COMMAND: ${{ inputs.command }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+        ENV_VARS: ${{ inputs.env-vars }}
+        ROOTS: ${{ inputs.source-roots }}
+        JUNIT: ${{ inputs.junit }}
+      run: |
+        roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
+        vars=(); for v in $ENV_VARS; do vars+=(--env-var "$v"); done
+        eval "args=($PYTEST_ARGS)"
+        mkdir -p "$(dirname "$JUNIT")"
+        # The suite's own failures do not stop the recording; a broken
+        # recording exits non-zero and nothing is saved.
+        diffcone collect --command "$COMMAND" "${roots[@]}" "${vars[@]}" -- \
+          "${args[@]}" "--junitxml=$JUNIT"
+        # Index and discover this commit once, so pull requests start warm.
+        diffcone plan --base HEAD --head HEAD --discover pytest "${roots[@]}" \
+          --evidence auto -o /dev/null || [ $? -le 3 ]
+        diffcone prune --keep HEAD "${roots[@]}"
+        commit=$(git rev-parse HEAD)
+        find .diffcone/evidence -name '*.sqlite' ! -name "$commit-*" -delete
+        echo "key=$PREFIX-$commit" >> "$GITHUB_OUTPUT"
+      id: record
+    - name: Save
+      uses: actions/cache/save@v4
+      with:
+        path: .diffcone
+        key: ${{ steps.record.outputs.key }}

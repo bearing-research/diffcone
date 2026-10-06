@@ -1,0 +1,54 @@
+name: diffcone check
+description: >-
+  Compare a diffcone plan with the JUnit XML of the full run of the same
+  tests, and write the verdict (missed failures, tests run, test time) to
+  the job summary. Exits non-zero only when fail-on-miss is true.
+inputs:
+  results:
+    description: The directory diffcone run wrote (plan.json, diffcone.xml, baseline.xml).
+    default: diffcone-results
+  full:
+    description: JUnit XML of the full run.
+    required: true
+  others:
+    description: Further selective runs to compare, as space-separated NAME=JUNIT pairs (e.g. testmon=t.xml).
+    default: ""
+  fail-on-miss:
+    description: Fail the step when the plan missed a failure.
+    default: "false"
+  diffcone-ref:
+    description: The diffcone git ref to install.
+    default: main
+runs:
+  using: composite
+  steps:
+    - name: Install diffcone
+      shell: bash
+      env:
+        REF: ${{ inputs.diffcone-ref }}
+      run: |
+        python3 -m venv "$RUNNER_TEMP/diffcone"
+        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet \
+          "git+https://github.com/bearing-research/diffcone@$REF"
+    - name: Check
+      shell: bash
+      env:
+        RESULTS: ${{ inputs.results }}
+        FULL: ${{ inputs.full }}
+        OTHERS: ${{ inputs.others }}
+        FAIL: ${{ inputs.fail-on-miss }}
+      run: |
+        runs=()
+        [ -f "$RESULTS/diffcone.xml" ] && runs+=(--run "diffcone=$RESULTS/diffcone.xml")
+        for o in $OTHERS; do runs+=(--run "$o"); done
+        baseline=()
+        [ -f "$RESULTS/baseline.xml" ] && baseline=(--baseline "$RESULTS/baseline.xml")
+        status=0
+        "$RUNNER_TEMP/diffcone/bin/diffcone" check --plan "$RESULTS/plan.json" --full "$FULL" \
+          "${baseline[@]}" "${runs[@]}" --format markdown -o "$RUNNER_TEMP/verdict.md" || status=$?
+        cat "$RUNNER_TEMP/verdict.md" >> "$GITHUB_STEP_SUMMARY"
+        "$RUNNER_TEMP/diffcone/bin/diffcone" check --plan "$RESULTS/plan.json" --full "$FULL" \
+          "${baseline[@]}" "${runs[@]}" --format json -o "$RESULTS/verdict.json" || true
+        if [ "$status" -ge 2 ] || { [ "$status" -eq 1 ] && [ "$FAIL" = "true" ]; }; then
+          exit "$status"
+        fi

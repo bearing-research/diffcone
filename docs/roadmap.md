@@ -484,8 +484,11 @@ plan no longer exits 3, with its one note settled against a recording of
 prune` (3): the scratch pandas cache went from 5.8 GB to 167 MB, 29 MB
 with the store under zstd, and a plan from it to a new head took 18.6 s
 (15.3 s CPU, 2.2 GB peak RSS) on an otherwise quiet laptop;
-`collect --env-var` (4); and errors that name the commit to fetch when a
-shallow checkout lacks it (5).
+`collect --env-var` (4); errors that name the commit to fetch when a
+shallow checkout lacks it (5); and the composite actions with a pandas
+example (7, `actions/`, docs/ci.md), run locally step by step but not yet
+on GitHub. Left: running them on a fork, which gives the runner timings
+(6).
 The first step toward real use: run diffcone beside an unchanged CI and
 measure it against what CI finds.
 Decided: a separate job runs alongside the existing ones and is monitored,
