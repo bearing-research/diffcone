@@ -195,15 +195,25 @@ def _relative(path: str) -> str | None:
 CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
 
 
+_code_paths: dict[str, str | None] = {}
+
+
 def _code_path(name: str) -> str | None:
     """A code object's checkout-relative file. A profiled Cython build names
     its source relative to the directory it was built from, the checkout
-    root, rather than by an absolute path."""
+    root, rather than by an absolute path. Cached: a profiled build raises a
+    start event on every call of a Cython function, so this runs per call."""
+    try:
+        return _code_paths[name]
+    except KeyError:
+        pass
+    path: str | None = name
     if not os.path.isabs(name) and name.endswith(CYTHON_SUFFIXES):
-        name = os.path.normpath(os.path.join(ROOTS[0], name))
-        if not os.path.isfile(name):
-            return None
-    return _relative(name)
+        path = os.path.normpath(os.path.join(ROOTS[0], name))
+        if not os.path.isfile(path):
+            path = None
+    rel = _code_paths[name] = _relative(path) if path is not None else None
+    return rel
 
 
 # --------------------------------------------------------------------------- monitoring
