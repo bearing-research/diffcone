@@ -63,6 +63,7 @@ import re
 import struct
 import sys
 import zlib
+from typing import Any
 from urllib.parse import urlparse
 
 import pytest
@@ -232,7 +233,8 @@ def _code_path(name: str) -> str | None:
 
 # --------------------------------------------------------------------------- monitoring
 
-mon = getattr(sys, "monitoring", None)
+# None before 3.12, where pytest_configure stops before anything uses it.
+mon: Any = getattr(sys, "monitoring", None)
 
 
 def _on_start(code, offset):
@@ -465,7 +467,8 @@ def _start() -> None:
     sys.addaudithook(_audit)
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
-    functools.lru_cache = _tracking_lru_cache  # functools.cache goes through it too
+    # functools.cache goes through it too; a deliberate patch of the stdlib.
+    functools.lru_cache = _tracking_lru_cache  # ty: ignore[invalid-assignment]
     recording = True
 
 

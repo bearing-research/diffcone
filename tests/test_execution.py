@@ -431,6 +431,7 @@ def test_coverage_attributes_lines_to_the_innermost_symbol(repo):
     )
     plan2 = _covplan(repo, base2, head2)
     v2 = validate_pytest(plan2, repo=repo.path, command=PYTEST, coverage=True)
+    assert v2.coverage is not None
     hit = next(h for h in v2.coverage.hits if h.runner_id == "tests/test_ops.py::test_a")
     assert "pkg.ops.K" in hit.executed_changed
     assert hit.selected and v2.ok
@@ -450,6 +451,7 @@ def test_coverage_ignores_project_coverage_config(repo):
     head = repo.commit({"tests/test_ops.py": TEST_MOD.replace("== 3", "== 2 + 1")})
     plan = repo.plan(base, head, [], discover_runners=["pytest"])
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.coverage is not None
     assert v.coverage.changed_symbols == ("tests.test_ops.test_add",)
     assert [(h.runner_id, h.selected) for h in v.coverage.affected] == [
         ("tests/test_ops.py::test_add", True)
@@ -481,6 +483,7 @@ def test_read_coverage_contexts_handles_arcs_and_relative_paths(tmp_path):
         cov.start()
         cov.switch_context("tests/test_m.py::test_f[1]|run")
         spec = importlib.util.spec_from_file_location("mod", root / "mod.py")
+        assert spec is not None and spec.loader is not None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         mod.f(True)
@@ -530,7 +533,7 @@ def test_coverage_run_keeps_addopts_and_runs_head_once(repo, monkeypatch):
     monkeypatch.setattr(execution.subprocess, "run", counting_run)
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
     # The excluded test never runs, so it is neither an outcome nor a coverage miss.
-    assert v.ok
+    assert v.ok and v.coverage is not None
     assert all("excluded" not in h.runner_id for h in v.coverage.hits)
     excluded = next(o for o in v.outcomes if "excluded" in o.runner_id)
     assert (excluded.base, excluded.head, excluded.changed) == (None, None, False)
@@ -577,6 +580,7 @@ def test_coverage_credits_every_test_that_runs_a_line(repo):
     head = repo.commit({"pkg/ops.py": MOD.replace("a + b", "b + a")})
     plan = repo.plan(base, head, [], source_roots=["pkg", "tests"], discover_runners=["pytest"])
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.coverage is not None
     assert [h.runner_id for h in v.coverage.missed] == [
         "tests/test_first.py::test_first",
         "tests/test_second.py::test_second",
@@ -629,6 +633,8 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
         (c4, False, None),
     ]
     e2, _, e4 = report.entries
+    assert e2.validation is not None and e4.validation is not None
+    assert e2.validation.coverage is not None
     assert e2.validation.ok and e2.selected == 1 and e2.targets == 3
     assert e2.validation.coverage.recall == 1.0
     assert not e4.validation.ok
@@ -710,6 +716,7 @@ def test_removed_tests_are_not_misses_and_additive_changes_are_not_ground_truth(
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
     assert [o.runner_id for o in v.removed] == ["tests/test_ops.py::test_gone"]
     assert v.missed == []
+    assert v.coverage is not None
     assert [(h.runner_id, h.selected) for h in v.coverage.affected] == [
         ("tests/test_ops.py::test_new", True)
     ]
@@ -765,7 +772,7 @@ def test_validation_runs_with_checkout_source_roots_on_pythonpath(repo, monkeypa
 
     monkeypatch.setattr(execution.subprocess, "run", capturing_run)
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
-    assert v.ok and v.coverage.recall == 1.0
+    assert v.ok and v.coverage is not None and v.coverage.recall == 1.0
     assert len(seen_env) == 2
     for env in seen_env:
         first, second = env["PYTHONPATH"].split(os.pathsep)[:2]
@@ -1047,6 +1054,7 @@ def test_coverage_can_be_restricted_to_some_files(repo):
     with _run_full_pytest(
         repo.path, PYTEST, coverage=True, source_roots=["."], coverage_include=["pkg/ops.py"]
     ) as run:
+        assert run.coverage_db is not None
         contexts = read_coverage_contexts(run.coverage_db, repo.path, set())
     assert {f for files in contexts.values() for f in files} == {"pkg/ops.py"}
     assert set(contexts) == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}

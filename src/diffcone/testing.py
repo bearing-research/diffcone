@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 from diffcone.cache import IndexCache
 from diffcone.evidence import Evidence
@@ -91,7 +92,7 @@ class FixtureRepo:
         manifest = (
             parse_manifest(targets)
             if targets and isinstance(targets[0], dict)
-            else Manifest(list(targets))  # type: ignore[arg-type]
+            else Manifest(cast(list[Target], list(targets)))
         )
         result = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
         if self.check_cache and "cache" not in kwargs:

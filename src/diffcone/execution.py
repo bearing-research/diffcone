@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 import threading
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -394,7 +394,7 @@ def _run_full_pytest(
     command: str | None,
     *,
     coverage: bool = False,
-    source_roots: list[str] = (),
+    source_roots: Sequence[str] = (),
     hash_seed: str | None = None,
     coverage_include: list[str] | None = None,
 ) -> Iterator[_SuiteRun]:
@@ -1007,7 +1007,7 @@ class CorpusReport:
 
     @property
     def ok(self) -> bool:
-        return all(e.validation.ok for e in self.validated) and not any(
+        return all(e.validation.ok for e in self.validated if e.validation) and not any(
             e.error for e in self.entries
         )
 
@@ -1420,6 +1420,12 @@ class EvidenceRun:
     static: RunResult | None = None
     # The static plan was incomplete, so the whole suite ran instead.
     static_whole: bool = False
+
+    @property
+    def ran(self) -> RunResult:
+        """What actually ran: the static fallback when the environment differed."""
+        return self.static if self.static is not None else self.result
+
     # With ``advance``: the store written for head, or why none was.
     advanced: Path | None = None
     not_advanced: str | None = None
@@ -1486,8 +1492,8 @@ def run_with_evidence(
             shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
         if not report.exists():
             run = EvidenceRun(result)
-            if advance_from is not None and not dry_run:
-                _advance(run, plan, advance_from, out, cwd)  # type: ignore[arg-type]
+            if advance_from is not None and out is not None and not dry_run:
+                _advance(run, plan, advance_from, out, cwd)
             return run
         met = json.loads(report.read_text("utf-8"))
     static = static_plan()

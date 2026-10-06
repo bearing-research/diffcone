@@ -356,7 +356,7 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
         assert getattr(restored, field.name) == getattr(index, field.name), field.name
 
 
-def test_planning_suspends_the_cyclic_collector_and_restores_it(repo):
+def test_planning_suspends_the_cyclic_collector_and_restores_it(repo, monkeypatch):
     import gc
 
     from diffcone import planner
@@ -370,7 +370,7 @@ def test_planning_suspends_the_cyclic_collector_and_restores_it(repo):
         seen.append(gc.isenabled())
         return original(*args, **kwargs)
 
-    planner.plan_from_indexes = spy
+    monkeypatch.setattr(planner, "plan_from_indexes", spy)
     try:
         assert gc.isenabled()
         repo.plan(base, head, [])
@@ -379,7 +379,6 @@ def test_planning_suspends_the_cyclic_collector_and_restores_it(repo):
         repo.plan(base, head, [])
         assert not gc.isenabled()
     finally:
-        planner.plan_from_indexes = original
         gc.enable()
 
 

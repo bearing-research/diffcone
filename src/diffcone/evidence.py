@@ -396,9 +396,10 @@ def advance(
         for name, record in previous.tests.items()
         if name not in rerun and (alive is None or name in alive)
     }
-    for name, record in (fresh.tests if fresh is not None else {}).items():
-        old = previous.tests.get(name)
-        tests[name] = (fresh, record, old.flags & FLAG_UNSTABLE if old else 0)  # type: ignore[assignment]
+    if fresh is not None:
+        for name, record in fresh.tests.items():
+            old = previous.tests.get(name)
+            tests[name] = (fresh, record, old.flags & FLAG_UNSTABLE if old else 0)
     symbol_table = sorted({ev.symbols[i] for ev, r, _ in tests.values() for i in r.symbols})
     path_table = sorted({ev.paths[i] for ev, r, _ in tests.values() for i in r.paths | r.dirs})
     sid = {s: i for i, s in enumerate(symbol_table)}

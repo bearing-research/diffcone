@@ -29,6 +29,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from diffcone.cython import CythonFunction, CythonModule, CythonStatement
 from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
@@ -130,27 +131,28 @@ def index_from_dict(data: dict) -> SourceIndex:
         cython={
             path: CythonModule(
                 path,
-                tuple(
-                    CythonFunction(**{**f, "names": frozenset(f["names"])})
-                    for f in module["functions"]
-                ),
+                tuple(_cython_function(f) for f in module["functions"]),
                 module["outside_hash"],
                 None
                 if module["statements"] is None
-                else tuple(
-                    CythonStatement(
-                        **{
-                            **st,
-                            "names": tuple(st["names"]),
-                            "bases": tuple(st["bases"]),
-                        }
-                    )
-                    for st in module["statements"]
-                ),
+                else tuple(_cython_statement(st) for st in module["statements"]),
             )
             for path, module in data["cython"].items()
         },
     )
+
+
+def _cython_function(data: dict[str, Any]) -> CythonFunction:
+    fields = dict(data)
+    fields["names"] = frozenset(data["names"])
+    return CythonFunction(**fields)
+
+
+def _cython_statement(data: dict[str, Any]) -> CythonStatement:
+    fields = dict(data)
+    fields["names"] = tuple(data["names"])
+    fields["bases"] = tuple(data["bases"])
+    return CythonStatement(**fields)
 
 
 class ModuleCache:

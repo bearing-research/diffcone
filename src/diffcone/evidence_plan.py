@@ -414,8 +414,8 @@ class _Observers:
         }
         self.fixture_sources_changed = any(
             c.carries_impact
-            and (c.head or c.base).kind in (FUNCTION, METHOD, CLASS)  # type: ignore[union-attr]
-            and (c.head or c.base).module in pytest_modules  # type: ignore[union-attr]
+            and c.symbol.kind in (FUNCTION, METHOD, CLASS)
+            and c.symbol.module in pytest_modules
             and {ADDED, DELETED, DEFINITION_CHANGED} & set(c.changes)
             for c in self.changes
         )
@@ -493,10 +493,10 @@ class _Observers:
             what = "edited" if before and after else ("added" if after else "deleted")
             self._file(path, what, names=not (before and after))
         for change in self.changes:
-            symbol = change.head or change.base
-            if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):  # type: ignore[union-attr]
+            symbol = change.symbol
+            if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):
                 what = f"{change.id} {'/'.join(change.changes)}"
-                self._file(symbol.path, what, names=True)  # type: ignore[union-attr]
+                self._file(symbol.path, what, names=True)
 
     def _cython(self) -> set[str]:
         """Cython sources (roadmap item 7): the paths this rule handled.
@@ -738,8 +738,7 @@ class _Observers:
             )
 
     def _change(self, change: SymbolChange) -> None:
-        symbol = change.head or change.base
-        assert symbol is not None
+        symbol = change.symbol
         kinds = set(change.changes)
         test = self.test_code.is_test_code(symbol.module)
         label = f"{change.id} {'/'.join(change.changes)}"
@@ -942,8 +941,7 @@ class _Observers:
         the module, a decorated member through its class, so the lookup
         sites are those that can see that namespace."""
         self.seed_changes.add(change.id)
-        symbol = change.head or change.base
-        assert symbol is not None
+        symbol = change.symbol
         self._module_symbols(symbol.module, why)
         self._sites(symbol, change, why, imports=symbol.kind == MODULE)
 

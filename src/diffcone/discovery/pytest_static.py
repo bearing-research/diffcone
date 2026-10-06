@@ -969,8 +969,8 @@ def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
         names = {a.name for a in stmt.names}
         if "*" in names:
             imported[base] = None
-        elif imported.get(base, set()) is not None:
-            imported.setdefault(base, set()).update(names)
+        elif (known := imported.setdefault(base, set())) is not None:
+            known.update(names)
     out: list[ModuleFacts] = []
     for base, names in imported.items():
         sub = module_facts(base)
@@ -989,6 +989,11 @@ def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
         if visible.fixtures or visible.hooks:
             out.append(visible)
     return out
+
+
+# A module's scope for base-class lookups: (parsed module, its classes, imported
+# class names -> (module, name)).
+_Scope = tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]
 
 
 def discover_pytest(
@@ -1306,17 +1311,19 @@ def _collect_module_tests(
 
     # Module scopes reached through base classes: name -> (parsed, classes,
     # imported class names). None for a module outside the source roots.
-    scopes: dict[str, tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None] = {}
+    scopes: dict[str, _Scope | None] = {}
     # Per module: alias -> module it names, for a dotted base ``alias.Class``.
     module_prefixes: dict[str, dict[str, str]] = {}
 
-    def scope_for(module: str) -> tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]:
+    def scope_for(module: str) -> _Scope | None:
+        """None for a module outside the source roots, or one whose scope is
+        being built (an import cycle)."""
         if module in scopes:
-            return scopes[module]  # type: ignore[return-value]
+            return scopes[module]
         scopes[module] = None  # guards import cycles while this one is built
         facts = module_facts(module) if module_facts is not None else None
         if facts is None:
-            return None  # type: ignore[return-value]
+            return None
         modules: dict[str, str] = {}
         classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
         imported: dict[str, tuple[str, str]] = {}
@@ -1341,8 +1348,9 @@ def _collect_module_tests(
                     imported[alias.asname or alias.name] = (src, alias.name)
                     modules.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
         module_prefixes[module] = modules
-        scopes[module] = (facts.parsed, classes, imported)
-        return scopes[module]  # type: ignore[return-value]
+        scope = (facts.parsed, classes, imported)
+        scopes[module] = scope
+        return scope
 
     own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
 
@@ -1472,7 +1480,7 @@ def _collect_module_tests(
                     None,
                 )
             nodeid = f"{parsed.path}::{bound}"
-            if node is None:
+            if node is None or origin is None:
                 # Outside the source roots (or not a definition there): whether
                 # pytest collects anything from it is unknown (unittest's own
                 # ``TestCase`` yields nothing), so it is reported, not guessed.

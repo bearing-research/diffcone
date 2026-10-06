@@ -247,8 +247,8 @@ class Plan:
     fallbacks: list[Fallback]
     unresolved: list[UnresolvedRecord]
     errors: list[AnalysisError]
-    base_index: SourceIndex = field(repr=False, default=None)  # type: ignore[assignment]
-    head_index: SourceIndex = field(repr=False, default=None)  # type: ignore[assignment]
+    base_index: SourceIndex = field(repr=False)
+    head_index: SourceIndex = field(repr=False)
     discovery: list[DiscoveryResult] = field(default_factory=list)
     targets: list[Target] = field(default_factory=list)
     declarations: list[Declaration] = field(default_factory=list)
@@ -366,9 +366,7 @@ def _runs_at_import(change: SymbolChange) -> bool:
     calls is reached through its edges), and an inert ``def`` at both
     revisions only binds a name (removing or rebinding it reaches its users
     through deletion and resolution edges)."""
-    symbol = change.head or change.base
-    if symbol is None:
-        return False
+    symbol = change.symbol
     if symbol.kind in (MODULE, CLASS):
         return True
     if symbol.kind == VARIABLE:
@@ -665,8 +663,7 @@ def plan_from_indexes(
     # A change that runs when its module is imported affects the module's
     # import, hence (through ``imports`` edges) every importer.
     for change in impacting:
-        symbol = change.head or change.base
-        assert symbol is not None
+        symbol = change.symbol
         if symbol.module not in mode and _runs_at_import(change):
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
@@ -685,7 +682,7 @@ def plan_from_indexes(
     # supplied, which can belong to any module; the index binds that read at
     # the other end instead (a class whose instances are handed around gains
     # an edge to each of its members), and the closure check stays as well.
-    changed_modules = {(c.head or c.base).module for c in impacting}  # type: ignore[union-attr]
+    changed_modules = {c.symbol.module for c in impacting}
     reach = _ImportReach(base, head)
 
     if impacting and seeds is None:
@@ -857,11 +854,7 @@ def _runner_dependency_fallbacks(
         runner_modules: set[str] = set()
         for module in roots:
             runner_modules |= reach.closure_of(module)
-        hit = sorted(
-            c.id
-            for c in impacting
-            if (c.head or c.base).module in runner_modules  # type: ignore[union-attr]
-        )
+        hit = sorted(c.id for c in impacting if c.symbol.module in runner_modules)
         if not hit:
             continue
         shown = ", ".join(hit[:3]) + (f" and {len(hit) - 3} more" if len(hit) > 3 else "")
@@ -1149,17 +1142,17 @@ def plan(
     base_index, _ = _index_snapshot(repo_path, base, roots, with_config=False, cache=cache)
     # Discovery of a committed head may come from the cache, and then so may
     # the head index; otherwise discovery needs the head snapshot's files.
-    head_commit = _cacheable_commit(repo_path, head) if cache is not None else None
+    discovery_cache = cache.discovery if cache is not None else None
+    head_commit = _cacheable_commit(repo_path, head) if discovery_cache is not None else None
     cached_head: list[DiscoveryResult] | None = None
-    if runners and head_commit is not None:
-        found = [cache.discovery.load(head_commit, roots, r, options) for r in runners]  # type: ignore[union-attr]
-        if all(result is not None for result in found):
-            cached_head = found  # type: ignore[assignment]
+    if runners and head_commit is not None and discovery_cache is not None:
+        found = [discovery_cache.load(head_commit, roots, r, options) for r in runners]
+        hits = [result for result in found if result is not None]
+        if len(hits) == len(runners):
+            cached_head = hits
     head_index, head_snapshot = _index_snapshot(
         repo_path, head, roots, with_config=bool(runners) and cached_head is None, cache=cache
     )
-    if runners and cached_head is None and head_snapshot is None:  # pragma: no cover
-        raise GitError("discovery needs the head snapshot's files")
     # Both revisions, as every other edge is: a commit that deletes a
     # declaration while changing what it pointed at must still select.
     # Discovery at the base too, so a target the base did not have is known
@@ -1167,21 +1160,21 @@ def plan(
     # repositories); the base index still comes from the cache.
     base_target_ids: set[str] | None = None
     if runners:
-        base_commit = _cacheable_commit(repo_path, base) if cache is not None else None
+        base_commit = _cacheable_commit(repo_path, base) if discovery_cache is not None else None
         base_target_ids = set()
         base_snapshot: Snapshot | None = None
         for runner in runners:
             result = (
-                cache.discovery.load(base_commit, roots, runner, options)  # type: ignore[union-attr]
-                if base_commit is not None
+                discovery_cache.load(base_commit, roots, runner, options)
+                if base_commit is not None and discovery_cache is not None
                 else None
             )
             if result is None:
                 if base_snapshot is None:
                     base_snapshot = read_snapshot(repo_path, base, roots, with_config=True)
                 result = discover(runner, base_snapshot, base_index, options)
-                if base_commit is not None:
-                    cache.discovery.store(result, base_commit, roots, options)  # type: ignore[union-attr]
+                if base_commit is not None and discovery_cache is not None:
+                    discovery_cache.store(result, base_commit, roots, options)
             base_target_ids |= {target.runner_id for target in result.targets}
     declared: list[Declaration] = []
     for revision, index in ((base, base_index), (head, head_index)):
@@ -1192,13 +1185,16 @@ def plan(
                 AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
             )
     declared = sorted(set(declared))
+    discovered: list[DiscoveryResult] = []
     if cached_head is not None:
         discovered = cached_head
-    else:
+    elif runners:
+        if head_snapshot is None:  # pragma: no cover
+            raise GitError("discovery needs the head snapshot's files")
         discovered = [discover(runner, head_snapshot, head_index, options) for runner in runners]
-        if head_commit is not None:
+        if head_commit is not None and discovery_cache is not None:
             for result in discovered:
-                cache.discovery.store(result, head_commit, roots, options)  # type: ignore[union-attr]
+                discovery_cache.store(result, head_commit, roots, options)
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 

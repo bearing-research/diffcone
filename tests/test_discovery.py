@@ -8,7 +8,7 @@ from diffcone.cli import main
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
-from diffcone.testing import asv_target, py_target, reason, rules, selected, unselected
+from diffcone.testing import py_target, reason, rules, selected, unselected
 
 
 def run_discovery(repo, rev, runner, roots=None, **opts):
@@ -322,7 +322,6 @@ def test_plan_with_discovery_end_to_end(repo):
         "tests/test_all.py::test_nothing",
     } <= selected(plan3)
     assert "bench.time_free" in unselected(plan3)
-    assert asv_target  # imported for symmetry with other scenario files
 
 
 def test_cli_discover_and_plan_with_discover(repo, capsys):

@@ -191,7 +191,9 @@ def discover_asv(
             extra[name] = found[0] if found else None
         return extra[name]
 
-    def bases_of(cls: ast.ClassDef, pm: ParsedModule, runner_id: str) -> list[ast.ClassDef]:
+    def bases_of(
+        cls: ast.ClassDef, pm: ParsedModule, runner_id: str
+    ) -> list[tuple[ast.ClassDef, ParsedModule]]:
         """Base classes of ``cls``, nearest first, each with the module that
         defines it; a base that resolves nowhere is reported."""
         chain: list[tuple[ast.ClassDef, ParsedModule]] = []
@@ -208,8 +210,8 @@ def discover_asv(
             found_cls, found_mod = here.get(name), owner
             if found_cls is None:
                 target = _imported_names(owner).get(name)
-                source = module_for(target[0]) if target else None
-                if source is not None:
+                source = module_for(target[0]) if target is not None else None
+                if target is not None and source is not None:
                     found_cls = {c.name: c for c in scope_classes(source.tree.body)}.get(target[1])
                     found_mod = source
             if found_cls is None:

@@ -42,6 +42,14 @@ class SymbolChange:
     head: Symbol | None
 
     @property
+    def symbol(self) -> Symbol:
+        """The symbol as it is in head, or as it was in base when deleted:
+        a change always has one side."""
+        symbol = self.head or self.base
+        assert symbol is not None, f"{self.id} has neither side"
+        return symbol
+
+    @property
     def carries_impact(self) -> bool:
         return not set(self.changes) <= NON_IMPACT
 
@@ -81,15 +89,14 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
         b = base.symbols.get(symbol_id)
         h = head.symbols.get(symbol_id)
-        module = (b or h).module  # type: ignore[union-attr]
-        if b is None and module in base.failed_modules:
-            continue
-        if h is None and module in head.failed_modules:
-            continue
         if b is None:
-            changes.append(SymbolChange(symbol_id, h.kind, (ADDED,), None, h))  # type: ignore[union-attr]
+            assert h is not None  # the id came from one of the two
+            if h.module not in base.failed_modules:
+                changes.append(SymbolChange(symbol_id, h.kind, (ADDED,), None, h))
             continue
         if h is None:
+            if b.module in head.failed_modules:
+                continue
             changes.append(SymbolChange(symbol_id, b.kind, (DELETED,), b, None))
             continue
         kinds: list[str] = []

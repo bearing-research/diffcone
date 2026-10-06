@@ -105,7 +105,8 @@ def test_the_reader_finds_functions_methods_and_their_flags():
     # The names a body mentions, for the callers of nogil and cpdef functions.
     assert {"_add", "malloc"} <= functions["total"].names
     assert module.function_at(17) is None  # the blank line after total
-    assert module.function_at(19).name == "_add"
+    at_19 = module.function_at(19)
+    assert at_19 is not None and at_19.name == "_add"
 
 
 def test_declarations_without_a_body_are_not_functions():
@@ -197,7 +198,9 @@ IF UNAME_SYSNAME == "Windows":
 
 def test_the_reader_finds_what_statements_bind():
     module = read("pkg/_ext.pyx", OUTSIDE)
-    got = [(s.scope, s.kind, s.names, s.visible, s.why) for s in module.statements]
+    statements = module.statements
+    assert statements is not None
+    got = [(s.scope, s.kind, s.names, s.visible, s.why) for s in statements]
     assert got == [
         ("", "code", (), False, "a compiler directive"),
         ("", "code", (), False, "a docstring"),
@@ -232,9 +235,9 @@ def test_the_reader_finds_what_statements_bind():
         ("", "code", (), False, "compile-time IF"),
         ("", "code", (), False, "include"),
     ]
-    box = next(s for s in module.statements if s.kind == "class")
+    box = next(s for s in statements if s.kind == "class")
     assert box.bases == ("Base",)
-    imports = [s.module for s in module.statements if s.kind == "import"]
+    imports = [s.module for s in statements if s.kind == "import"]
     assert imports[-2:] == [".np_datetime npy_datetimestruct", "pandas._libs util"]
     # Statements inside functions are the functions' own.
     assert [f.name for f in module.functions] == ["Box.get"]

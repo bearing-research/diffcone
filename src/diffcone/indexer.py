@@ -34,7 +34,9 @@ import io
 import json
 import tokenize
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from diffcone.cython import read as read_cython
 from diffcone.model import (
@@ -132,10 +134,11 @@ class _StripDefs(ast.NodeTransformer):
     def __init__(self, strip_imports: bool) -> None:
         self.strip_imports = strip_imports
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.stmt | None:
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.stmt | None:
         return None
 
-    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.stmt | None:
+        return self.visit_FunctionDef(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.stmt | None:
         return None
@@ -256,6 +259,10 @@ class ClassScope:
     in_mro: bool = False  # cycle guard while linearising
 
 
+# A top-level ``NAME = <expr>`` or ``NAME: T = <expr>`` that is a variable symbol.
+VariableStatement = ast.Assign | ast.AnnAssign
+
+
 @dataclass
 class ModuleScope:
     name: str
@@ -272,7 +279,7 @@ class ModuleScope:
     # Simple top-level assignments that are symbols of their own: name -> id,
     # and the statement each one came from (excluded from the module body hash).
     variables: dict[str, str] = field(default_factory=dict)
-    variable_stmts: dict[str, ast.stmt] = field(default_factory=dict)
+    variable_stmts: dict[str, VariableStatement] = field(default_factory=dict)
     # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
     # Names this module mutates in place anywhere (``d[k] = v``,
@@ -466,8 +473,10 @@ def _constant_string(expr: ast.expr) -> str | None:
     """The string ``expr`` is, when it is written out in the source."""
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return expr.value
-    if isinstance(expr, ast.JoinedStr) and all(isinstance(v, ast.Constant) for v in expr.values):
-        return "".join(str(v.value) for v in expr.values)  # type: ignore[attr-defined]
+    if isinstance(expr, ast.JoinedStr):
+        parts = [v.value for v in expr.values if isinstance(v, ast.Constant)]
+        if len(parts) == len(expr.values):
+            return "".join(str(part) for part in parts)
     return None
 
 
@@ -508,18 +517,18 @@ def _string_candidates(
         return module_literals.get(expr.id)
     # ``D.keys()`` over a literal-keyed dict yields its keys. (``D.items()``
     # yields pairs and is handled only for ``for key, value in`` targets.)
-    if _is_dict_method_call(expr, "keys"):
-        return _string_candidates(expr.func.value, local_literals, module_literals)  # type: ignore[attr-defined]
+    if (receiver := _dict_method_receiver(expr, "keys")) is not None:
+        return _string_candidates(receiver, local_literals, module_literals)
     # ``D.values()`` over a dict literal with string values yields them.
-    if _is_dict_method_call(expr, "values"):
-        return _indexed(expr.func.value, local_literals, module_literals)  # type: ignore[attr-defined]
+    if (receiver := _dict_method_receiver(expr, "values")) is not None:
+        return _indexed(receiver, local_literals, module_literals)
     # ``D[key]`` / ``L[i]``: one of the literal's values (a slice is not one).
     if isinstance(expr, ast.Subscript) and not isinstance(expr.slice, ast.Slice):
         return _indexed(expr.value, local_literals, module_literals)
     return None
 
 
-def _constant_strings(exprs: list[ast.expr | None]) -> tuple[str, ...] | None:
+def _constant_strings(exprs: Sequence[ast.expr | None]) -> tuple[str, ...] | None:
     """The strings ``exprs`` are, or None when any of them is not written out
     as one (a ``*``/``**`` unpacking, whose element is None, included)."""
     out: list[str] = []
@@ -544,9 +553,9 @@ def _indexed(
         # ``{**other}`` has a None key and hides what it contributes.
         if any(key is None for key in expr.keys):
             return None
-        return _constant_strings(expr.values)  # type: ignore[arg-type]
+        return _constant_strings(expr.values)
     if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
-        return _constant_strings(expr.elts)  # type: ignore[arg-type]
+        return _constant_strings(expr.elts)
     if isinstance(expr, ast.Name):
         key = expr.id + INDEXED
         if key in local_literals:
@@ -555,14 +564,17 @@ def _indexed(
     return None
 
 
-def _is_dict_method_call(expr: ast.expr, method: str) -> bool:
-    return (
+def _dict_method_receiver(expr: ast.expr, method: str) -> ast.expr | None:
+    """``D`` when ``expr`` is ``D.<method>()`` with no arguments."""
+    if (
         isinstance(expr, ast.Call)
         and not expr.args
         and not expr.keywords
         and isinstance(expr.func, ast.Attribute)
         and expr.func.attr == method
-    )
+    ):
+        return expr.func.value
+    return None
 
 
 def _collect_literal_bindings(
@@ -576,8 +588,9 @@ def _collect_literal_bindings(
     found: dict[str, tuple[str, ...] | None] = {}
 
     def merge(name: str, values: tuple[str, ...] | None) -> None:
-        if name in found and found[name] is not None and values is not None:
-            found[name] = tuple(dict.fromkeys(found[name] + values))
+        known = found.get(name)
+        if known is not None and values is not None:
+            found[name] = tuple(dict.fromkeys(known + values))
         else:
             found[name] = None if (name in found and found[name] is None) else values
 
@@ -617,8 +630,8 @@ def _collect_literal_bindings(
             # keys and the values are bounded, anything else is not.
             elts = n.target.elts
             keys = items = None
-            if _is_dict_method_call(n.iter, "items") and len(elts) == 2:
-                receiver = n.iter.func.value  # type: ignore[attr-defined]
+            receiver = _dict_method_receiver(n.iter, "items")
+            if receiver is not None and len(elts) == 2:
                 keys = _string_candidates(receiver, found, module_literals)
                 items = _indexed(receiver, found, module_literals)
             for i, elt in enumerate(elts):
@@ -665,8 +678,10 @@ def _mutated_name(node: ast.AST) -> str | None:
     """The name a statement or call mutates in place (``d[k] = v``,
     ``d.append(x)``, ``del d[k]``), if it is a plain name."""
     targets: list[ast.expr] = []
-    if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-        targets = list(getattr(node, "targets", [])) or [node.target]  # type: ignore[list-item]
+    if isinstance(node, ast.Assign):
+        targets = list(node.targets)
+    elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+        targets = [node.target]
     elif isinstance(node, ast.Delete):
         targets = list(node.targets)
     elif (
@@ -777,10 +792,11 @@ class _LocalBindings(ast.NodeVisitor):
             if alias.name != "*":
                 self.names.add(alias.asname or alias.name)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self.names.add(node.name)
 
-    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return self.visit_FunctionDef(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.names.add(node.name)
@@ -1496,10 +1512,10 @@ class Indexer:
                         )
         for ref in self.out.attr_refs:
             bound = self._attribute_writes(ref.cls, ref.attr, writes, unresolved_names)
-            if bound is None or any(w.binding[0] != "symbol" for w in bound):  # type: ignore[index]
+            if bound is None or any(binding[0] != "symbol" for _, binding in bound):
                 continue
-            for w in bound:
-                node: Node = Resolved(w.binding[1])  # type: ignore[index]
+            for _, binding in bound:
+                node: Node = Resolved(binding[1])
                 for attr in ref.rest:
                     node = self._step(node, attr)
                 if isinstance(node, Resolved) and not ref.rest and node.symbol != ref.source:
@@ -1655,7 +1671,7 @@ class Indexer:
         family: set[str] = set()
         for cid in (class_id, *self._descendants.get(class_id, ())):
             family.update(self._mro(cid))
-        bound: list[_AttrWrite] = []
+        bound: list[tuple[_AttrWrite, list[Any]]] = []
         for cid in sorted(family):
             cscope = self.class_scopes.get(cid)
             if cscope is None or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
@@ -1667,12 +1683,11 @@ class Indexer:
             for w in writes.get((cid, attr), ()):
                 if w.binding is None:
                     return None
-                bound.append(w)
+                bound.append((w, w.binding))
         if not bound:
             return None
         found: set[str] = set()
-        for w in bound:
-            kind, value = w.binding  # type: ignore[misc]
+        for w, (kind, value) in bound:
             if kind == "symbol":
                 symbol = self.index.symbols.get(value)
                 if symbol is None or symbol.kind != CLASS:
@@ -1773,9 +1788,9 @@ class Indexer:
         attr: str,
         writes: dict[tuple[str, str], list[_AttrWrite]],
         unresolved_names: set[str],
-    ) -> list[_AttrWrite] | None:
+    ) -> list[tuple[_AttrWrite, list[Any]]] | None:
         """What ``self.<attr>`` may hold in a method of ``class_id``: its
-        bound writes, or None when it cannot be bounded. The
+        bound writes with their bindings, or None when it cannot be bounded. The
         instance may belong to any in-scope subclass, so every class in the
         MRO of the class or of a subclass counts; each must be plain and
         fully in scope, none may define the attribute at class level or
@@ -1790,7 +1805,7 @@ class Indexer:
         family: set[str] = set()
         for cid in (class_id, *self._descendants.get(class_id, ())):
             family.update(self._mro(cid))
-        bound: list[_AttrWrite] = []
+        bound: list[tuple[_AttrWrite, list[Any]]] = []
         for cid in sorted(family):
             cscope = self.class_scopes[cid]
             if not cscope.plain or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
@@ -1804,7 +1819,7 @@ class Indexer:
             for w in writes.get((cid, attr), ()):
                 if w.binding is None:
                     return None
-                bound.append(w)
+                bound.append((w, w.binding))
         return bound or None
 
     def _attribute_strings(
@@ -1818,8 +1833,7 @@ class Indexer:
         if bound is None:
             return None
         values: list[str] = []
-        for w in bound:
-            kind, value = w.binding  # type: ignore[misc]
+        for w, (kind, value) in bound:
             if kind == "strings":
                 values.extend(value)
             elif kind == "param":
@@ -1851,7 +1865,7 @@ class Indexer:
 
     def _module_statements(
         self, scope: ModuleScope, *, register_imports: bool
-    ) -> tuple[list[ast.stmt], list[ast.stmt], dict[str, ast.stmt]]:
+    ) -> tuple[list[ast.stmt], list[ast.stmt], dict[str, VariableStatement]]:
         """(all scope statements, body without docstring, variable statements)
         of a parsed module; records the import statements and, unless the
         import table was served by the cache, fills it."""
@@ -1913,7 +1927,8 @@ class Indexer:
             if name in scope.members:
                 continue  # also a def/class: Python's last binding wins; stay conservative
             symbol_id = self._member_id(scope.name, name)
-            value = stmt.value  # type: ignore[attr-defined]
+            value = stmt.value
+            assert value is not None  # _variable_statements keeps assignments with a value
             symbol = Symbol(
                 id=symbol_id,
                 kind=VARIABLE,
@@ -2116,7 +2131,10 @@ class Indexer:
                     finally:
                         for a, annotation in zip(detached, annotations, strict=True):
                             a.annotation = annotation
-                    annotation_parts = [*annotations, *annotation_parts]  # type: ignore[list-item]
+                    annotation_parts = [
+                        *(a for a in annotations if a is not None),
+                        *annotation_parts,
+                    ]
                     return (
                         _digest(hash_nodes(annotation_parts)),
                         _digest(
@@ -2363,6 +2381,7 @@ class Indexer:
         return name in self._module_prefixes
 
     def _resolve_module(self, scope: ModuleScope) -> None:
+        assert scope.tree is not None  # parsed before a module is resolved
         module_scope = Scope(module=scope)
         # Module-level imports -> init-time edges.
         for node in scope.import_nodes:
@@ -2839,10 +2858,11 @@ def _class_attributes(node: ast.ClassDef) -> dict[str, str]:
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
             for target in targets:
                 elements = target.elts if isinstance(target, (ast.Tuple, ast.List)) else [target]
-                if not all(isinstance(e, ast.Name) for e in elements):
+                plain = [e.id for e in elements if isinstance(e, ast.Name)]
+                if len(plain) != len(elements):
                     names = []
                     break
-                names += [e.id for e in elements]  # type: ignore[attr-defined]
+                names += plain
         for name in names or [OPAQUE_ATTRIBUTE]:
             parts[name].append(dumped)
     parts[CLASS_STATEMENT] = [
@@ -2857,12 +2877,13 @@ def _start_line(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> 
     return min([node.lineno, *(d.lineno for d in node.decorator_list)])
 
 
-def _variable_statements(scope: ModuleScope, body: list[ast.stmt]) -> dict[str, ast.stmt]:
+def _variable_statements(scope: ModuleScope, body: list[ast.stmt]) -> dict[str, VariableStatement]:
     """Top-level ``NAME = <expr>`` / ``NAME: T = <expr>`` statements whose name
     is bound exactly once in the module: candidates for variable symbols.
     Names bound any other way too (in a loop, by unpacking, inside a block)
     stay on the module symbol."""
-    simple: dict[str, list[ast.stmt]] = defaultdict(list)
+    assert scope.tree is not None
+    simple: dict[str, list[VariableStatement]] = defaultdict(list)
     for stmt in body:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             target = stmt.targets[0]
@@ -2887,11 +2908,11 @@ def _variable_statements(scope: ModuleScope, body: list[ast.stmt]) -> dict[str, 
     }
 
 
-def _end_line(node: ast.AST) -> int:
+def _end_line(node: ast.stmt | ast.Module) -> int:
     """Last source line of a definition; a Module has no position of its own."""
     if isinstance(node, ast.Module):
         return node.body[-1].end_lineno or 1 if node.body else 1
-    return node.end_lineno or node.lineno  # type: ignore[attr-defined]
+    return node.end_lineno or node.lineno
 
 
 def _has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
@@ -3082,7 +3103,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         module = scope.module
         return name in module.members or name in module.imports or name in module.bindings
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         if self.skip_defs:
             return
         for dec in node.decorator_list:
@@ -3101,7 +3122,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         finally:
             self.scope = outer
 
-    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return self.visit_FunctionDef(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         if self.skip_defs:
@@ -3132,8 +3154,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         finally:
             self.scope = outer
 
-    def _visit_comprehension(self, node: ast.AST) -> None:
-        generators = node.generators  # type: ignore[attr-defined]
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
+    ) -> None:
+        generators = node.generators
         bound: set[str] = set()
         literals: dict[str, tuple[str, ...] | None] = {}
         for gen in generators:
@@ -3174,12 +3198,15 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._resolve([node.id])
             self._mark_escape(node, [node.id])
 
+    def _self_class(self, node: ast.expr) -> str | None:
+        """The class of the method this is in, when ``node`` is its ``self``
+        or ``cls``."""
+        if isinstance(node, ast.Name) and node.id == self.scope.self_name:
+            return self.scope.self_class
+        return None
+
     def _is_self(self, node: ast.expr) -> bool:
-        return (
-            isinstance(node, ast.Name)
-            and node.id == self.scope.self_name
-            and self.scope.self_class is not None
-        )
+        return self._self_class(node) is not None
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if not isinstance(node.ctx, ast.Load):
@@ -3288,10 +3315,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         write of that class's instance attribute (bound only when it is a
         plain ``__init__`` assignment); on any other receiver the type is
         unknown, so no class's ``attr`` can be bounded."""
-        if self._is_self(node.value):
+        if (cls := self._self_class(node.value)) is not None:
             binding = self._bindings.pop(id(node), None)
             self.indexer.out.attr_writes.append(
-                _AttrWrite(self.scope.self_class, node.attr, self.scope.method, binding)
+                _AttrWrite(cls, node.attr, self.scope.method, binding)
             )
         else:
             self.indexer.out.attr_unbound.add(("", node.attr))
@@ -3327,7 +3354,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
         """``setattr(receiver, name, ...)`` and its relatives."""
         names = self.scope.string_candidates(name) if name is not None else None
-        owner = self.scope.self_class if receiver is not None and self._is_self(receiver) else ""
+        owner = (self._self_class(receiver) if receiver is not None else None) or ""
         for attr in names if names is not None else ("*",):
             self.indexer.out.attr_unbound.add((owner, attr.rsplit(".", 1)[-1]))
 
@@ -3422,11 +3449,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._import_module(node, canonical)
             elif canonical == "runpy.run_path":
                 self._dynamic("runpy.run_path()")  # runs a file by path: anything
-            if builtin and parts[0] == "vars" and node.args and self._is_self(node.args[0]):
-                self.indexer.out.attr_unbound.add((self.scope.self_class, "*"))
+            if builtin and parts[0] == "vars" and node.args:
+                if (cls := self._self_class(node.args[0])) is not None:
+                    self.indexer.out.attr_unbound.add((cls, "*"))
             if builtin and parts[0] == "type" and len(node.args) == 1:
-                if self._is_self(node.args[0]):
-                    self.indexer.escape_class_family(self.scope.self_class)
+                if (cls := self._self_class(node.args[0])) is not None:
+                    self.indexer.escape_class_family(cls)
             if parts[-1] in ("setattr", "delattr") or parts[-2:] == ["patch", "object"]:
                 self._setattr_call(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
@@ -3627,11 +3655,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         """Defer a dynamic use whose name is one of the enclosing function's
         parameters (not rebound in its body) or an instance attribute
         ``self.<name>``; returns False when that does not apply."""
-        if isinstance(expr, ast.Attribute) and self._is_self(expr.value):
+        if isinstance(expr, ast.Attribute) and (cls := self._self_class(expr.value)) is not None:
             self.indexer.out.param_dynamics.append(
-                _ParamDynamic(
-                    self.source, expr.attr, kind, base, self.scope, detail, self.scope.self_class
-                )
+                _ParamDynamic(self.source, expr.attr, kind, base, self.scope, detail, cls)
             )
             return True
         if not (

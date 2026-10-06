@@ -635,7 +635,6 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.collect:
                     reason = checked.not_advanced or "the environment differs from the store's"
                     print(f"diffcone: evidence not advanced: {reason}", file=sys.stderr)
-                outcome = checked.result
                 if checked.mismatch is not None:
                     recorded = load_store(Path(result.evidence["store"])).environment
                     print(
@@ -651,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     for line in environment_differences(recorded, checked.mismatch)[:8]:
                         print(f"  {line}", file=sys.stderr)
-                    outcome = checked.static  # type: ignore[assignment]
+                outcome = checked.ran
             else:
                 outcome = run_selected(
                     result,
