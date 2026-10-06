@@ -157,6 +157,8 @@ hook_codes: set[int] = set()  # ran outside every test window with no import run
 import_paths: dict[str, set[str]] = {}
 import_dirs: dict[str, set[str]] = {}
 fixture_windows: dict[tuple[str, str, str], dict] = {}
+collected: set[str] = set()  # every test collected, parameters folded
+collection_ran = False  # this process collected (an xdist controller does not)
 used_fixtures: dict[str, list] = {}
 caches: list = []
 recording = False
@@ -480,10 +482,23 @@ def pytest_configure(config):
             _error("configure", exc)
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.hookimpl(wrapper=True)
 def pytest_collection_modifyitems(session, config, items):
+    # Every test pytest collected, before any plugin (``-m``, ``-k``, the
+    # selection plugin) deselects: it settles whether discovery's target list
+    # is short of the real collection (roadmap item 9).
+    global collection_ran
+    if recording:
+        try:
+            collected.update(fold_nodeid(item.nodeid) for item in items)
+            collection_ran = True
+        except Exception as exc:
+            _error("collection_modifyitems", exc)
+    result = yield
+    # After every other plugin has ordered them.
     if os.environ.get("DIFFCONE_COLLECT_REVERSE"):
         items.reverse()
+    return result
 
 
 def pytest_collection_finish(session):
@@ -631,6 +646,7 @@ def _finish():
         "environment": env,
         "environment_hash": environment_hash(env),
         "wrote_tests": writer is not None,
+        "collected": sorted(collected) if collection_ran else None,
         "errors": errors,
     }
     with open(os.path.join(OUT, f"process-{os.getpid()}.json"), "w") as f:

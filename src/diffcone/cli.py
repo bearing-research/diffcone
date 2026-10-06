@@ -554,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
                     extra=args.runner_args,
                     dry_run=args.dry_run,
                     advance_from=evidence if args.collect else None,
+                    allow_incomplete=args.allow_incomplete_discovery,
                 )
                 if checked.advanced is not None:
                     print(
@@ -569,7 +570,13 @@ def main(argv: list[str] | None = None) -> int:
                     recorded = load_store(Path(result.evidence["store"])).environment
                     print(
                         "diffcone: the environment differs from the one the evidence was "
-                        "recorded in, so it says nothing here; ran the static plan instead:",
+                        "recorded in, so it says nothing here; ran "
+                        + (
+                            "the whole suite instead (the static plan's discovery may be "
+                            "incomplete):"
+                            if checked.static_whole
+                            else "the static plan instead:"
+                        ),
                         file=sys.stderr,
                     )
                     for line in environment_differences(recorded, checked.mismatch)[:8]:

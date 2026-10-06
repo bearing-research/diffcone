@@ -527,16 +527,31 @@ asking.
    the same nightly job), so the two selectors are compared on the same
    pull requests by misses, tests run and test time. Text, Markdown (for
    the step summary) and JSON; exit 1 when the plan missed a failure.
-2. Cache pruning to one commit's index, discovery and module entries.
-3. Project variables in the environment fingerprint: pandas' behaviour
+2. *Discovery completeness settled by the recording.* A static pandas plan
+   exits 3, so `run` refuses: one `uncollected_test_class` note
+   (`TestPandasDelegate.Delegator`, a helper class with a method named
+   `test_method`). The note exists because a plugin may collect such a
+   class (SQLAlchemy's collects `<Name>Test`), and discovery cannot know.
+   The recording can: it ran pytest's real collection at C, with the
+   environment `run` checks before any test. So the recorder keeps every
+   node ID pytest collected (before marker deselection, parameters
+   folded), and in evidence mode a note stops counting as incomplete when
+   the same note was there at C, its file is unchanged since C, and pytest
+   collected nothing at C that was not a discovery target. A test pytest
+   collected that is not a target keeps the plan incomplete and is named.
+   When `run` falls back to the static plan (the environment differs), an
+   incomplete static plan runs the whole suite instead of its selection.
+   Narrowing (exit 3 to 0): regression scenarios for each condition.
+3. Cache pruning to one commit's index, discovery and module entries.
+4. Project variables in the environment fingerprint: pandas' behaviour
    depends on `PANDAS_FUTURE`, which the recorder does not read today. The
    store must say which variables it recorded, so planning compares the
    same ones.
-4. A plain error naming the commit to fetch when the evidence commit is not
+5. A plain error naming the commit to fetch when the evidence commit is not
    in the checkout (the pandas job fetches full history, but a shallow
    checkout needs only `git fetch --depth=1 origin <C>`).
-5. Cold and warm plan times on a 4-core GitHub runner.
-6. The workflows themselves, as composite actions in this repository and
+6. Cold and warm plan times on a 4-core GitHub runner.
+7. The workflows themselves, as composite actions in this repository and
    documented examples.
 
 **Trade-off.** Nightly compute (the suite under the recorder) and about

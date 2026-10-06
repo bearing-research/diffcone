@@ -1023,7 +1023,7 @@ def discover_pytest(
                 "a DIR=PREFIX source root"
             )
         )
-        result.notes.append(DiscoveryNote(RUNNER, "unparsed_file", detail))
+        result.notes.append(DiscoveryNote(RUNNER, "unparsed_file", detail, path))
     facts_by_path = {pm.path: _collect_facts(pm) for pm in parsed}
     facts_by_module = {f.parsed.module: f for f in facts_by_path.values()}
 
@@ -1121,7 +1121,9 @@ def discover_pytest(
     # another module, alembic's ``BatchApplyTest`` is a base nowhere).
     for symbol, detail in uncollected:
         if symbol not in used_as_base:
-            result.notes.append(DiscoveryNote(RUNNER, "uncollected_test_class", detail))
+            result.notes.append(
+                DiscoveryNote(RUNNER, "uncollected_test_class", detail, detail.split("::", 1)[0])
+            )
 
     for facts in sorted(facts_by_path.values(), key=lambda f: f.parsed.path):
         for hook in facts.collect_hooks:
@@ -1131,6 +1133,7 @@ def discover_pytest(
                     "plugin_collects_files",
                     f"{facts.parsed.path}: binds {hook}, which makes tests out of files or "
                     "objects by its own rules; what it collects is not a target",
+                    facts.parsed.path,
                 )
             )
 
@@ -1412,6 +1415,7 @@ def _collect_module_tests(
                         f"{nodeid}: base class {name!r} is not defined in this module or "
                         "imported from one in the source roots; test methods it may "
                         "contribute are not discovered",
+                        parsed.path,
                     )
                 )
         return chain
@@ -1443,6 +1447,7 @@ def _collect_module_tests(
                         "imported_test_out_of_scope",
                         f"{parsed.path}: ``from {source} import *`` names a module outside "
                         "the source roots; any tests pytest collects through it are not targets",
+                        parsed.path,
                     )
                 )
                 continue
@@ -1478,6 +1483,7 @@ def _collect_module_tests(
                             "imported_test_out_of_scope",
                             f"{nodeid}: imported from {source}, outside the source roots; "
                             "any tests pytest collects from it are not targets",
+                            parsed.path,
                         )
                     )
                 continue

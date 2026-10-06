@@ -175,7 +175,11 @@ rule each time:
 first checks inside the test process, before any test runs, that the
 interpreter, the installed distributions and a few variables match the
 recording. If they don't, the evidence says nothing about this
-environment, so it runs the static plan instead and says why. `validate`
+environment, so it runs the static plan instead and says why. The
+recording also settles discovery's doubts: a class pytest's rules skip but
+a plugin might collect stops making the plan incomplete (exit 3) when the
+recorded collection shows nothing beyond the targets and its file has not
+changed since. `validate`
 and `corpus` take `--evidence` too, so a plan's recall can be measured
 with the same machinery.
 

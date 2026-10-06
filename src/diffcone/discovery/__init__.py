@@ -42,6 +42,10 @@ class DiscoveryNote:
     runner: str
     kind: str
     detail: str
+    # The file the note is about, for the notes that mean the target list
+    # may be short: evidence mode checks whether it changed since a
+    # recording settled the note (roadmap item 9).
+    path: str = ""
 
 
 @dataclass
@@ -67,6 +71,9 @@ INCOMPLETE_NOTE_KINDS = frozenset(
         # A file pytest collects that could not be parsed or named: whatever
         # tests it holds are not targets.
         "unparsed_file",
+        # Evidence mode: pytest collected tests at the recorded commit that
+        # were not targets there.
+        "collected_not_target",
     }
 )
 

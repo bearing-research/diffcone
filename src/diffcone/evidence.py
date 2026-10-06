@@ -86,6 +86,10 @@ class Evidence:
     # of the last full collection in its line (its own commit when it is one).
     advanced_from: str | None = None
     full_commit: str | None = None
+    # Every test pytest collected at the commit (parameters folded), before
+    # any deselection; None when not recorded (an older store, or advanced
+    # by a run that ran nothing).
+    collected: frozenset[str] | None = None
     location: Path | None = None
 
     def __post_init__(self) -> None:
@@ -169,6 +173,7 @@ class _Raw:
     import_subprocess: bool
     environment: dict
     environment_hash: str
+    collected: set[str] | None = None
 
 
 def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _Raw:
@@ -205,6 +210,8 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             )
         environments.append(data["environment"])
         raw.environment_hash = data["environment_hash"]
+        if data.get("collected") is not None:
+            raw.collected = (raw.collected or set()) | set(data["collected"])
         symbol_of: list[str | None] = []
         file_of: list[str | None] = []
         for path, line, qualname in data["table"]:
@@ -349,6 +356,11 @@ def fold(
         import_dirs=_merged(r.import_dirs for r in raws),
         import_subprocess=any(r.import_subprocess for r in raws),
         reverse_checked=len(raws) > 1,
+        collected=(
+            frozenset().union(*(r.collected for r in raws if r.collected is not None))
+            if any(r.collected is not None for r in raws)
+            else None
+        ),
     )
 
 
@@ -429,6 +441,9 @@ def advance(
         reverse_checked=previous.reverse_checked,
         advanced_from=previous.commit,
         full_commit=previous.full_commit or previous.commit,
+        # The run collected the whole suite at head before selecting from
+        # it; with nothing run, head's collection is unknown.
+        collected=fresh.collected if fresh is not None else None,
     )
 
 
@@ -494,6 +509,7 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "reverse_checked": evidence.reverse_checked,
                 "advanced_from": evidence.advanced_from,
                 "full_commit": evidence.full_commit or evidence.commit,
+                "collected": sorted(evidence.collected) if evidence.collected is not None else None,
             }
             db.executemany(
                 "INSERT INTO meta VALUES (?, ?)", [(k, json.dumps(v)) for k, v in meta.items()]
@@ -575,6 +591,7 @@ def load_store(path: Path) -> Evidence:
         reverse_checked=meta["reverse_checked"],
         advanced_from=meta.get("advanced_from"),
         full_commit=meta.get("full_commit") or meta["commit"],
+        collected=frozenset(meta["collected"]) if meta.get("collected") is not None else None,
         location=path,
     )
 

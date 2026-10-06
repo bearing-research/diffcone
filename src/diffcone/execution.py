@@ -1415,6 +1415,8 @@ class EvidenceRun:
     # the evidence plan was then not run, and the static one was.
     mismatch: dict | None = None
     static: RunResult | None = None
+    # The static plan was incomplete, so the whole suite ran instead.
+    static_whole: bool = False
     # With ``advance``: the store written for head, or why none was.
     advanced: Path | None = None
     not_advanced: str | None = None
@@ -1439,6 +1441,7 @@ def run_with_evidence(
     extra: list[str] | None = None,
     dry_run: bool = False,
     advance_from: Evidence | None = None,
+    allow_incomplete: bool = False,
 ) -> EvidenceRun:
     """Run an evidence plan's pytest selection with the recorder in check
     mode: before any test runs, it compares the environment with the one the
@@ -1481,8 +1484,24 @@ def run_with_evidence(
             return run
         met = json.loads(report.read_text("utf-8"))
     static = static_plan()
+    if static.incomplete_discovery and not allow_incomplete:
+        # The evidence may have settled what the static plan cannot: pytest
+        # may collect tests that are not targets, so run them all.
+        return EvidenceRun(
+            result, met, run_whole(static, cwd=cwd, command=command, extra=extra), True
+        )
     fallback = run_selected(static, "pytest", cwd=cwd, command=command, extra=extra)
     return EvidenceRun(result, met, fallback)
+
+
+def run_whole(
+    plan: Plan, *, cwd: Path, command: str | None = None, extra: list[str] | None = None
+) -> RunResult:
+    """Run the whole pytest suite (every target counts as selected)."""
+    targets = [d.target for d in plan.decisions if d.target.runner == "pytest"]
+    argv = build_command("pytest", [], command, list(extra or []))
+    returncode = subprocess.run(argv, cwd=cwd).returncode
+    return RunResult("pytest", argv, targets, len(targets), returncode)
 
 
 def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: Path) -> None:

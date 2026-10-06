@@ -679,6 +679,18 @@ exits 3, and `run` refuses without `--allow-incomplete-discovery`: a
 degraded plan runs too much, an incomplete one would run too little, and
 only the second can miss.
 
+Evidence settles what discovery cannot know. The recorder keeps every test
+pytest collected at the recorded commit C, before any deselection, in the
+environment `run` checks before any test runs. With evidence, such a note
+stops counting (it becomes `settled_by_evidence`) when the same note stood
+at C, its file is unchanged since C, and pytest collected nothing at C
+that was not a target there. A test it did collect that was not a target
+is a gap the recording proves (`collected_not_target`), and keeps the plan
+incomplete. pandas' only note, a helper class with a method named
+`test_method`, is settled this way. When `run` falls back to the static
+plan because the environment differs and that plan is incomplete, it runs
+the whole suite.
+
 `unparsed_file` covers two cases. A file that does not parse is also an
 analysis error, so the plan degrades and selects everything. A file that
 cannot be named from any source root -- a directory component that is not

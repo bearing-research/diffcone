@@ -317,6 +317,102 @@ def test_validate_with_evidence(repo):
     assert v.coverage is not None and not v.coverage.missed
 
 
+# --------------------------------------------------------------------------- completeness
+
+HELPER = """\
+class TestThing:
+    class Helper:
+        def test_method(self):
+            pass
+
+    def test_thing(self):
+        assert self.Helper()
+"""
+PLUGIN = """\
+import pytest
+
+
+def pytest_pycollect_makeitem(collector, name, obj):
+    if name.startswith("Check") and isinstance(obj, type):
+        return pytest.Class.from_parent(collector, name=name, obj=obj)
+"""
+
+
+def _kinds(plan):
+    return sorted(n.kind for n in plan.incomplete_discovery)
+
+
+def test_the_recording_settles_a_class_pytest_does_not_collect(repo):
+    """Discovery cannot know no plugin collects a helper class with a
+    ``test_`` method; the recording ran the real collection (roadmap item 9)."""
+    repo.commit({**FILES, "tests/test_helper.py": HELPER})
+    ev = repo.collect()
+    assert "tests/test_helper.py::TestThing::test_thing" in ev.collected
+    assert T + "test_add" in ev.collected  # parameters folded
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    static = repo.plan(ev.commit, head, [], discover_runners=["pytest"])
+    assert _kinds(static) == ["uncollected_test_class"]
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert _kinds(plan) == []
+    notes = [n for d in plan.discovery for n in d.notes if n.kind == "settled_by_evidence"]
+    assert len(notes) == 1 and notes[0].path == "tests/test_helper.py"
+    # Its file changed since the recording: it may now be collected.
+    edited = repo.commit({"tests/test_helper.py": HELPER.replace("pass", "return 1")})
+    plan = repo.plan(ev.commit, edited, [], discover_runners=["pytest"], evidence=ev)
+    assert _kinds(plan) == ["uncollected_test_class"]
+    # A store that did not record its collection settles nothing.
+    plan = repo.plan(
+        head, head, [], discover_runners=["pytest"], evidence=replace(ev, collected=None)
+    )
+    assert _kinds(plan) == ["uncollected_test_class"]
+
+
+def test_tests_a_plugin_collected_keep_the_plan_incomplete(repo):
+    repo.commit(
+        {
+            **FILES,
+            "tests/plug/__init__.py": "",
+            "tests/plug/conftest.py": PLUGIN,
+            "tests/plug/test_plug.py": "class CheckThing:\n    def test_x(self):\n        pass\n",
+        }
+    )
+    ev = repo.collect()
+    assert "tests/plug/test_plug.py::CheckThing::test_x" in ev.collected
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert _kinds(plan) == [
+        "collected_not_target",
+        "plugin_collects_files",
+        "uncollected_test_class",
+    ]
+    (gap,) = [n for n in plan.incomplete_discovery if n.kind == "collected_not_target"]
+    assert "tests/plug/test_plug.py::CheckThing::test_x" in gap.detail
+
+
+def test_an_incomplete_static_fallback_runs_the_whole_suite(repo):
+    from diffcone import execution
+
+    repo.commit({**FILES, "tests/test_helper.py": HELPER})
+    ev = repo.collect()
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert not plan.incomplete_discovery
+    plan.evidence["environment_hash"] = "0" * 16  # recorded somewhere else
+    static = repo.plan(ev.commit, head, [], discover_runners=["pytest"])
+    command = f"{sys.executable} -m pytest"
+    run = execution.run_with_evidence(
+        plan, lambda: static, cwd=repo.path, command=command, extra=["-q"]
+    )
+    assert run.mismatch is not None and run.static_whole
+    assert run.static is not None and run.static.returncode == 0
+    assert len(run.static.selected) == run.static.total
+    # Allowed, it runs the static selection.
+    run = execution.run_with_evidence(
+        plan, lambda: static, cwd=repo.path, command=command, extra=["-q"], allow_incomplete=True
+    )
+    assert not run.static_whole
+
+
 # --------------------------------------------------------------------------- advancing
 
 

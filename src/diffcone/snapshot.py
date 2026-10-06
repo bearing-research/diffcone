@@ -99,6 +99,22 @@ def _git(repo: Path, args: list[str], stdin: bytes | None = None) -> bytes:
     return proc.stdout
 
 
+def file_id(repo: Path, revision: str, path: str) -> str | None:
+    """The git blob id of ``path`` in a snapshot (a revision, ``INDEX`` or
+    ``WORKTREE``), or None when it is not there."""
+    try:
+        if revision == WORKTREE:
+            if not (repo / path).is_file():
+                return None
+            out = _git(repo, ["hash-object", "--", path])
+        else:
+            spec = f":{path}" if revision == INDEX else f"{revision}:{path}"
+            out = _git(repo, ["rev-parse", "--verify", "--quiet", spec])
+    except GitError:
+        return None
+    return out.decode().strip() or None
+
+
 def resolve_commit(repo: Path, revision: str) -> str:
     out = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"])
     commit = out.decode().strip()

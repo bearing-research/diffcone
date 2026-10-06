@@ -51,7 +51,14 @@ from diffcone.classify import (
 from diffcone.declarations import FILENAME as DECLARATION_FILE
 from diffcone.declarations import Declaration
 from diffcone.declarations import load as load_declarations
-from diffcone.discovery import RUNNER_MODULES, DiscoveryOptions, DiscoveryResult, discover
+from diffcone.discovery import (
+    INCOMPLETE_NOTE_KINDS,
+    RUNNER_MODULES,
+    DiscoveryNote,
+    DiscoveryOptions,
+    DiscoveryResult,
+    discover,
+)
 from diffcone.evidence import Evidence, EvidenceError
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
@@ -81,6 +88,7 @@ from diffcone.snapshot import (
     GitError,
     Snapshot,
     commit_description,
+    file_id,
     read_snapshot,
     resolve_commit,
 )
@@ -1043,6 +1051,75 @@ def without_cyclic_gc(func):
     return inner
 
 
+def _settle_discovery(
+    repo: Path,
+    head: str,
+    evidence: Evidence,
+    evidence_index: SourceIndex,
+    discovered: list[DiscoveryResult],
+    roots: list[str],
+    options: DiscoveryOptions,
+    cache: IndexCache | None,
+) -> list[DiscoveryResult]:
+    """What the recording says about pytest discovery's completeness
+    (roadmap item 9). It ran pytest's real collection at C, in the
+    environment ``run`` checks before any test. A note saying a plugin may
+    collect tests that are not targets stops counting when the same note was
+    there at C, its file is unchanged since C, and pytest collected nothing
+    at C that was not a target then. A test it did collect that was not a
+    target is a gap the recording proves, noted as incomplete itself."""
+    if evidence.collected is None or not any(d.runner == "pytest" for d in discovered):
+        return discovered
+    at_c = (
+        cache.discovery.load(evidence.commit, roots, "pytest", options)
+        if cache is not None
+        else None
+    )
+    if at_c is None:
+        snapshot = read_snapshot(repo, evidence.commit, roots, with_config=True)
+        at_c = discover("pytest", snapshot, evidence_index, options)
+        if cache is not None:
+            cache.discovery.store(at_c, evidence.commit, roots, options)
+    targets_at_c = {t.runner_id for t in at_c.targets}
+    extra = sorted(evidence.collected - targets_at_c)
+    notes_at_c = {(n.kind, n.detail) for n in at_c.notes}
+    short = evidence.commit[:12]
+    out = []
+    for result in discovered:
+        if result.runner != "pytest":
+            out.append(result)
+            continue
+        notes = []
+        for note in result.notes:
+            if (
+                note.kind in INCOMPLETE_NOTE_KINDS
+                and not extra
+                and note.path
+                and (note.kind, note.detail) in notes_at_c
+                and file_id(repo, evidence.commit, note.path) == file_id(repo, head, note.path)
+            ):
+                note = DiscoveryNote(
+                    note.runner,
+                    "settled_by_evidence",
+                    f"{note.detail} [settled: at {short}, where this note stood too, pytest "
+                    f"collected no test that was not a target, and {note.path} is unchanged "
+                    "since]",
+                    note.path,
+                )
+            notes.append(note)
+        if extra:
+            notes.append(
+                DiscoveryNote(
+                    "pytest",
+                    "collected_not_target",
+                    f"the recording at {short} collected {len(extra)} test(s) that were not "
+                    f"targets there, e.g. {', '.join(extra[:3])}",
+                )
+            )
+        out.append(DiscoveryResult(result.runner, result.targets, notes, result.config))
+    return out
+
+
 @without_cyclic_gc
 def plan(
     repo: str | Path,
@@ -1132,6 +1209,9 @@ def plan(
             )
         evidence_index, _ = _index_snapshot(
             repo_path, evidence.commit, roots, with_config=False, cache=cache
+        )
+        discovered = _settle_discovery(
+            repo_path, head, evidence, evidence_index, discovered, roots, options, cache
         )
         return plan_with_evidence(
             base_index,
