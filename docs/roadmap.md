@@ -385,7 +385,7 @@ build, the whole suite under `-n 8`):
 4. *Recall* (done 2026-10-06). The pandas compiled edits replayed against a store collected
    on a profiled build, checked against the line-traced oracle.
 
-**Not covered.** Edits outside Cython function bodies (38 of the 86
+**Not covered.** Edits outside Cython function bodies (item 8; 38 of the 86
 compiled commits in the spike), `.pxi.in` templates, hand-written C and
 build files still select everything; telling additive module-level edits
 apart is the next gain. A module the store holds no Cython record of
@@ -398,3 +398,71 @@ or a guard that closes each one (the `nogil` caller rule is the first).
 **Done when.** The spike has run, and either the rule is shown sound on
 the recent compiled edits with its savings stated, or the gap is measured
 and the item is closed as measured and left alone, like items 0 and 1.
+
+## 8. Cython edits outside function bodies
+
+**Status.** Planned. Under evidence, a Cython edit outside every function
+body selects everything (item 7, "Not covered"): 38 of the 86 compiled
+commits in pandas' last 500. A survey of their diffs (pandas `3f57341`):
+names added to or dropped from `cimport` and `import` lists, new module
+constants and `cdef` globals, `.pxd` signatures and `ctypedef`s, `cdef
+class` attribute declarations, structs and enums, extern blocks moved to
+a shared `.pxd`, helper functions added or deleted, and class docstrings.
+One bare call at module level (`_fill_safe_years()`).
+
+**Mechanism: the names a statement binds.** The Python rules (evidence_plan
+docstring) say a variable is observed by its readers, an added or deleted
+name also by the lookup and reflection sites, a deleted one also by its
+importers, and code that runs at import escalates. The Cython equivalent:
+
+* *Statements.* Outside function spans, the reader splits the file into
+  logical statements with Python's `tokenize` (it reads all 106 pandas
+  Cython files on 3.11 and 3.14; a file it cannot read keeps today's
+  file-level change). Each statement has a scope (the module or a class),
+  the names it binds, whether those names are visible from Python, and a
+  hash. Bindings: one per item of an `import`/`cimport` list (so
+  reformatting a list or adding a name changes only that name); the
+  declarator of a `cdef`/`ctypedef`/`DEF` declaration or of an extern or
+  `.pxd` function declaration; assignment targets; a class attribute
+  declaration or assignment; the name of a struct, enum, union or fused
+  type together with its members, as one statement (member order sets
+  enum values and layout); a class header's class name.
+* *What changed.* A name changed when the ordered list of hashes of the
+  statements binding it differs between the two sides, so redefinition
+  order counts. Added and deleted functions become changed names too
+  (`def`/`cpdef` visible, `cdef` not). Order among the other non-import
+  statements is compared as well.
+* *Who notices.* A C name is compiled into the code that mentions it, so a
+  changed name is observed by every Cython function (in any file: a
+  `.pxd` reaches its cimporters) whose header or body mentions it, through
+  the `nogil`/`cpdef` caller rule, and through the import effect of
+  item 7. A name visible from Python is also observed by the Python
+  readers that look it up by that name (an attribute reference nothing
+  resolves: the index records Python code reading names off compiled
+  modules exactly so), and when added or deleted by the lookup and
+  reflection sites. A class attribute declaration also reaches the
+  class's methods and every function naming the class: instance layout and
+  generated pickling change for every instance, and anything holding one
+  got it there.
+* *Still everything.* Code that runs at import or that nothing names: a
+  bare expression statement, a module or class docstring (`__doc__`, a
+  special name; Python escalates these too), a special attribute or an
+  added or deleted special method, a changed class header (bases),
+  `include`, compile-time `IF`, star imports, a reordered statement, and a
+  deleted name visible from Python (a Python module importing it fails at
+  import, and the index does not record imports of names from compiled
+  modules). A reader in a module the store holds no Cython record of
+  selects everything, as for body edits.
+
+**Trade-off.** It narrows: each rule needs a regression scenario on the
+profiled fixture extension, and the risk is a binding the reader
+misattributes. The fallback for anything unparsed is the file-level
+change, never a smaller set.
+
+**Done when.** The rules land with scenarios; pandas' 38 commits are
+re-planned with the count that leaves select-all and the median size,
+and real outside edits replayed at the evidence commit (their hunks
+reverse-applied there) are checked against the line-traced oracle: every
+test whose traced lines fall in a function mentioning a name on a
+changed line must be selected, and any flagged name that the rules
+dropped is explained.
