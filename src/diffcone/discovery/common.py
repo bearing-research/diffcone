@@ -23,6 +23,27 @@ class ParsedModule:
         return member_symbol_id(self.module, name, self.submodules)
 
 
+# Set on a module's function nodes when its source never mentions
+# getfixturevalue, so discovery can skip walking each test body for it.
+NO_GETFIXTUREVALUE = "_diffcone_no_getfixturevalue"
+
+
+def _mark_functions(body: list[ast.stmt]) -> None:
+    """Mark the functions defined at statement level (module, class and
+    block bodies), without walking expressions."""
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            setattr(node, NO_GETFIXTUREVALUE, True)
+            stack.extend(node.body)
+        elif isinstance(node, ast.ClassDef):
+            stack.extend(node.body)
+        else:
+            for name in ("body", "orelse", "finalbody", "handlers"):
+                stack.extend(getattr(node, name, ()) or ())
+
+
 def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModule], list[str]]:
     """Parse the given snapshot paths. Returns (parsed, failed paths)."""
     parsed: list[ParsedModule] = []
@@ -38,6 +59,8 @@ def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModu
         except (SyntaxError, UnicodeDecodeError, ValueError):
             failed.append(path)
             continue
+        if b"getfixturevalue" not in snapshot.files[path]:
+            _mark_functions(tree.body)
         parsed.append(ParsedModule(path, module, tree, children.get(module, frozenset())))
     return parsed, failed
 

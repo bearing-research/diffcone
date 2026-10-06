@@ -31,6 +31,8 @@ rule. See docs/design.md.
 
 from __future__ import annotations
 
+import functools
+import gc
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -994,6 +996,28 @@ def _index_snapshot(
     return index, snapshot
 
 
+def without_cyclic_gc(func):
+    """Run ``func`` with Python's cyclic garbage collector suspended, and
+    restore its state after. A plan holds two whole indexes (on pandas,
+    millions of objects) while it allocates syntax trees and sets, so each
+    collection walks the whole heap: on pandas the collector took two thirds
+    of a warm plan (46-56 s with it, 18 s without). Planning makes almost
+    no reference cycles; they are collected once the collector resumes."""
+
+    @functools.wraps(func)
+    def inner(*args, **kwargs):
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            if enabled:
+                gc.enable()
+
+    return inner
+
+
+@without_cyclic_gc
 def plan(
     repo: str | Path,
     base: str,

@@ -354,3 +354,30 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
     restored = index_from_dict(index_to_dict(index))
     for field in dataclasses.fields(SourceIndex):
         assert getattr(restored, field.name) == getattr(index, field.name), field.name
+
+
+def test_planning_suspends_the_cyclic_collector_and_restores_it(repo):
+    import gc
+
+    from diffcone import planner
+
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": "def f():\n    return 1\n"})
+    head = repo.commit({"pkg/ops.py": "def f():\n    return 2\n"})
+    seen = []
+    original = planner.plan_from_indexes
+
+    def spy(*args, **kwargs):
+        seen.append(gc.isenabled())
+        return original(*args, **kwargs)
+
+    planner.plan_from_indexes = spy
+    try:
+        assert gc.isenabled()
+        repo.plan(base, head, [])
+        assert seen and not any(seen) and gc.isenabled()
+        gc.disable()  # a caller that turned it off keeps it off
+        repo.plan(base, head, [])
+        assert not gc.isenabled()
+    finally:
+        planner.plan_from_indexes = original
+        gc.enable()

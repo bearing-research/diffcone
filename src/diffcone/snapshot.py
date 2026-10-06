@@ -607,7 +607,12 @@ def module_name_for(path: str, source_roots: list[str]) -> str | None:
 
 def child_modules(snapshot: Snapshot) -> dict[str, frozenset[str]]:
     """Immediate submodule names per module, from the files present
-    (whether or not they parse): what a package binding can shadow."""
+    (whether or not they parse): what a package binding can shadow.
+    Computed once per snapshot: discovery parses modules one at a time and
+    asks for every one (about 100 times a plan on pandas)."""
+    cached = snapshot.__dict__.get("_child_modules")
+    if cached is not None:
+        return cached
     children: dict[str, set[str]] = {}
     for path in snapshot.files:
         module = module_name_for(path, snapshot.source_roots) if path.endswith(".py") else None
@@ -616,7 +621,9 @@ def child_modules(snapshot: Snapshot) -> dict[str, frozenset[str]]:
         parent, _, child = module.rpartition(".")
         if parent:
             children.setdefault(parent, set()).add(child)
-    return {k: frozenset(v) for k, v in children.items()}
+    result = {k: frozenset(v) for k, v in children.items()}
+    snapshot.__dict__["_child_modules"] = result
+    return result
 
 
 def member_symbol_id(module: str, name: str, submodules: frozenset[str] | set[str]) -> str:

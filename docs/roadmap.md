@@ -104,7 +104,15 @@ real collection".)
 
 ## 4. Planner cost on large trees
 
-**Status.** With the module cache (design.md, "Module cache") a warm
+**Status.** On pandas (2026-10-06) a warm evidence plan took 46-56 s, and
+two thirds of it was Python's cyclic garbage collector walking the two
+indexes' heap while planning allocated (`cProfile` overstated discovery
+instead: its overhead grows with Python calls). `plan()` now runs with the
+collector suspended: 21 s, the same selection, and a lower peak RSS
+(1.7 GB against 2.5 GB). What remains of that plan: discovery of both
+sides 7.6 s CPU, evidence planning 4.1 s, the index cache 3.7 s, static
+escalation 2.2 s. Caching discovery per commit is the next candidate.
+Earlier: with the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing
 and 0.4 to 0.55 s in `plan_from_indexes`: unioning the two indexes' edges
 into one graph (0.16 s), dependency signatures for classification and

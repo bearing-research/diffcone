@@ -89,6 +89,7 @@ from typing import Any
 
 from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
 from diffcone.discovery.common import (
+    NO_GETFIXTUREVALUE,
     ParsedModule,
     decorator_chain,
     keyword_value,
@@ -743,6 +744,8 @@ def _getfixturevalue_names(node: ast.AST) -> list[str]:
     """Fixture names requested as ``<request>.getfixturevalue("name")`` with a
     literal, anywhere in the body (nested functions included)."""
     found: list[str] = []
+    if getattr(node, NO_GETFIXTUREVALUE, False):
+        return found  # its module's source never says getfixturevalue
     for inner in ast.walk(node):
         if (
             isinstance(inner, ast.Call)
