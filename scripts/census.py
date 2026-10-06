@@ -322,7 +322,7 @@ def census_repo(slug: str, work: Path, count: int) -> dict:
                 result["commits"].append({"sha": sha[:10], "error": f"{type(exc).__name__}: {exc}"})
                 continue
             causes: Counter = Counter()
-            dynamic: Counter = Counter()
+            dynamic: dict[str, float] = defaultdict(float)  # fractional weights
             seeds: Counter = Counter()
             names: Counter = Counter()
             fixtures: Counter = Counter()

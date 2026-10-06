@@ -11,8 +11,12 @@ import json
 import os
 import re
 import sys
+from typing import Any
 
 import pytest
+
+# The spike runs on 3.12+; the project's floor (3.11) has no sys.monitoring.
+MONITORING: Any = getattr(sys, "monitoring", None)
 
 OUT = os.environ.get("CYSPIKE_OUT")
 MODE = os.environ.get("CYSPIKE_MODE")
@@ -35,7 +39,7 @@ def _fold(nodeid: str) -> str:
 
 
 if OUT and MODE == "starts":
-    mon = sys.monitoring
+    mon = MONITORING
     TOOL = 4
     mon.use_tool_id(TOOL, "cyspike")
 
@@ -51,7 +55,7 @@ if OUT and MODE == "starts":
 
 if OUT and MODE == "monlines":
     # A linetrace build in Cython's sys.monitoring mode raises LINE events.
-    mon = sys.monitoring
+    mon = MONITORING
     TOOL = 4
     mon.use_tool_id(TOOL, "cyspike")
 
@@ -97,7 +101,7 @@ def pytest_runtest_protocol(item, nextitem):
     current.clear()
     active[0] = True
     if MODE in ("starts", "monlines"):
-        sys.monitoring.restart_events()
+        MONITORING.restart_events()
     else:
         sys.settrace(_global)
     try:

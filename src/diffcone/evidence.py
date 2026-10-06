@@ -92,16 +92,6 @@ class Evidence:
     collected: frozenset[str] | None = None
     location: Path | None = None
 
-    def __post_init__(self) -> None:
-        self._symbol_ids = {s: i for i, s in enumerate(self.symbols)}
-        self._path_ids = {p: i for i, p in enumerate(self.paths)}
-
-    def symbol_ids(self, symbols) -> set[int]:
-        return {self._symbol_ids[s] for s in symbols if s in self._symbol_ids}
-
-    def path_ids(self, paths) -> set[int]:
-        return {self._path_ids[p] for p in paths if p in self._path_ids}
-
     def executed(self, record: TestRecord) -> set[str]:
         return {self.symbols[i] for i in record.symbols}
 

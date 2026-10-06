@@ -33,7 +33,7 @@ uv run python scripts/cause_precision.py --repo DIR --command CMD --commit SHA  
 uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
-uv run ty check                                 # types (src and tests; pinned in the dev group)
+uv run ty check                                 # types (src, tests, scripts; pinned in the dev group)
 ```
 
 Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan, 3 discovery may be short of what the runner collects (`run` refuses without `--allow-incomplete-discovery`). 1 over-selects, 3 may under-run; 3 wins when both apply.

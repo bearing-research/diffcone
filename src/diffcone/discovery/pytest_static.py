@@ -666,10 +666,6 @@ def _marks_from_pytestmark(body: list[ast.stmt]) -> Marks:
     return _marks_from_expressions(exprs)
 
 
-def _usefixtures_from_decorators(decorators: list[ast.expr]) -> tuple[str, ...]:
-    return _marks_from_expressions(decorators).usefixtures
-
-
 def _usefixtures_from_pytestmark(body: list[ast.stmt]) -> tuple[str, ...]:
     return _marks_from_pytestmark(body).usefixtures
 

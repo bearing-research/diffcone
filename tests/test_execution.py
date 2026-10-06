@@ -380,7 +380,6 @@ def test_symbols_carry_line_ranges(repo):
     assert symbols["m.C"].line_ranges == ((5, 7),)
     assert symbols["m.C.m"].line_ranges == ((6, 7),)
     assert symbols["m"].line_ranges == ((1, 7),)
-    assert symbols["m.C.m"].covers_line(7) and not symbols["m.C.m"].covers_line(2)
 
 
 # --- regression tests added after code review ------------------------------

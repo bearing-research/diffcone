@@ -59,8 +59,9 @@ select = ["E", "F", "I", "UP", "B"]
 python-version = "3.11"  # the oldest supported: newer APIs are flagged
 
 [tool.ty.src]
-include = ["src", "tests"]
-# scripts/ holds measurement scripts and spikes run by hand, not shipped.
+include = ["src", "tests", "scripts"]
+# A finished spike, kept as the record of what it measured (evidence_design.md).
+exclude = ["scripts/evidence_spike"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

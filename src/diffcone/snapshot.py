@@ -184,11 +184,6 @@ def _text_paths(paths: list[str] | tuple[str, ...]) -> list[str]:
     return [p for p in paths if p.endswith(TEXT_DOCTEST_SUFFIXES)]
 
 
-def list_python_files(repo: Path, commit: str, source_roots: list[str]) -> list[str]:
-    entries = _ls_tree(repo, commit, _root_pathspecs(source_roots))
-    return sorted(p for m, p in entries if p.endswith(".py") and m != SYMLINK_MODE)
-
-
 def _link_target(link: str, target: str) -> str | None:
     """The repository path a relative symlink at ``link`` points to, or None
     when it is absolute, leaves the repository or is the repository root."""

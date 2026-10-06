@@ -67,9 +67,6 @@ class Symbol:
     # annotations, a plain class for methods).
     inert_definition: bool = False
 
-    def covers_line(self, line: int) -> bool:
-        return any(start <= line <= end for start, end in self.line_ranges)
-
 
 @dataclass(frozen=True, order=True)
 class Edge:

@@ -327,7 +327,10 @@ tests executed them.
 4. Cost: recording against the profiled build, against today's recorder.
 
 **Spike results** (pandas `3f57341`, one profiled and one line-traced
-build, the whole suite under `-n 8`):
+build, the whole suite under `-n 8`; the analysis scripts,
+`scripts/cython_spike/analyse.py` with its prototype reader
+`cyblocks.py`, and `rerun_check.py` were removed once `diffcone.cython`
+replaced them and are at commit `689bfc7`):
 
 * *Soundness.* Of 1 254 Cython functions the oracle saw run, 1 075 are
   covered by their own start events and 105 through their Cython callers.

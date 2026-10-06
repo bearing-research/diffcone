@@ -122,6 +122,7 @@ def main() -> int:
                 coverage_include=changed_files,
             ) as run:
                 outcomes = run.outcomes
+                assert run.coverage_db is not None
                 shutil.copy(run.coverage_db, cov_db)
                 (out / f"log-{short}.txt").write_text(run.log)
             outcomes_file.write_text(json.dumps(outcomes))

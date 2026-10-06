@@ -31,6 +31,7 @@ SCRIPTS = Path(__file__).resolve().parent
 def _census():
     """The census's cause attribution, without running the census."""
     spec = importlib.util.spec_from_file_location("census", SCRIPTS / "census.py")
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["census"] = module
     spec.loader.exec_module(module)
