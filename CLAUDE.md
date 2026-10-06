@@ -23,6 +23,7 @@ uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] 
 uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto  # plan on it
 uv run diffcone run --base main --head HEAD --discover pytest --command "uv run pytest" --evidence auto --collect -- -n 8  # run, advance the store
 uv run diffcone evidence                        # list evidence stores
+uv run diffcone check --plan plan.json --full full.xml [--baseline base.xml] [--run testmon=t.xml]  # plan vs a full run's JUnit
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json
 uv run python scripts/collection_check.py --repo DIR --command CMD  # discovery vs real collection
@@ -47,6 +48,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/declarations.py` reads `diffcone.toml` (dependencies the project states that the analysis cannot see) from both revisions; declarations only add edges, and anything wrong with the file is an analysis error rather than a declaration that silently does nothing.
 - `src/diffcone/report.py` renders JSON (`schema_version` 3) and text.
 - `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate`/`collect`; keep it that way.
+- `src/diffcone/check.py` compares a plan (JSON) with JUnit XML from a full run and from selective runs (roadmap item 9); it reads files only and runs nothing.
 - `src/diffcone/selection.py` is the pytest plugin `run` loads as `-p diffcone_select` to keep only the selected tests (pytest collects from its own starting points, since naming tests on the command line loads their conftests early). Like `collect.py`, it imports nothing of diffcone.
 - Execution evidence (opt-in, roadmap item 5, `docs/evidence_design.md`):
   - `src/diffcone/collect.py` is the pytest plugin that records what each test executed. It is loaded into the project's process as `-p diffcone_collect` and imports nothing of diffcone.

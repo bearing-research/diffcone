@@ -208,6 +208,23 @@ ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
 still missing are in [docs/evidence_design.md](docs/evidence_design.md).
 
+### Checking a plan against a full run
+
+`check` compares a plan with the JUnit XML of a full pytest run (`pytest
+--junitxml=full.xml`) and reports every test that failed or errored there
+but was not selected. It runs nothing, so it fits beside an existing CI job.
+A failure that a `--baseline` run without the change also had is reported
+as already failing, not missed. Each `--run NAME=JUNIT` is a selective run
+compared on the same failures: diffcone's own, or another selector's such
+as pytest-testmon's. Output is text, Markdown (for a CI step summary) or
+JSON; the exit code is 1 when the plan missed a failure.
+
+```bash
+uv run diffcone plan --base main --head HEAD --discover pytest --evidence auto -o plan.json
+uv run diffcone check --plan plan.json --full full.xml --baseline nightly.xml \
+    --run testmon=testmon.xml --format markdown
+```
+
 ### Static discovery
 
 Discovery never imports or runs project code; it reproduces a documented

@@ -16,7 +16,8 @@ tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
 the runner's exit code (0 when nothing was selected or with --dry-run). ``validate`` exits
 0 when every outcome change was selected, 1 when some were missed, 2 on
-errors.
+errors. ``check`` exits 0 when every new failure of the full run was
+selected, 1 when the plan missed one, 2 when an input cannot be read.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import sys
 import time
 from pathlib import Path
 
+from diffcone import check as checking
 from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.evidence import (
@@ -302,6 +304,42 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
     e.add_argument("runner_args", nargs="*", help="extra pytest arguments (after --)")
 
+    k = sub.add_parser(
+        "check",
+        help="check a plan against a full run's JUnit XML: was every failing test selected?",
+        description=(
+            "Read a plan (diffcone plan --format json) and the JUnit XML of a full pytest "
+            "run, and report every test that failed or errored there but was not selected. "
+            "A failure the --baseline run also had is reported as already failing. Each "
+            "--run is a selective run (diffcone's own, or another selector's such as "
+            "pytest-testmon) compared on the same failures. Runs nothing."
+        ),
+    )
+    k.add_argument("--plan", required=True, help="the plan, as JSON")
+    k.add_argument(
+        "--full",
+        required=True,
+        action="append",
+        metavar="JUNIT",
+        help="JUnit XML of the full run (repeatable: several files are one run)",
+    )
+    k.add_argument(
+        "--baseline",
+        action="append",
+        metavar="JUNIT",
+        help="JUnit XML of a run without the change (e.g. the nightly run at the evidence "
+        "commit): its failures are not misses",
+    )
+    k.add_argument(
+        "--run",
+        action="append",
+        default=[],
+        metavar="NAME=JUNIT",
+        help="JUnit XML of a selective run to compare (repeatable)",
+    )
+    k.add_argument("--format", choices=("text", "markdown", "json"), default="text")
+    k.add_argument("--output", "-o", help="write the result to this file instead of stdout")
+
     ls = sub.add_parser("evidence", help="list the evidence stores of a repository")
     ls.add_argument("--repo", default=".", help="path to the git repository (default: .)")
 
@@ -319,6 +357,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(d)
     return parser
+
+
+def _check(args: argparse.Namespace) -> int:
+    def cases(paths: list[str]) -> list[checking.Case]:
+        return [case for path in paths for case in checking.read_junit(path)]
+
+    try:
+        runs = {}
+        for spec in args.run:
+            name, sep, path = spec.partition("=")
+            if not sep or not name or not path:
+                raise checking.CheckError(f"--run takes NAME=JUNIT, not {spec!r}")
+            runs[name] = cases([path])
+        report = checking.check(
+            checking.load_plan(args.plan),
+            cases(args.full),
+            baseline=cases(args.baseline) if args.baseline else None,
+            runs=runs,
+        )
+    except checking.CheckError as exc:
+        print(f"diffcone: error: {exc}", file=sys.stderr)
+        return 2
+    render = {
+        "text": checking.to_text,
+        "markdown": checking.to_markdown,
+        "json": lambda r: json.dumps(checking.to_dict(r), indent=2) + "\n",
+    }[args.format]
+    code = _write(render(report), args.output)
+    return code if code else (0 if report.ok else 1)
 
 
 def _write(text: str, output: str | None) -> int:
@@ -393,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         return _list_evidence(Path(args.repo))
     if args.command == "collect":
         return _collect(args)
+    if args.command == "check":
+        return _check(args)
     options = DiscoveryOptions(
         external_fixtures=frozenset(args.external_fixtures),
         well_known_fixtures=not args.no_well_known_fixtures,

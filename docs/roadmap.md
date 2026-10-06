@@ -514,9 +514,19 @@ asking.
 
 **What diffcone needs.**
 
-1. `diffcone check`: read a plan and JUnit XML (pytest's `classname` and
-   `name` mapped back to node IDs, parameters folded as targets are) and
-   report misses and outcome disagreements, as Markdown and JSON.
+1. `diffcone check --plan plan.json --full full.xml [--baseline
+   nightly.xml] [--run NAME=run.xml ...]`: read a plan and JUnit XML
+   (pytest's `classname` and `name` mapped back to node IDs as pytest's
+   junitxml builds them, parameters folded as targets are, a collection
+   error standing for its file) and report every test that failed or
+   errored in the full run but was not selected. A failure the nightly run
+   at C also had is reported as already failing, not as a miss. Each
+   `--run` is a selective run read from its JUnit (the tests in it are the
+   tests it ran): diffcone's own, whose outcomes must agree with the full
+   run's, and **pytest-testmon's** (`pytest --testmon`, its data recorded by
+   the same nightly job), so the two selectors are compared on the same
+   pull requests by misses, tests run and test time. Text, Markdown (for
+   the step summary) and JSON; exit 1 when the plan missed a failure.
 2. Cache pruning to one commit's index, discovery and module entries.
 3. Project variables in the environment fingerprint: pandas' behaviour
    depends on `PANDAS_FUTURE`, which the recorder does not read today. The
