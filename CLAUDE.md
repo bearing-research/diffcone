@@ -23,6 +23,7 @@ uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] 
 uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto  # plan on it
 uv run diffcone run --base main --head HEAD --discover pytest --command "uv run pytest" --evidence auto --collect -- -n 8  # run, advance the store
 uv run diffcone evidence                        # list evidence stores
+uv run diffcone prune --keep HEAD               # shrink the cache to what planning at HEAD reads
 uv run diffcone check --plan plan.json --full full.xml [--baseline base.xml] [--run testmon=t.xml]  # plan vs a full run's JUnit
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json

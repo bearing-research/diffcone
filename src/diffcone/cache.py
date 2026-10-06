@@ -22,11 +22,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from diffcone.cython import CythonFunction, CythonModule, CythonStatement
@@ -352,6 +353,7 @@ class DiscoveryCache:
         data = {
             "format": DISCOVERY_FORMAT,
             "commit": commit,
+            "fingerprint": DISCOVERY_FINGERPRINT,
             "runner": result.runner,
             "targets": [asdict(t) for t in result.targets],
             "notes": [asdict(n) for n in result.notes],
@@ -405,3 +407,96 @@ class IndexCache:
             os.replace(tmp, path)
         except OSError:
             pass  # a cache write failure is never an error
+
+
+# --------------------------------------------------------------------------- pruning
+
+_COMMIT = re.compile(rb'"commit": "([0-9a-f]{40})"')
+_FINGERPRINT = re.compile(rb'"fingerprint": "([0-9a-f]+)"')
+
+
+def _head(path: Path) -> bytes:
+    try:
+        with path.open("rb") as f:
+            return f.read(4096)
+    except OSError:
+        return b""
+
+
+def _recorded_commit(path: Path) -> str | None:
+    """The commit an index or discovery file was stored for: the first
+    ``"commit"`` key, which both write near the start."""
+    match = _COMMIT.search(_head(path))
+    return match.group(1).decode() if match else None
+
+
+@dataclass
+class PruneResult:
+    files_removed: int = 0
+    files_kept: int = 0
+    rows_removed: int = 0
+    rows_kept: int = 0
+    bytes_before: int = 0
+    bytes_after: int = 0
+
+
+def _size(directory: Path) -> int:
+    return sum(p.stat().st_size for p in directory.rglob("*") if p.is_file())
+
+
+def prune(
+    directory: Path, commits: set[str], source_roots: list[str], module_keys: set[str]
+) -> PruneResult:
+    """Keep only what planning at ``commits`` with ``source_roots`` reads:
+    their whole indexes and discovery results as this version of diffcone
+    names them, and the per-module rows for their files' ``module_keys``
+    (``ModuleCache.key``), which also serve a later commit or a working tree
+    sharing those files. Everything else goes: other commits, entries an
+    older diffcone wrote, partial writes. The cache stays an optimisation: a
+    pruned entry is a miss, never a different plan."""
+    result = PruneResult(bytes_before=_size(directory) if directory.exists() else 0)
+    indexes = {f"{index_key(c, source_roots)}.json" for c in commits}
+
+    def wanted(sub: str, path: Path) -> bool:
+        if sub == "index":
+            return path.name in indexes
+        found = _FINGERPRINT.search(_head(path))
+        return (
+            path.suffix == ".json"
+            and _recorded_commit(path) in commits
+            and found is not None
+            and found.group(1).decode() == DISCOVERY_FINGERPRINT
+        )
+
+    for sub in ("index", "discovery"):
+        for path in sorted((directory / sub).glob("*")):
+            if wanted(sub, path):
+                result.files_kept += 1
+                continue
+            try:
+                path.unlink()
+                result.files_removed += 1
+            except OSError:
+                pass
+    modules = directory / "modules.sqlite"
+    if modules.exists():
+        try:
+            conn = sqlite3.connect(modules, timeout=30)
+            try:
+                with conn:
+                    conn.execute("CREATE TEMP TABLE keep (key TEXT PRIMARY KEY)")
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO keep VALUES (?)", [(k,) for k in module_keys]
+                    )
+                    result.rows_removed = conn.execute(
+                        "DELETE FROM records WHERE key NOT IN (SELECT key FROM keep)"
+                    ).rowcount
+                result.rows_kept = conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass  # a cache that cannot be pruned is still a valid cache
+    result.bytes_after = _size(directory) if directory.exists() else 0
+    return result

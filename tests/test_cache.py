@@ -432,3 +432,55 @@ def test_discovery_of_committed_snapshots_is_cached(repo, tmp_path, monkeypatch)
     calls.clear()
     planner.plan(repo.path, "HEAD~1", "WORKTREE", cache=cache, **args)
     assert calls == ["WORKTREE"]
+
+
+def test_pruning_keeps_what_planning_at_the_kept_commit_reads(repo, tmp_path, monkeypatch):
+    """``diffcone prune --keep C`` (roadmap item 9): C's index and discovery
+    stay, every other commit's go, and the module records of C's files still
+    serve a later commit's index."""
+    from diffcone import planner
+    from diffcone.report import to_json
+
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/ops.py": OPS,
+        "pkg/util.py": "def helper():\n    return 1\n",
+        "tests/test_ops.py": TEST_OPS,
+    }
+    first = repo.commit(files)
+    second = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    third = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
+    cache_dir = tmp_path / "c"
+    args = dict(source_roots=["."], discover_runners=["pytest"])
+    planner.plan(repo.path, first, second, cache=IndexCache(cache_dir), **args)
+    assert len(list((cache_dir / "index").glob("*.json"))) == 2
+    assert len(list((cache_dir / "discovery").glob("*.json"))) == 2
+    (cache_dir / "index" / "partial.tmp").write_text("{")
+    # What an older diffcone wrote for the kept commit is not read any more.
+    stale = cache_dir / "discovery" / "stale.json"
+    stale.write_text(json.dumps({"format": 1, "commit": second, "fingerprint": "0"}))
+    (cache_dir / "index" / "stale.json").write_text(json.dumps({"snapshot": {"commit": second}}))
+
+    assert (
+        main(["prune", "--repo", str(repo.path), "--keep", second, "--cache-dir", str(cache_dir)])
+        == 0
+    )
+    assert [cache_mod._recorded_commit(p) for p in (cache_dir / "index").iterdir()] == [second]
+    assert [cache_mod._recorded_commit(p) for p in (cache_dir / "discovery").iterdir()] == [second]
+
+    calls = []
+    original = planner.discover
+
+    def counting(runner, snapshot, index, options=None):
+        calls.append(snapshot.info.revision)
+        return original(runner, snapshot, index, options)
+
+    monkeypatch.setattr(planner, "discover", counting)
+    cache = IndexCache(cache_dir)
+    plan = planner.plan(repo.path, second, third, cache=cache, **args)
+    # The base side comes whole from the cache; the new head is discovered,
+    # and its index reuses the records of the files it shares with the base.
+    assert calls == [third]
+    assert cache.hits == 1
+    assert cache.modules.facts_hits == 3 and cache.modules.facts_misses == 1
+    assert to_json(plan) == to_json(planner.plan(repo.path, second, third, **args))

@@ -212,6 +212,15 @@ ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
 still missing are in [docs/evidence_design.md](docs/evidence_design.md).
 
+For a cache shipped between CI runs, `prune` keeps only what planning at
+the given commits reads (their indexes and discovery results, and the
+per-module records of their files, which also serve a later commit sharing
+them) and deletes everything else:
+
+```bash
+uv run diffcone prune --keep HEAD
+```
+
 ### Checking a plan against a full run
 
 `check` compares a plan with the JUnit XML of a full pytest run (`pytest

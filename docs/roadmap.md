@@ -477,10 +477,13 @@ dropped is explained.
 
 ## 9. GitHub Actions: record at night, plan during the day (pandas trial)
 
-**Status.** In progress (2026-10-06). Done: `diffcone check` (1 below)
-and discovery completeness settled by the recording (2): a pandas
-evidence plan no longer exits 3, with its one note settled against a
-recording of 22 566 collected tests, none of them outside the targets.
+**Status.** In progress (2026-10-06). Done: `diffcone check` (1 below),
+discovery completeness settled by the recording (2): a pandas evidence
+plan no longer exits 3, with its one note settled against a recording of
+22 566 collected tests, none of them outside the targets; and `diffcone
+prune` (3): the scratch pandas cache went from 5.8 GB to 167 MB, 29 MB
+with the store under zstd, and a plan from it to a new head took 18.6 s
+(15.3 s CPU, 2.2 GB peak RSS) on an otherwise quiet laptop.
 The first step toward real use: run diffcone beside an unchanged CI and
 measure it against what CI finds.
 Decided: a separate job runs alongside the existing ones and is monitored,
@@ -546,7 +549,8 @@ asking.
    When `run` falls back to the static plan (the environment differs), an
    incomplete static plan runs the whole suite instead of its selection.
    Narrowing (exit 3 to 0): regression scenarios for each condition.
-3. Cache pruning to one commit's index, discovery and module entries.
+3. Cache pruning to one commit's index, discovery and module entries
+   (`diffcone prune --keep C`; entries an older diffcone wrote go too).
 4. Project variables in the environment fingerprint: pandas' behaviour
    depends on `PANDAS_FUTURE`, which the recorder does not read today. The
    store must say which variables it recorded, so planning compares the

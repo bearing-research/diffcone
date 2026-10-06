@@ -340,6 +340,29 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--format", choices=("text", "markdown", "json"), default="text")
     k.add_argument("--output", "-o", help="write the result to this file instead of stdout")
 
+    pr = sub.add_parser(
+        "prune",
+        help="shrink the cache to what planning at given commits reads",
+        description=(
+            "Delete every cached index and discovery result except those of the --keep "
+            "commits, and every per-module record except those of their files (which also "
+            "serve later commits and the working tree sharing them). For a cache shipped "
+            "between CI runs: keep the commit the evidence was recorded at."
+        ),
+    )
+    pr.add_argument("--repo", default=".", help="path to the git repository (default: .)")
+    pr.add_argument(
+        "--keep", action="append", required=True, metavar="REV", help="commit to keep (repeatable)"
+    )
+    pr.add_argument(
+        "--source-root",
+        action="append",
+        dest="source_roots",
+        metavar="DIR[=PREFIX]",
+        help="as for plan (repeatable; default: .)",
+    )
+    pr.add_argument("--cache-dir", help="the cache (default: <repo>/.diffcone/cache)")
+
     ls = sub.add_parser("evidence", help="list the evidence stores of a repository")
     ls.add_argument("--repo", default=".", help="path to the git repository (default: .)")
 
@@ -357,6 +380,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common(d)
     return parser
+
+
+def _prune(args: argparse.Namespace) -> int:
+    from diffcone.cache import ModuleCache, prune
+    from diffcone.snapshot import module_name_for
+
+    repo = Path(args.repo)
+    roots = args.source_roots or ["."]
+    try:
+        commits, keys = set(), set()
+        for revision in args.keep:
+            commit = resolve_commit(repo, revision)
+            commits.add(commit)
+            snapshot = read_snapshot(repo, commit, roots)
+            for path, content in snapshot.files.items():
+                module = module_name_for(path, snapshot.source_roots)
+                if module is not None:
+                    keys.add(ModuleCache.key(module, path, content))
+    except GitError as exc:
+        print(f"diffcone: error: {exc}", file=sys.stderr)
+        return 2
+    directory = Path(args.cache_dir) if args.cache_dir else default_cache_dir(repo)
+    result = prune(directory, commits, roots, keys)
+    mb = 1024 * 1024
+    print(
+        f"diffcone: kept {result.files_kept} cached file(s) and {result.rows_kept} module "
+        f"record(s), removed {result.files_removed} and {result.rows_removed}; "
+        f"{result.bytes_before / mb:.1f} MB -> {result.bytes_after / mb:.1f} MB",
+        file=sys.stderr,
+    )
+    return 0
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -462,6 +516,8 @@ def main(argv: list[str] | None = None) -> int:
         return _collect(args)
     if args.command == "check":
         return _check(args)
+    if args.command == "prune":
+        return _prune(args)
     options = DiscoveryOptions(
         external_fixtures=frozenset(args.external_fixtures),
         well_known_fixtures=not args.no_well_known_fixtures,
