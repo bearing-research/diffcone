@@ -436,7 +436,8 @@ importers, and code that runs at import escalates. The Cython equivalent:
   changed name is observed by every Cython function (in any file: a
   `.pxd` reaches its cimporters) whose header or body mentions it, through
   the `nogil`/`cpdef` caller rule, and through the import effect of
-  item 7. A name visible from Python is also observed by the Python
+  item 7. A `.pyx` file's C names stay in it, unless its `.pxd` declares
+  them too (a C global the `.pyx` initialises and cimporters read). A name visible from Python is also observed by the Python
   readers that look it up by that name (an attribute reference nothing
   resolves: the index records Python code reading names off compiled
   modules exactly so), and when added or deleted by the lookup and

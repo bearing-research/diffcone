@@ -516,6 +516,65 @@ def test_outside_edits_select_the_readers_of_the_names_they_change(repo):
         assert selected(plan) == set() and not plan.fallbacks
 
 
+SCALE_PXD = "cdef double FACTOR\n"
+SCALE = "# cython: profile=True\ncdef double FACTOR = 3\n"
+USE = """\
+# cython: profile=True
+from pkg._scale cimport FACTOR
+
+
+def apply(double x):
+    return x * FACTOR
+"""
+USE_TESTS = """\
+from pkg._use import apply
+
+
+def test_apply():
+    assert apply(2) == 6
+
+
+def test_plain():
+    assert 1 + 1 == 2
+"""
+
+
+def test_a_c_global_its_pxd_declares_reaches_the_modules_cimporting_it(repo):
+    """``_scale.pyx`` initialises a global its ``.pxd`` declares, and
+    ``_use.pyx`` cimports it: changing the value reaches ``_use``'s readers,
+    although the edit is in a ``.pyx`` (regression for roadmap item 8)."""
+    import shutil
+    import subprocess
+
+    pytest.importorskip("Cython")
+    pytest.importorskip("setuptools")
+    if shutil.which("cc") is None and shutil.which("gcc") is None:
+        pytest.skip("no C compiler")
+    repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\nbuild/\n*.c\n*.so\n*.pyd\n",
+            "setup.py": SETUP.replace('"pkg/_fast.pyx"', '["pkg/_scale.pyx", "pkg/_use.pyx"]'),
+            "pkg/__init__.py": "",
+            "pkg/_scale.pxd": SCALE_PXD,
+            "pkg/_scale.pyx": SCALE,
+            "pkg/_use.pyx": USE,
+            "tests/__init__.py": "",
+            "tests/test_use.py": USE_TESTS,
+        }
+    )
+    subprocess.run(
+        [sys.executable, "setup.py", "-q", "build_ext", "--inplace"],
+        cwd=repo.path,
+        check=True,
+        capture_output=True,
+    )
+    ev = repo.collect()
+    head = repo.commit({"pkg/_scale.pyx": SCALE.replace("= 3", "= 4")})
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert selected(plan) == {"tests/test_use.py::test_apply"}
+    assert not plan.fallbacks
+
+
 def test_outside_edits_nothing_bounds_select_everything(repo):
     _built_extension(repo)
     ev = repo.collect()

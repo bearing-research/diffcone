@@ -579,7 +579,7 @@ class _Observers:
         everything holding an instance."""
         qualified = f"{changed.scope}.{changed.name}" if changed.scope else changed.name
         label = f"{changed.path}::{qualified} {changed.change} (Cython, outside functions)"
-        seers = self._cython_seers(changed.path, changed.visible)
+        seers = self._cython_seers(changed.path, changed.name, changed.visible)
         for path, function in self._cython_mentioning(changed.name):
             if seers is None or path in seers:
                 self._cython_ran(
@@ -661,19 +661,30 @@ class _Observers:
                         self._cython_mentions[mentioned].append((p, function))
         return self._cython_mentions.get(name, [])
 
-    def _cython_seers(self, path: str, visible: bool) -> set[str] | None:
-        """The Cython files whose functions can see a name bound in ``path``,
-        or None for every file. A name Python can see may be imported
-        anywhere, and a ``.pxi`` file is included anywhere; a ``.pyx``
-        file's C names stay in it (and in the ``.pxi`` files it may include);
-        a ``.pxd`` file's reach its ``.pyx`` and every file that cimports
-        from it, transitively through other ``.pxd`` files."""
+    def _cython_seers(self, path: str, name: str, visible: bool) -> set[str] | None:
+        """The Cython files whose functions can see ``name`` bound in
+        ``path``, or None for every file. A name Python can see may be
+        imported anywhere, and a ``.pxi`` file is included anywhere; a
+        ``.pyx`` file's C names stay in it (and in the ``.pxi`` files it may
+        include) unless its ``.pxd`` declares them too (a C global the
+        ``.pyx`` initialises, read by cimporters); a ``.pxd`` file's reach its
+        ``.pyx`` and every file that cimports from it, transitively through
+        other ``.pxd`` files."""
         if visible or path.endswith(".pxi"):
             return None
         modules = {**self.c.cython, **self.other.cython}
         seen = {path} | {p for p in modules if p.endswith(".pxi")}
         if path.endswith(".pyx"):
-            return seen
+            twin = modules.get(path[: -len(".pyx")] + ".pxd")
+            declared = twin is not None and (
+                twin.statements is None
+                or any(name in s.names for s in twin.statements)
+                or any(f.simple_name == name for f in twin.functions)
+            )
+            if not declared:
+                return seen
+            path = path[: -len(".pyx")] + ".pxd"
+            seen.add(path)
         seen.add(path[: -len(".pxd")] + ".pyx")
         frontier = [path]
         while frontier:
