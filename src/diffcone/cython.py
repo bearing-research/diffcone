@@ -22,10 +22,12 @@ is which functions changed and what each function's body mentions.
   nor for a ``cpdef`` method's C body under ``skip_dispatch`` (an explicit
   ``Base.method(self, ...)`` call), so those are found through the functions
   that name them, which also covers a function taken as a pointer.
-* Blank lines and comment-only lines are ignored by both hashes. Everything
-  outside the functions (``cimport``, ``ctypedef``, structs, class headers
-  and attribute declarations, constants, ``include``) is hashed together:
-  a change there is not attributed to any function.
+* Blank lines and comment-only lines are ignored by both hashes, except
+  compiler directives (``# cython: boundscheck=False``, ``# distutils:``),
+  which change how every function in the file is compiled. Everything
+  outside the functions (directives, ``cimport``, ``ctypedef``, structs,
+  class headers and attribute declarations, constants, ``include``) is
+  hashed together: a change there is not attributed to any function.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ _NOT_FUNC = re.compile(
 )
 _CALLABLE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 _WORD = re.compile(r"\b[A-Za-z_]\w*\b")
+_DIRECTIVE = re.compile(r"^\s*#\s*(?:cython|distutils)\s*:")
 
 
 def is_cython(path: str) -> bool:
@@ -133,10 +136,10 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
 
-def _hash(lines: Iterable[str]) -> str:
+def _hash(lines: Iterable[str], *, directives: bool = False) -> str:
     digest = hashlib.sha256()
     for line in lines:
-        if _significant(line):
+        if _significant(line) or (directives and _DIRECTIVE.match(line)):
             digest.update(line.rstrip().encode("utf-8", "surrogateescape") + b"\n")
     return digest.hexdigest()[:24]
 
@@ -239,7 +242,7 @@ def read(path: str, text: str) -> CythonModule:
         )
         covered.update(range(first, last + 1))
         i = last + 1  # what is nested in the function is part of it
-    outside = _hash(line for k, line in enumerate(lines) if k not in covered)
+    outside = _hash((line for k, line in enumerate(lines) if k not in covered), directives=True)
     return CythonModule(path, tuple(functions), outside)
 
 

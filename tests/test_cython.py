@@ -127,6 +127,13 @@ def test_changes_are_function_level_when_only_bodies_change():
     # Anything outside a function is not attributed to one.
     outside = changed(PYX.replace("cdef int LIMIT = 10", "cdef int LIMIT = 11"))
     assert outside.files == (("pkg/_ext.pyx", "changed outside its functions"),)
+    # A compiler directive is a comment that changes every function.
+    for text in (
+        PYX.replace("language_level=3", "language_level=3, cdivision=True"),
+        "# cython: boundscheck=False\n" + PYX,
+        "# distutils: language = c++\n" + PYX,
+    ):
+        assert changed(text).files == (("pkg/_ext.pyx", "changed outside its functions"),)
     # A new function (an override changes dispatch) is a file-level change.
     added = changed(PYX + "\n\ndef extra():\n    return 1\n")
     assert added.files == (("pkg/_ext.pyx", "functions added or deleted (extra added)"),)
@@ -297,6 +304,10 @@ def test_other_cython_edits_select_everything_or_nothing(repo):
     # A comment is not a change.
     plan = _plan(repo, ev, FAST.replace("cdef class Big(Box):", "# Bigger.\ncdef class Big(Box):"))
     assert selected(plan) == set() and not plan.fallbacks
+    # A compiler directive changes how every function is compiled.
+    plan = _plan(repo, ev, FAST.replace("profile=True", "profile=True, cdivision=True"))
+    assert len(selected(plan)) == 4
+    assert [f.rule for f in plan.fallbacks] == ["unobserved_file_changed"]
     # A change outside every function is not attributed to one.
     plan = _plan(repo, ev, FAST.replace("cdef public double v", "cdef public double v, w"))
     assert len(selected(plan)) == 4
