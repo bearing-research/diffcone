@@ -149,6 +149,46 @@ def test_an_added_method_selects_the_tests_that_ran_an_unbounded_lookup(repo):
     assert rules(plan, HAS) == {"lookup_site"}
 
 
+SETTINGS = {
+    **BASE,
+    "pkg/settings.py": "LIMIT = 1\nOTHER = 2\n",
+    "pkg/derived.py": "from pkg.settings import LIMIT\n\nDOUBLE = LIMIT * 2\n",
+    "tests/test_settings.py": """\
+from pkg import derived, settings
+
+
+def test_dynamic():
+    name = "".join(["LIM", "IT"])
+    assert getattr(settings, name) == 1
+
+
+def test_vars():
+    assert vars(settings)["LIMIT"] == 1
+
+
+def test_derived():
+    name = "".join(["DOU", "BLE"])
+    assert getattr(derived, name) == 2
+
+
+def test_other():
+    assert settings.OTHER == 2
+""",
+}
+
+
+def test_a_changed_value_reaches_the_lookups_that_can_read_it(repo):
+    base, ev = _collected(repo, SETTINGS)
+    head = repo.commit({"pkg/settings.py": "LIMIT = 3\nOTHER = 2\n"})
+    plan = _plan(repo, base, head, ev)
+    T = "tests/test_settings.py::"
+    # Each of the first three now fails, though none names LIMIT or DOUBLE
+    # (DOUBLE captured LIMIT's value); test_other reads nothing that changed.
+    assert selected(plan) == {T + "test_dynamic", T + "test_vars", T + "test_derived"}
+    assert rules(plan, T + "test_dynamic") == {"lookup_site"}
+    assert rules(plan, T + "test_derived") == {"lookup_site"}
+
+
 def test_a_changed_signature_reaches_callers_through_a_lookup(repo):
     base, ev = _collected(repo, DISPATCH)
     api = DISPATCH["pkg/api.py"].replace("    def b(self):", "    def b(self, extra=0):")

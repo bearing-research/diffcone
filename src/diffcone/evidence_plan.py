@@ -16,9 +16,10 @@ observed by"), and a test is selected when its record meets E:
   readers (resolved references and name matches, one hop), the lookup and
   reflection sites that can see its namespace, and escalation when the
   ``def`` runs code at import;
-* a variable: its readers; a reader that is itself a variable captured the
-  value and is followed in turn; a module's or class's top-level reader
-  escalates its module;
+* a variable: its readers and the lookup and reflection sites that can see
+  its namespace (a lookup by a name nothing bounds reads the value too); a
+  reader that is itself a variable captured the value and is followed in
+  turn; a module's or class's top-level reader escalates its module;
 * a class body: the attributes whose statements changed, through every
   reader of those names and the lookup and reflection sites; an opaque
   body statement, a dunder attribute or a changed class statement (bases,
@@ -785,10 +786,12 @@ class _Observers:
         if symbol.kind == VARIABLE:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
             self._readers(change.id, change, label)
-            if kinds & {ADDED, DELETED}:
-                self._sites(symbol, change, label)
-                if DELETED in kinds:
-                    self._importers(change.id, change, label)
+            # A lookup by a name nothing bounds reads the value as well as
+            # noticing the name come or go: a variable runs no code of its
+            # own for the record to show.
+            self._sites(symbol, change, label)
+            if DELETED in kinds:
+                self._importers(change.id, change, label)
             return
         if symbol.kind == CLASS:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
@@ -884,6 +887,7 @@ class _Observers:
                 self._followed.add(reader)
                 self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
                 self._readers(reader, change, label)
+                self._sites(symbol, change, f"{label}, captured by {reader}")
         else:
             # Module or class top-level code: import-time state.
             self._escalate_module(symbol.module, f"top-level code of {reader} reads {label}")

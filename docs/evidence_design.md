@@ -128,7 +128,7 @@ For each change diffcone classifies between C and head:
 | added, deleted or changed pytest hook (`pytest_*` in a conftest or plugin) | everything | — |
 | added or deleted module | static readers (importers) | — (only code that names it reaches it, and that code changed too) |
 | added or deleted special method (`__eq__`, `__len__`…) in class C | members of C's hierarchy + static readers of C and of its subclasses (whoever builds or checks an instance) | — |
-| variable value changed, `v` | static readers of `v` (by name too, which covers `getattr(obj, "v")` with a literal), enumeration sites; added or deleted, also the unbounded lookup sites that can see its namespace | when a library or conftest import reads `v`: module or class top-level code reading it (`Y = DEFAULT * 2`), or code an import ran. A test module's top-level read selects that module's tests |
+| variable value changed, `v` | static readers of `v` (by name too, which covers `getattr(obj, "v")` with a literal), and the enumeration and unbounded lookup sites that can see its namespace (a `getattr` with a computed name reads the value too; a variable runs no code the record could show); the same for a variable that captured the value | when a library or conftest import reads `v`: module or class top-level code reading it (`Y = DEFAULT * 2`), or code an import ran. A test module's top-level read selects that module's tests |
 | class structure changed (bases, metaclass, class decorators, class body) | every member of C, its bases and its subclasses + static readers of those classes | class decorators and metaclasses: always |
 | module-level statements or imports changed | — | always: they run at import |
 | a test or fixture changed | selected (`changed_target`, as today) | — |
@@ -466,6 +466,14 @@ first version added a function's callers whenever a body edit also added
 a call, but callers see new behaviour only by executing the function,
 which puts it in their record already. Callers now count only when the
 definition itself changes.
+
+**Later correction** (2026-10-06, found while extending the rules to Cython
+names, roadmap item 8): a changed variable's *value* reached only its
+readers, so a test reading it through `getattr(module, name)` with a
+computed name, or through `vars(module)`, was missed; a variable runs no
+code of its own for the record to show. A changed value now reaches the
+lookup and reflection sites that can see its namespace, as an added or
+deleted name did. The numbers above predate this and can only rise.
 
 **What the spike corrected in this design** (each is folded into the
 tables above): names cannot be recorded by wrapping; the tracer must start
