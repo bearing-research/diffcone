@@ -111,7 +111,10 @@ instead: its overhead grows with Python calls). `plan()` now runs with the
 collector suspended: 21 s, the same selection, and a lower peak RSS
 (1.7 GB against 2.5 GB). What remains of that plan: discovery of both
 sides 7.6 s CPU, evidence planning 4.1 s, the index cache 3.7 s, static
-escalation 2.2 s. Caching discovery per commit is the next candidate.
+escalation 2.2 s. Discovery of committed snapshots is now cached per commit
+(`DiscoveryCache`), and a cached head lets the head index come from the
+index cache too; timing it on pandas waits for a quiet machine (the load
+average was over 100 when it was measured).
 Earlier: with the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing
 and 0.4 to 0.55 s in `plan_from_indexes`: unioning the two indexes' edges

@@ -397,3 +397,38 @@ def test_a_cache_hit_reports_the_revision_it_was_asked_for(repo, tmp_path):
     miss = plan(repo.path, "HEAD~1", "HEAD", source_roots=["."])
     assert hit.base.description == f"commit {sha[:12]} (HEAD~1)"
     assert to_json(hit) == to_json(miss)
+
+
+def test_discovery_of_committed_snapshots_is_cached(repo, tmp_path, monkeypatch):
+    from diffcone import planner
+    from diffcone.cache import IndexCache
+    from diffcone.report import to_json
+
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/ops.py": "def f():\n    return 1\n",
+        "tests/test_ops.py": "from pkg.ops import f\n\n\ndef test_f():\n    assert f()\n",
+    }
+    repo.commit(files)
+    repo.commit({"pkg/ops.py": "def f():\n    return 2\n"})
+    calls = []
+    original = planner.discover
+
+    def counting(runner, snapshot, index, options=None):
+        calls.append(snapshot.info.revision)
+        return original(runner, snapshot, index, options)
+
+    monkeypatch.setattr(planner, "discover", counting)
+    cache = IndexCache(tmp_path / "c")
+    args = dict(source_roots=["."], discover_runners=["pytest"])
+    first = planner.plan(repo.path, "HEAD~1", "HEAD", cache=cache, **args)
+    assert calls == ["HEAD~1", "HEAD"]
+    calls.clear()
+    second = planner.plan(repo.path, "HEAD~1", "HEAD", cache=cache, **args)
+    assert calls == []  # both sides, and the head index with them, from the cache
+    uncached = planner.plan(repo.path, "HEAD~1", "HEAD", **args)
+    assert to_json(first) == to_json(second) == to_json(uncached)
+    # The working tree is never cached; its committed base still is.
+    calls.clear()
+    planner.plan(repo.path, "HEAD~1", "WORKTREE", cache=cache, **args)
+    assert calls == ["WORKTREE"]

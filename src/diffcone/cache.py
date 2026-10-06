@@ -30,6 +30,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from diffcone.cython import CythonFunction, CythonModule
+from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
+from diffcone.manifest import Target
 from diffcone.model import (
     AnalysisError,
     Edge,
@@ -263,12 +265,100 @@ class ModuleCache:
             conn.close()
 
 
+DISCOVERY_FORMAT = 1
+
+
+def _discovery_fingerprint() -> str:
+    """The indexer's fingerprint (discovery reads the index) and the
+    discovery package's source: any change invalidates cached results."""
+    here = Path(__file__).parent
+    h = hashlib.sha256(INDEXER_FINGERPRINT.encode())
+    for path in sorted((here / "discovery").glob("*.py")) + [here / "manifest.py"]:
+        h.update(path.name.encode())
+        h.update(path.read_bytes())
+    return h.hexdigest()[:16]
+
+
+DISCOVERY_FINGERPRINT = _discovery_fingerprint()
+
+
+class DiscoveryCache:
+    """Static discovery results per committed snapshot. Discovery reads only
+    the snapshot and its index, so a commit, source roots, runner and
+    options determine the result; ``WORKTREE`` and ``INDEX`` are never
+    cached. On pandas discovering both sides was the largest part of a warm
+    plan, and a cached head also lets the head index come from the cache."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory / "discovery"
+
+    def _path(self, commit: str, roots: list[str], runner: str, options: DiscoveryOptions) -> Path:
+        settings = {
+            k: sorted(v) if isinstance(v, (set, frozenset)) else v
+            for k, v in sorted(asdict(options).items())
+        }
+        material = json.dumps(
+            [DISCOVERY_FORMAT, DISCOVERY_FINGERPRINT, commit, sorted(roots), runner, settings]
+        )
+        return self.directory / f"{hashlib.sha256(material.encode()).hexdigest()}.json"
+
+    def load(
+        self, commit: str, roots: list[str], runner: str, options: DiscoveryOptions
+    ) -> DiscoveryResult | None:
+        try:
+            data = json.loads(self._path(commit, roots, runner, options).read_text("utf-8"))
+            if data.get("format") != DISCOVERY_FORMAT or data.get("commit") != commit:
+                return None
+            return DiscoveryResult(
+                runner=data["runner"],
+                targets=[
+                    Target(
+                        t["runner"],
+                        t["runner_id"],
+                        t["entry_symbol"],
+                        tuple(t["lifecycle_dependencies"]),
+                    )
+                    for t in data["targets"]
+                ],
+                notes=[DiscoveryNote(**n) for n in data["notes"]],
+                config=data["config"],
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def store(
+        self,
+        result: DiscoveryResult,
+        commit: str,
+        roots: list[str],
+        options: DiscoveryOptions,
+    ) -> None:
+        path = self._path(commit, roots, result.runner, options)
+        data = {
+            "format": DISCOVERY_FORMAT,
+            "commit": commit,
+            "runner": result.runner,
+            "targets": [asdict(t) for t in result.targets],
+            "notes": [asdict(n) for n in result.notes],
+            "config": result.config,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError):
+            pass  # a cache write failure is never an error
+
+
 class IndexCache:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
         self.hits = 0
         self.misses = 0
         self.modules = ModuleCache(directory)
+        self.discovery = DiscoveryCache(directory)
         # The per-file hash cache this replaced left ``hashes/`` behind.
         shutil.rmtree(directory / "hashes", ignore_errors=True)
 

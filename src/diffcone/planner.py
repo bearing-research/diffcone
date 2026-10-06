@@ -1011,6 +1011,17 @@ def _index_snapshot(
     return index, snapshot
 
 
+def _cacheable_commit(repo_path: Path, revision: str) -> str | None:
+    """The commit a revision names, or None for ``WORKTREE``, ``INDEX`` and
+    anything that does not resolve: what may be served from a cache."""
+    if revision in (WORKTREE, INDEX):
+        return None
+    try:
+        return resolve_commit(repo_path, revision)
+    except GitError:
+        return None
+
+
 def without_cyclic_gc(func):
     """Run ``func`` with Python's cyclic garbage collector suspended, and
     restore its state after. A plan holds two whole indexes (on pandas,
@@ -1057,13 +1068,20 @@ def plan(
     manifest_roots = manifest.source_roots if manifest is not None else None
     roots = list(source_roots or manifest_roots or ["."])
     runners = list(discover_runners)
+    options = discovery_options or DiscoveryOptions()
     base_index, _ = _index_snapshot(repo_path, base, roots, with_config=False, cache=cache)
-    # The head snapshot's files are needed for discovery, so it is only served
-    # from cache when nothing is discovered.
+    # Discovery of a committed head may come from the cache, and then so may
+    # the head index; otherwise discovery needs the head snapshot's files.
+    head_commit = _cacheable_commit(repo_path, head) if cache is not None else None
+    cached_head: list[DiscoveryResult] | None = None
+    if runners and head_commit is not None:
+        found = [cache.discovery.load(head_commit, roots, r, options) for r in runners]  # type: ignore[union-attr]
+        if all(result is not None for result in found):
+            cached_head = found  # type: ignore[assignment]
     head_index, head_snapshot = _index_snapshot(
-        repo_path, head, roots, with_config=bool(runners), cache=cache
+        repo_path, head, roots, with_config=bool(runners) and cached_head is None, cache=cache
     )
-    if runners and head_snapshot is None:  # pragma: no cover - guarded above
+    if runners and cached_head is None and head_snapshot is None:  # pragma: no cover
         raise GitError("discovery needs the head snapshot's files")
     # Both revisions, as every other edge is: a commit that deletes a
     # declaration while changing what it pointed at must still select.
@@ -1072,12 +1090,22 @@ def plan(
     # repositories); the base index still comes from the cache.
     base_target_ids: set[str] | None = None
     if runners:
-        base_snapshot = read_snapshot(repo_path, base, roots, with_config=True)
-        base_target_ids = {
-            target.runner_id
-            for runner in runners
-            for target in discover(runner, base_snapshot, base_index, discovery_options).targets
-        }
+        base_commit = _cacheable_commit(repo_path, base) if cache is not None else None
+        base_target_ids = set()
+        base_snapshot: Snapshot | None = None
+        for runner in runners:
+            result = (
+                cache.discovery.load(base_commit, roots, runner, options)  # type: ignore[union-attr]
+                if base_commit is not None
+                else None
+            )
+            if result is None:
+                if base_snapshot is None:
+                    base_snapshot = read_snapshot(repo_path, base, roots, with_config=True)
+                result = discover(runner, base_snapshot, base_index, options)
+                if base_commit is not None:
+                    cache.discovery.store(result, base_commit, roots, options)  # type: ignore[union-attr]
+            base_target_ids |= {target.runner_id for target in result.targets}
     declared: list[Declaration] = []
     for revision, index in ((base, base_index), (head, head_index)):
         found, problems = load_declarations(repo_path, revision)
@@ -1087,9 +1115,13 @@ def plan(
                 AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
             )
     declared = sorted(set(declared))
-    discovered = [
-        discover(runner, head_snapshot, head_index, discovery_options) for runner in runners
-    ]
+    if cached_head is not None:
+        discovered = cached_head
+    else:
+        discovered = [discover(runner, head_snapshot, head_index, options) for runner in runners]
+        if head_commit is not None:
+            for result in discovered:
+                cache.discovery.store(result, head_commit, roots, options)  # type: ignore[union-attr]
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 
