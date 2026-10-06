@@ -1592,6 +1592,45 @@ above):
   lines, and per-test coverage over all of pandas filled the disk; the
   harness now measures only the files the range changes.
 
+## pandas: advancing the store (`run --collect`, 24 chained commits)
+
+The same 25 commits, chained: evidence was recorded in full at `ebbcd61`
+only, and every later commit was planned from the store advanced at its
+parent, checked against the full-suite coverage runs above, and then had
+its selection run under the recorder to advance the store to it
+(`scripts/evidence_recall.py --advance`).
+
+**Recall is 100 %**: 56 outcome changes and 25 249 tests executing a changed
+symbol (summed per pair), all selected.
+
+| selection by evidence | commits |
+|---|---|
+| 10.7-12.9 % | 11 |
+| 35-90 % | 6 |
+| everything | 7 |
+
+On the 20 commits the windowed run also planned, the mean selection falls
+from 76.3 % to 53.2 %: a compiled-source edit or an escalation now costs
+its own commit only. The seven that select everything are two compiled
+edits (`aggregations.pyx`, `tzconversion.pyx`) and five escalations of
+import-time changes (`pandas.conftest`, `config_init`, a test module's
+class body). Advancing took 3 610 s over the 24 commits (median 173 s,
+including a full collection each), against about 440 s for each full
+recording.
+
+**The advanced stores match full recordings to within the noise of a full
+recording.** At the four commits with a full recording, records differ for
+21 to 96 tests by symbols (0.1-0.4 %) and up to 179 by paths, in both
+directions. Two full recordings of `ebbcd61` differ for 34 tests by symbols
+and 42 by paths, in the same lazily cached attributes
+(`BaseMaskedDtype.itemsize`, `index_class`, `RangeIndex._references`): 74
+of the 126 differing symbols are the same, and the rest are of the same
+kind. A carried record could only be stale if its test executed changed
+code, and coverage found no unselected test that did at any of the 24
+commits, so the differences are run-to-run order dependence, which
+`collect --reverse-check` exists to flag. The only other difference is two
+records of tests `8f11807` deleted, carried along unused.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

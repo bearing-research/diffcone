@@ -181,8 +181,11 @@ miss and states its savings against static.
 
 ## 6. Advancing an evidence store (`run --collect`)
 
-**Status.** Implemented (2026-10-05): `run --collect`, `evidence.advance`,
-tested on the fixture repository. The pandas chain below is what remains.
+**Status.** Done (2026-10-06): `run --collect`, `evidence.advance`. On
+pandas, 24 commits planned in a chain from advanced stores have 100 %
+recall, mean selection 53 % against 76 % from stores up to five commits
+old, and the advanced stores match full recordings within a full
+recording's own noise (evaluation.md, "pandas: advancing the store").
 The pandas recall run
 showed why it matters: planned from a store up to five commits old, one
 compiled-source edit or root conftest change kept every later pair of its
