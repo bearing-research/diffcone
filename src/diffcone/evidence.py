@@ -621,8 +621,12 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
             raise EvidenceError(f"no evidence store at {spec}")
         return path
     best: tuple[int, float, Path] | None = None
+    missing: list[str] = []
     for store in list_stores(repo):
         if sorted(store.source_roots) != sorted(source_roots):
+            continue
+        if not has_commit(repo, store.commit):
+            missing.append(store.commit)
             continue
         if subprocess.run(
             ["git", "merge-base", "--is-ancestor", store.commit, reference],
@@ -641,11 +645,39 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
         if best is None or key < best:
             best = key
     if best is None:
+        hints = []
+        if missing:
+            hints.append(
+                f"the store(s) at {', '.join(c[:12] for c in missing)} are for commits this "
+                f"checkout does not have; fetch them (git fetch --depth=1 origin {missing[0]})"
+            )
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        if shallow.stdout.strip() == "true":
+            hints.append(
+                "this clone is shallow, so whether a store's commit is an ancestor cannot be "
+                "told: fetch the history, or pass the store's path to --evidence"
+            )
         raise EvidenceError(
             f"no evidence store with source roots {source_roots} at an ancestor of "
             f"{reference[:12]}; record one with `diffcone collect`"
+            + "".join(f"; {h}" for h in hints)
         )
     return best[2]
+
+
+def has_commit(repo: Path, commit: str) -> bool:
+    """Whether the repository holds ``commit``'s object."""
+    return (
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=repo, capture_output=True
+        ).returncode
+        == 0
+    )
 
 
 def list_stores(repo: Path) -> list[StoreInfo]:

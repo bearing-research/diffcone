@@ -307,6 +307,48 @@ def test_run_falls_back_to_static_planning_in_another_environment(repo, capsys, 
     assert {t.runner_id for t in run.static.selected} == selected(static)
 
 
+def test_a_project_variable_is_part_of_the_environment(repo, monkeypatch):
+    """``collect --env-var`` (roadmap item 9): pandas' PANDAS_FUTURE changes
+    what tests do, so a run with another value uses no evidence."""
+    from diffcone import execution
+
+    monkeypatch.setenv("DIFFCONE_TEST_FLAG", "on")
+    repo.commit(FILES)
+    ev = repo.collect(env_variables=["DIFFCONE_TEST_FLAG"])
+    assert ev.environment["variables"]["DIFFCONE_TEST_FLAG"] == "on"
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+    assert "DIFFCONE_TEST_FLAG" in plan.evidence["variables"]
+    static = repo.plan(ev.commit, head, [], discover_runners=["pytest"])
+    command = f"{sys.executable} -m pytest"
+
+    def run():
+        return execution.run_with_evidence(
+            plan, lambda: static, cwd=repo.path, command=command, extra=["-q"]
+        )
+
+    assert run().mismatch is None
+    monkeypatch.setenv("DIFFCONE_TEST_FLAG", "off")
+    checked = run()
+    assert checked.mismatch is not None
+    assert checked.mismatch["variables"]["DIFFCONE_TEST_FLAG"] == "off"
+
+
+def test_evidence_at_a_commit_the_checkout_lacks_says_what_to_fetch(repo):
+    from diffcone.evidence import find_store
+
+    repo.commit(FILES)
+    ev = repo.collect()
+    absent = replace(ev, commit="0123456789abcdef0123456789abcdef01234567")
+    with pytest.raises(EvidenceError, match="git fetch --depth=1 origin 0123456789ab"):
+        repo.plan(ev.commit, ev.commit, [], discover_runners=["pytest"], evidence=absent)
+    for path in (repo.path / ".diffcone" / "evidence").glob("*.sqlite"):
+        path.unlink()
+    write_store(absent, repo.path / ".diffcone" / "evidence")
+    with pytest.raises(EvidenceError, match="commits this checkout does not have"):
+        find_store(repo.path, "auto", ["."], ev.commit)
+
+
 def test_validate_with_evidence(repo):
     from diffcone.execution import validate_pytest
 

@@ -300,6 +300,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="run the suite a second time in reverse order; tests whose records differ are "
         "marked unstable and always selected",
     )
+    e.add_argument(
+        "--env-var",
+        action="append",
+        dest="env_variables",
+        default=[],
+        metavar="NAME",
+        help="an environment variable that changes what tests do (pandas' PANDAS_FUTURE): "
+        "recorded with the environment, and a run where it differs uses no evidence "
+        "(repeatable)",
+    )
     e.add_argument("--no-cache", action="store_true", help="do not use the index cache")
     e.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
     e.add_argument("runner_args", nargs="*", help="extra pytest arguments (after --)")
@@ -488,6 +498,7 @@ def _collect(args: argparse.Namespace) -> int:
             reverse_check=args.reverse_check,
             extra=args.runner_args,
             cache=cache,
+            env_variables=args.env_variables,
         )
     except (GitError, EvidenceError) as exc:
         print(f"diffcone: error: {exc}", file=sys.stderr)

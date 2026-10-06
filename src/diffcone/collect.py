@@ -38,6 +38,9 @@ Environment variables:
                                project: a module of one of them loaded from
                                outside the root means an installed copy ran
 ``DIFFCONE_COLLECT_REVERSE``   run the collected tests in reverse order
+``DIFFCONE_ENV_VARIABLES``     comma-separated project variables that change
+                               what tests do (pandas' ``PANDAS_FUTURE``),
+                               recorded with the environment and checked
 ``DIFFCONE_CHECK_ENV``         check mode: the environment hash evidence was
                                recorded under; on a mismatch the plugin
                                writes ``DIFFCONE_CHECK_REPORT`` and stops the
@@ -67,6 +70,15 @@ import pytest
 TOOL = 3
 FLAG_SUBPROCESS = 1
 ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL")
+
+
+def _variables() -> tuple[str, ...]:
+    """The variables the environment includes: these, and the project's own
+    (``DIFFCONE_ENV_VARIABLES``, from ``collect --env-var``)."""
+    extra = {v for v in os.environ.get("DIFFCONE_ENV_VARIABLES", "").split(",") if v}
+    return ENV_VARIABLES + tuple(sorted(extra - set(ENV_VARIABLES)))
+
+
 SUBPROCESS_EVENTS = frozenset(
     {
         "subprocess.Popen",
@@ -126,7 +138,7 @@ def environment() -> dict:
         "platform": sys.platform,
         "machine": platform.machine(),
         "distributions": sorted(dists),
-        "variables": {k: os.environ.get(k) for k in ENV_VARIABLES},
+        "variables": {k: os.environ.get(k) for k in _variables()},
     }
 
 

@@ -1333,6 +1333,7 @@ def collect_evidence(
     reverse_check: bool = False,
     extra: list[str] | None = None,
     cache: IndexCache | None = None,
+    env_variables: list[str] | None = None,
 ) -> CollectResult:
     """Run the whole suite under the recorder at a commit and write a store.
 
@@ -1366,6 +1367,8 @@ def collect_evidence(
     ):
         base_env = _checkout_env(cwd, source_roots)
         base_env.setdefault("PYTHONHASHSEED", "0")
+        if env_variables:
+            base_env["DIFFCONE_ENV_VARIABLES"] = ",".join(sorted(set(env_variables)))
         base_env["DIFFCONE_COLLECT_PACKAGES"] = ",".join(sorted({m.split(".")[0] for m in modules}))
         runs = [Path(tmp) / "forward"] + ([Path(tmp) / "reverse"] if reverse_check else [])
         logs, returncode = [], 0
@@ -1424,11 +1427,15 @@ class EvidenceRun:
 
 def evidence_env(plan: Plan) -> dict[str, str]:
     """What a run relying on an evidence plan changes in the environment:
-    ``PYTHONHASHSEED`` as recorded (the records assumed it)."""
+    ``PYTHONHASHSEED`` as recorded (the records assumed it), and the names of
+    the variables the recording included, so the check compares the same."""
     env = dict(os.environ)
     seed = (plan.evidence or {}).get("hash_seed")
     if seed is not None:
         env["PYTHONHASHSEED"] = seed
+    variables = (plan.evidence or {}).get("variables")
+    if variables:
+        env["DIFFCONE_ENV_VARIABLES"] = ",".join(variables)
     return env
 
 

@@ -19,7 +19,7 @@ uv run diffcone discover --repo . --rev HEAD --discover pytest -o targets.json
 uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" [--dry-run] -- -x
 uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest" [--coverage]
 uv run diffcone corpus --range main~10..main --discover pytest --command "uv run pytest" --coverage
-uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] -- -n 8  # record evidence (3.12+)
+uv run diffcone collect --command "uv run pytest" [--rev REV] [--reverse-check] [--env-var NAME] -- -n 8  # record evidence (3.12+)
 uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto  # plan on it
 uv run diffcone run --base main --head HEAD --discover pytest --command "uv run pytest" --evidence auto --collect -- -n 8  # run, advance the store
 uv run diffcone evidence                        # list evidence stores

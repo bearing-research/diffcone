@@ -124,6 +124,7 @@ class FixtureRepo:
         reverse_check: bool = False,
         command: str | None = None,
         extra: list[str] | None = None,
+        env_variables: list[str] | None = None,
     ) -> Evidence:
         """Record execution evidence (``diffcone collect``) at ``rev`` (default:
         the clean checkout), running the suite with this interpreter's pytest."""
@@ -136,6 +137,7 @@ class FixtureRepo:
             rev=rev,
             reverse_check=reverse_check,
             extra=extra,
+            env_variables=env_variables,
         ).evidence
 
     def write_manifest(self, targets: list[dict], name: str = "targets.json") -> Path:

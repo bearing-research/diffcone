@@ -174,8 +174,13 @@ rule each time:
 `run --evidence` runs such a plan with the recorded `PYTHONHASHSEED`, and
 first checks inside the test process, before any test runs, that the
 interpreter, the installed distributions and a few variables match the
-recording. If they don't, the evidence says nothing about this
-environment, so it runs the static plan instead and says why. The
+recording (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`, and any the project
+names with `collect --env-var`, such as pandas' `PANDAS_FUTURE`). If they
+don't, the evidence says nothing about this environment, so it runs the
+static plan instead and says why. Planning needs the recorded commit's
+objects: in a shallow clone, fetch it (`git fetch --depth=1 origin
+<commit>`) and pass the store's path, since `--evidence auto` cannot tell
+ancestry there. The
 recording also settles discovery's doubts: a class pytest's rules skip but
 a plugin might collect stops making the plan incomplete (exit 3) when the
 recorded collection shows nothing beyond the targets and its file has not

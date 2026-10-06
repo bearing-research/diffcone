@@ -59,7 +59,7 @@ from diffcone.discovery import (
     DiscoveryResult,
     discover,
 )
-from diffcone.evidence import Evidence, EvidenceError
+from diffcone.evidence import Evidence, EvidenceError, has_commit
 from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
@@ -1202,6 +1202,12 @@ def plan(
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 
+        if not has_commit(repo_path, evidence.commit):
+            raise EvidenceError(
+                f"the evidence was recorded at {evidence.commit[:12]}, which this checkout does "
+                f"not have (a shallow clone?); fetch it: git fetch --depth=1 origin "
+                f"{evidence.commit}"
+            )
         if sorted(evidence.source_roots) != sorted(roots):
             raise EvidenceError(
                 f"the evidence was recorded with source roots {evidence.source_roots}, the plan "

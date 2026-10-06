@@ -480,10 +480,12 @@ dropped is explained.
 **Status.** In progress (2026-10-06). Done: `diffcone check` (1 below),
 discovery completeness settled by the recording (2): a pandas evidence
 plan no longer exits 3, with its one note settled against a recording of
-22 566 collected tests, none of them outside the targets; and `diffcone
+22 566 collected tests, none of them outside the targets; `diffcone
 prune` (3): the scratch pandas cache went from 5.8 GB to 167 MB, 29 MB
 with the store under zstd, and a plan from it to a new head took 18.6 s
-(15.3 s CPU, 2.2 GB peak RSS) on an otherwise quiet laptop.
+(15.3 s CPU, 2.2 GB peak RSS) on an otherwise quiet laptop;
+`collect --env-var` (4); and errors that name the commit to fetch when a
+shallow checkout lacks it (5).
 The first step toward real use: run diffcone beside an unchanged CI and
 measure it against what CI finds.
 Decided: a separate job runs alongside the existing ones and is monitored,

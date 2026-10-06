@@ -1350,6 +1350,7 @@ def _summary(
         "environment_hash": evidence.environment_hash,
         "python": evidence.environment.get("python", "").split()[0],
         "hash_seed": evidence.environment.get("variables", {}).get("PYTHONHASHSEED"),
+        "variables": sorted(evidence.environment.get("variables", {})),
         "created": evidence.created,
         "tests": len(evidence.tests),
         "reverse_checked": evidence.reverse_checked,
