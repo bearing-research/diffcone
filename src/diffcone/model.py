@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from diffcone.cython import CythonModule
+
 MODULE = "module"
 CLASS = "class"
 FUNCTION = "function"
@@ -138,6 +140,10 @@ class SourceIndex:
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)
+    # Cython sources among them (.pyx, .pxd, .pxi) at function level: path ->
+    # module (diffcone.cython). Static planning does not use these; evidence
+    # mode diffs them to find the Cython functions a change touched.
+    cython: dict[str, CythonModule] = field(default_factory=dict)
     # (symbol, detail): code that observes names or signatures reflectively
     # without naming them (``dir``, ``hasattr``, ``inspect.signature``, a
     # ``__dict__`` read). Static planning does not use these; evidence mode

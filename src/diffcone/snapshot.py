@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone.cython import is_cython
 from diffcone.model import (
     KIND_COMMIT,
     KIND_INDEX,
@@ -60,6 +61,8 @@ class Snapshot:
     # with ``with_config``) the content of the text files among them that
     # pytest could collect as doctests.
     other_files: dict[str, str] = field(default_factory=dict)
+    # The content of the Cython sources among them (diffcone.cython).
+    cython_files: dict[str, bytes] = field(default_factory=dict)
     text_files: dict[str, bytes] = field(default_factory=dict)
 
     @property
@@ -374,6 +377,9 @@ def read_commit_snapshot(
         other_files={
             p: oid for _, oid, p in sorted(entries_ids, key=lambda e: e[2]) if not p.endswith(".py")
         },
+        cython_files=read_files(
+            repo, commit, sorted(p for m, p in entries if is_cython(p) and m != SYMLINK_MODE)
+        ),
         text_files=read_files(
             repo, commit, _text_paths([p for m, p in entries if m != SYMLINK_MODE])
         )
@@ -448,6 +454,12 @@ def read_index_snapshot(
             for p, (_, oid) in sorted(_ls_files_staged_ids(repo, source_roots).items())
             if not p.endswith(".py")
         },
+        cython_files=read_files(
+            repo,
+            "",
+            sorted(p for p, m in staged.items() if is_cython(p) and m != SYMLINK_MODE),
+            label=INDEX,
+        ),
         text_files=read_files(
             repo, "", _text_paths([p for p, m in staged.items() if m != SYMLINK_MODE]), label=INDEX
         )
@@ -533,6 +545,11 @@ def read_worktree_snapshot(
             ),
             source_roots,
         ),
+        cython_files={
+            p: (repo / p).read_bytes()
+            for p in sorted({p for _, p in listed if is_cython(p)})
+            if (repo / p).is_file() and not (repo / p).is_symlink()
+        },
         text_files={
             p: (repo / p).read_bytes()
             for p in _text_paths(sorted({p for _, p in listed}))

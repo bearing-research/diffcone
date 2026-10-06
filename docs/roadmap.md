@@ -341,11 +341,30 @@ build, the whole suite under `-n 8`):
 * *Cost.* The profiled build ran the suite with the start probe in 252 s
   and the same 13 failures as the ordinary build.
 
-**Before building.** A Cython reader in diffcone (the spike's
-`cyblocks.py` is the prototype), recorder support for Cython code objects
-(matched by file and first line), the caller rule, an exclusion list for
-modules that cannot be profiled, and a module-level classification finer
-than the spike's.
+**Stages** (each lands with its tests and is pushed on its own):
+
+1. *Reader and changes* (done 2026-10-06). `src/diffcone/cython.py` reads `.pyx`, `.pxd` and
+   `.pxi` files under the source roots into functions (qualified name,
+   span from the first decorator, body hash, `nogil`, `cpdef`, the names
+   the body mentions; nested functions belong to their parent) and a hash
+   of everything outside them, comments excluded. Snapshots carry those
+   files' content, the index carries the result (`INDEX_FORMAT` bump), and
+   `cython_changes` diffs two indexes. Static planning is unchanged: a
+   compiled edit still selects everything, since nothing static connects
+   a Python test to a Cython function.
+2. *Recorder and store.* `fold` maps a code object whose file is a Cython
+   source to the outermost function holding its first line, named
+   `<path>::<qualname>`. Collection needs a build with `profile=True`;
+   diffcone does not build, so that is documented, not enforced.
+3. *Planning.* With evidence, a Cython edit that changes only function
+   bodies selects the tests that executed a changed function, and for a
+   `nogil` or `cpdef` function also those that executed any Cython
+   function naming it. It still selects everything when the edit changes
+   anything outside function bodies, adds or deletes a file, or touches a
+   module the store holds no Cython record for (a module built without
+   profiling looks exactly like that).
+4. *Recall.* The pandas compiled edits replayed against a store collected
+   on a profiled build, checked against the line-traced oracle.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,

@@ -36,6 +36,7 @@ import tokenize
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from diffcone.cython import read as read_cython
 from diffcone.model import (
     CLASS,
     CLASS_STATEMENT,
@@ -1134,7 +1135,14 @@ def _facts_to_dict(
 class Indexer:
     def __init__(self, snapshot: Snapshot, module_cache=None) -> None:
         self.snapshot = snapshot
-        self.index = SourceIndex(snapshot=snapshot.info, other_files=dict(snapshot.other_files))
+        self.index = SourceIndex(
+            snapshot=snapshot.info,
+            other_files=dict(snapshot.other_files),
+            cython={
+                path: read_cython(path, content.decode("utf-8", "surrogateescape"))
+                for path, content in sorted(snapshot.cython_files.items())
+            },
+        )
         self.index.errors.extend(snapshot.errors)
         # Optional per-module cache of first-pass facts and second-pass
         # outputs (diffcone.cache.ModuleCache). Applies to every snapshot kind.

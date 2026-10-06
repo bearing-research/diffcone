@@ -29,6 +29,7 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
+from diffcone.cython import CythonFunction, CythonModule
 from diffcone.model import (
     AnalysisError,
     Edge,
@@ -40,7 +41,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 18  # 18: reflection sites, class attributes and bases (evidence mode)
+INDEX_FORMAT = 19  # 19: Cython sources at function level (evidence mode)
 
 
 def _indexer_fingerprint() -> str:
@@ -51,7 +52,7 @@ def _indexer_fingerprint() -> str:
     h = hashlib.sha256()
     # ``ast.dump`` output (hence every hash) may differ between Python versions.
     h.update(f"python{sys.version_info[0]}.{sys.version_info[1]}:".encode())
-    for name in ("model.py", "snapshot.py", "indexer.py"):
+    for name in ("model.py", "snapshot.py", "indexer.py", "cython.py"):
         h.update((here / name).read_bytes())
     return h.hexdigest()[:16]
 
@@ -86,6 +87,13 @@ def index_to_dict(index: SourceIndex) -> dict:
             c: dict(sorted(a.items())) for c, a in sorted(index.class_attributes.items())
         },
         "class_bases": {c: list(b) for c, b in sorted(index.class_bases.items())},
+        "cython": {
+            path: {
+                "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
+                "outside_hash": module.outside_hash,
+            }
+            for path, module in sorted(index.cython.items())
+        },
     }
 
 
@@ -113,6 +121,17 @@ def index_from_dict(data: dict) -> SourceIndex:
         reflection={(s, d) for s, d in data["reflection"]},
         class_attributes={c: dict(a) for c, a in data["class_attributes"].items()},
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
+        cython={
+            path: CythonModule(
+                path,
+                tuple(
+                    CythonFunction(**{**f, "names": frozenset(f["names"])})
+                    for f in module["functions"]
+                ),
+                module["outside_hash"],
+            )
+            for path, module in data["cython"].items()
+        },
     )
 
 

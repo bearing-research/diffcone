@@ -1,0 +1,145 @@
+"""Cython sources at function level (roadmap item 7, stage 1): the tolerant
+reader, function-level changes between two snapshots, and the index and its
+cache carrying them."""
+
+from __future__ import annotations
+
+from diffcone.cache import index_from_dict, index_to_dict
+from diffcone.cython import cython_changes, read
+from diffcone.indexer import build_index
+from diffcone.snapshot import read_snapshot
+
+PYX = '''\
+# cython: language_level=3
+cimport cython
+from libc.stdlib cimport malloc
+
+cdef int LIMIT = 10
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+def total(values):
+    """Sum.
+
+Continued at column 0, as pandas' docstrings sometimes are.
+    """
+    cdef int64_t **rows = <int64_t**>malloc(8)
+    return _add(values[0], values[1])
+
+
+cdef inline int _add(int a, int b) noexcept nogil:
+    return a + b
+
+
+cdef (Py_ssize_t, Py_ssize_t) bounds(
+    slice s,
+    Py_ssize_t n,
+):
+    def helper(x):
+        return x
+    return helper(0), n
+
+
+cdef class Box:
+    cdef public double v
+
+    def __init__(self, v):
+        self.v = v
+
+    cpdef double scaled(self, double k):
+        return self.v * k
+
+    @property
+    def doubled(self):
+        """Twice.
+"""
+        return self.v * 2
+
+    @doubled.setter
+    def doubled(self, value):
+        self.v = value / 2
+
+
+class Plain:
+    def method(self):
+        return LIMIT
+'''
+
+PXD = """\
+cdef int _add(int a, int b) noexcept nogil
+cpdef double scaled(double k)
+
+cdef inline bint is_small(int x) noexcept:
+    return x < 3
+"""
+
+
+def test_the_reader_finds_functions_methods_and_their_flags():
+    module = read("pkg/_ext.pyx", PYX)
+    functions = module.by_name()
+    assert list(functions) == [
+        "total",
+        "_add",
+        "bounds",
+        "Box.__init__",
+        "Box.scaled",
+        "Box.doubled",
+        "Box.doubled#2",  # the setter after the getter
+        "Plain.method",
+    ]
+    # A span starts at the first decorator: a code object's first line.
+    assert functions["total"].start == 8
+    # The docstring's column-0 line does not end the function or the class.
+    assert functions["total"].end == 16
+    assert functions["Box.doubled"].end == functions["Box.doubled#2"].start - 2
+    assert (functions["_add"].nogil, functions["_add"].cpdef) == (True, False)
+    assert (functions["Box.scaled"].nogil, functions["Box.scaled"].cpdef) == (False, True)
+    # A nested function is part of its parent; a C tuple return type is not a name.
+    assert "helper" in functions["bounds"].names and "helper" not in functions
+    # The names a body mentions, for the callers of nogil and cpdef functions.
+    assert {"_add", "malloc"} <= functions["total"].names
+    assert module.function_at(17) is None  # the blank line after total
+    assert module.function_at(19).name == "_add"
+
+
+def test_declarations_without_a_body_are_not_functions():
+    module = read("pkg/_ext.pxd", PXD)
+    assert list(module.by_name()) == ["is_small"]
+
+
+def test_changes_are_function_level_when_only_bodies_change():
+    before = {"pkg/_ext.pyx": read("pkg/_ext.pyx", PYX)}
+
+    def changed(text):
+        return cython_changes(before, {"pkg/_ext.pyx": read("pkg/_ext.pyx", text)})
+
+    body = changed(PYX.replace("return self.v * k", "return k * self.v"))
+    assert body.functions == (("pkg/_ext.pyx", "Box.scaled"),) and body.files == ()
+    # Comments, blank lines and moving a function down are not changes.
+    moved = PYX.replace("cdef class Box:", "\n\n# A box.\ncdef class Box:")
+    assert changed(moved).functions == () and changed(moved).files == ()
+    # Anything outside a function is not attributed to one.
+    outside = changed(PYX.replace("cdef int LIMIT = 10", "cdef int LIMIT = 11"))
+    assert outside.files == (("pkg/_ext.pyx", "changed outside its functions"),)
+    # A new function (an override changes dispatch) is a file-level change.
+    added = changed(PYX + "\n\ndef extra():\n    return 1\n")
+    assert added.files == (("pkg/_ext.pyx", "functions added or deleted (extra added)"),)
+    gone = cython_changes(before, {})
+    assert gone.files == (("pkg/_ext.pyx", "deleted"),)
+
+
+def test_snapshots_and_the_cache_carry_cython_modules(repo):
+    repo.commit({"pkg/__init__.py": "", "pkg/_ext.pyx": PYX, "pkg/_ext.pxd": PXD})
+    index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
+    assert set(index.cython) == {"pkg/_ext.pyx", "pkg/_ext.pxd"}
+    assert index.cython["pkg/_ext.pyx"] == read("pkg/_ext.pyx", PYX)
+    assert index_from_dict(index_to_dict(index)).cython == index.cython
+
+    (repo.path / "pkg" / "_ext.pyx").write_text(PYX.replace("a + b", "b + a"), "utf-8")
+    worktree = build_index(read_snapshot(repo.path, "WORKTREE", ["."]))
+    changes = cython_changes(index.cython, worktree.cython)
+    assert changes.functions == (("pkg/_ext.pyx", "_add"),)
+    repo.git("add", "pkg/_ext.pyx")
+    staged = build_index(read_snapshot(repo.path, "INDEX", ["."]))
+    assert staged.cython == worktree.cython
