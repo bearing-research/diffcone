@@ -230,6 +230,9 @@ an inferred path:
   bounds and can see N; `n` was added to N".
 * `opened_file`: "T opened `pandas/tests/io/data/x.csv`; it changed".
 * `escalated`: "`f` ran at import: static planning for this change".
+* `cython_caller`: "T executed the Cython function `g`, which names `f`; `f`
+  is `nogil` or `cpdef` and changed" (a profiled build does not always
+  report those itself; roadmap item 7).
 
 Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
 `environment_mismatch`.

@@ -64,6 +64,7 @@ from diffcone.classify import (
     SymbolChange,
     classify,
 )
+from diffcone.cython import CythonFunction, cython_changes, is_cython, symbol_id
 from diffcone.declarations import Declaration
 from diffcone.discovery import DiscoveryResult
 from diffcone.evidence import FLAG_SUBPROCESS, FLAG_UNSTABLE, UNINDEXED_MODULE, Evidence
@@ -88,6 +89,7 @@ from diffcone.model import (
 from diffcone.planner import (
     RULE_ANALYSIS_ERROR,
     RULE_CHANGED_TARGET,
+    RULE_CYTHON_CALLER,
     RULE_ENTRY_DOCSTRING,
     RULE_ESCALATED,
     RULE_EXECUTED_CHANGED,
@@ -414,6 +416,8 @@ class _Observers:
         self.seed_nodes: dict[str, str] = {}
         self.escalated_modules: set[str] = set()
         self._followed: set[str] = set()
+        # Cython name -> the Cython functions at C that mention it (lazily).
+        self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
 
     # -- recording --------------------------------------------------------------
 
@@ -470,7 +474,10 @@ class _Observers:
         for change in self.changes:
             if change.carries_impact:
                 self._change(change)
+        cython = self._cython()
         for path in _changed_unanalysed_files(self.c, self.other):
+            if path in cython:
+                continue
             before, after = path in self.c.other_files, path in self.other.other_files
             what = "edited" if before and after else ("added" if after else "deleted")
             self._file(path, what, names=not (before and after))
@@ -479,6 +486,103 @@ class _Observers:
             if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):  # type: ignore[union-attr]
                 what = f"{change.id} {'/'.join(change.changes)}"
                 self._file(symbol.path, what, names=True)  # type: ignore[union-attr]
+
+    def _cython(self) -> set[str]:
+        """Cython sources (roadmap item 7): the paths this rule handled.
+
+        A body edit selects the tests that executed the function in a
+        profiled build at C, and for a ``nogil`` or ``cpdef`` function (which
+        such a build does not always report) the tests that executed any
+        Cython function naming it. Anything else, or a module the store holds
+        no Cython record of (built without ``profile=True``), selects all."""
+        paths = {
+            p
+            for p in _changed_unanalysed_files(self.c, self.other)
+            if is_cython(p) and (p in self.c.cython or p in self.other.cython)
+        }
+        if not paths:
+            return set()
+        changes = cython_changes(
+            {p: m for p, m in self.c.cython.items() if p in paths},
+            {p: m for p, m in self.other.cython.items() if p in paths},
+        )
+        for path, why in changes.files:
+            self._select_all(
+                RULE_UNOBSERVED_FILE,
+                f"{path} {why}: a Cython change outside function bodies is not attributed "
+                "to any function",
+            )
+        recorded = {
+            s.split("::", 1)[0]
+            for s in self.evidence.symbols
+            if "::" in s and is_cython(s.split("::", 1)[0])
+        }
+        for path, name in changes.functions:
+            label = f"{symbol_id(path, name)} body_changed (Cython)"
+            if path not in recorded:
+                self._select_all(
+                    RULE_UNOBSERVED_FILE,
+                    f"{label}: the evidence holds no Cython record from {path} (collected "
+                    "without a profile=True build of it?)",
+                )
+                continue
+            function = self.c.cython[path].by_name()[name]
+            self._observe(symbol_id(path, name), RULE_EXECUTED_CHANGED, label, None)
+            self._cython_import_effect(symbol_id(path, name), label)
+            if function.nogil or function.cpdef:
+                kind = "nogil" if function.nogil else "cpdef"
+                for caller in self._cython_callers(path, name):
+                    self._observe(
+                        caller,
+                        RULE_CYTHON_CALLER,
+                        f"{caller} names {symbol_id(path, name)}, a {kind} function a profiled "
+                        f"build does not always report; {label}",
+                        None,
+                    )
+                    self._cython_import_effect(caller, label)
+        return paths
+
+    def _cython_callers(self, path: str, name: str) -> list[str]:
+        """The Cython functions at C that name ``path::name``, and through
+        any of them that is itself ``nogil`` or ``cpdef``, theirs."""
+        if self._cython_mentions is None:
+            self._cython_mentions = defaultdict(list)
+            for p, module in self.c.cython.items():
+                for function in module.functions:
+                    for mentioned in function.names:
+                        self._cython_mentions[mentioned].append((p, function))
+        by_name = self._cython_mentions
+        found: set[str] = set()
+        stack = [(path, name)]
+        while stack:
+            p, n = stack.pop()
+            simple = n.split(".")[-1].split("#")[0]
+            for caller_path, caller in by_name.get(simple, ()):
+                caller_id = symbol_id(caller_path, caller.name)
+                if caller_id in found or (caller_path, caller.name) == (path, name):
+                    continue
+                found.add(caller_id)
+                if caller.nogil or caller.cpdef:
+                    stack.append((caller_path, caller.name))
+        return sorted(found)
+
+    def _cython_import_effect(self, symbol_id_: str, label: str) -> None:
+        """Cython code that ran while a module was imported built its state;
+        code that ran in a hook or during collection cannot be planned
+        statically, so it selects all."""
+        for module in sorted(self.evidence.import_by.get(symbol_id_, ())):
+            if module.startswith(UNINDEXED_MODULE):
+                self._select_all(
+                    RULE_UNINDEXED_IMPORT,
+                    f"{label}: {symbol_id_} ran while a file outside the source roots was imported",
+                )
+            else:
+                self._escalate_module(module, f"{symbol_id_} ran while {module} was imported")
+        if symbol_id_ in self.evidence.hook_phase:
+            self._select_all(
+                RULE_UNOBSERVED_FILE,
+                f"{label}: {symbol_id_} ran outside every test (a hook or collection)",
+            )
 
     def _change(self, change: SymbolChange) -> None:
         symbol = change.head or change.base

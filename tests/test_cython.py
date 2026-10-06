@@ -12,7 +12,7 @@ from diffcone.cache import index_from_dict, index_to_dict
 from diffcone.cython import cython_changes, read
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
-from diffcone.testing import executed
+from diffcone.testing import executed, rules, selected
 
 PYX = '''\
 # cython: language_level=3
@@ -212,8 +212,9 @@ setup(ext_modules=cythonize("pkg/_fast.pyx"))
 """
 
 
-def _built_extension(repo):
-    """A fixture repository with a profiled Cython extension built in place."""
+def _built_extension(repo, profile=True):
+    """A fixture repository with a Cython extension built in place, profiled
+    unless ``profile`` is false."""
     import shutil
     import subprocess
 
@@ -226,7 +227,7 @@ def _built_extension(repo):
             ".gitignore": "__pycache__/\n.diffcone/\nbuild/\n*.c\n*.so\n*.pyd\n",
             "setup.py": SETUP,
             "pkg/__init__.py": "",
-            "pkg/_fast.pyx": FAST,
+            "pkg/_fast.pyx": FAST if profile else FAST.replace("# cython: profile=True\n", ""),
             "tests/__init__.py": "",
             "tests/test_fast.py": FAST_TESTS,
         }
@@ -255,3 +256,61 @@ def test_a_profiled_build_records_cython_functions(repo):
     # none either; the caller rule covers both (roadmap item 7).
     assert cy["big"] == {"pkg/_fast.pyx::Box.__init__", "pkg/_fast.pyx::Big.scaled"}
     assert cy["plain"] == set()
+
+
+# --------------------------------------------------------------------------- planning
+
+
+def _plan(repo, ev, text):
+    head = repo.commit({"pkg/_fast.pyx": text})
+    return repo.plan(ev.commit, head, [], discover_runners=["pytest"], evidence=ev)
+
+
+def test_a_body_change_selects_the_tests_that_executed_the_function(repo):
+    _built_extension(repo)
+    ev = repo.collect()
+    plan = _plan(repo, ev, FAST.replace("Box(self.v + other.v)", "Box(other.v + self.v)"))
+    assert selected(plan) == {"tests/test_fast.py::test_add"}
+    assert rules(plan, "tests/test_fast.py::test_add") == {"executed_changed"}
+    assert not plan.fallbacks
+    # Static planning cannot connect a test to a Cython function.
+    static = repo.plan(ev.commit, plan.head.commit, [], discover_runners=["pytest"])
+    assert len(selected(static)) == 4
+
+
+def test_nogil_and_cpdef_functions_are_found_through_their_callers(repo):
+    _built_extension(repo)
+    ev = repo.collect()
+    # _fast is nogil: tripled names it and was recorded.
+    plan = _plan(repo, ev, FAST.replace("return x * 3", "return 3 * x"))
+    assert selected(plan) == {"tests/test_fast.py::test_tripled"}
+    assert rules(plan, "tests/test_fast.py::test_tripled") == {"cython_caller"}
+    # Box.scaled ran only as Box.scaled(self, k) inside Big.scaled, which a
+    # profiled build does not report: Big.scaled names it.
+    plan = _plan(repo, ev, FAST.replace("return self.v * k", "return k * self.v"))
+    assert selected(plan) == {"tests/test_fast.py::test_big"}
+
+
+def test_other_cython_edits_select_everything_or_nothing(repo):
+    _built_extension(repo)
+    ev = repo.collect()
+    # A comment is not a change.
+    plan = _plan(repo, ev, FAST.replace("cdef class Big(Box):", "# Bigger.\ncdef class Big(Box):"))
+    assert selected(plan) == set() and not plan.fallbacks
+    # A change outside every function is not attributed to one.
+    plan = _plan(repo, ev, FAST.replace("cdef public double v", "cdef public double v, w"))
+    assert len(selected(plan)) == 4
+    assert [f.rule for f in plan.fallbacks] == ["unobserved_file_changed"]
+
+
+def test_a_store_without_cython_records_selects_everything(repo):
+    _built_extension(repo, profile=False)
+    ev = repo.collect()
+    assert not any(".pyx::" in s for s in ev.symbols)
+    plan = _plan(
+        repo,
+        ev,
+        FAST.replace("# cython: profile=True\n", "").replace("return x * 3", "return 3 * x"),
+    )
+    assert len(selected(plan)) == 4
+    assert "profile=True" in plan.fallbacks[0].detail

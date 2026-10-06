@@ -191,6 +191,14 @@ uv run diffcone run --base main --head HEAD --discover pytest \
     --command "uv run pytest" --evidence auto --collect -- -n 8
 ```
 
+Compiled Cython code (`.pyx`, `.pxd`, `.pxi`) is covered at function level
+when the evidence was recorded against a build with Cython's
+`profile=True` directive (the runs themselves use the ordinary build): an
+edit to a function's body selects the tests that executed it. diffcone does
+not build the project, so building that way is up to you; a module without
+Cython records, an edit outside function bodies, and C sources or build
+files still select everything.
+
 ASV targets keep static selection. The rules, the assumptions they rest on
 (the same environment, deterministic tests, test isolation) and what is
 still missing are in [docs/evidence_design.md](docs/evidence_design.md).

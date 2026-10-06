@@ -356,7 +356,7 @@ build, the whole suite under `-n 8`):
    source to the outermost function holding its first line, named
    `<path>::<qualname>`. Collection needs a build with `profile=True`;
    diffcone does not build, so that is documented, not enforced.
-3. *Planning.* With evidence, a Cython edit that changes only function
+3. *Planning* (done 2026-10-06). With evidence, a Cython edit that changes only function
    bodies selects the tests that executed a changed function, and for a
    `nogil` or `cpdef` function also those that executed any Cython
    function naming it. It still selects everything when the edit changes

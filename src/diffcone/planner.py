@@ -104,6 +104,9 @@ RULE_SUBPROCESS = "subprocess"
 RULE_PYTEST_HOOK = "pytest_hook_changed"
 RULE_UNOBSERVED_FILE = "unobserved_file_changed"
 RULE_UNINDEXED_IMPORT = "unindexed_import"
+# A test executed a Cython function that names a changed nogil or cpdef one,
+# which a profiled build does not report itself (roadmap item 7).
+RULE_CYTHON_CALLER = "cython_caller"
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
