@@ -7,7 +7,7 @@ lives in [roadmap.md](roadmap.md).
 
 ```
 Git snapshot reader        diffcone/snapshot.py
-  -> Source index          diffcone/indexer.py   (symbols, hashes, edges, unresolved refs)
+  -> Source index          diffcone/indexer/     (symbols, hashes, edges, unresolved refs)
   -> Change classifier     diffcone/classify.py
   -> Impact planner        diffcone/planner.py
   -> Reports               diffcone/report.py    (JSON and text)

@@ -56,8 +56,11 @@ def _indexer_fingerprint() -> str:
     h = hashlib.sha256()
     # ``ast.dump`` output (hence every hash) may differ between Python versions.
     h.update(f"python{sys.version_info[0]}.{sys.version_info[1]}:".encode())
-    for name in ("model.py", "snapshot.py", "indexer.py", "cython.py"):
-        h.update((here / name).read_bytes())
+    sources = [here / name for name in ("model.py", "snapshot.py", "cython.py")]
+    sources += sorted((here / "indexer").glob("*.py"))
+    for path in sources:
+        h.update(path.relative_to(here).as_posix().encode() + b"\0")
+        h.update(path.read_bytes())
     return h.hexdigest()[:16]
 
 

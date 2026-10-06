@@ -1,0 +1,804 @@
+"""The second pass's AST walker: what a function, class or module body
+references, calls, writes and looks up dynamically."""
+
+from __future__ import annotations
+
+import ast
+from typing import TYPE_CHECKING
+
+from diffcone.indexer.definitions import _flatten_chain
+from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
+from diffcone.indexer.literals import _collect_store_names, _LocalBindings
+from diffcone.indexer.scopes import (
+    External,
+    ModuleNode,
+    Node,
+    Resolved,
+    Scope,
+    Unresolved,
+    _resolve_relative_name,
+    _string_prefix,
+)
+from diffcone.indexer.syntax import (
+    DYNAMIC_CALLS,
+    REFLECTIVE_ATTRIBUTES,
+    REFLECTIVE_BUILTINS,
+    REFLECTIVE_CALLS,
+)
+from diffcone.model import (
+    CLASS,
+    FUNCTION,
+    METHOD,
+    REFERENCES,
+    UNRESOLVED_ATTRIBUTE,
+    UNRESOLVED_DYNAMIC,
+    VARIABLE,
+    Edge,
+    ExternalReference,
+    UnresolvedReference,
+)
+from diffcone.snapshot import (
+    module_name_for,
+    split_root,
+)
+
+if TYPE_CHECKING:
+    from diffcone.indexer.core import Indexer
+
+
+class _ReferenceCollector(ast.NodeVisitor):
+    """Walk a symbol's code and record edges / unresolved references.
+
+    Nested functions, lambdas and comprehensions push their own scope so a
+    name bound there does not shadow the enclosing symbol's references. With
+    ``skip_defs`` (module and class bodies) nested definitions are not
+    entered at all: they are symbols resolved on their own.
+    """
+
+    def __init__(
+        self, indexer: Indexer, source: str, scope: Scope, *, skip_defs: bool = False
+    ) -> None:
+        self.indexer = indexer
+        self.source = source
+        self.scope = scope
+        self.skip_defs = skip_defs
+        # Positions that name a class without constructing it (the second
+        # argument of ``isinstance``/``issubclass``, the first of
+        # ``typing.cast``). Annotations are not among them: frameworks build
+        # instances from them (injector, FastAPI's ``Depends()``, pydantic).
+        self._type_nodes: set[int] = set()
+        # ``self.<attr> = value`` targets in ``__init__`` -> what they bind.
+        self._bindings: dict[int, list | None] = {}
+
+    def _push(
+        self,
+        bound: set[str],
+        literals: dict[str, tuple[str, ...] | None] | None = None,
+        node: ast.AST | None = None,
+    ) -> Scope:
+        outer = self.scope
+        self.scope = Scope(
+            module=outer.module,
+            local_imports=outer.local_imports,
+            locals=outer.locals | bound,
+            self_name=None if outer.self_name in bound else outer.self_name,
+            self_class=None if outer.self_name in bound else outer.self_class,
+            self_is_class=outer.self_is_class,
+            literal_node=node,
+            literal_parent=outer,
+            literal_bound=frozenset(bound),
+            literal_extra=dict(literals or {}),
+            params={},  # a nested scope's names are not the enclosing function's parameters
+            param_aliases={k: v for k, v in outer.param_aliases.items() if k not in bound},
+        )
+        return outer
+
+    def _is_shadowed(self, name: str) -> bool:
+        """True when ``name`` is bound by the program rather than a builtin."""
+        scope = self.scope
+        if name in scope.locals or name in scope.local_imports:
+            return True
+        module = scope.module
+        return name in module.members or name in module.imports or name in module.bindings
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        if self.skip_defs:
+            return
+        for dec in node.decorator_list:
+            self.visit(dec)
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
+            self.visit(default)
+        outer = self._push(_LocalBindings().collect(node), node=node)
+        try:
+            for arg in ast.walk(node.args):
+                if isinstance(arg, ast.arg) and arg.annotation is not None:
+                    self.visit(arg.annotation)
+            if node.returns is not None:
+                self.visit(node.returns)
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self.scope = outer
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return self.visit_FunctionDef(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        if self.skip_defs:
+            return
+        for expr in list(node.bases) + list(node.keywords) + list(node.decorator_list):
+            self.visit(expr)
+        bases: list[str] = []
+        for expr in node.bases:
+            parts = _flatten_chain(expr)
+            target = self.indexer.resolve_chain(parts, self.scope) if parts else None
+            if isinstance(target, Resolved) and not target.detail:
+                if target.symbol in self.indexer.class_scopes:
+                    bases.append(target.symbol)
+        self.indexer.class_creation(self.source, bases, node.keywords, self.scope)
+        outer = self._push(_LocalBindings().collect(node))
+        try:
+            for stmt in node.body:
+                self.visit(stmt)
+        finally:
+            self.scope = outer
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
+            self.visit(default)
+        outer = self._push(_LocalBindings().collect(node))
+        try:
+            self.visit(node.body)
+        finally:
+            self.scope = outer
+
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
+    ) -> None:
+        generators = node.generators
+        bound: set[str] = set()
+        literals: dict[str, tuple[str, ...] | None] = {}
+        for gen in generators:
+            bound |= _collect_store_names(gen.target)
+            if isinstance(gen.target, ast.Name):
+                literals[gen.target.id] = self.scope.string_candidates(gen.iter)
+        outer = self._push(bound, literals)
+        try:
+            for gen in generators:
+                self.visit(gen.iter)
+                for cond in gen.ifs:
+                    self.visit(cond)
+            for field_name in ("elt", "key", "value"):
+                child = getattr(node, field_name, None)
+                if child is not None:
+                    self.visit(child)
+        finally:
+            self.scope = outer
+
+    visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
+
+    def _resolve(self, parts: list[str], kind: str = REFERENCES) -> None:
+        node, rest = self.indexer.resolve_chain_names(parts, self.scope)
+        chain = ".".join(parts)
+        self.indexer._record(self.source, node, kind=kind, chain=chain)
+        for name in rest:
+            self.indexer.out.unresolved.add(
+                UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, chain)
+            )
+
+    def _dynamic(self, detail: str) -> None:
+        self.indexer.out.unresolved.add(
+            UnresolvedReference(self.source, UNRESOLVED_DYNAMIC, "", detail)
+        )
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._resolve([node.id])
+            self._mark_escape(node, [node.id])
+
+    def _self_class(self, node: ast.expr) -> str | None:
+        """The class of the method this is in, when ``node`` is its ``self``
+        or ``cls``."""
+        if isinstance(node, ast.Name) and node.id == self.scope.self_name:
+            return self.scope.self_class
+        return None
+
+    def _is_self(self, node: ast.expr) -> bool:
+        return self._self_class(node) is not None
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if not isinstance(node.ctx, ast.Load):
+            self._attribute_write(node)
+        elif node.attr in REFLECTIVE_ATTRIBUTES:
+            self.indexer.out.reflection.add((self.source, f".{node.attr}"))
+        if node.attr == "__dict__":
+            # ``__dict__`` can read or write any attribute; through another
+            # receiver (aliased, reassigned, ``|=``) the class is unknown.
+            owner = self.scope.self_class if self._is_self(node.value) else ""
+            self.indexer.out.attr_unbound.add((owner or "", "*"))
+        parts = _flatten_chain(node)
+        if parts is not None:
+            self._resolve(parts)
+            self._mark_escape(node, parts)
+            if (
+                isinstance(node.ctx, ast.Load)
+                and len(parts) >= 2
+                and parts[0] == self.scope.self_name
+                and self.scope.self_class is not None
+                and isinstance(
+                    self.indexer.lookup_in_class(self.scope.self_class, parts[1]), Unresolved
+                )
+            ):
+                self.indexer.out.attr_refs.append(
+                    _AttrRef(
+                        self.source, self.scope.self_class, parts[1], parts[2:], ".".join(parts)
+                    )
+                )
+            return
+        if self._is_zero_arg_super(node.value) and self.scope.self_class is not None:
+            # ``super().m``: next definition of ``m`` in the enclosing class's MRO.
+            target = self.indexer.lookup_super(self.scope.self_class, node.attr)
+            self.indexer._record(self.source, target, chain=f"super().{node.attr}")
+            if node is not self._call_func:
+                self._escape(target)
+            return
+        # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
+        # unknown, but the attribute name still bounds what it may refer to.
+        self.indexer.out.unresolved.add(
+            UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
+        )
+        self.generic_visit(node)
+
+    def _is_zero_arg_super(self, node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "super"
+            and not node.args
+            and not self._is_shadowed("super")
+        )
+
+    def visit_Import(self, node: ast.Import) -> None:
+        return  # handled by Indexer._import_edges
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        return
+
+    # Methods that mutate a container in place: a call of one on a variable
+    # makes the caller a writer of that variable.
+    MUTATING_METHODS = frozenset(
+        {
+            "append",
+            "extend",
+            "insert",
+            "pop",
+            "popitem",
+            "remove",
+            "clear",
+            "update",
+            "setdefault",
+            "add",
+            "discard",
+            "sort",
+            "reverse",
+            "__setitem__",
+            "__delitem__",
+        }
+    )
+
+    def _mutation_target(self, expr: ast.expr) -> None:
+        """Record ``source`` as a writer when ``expr`` (an assignment target or
+        a receiver of a mutating call) is a subscript/attribute of a variable
+        symbol, or the variable itself under ``global``."""
+        base = expr
+        while isinstance(base, (ast.Subscript, ast.Attribute)):
+            base = base.value
+        if not isinstance(base, ast.Name):
+            return
+        if base.id in self.scope.locals and base.id not in self.scope.param_aliases:
+            return
+        if base is expr and base.id in self.scope.locals:
+            return  # rebinding a parameter is not a mutation of its default
+        node = self.indexer.resolve_chain([base.id], self.scope)
+        if isinstance(node, Resolved) and not node.detail:
+            symbol = self.indexer.index.symbols.get(node.symbol)
+            if symbol is None or symbol.kind != VARIABLE or symbol.id == self.source:
+                return
+            if self.skip_defs and symbol.module == self.scope.module.name:
+                return  # a module's own top-level mutations are part of the variable's hash
+            self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
+
+    def _attribute_write(self, node: ast.Attribute) -> None:
+        """A store or delete of ``<receiver>.<attr>``: on ``self`` it is a
+        write of that class's instance attribute (bound only when it is a
+        plain ``__init__`` assignment); on any other receiver the type is
+        unknown, so no class's ``attr`` can be bounded."""
+        if (cls := self._self_class(node.value)) is not None:
+            binding = self._bindings.pop(id(node), None)
+            self.indexer.out.attr_writes.append(
+                _AttrWrite(cls, node.attr, self.scope.method, binding)
+            )
+        else:
+            self.indexer.out.attr_unbound.add(("", node.attr))
+
+    def _init_binding(self, value: ast.expr) -> list | None:
+        """What ``self.<attr> = value`` in ``__init__`` binds, if bounded."""
+        if isinstance(value, ast.Name) and value.id in self.scope.params:
+            return None if value.id in self.scope.rebound else ["param", value.id]
+        strings = self.scope.string_candidates(value)
+        if strings is not None:
+            return ["strings", list(strings)]
+        parts = _flatten_chain(value)
+        if parts is None:
+            return None
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if (
+            isinstance(target, Resolved)
+            and not (target.detail or target.receiver or target.overrides)
+            and not target.uncertain_attr
+        ):
+            return ["symbol", target.symbol]
+        return None
+
+    def _stash_binding(self, target: ast.expr, value: ast.expr | None) -> None:
+        if (
+            value is not None
+            and isinstance(target, ast.Attribute)
+            and self._is_self(target.value)
+            and self.scope.method.rsplit(".", 1)[-1] == "__init__"
+        ):
+            self._bindings[id(target)] = self._init_binding(value)
+
+    def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
+        """``setattr(receiver, name, ...)`` and its relatives."""
+        names = self.scope.string_candidates(name) if name is not None else None
+        owner = (self._self_class(receiver) if receiver is not None else None) or ""
+        for attr in names if names is not None else ("*",):
+            self.indexer.out.attr_unbound.add((owner, attr.rsplit(".", 1)[-1]))
+
+    def _dict_write(self, expr: ast.expr) -> None:
+        """``x.__dict__[k] = v``, ``vars(x).update(...)``: any attribute."""
+        while isinstance(expr, ast.Subscript):
+            expr = expr.value
+        receiver: ast.expr | None = None
+        if isinstance(expr, ast.Attribute) and expr.attr == "__dict__":
+            receiver = expr.value
+        elif (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "vars"
+            and expr.args
+        ):
+            receiver = expr.args[0]
+        if receiver is not None:
+            self._reflective_write(receiver, None)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if len(node.targets) == 1:
+            self._stash_binding(node.targets[0], node.value)
+        for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                self._dict_write(target)
+            for sub in ast.walk(target):
+                if isinstance(sub, (ast.Subscript, ast.Attribute)):
+                    self._mutation_target(sub)
+                elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
+                    self._mutation_target(sub)  # rebinding a ``global`` variable
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._mutation_target(node.target)
+        if isinstance(node.target, ast.Subscript):
+            self._dict_write(node.target)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._mutation_target(node.target)
+            self._stash_binding(node.target, node.value)
+        self.visit(node.target)
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self._mutation_target(target)
+            if isinstance(target, ast.Subscript):
+                self._dict_write(target)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        parts = _flatten_chain(node.func)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in self.MUTATING_METHODS
+            and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute, ast.Call))
+        ):
+            self._mutation_target(node.func.value)
+            self._dict_write(node.func.value)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in (
+            "__setattr__",
+            "__delattr__",
+        ):
+            # ``object.__setattr__(self, n, v)`` / ``self.__setattr__(n, v)``.
+            receiver = node.func.value if self._is_self(node.func.value) else None
+            if receiver is None and node.args and self._is_self(node.args[0]):
+                receiver = node.args[0]
+            self._reflective_write(receiver, None)
+        if parts is not None:
+            name = ".".join(parts)
+            builtin = len(parts) == 1 and not self._is_shadowed(name)
+            if (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
+                not builtin and self._canonical_name(parts) in REFLECTIVE_CALLS
+            ):
+                self.indexer.out.reflection.add((self.source, f"{name}()"))
+            if builtin and parts[0] in DYNAMIC_CALLS:
+                self._dynamic(f"{name}()")
+            elif builtin and parts[0] == "__import__":
+                self._import_module(node, "__import__")
+            elif builtin and parts[0] == "getattr":
+                self._getattr(node)
+            elif (canonical := self._canonical_name(parts)) in (
+                "importlib.import_module",
+                "importlib.__import__",
+                "runpy.run_module",
+            ):
+                self._import_module(node, canonical)
+            elif canonical == "runpy.run_path":
+                self._dynamic("runpy.run_path()")  # runs a file by path: anything
+            if builtin and parts[0] == "vars" and node.args:
+                if (cls := self._self_class(node.args[0])) is not None:
+                    self.indexer.out.attr_unbound.add((cls, "*"))
+            if builtin and parts[0] == "type" and len(node.args) == 1:
+                if (cls := self._self_class(node.args[0])) is not None:
+                    self.indexer.escape_class_family(cls)
+            if parts[-1] in ("setattr", "delattr") or parts[-2:] == ["patch", "object"]:
+                self._setattr_call(node, parts)
+            if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
+                self._mark_type_node(node.args[1])
+            elif node.args and self._canonical_name(parts) in (
+                "typing.cast",
+                "typing_extensions.cast",
+            ):
+                self._mark_type_node(node.args[0])
+            self._record_call_site(node, parts)
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and self._is_zero_arg_super(node.func.value)
+            and self.scope.self_class is not None
+        ):
+            target = self.indexer.lookup_super(self.scope.self_class, node.func.attr)
+            self._add_call_site(node, target, receiver_bound=True)
+        self._call_func = node.func
+        self.generic_visit(node)
+
+    _call_func: ast.expr | None = None
+
+    def _mark_type_node(self, node: ast.expr) -> None:
+        self._type_nodes.add(id(node))
+        if isinstance(node, ast.Tuple):
+            self._type_nodes |= {id(e) for e in node.elts}
+
+    def _setattr_call(self, node: ast.Call, parts: list[str]) -> None:
+        """``setattr``/``delattr``, ``monkeypatch.setattr`` and
+        ``patch.object``: the receiver is the first argument and the name the
+        second (``monkeypatch.setattr("pkg.mod.name", value)`` names it in a
+        dotted string instead)."""
+        args = list(node.args)
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        if len(parts) > 1 and args and isinstance(args[0], ast.Constant):
+            self._reflective_write(None, args[0])
+            return
+        receiver = args[0] if args else keywords.get("target")
+        name = args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))
+        self._reflective_write(receiver, name)
+
+    def _record_call_site(self, node: ast.Call, parts: list[str]) -> None:
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if not (isinstance(target, Resolved) and not target.detail):
+            return
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is not None and symbol.kind == CLASS:
+            # Constructing a class calls the ``__init__`` its MRO resolves to
+            # (any subclass's, for ``cls(...)``), with ``self`` implicit.
+            init = self.indexer.lookup_in_class(symbol.id, "__init__", dispatch=target.receiver)
+            self._add_call_site(node, init, receiver_bound=True)
+            return
+        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            return
+        receiver_bound = False
+        if symbol.kind == METHOD and len(parts) > 1:
+            base = self.indexer._lookup_base(parts[0], self.scope)
+            base_is_class = (
+                isinstance(base, Resolved)
+                and not base.detail
+                and base.symbol in self.indexer.class_scopes
+                and len(parts) == 2
+                and parts[0] != self.scope.self_name  # self/cls also resolve to the class
+            )
+            receiver_bound = not base_is_class
+        self._add_call_site(node, target, receiver_bound=receiver_bound)
+
+    def _add_call_site(self, node: ast.Call, target: Node, *, receiver_bound: bool) -> None:
+        if not (isinstance(target, Resolved) and not target.detail):
+            return
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            return
+        unbounded = any(isinstance(a, ast.Starred) for a in node.args) or any(
+            k.arg is None for k in node.keywords
+        )
+        site = _CallSite(
+            positional=[self.scope.string_candidates(a) for a in node.args],
+            keywords={
+                k.arg: self.scope.string_candidates(k.value)
+                for k in node.keywords
+                if k.arg is not None
+            },
+            unbounded=unbounded,
+            receiver_bound=receiver_bound,
+            positional_classes=[self._argument_class(a) for a in node.args],
+            keyword_classes={
+                k.arg: self._argument_class(k.value) for k in node.keywords if k.arg is not None
+            },
+            positional_sources=[self._argument_source(a) for a in node.args],
+            keyword_sources={
+                k.arg: self._argument_source(k.value) for k in node.keywords if k.arg is not None
+            },
+            caller=self.source,
+            positional_params=[self._argument_param(a) for a in node.args],
+            keyword_params={
+                k.arg: self._argument_param(k.value) for k in node.keywords if k.arg is not None
+            },
+        )
+        self.indexer.out.call_sites[symbol.id].append(site)
+        # A dispatched call may land on any override: they share the call site.
+        for override_id, detail in target.overrides:
+            if not detail:
+                self.indexer.out.call_sites[override_id].append(site)
+
+    def _argument_class(self, expr: ast.expr) -> str | None:
+        """The class an argument is an instance of, when the argument says so:
+        ``C()`` passes an instance of C, ``C`` passes the class itself. A name
+        holding an instance, or anything a function returns, says nothing."""
+        target = expr.func if isinstance(expr, ast.Call) else expr
+        parts = _flatten_chain(target)
+        if parts is None:
+            return None
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return node.symbol if symbol is not None and symbol.kind == CLASS else None
+
+    def _argument_param(self, expr: ast.expr) -> str | None:
+        """The enclosing function's parameter an argument is, when it is
+        exactly that name and the body never rebinds it."""
+        if not isinstance(expr, ast.Name) or isinstance(expr.ctx, ast.Store):
+            return None
+        if expr.id not in self.scope.params or expr.id in self.scope.rebound:
+            return None
+        return expr.id
+
+    def _argument_source(self, expr: ast.expr) -> str | None:
+        """The function an argument came out of: ``make()`` directly, or a
+        name this scope assigned once from such a call (``obj = make()``).
+        What that function returns is known only once every module has been
+        indexed, so the join happens at the end (see Indexer.build)."""
+        if isinstance(expr, ast.Name) and not isinstance(expr.ctx, ast.Store):
+            expr = self._local_source(expr.id) or expr
+        if not isinstance(expr, ast.Call):
+            return None
+        parts = _flatten_chain(expr.func)
+        if parts is None:
+            return None
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return node.symbol if symbol is not None and symbol.kind in (FUNCTION, METHOD) else None
+
+    def _local_source(self, name: str) -> ast.expr | None:
+        """What this scope assigns ``name``, when that is the only thing that
+        binds it. A second assignment, a loop target, a ``with ... as``, a
+        ``del`` or a parameter of the same name all say nothing: the object
+        could be either."""
+        body = self.scope.literal_node
+        if body is None or name in self.scope.params:
+            return None
+        bindings = [
+            inner
+            for inner in ast.walk(body)
+            if isinstance(inner, ast.Name)
+            and inner.id == name
+            and not isinstance(inner.ctx, ast.Load)
+        ]
+        if len(bindings) != 1:
+            return None
+        for inner in ast.walk(body):
+            if isinstance(inner, ast.Assign) and any(t is bindings[0] for t in inner.targets):
+                return inner.value
+            if isinstance(inner, ast.AnnAssign) and inner.target is bindings[0]:
+                return inner.value
+        return None
+
+    def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
+        """A function referenced other than as the callee of a call may be
+        called from anywhere with anything; so may a class (constructed), unless
+        it is only named by ``isinstance``/``issubclass``/``typing.cast``
+        (annotations count: frameworks construct from them). ``self`` as a value is an
+        instance, not its class; ``cls``, ``type(self)`` and
+        ``self.__class__`` are the class of any in-scope subclass."""
+        if parts[0] == self.scope.self_name and self.scope.self_class is not None:
+            if parts == [parts[0], "__class__"] or (
+                len(parts) == 1 and self.scope.self_is_class and node is not self._call_func
+            ):
+                self.indexer.escape_class_family(self.scope.self_class)
+                return
+            if len(parts) == 1:
+                return
+        if node is self._call_func:
+            return
+        type_position = id(node) in self._type_nodes
+        self._escape(self.indexer.resolve_chain(parts, self.scope), classes=not type_position)
+
+    def _escape(self, target: Node, *, classes: bool = True) -> None:
+        if isinstance(target, Resolved) and not target.detail:
+            self.indexer.escape(target, classes=classes)
+
+    def _param_dynamic(
+        self, expr: ast.expr, kind: str, base: list[str] | None, detail: str
+    ) -> bool:
+        """Defer a dynamic use whose name is one of the enclosing function's
+        parameters (not rebound in its body) or an instance attribute
+        ``self.<name>``; returns False when that does not apply."""
+        if isinstance(expr, ast.Attribute) and (cls := self._self_class(expr.value)) is not None:
+            self.indexer.out.param_dynamics.append(
+                _ParamDynamic(self.source, expr.attr, kind, base, self.scope, detail, cls)
+            )
+            return True
+        if not (
+            isinstance(expr, ast.Name)
+            and expr.id in self.scope.params
+            and expr.id not in self.scope.rebound
+        ):
+            return False
+        self.indexer.out.param_dynamics.append(
+            _ParamDynamic(self.source, expr.id, kind, base, self.scope, detail)
+        )
+        return True
+
+    def _forwarded_name(self, expr: ast.expr) -> bool:
+        """``getattr(x, name)`` inside ``__getattr__``/``__getattribute__``
+        with ``name`` the method's own name parameter: the method runs only
+        for an access ``obj.<name>``, and every access site records ``<name>``
+        itself (resolved, or as a name-bounded reference that reaches
+        whatever this lookup can), so it is not a dynamic reference."""
+        method = self.scope.method.rsplit(".", 1)[-1]
+        if method not in ("__getattr__", "__getattribute__") or not self.scope.self_class:
+            return False
+        params = [p for p, i in self.scope.params.items() if i == 1]
+        return (
+            isinstance(expr, ast.Name)
+            and bool(params)
+            and expr.id == params[0]
+            and expr.id not in self.scope.rebound
+        )
+
+    def _getattr_detail(self, receiver: ast.expr, base: list[str] | None) -> str:
+        """What bounds an unbounded ``getattr(x, <name>)``. The seeding
+        module's import closure covers an object that is one of that
+        module's globals: a module it can name holds attributes from its own
+        closure, which is inside ours. A receiver that came from somewhere
+        else -- a parameter, a call result, an instance whose attributes a
+        caller may have set -- can be an object of any module; that read is
+        bounded at the other end, by the classes handed to other code (see
+        ``SourceIndex.escaped_classes``), and the detail says so."""
+        node = self.indexer.resolve_chain(base, self.scope) if base else None
+        if isinstance(node, (ModuleNode, External)):
+            return "getattr(<non-literal>)"
+        return "getattr(<non-literal>) on a receiver from elsewhere, bound to the classes handed on"
+
+    def _getattr(self, node: ast.Call) -> None:
+        if len(node.args) < 2:
+            return
+        if self._forwarded_name(node.args[1]):
+            return
+        names = self.scope.string_candidates(node.args[1])
+        base = _flatten_chain(node.args[0])
+        if names is None:
+            prefix = _string_prefix(node.args[1])
+            if prefix is not None:
+                # ``getattr(obj, f"pytest_{name}")``: every in-scope attribute
+                # name with that prefix is a candidate, nothing else.
+                names = self.indexer.symbol_names_with_prefix(prefix)
+            elif not self._param_dynamic(
+                node.args[1], "getattr", base, self._getattr_detail(node.args[0], base)
+            ):
+                # The name is not a parameter either: nothing bounds it.
+                self._dynamic(self._getattr_detail(node.args[0], base))
+                return
+            else:
+                return
+        for name in names:
+            if base is None:
+                # Unknown receiver, known attribute name: bounded like ``obj.name``.
+                self.indexer.out.unresolved.add(
+                    UnresolvedReference(
+                        self.source, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
+                    )
+                )
+            else:
+                # The attribute's value is used, so a function or class
+                # found this way may be called from here with anything.
+                self._resolve(base + [name])
+                self._escape(self.indexer.resolve_chain(base + [name], self.scope))
+
+    def _canonical_name(self, parts: list[str]) -> str | None:
+        """The dotted name a callee chain refers to through the scope's import
+        bindings (``import_module`` from ``from importlib import
+        import_module`` is ``importlib.import_module``); None for a local."""
+        head = parts[0]
+        binding = self.scope.local_imports.get(head)
+        if binding is None:
+            if head in self.scope.locals:
+                return None
+            binding = self.scope.module.imports.get(head)
+        if binding is None:
+            return ".".join(parts)
+        base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+        return ".".join([base, *parts[1:]])
+
+    def _import_package(self, node: ast.Call) -> str | None:
+        """``import_module``'s ``package`` argument when it is known: a
+        literal, ``__name__`` (this module) or ``__package__``."""
+        arg = node.args[1] if len(node.args) > 1 else None
+        for k in node.keywords:
+            if k.arg == "package":
+                arg = k.value
+        if arg is None:
+            return None
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+        module = self.scope.module
+        # Under a ``DIR=PREFIX`` root the indexed name is diffcone's own, not
+        # the one Python gives the module at runtime.
+        roots = [split_root(r)[0] for r in self.indexer.snapshot.source_roots]
+        if module_name_for(module.path, roots) != module.name:
+            return None
+        if isinstance(arg, ast.Name) and not self._is_shadowed(arg.id):
+            if arg.id == "__name__":
+                return module.name
+            if arg.id == "__package__":
+                return module.name if module.is_package else module.name.rpartition(".")[0]
+        return None
+
+    def _import_module(self, node: ast.Call, name: str) -> None:
+        if not node.args:
+            return
+        package = self._import_package(node) if name == "importlib.import_module" else None
+        names = self.scope.string_candidates(node.args[0])
+        if names is not None and package is not None:
+            resolved = [_resolve_relative_name(n, package) for n in names]
+            if all(r is not None for r in resolved):
+                names = tuple(r for r in resolved if r is not None)
+        if names is None:
+            prefix = _string_prefix(node.args[0])
+            if prefix is not None and prefix.startswith(".") and package is not None:
+                prefix = _resolve_relative_name(prefix, package, prefix=True)
+            if prefix is not None and not prefix.startswith("."):
+                # ``import_module(f"attr.{name}")``: every in-scope module under
+                # the prefix may be imported; nothing outside it can be.
+                names = self.indexer.modules_with_prefix(prefix)
+                if not names:
+                    self.indexer.out.external.add(ExternalReference(self.source, prefix + "*"))
+                    return
+        if names is None or any(n.startswith(".") for n in names):
+            if names is not None or not self._param_dynamic(
+                node.args[0], "import", None, f"{name}(<non-literal>)"
+            ):
+                self._dynamic(f"{name}(<non-literal>)")
+            return
+        for module in names:
+            self.indexer._module_import_edge(self.source, module)
