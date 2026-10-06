@@ -242,8 +242,11 @@ one (differences explained).
 
 ## 7. Compiled sources under evidence (Cython)
 
-**Status.** Spike run (2026-10-06, `scripts/cython_spike/`); the mechanism
-holds with the refinements below and is not built. Today any
+**Status.** Done (2026-10-06): stages 1-4 below. With evidence recorded on a
+`profile=True` build, a Cython body edit selects the tests that executed
+the function; on 25 pandas commits recall is 100 % at a median of 19 %
+(evaluation.md, "pandas: Cython edits planned from a profiled build").
+What remains is in "Not covered" below. Before this, any
 change to a compiled source or build file selects everything under evidence
 (`unobserved_file_changed`). In pandas that is 86 of the last 500
 first-parent commits before `3f57341` (17 %), 13 of them touching nothing
@@ -363,8 +366,14 @@ build, the whole suite under `-n 8`):
    anything outside function bodies, adds or deletes a file, or touches a
    module the store holds no Cython record for (a module built without
    profiling looks exactly like that).
-4. *Recall.* The pandas compiled edits replayed against a store collected
+4. *Recall* (done 2026-10-06). The pandas compiled edits replayed against a store collected
    on a profiled build, checked against the line-traced oracle.
+
+**Not covered.** Edits outside Cython function bodies (38 of the 86
+compiled commits in the spike), `.pxi.in` templates, hand-written C and
+build files still select everything; telling additive module-level edits
+apart is the next gain. A module the store holds no Cython record of
+(built without profiling) selects everything for its edits.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,

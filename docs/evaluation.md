@@ -1632,6 +1632,37 @@ commits, so the differences are run-to-run order dependence, which
 records of tests `8f11807` deleted, carried along unused; advancing now
 drops the record of a test that is no longer a target.
 
+## pandas: Cython edits planned from a profiled build (25 commits)
+
+Roadmap item 7, stage 4. Evidence was recorded with `diffcone collect` at
+`3f57341` built with Cython's `profile=True` (306 s for the suite; 1 253
+Cython functions recorded from 42 files). `parsers.pyx` needed its I/O
+callback declared `noexcept nogil` first: profiling it as declared
+segfaults, a pandas bug reported upstream. Of the last 500 first-parent
+commits, the 25 whose Cython change is confined to bodies of functions
+that still exist at `3f57341` were replayed there
+(`scripts/cython_spike/recall.py`): the same functions edited by a
+no-op statement and planned with the store. The check is the line-traced
+oracle (`profile`/`linetrace` with `CYTHON_TRACE_NOGIL`, whole suite, per
+test): every test that executed a line of an edited function must be
+selected.
+
+**Recall is 100 %**: 57 021 (function, test) expectations, none missed.
+
+| selection | commits |
+|---|---|
+| 10.7-15 % | 13 |
+| 15-50 % | 7 |
+| everything | 5 |
+
+Median 19 % of 24 924 targets, of which about 2 660 are the tests this
+marker-filtered recording never ran (always selected). The five that
+select everything do so through evidence, not a fallback:
+`tz_localize_to_utc`, `parse_timedelta_string` and `Timedelta.__new__` run
+while `pandas.conftest` and test modules are imported, so their import-time
+state escalates as it does for Python. Static planning selects everything
+on all 25.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
