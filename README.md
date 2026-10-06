@@ -1,422 +1,110 @@
 # diffcone
 
-Diffcone is a static-first, function-level change-impact engine for Python.
-It maps changes in application code to the tests and benchmarks that can
-observe them, and explains every selection with a concrete dependency path or
-an explicit fallback rule.
+[![CI](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml/badge.svg)](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml)
+[![Docs](https://github.com/bearing-research/diffcone/actions/workflows/docs.yml/badge.svg)](https://bearing-research.github.io/diffcone/)
 
-**Status: alpha (0.1).** Planning between commits, the staged index or the
-working tree; static pytest and ASV discovery; running, validating and
-checking a plan; and opt-in execution evidence (what each test executed,
-recorded once and planned on) are implemented and covered by acceptance
-scenarios, and recall has been measured on 34 public repositories and on
-pandas. Analysis never runs project code; `run`, `validate` and `collect`
-execute the runner only after a plan exists. See
-[Limitations](#limitations) and [docs/roadmap.md](https://github.com/bearing-research/diffcone/blob/main/docs/roadmap.md) before
-relying on it, and [CHANGELOG.md](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md) for what each release
-contains.
+**Which tests and benchmarks can a change to Python code affect, and why?**
 
-## What it does
+diffcone reads two snapshots of a repository (two commits, or a commit and
+your working tree), works out which functions, methods and classes changed,
+and follows the dependencies back to the tests and benchmarks that can
+observe them. Every selection comes with the path that connects it to a
+change, or the rule that made diffcone select it without one. It never runs
+your code to plan.
 
-Given two snapshots (git revisions, the staged `INDEX`, or the `WORKTREE`)
-and a set of runnable targets (from a manifest, from static discovery, or
-both), `diffcone plan`:
+```console
+$ diffcone plan --base HEAD~1 --head HEAD --discover pytest \
+    --source-root src --source-root . --format text
+...
+changed symbols (1):
+  calc.ops.mul [function] body_changed
 
-1. reads both snapshots without checking anything out or executing code;
-2. indexes modules, classes, functions and methods with stable identities and
-   hashes of their bodies and definitions;
-3. resolves the statically resolvable subset of references into dependency
-   edges, and records everything else as *unresolved*;
-4. classifies each symbol as added, deleted, body-changed, definition-changed
-   or dependencies-changed, using **both** revisions' graphs;
-5. walks dependencies backward to the targets and emits a deterministic plan.
+selected targets (2):
+  pytest: tests/test_calc.py::test_mul
+    - dependency: calc.ops.mul body_changed
+  pytest: tests/test_calc.py::test_square
+    - dependency: calc.ops.mul body_changed
+      ... -> tests.test_calc.test_square -[references]-> calc.ops.square -[references]-> calc.ops.mul
 
-Runner-independence is built in: pytest tests and ASV benchmarks are just
-targets with a runner label, an entry symbol and declared lifecycle
-dependencies (fixtures, `setup` methods). Runner knowledge lives only in the
-discovery modules that produce those targets.
+unselected targets (1):
+  pytest: tests/test_calc.py::test_add
+```
 
-## Install and run
+- **Explainable:** a selection is a dependency path or an explicit fallback
+  rule, never a guess or a score.
+- **Conservative:** what it cannot bound (a dynamic import, a file that does
+  not parse, a plugin it cannot see) widens the selection and is reported. A
+  plan may run more tests than needed; it is built not to run fewer.
+- **Runner-independent:** pytest tests and ASV benchmarks are both targets,
+  found by static discovery that never imports your code.
+- **Evidence when static analysis is not enough:** record once what each
+  test executed, and a large library where everything imports everything
+  (pandas) stops selecting nearly the whole suite for nearly every change.
 
-Requires Python 3.11+ and git; no other dependency. Install the command
-from PyPI, or from this repository:
+## Install
+
+Python 3.11+ and git; no other dependencies.
 
 ```bash
-uv tool install diffcone        # or: pipx install diffcone, pip install diffcone
-uv tool install git+https://github.com/bearing-research/diffcone
-diffcone --version
+uv tool install diffcone    # or: pipx install diffcone, pip install diffcone
 ```
 
-Execution evidence (below) records inside the project's own test process,
-which needs Python 3.12+ there (3.13+ to record Cython code); diffcone
-itself may run on another interpreter. The examples below run from a
-checkout of diffcone with [uv](https://docs.astral.sh/uv/):
+## Use
 
 ```bash
-uv sync
-uv run diffcone plan \
-  --repo . \
-  --base main \
-  --head HEAD \
-  --discover pytest --discover asv \
-  --source-root src --source-root . \
-  --format json          # or: text
+# what can my uncommitted change affect?
+diffcone plan --base main --head WORKTREE --discover pytest --format text
+
+# run only that (arguments after -- go to pytest)
+diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" -- -x
+
+# record what each test executes, then plan on it (Python 3.12+ in the project)
+diffcone collect --command "uv run pytest" -- -n 8
+diffcone plan --base main --head HEAD --discover pytest --evidence auto -o plan.json
+
+# did the plan select every test that failed in a full run?
+diffcone check --plan plan.json --full full.xml
 ```
 
-Committed snapshots are indexed once and cached under `.diffcone/cache/`
-(add it to `.gitignore`; `--no-cache` and `--cache-dir` control it), and
-every module's index is cached by file content, so the developer loop
-`--base main --head WORKTREE` re-parses and re-resolves only the files
-that changed since the last plan.
+With a `src` layout, add `--source-root src --source-root .` so modules get
+their import names.
 
-`--base` and `--head` accept any git revision, `INDEX` (staged content) or
-`WORKTREE` (files on disk, tracked or untracked, ignored files excluded).
-The report names the kind of each snapshot and flags uncommitted analysis,
-so `--head WORKTREE` is the everyday developer loop and `--head HEAD` is the
-CI form. `--discover RUNNER` statically discovers targets in the head
-snapshot.
-`--targets manifest.json` supplies them explicitly; both can be combined, and
-a manifest entry overrides a discovered target with the same id. To inspect
-or edit what discovery finds, emit a manifest first:
+## Documentation
 
-```bash
-uv run diffcone discover --repo . --rev HEAD --discover pytest --discover asv \
-  --source-root src --source-root . -o targets.json
-```
+**[bearing-research.github.io/diffcone](https://bearing-research.github.io/diffcone/)**:
+[getting started](https://bearing-research.github.io/diffcone/getting-started/),
+guides to [planning](https://bearing-research.github.io/diffcone/guides/planning/),
+[running and checking](https://bearing-research.github.io/diffcone/guides/running/),
+[execution evidence](https://bearing-research.github.io/diffcone/guides/evidence/)
+and [CI](https://bearing-research.github.io/diffcone/ci/), the
+[command reference](https://bearing-research.github.io/diffcone/reference/cli/),
+[limitations](https://bearing-research.github.io/diffcone/limitations/), and how
+it works in the [design](https://bearing-research.github.io/diffcone/design/)
+and [evaluation](https://bearing-research.github.io/diffcone/evaluation/).
 
-Source roots decide module names: a file is named relative to the **longest**
-root that contains it. With `--source-root src --source-root .`, the file
-`src/calc/ops.py` is module `calc.ops` and `tests/test_calc.py` is
-`tests.test_calc`, which is how the manifest below refers to them. With only
-`--source-root tests`, that test module would be named `test_calc` instead.
+## Status
 
-Exit codes: `0` plan produced; `1` plan produced but analysis errors forced a
-select-everything fallback; `2` no plan (bad revision, bad manifest); `3` plan
-produced but discovery may be short of what the runner collects (a class a
-plugin collects by its own rules, a base class or an imported test outside the
-source roots). `1` and `3` are opposite failures -- `1` selects too much, `3`
-means the target list itself may be incomplete -- and `3` wins when both apply.
-`run` refuses to execute such a plan unless given `--allow-incomplete-discovery`.
-It also refuses when the working tree it would run differs, under the source
-roots, from the snapshot the plan analysed (`--allow-mismatched-worktree` to
-run anyway): the plan describes the code it read, not whatever is checked out.
-
-### Declaring what the analysis cannot see
-
-Some dependencies are real but invisible to any static rule: a registry
-filled at import time, a plugin resolved through entry points. State them in
-`diffcone.toml` at the repository root and the plan follows them, explaining
-the selection with your own words:
-
-```toml
-[[edges]]
-from = "pkg.registry.dispatch"
-to = "pkg.handlers.json_handler"
-why = "handlers register themselves through entry points"
-```
-
-Declarations only add edges, so they can only select *more*, never less. An
-endpoint that exists in neither revision is an analysis error rather than a
-declaration that quietly does nothing.
-
-### Running and validating
-
-Planning never executes project code. Two commands run things *after* a
-plan exists, with a command line you control:
-
-```bash
-# execute only the selected pytest targets (arguments after -- go to pytest)
-uv run diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" -- -x
-uv run diffcone run --base main --head HEAD --discover asv --runner asv --dry-run
-
-# outcome-based validation of the plan
-uv run diffcone validate --base main --head HEAD --discover pytest --command "uv run pytest"
-```
-
-`corpus --range A..B` replays history: it plans and validates every
-parent-to-commit pair in the range (first-parent order, commits without
-`.py` changes skipped by default) and aggregates outcome misses, coverage
-recall/precision and mean selection savings. Each commit's suite runs once.
-
-Pass the source roots that hold the package (for a `src` layout,
-`--source-root src --source-root tests`): validation puts them first on
-`PYTHONPATH` so the checkout's code, not an installed copy, is what runs.
-A relative interpreter path in `--command` (`.venv/bin/python -m pytest`)
-is resolved against the current directory and then the repository, since
-the suites run in temporary worktrees.
-In a monorepo, one plan is one pytest session: pass every package root
-that session imports plus the test tree it collects, and plan once per
-session when packages carry their own `tests/` trees (two files mapping to
-the same module name are reported as an analysis error, as pytest would
-report an import mismatch). When one session collects several such trees
-(`--import-mode=importlib`), give each its own namespace with
-`--source-root DIR=PREFIX`.
-
-`validate` runs the full pytest suite at both snapshots (commits are checked
-out into temporary `git worktree`s, `WORKTREE` runs in place) and reports
-every test whose pass/fail outcome changed but was not selected. With
-`--coverage` it also runs the head suite under pytest-cov with per-test
-contexts (pytest-cov must be installed in the environment that runs the
-suite) and requires every test that *executed* a changed symbol to have been
-selected, reporting recall and precision against that dynamic ground truth.
-It exits 1 on any miss.
-
-### Execution evidence (opt-in, in progress)
-
-Static planning cannot tell which tests of a large, tightly connected
-library reach a change: in pandas nearly every change selects nearly every
-test. Evidence mode adds one fact that reading the code cannot supply,
-which functions each test actually executed in a recorded run. It needs
-Python 3.12+ in the project's environment.
-
-```bash
-# record, at a clean HEAD, what every test executed (arguments after -- go to pytest)
-uv run diffcone collect --command "uv run pytest" -- -n 8
-uv run diffcone evidence                       # list the stores
-# plan on the nearest recorded ancestor
-uv run diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
-```
-
-A test is selected when its record meets a change: it executed a changed
-function, a reader of a changed definition or value, or a lookup that could
-see a changed name, or it touched a changed file. What evidence cannot
-bound is planned statically or selects everything, and the report names the
-rule each time:
-- changes that run at import;
-- tests with no record, an unstable record or a subprocess;
-- compiled sources and configuration.
-
-`run --evidence` runs such a plan with the recorded `PYTHONHASHSEED`, and
-first checks inside the test process, before any test runs, that the
-interpreter, the installed distributions and a few variables match the
-recording (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`, and any the project
-names with `collect --env-var`, such as pandas' `PANDAS_FUTURE`). If they
-don't, the evidence says nothing about this environment, so it runs the
-static plan instead and says why. Planning needs the recorded commit's
-objects: in a shallow clone, fetch it (`git fetch --depth=1 origin
-<commit>`) and pass the store's path, since `--evidence auto` cannot tell
-ancestry there. The
-recording also settles discovery's doubts: a class pytest's rules skip but
-a plugin might collect stops making the plan incomplete (exit 3) when the
-recorded collection shows nothing beyond the targets and its file has not
-changed since. `validate`
-and `corpus` take `--evidence` too, so a plan's recall can be measured
-with the same machinery.
-
-With `--collect`, `run` also records the tests it runs and writes a store
-for head: their new records, and the old ones for every test the plan did
-not select (it runs identically at head). The next plan then starts from
-head, without a full suite run per commit. It needs a clean checkout of
-head and the pytest arguments the store was collected with, and writes
-nothing if the environment differs or pytest stops early:
-
-```bash
-uv run diffcone run --base main --head HEAD --discover pytest \
-    --command "uv run pytest" --evidence auto --collect -- -n 8
-```
-
-Compiled Cython code (`.pyx`, `.pxd`, `.pxi`) is covered at function level
-when the evidence was recorded against a build with Cython's
-`profile=True` directive (the runs themselves use the ordinary build): an
-edit to a function's body selects the tests that executed it. An edit
-outside function bodies (an import, a declaration, a constant, a class
-attribute, a function added) selects the tests that executed a Cython
-function naming what it changed, and for a name Python can see, the tests
-that ran Python code reading it. diffcone does not build the project, so
-building that way is up to you. A module without Cython records, code
-outside functions that binds nothing by name (a bare call, a docstring, a
-compiler directive, `include`), a deleted name Python can see, and C
-sources or build files still select everything.
-
-ASV targets keep static selection. The rules, the assumptions they rest on
-(the same environment, deterministic tests, test isolation) and what is
-still missing are in [docs/evidence_design.md](https://github.com/bearing-research/diffcone/blob/main/docs/evidence_design.md).
-
-For a cache shipped between CI runs, `prune` keeps only what planning at
-the given commits reads (their indexes and discovery results, and the
-per-module records of their files, which also serve a later commit sharing
-them) and deletes everything else:
-
-```bash
-uv run diffcone prune --keep HEAD
-```
-
-### Checking a plan against a full run
-
-GitHub Actions to record nightly and check pull requests are in
-[docs/ci.md](https://github.com/bearing-research/diffcone/blob/main/docs/ci.md) (not yet run on GitHub).
-
-`check` compares a plan with the JUnit XML of a full pytest run (`pytest
---junitxml=full.xml`) and reports every test that failed or errored there
-but was not selected. It runs nothing, so it fits beside an existing CI job.
-A failure that a `--baseline` run without the change also had is reported
-as already failing, not missed. Each `--run NAME=JUNIT` is a selective run
-compared on the same failures: diffcone's own, or another selector's such
-as pytest-testmon's. Output is text, Markdown (for a CI step summary) or
-JSON; the exit code is 1 when the plan missed a failure.
-
-```bash
-uv run diffcone plan --base main --head HEAD --discover pytest --evidence auto -o plan.json
-uv run diffcone check --plan plan.json --full full.xml --baseline nightly.xml \
-    --run testmon=testmon.xml --format markdown
-```
-
-### Static discovery
-
-Discovery never imports or runs project code; it reproduces a documented
-subset of each runner's collection rules from the AST and reports what it
-cannot resolve.
-
-**pytest** ([details](https://github.com/bearing-research/diffcone/blob/main/docs/design.md#pytest)): `python_files`,
-`python_classes`, `python_functions` and `testpaths` from `pytest.ini`,
-`pyproject.toml`, `tox.ini` or `setup.cfg`; test functions, `Test*` classes
-(without `__init__`), nested classes and `unittest.TestCase` methods. Each
-test's lifecycle dependencies are its fixtures (by parameter, by
-`usefixtures`, transitively, resolved class > module > nearest `conftest.py`
-outward > `pytest_plugins` modules and the project's own `pytest11`
-entry-point plugins in the source roots), autouse fixtures,
-xunit setup functions, its module, every `conftest.py` on its path and their
-`pytest_*` hooks. A fixture that is not found is assumed to come from an
-installed plugin when a well-known plugin provides it (`mocker`,
-`httpx_mock`, `freezer`, `anyio_backend`, `benchmark`, ...; the report
-lists every such assumption; `--no-well-known-fixtures` turns this off) or
-when it is passed with `--assume-external-fixture NAME`; any other unknown
-fixture becomes the dependency `fixture:<name>`, which the planner cannot
-resolve, so the test is selected conservatively. Doctests are discovered as
-pytest collects them (`--doctest-modules`, `--doctest-glob`): a docstring
-doctest depends on everything its module's globals can reach, and a
-text-file doctest is always selected.
-
-**ASV** ([details](https://github.com/bearing-research/diffcone/blob/main/docs/design.md#asv)): `benchmark_dir` from
-`asv.conf.json`; `time_`/`timeraw_`/`mem_`/`peakmem_`/`track_` functions and
-methods; lifecycle dependencies are the class and module `setup`,
-`setup_cache` and `teardown` plus the module itself. Class attributes such
-as `params` reach benchmarks through the class body.
-
-### Target manifest
-
-The manifest is the interchange format between discovery and the planner,
-and the way to hand-author targets for runners without discovery. It is
-JSON:
-
-```json
-{
-  "source_roots": ["src", "."],
-  "targets": [
-    {
-      "runner": "pytest",
-      "runner_id": "tests/test_calc.py::test_add",
-      "entry_symbol": "tests.test_calc.test_add",
-      "lifecycle_dependencies": ["tests.conftest.db"]
-    },
-    {
-      "runner": "asv",
-      "runner_id": "bench_calc.TimeCalc.time_add",
-      "entry_symbol": "benchmarks.bench_calc.TimeCalc.time_add",
-      "lifecycle_dependencies": ["benchmarks.bench_calc.TimeCalc.setup"]
-    }
-  ]
-}
-```
-
-* `entry_symbol` is the dotted identity of the test/benchmark function
-  (module path relative to a source root, then class and function names).
-* `lifecycle_dependencies` are symbols the runner executes for this target
-  outside its body: pytest fixtures, ASV `setup`/`setup_cache`, etc. Diffcone
-  does not infer these from naming conventions. A module symbol (for example
-  `tests.test_calc`) can be listed too; that makes module-level state such as
-  `pytestmark` or `pytest.importorskip` count for the target.
-* A target's parameter cases are not modelled; a target is selected as a
-  whole.
-* `--source-root` on the command line overrides `source_roots`.
-
-### Report
-
-The JSON report (`schema_version: 3`) contains:
-
-| Section | Contents |
-|---|---|
-| `analysis` | both snapshots (`revision`, `commit`, `kind`, `uncommitted`, `description`), source roots, `working_tree_analyzed` / `uncommitted_analyzed`, the supported scope with a one-sentence `analyzed` statement, counts, and `evidence` (the store an evidence plan used, or `null`) |
-| `changed_symbols` | every symbol that differs, with its change kinds |
-| `selected_targets` | targets to run, the rules that selected them, whether any rule is conservative |
-| `unselected_targets` | targets with no path to a change |
-| `dependency_explanations` | per selected target, the edge path from target to changed symbol |
-| `unresolved_relationships` | references the resolver could not bound, and which changed symbols they may match |
-| `fallback_decisions` | every place the planner broadened selection instead of guessing |
-| `analysis_errors` | parse failures etc.; any error selects all targets and sets `status: degraded` |
-
-`--format text` prints the same information as a readable summary.
-
-Measured results on real repositories, with reproduction steps, are in
-[docs/evaluation.md](https://github.com/bearing-research/diffcone/blob/main/docs/evaluation.md), including a planning-only census
-of 42 projects (`scripts/census.py`) that attributes every selection to
-its cause.
-
-## Limitations
-
-* **Uncommitted analysis is explicit.** A `WORKTREE` or `INDEX` snapshot is
-  named as such in the report (`analysis.head.kind`, `uncommitted_analyzed`).
-  Results for a working tree are only as stable as the working tree.
-* **Discovery is static, and says where it stops.** It reproduces pytest's
-  and ASV's documented collection rules -- including tests inherited from
-  base classes in other modules, star-imported test suites, `TestCase`
-  subclasses whatever they are named, and inherited ASV benchmarks -- but it
-  cannot reproduce what a runner *plugin* collects by its own rules
-  (SQLAlchemy's `<Name>Test`, a Sybil doctest in a `.rst` file), and it does
-  not expand `params` or `pytest_generate_tests` into separate cases. What
-  it cannot see it reports: unknown fixtures are selected conservatively,
-  and a plan whose target list may be short of the suite exits 3 rather than
-  looking complete. `scripts/collection_check.py` checks all of this against
-  what the runner really collects; see `docs/design.md` for the exact
-  subset.
-* **Narrow, documented resolution subset** (see
-  [docs/design.md](https://github.com/bearing-research/diffcone/blob/main/docs/design.md)): direct names and attribute chains rooted
-  at module-level definitions, import aliases, star imports within source
-  roots, or `self`/`cls`, with class attributes looked up through the
-  in-scope MRO (including `super()`) and `self`/`cls` calls dispatching to
-  in-scope overrides. No type inference and no dispatch on receivers of
-  unknown type; an instance attribute is resolved only when every write is
-  a plain `__init__` assignment of a literal, a function or class, or a
-  constructor argument that every construction passes as a literal
-  (`getattr(hooks, self.identifier)`). Other references are
-  reported as unresolved and matched conservatively by name against every
-  known function, method or class of that name, so impact reaches them
-  whenever any such symbol is affected.
-* **Removing or redirecting an import invalidates the whole importing
-  module** (adding one does not), and any change to a class body
-  (attributes, member list, bases, decorators) invalidates every method of
-  that class. This is conservative by design.
-* **Import-time changes select every importer.** A change that runs when
-  a module is imported (a top-level statement, a module-level constant, a
-  class body, a decorator, a function that import-time code calls) selects
-  every target whose module imports that module, directly or through
-  others. This is deliberately broad: a plan may select more tests than
-  needed, never fewer.
-* **A file that does not parse forces select-all.** Any file under a
-  source root with invalid syntax (including Python 2 code, which is not
-  supported) or that is not UTF-8 is an analysis error, even a test data
-  file nothing imports. Choose source roots that leave such files out.
-* **Dynamic reflection is bounded by imports, dynamic imports are not.** A
-  function using `eval`, `exec`, `globals()`, `vars()` or `getattr` with an
-  unbounded name is treated as affected by any change in a module its own
-  module imports (transitively); `__import__` or `import_module` with an
-  unbounded name is affected by any change anywhere.
+Alpha (0.1). Planning, static pytest and ASV discovery, running, validating
+and checking plans, and execution evidence are implemented and covered by
+acceptance scenarios; recall has been measured on 34 public repositories
+and on pandas. See the
+[changelog](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md)
+for what each release contains and the
+[roadmap](https://bearing-research.github.io/diffcone/roadmap/) for what is
+next.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest                                   # all tests
-uv run pytest tests/test_scenarios.py -k alias  # one scenario
+uv run pytest
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
+uv run ty check
 ```
 
-`tests/test_scenarios.py` holds the acceptance scenarios from the handoff
-document and `tests/test_discovery.py` the discovery rules; each builds a
-small git repository with before/after commits (via `diffcone.testing`,
-which is public so integrators can write the same kind of scenarios) and
-asserts exact target sets and reasons. See [AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md) for the rules that apply when
-changing selection behaviour.
+See [development](https://bearing-research.github.io/diffcone/development/) and
+[AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md)
+for the rules that apply when changing selection behaviour.
 
 ## License
 

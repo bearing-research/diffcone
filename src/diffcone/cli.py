@@ -162,6 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--command",
         dest="runner_command",
+        metavar="COMMAND",
         help='runner command line (default: "python -m pytest" or "asv run"); run in --repo',
     )
     r.add_argument("--dry-run", action="store_true", help="print the command instead of running")
@@ -202,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument(
         "--command",
         dest="runner_command",
+        metavar="COMMAND",
         help='pytest command line (default: "python -m pytest")',
     )
     v.add_argument(
@@ -237,6 +239,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--command",
         dest="runner_command",
+        metavar="COMMAND",
         help='pytest command line (default: "python -m pytest")',
     )
     c.add_argument("--coverage", action="store_true", help="also measure coverage recall/precision")
@@ -292,6 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument(
         "--command",
         dest="runner_command",
+        metavar="COMMAND",
         help='pytest command line (default: "python -m pytest")',
     )
     e.add_argument(

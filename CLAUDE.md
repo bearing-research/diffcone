@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Diffcone is a static-first, function-level change-impact engine for Python. It maps changes in application code to affected tests and benchmarks (pytest and ASV are the first runner integrations).
 
-Milestone 1 (`diffcone plan` over two committed revisions with a target manifest), milestone 2 (static pytest/ASV discovery) and milestone 3 (`INDEX`/`WORKTREE` snapshots) are implemented. `docs/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `docs/evaluation.md` records corpus results on real repositories (re-run it when changing selection rules); `AGENTS.md` holds the scope boundaries. `docs/roadmap.md` carries a design sketch (mechanism, trade-off, done-when) for every planned item; write or update the sketch there before implementing something new, and drop items once they ship. Stdlib only, no runtime dependencies.
+Milestone 1 (`diffcone plan` over two committed revisions with a target manifest), milestone 2 (static pytest/ASV discovery) and milestone 3 (`INDEX`/`WORKTREE` snapshots) are implemented. `notes/diffcone_coding_agent_handoff.md` is the original spec; `docs/design.md` documents the rules as implemented; `docs/evaluation.md` records corpus results on real repositories (re-run it when changing selection rules); `AGENTS.md` holds the scope boundaries. `docs/roadmap.md` carries a design sketch (mechanism, trade-off, done-when) for every planned item; write or update the sketch there before implementing something new, and drop items once they ship. Stdlib only, no runtime dependencies.
 
 ## Commands
 
@@ -34,6 +34,8 @@ uv run pytest                                   # all tests
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 uv run ty check                                 # types (src, tests, scripts; pinned in the dev group)
+uv run --group docs zensical serve              # the docs site (zensical.toml); build --strict fails on a broken link
+uv run python scripts/docs_cli.py               # regenerate docs/reference/cli.md after changing an option
 ```
 
 Exit codes: 0 complete, 1 degraded (analysis errors forced select-all), 2 no plan, 3 discovery may be short of what the runner collects (`run` refuses without `--allow-incomplete-discovery`). 1 over-selects, 3 may under-run; 3 wins when both apply.
@@ -102,3 +104,5 @@ Any change that **narrows** selection must come with a regression scenario.
 ## Docs to maintain
 
 `README.md`, `docs/design.md`, `docs/roadmap.md`, and `AGENTS.md` are required by the milestone. Always separate implemented functionality from planned functionality.
+
+The docs site (Zensical, `zensical.toml`, published to GitHub Pages by `.github/workflows/docs.yml`) is `docs/`: user pages (`index.md`, `getting-started.md`, `guides/`, `reference/`, `limitations.md`, `development.md`) and the background documents (`design.md`, `evidence_design.md`, `evaluation.md`, `ci.md`, `roadmap.md`); `notes/` holds agent handoff notes that are not published. The README is a short overview linking into the site. `docs/reference/cli.md` is generated from the parser, and `tests/test_docs.py` checks it and that every `diffcone ...` command in a bash or console block of the README and docs parses.

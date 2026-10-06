@@ -27,6 +27,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/bearing-research/diffcone"
+Documentation = "https://bearing-research.github.io/diffcone/"
 Repository = "https://github.com/bearing-research/diffcone"
 Issues = "https://github.com/bearing-research/diffcone/issues"
 Changelog = "https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md"
@@ -46,6 +47,9 @@ dev = [
     "ruff>=0.5",
     "setuptools",  # builds those extensions
     "ty==0.0.84",  # pre-1.0: pinned, since new releases add checks
+]
+docs = [
+    "zensical==0.0.68",  # pre-1.0: pinned
 ]
 
 [tool.ruff]
