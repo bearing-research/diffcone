@@ -113,8 +113,13 @@ collector suspended: 21 s, the same selection, and a lower peak RSS
 sides 7.6 s CPU, evidence planning 4.1 s, the index cache 3.7 s, static
 escalation 2.2 s. Discovery of committed snapshots is now cached per commit
 (`DiscoveryCache`), and a cached head lets the head index come from the
-index cache too; timing it on pandas waits for a quiet machine (the load
-average was over 100 when it was measured).
+index cache too. The machine never got quiet enough for wall times, so in
+CPU time, interleaved, two rounds each: replanning the same pair 15.4-16.0 s
+against 33.7-36.0 s with the discovery cache off, and a new head on a
+cached base (the next commit of a chain) 26.6-31.6 s. Under lighter load
+the same cached replan took 10.9 s CPU: evidence planning 8.1 s (5.0 s of
+it the static escalation, twice), loading the two indexes 2.2 s,
+classification 1.1 s, discovery 0.1 s.
 Earlier: with the module cache (design.md, "Module cache") a warm
 working-tree plan on a synthetic 2 501-module tree spends 0.27 s indexing
 and 0.4 to 0.55 s in `plan_from_indexes`: unioning the two indexes' edges
