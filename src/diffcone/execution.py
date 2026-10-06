@@ -332,7 +332,10 @@ class _Checkout:
     def __enter__(self) -> Path:
         if self.kind == KIND_COMMIT:
             self._tmp = tempfile.TemporaryDirectory(prefix="diffcone-validate-")
-            self.path = Path(self._tmp.name) / "checkout"
+            # A name of its own: git names the worktree's admin directory
+            # (.git/worktrees/<name>) after it, and parallel corpus jobs that
+            # all used "checkout" raced on creating it.
+            self.path = Path(self._tmp.name) / f"checkout-{Path(self._tmp.name).name}"
             _git(self.repo, ["worktree", "add", "--detach", "-q", str(self.path), self.commit])
         elif self.kind != KIND_WORKTREE:
             raise GitError("validate supports commit and WORKTREE snapshots, not INDEX")
