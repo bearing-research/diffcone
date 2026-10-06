@@ -9,12 +9,7 @@ from dataclasses import dataclass, field
 
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope, Scope
 from diffcone.indexer.syntax import _digest
-from diffcone.model import (
-    Edge,
-    ExternalReference,
-    Symbol,
-    UnresolvedReference,
-)
+from diffcone.model import Edge, ExternalReference, Symbol, UnresolvedReference
 
 
 @dataclass

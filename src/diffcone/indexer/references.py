@@ -37,13 +37,10 @@ from diffcone.model import (
     ExternalReference,
     UnresolvedReference,
 )
-from diffcone.snapshot import (
-    module_name_for,
-    split_root,
-)
+from diffcone.snapshot import module_name_for, split_root
 
 if TYPE_CHECKING:
-    from diffcone.indexer.core import Indexer
+    from diffcone.indexer.resolver import Resolver
 
 
 class _ReferenceCollector(ast.NodeVisitor):
@@ -56,7 +53,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     """
 
     def __init__(
-        self, indexer: Indexer, source: str, scope: Scope, *, skip_defs: bool = False
+        self, indexer: Resolver, source: str, scope: Scope, *, skip_defs: bool = False
     ) -> None:
         self.indexer = indexer
         self.source = source

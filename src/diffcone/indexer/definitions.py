@@ -9,10 +9,7 @@ from collections import defaultdict
 from diffcone.indexer.literals import _collect_store_names
 from diffcone.indexer.scopes import ModuleScope, VariableStatement, _absolute_module
 from diffcone.indexer.syntax import DEF_NODES, _digest, iter_scope_statements
-from diffcone.model import (
-    CLASS_STATEMENT,
-    OPAQUE_ATTRIBUTE,
-)
+from diffcone.model import CLASS_STATEMENT, OPAQUE_ATTRIBUTE
 
 
 def _canonical_imports(scope: ModuleScope) -> set[str]:
