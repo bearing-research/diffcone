@@ -385,11 +385,10 @@ build, the whole suite under `-n 8`):
 4. *Recall* (done 2026-10-06). The pandas compiled edits replayed against a store collected
    on a profiled build, checked against the line-traced oracle.
 
-**Not covered.** Edits outside Cython function bodies (item 8; 38 of the 86
-compiled commits in the spike), `.pxi.in` templates, hand-written C and
-build files still select everything; telling additive module-level edits
-apart is the next gain. A module the store holds no Cython record of
-(built without profiling) selects everything for its edits.
+**Not covered.** `.pxi.in` templates, hand-written C and build files still
+select everything (edits outside function bodies are item 8). A module the
+store holds no Cython record of (built without profiling) selects
+everything for its edits.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,
@@ -401,9 +400,17 @@ and the item is closed as measured and left alone, like items 0 and 1.
 
 ## 8. Cython edits outside function bodies
 
-**Status.** Planned. Under evidence, a Cython edit outside every function
-body selects everything (item 7, "Not covered"): 38 of the 86 compiled
-commits in pandas' last 500. A survey of their diffs (pandas `3f57341`):
+**Status.** Done (2026-10-06). Of pandas' last 500 first-parent commits, 46
+change Cython outside function bodies or add or delete functions; 37 are
+now bounded by the names they change (5 of them still select everything
+for C or build files they also touch), and 9 stay file-level (a deleted
+name Python can see, a class docstring, a bare call). Replayed at the
+evidence commit against the line-traced oracle: no miss, 16 of 28 planned
+edits narrow at a median of 13 % (evaluation.md, "pandas: Cython edits
+outside function bodies"). Reviewing the replay found that a `.pyx` global
+its `.pxd` declares reaches cimporters, now handled. Before this, such an
+edit selected everything: 38 of the 86 compiled commits by the spike's
+count. A survey of their diffs (pandas `3f57341`):
 names added to or dropped from `cimport` and `import` lists, new module
 constants and `cdef` globals, `.pxd` signatures and `ctypedef`s, `cdef
 class` attribute declarations, structs and enums, extern blocks moved to

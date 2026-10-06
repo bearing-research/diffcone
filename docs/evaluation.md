@@ -1663,6 +1663,50 @@ while `pandas.conftest` and test modules are imported, so their import-time
 state escalates as it does for Python. Static planning selects everything
 on all 25.
 
+## pandas: Cython edits outside function bodies (39 commits)
+
+Roadmap item 8, against the same store and oracle as the previous section.
+Of the last 500 first-parent commits, 46 change Cython sources outside
+function bodies or add or delete functions. Each was replayed at the
+evidence commit by reverse-applying its Cython hunks there
+(`scripts/cython_spike/outside_replay.py`); 39 apply. Reversal turns an
+addition into a deletion, so this exercises deletions more than the
+history does.
+
+| outcome | commits |
+|---|---|
+| file-level: a deleted name Python can see | 8 |
+| file-level: a class docstring | 3 |
+| planned, narrow | 16 |
+| planned, everything through evidence | 12 |
+
+The 16 narrow plans select a median of 3 343 of 24 924 targets (13 %; an
+empty change selects 2 667, the tests without a usable record). Of the 12
+that select everything, 10 do so because a changed or reading function ran
+while a pandas module was imported (import-time escalation, as for
+Python), and 2 because a reading function ran during collection
+(`_Timestamp.__repr__` building parametrize ids).
+
+**No miss.** `scripts/cython_spike/outside_check.py` checked every changed
+name of every narrow plan: each test the line-traced build saw executing a
+function that can see the name and mentions it is in the evidence for
+that function or for a recorded caller of it. Identifiers on changed lines
+that diffcone did not count as changed names were all references: type
+names, parameter names in declarations, module paths, calls. Functions in
+other files mentioning a changed name either bind it themselves (a
+`cimport` is local to its module), read it off a cimported module
+(`util.INT64_MAX`), mention it in a docstring, or use a local variable of
+the same name. Reviewing those flags found one real gap, now closed: a C
+global that a `.pyx` initialises and its `.pxd` declares
+(`dtypes.pxd`'s `c_OFFSET_TO_PERIOD_FREQSTR`) is read by every module
+cimporting it.
+
+In the forward direction (the commits as written, classified without
+planning) 37 of the 46 are bounded by names and 9 stay file-level: 5
+delete a name Python can see, 3 change a class docstring, 1 adds a bare
+call at import. Five of the 37 also change C sources or build files,
+which still select everything.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module
