@@ -1072,7 +1072,10 @@ selection rules.</p>
   <code>plan --evidence</code> selects the tests whose record meets the change, and
   plans the rest statically or selects everything, saying which.
   <code>run --collect</code> advances the record to the new commit. <code>--env-var</code>
-  records project variables that change what tests do.</li>
+  records project variables that change what tests do. Tests that start a
+  subprocess or subinterpreter, or leave a thread running, are always
+  selected; a shared fixture computed once by one xdist worker is credited
+  to every test using it.</li>
 <li>Cython: with a <code>profile=True</code> build recorded on Python 3.13+, edits to
   function bodies and to the names a file binds outside functions select
   the tests that executed the code concerned.</li>
