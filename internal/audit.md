@@ -140,9 +140,9 @@ precision blow-ups introduced by round 1's fixes come first.
 | S4 | Star imports lose to earlier bindings: `from a import f` then `from b import *` (or two star imports, the settings pattern) resolves `f` to the first; at runtime the last wins. | fixed (round 2, S batch) |
 | S5 | Added imports from outside the source roots (`from json import dumps` fixing a NameError, `from __future__ import annotations`, a builtin shadowed by an import) are invisible: unresolved/external references are not in dependency signatures. | fixed (round 2, S batch) |
 | S6 | `exec`/`eval`/`compile` of text read from a file is bounded by the import closure; the file need not be imported (`exec(open("version.py").read())`, plugin loaders). | fixed (round 2, S batch) |
-| S7 | Names consumed through strings (`monkeypatch.setattr("a.b.X", ...)`, `mock.patch("a.b.c")`, a string `skipif` condition) or deleted literal variables used by other modules' tests are not dependencies. | open |
-| S8 | An import-time write to another module's globals (`settings.DEBUG = True` in a conftest) reaches only the writer's module. | open |
-| S9 | `setup.py` (and other build hooks) is indexed as a module nobody imports, so a build change selects nothing. | open |
+| S7 | Names consumed through strings (`monkeypatch.setattr("a.b.X", ...)`, `mock.patch("a.b.c")`, a string `skipif` condition) or deleted literal variables used by other modules' tests are not dependencies. | fixed (round 2) |
+| S8 | An import-time write to another module's globals (`settings.DEBUG = True` in a conftest) reaches only the writer's module. | fixed (round 2) |
+| S9 | `setup.py` (and other build hooks) is indexed as a module nobody imports, so a build change selects nothing. | fixed (round 2) |
 
 ## Discovery (D, continued)
 
@@ -173,7 +173,7 @@ precision blow-ups introduced by round 1's fixes come first.
 | E16 | A generator or coroutine re-entered with `.throw()`/`.close()` is not seen (PY_THROW). | open |
 | E17 | Python 3.14 subinterpreters are not flagged. | open |
 | E18 | An indexed `.py` file read as data (`exec(open(...))`, `inspect.getsource`) selects nothing when it changes. | open |
-| E19 | Compiled/build file suffixes incomplete and case-sensitive (`Cargo.toml`, `.c.src`, `.F90`, `.pyf`, `.i`). | open |
+| E19 | Compiled/build file suffixes incomplete and case-sensitive (`Cargo.toml`, `.c.src`, `.F90`, `.pyf`, `.i`). | fixed (round 2) |
 | E20 | Files opened by C code (`sqlite3.connect`, `ctypes.dlopen`, `os.access`) are not touches. | open |
 
 ## Running and CI (R, continued)

@@ -29,6 +29,7 @@ from diffcone.model import (
     CLASS,
     FUNCTION,
     METHOD,
+    MODULE,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
@@ -304,7 +305,28 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _mutation_target(self, expr: ast.expr) -> None:
         """Record ``source`` as a writer when ``expr`` (an assignment target or
         a receiver of a mutating call) is a subscript/attribute of a variable
-        symbol, or the variable itself under ``global``."""
+        symbol, or the variable itself under ``global``; or another module's
+        variable assigned through the module (``settings.DEBUG = True`` in a
+        conftest: whoever reads ``settings.DEBUG`` sees the writer)."""
+        if isinstance(expr, ast.Attribute):
+            chain = _flatten_chain(expr)
+            if chain is not None and len(chain) > 1 and chain[0] not in self.scope.locals:
+                target = self.indexer.resolve_chain(chain, self.scope)
+                if isinstance(target, Resolved):
+                    symbol = self.indexer.index.symbols.get(target.symbol)
+                    if (
+                        symbol is not None
+                        and symbol.id != self.source
+                        and symbol.module != self.scope.module.name
+                        and (
+                            (symbol.kind == VARIABLE and not target.detail)
+                            or (symbol.kind == MODULE and target.detail.startswith("attribute:"))
+                        )
+                    ):
+                        self.indexer.out.edges.add(
+                            Edge(symbol.id, self.source, REFERENCES, "mutated_by")
+                        )
+                        return
         base = expr
         while isinstance(base, (ast.Subscript, ast.Attribute)):
             base = base.value
@@ -486,6 +508,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self.indexer.escape_class_family(cls)
             if parts[-1] in ("setattr", "delattr") or parts[-2:] == ["patch", "object"]:
                 self._setattr_call(node, parts)
+            self._string_targets(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
                 self._mark_type_node(node.args[1])
             elif node.args and self._canonical_name(parts) in (
@@ -510,6 +533,43 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._type_nodes.add(id(node))
         if isinstance(node, ast.Tuple):
             self._type_nodes |= {id(e) for e in node.elts}
+
+    def _string_targets(self, node: ast.Call, parts: list[str]) -> None:
+        """Names a call reaches only through a string: ``monkeypatch.setattr(
+        "pkg.config.TIMEOUT", 0)``, ``mock.patch("pkg.api.fetch")``,
+        ``patch.dict("pkg.config.D")`` and ``(obj, "NAME")`` pairs depend on
+        that name existing (patching a missing one raises); a string
+        ``skipif``/``xfail`` condition is code pytest evaluates."""
+        args = node.args
+        last = parts[-1]
+        if last in ("skipif", "xfail") and args:
+            condition = args[0]
+            if isinstance(condition, ast.Constant) and isinstance(condition.value, str):
+                try:
+                    expr = ast.parse(condition.value, mode="eval").body
+                except SyntaxError:
+                    return
+                self.visit(expr)
+            return
+        patching = (
+            (last in ("setattr", "delattr") and len(parts) > 1)
+            or last == "patch"
+            or parts[-2:] in (["patch", "object"], ["patch", "dict"])
+        )
+        if not patching or not args:
+            return
+        first = args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            chain = first.value.split(".")
+            if len(chain) > 1 and all(c.isidentifier() for c in chain):
+                node_ = self.indexer.resolve_dotted(chain)
+                if node_ is not None:
+                    self.indexer._record(self.source, node_, chain=first.value)
+            return
+        if len(args) > 1 and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
+            receiver = _flatten_chain(first)
+            if receiver is not None and args[1].value.isidentifier():
+                self._resolve([*receiver, args[1].value])
 
     def _setattr_call(self, node: ast.Call, parts: list[str]) -> None:
         """``setattr``/``delattr``, ``monkeypatch.setattr`` and

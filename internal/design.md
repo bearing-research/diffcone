@@ -205,6 +205,7 @@ A name or dotted chain `a.b.c` is resolved from its base:
    symbol is never misattributed to a third-party package.
 8. Builtins and dunder names are ignored, unless the program binds the same
    name itself.
+9. Anything else → unresolved bare name.
 
 Further rules (pre-release audit, round 2):
 
@@ -237,7 +238,17 @@ Further rules (pre-release audit, round 2):
   (`from json import dumps` fixing a NameError, a builtin shadowed by an
   import) is `dependencies_added`; a change to `from __future__` imports is
   a module definition change.
-9. Anything else → unresolved bare name.
+* Names reached through strings are dependencies: the dotted target of
+  `monkeypatch.setattr`/`delattr`, `mock.patch`, `patch.dict` (resolved
+  from the longest in-scope module prefix), the `(obj, "NAME")` pair of
+  `setattr`-style calls and `patch.object`, and the code of a string
+  `skipif`/`xfail` condition.
+* Assigning another module's variable through the module (`settings.DEBUG
+  = True` in a conftest) makes the writer a `mutated_by` dependency of the
+  variable, as an in-place mutation does.
+* A changed build script at the repository root (`setup.py`,
+  `hatch_build.py`, `build.py`, `pdm_build.py`) selects every target, as a
+  changed compiled source does.
 
 Attribute steps walk from module to submodule, module member, module
 variable or star-imported name, and, for a name the module does not bind,

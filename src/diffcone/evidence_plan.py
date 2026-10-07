@@ -108,6 +108,7 @@ from diffcone.model import (
     Symbol,
 )
 from diffcone.planner import (
+    BUILD_SCRIPTS,
     OWN_DIRS,
     OWN_FILES,
     RULE_ANALYSIS_ERROR,
@@ -159,9 +160,18 @@ COMPILED_SUFFIXES = (
     ".hh",
     ".hpp",
     ".f",
+    ".f77",
+    ".for",
     ".f90",
+    ".f95",
+    ".pyf",
     ".rs",
     ".cu",
+    ".i",
+    ".swg",
+    ".m",
+    ".mm",
+    ".src",
     ".in",
     ".tpl",
     ".so",
@@ -186,6 +196,13 @@ CONFIG_FILES = frozenset(
         "pixi.toml",
         ".python-version",
         ".coveragerc",
+        "Cargo.toml",
+        "build.rs",
+        # Build scripts are Python, but nobody imports them.
+        "setup.py",
+        "hatch_build.py",
+        "build.py",
+        "pdm_build.py",
     }
 )
 CONFIG_PREFIXES = ("requirements", "environment", "constraints")
@@ -213,7 +230,7 @@ def _site_kind(detail: str) -> str:
 def _unobserved_file(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     return (
-        path.endswith(COMPILED_SUFFIXES)
+        path.lower().endswith(COMPILED_SUFFIXES)
         or name in CONFIG_FILES
         or name.endswith(".lock")
         or (name.startswith(CONFIG_PREFIXES) and name.endswith((".txt", ".yml", ".yaml")))
@@ -501,6 +518,9 @@ class _Observers:
     def run(self) -> None:
         decorated = self.c.doc_decorated | self.other.doc_decorated
         for change in self.changes:
+            if change.symbol.path in BUILD_SCRIPTS:
+                self._file(change.symbol.path, "edited", names=False)
+                continue
             if change.carries_impact:
                 self._change(change)
             elif DOCSTRING_CHANGED in change.changes and change.id in decorated:

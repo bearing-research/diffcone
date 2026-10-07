@@ -1797,3 +1797,100 @@ def test_s2_a_registered_function_reaches_users_of_the_registry(repo, files, cha
     plan = repo.plan(base, head, [], discover_runners=["pytest"])
     assert "tests/test_r.py::test_r" in selected(plan)
     assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S7: names a test reaches through a string.
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        "def test_t(monkeypatch):\n    monkeypatch.setattr('lib.config.LEGACY', 0)\n",
+        "import lib.config\n\n\ndef test_t(monkeypatch):\n"
+        "    monkeypatch.setattr(lib.config, 'LEGACY', 0)\n",
+        "import pytest\n\nimport lib.config\n\n\n@pytest.mark.skipif('lib.config.LEGACY')\n"
+        "def test_t():\n    pass\n",
+    ],
+)
+def test_s7_a_name_reached_through_a_string_is_a_dependency(repo, test):
+    base = repo.commit(
+        {
+            "lib/__init__.py": "",
+            "lib/config.py": "LEGACY = 1\nOTHER = 2\n",
+            "lib/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_t.py": test,
+            "tests/test_other.py": "from lib.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({"lib/config.py": "OTHER = 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_t.py::test_t" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S8: an import-time write to another module's variable reaches its readers.
+
+
+def test_s8_a_conftest_writing_another_modules_variable_reaches_its_readers(repo):
+    base = repo.commit(
+        {
+            "lib/__init__.py": "",
+            "lib/settings.py": "DEBUG = False\n",
+            "lib/mode.py": "from lib import settings\n\n\ndef mode():\n    return settings.DEBUG\n",
+            "lib/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/sub/__init__.py": "",
+            "tests/sub/conftest.py": "from lib import settings\n\nsettings.DEBUG = False\n",
+            "tests/sub/test_a.py": "def test_a():\n    pass\n",
+            "tests/test_d.py": (
+                "from lib.mode import mode\n\n\ndef test_d():\n    assert mode() is False\n"
+            ),
+            "tests/test_other.py": "from lib.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit(
+        {"tests/sub/conftest.py": "from lib import settings\n\nsettings.DEBUG = True\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_d.py::test_d" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S9, E19: build scripts and compiled sources select everything.
+
+
+def test_s9_a_changed_build_script_selects_everything(repo):
+    base = repo.commit(
+        {
+            "setup.py": "from setuptools import setup\n\nsetup(name='lib')\n",
+            "lib/__init__.py": "",
+            "lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    f()\n",
+        }
+    )
+    head = repo.commit(
+        {"setup.py": "from setuptools import setup\n\nsetup(name='lib', version='2')\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_m.py::test_f"}
+
+
+@needs_monitoring
+@pytest.mark.parametrize("path", ["setup.py", "lib/kernel.F90", "Cargo.toml"])
+def test_e19_build_inputs_select_everything_in_evidence_mode(repo, path):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "setup.py": "X = 1\n",
+            "lib/kernel.F90": "! kernel\n",
+            "Cargo.toml": "[package]\nname = 'k'\n",
+            "lib/__init__.py": "",
+            "lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    f()\n",
+        },
+        {path: "X = 22\n" if path == "setup.py" else "! changed\n"},
+    )
+    assert "tests/test_m.py::test_f" in chosen

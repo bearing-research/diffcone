@@ -162,6 +162,8 @@ CONSERVATIVE_RULES = frozenset(
 # the cache, and the declarations the planner already reads from both
 # revisions.
 OWN_FILES = ("diffcone.toml",)
+# Build scripts at the repository root (see plan_from_indexes).
+BUILD_SCRIPTS = frozenset({"setup.py", "hatch_build.py", "build.py", "pdm_build.py"})
 OWN_DIRS = (".diffcone/",)
 UNANALYSED_PATHS_SHOWN = 5
 
@@ -658,6 +660,11 @@ def plan_from_indexes(
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]
     fallbacks += _runner_dependency_fallbacks(targets, seeded, base, head)
     unanalysed = _changed_unanalysed_files(base, head) if seeds is None else []
+    if seeds is None:
+        # A build script is Python nobody imports, but it decides what is
+        # compiled and installed: a change to it is as unbounded as a changed
+        # compiled source.
+        unanalysed += sorted({c.symbol.path for c in changes if c.symbol.path in BUILD_SCRIPTS})
     if unanalysed:
         shown = ", ".join(unanalysed[:UNANALYSED_PATHS_SHOWN])
         more = len(unanalysed) - UNANALYSED_PATHS_SHOWN

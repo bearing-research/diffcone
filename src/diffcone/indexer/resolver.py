@@ -697,6 +697,21 @@ class Resolver(FirstPass):
             if prefix in self.scopes and prefix != source:
                 self.out.edges.add(Edge(source, prefix, IMPORTS))
 
+    def resolve_dotted(self, chain: list[str]) -> Node:
+        """An absolute dotted name as a string names it (``"pkg.mod.NAME"``):
+        the longest in-scope module prefix, then attribute steps. None when
+        no prefix is in scope (a third-party target)."""
+        for i in range(len(chain), 0, -1):
+            module = ".".join(chain[:i])
+            if self._module_in_scope(module):
+                node: Node = ModuleNode(module)
+                for attr in chain[i:]:
+                    if node is None:
+                        return None
+                    node = self._step(node, attr)
+                return node
+        return None
+
     def _misrooted(self, module: str) -> str | None:
         """The analysed package an absolute import most likely means when the
         source roots name it with a prefix: ``calc`` for ``src.calc`` when
