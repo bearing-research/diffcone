@@ -1269,3 +1269,183 @@ def test_fixtures_and_marks_from_a_base_elsewhere_select_their_tests(repo):
     plan = plan_for("pkg/other.py", "1", "2")
     assert selected(plan) == set()
     assert "bench.time_noop" in unselected(plan)
+
+
+STORED_MARKS = {
+    "tests/__init__.py": "",
+    "tests/conftest.py": (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef db():\n    return 'db'\n\n\n"
+        "@pytest.fixture\ndef net():\n    return 'net'\n\n\n"
+        "@pytest.fixture\ndef clock():\n    return 'clock'\n"
+    ),
+    "tests/marks.py": (
+        "import pytest\n\n"
+        "needs_net = pytest.mark.usefixtures('net')\n"
+        "needs_both = [pytest.mark.usefixtures('db'), needs_net]\n"
+    ),
+    "tests/test_local.py": (
+        "import pytest\n\n"
+        "needs_db = pytest.mark.usefixtures('db')\n"
+        "also_db = needs_db\n"
+        "pytestmark = [pytest.mark.usefixtures('clock')]\n\n\n"
+        "@needs_db\ndef test_local():\n    pass\n\n\n"
+        "@also_db\ndef test_alias():\n    pass\n\n\n"
+        "def test_plain():\n    pass\n"
+    ),
+    "tests/test_imported.py": (
+        "from tests import marks\n"
+        "from tests.marks import needs_both, needs_net\n\n"
+        "pytestmark = needs_both\n\n\n"
+        "@needs_net\nclass TestNet:\n    def test_net(self):\n        pass\n\n\n"
+        "@marks.needs_net\ndef test_dotted():\n    pass\n"
+    ),
+}
+
+
+def test_a_mark_stored_in_a_variable_applies_where_it_is_used(repo):
+    """``skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")`` then
+    ``@skip_pyarrow``: the stored mark is the decorator, here, through an
+    alias, an import, ``module.name`` or a ``pytestmark`` list."""
+    rev = repo.commit(STORED_MARKS)
+    targets = by_id(run_discovery(repo, rev, "pytest"))
+
+    def deps(test):
+        return set(targets[test].lifecycle_dependencies)
+
+    db, net, clock = "tests.conftest.db", "tests.conftest.net", "tests.conftest.clock"
+    assert {db, clock} <= deps("tests/test_local.py::test_local")
+    assert {db, clock} <= deps("tests/test_local.py::test_alias")
+    assert db not in deps("tests/test_local.py::test_plain")
+    assert {db, net} <= deps("tests/test_imported.py::TestNet::test_net")
+    assert {db, net} <= deps("tests/test_imported.py::test_dotted")
+
+
+def test_a_fixture_applied_by_a_stored_mark_selects_its_tests(repo):
+    """Before, a stored mark was no dependency: changing the fixture selected
+    none of its tests (a miss)."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **STORED_MARKS,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+            "pkg/__init__.py": "",
+            "pkg/other.py": "X = 1\n",
+        }
+    )
+
+    def plan_for(path, old, new):
+        repo.git("reset", "-q", "--hard", base)  # each edit on its own
+        head = repo.commit({path: STORED_MARKS.get(path, "X = 1\n").replace(old, new)})
+        return repo.plan(base, head, [bench], discover_runners=["pytest"])
+
+    imported = {"tests/test_imported.py::TestNet::test_net", "tests/test_imported.py::test_dotted"}
+    assert selected(plan_for("tests/conftest.py", "'db'", "'d'")) == imported | {
+        "tests/test_local.py::test_local",
+        "tests/test_local.py::test_alias",
+    }
+    assert selected(plan_for("tests/conftest.py", "'net'", "'n'")) == imported
+    plan = plan_for("pkg/other.py", "1", "2")
+    assert selected(plan) == set()
+    assert "bench.time_noop" in unselected(plan)
+
+
+IMPLICIT_REQUESTS = {
+    "tests/__init__.py": "",
+    "tests/conftest.py": (
+        "import pytest\n\nENABLED = True\n\n\n"
+        "@pytest.fixture(scope='session')\n"
+        "def tmp_path_factory(request):\n    return 'factory'\n\n\n"
+        "@pytest.fixture\ndef anyio_backend():\n    return 'asyncio'\n\n\n"
+        "@pytest.fixture(autouse=ENABLED)\ndef guard():\n    return 'guard'\n\n\n"
+        "@pytest.fixture(autouse=False)\ndef off():\n    return 'off'\n"
+    ),
+    "tests/test_paths.py": ("def test_tmp(tmp_path):\n    pass\n\n\ndef test_plain():\n    pass\n"),
+}
+
+
+def test_overrides_of_fixtures_provided_outside_and_conditional_autouse_apply(repo):
+    """pytest's ``tmp_path`` requests ``tmp_path_factory``, so an override of
+    it is a dependency of tests using ``tmp_path``; anyio's plugin adds
+    ``anyio_backend`` to async tests, so an override of it is a dependency of
+    every test that can see it. ``autouse=ENABLED`` is autouse unless
+    literally false."""
+    rev = repo.commit(IMPLICIT_REQUESTS)
+    targets = by_id(run_discovery(repo, rev, "pytest"))
+    for test in ("tests/test_paths.py::test_tmp", "tests/test_paths.py::test_plain"):
+        deps = set(targets[test].lifecycle_dependencies)
+        assert {"tests.conftest.anyio_backend", "tests.conftest.guard"} <= deps, test
+        assert "tests.conftest.off" not in deps
+    tmp = set(targets["tests/test_paths.py::test_tmp"].lifecycle_dependencies)
+    plain = set(targets["tests/test_paths.py::test_plain"].lifecycle_dependencies)
+    assert "tests.conftest.tmp_path_factory" in tmp
+    assert "tests.conftest.tmp_path_factory" not in plain
+
+
+def test_a_fixture_requested_from_outside_selects_the_tests_that_see_it(repo):
+    """Before, changing these fixtures selected nothing (misses)."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **IMPLICIT_REQUESTS,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    tmp = "tests/test_paths.py::test_tmp"
+    both = {tmp, "tests/test_paths.py::test_plain"}
+    for old, new, expected in (
+        ("'factory'", "'f'", {tmp}),
+        ("'asyncio'", "'trio'", both),
+        ("'guard'", "'g'", both),
+    ):
+        repo.git("reset", "-q", "--hard", base)  # each edit on its own
+        head = repo.commit(
+            {"tests/conftest.py": IMPLICIT_REQUESTS["tests/conftest.py"].replace(old, new)}
+        )
+        plan = repo.plan(base, head, [bench], discover_runners=["pytest"])
+        assert selected(plan) == expected, old
+        assert "bench.time_noop" in unselected(plan)
+
+
+NESTED_PLUGINS = {
+    "tests/__init__.py": "",
+    "tests/fixtures/__init__.py": "pytest_plugins = ['tests.fixtures.repo']\n",
+    "tests/fixtures/repo.py": (
+        "import pytest\n\npytest_plugins = ['tests.fixtures.http']\n\n\n"
+        "@pytest.fixture(autouse=True)\ndef repository():\n    return 'repo'\n"
+    ),
+    "tests/fixtures/http.py": (
+        "import pytest\n\n\n@pytest.fixture\ndef http():\n    return 'http'\n"
+    ),
+    "tests/conftest.py": "pytest_plugins = ['tests.fixtures']\n",
+    "tests/test_x.py": "def test_plain():\n    pass\n\n\ndef test_http(http):\n    pass\n",
+}
+
+
+def test_plugins_declared_by_a_plugin_are_loaded_too(repo):
+    """pytest registers a module plugin's own ``pytest_plugins`` (poetry's
+    conftest loads a package whose ``__init__`` lists its fixture modules).
+    Before, their fixtures were unseen: the autouse one no dependency (a
+    miss), the requested one unresolved."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **NESTED_PLUGINS,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    targets = by_id(run_discovery(repo, base, "pytest"))
+    plain = set(targets["tests/test_x.py::test_plain"].lifecycle_dependencies)
+    http = set(targets["tests/test_x.py::test_http"].lifecycle_dependencies)
+    assert "tests.fixtures.repo.repository" in plain
+    assert {"tests.fixtures.repo.repository", "tests.fixtures.http.http"} <= http
+    assert not any(d.startswith("fixture:") for d in plain | http)
+
+    path = "tests/fixtures/repo.py"
+    head = repo.commit({path: NESTED_PLUGINS[path].replace("'repo'", "'r'")})
+    plan = repo.plan(base, head, [bench], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_x.py::test_plain", "tests/test_x.py::test_http"}
+    assert "bench.time_noop" in unselected(plan)

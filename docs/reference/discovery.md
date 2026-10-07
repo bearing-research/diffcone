@@ -26,15 +26,17 @@ the doctest options in `addopts`.
 - its fixtures, requested by parameter or `usefixtures`, and the fixtures
   those use, resolved the way pytest does: class (including the fixtures
   it inherits from base classes in other modules), then module, then each
-  `conftest.py` outward, then plugins listed in `pytest_plugins` and your
-  project's own pytest plugins. A fixture is found under every name a module
+  `conftest.py` outward, then plugins listed in `pytest_plugins` (and the
+  plugins those list) and your project's own pytest plugins. A fixture is found under every name a module
   binds it to, as in pytest: an alias (`box2 = box`) or an import (`from
   tests.helpers import engine`), unless the fixture sets its own `name=`.
   A name the test parametrizes is a parameter, not a fixture, for the test
   and for every fixture it uses;
 - marks such as `usefixtures` and `parametrize` on its class and the
-  class's base classes;
-- autouse fixtures that apply to it;
+  class's base classes, including marks stored in a variable and applied
+  by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`);
+- autouse fixtures that apply to it, including ones whose `autouse=` is a
+  variable;
 - xunit-style `setup_*` and `teardown_*` functions;
 - its module, and every `conftest.py` on its path with their `pytest_*`
   hooks.
@@ -51,6 +53,13 @@ others), and lists each one it assumes in the report. Name fixtures from
 other plugins with `--assume-external-fixture NAME`. A fixture diffcone
 can't find otherwise is reported, and the tests that use it are selected
 on every change, since diffcone can't tell what the fixture depends on.
+
+Some fixtures are requested by pytest or a plugin itself rather than by
+your tests: pytest's `tmp_path` uses `tmp_path_factory`, and anyio's plugin
+uses `anyio_backend`. If your project overrides one, diffcone counts the
+override as a dependency of the tests that use it: for pytest's fixtures,
+the tests that use the fixture requesting it; for a plugin's, every test
+that can see the override.
 
 ### Parametrized tests
 

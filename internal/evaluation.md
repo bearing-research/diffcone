@@ -1312,6 +1312,47 @@ would have matched one. Benchmarks inherited from a base class are now
 targets too, though no census suite uses inheritance, so that rule is
 sound and tested but unmeasured in the wild.
 
+## Fixture dependencies against pytest's closures (43 repositories)
+
+`scripts/collection_check.py` checks which tests discovery finds;
+`scripts/fixture_check.py` checks what each one depends on. A plugin loaded
+into `pytest --collect-only` records, for every collected test, the fixture
+functions pytest resolved its closure to (following overrides that request
+their own name, skipping the pseudo-fixtures of direct parametrization),
+and the script reports every one inside the repository that the test's
+discovered lifecycle dependencies do not cover. A test carrying any
+`fixture:<name>` placeholder counts as covered, since it is selected on
+every change. An uncovered fixture is a fixture whose change selects
+nothing: a miss, found without a commit range or a full run.
+
+Run over the 42 census repositories and pandas (2026-10-06, environments
+from each project's test dependencies), it found misses in seven, from
+five mechanisms. All were fixed, each with a regression scenario:
+
+| mechanism | where | tests |
+|---|---|---|
+| a nested `pytest_plugins` (a plugin package whose `__init__` lists the modules with its autouse fixtures) | poetry | 1365 |
+| pytest's own `tmp_path` requesting `tmp_path_factory`, which the project overrides | pip | 1038 |
+| anyio's plugin adding `usefixtures("anyio_backend")` to async tests, the project overriding `anyio_backend` | anyio, uvicorn | 687, 240 |
+| `@pytest.fixture(autouse=HAS_BLOCKBUSTER)`, read as not autouse | starlette | 581 |
+| a mark stored in a variable (`skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")`, then `@skip_pyarrow`) | pandas | 107 |
+
+Before these, the same day's pandas work had found two more by hand, which
+the audit confirms fixed: autouse fixtures and `usefixtures` marks on test
+base classes in other modules (about 6000 pandas tests). After the fixes,
+all 43 repositories are clean: 52 566 test functions, no fixture missed.
+
+Plugins cannot be read, so the plugin case rests on a curated list
+(`PLUGIN_REQUESTED` in `pytest_static.py`) of names plugins request
+themselves; an in-repo override of one counts as autouse. A first version
+treated an override of *any* name a plugin provides that way and was
+withdrawn: `db` and `freezer` are names projects define for their own
+tests, and seven scenarios caught the over-selection. pytest's own
+fixtures are followed exactly (`BUILTIN_REQUESTS`).
+
+Like `collection_check.py`, this is the check to run on a new repository,
+and after any change to discovery's fixture rules.
+
 ## Are name-match selections worth their cost?
 
 The census attributes 9 % of selections to name matches alone, and the

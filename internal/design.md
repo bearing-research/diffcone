@@ -737,7 +737,14 @@ the test's fixture closure, not only to the test: a fixture that requests it
 gets the parameter, and a fixture of that name is replaced, with its own
 requests pruned, as pytest does. `@pytest.mark.usefixtures(...)`
 on the function, class, its bases, enclosing classes or module adds
-requests. Resolution order is class fixtures (one level per class: pytest
+requests. A mark may be stored in a variable and applied by name
+(`skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")`, then
+`@skip_pyarrow` or `pytestmark = [skip_pyarrow]`): a decorator or
+`pytestmark` entry that is a bare name or `module.name` is resolved to the
+mark expressions bound to it at module level, in the module that defines
+the decorated function or class, through aliases and `from` imports (only
+names used this way are followed). A mark built by a function call
+(`td.skip_if_no(...)`) is not followed. Resolution order is class fixtures (one level per class: pytest
 registers them from `dir(cls)`, so the level holds the class's own
 fixtures and those of its bases in any module in the source roots, the
 nearest definition of an attribute hiding the others; a subclass fixture
@@ -749,14 +756,28 @@ points from `pyproject.toml` (`[project.entry-points]` or
 `[tool.poetry.plugins]`) or `setup.cfg`, and modules loaded with `-p name`
 in `addopts` (a pytest-internal name such as `pytester` resolves to
 `_pytest.<name>` when that module is in scope, as in pytest's own
-repository), following one level of
+repository), and recursively the modules those plugin modules list in
+their own `pytest_plugins` (pytest registers them as it registers the
+module: poetry's conftest loads a package whose `__init__` lists the
+modules with its autouse fixtures), following one level of
 `from ... import` re-exports so a plugin package's `__init__` exposes the
 fixtures and hooks it imports (matched on the original name; a fixture keeps
 its own name under an alias). Hooks defined in or imported into those
 plugin modules are lifecycle dependencies of every test. Nearest scope wins; a fixture that requests its
 own name (`def db(db)`) resolves to the next definition outward; requests
 are resolved transitively along the same chain; autouse fixtures anywhere
-on the chain apply.
+on the chain apply (`autouse=` anything but a literal false value:
+starlette's `autouse=HAS_BLOCKBUSTER` applies whenever the flag is set). Code
+discovery cannot read requests fixtures too. pytest's own fixtures are
+followed through what they request (`BUILTIN_REQUESTS`: `tmp_path`
+requests `tmp_path_factory`, which pip overrides). Installed plugins cannot
+be read, so an in-scope override of a fixture a plugin requests itself
+(`PLUGIN_REQUESTED`: anyio's plugin adds `usefixtures("anyio_backend")` to
+async tests, and anyio and uvicorn override `anyio_backend`; pytest-django's
+`django_db_setup`, pytest-asyncio's `event_loop_policy`) is a dependency
+of every test that can see it, as if autouse. The list is curated, not
+every name a plugin provides: `db` or `client` are names projects define
+for their own tests, which request them by name.
 
 Lifecycle dependencies of a test: the resolved fixture symbols, the test
 module and its own `pytest_*` hooks, the module-level `pytestmark`,

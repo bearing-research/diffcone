@@ -23,7 +23,9 @@ The first release.
 - Static discovery of pytest tests (configuration, collection rules,
   inheritance, star-imported suites, the fixture chain with fixtures bound
   by alias or import, fixtures and marks inherited from base classes in
-  other modules, and parametrized names supplied to fixtures, doctests)
+  other modules, marks stored in variables, parametrized names supplied to
+  fixtures, plugins declared by plugins, and overrides of fixtures that
+  pytest and installed plugins request, doctests)
   and ASV benchmarks, without importing project code; what it cannot see
   it reports. `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.

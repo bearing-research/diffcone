@@ -42,13 +42,18 @@ Lifecycle dependencies attached to each test:
   ``mock.patch`` decorators on the function or, for ``test*`` methods, on
   its class and base classes), by ``@pytest.mark.usefixtures`` on the
   function, class (including enclosing classes and every base class, as
-  pytest reads marks along the MRO) or module (``pytestmark``),
+  pytest reads marks along the MRO) or module (``pytestmark``), whether
+  written out or stored in a variable (``skip_pyarrow =
+  pytest.mark.usefixtures("pyarrow_skip")`` then ``@skip_pyarrow``, also
+  through aliases, ``from`` imports and ``module.name``, resolved in the
+  module that defines the decorated function or class),
   and transitively by other fixtures, resolved in pytest's order: class
   (its own fixtures and those it inherits from bases in any module in the
   source roots, the nearest definition of an attribute hiding the rest, as
   ``dir(cls)`` sees them), enclosing classes, module, nearest
   ``conftest.py`` outward, then
-  ``pytest_plugins`` modules within the source roots; a fixture requesting
+  ``pytest_plugins`` modules within the source roots (and the plugins those
+  declare, as pytest registers them); a fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
   pkg.conftest import engine as motor``, a star import), as pytest registers
@@ -58,7 +63,16 @@ Lifecycle dependencies attached to each test:
   (``set_engine(engine, ext)`` under ``parametrize("engine, ext")``), as
   pytest replaces any fixture of that name and prunes what it requests;
 * fixtures requested by literal name through ``request.getfixturevalue``;
-* ``autouse`` fixtures visible from the test;
+* ``autouse`` fixtures visible from the test (``autouse=`` anything but a
+  literal false value, since ``autouse=FLAG`` applies whenever the flag is
+  set);
+* what pytest's own fixtures request (``BUILTIN_REQUESTS``: ``tmp_path``
+  requests ``tmp_path_factory``), so an in-scope override of the requested
+  name is a dependency of the tests using the builtin;
+* in-scope overrides of fixtures that installed plugins request themselves
+  (``PLUGIN_REQUESTED``: ``anyio_backend``, which anyio's plugin adds to
+  async tests, ``django_db_setup``, ``event_loop_policy``) visible from the
+  test, as if autouse, since the plugins cannot be read;
 * the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
   path and each ``pytest_*`` hook function in those conftests;
 * xunit-style setup/teardown functions and methods when present;
@@ -95,7 +109,7 @@ import configparser
 import doctest
 import tomllib
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
@@ -313,6 +327,71 @@ BUILTIN_FIXTURES = frozenset(
         "tmpdir_factory",
     }
 )
+
+# What pytest's own fixtures request (pytest 9): an in-scope override of a
+# requested name (pip overrides ``tmp_path_factory``) is what a test using
+# the builtin really runs.
+BUILTIN_REQUESTS: dict[str, tuple[str, ...]] = {
+    "tmp_path": ("tmp_path_factory",),
+    "tmpdir": ("tmp_path",),
+    "testdir": ("pytester",),
+    "pytester": ("tmp_path_factory", "monkeypatch"),
+}
+
+# Fixtures that installed plugins request themselves, without the test
+# naming them, and that projects override to configure the plugin: anyio's
+# plugin adds ``anyio_backend`` to async tests, pytest-django's database
+# fixtures request ``django_db_setup``. The plugins cannot be read, so an
+# in-scope override of one of these is a dependency of every test that can
+# see it, as if autouse. Names tests request directly (``db``, ``client``)
+# are not here: those are followed like any request.
+PLUGIN_REQUESTED: dict[str, str] = {
+    name: dist
+    for dist, names in {
+        "anyio": ("anyio_backend",),
+        "pytest-asyncio": ("event_loop_policy", "event_loop"),
+        "pytest-django": (
+            "django_db_setup",
+            "django_db_blocker",
+            "django_db_keepdb",
+            "django_db_createdb",
+            "django_db_use_migrations",
+            "django_db_modify_db_settings",
+            "django_db_modify_db_settings_parallel_suffix",
+            "django_db_modify_db_settings_tox_suffix",
+            "django_db_modify_db_settings_xdist_suffix",
+            "django_test_environment",
+        ),
+        "celery": (
+            "celery_config",
+            "celery_parameters",
+            "celery_enable_logging",
+            "celery_includes",
+            "celery_worker_pool",
+            "celery_worker_parameters",
+        ),
+        "pytest-playwright": ("browser_type_launch_args", "browser_context_args"),
+        "pytest-selenium": (
+            "driver_args",
+            "driver_kwargs",
+            "driver_class",
+            "driver_path",
+            "chrome_options",
+            "firefox_options",
+            "capabilities",
+            "session_capabilities",
+        ),
+        "pytest-qt": ("qapp_args", "qapp_cls"),
+        "pytest-docker": (
+            "docker_compose_file",
+            "docker_compose_project_name",
+            "docker_cleanup",
+            "docker_setup",
+        ),
+        "pytest-datadir": ("original_datadir",),
+    }.items()
+    for name in names
+}
 
 CLASS_SETUP_METHODS = (
     "setup_class",
@@ -627,10 +706,14 @@ def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str
                 if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str)
                 else None
             )
-            autouse_node = keyword_value(call, "autouse")
-            autouse = isinstance(autouse_node, ast.Constant) and bool(autouse_node.value)
-            return True, name, autouse
+            return True, name, _autouse(keyword_value(call, "autouse"))
     return False, None, False
+
+
+def _autouse(node: ast.expr | None) -> bool:
+    """Whether ``autouse=`` may be true: anything but a literal false value
+    (``autouse=HAS_BLOCKBUSTER`` is autouse whenever the flag is set)."""
+    return node is not None and not (isinstance(node, ast.Constant) and not node.value)
 
 
 @dataclass(frozen=True)
@@ -664,10 +747,18 @@ def _split_argnames(node: ast.expr) -> list[str]:
     return string_literals([node])
 
 
-def _marks_from_expressions(exprs: list[ast.expr]) -> Marks:
+# Expands a decorator or ``pytestmark`` entry that names a stored mark
+# (``@skip_pyarrow`` after ``skip_pyarrow = pytest.mark.usefixtures(...)``)
+# into the mark expressions it stands for; None or empty when it names none.
+MarkExpander = Callable[[ast.expr], "list[ast.expr] | None"]
+
+
+def _marks_from_expressions(exprs: list[ast.expr], expand: MarkExpander | None = None) -> Marks:
     use: list[str] = []
     parametrized: set[str] = set()
     indirect: set[str] = set()
+    if expand is not None:
+        exprs = [e for x in exprs for e in (expand(x) or [x])]
     for expr in exprs:
         parts, call = decorator_chain(expr)
         if call is None or len(parts) < 2 or parts[-2] != "mark":
@@ -685,12 +776,12 @@ def _marks_from_expressions(exprs: list[ast.expr]) -> Marks:
     return Marks(tuple(use), frozenset(parametrized), frozenset(indirect))
 
 
-def _marks_from_pytestmark(body: list[ast.stmt]) -> Marks:
+def _marks_from_pytestmark(body: list[ast.stmt], expand: MarkExpander | None = None) -> Marks:
     exprs: list[ast.expr] = []
     for name, value in scope_assignments(body):
         if name == "pytestmark":
             exprs += list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
-    return _marks_from_expressions(exprs)
+    return _marks_from_expressions(exprs, expand)
 
 
 def _usefixtures_from_pytestmark(body: list[ast.stmt]) -> tuple[str, ...]:
@@ -836,8 +927,7 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
         )
         names_itself = explicit_name is not None
         fixture_name = explicit_name or name
-        autouse_node = keyword_value(call, "autouse")
-        autouse = isinstance(autouse_node, ast.Constant) and bool(autouse_node.value)
+        autouse = _autouse(keyword_value(call, "autouse"))
         fixture = Fixture(
             fixture_name, parsed.member_id(func.name), autouse, _fixture_requests(func, False)
         )
@@ -913,6 +1003,12 @@ class _Resolver:
         self.unresolved = unresolved
         self.assumed = assumed  # external fixture name -> requesting tests
 
+    def plugin_requested(self, name: str) -> bool:
+        """Whether an installed plugin requests this name itself
+        (``PLUGIN_REQUESTED``): an in-scope override of it is then a
+        dependency of every test it is visible to, like an autouse fixture."""
+        return self.options.well_known_fixtures and name in PLUGIN_REQUESTED
+
     def chain(self, class_levels: list[dict[str, Fixture]]) -> list[dict[str, Fixture]]:
         levels = list(class_levels)  # innermost class first
         levels.append(self.module.fixtures)
@@ -937,7 +1033,7 @@ class _Resolver:
         queue: list[tuple[str, int]] = [(name, 0) for name in requests]
         for level in levels:
             for fixture in level.values():
-                if fixture.autouse:
+                if fixture.autouse or self.plugin_requested(fixture.name):
                     queue.append((fixture.name, 0))
         while queue:
             name, start = queue.pop(0)
@@ -954,7 +1050,7 @@ class _Resolver:
                 for req in fixture.requests:
                     queue.append((req, level_index + 1 if req == name else 0))
             elif name in BUILTIN_FIXTURES:
-                continue
+                queue.extend((req, 0) for req in BUILTIN_REQUESTS.get(name, ()))
             elif name in self.options.external_fixtures or (
                 self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES
             ):
@@ -1192,8 +1288,16 @@ def discover_pytest(
         link(facts)
 
     def plugin_facts(
-        declared: list[str], where: str, kind: str = "pytest_plugins"
+        declared: list[str],
+        where: str,
+        kind: str = "pytest_plugins",
+        seen: set[str] | None = None,
     ) -> list[ModuleFacts]:
+        """The plugin modules ``declared`` loads, and those they declare in
+        turn: pytest registers each module plugin, then its own
+        ``pytest_plugins`` (poetry's conftest loads a package whose
+        ``__init__`` lists the modules holding its autouse fixtures)."""
+        seen = set() if seen is None else seen
         found: list[ModuleFacts] = []
         for name in declared:
             # pytest's own plugins are builtin unless this repository *is*
@@ -1212,8 +1316,13 @@ def discover_pytest(
                     )
                 )
                 continue
+            if facts.parsed.module in seen:
+                continue
+            seen.add(facts.parsed.module)
             found.append(link(facts))
             found.extend(link(sub) for sub in _reexported_facts(facts, module_facts))
+            if facts.plugins:
+                found.extend(plugin_facts(facts.plugins, facts.parsed.path, seen=seen))
         return found
 
     global_plugins: list[ModuleFacts] = []
@@ -1436,7 +1545,6 @@ def _collect_module_tests(
     parsed = facts.parsed
     functions = tuple(config["python_functions"])
     classes = tuple(config["python_classes"])
-    module_marks = _marks_from_pytestmark(parsed.tree.body)
     module_classes = {c.name: c for c in scope_classes(parsed.tree.body)}
     # Names used as a base anywhere in the module: such a class contributes
     # its methods through its subclasses, so it is not an uncollected class.
@@ -1506,6 +1614,54 @@ def _collect_module_tests(
         return scope
 
     own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
+    # Base class id -> the module defining it, whose names its decorators use.
+    defined_in: dict[str, str] = {}
+    stored: dict[tuple[str, str], list[ast.expr]] = {}
+
+    def stored_mark(module: str, name: str) -> list[ast.expr]:
+        """The mark expressions ``module`` binds to ``name`` at module level
+        (``skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")``, or a
+        list of marks), following aliases and ``from`` imports; empty when
+        it binds none that can be seen. Only names used as marks are
+        followed, so no imported library is parsed for this."""
+        key = (module, name)
+        if key in stored:
+            return stored[key]
+        stored[key] = []  # guards cycles
+        scope = scope_for(module)
+        if scope is None:
+            return []
+        found: list[ast.expr] = []
+        values = [v for n, v in scope_assignments(scope[0].tree.body) if n == name]
+        if values:
+            # Every binding counts: which one is live is not tracked.
+            expand = expander(module)
+            for value in values:
+                elts = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+                for expr in elts:
+                    found += expand(expr) or [expr]
+        elif name in scope[2]:
+            found = stored_mark(*scope[2][name])
+        stored[key] = found
+        return found
+
+    def expander(module: str) -> MarkExpander:
+        """Resolves ``name`` and ``alias.name`` mark entries in ``module``."""
+
+        def expand(expr: ast.expr) -> list[ast.expr] | None:
+            if isinstance(expr, ast.Name):
+                return stored_mark(module, expr.id)
+            parts, call = decorator_chain(expr)
+            if call is None and len(parts) == 2:
+                target = module_prefixes.get(module, {}).get(parts[0])
+                if target is not None:
+                    return stored_mark(target, parts[1])
+            return None
+
+        return expand
+
+    own_marks = expander(parsed.module)
+    module_marks = _marks_from_pytestmark(parsed.tree.body, own_marks)
 
     def class_in(module: str, name: str) -> tuple[ast.ClassDef, str, Any] | None:
         """The class ``name`` names in ``module``: defined there, or imported
@@ -1566,6 +1722,7 @@ def _collect_module_tests(
                 base_cls, base_id, base_scope = found
                 if used_as_base is not None:
                     used_as_base.add(base_id)
+                defined_in[base_id] = base_scope[0].module
                 chain.append((base_cls, base_id))
                 queue.extend((b, base_scope) for b in base_cls.bases)
             elif not (quiet or name.endswith("TestCase") or name in NO_TEST_BASES):
@@ -1633,10 +1790,12 @@ def _collect_module_tests(
         class_levels = [_class_level([(cls, class_id), *bases]), *(outer or [])]
         # Marks: the enclosing scopes', the bases' (pytest reads marks along
         # the MRO), then the class's own.
+        home = (scope or own_scope)[0].module
         class_marks = inherited
-        for owner, _ in [*reversed(bases), (cls, class_id)]:
-            class_marks = class_marks + _marks_from_expressions(owner.decorator_list)
-            class_marks = class_marks + _marks_from_pytestmark(owner.body)
+        for owner, owner_id in [*reversed(bases), (cls, class_id)]:
+            expand = expander(defined_in.get(owner_id, home))
+            class_marks = class_marks + _marks_from_expressions(owner.decorator_list, expand)
+            class_marks = class_marks + _marks_from_pytestmark(owner.body, expand)
         # ``@patch`` on a class (or on a base, whose patched methods are
         # inherited and patched again) injects into every ``test*`` method.
         class_injected = _injected_patch_count(cls.decorator_list) + sum(
@@ -1660,7 +1819,8 @@ def _collect_module_tests(
                 continue
             if not (_matches(functions, method) or (unittest_style and method.startswith("test"))):
                 continue
-            marks = class_marks + _marks_from_expressions(func.decorator_list)
+            expand = expander(defined_in.get(owner_id, home))
+            marks = class_marks + _marks_from_expressions(func.decorator_list, expand)
             requests = list(_fixture_requests(func, True, marks, class_injected))
             requests += list(marks.usefixtures)
             add(f"{nodeid}::{method}", f"{owner_id}.{method}", class_levels, requests, extra, marks)
@@ -1672,7 +1832,7 @@ def _collect_module_tests(
     for func in scope_functions(parsed.tree.body):
         if not _matches(functions, func.name) or _is_fixture(func)[0]:
             continue
-        marks = module_marks + _marks_from_expressions(func.decorator_list)
+        marks = module_marks + _marks_from_expressions(func.decorator_list, own_marks)
         requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
         add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [], marks)
 
@@ -1759,7 +1919,9 @@ def _collect_module_tests(
                     scope=origin_scope,
                 )
             elif is_function and not _is_fixture(node)[0]:
-                marks = module_marks + _marks_from_expressions(node.decorator_list)
+                marks = module_marks + _marks_from_expressions(
+                    node.decorator_list, expander(origin.parsed.module)
+                )
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
                 add(nodeid, entry, [], requests, [origin.parsed.module], marks)
 
