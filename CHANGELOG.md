@@ -22,9 +22,9 @@ The first release.
   collects (3).
 - Static discovery of pytest tests (configuration, collection rules,
   inheritance, star-imported suites, the fixture chain with fixtures bound
-  by alias or import, doctests) and ASV
-  benchmarks, without importing project code; what it cannot see it
-  reports. `diffcone discover` writes the targets as a manifest.
+  by alias or import and parametrized names supplied to fixtures, doctests)
+  and ASV benchmarks, without importing project code; what it cannot see
+  it reports. `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.
 - Indexes, discovery and per-module results are cached under
   `.diffcone/cache/`; a cached plan is identical to an uncached one.

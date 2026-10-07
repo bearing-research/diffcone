@@ -729,7 +729,11 @@ decorator injects one more argument, as `unittest.mock` patches every
 hypothesis `@given` (keyword strategies by name, positional strategies
 filling the last parameters), and names supplied by
 `@pytest.mark.parametrize` on the function, class, enclosing classes or
-module (`indirect` names stay requests). `@pytest.mark.usefixtures(...)`
+module (`indirect` names stay requests). Such a name is supplied throughout
+the test's fixture closure, not only to the test: a fixture that requests it
+(`set_engine(engine, ext)` under a class-level `parametrize("engine, ext")`)
+gets the parameter, and a fixture of that name is replaced, with its own
+requests pruned, as pytest does. `@pytest.mark.usefixtures(...)`
 on the function, class, enclosing classes or module adds requests.
 Resolution order is class fixtures (the class, then its in-module bases,
 then enclosing classes), module fixtures, `conftest.py` from the test's

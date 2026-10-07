@@ -47,7 +47,10 @@ Lifecycle dependencies attached to each test:
   fixture under every name it binds the fixture to (``box2 = box``, ``from
   pkg.conftest import engine as motor``, a star import), as pytest registers
   it, except that a fixture with an explicit ``name=`` is offered under that
-  name only;
+  name only; a name the test's marks parametrize directly is a parameter at
+  every depth of the closure, not only among the test's own arguments
+  (``set_engine(engine, ext)`` under ``parametrize("engine, ext")``), as
+  pytest replaces any fixture of that name and prunes what it requests;
 * fixtures requested by literal name through ``request.getfixturevalue``;
 * ``autouse`` fixtures visible from the test;
 * the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
@@ -640,6 +643,12 @@ class Marks:
             self.indirect | other.indirect,
         )
 
+    @property
+    def supplied(self) -> frozenset[str]:
+        """Names whose values ``parametrize`` supplies directly: they replace
+        any fixture of that name throughout the test's closure."""
+        return self.parametrized - self.indirect
+
 
 NO_MARKS = Marks()
 
@@ -737,7 +746,7 @@ def _fixture_requests(
         injected += class_injected
     if injected:
         required = required[injected:]
-    skip = set(marks.parametrized - marks.indirect)
+    skip = set(marks.supplied)
     # hypothesis ``@given``: keyword strategies fill parameters by name,
     # positional strategies fill the *last* parameters (from the right).
     given_positional, given_keywords = _given_arguments(node.decorator_list)
@@ -900,7 +909,12 @@ class _Resolver:
         levels.extend(p.fixtures for p in self.plugins)
         return levels
 
-    def lifecycle(self, class_ids: list[str], requests: list[str]) -> list[str]:
+    def lifecycle(
+        self, class_ids: list[str], requests: list[str], supplied: frozenset[str] = frozenset()
+    ) -> list[str]:
+        """Fixtures the test's closure reaches. A ``supplied`` name (directly
+        parametrized on the test) is a parameter at every depth, as pytest
+        replaces the fixture of that name and prunes what it requests."""
         levels = self.chain(class_ids)
         deps: list[str] = []
         seen: set[tuple[str, int]] = set()
@@ -913,7 +927,7 @@ class _Resolver:
                     queue.append((fixture.name, 0))
         while queue:
             name, start = queue.pop(0)
-            if (name, start) in seen:
+            if (name, start) in seen or name in supplied:
                 continue
             seen.add((name, start))
             found = next(
@@ -1419,12 +1433,19 @@ def _collect_module_tests(
         for base in node.bases
     }
 
-    def add(nodeid: str, entry: str, class_ids: list[str], requests: list[str], extra: list[str]):
+    def add(
+        nodeid: str,
+        entry: str,
+        class_ids: list[str],
+        requests: list[str],
+        extra: list[str],
+        marks: Marks,
+    ):
         if entry not in index.symbols:
             result.notes.append(
                 DiscoveryNote(RUNNER, "missing_symbol", f"{nodeid}: {entry} is not in the index")
             )
-        deps = module_deps + extra + resolver.lifecycle(class_ids, requests)
+        deps = module_deps + extra + resolver.lifecycle(class_ids, requests, marks.supplied)
         result.targets.append(Target(RUNNER, nodeid, entry, tuple(sorted(set(deps)))))
 
     # Module scopes reached through base classes: name -> (parsed, classes,
@@ -1551,7 +1572,7 @@ def _collect_module_tests(
             continue
         marks = module_marks + _marks_from_expressions(func.decorator_list)
         requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
-        add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [])
+        add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [], marks)
 
     # pytest collects every module attribute matching the naming rules,
     # including functions and classes imported from elsewhere (fastapi's
@@ -1632,11 +1653,18 @@ def _collect_module_tests(
                 for name, (method, owner_id) in sorted(methods.items()):
                     if _matches(functions, name) and not _is_fixture(method)[0]:
                         requests = list(_fixture_requests(method, True, module_marks))
-                        add(f"{nodeid}::{name}", f"{owner_id}.{name}", [], requests, [])
+                        add(
+                            f"{nodeid}::{name}",
+                            f"{owner_id}.{name}",
+                            [],
+                            requests,
+                            [],
+                            module_marks,
+                        )
             elif is_function and not _is_fixture(node)[0]:
                 marks = module_marks + _marks_from_expressions(node.decorator_list)
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
-                add(nodeid, entry, [], requests, [origin.parsed.module])
+                add(nodeid, entry, [], requests, [origin.parsed.module], marks)
 
     def walk_class(
         cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str, inherited: Marks
@@ -1703,7 +1731,7 @@ def _collect_module_tests(
             marks = class_marks + _marks_from_expressions(func.decorator_list)
             requests = list(_fixture_requests(func, True, marks, class_injected))
             requests += list(marks.usefixtures)
-            add(f"{nodeid}::{name}", f"{owner_id}.{name}", class_ids, requests, extra)
+            add(f"{nodeid}::{name}", f"{owner_id}.{name}", class_ids, requests, extra, marks)
         for inner in scope_classes(cls.body):
             walk_class(inner, prefix_ids + [class_id], nodeid, class_marks)
 

@@ -1109,3 +1109,75 @@ def test_a_fixture_reached_by_alias_or_import_selects_only_its_tests(repo):
     plan = plan_for("pkg/other.py", "1", "2")
     assert selected(plan) == {always}
     assert "bench.time_noop" in unselected(plan)
+
+
+PARAMETRIZED_CLOSURE = {
+    "tests/__init__.py": "",
+    "tests/conftest.py": (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef engine(dep):\n    return 'engine'\n\n\n"
+        "@pytest.fixture\ndef dep():\n    return 'dep'\n"
+    ),
+    "tests/test_w.py": (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef set_engine(engine, ext):\n    return engine, ext\n\n\n"
+        "@pytest.mark.parametrize('engine, ext', [('x', '.x')])\n"
+        "@pytest.mark.usefixtures('set_engine')\n"
+        "class TestWriter:\n    def test_both(self):\n        pass\n\n\n"
+        "@pytest.mark.parametrize('ext', ['.y'])\n"
+        "def test_ext_only(set_engine):\n    pass\n\n\n"
+        "@pytest.mark.parametrize('ext', ['.z'], indirect=True)\n"
+        "def test_indirect(set_engine):\n    pass\n"
+    ),
+}
+
+
+def test_parametrized_names_are_parameters_throughout_the_closure(repo):
+    """pytest hands a directly parametrized name to every fixture in the
+    test's closure, replacing a fixture of that name and pruning what it
+    requests; an ``indirect`` name is still a fixture request."""
+    rev = repo.commit(PARAMETRIZED_CLOSURE)
+    targets = by_id(run_discovery(repo, rev, "pytest"))
+
+    def deps(test):
+        return set(targets[f"tests/test_w.py::{test}"].lifecycle_dependencies)
+
+    both = deps("TestWriter::test_both")
+    assert "tests.test_w.set_engine" in both
+    assert not both & {"tests.conftest.engine", "tests.conftest.dep"}
+    assert not any(d.startswith("fixture:") for d in both)
+    ext_only = deps("test_ext_only")
+    assert {"tests.conftest.engine", "tests.conftest.dep"} <= ext_only
+    assert not any(d.startswith("fixture:") for d in ext_only)
+    assert "fixture:ext" in deps("test_indirect")
+
+
+def test_a_fixture_replaced_by_parametrize_does_not_select_its_test(repo):
+    """Before, ``set_engine``'s parametrized requests were unresolved and its
+    tests were selected on every change, as test_indirect (whose ``ext`` is
+    a fixture nobody defines) still is (regression for the narrowing)."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **PARAMETRIZED_CLOSURE,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+            "pkg/__init__.py": "",
+            "pkg/other.py": "X = 1\n",
+        }
+    )
+    T = "tests/test_w.py::"
+    always = T + "test_indirect"
+
+    def plan_for(path, old, new):
+        repo.git("reset", "-q", "--hard", base)  # each edit on its own
+        head = repo.commit({path: PARAMETRIZED_CLOSURE.get(path, "X = 1\n").replace(old, new)})
+        return repo.plan(base, head, [bench], discover_runners=["pytest"])
+
+    for old, new in (("'engine'", "'e'"), ("'dep'", "'d'")):
+        plan = plan_for("tests/conftest.py", old, new)
+        assert selected(plan) == {T + "test_ext_only", always}, old
+        assert T + "TestWriter::test_both" in unselected(plan)
+    plan = plan_for("pkg/other.py", "1", "2")
+    assert selected(plan) == {always}
+    assert "bench.time_noop" in unselected(plan)

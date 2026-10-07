@@ -28,7 +28,9 @@ the doctest options in `addopts`.
   `conftest.py` outward, then plugins listed in `pytest_plugins` and your
   project's own pytest plugins. A fixture is found under every name a module
   binds it to, as in pytest: an alias (`box2 = box`) or an import (`from
-  tests.helpers import engine`), unless the fixture sets its own `name=`;
+  tests.helpers import engine`), unless the fixture sets its own `name=`.
+  A name the test parametrizes is a parameter, not a fixture, for the test
+  and for every fixture it uses;
 - autouse fixtures that apply to it;
 - xunit-style `setup_*` and `teardown_*` functions;
 - its module, and every `conftest.py` on its path with their `pytest_*`
