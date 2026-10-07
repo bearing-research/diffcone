@@ -1096,15 +1096,17 @@ the doctest options in <code>addopts</code>.</p>
 <li>its fixtures, requested by parameter or <code>usefixtures</code>, and the fixtures
   those use, resolved the way pytest does: class (including the fixtures
   it inherits from base classes in other modules), then module, then each
-  <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> and your
-  project's own pytest plugins. A fixture is found under every name a module
+  <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> (and the
+  plugins those list) and your project's own pytest plugins. A fixture is found under every name a module
   binds it to, as in pytest: an alias (<code>box2 = box</code>) or an import (<code>from
   tests.helpers import engine</code>), unless the fixture sets its own <code>name=</code>.
   A name the test parametrizes is a parameter, not a fixture, for the test
   and for every fixture it uses;</li>
 <li>marks such as <code>usefixtures</code> and <code>parametrize</code> on its class and the
-  class's base classes;</li>
-<li>autouse fixtures that apply to it;</li>
+  class's base classes, including marks stored in a variable and applied
+  by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>);</li>
+<li>autouse fixtures that apply to it, including ones whose <code>autouse=</code> is a
+  variable;</li>
 <li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions;</li>
 <li>its module, and every <code>conftest.py</code> on its path with their <code>pytest_*</code>
   hooks.</li>
@@ -1119,6 +1121,12 @@ others), and lists each one it assumes in the report. Name fixtures from
 other plugins with <code>--assume-external-fixture NAME</code>. A fixture diffcone
 can't find otherwise is reported, and the tests that use it are selected
 on every change, since diffcone can't tell what the fixture depends on.</p>
+<p>Some fixtures are requested by pytest or a plugin itself rather than by
+your tests: pytest's <code>tmp_path</code> uses <code>tmp_path_factory</code>, and anyio's plugin
+uses <code>anyio_backend</code>. If your project overrides one, diffcone counts the
+override as a dependency of the tests that use it: for pytest's fixtures,
+the tests that use the fixture requesting it; for a plugin's, every test
+that can see the override.</p>
 <h3 id="parametrized-tests">Parametrized tests<a class="headerlink" href="#parametrized-tests" title="Permanent link">&para;</a></h3>
 <p>Each test is a single target: diffcone selects or skips all of its
 parameter cases together.</p>
