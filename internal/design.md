@@ -711,7 +711,15 @@ come from a manifest.
 Fixtures are functions decorated with a dotted name ending in `fixture` or
 `yield_fixture`, or module-level bindings of the form
 `name = pytest.fixture(...)(function)`; `name=` and `autouse=True` keyword
-arguments are honoured.
+arguments are honoured. pytest registers a fixture under every name a
+module binds it to (its `parsefactories` walks the module's namespace), so
+a module also offers the fixtures it binds by alias (`box2 = box`), by
+`from` import (`from pkg.conftest import engine as motor`) or by star
+import, followed across modules and re-exports; a fixture with an explicit
+`name=` is offered under that name only, whatever it is bound to. Only names
+something could request (a parameter or an identifier-like string in the
+test modules and conftests) are followed, so discovery does not parse every
+module a test imports from.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
 `patch.object` decorators (unless `new` is given) on the function or, for

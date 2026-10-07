@@ -8,7 +8,7 @@ from diffcone.cli import main
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
-from diffcone.testing import py_target, reason, rules, selected, unselected
+from diffcone.testing import asv_target, py_target, reason, rules, selected, unselected
 
 
 def run_discovery(repo, rev, runner, roots=None, **opts):
@@ -1026,3 +1026,86 @@ def test_pytest_base_classes_re_exported_by_a_package(repo):
         "tests/ext/test_dt.py::Test2DCompat::test_shift_2d",
         "tests/ext/test_np.py::TestNp::test_shift_2d",
     }
+
+
+FIXTURE_BINDINGS = {
+    "tests/__init__.py": "",
+    "tests/other/__init__.py": "",
+    "tests/conftest.py": (
+        "import pytest\n\n\n@pytest.fixture\ndef box():\n    return 'box'\n\n\nbox2 = box\n"
+    ),
+    "tests/other/conftest.py": (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef engine():\n    return 'engine'\n\n\n"
+        "@pytest.fixture(name='named')\ndef _named_impl():\n    return 'named'\n"
+    ),
+    "tests/helpers.py": (
+        "import pytest\n\n__all__ = ['shared']\n\n\n"
+        "@pytest.fixture\ndef shared():\n    return 'shared'\n"
+    ),
+    "tests/test_x.py": (
+        "from tests.helpers import *\n"
+        "from tests.other.conftest import engine\n"
+        "from tests.other.conftest import engine as motor\n"
+        "from tests.other.conftest import _named_impl as alias_of_named\n\n\n"
+        "def test_alias(box2):\n    pass\n\n\n"
+        "def test_imported(engine):\n    pass\n\n\n"
+        "def test_imported_as(motor):\n    pass\n\n\n"
+        "def test_explicit_name(named):\n    pass\n\n\n"
+        "def test_starred(shared):\n    pass\n\n\n"
+        "def test_not_registered(alias_of_named):\n    pass\n"
+    ),
+}
+
+
+def test_fixtures_bound_by_alias_or_import_resolve_as_pytest_registers_them(repo):
+    """pytest registers a fixture under every name a module binds it to
+    (``box2 = box``, ``from pkg.conftest import engine as motor``, a star
+    import), unless the fixture names itself (``name=``): then under that
+    name only."""
+    rev = repo.commit(FIXTURE_BINDINGS)
+    targets = by_id(run_discovery(repo, rev, "pytest"))
+
+    def deps(test):
+        return set(targets[f"tests/test_x.py::{test}"].lifecycle_dependencies)
+
+    assert "tests.conftest.box" in deps("test_alias")
+    assert "tests.other.conftest.engine" in deps("test_imported")
+    assert "tests.other.conftest.engine" in deps("test_imported_as")
+    assert "tests.other.conftest._named_impl" in deps("test_explicit_name")
+    assert "tests.helpers.shared" in deps("test_starred")
+    # A fixture that names itself is not registered under the alias.
+    assert "fixture:alias_of_named" in deps("test_not_registered")
+    for test in ("test_alias", "test_imported", "test_imported_as", "test_explicit_name"):
+        assert not any(d.startswith("fixture:") for d in deps(test)), test
+
+
+def test_a_fixture_reached_by_alias_or_import_selects_only_its_tests(repo):
+    """Before, such a fixture was unresolved and its tests were selected on
+    every change, as test_not_registered (whose name pytest does not
+    register) still is (regression for the narrowing)."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **FIXTURE_BINDINGS,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+            "pkg/__init__.py": "",
+            "pkg/other.py": "X = 1\n",
+        }
+    )
+    T = "tests/test_x.py::"
+    always = T + "test_not_registered"
+
+    def plan_for(path, old, new):
+        repo.git("reset", "-q", "--hard", base)  # each edit on its own
+        head = repo.commit({path: FIXTURE_BINDINGS.get(path, "X = 1\n").replace(old, new)})
+        return repo.plan(base, head, [bench], discover_runners=["pytest"])
+
+    plan = plan_for("tests/conftest.py", "'box'", "'b'")
+    assert selected(plan) == {T + "test_alias", always}
+    plan = plan_for("tests/other/conftest.py", "'engine'", "'e'")
+    assert selected(plan) == {T + "test_imported", T + "test_imported_as", always}
+    plan = plan_for("pkg/other.py", "1", "2")
+    assert selected(plan) == {always}
+    assert "bench.time_noop" in unselected(plan)

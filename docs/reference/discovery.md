@@ -26,7 +26,9 @@ the doctest options in `addopts`.
 - its fixtures, requested by parameter or `usefixtures`, and the fixtures
   those use, resolved the way pytest does: class, then module, then each
   `conftest.py` outward, then plugins listed in `pytest_plugins` and your
-  project's own pytest plugins;
+  project's own pytest plugins. A fixture is found under every name a module
+  binds it to, as in pytest: an alias (`box2 = box`) or an import (`from
+  tests.helpers import engine`), unless the fixture sets its own `name=`;
 - autouse fixtures that apply to it;
 - xunit-style `setup_*` and `teardown_*` functions;
 - its module, and every `conftest.py` on its path with their `pytest_*`

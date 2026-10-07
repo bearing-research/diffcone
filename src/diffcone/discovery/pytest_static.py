@@ -43,7 +43,11 @@ Lifecycle dependencies attached to each test:
   and transitively by other fixtures, resolved in pytest's order: class and
   its in-module bases, module, nearest ``conftest.py`` outward, then
   ``pytest_plugins`` modules within the source roots; a fixture requesting
-  its own name resolves to the next definition outward;
+  its own name resolves to the next definition outward; a module offers a
+  fixture under every name it binds the fixture to (``box2 = box``, ``from
+  pkg.conftest import engine as motor``, a star import), as pytest registers
+  it, except that a fixture with an explicit ``name=`` is offered under that
+  name only;
 * fixtures requested by literal name through ``request.getfixturevalue``;
 * ``autouse`` fixtures visible from the test;
 * the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
@@ -82,7 +86,8 @@ import configparser
 import doctest
 import tomllib
 from collections import Counter
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
 from typing import Any
@@ -593,6 +598,14 @@ class ModuleFacts:
     plugins: list[str] = field(default_factory=list)
     usefixtures: tuple[str, ...] = ()
     setup_functions: list[str] = field(default_factory=list)
+    # Attribute name -> (fixture, whether it names itself): what pytest finds
+    # bound in the module's namespace. Fixtures defined here start it; names
+    # bound to them by alias or import are added by _link_fixtures.
+    fixture_attrs: dict[str, tuple[Fixture, bool]] = field(default_factory=dict)
+    # Module-level bindings that may bind a fixture, in order: ("alias",
+    # name, "", other_name), ("import", name, module, imported_name) and
+    # ("star", "", module, "").
+    bindings: list[tuple[str, str, str, str]] = field(default_factory=list)
 
 
 def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str | None, bool]:
@@ -774,7 +787,9 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
         symbol = parsed.member_id(func.name)
         if is_fixture:
             name = explicit or func.name
-            facts.fixtures[name] = Fixture(name, symbol, autouse, _fixture_requests(func, False))
+            fixture = Fixture(name, symbol, autouse, _fixture_requests(func, False))
+            facts.fixtures[name] = fixture
+            facts.fixture_attrs[func.name] = (fixture, explicit is not None)
         elif func.name.startswith("pytest_"):
             facts.hooks.append(symbol)
             if func.name in COLLECT_HOOKS:
@@ -800,16 +815,40 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             continue
         func = functions[target.id]
         explicit = keyword_value(call, "name")
-        fixture_name = (
+        explicit_name = (
             explicit.value
             if isinstance(explicit, ast.Constant) and isinstance(explicit.value, str)
-            else name
+            else None
         )
+        names_itself = explicit_name is not None
+        fixture_name = explicit_name or name
         autouse_node = keyword_value(call, "autouse")
         autouse = isinstance(autouse_node, ast.Constant) and bool(autouse_node.value)
-        facts.fixtures[fixture_name] = Fixture(
+        fixture = Fixture(
             fixture_name, parsed.member_id(func.name), autouse, _fixture_requests(func, False)
         )
+        facts.fixtures[fixture_name] = fixture
+        facts.fixture_attrs[name] = (fixture, names_itself)
+    # Names bound to a fixture defined elsewhere (``box2 = box``, ``from
+    # pkg.conftest import engine``): pytest registers a fixture under every
+    # name the module binds it to (_link_fixtures resolves them).
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, ast.ImportFrom):
+            source = _absolute_module(parsed, stmt)
+            for alias in stmt.names:
+                if alias.name == "*":
+                    facts.bindings.append(("star", "", source, ""))
+                else:
+                    facts.bindings.append(
+                        ("import", alias.asname or alias.name, source, alias.name)
+                    )
+        elif (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Name)
+        ):
+            facts.bindings.append(("alias", stmt.targets[0].id, "", stmt.value.id))
     for cls in scope_classes(body):
         _collect_class_fixtures(facts, cls, parsed.member_id(cls.name))
     facts.plugins = _plugins_from_body(body)
@@ -948,6 +987,74 @@ def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
     return False
 
 
+def _requested_names(trees: Iterable[ast.Module]) -> set[str]:
+    """Every name a fixture could be requested by in these modules: function
+    parameters, and identifier-like strings (``usefixtures("db")``,
+    ``request.getfixturevalue("db")``). A superset, used only to skip
+    bindings no test can ask for."""
+    names: set[str] = set()
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value.isidentifier():
+                    names.add(node.value)
+    return names
+
+
+def _fixture_bound_to(
+    module: str, attr: str, module_facts, seen: set[tuple[str, str]]
+) -> tuple[Fixture, bool] | None:
+    """The fixture ``module``'s namespace binds to ``attr``, with whether it
+    names itself, following aliases, ``from`` imports and star imports (the
+    last binding of a name wins; a fixture defined in the module wins over
+    any binding)."""
+    if (module, attr) in seen:
+        return None
+    seen.add((module, attr))
+    facts = module_facts(module)
+    if facts is None:
+        return None
+    if attr in facts.fixture_attrs:
+        return facts.fixture_attrs[attr]
+    for kind, bound, source, name in reversed(facts.bindings):
+        if kind == "star":
+            origin = module_facts(source)
+            if origin is not None and attr in _star_names(origin.parsed.tree):
+                return _fixture_bound_to(source, attr, module_facts, seen)
+        elif bound == attr:
+            return _fixture_bound_to(
+                module if kind == "alias" else source, name, module_facts, seen
+            )
+    return None
+
+
+def _link_fixtures(facts: ModuleFacts, module_facts, requested: set[str]) -> None:
+    """Register the fixtures this module binds to names of its own: pytest
+    finds a fixture under every name bound to it in the module's namespace
+    (``box2 = box``, ``from pkg.conftest import engine as motor``), except
+    that a fixture with an explicit ``name=`` is found under that name only.
+    Only names in ``requested`` are followed: any other cannot be asked for,
+    and following it would parse every module a test imports from."""
+    for kind, bound, source, _ in facts.bindings:
+        if kind == "star":
+            origin = module_facts(source)
+            attrs = [n for n in _star_names(origin.parsed.tree) if n in requested] if origin else []
+        else:
+            attrs = [bound] if bound in requested else []
+        for attr in attrs:
+            if attr in facts.fixture_attrs:
+                continue
+            found = _fixture_bound_to(facts.parsed.module, attr, module_facts, set())
+            if found is None:
+                continue
+            fixture, names_itself = found
+            facts.fixture_attrs[attr] = found
+            registered = fixture.name if names_itself else attr
+            facts.fixtures.setdefault(registered, replace(fixture, name=registered))
+
+
 def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
     """Fixtures and hooks a plugin module exposes by importing them from
     submodules (``from .plugin import mocker``): pytest registers whatever the
@@ -1041,6 +1148,21 @@ def discover_pytest(
                 return facts_by_module[name]
         return None
 
+    # Names bound to fixtures defined elsewhere. Plugin modules are linked
+    # where plugin_facts finds them, with their own requests added.
+    requested = _requested_names(f.parsed.tree for f in facts_by_path.values())
+    linked: set[str] = set()
+
+    def link(facts: ModuleFacts) -> ModuleFacts:
+        if facts.parsed.module not in linked:
+            linked.add(facts.parsed.module)
+            requested.update(_requested_names([facts.parsed.tree]))
+            _link_fixtures(facts, module_facts, requested)
+        return facts
+
+    for facts in list(facts_by_path.values()):
+        link(facts)
+
     def plugin_facts(
         declared: list[str], where: str, kind: str = "pytest_plugins"
     ) -> list[ModuleFacts]:
@@ -1062,8 +1184,8 @@ def discover_pytest(
                     )
                 )
                 continue
-            found.append(facts)
-            found.extend(_reexported_facts(facts, module_facts))
+            found.append(link(facts))
+            found.extend(link(sub) for sub in _reexported_facts(facts, module_facts))
         return found
 
     global_plugins: list[ModuleFacts] = []

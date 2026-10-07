@@ -21,7 +21,8 @@ The first release.
   (1), no plan (2) and a target list that may be short of what the runner
   collects (3).
 - Static discovery of pytest tests (configuration, collection rules,
-  inheritance, star-imported suites, the fixture chain, doctests) and ASV
+  inheritance, star-imported suites, the fixture chain with fixtures bound
+  by alias or import, doctests) and ASV
   benchmarks, without importing project code; what it cannot see it
   reports. `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.
