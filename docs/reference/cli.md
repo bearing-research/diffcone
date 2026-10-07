@@ -23,9 +23,11 @@ could skip tests. `3` wins when both apply. A manifest written by
 `discover` keeps its notes, so a plan made from it exits `3` as well.
 
 `run` exits with the runner's own code (0 when nothing was selected, or
-with `--dry-run`). It refuses with `2` when the working tree differs from
-the snapshot the plan analysed (unless `--allow-mismatched-worktree`), and
-with `3` when discovery may be incomplete (unless
+with `--dry-run`; pytest's `5`, no test ran, counts as `0`), and with `3`
+when a selected test was not collected. It refuses with `2` when the
+working tree differs from the snapshot the plan analysed (unless
+`--allow-mismatched-worktree`) or `--repo` is not the top of a git
+repository, and with `3` when discovery may be incomplete (unless
 `--allow-incomplete-discovery`).
 
 `validate` and `corpus` exit `0` when every outcome change was selected,
@@ -75,7 +77,7 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 | `--head` `HEAD` |  | **Required.** Head snapshot: a git revision, INDEX or WORKTREE. |
 | `--targets` `TARGETS` |  | Path to a JSON target manifest. |
 | `--runner` `RUNNER` | `pytest` | Which runner to execute. One of `pytest`, `asv`. |
-| `--command` `COMMAND` |  | Runner command line (default: "python -m pytest" or "asv run"); run in --repo. |
+| `--command` `COMMAND` |  | Runner command line (default: "python -m pytest", or "asv run --python=same", which benchmarks the checkout in the current environment); run in --repo. |
 | `--dry-run` |  | Print the command instead of running. |
 | `--allow-mismatched-worktree` |  | Run even when the checkout is not the snapshot the plan analysed. |
 | `--allow-incomplete-discovery` |  | Run even when discovery reports tests the runner may collect that are not targets. |

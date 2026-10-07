@@ -7,6 +7,7 @@ test or benchmark whose outcome changes was not selected.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -948,3 +949,192 @@ def test_d10_asv_names_as_asv_does(repo):
         "bench_a.Suite.time_a",
         "bench_a.Suite.time_alias",
     } <= targets
+
+
+# R: running and checking.
+
+PYTEST = f"{sys.executable} -m pytest -p no:cacheprovider"
+CALC = {
+    "calc/__init__.py": "",
+    "calc/ops.py": "def add(a, b):\n    return a + b\n\n\ndef other():\n    return 1\n",
+    "tests/__init__.py": "",
+    "tests/test_ops.py": (
+        "import os\n\nfrom calc.ops import add, other\n\n\n"
+        "def test_x():\n    if os.environ.get('FLAG') == 'on':\n        assert other() == 1\n\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+    ),
+}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monkeypatch, capsys):
+    """Recorded with FLAG off, test_x never called other(); run with FLAG on,
+    the evidence selects nothing for a change to other(), but it does not
+    apply here: the static plan runs, and test_x fails."""
+    base = repo.commit(CALC)
+    monkeypatch.setenv("FLAG", "off")
+    repo.collect(env_variables=["FLAG"])
+    # A different size: a same-size edit within the second of the recording
+    # run would reuse the stale .pyc (Python checks mtime and size).
+    ops = CALC["calc/ops.py"].replace("return 1", "return 1 + 1")
+    head = repo.commit({"calc/ops.py": ops})
+    monkeypatch.setenv("FLAG", "on")
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--evidence",
+            "auto",
+            "--command",
+            PYTEST,
+            "--",
+            "-q",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert "environment differs" in err
+    assert code == 1  # test_x ran under the static plan, and failed
+
+
+def test_r2_a_symlinked_repo_path_selects_the_right_tests(repo, tmp_path, capfd):
+    base = repo.commit({**CALC})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "b + a")})
+    link = tmp_path / "link"
+    link.symlink_to(repo.path)
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(link),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST,
+            "--",
+            "-q",
+        ]
+    )
+    out = capfd.readouterr()
+    assert code == 0, out.err
+    assert "1 passed" in out.out and "did not collect" not in out.err
+
+
+def test_r3_r7_run_exit_codes():
+    from diffcone.cli import _run_exit_code
+
+    assert _run_exit_code(0, missing=True) == 3  # a selected test never ran
+    assert _run_exit_code(5, missing=True) == 3
+    assert _run_exit_code(1, missing=True) == 1  # the runner's failure wins
+    assert _run_exit_code(5, missing=False) == 0  # every selected test skipped at import
+    assert _run_exit_code(1, missing=False) == 1
+
+
+def test_r4_a_repo_subdirectory_is_refused(repo, capsys):
+    repo.commit({"proj/calc/__init__.py": "", "proj/calc/ops.py": "X = 1\n"})
+    code = main(
+        [
+            "plan",
+            "--repo",
+            str(repo.path / "proj"),
+            "--base",
+            "HEAD",
+            "--head",
+            "HEAD",
+            "--discover",
+            "pytest",
+        ]
+    )
+    assert code == 2
+    assert "--source-root proj" in capsys.readouterr().err
+
+
+def test_r5_validate_sees_outcomes_whatever_the_projects_verbosity(repo, capsys):
+    from diffcone.execution import validate_pytest
+
+    base = repo.commit({**CALC, "pyproject.toml": '[tool.pytest.ini_options]\naddopts = "-q"\n'})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "a + b + 1")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    result = validate_pytest(plan, repo=repo.path, command=PYTEST)
+    changed = {o.runner_id for o in result.outcomes if o.changed}
+    assert changed == {"tests/test_ops.py::test_add"}
+
+
+def test_r6_a_failure_diffcones_run_did_not_run_fails_the_check(tmp_path):
+    from diffcone.check import check, load_plan, read_junit
+
+    plan = {
+        "status": "complete",
+        "discovery_incomplete": False,
+        "selected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+        "unselected_targets": [],
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+    (tmp_path / "full.xml").write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_x">'
+        '<failure message="boom"/></testcase></testsuite></testsuites>'
+    )
+    (tmp_path / "dc.xml").write_text("<testsuites><testsuite/></testsuites>")
+    report = check(
+        load_plan(tmp_path / "plan.json"),
+        read_junit(tmp_path / "full.xml"),
+        runs={"diffcone": read_junit(tmp_path / "dc.xml")},
+    )
+    assert report.not_run == ["tests/test_a.py::test_x"]
+    assert not report.ok
+
+
+def test_r8_doctests_asked_for_after_the_separator_are_planned_and_run(repo, capfd):
+    base = repo.commit(
+        {
+            **CALC,
+            "calc/ops.py": CALC["calc/ops.py"].replace(
+                "def other():\n", "def other():\n    '''\n    >>> other()\n    1\n    '''\n"
+            ),
+        }
+    )
+    ops = repo.git("show", "HEAD:calc/ops.py")
+    head = repo.commit({"calc/ops.py": ops.replace("    return 1", "    return 2")})
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST,
+            "--",
+            "-q",
+            "--doctest-modules",
+        ]
+    )
+    out = capfd.readouterr()
+    assert code == 1, out.err  # the doctest ran, and failed
+    assert "calc.ops.other" in out.out
+
+
+def test_r8_unknown_collected_tests_are_run_not_dropped(repo, capsys):
+    from diffcone.execution import run_selected
+
+    base = repo.commit(CALC)
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "b + a")})
+    plan = repo.plan(
+        base, head, [py_target("tests/test_ops.py::test_add", "tests.test_ops.test_add")]
+    )
+    result = run_selected(plan, "pytest", cwd=repo.path, command=PYTEST, extra=["-q"])
+    assert result.unknown == ["tests/test_ops.py::test_x"]

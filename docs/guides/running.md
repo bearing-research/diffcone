@@ -49,7 +49,9 @@ selected, and exits with `1` if there is one. Options:
 - `--baseline base.xml` takes a run from before the change. Tests that
   failed there too are reported as already failing, not as misses.
 - `--run NAME=JUNIT` adds a selective run to compare on the same failures:
-  diffcone's own run of the plan, or another test-selection tool's.
+  diffcone's own run of the plan, or another test-selection tool's. Name
+  diffcone's own run `diffcone` (`--run diffcone=diffcone.xml`): a new
+  failure it didn't execute is a miss too, even if the plan selected it.
 - `--format markdown` writes a summary table for a CI job summary, and
   `--format json` a report for scripts.
 

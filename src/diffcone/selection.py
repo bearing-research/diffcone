@@ -14,11 +14,19 @@ file, as with the recorder), so it imports nothing of diffcone. Settings, from
 the environment:
 
 * ``DIFFCONE_SELECT``: a directory holding ``selected``, one selected test per
-  line (``path::Class::test``, parameter cases folded); each process writes
-  ``missing-<pid>`` there, the selected tests it did not collect, leaving out
-  those under a directory or module that skipped at collection;
+  line (``path::Class::test``, parameter cases folded), and ``targets``, every
+  target of the plan; each process writes ``missing-<pid>`` there, the
+  selected tests it did not collect, leaving out those under a directory or
+  module that skipped at collection, and ``unknown-<pid>``, the collected
+  tests that are no target at all: those are kept and run, since the plan
+  cannot say whether a change reaches them (a plugin's own collection, an
+  option discovery did not see);
 * ``DIFFCONE_COLLECT_ROOT``: the repository, which those paths are relative
-  to (pytest's own node ids are relative to its rootdir, which may differ).
+  to (pytest's own node ids are relative to its rootdir, which may differ);
+* ``DIFFCONE_OUTCOMES``: a directory; each process writes ``outcomes-<pid>``,
+  one ``nodeid<TAB>OUTCOME`` line per report (``PASSED``, ``FAILED``,
+  ``SKIPPED``, ``XFAIL``, ``XPASS``, ``ERROR``), as ``validate`` reads them:
+  pytest's console output depends on the project's verbosity options.
 """
 
 from __future__ import annotations
@@ -29,12 +37,20 @@ import re
 import pytest
 
 DIRECTORY = os.environ.get("DIFFCONE_SELECT")
-ROOT = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
+OUTCOMES = os.environ.get("DIFFCONE_OUTCOMES")
+_ROOT = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
+# The repository as given and with symlinks resolved: pytest reports paths
+# under whichever its rootdir is, and a linked or relative ``--repo`` differs.
+ROOTS = tuple(dict.fromkeys([os.path.realpath(_ROOT), os.path.abspath(_ROOT)]))
 skipped: list[str] = []  # repository-relative paths of collectors that skipped
 
 
 def _relative(where) -> str:
-    return os.path.relpath(str(where), ROOT).replace(os.sep, "/")
+    path = os.path.abspath(str(where))
+    for root in ROOTS:
+        if path.startswith(root + os.sep):
+            return os.path.relpath(path, root).replace(os.sep, "/")
+    return os.path.relpath(os.path.realpath(path), ROOTS[0]).replace(os.sep, "/")
 
 
 def _key(item) -> str:
@@ -62,14 +78,24 @@ def pytest_collection_modifyitems(session, config, items):
         return
     with open(os.path.join(DIRECTORY, "selected"), encoding="utf-8") as f:
         wanted = {line for line in f.read().splitlines() if line}
-    keep, drop, found = [], [], set()
+    targets_file = os.path.join(DIRECTORY, "targets")
+    known: set[str] | None = None
+    if os.path.exists(targets_file):
+        with open(targets_file, encoding="utf-8") as f:
+            known = {line for line in f.read().splitlines() if line}
+    keep, drop, found, unknown = [], [], set(), set()
     for item in items:
         key = _key(item)
         if key in wanted:
             keep.append(item)
             found.add(key)
+        elif known is not None and key not in known:
+            keep.append(item)
+            unknown.add(key)
         else:
             drop.append(item)
+    with open(os.path.join(DIRECTORY, f"unknown-{os.getpid()}"), "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(unknown)))
     if drop:
         config.hook.pytest_deselected(items=drop)
         items[:] = keep
@@ -85,3 +111,23 @@ def pytest_collection_modifyitems(session, config, items):
                 )
             )
         )
+
+
+def pytest_runtest_logreport(report):
+    if not OUTCOMES:
+        return
+    outcome = None
+    xfail = hasattr(report, "wasxfail")
+    if report.when == "call":
+        if xfail:
+            outcome = "XPASS" if report.passed else "XFAIL"
+        else:
+            outcome = report.outcome.upper()
+    elif report.failed:
+        outcome = "ERROR"  # in setup or teardown
+    elif report.when == "setup" and report.skipped:
+        outcome = "XFAIL" if xfail else "SKIPPED"
+    if outcome is not None:
+        path = os.path.join(OUTCOMES, f"outcomes-{os.getpid()}")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{report.nodeid}\t{outcome}\n")

@@ -173,7 +173,10 @@ def test_run_executes_only_selected_targets(repo, capsys):
         ]
     )
     assert code == 0
-    assert capsys.readouterr().out.strip() == "asv run --bench '^(bench\\.time_add)($|\\()'"
+    assert (
+        capsys.readouterr().out.strip()
+        == "asv run --python=same --bench '^(bench\\.time_add)($|\\()'"
+    )
 
 
 # Roots that leave the repository's top-level ``data.txt`` outside the
@@ -1114,7 +1117,8 @@ def test_run_warns_about_selected_targets_pytest_did_not_collect(repo, capsys):
         ]
     )
     args = ["run", "--repo", str(repo.path), "--base", base, "--head", head]
-    assert main([*args, "--targets", str(manifest), "--command", PYTEST, "--", "-q"]) == 0
+    # A selected test that did not run makes the run inconclusive (audit R3).
+    assert main([*args, "--targets", str(manifest), "--command", PYTEST, "--", "-q"]) == 3
     err = capsys.readouterr().err
     assert "pytest did not collect 1 selected target(s)" in err
     assert "tests/test_ops.py::test_gone" in err

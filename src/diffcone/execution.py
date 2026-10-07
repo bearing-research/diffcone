@@ -41,7 +41,7 @@ from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
 from diffcone.snapshot import GitError, _git, resolve_commit, split_root
 
-DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run"}
+DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run --python=same"}
 
 # Parameter ids may contain spaces, pipes and nested brackets
 # (``test_x[choices4-[TEXT: a|b]] PASSED [ 12%]``), so the node id is
@@ -112,6 +112,9 @@ class RunResult:
     # Selected pytest targets that pytest did not collect (discovery and
     # collection disagree): a node id on the command line used to fail loudly.
     missing: list[str] = field(default_factory=list)
+    # Collected tests that are no target of the plan: kept and run (see
+    # selection.py), and reported.
+    unknown: list[str] = field(default_factory=list)
 
 
 def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
@@ -188,6 +191,10 @@ def run_selected(
         Path(tmp, "selected").write_text(
             "".join(f"{t.runner_id}\n" for t in selected), encoding="utf-8"
         )
+        every = [d.target for d in plan.decisions if d.target.runner == runner]
+        Path(tmp, "targets").write_text(
+            "".join(f"{t.runner_id}\n" for t in every), encoding="utf-8"
+        )
         result.command = [
             *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
             "-p",
@@ -204,6 +211,14 @@ def run_selected(
         ]
         if reports:
             result.missing = sorted(set.intersection(*reports))
+        result.unknown = sorted(
+            {
+                line
+                for f in Path(tmp).glob("unknown-*")
+                for line in f.read_text("utf-8").split("\n")
+                if line
+            }
+        )
     return result
 
 
@@ -315,6 +330,18 @@ def parse_pytest_verbose(output: str) -> dict[str, str]:
     return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
 
 
+def parse_outcome_lines(lines: list[str]) -> dict[str, str]:
+    """``parse_pytest_verbose`` for the selection plugin's outcome lines
+    (``nodeid<TAB>OUTCOME``): the same fold, the same order."""
+    order = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
+    seen: dict[str, set[str]] = {}
+    for line in lines:
+        nodeid, _, outcome = line.rpartition("\t")
+        if nodeid and outcome in order:
+            seen.setdefault(fold_nodeid(nodeid), set()).add(outcome)
+    return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
+
+
 class _Checkout:
     """A directory holding a snapshot: a temporary detached worktree for a
     commit, or the repository itself for WORKTREE."""
@@ -406,11 +433,18 @@ def _run_full_pytest(
         "-v",
         "-p",
         "no:cacheprovider",
+        "-p",
+        SELECT_PLUGIN,
         "--no-header",
         "-rN",
     ]
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
-        env = _checkout_env(cwd, list(source_roots))
+        # Outcomes come from the selection plugin, not the console: a project
+        # whose addopts carry ``-q`` prints no per-test lines at all.
+        env = plugin_environment(_checkout_env(cwd, list(source_roots)), None, cwd)
+        outcomes_dir = Path(tmp) / "outcomes"
+        outcomes_dir.mkdir()
+        env["DIFFCONE_OUTCOMES"] = str(outcomes_dir)
         if hash_seed is not None:
             # An evidence plan assumed the recorded hash seed; check it under that.
             env["PYTHONHASHSEED"] = hash_seed
@@ -451,6 +485,8 @@ def _run_full_pytest(
                 f"cannot run {argv[0]!r}: {exc}; a relative path in --command is resolved "
                 "against the current directory and the repository"
             ) from exc
+        finally:
+            shutil.rmtree(env["PYTHONPATH"].split(os.pathsep)[-1], ignore_errors=True)
         log = proc.stdout + proc.stderr
         if coverage and not (db and db.exists()):
             raise GitError(
@@ -469,7 +505,18 @@ def _run_full_pytest(
                 f"({PYTEST_EXIT.get(proc.returncode, 'unknown')}), so there are no outcomes to "
                 f"compare\n{log[-2000:]}"
             )
-        yield _SuiteRun(parse_pytest_verbose(proc.stdout), log, proc.returncode, db)
+        lines = [
+            line
+            for f in sorted(outcomes_dir.glob("outcomes-*"))
+            for line in f.read_text("utf-8").splitlines()
+        ]
+        if not lines:
+            raise GitError(
+                f"the suite ran ({argv[0]!r} exited {proc.returncode}) but reported no test "
+                "outcomes: diffcone's outcome plugin did not load, so there is nothing to "
+                f"compare\n{log[-2000:]}"
+            )
+        yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db)
 
 
 # --------------------------------------------------------------------------- coverage
@@ -1308,7 +1355,9 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     (link_dir / f"{SELECT_PLUGIN}.py").symlink_to(Path(__file__).parent / "selection.py")
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join([*([existing] if existing else []), str(link_dir)])
-    env["DIFFCONE_COLLECT_ROOT"] = str(root)
+    # Absolute and with symlinks resolved, as pytest reports a test's path:
+    # a relative or linked ``--repo`` would otherwise match nothing.
+    env["DIFFCONE_COLLECT_ROOT"] = str(Path(root).resolve())
     if out is not None:
         env["DIFFCONE_COLLECT_OUT"] = str(out)
     return env
@@ -1488,14 +1537,26 @@ def run_with_evidence(
                 dry_run=dry_run,
                 env=env,
             )
+            if not dry_run and not result.selected:
+                # Nothing selected is a verdict of the evidence too: check
+                # that it applies to this environment before trusting it.
+                argv = build_command("pytest", [], command, ["-p", PLUGIN, *(extra or [])])
+                subprocess.run(argv, cwd=cwd, env={**env, "DIFFCONE_CHECK_ONLY": "1"})
         finally:
             shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
-        if not report.exists():
+        checked = json.loads(report.read_text("utf-8")) if report.exists() else None
+        if dry_run or (checked is not None and checked.get("match")):
             run = EvidenceRun(result)
             if advance_from is not None and out is not None and not dry_run:
                 _advance(run, plan, advance_from, out, cwd)
             return run
-        met = json.loads(report.read_text("utf-8"))
+        # A mismatch, or no report at all (the plugin did not load, a wrapper
+        # dropped the variables): the evidence does not vouch for this run.
+        met = (
+            checked["environment"]
+            if checked is not None
+            else {"unchecked": "the environment check did not run"}
+        )
     static = static_plan()
     if static.incomplete_discovery and not allow_incomplete:
         # The evidence may have settled what the static plan cannot: pytest

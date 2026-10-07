@@ -27,6 +27,12 @@ inputs:
       Install diffcone from this git ref instead of from the action's own copy
       (by default the version of diffcone is the version of the action).
     default: ""
+  allow-incomplete-discovery:
+    description: >-
+      Run the selection even when discovery says pytest may collect tests that
+      are not targets (diffcone run --allow-incomplete-discovery). Tests pytest
+      collects that the plan does not know are run as well.
+    default: "false"
 outputs:
   selected:
     description: How many tests the plan selected.
@@ -63,6 +69,7 @@ runs:
         PYTEST_ARGS: ${{ inputs.pytest-args }}
         ROOTS: ${{ inputs.source-roots }}
         BASE: ${{ inputs.base }}
+        ALLOW_INCOMPLETE: ${{ inputs.allow-incomplete-discovery }}
       run: |
         roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
         eval "args=($PYTEST_ARGS)"
@@ -79,9 +86,10 @@ runs:
         fi
         cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
         diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" -o diffcone-results/plan.json || [ $? -le 3 ]
+          "${evidence[@]}" -o diffcone-results/plan.json || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
         python3 -c "import json; p = json.load(open('diffcone-results/plan.json')); \
           print('selected=%d' % len(p['selected_targets']))" >> "$GITHUB_OUTPUT"
+        allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)
         diffcone run --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" --command "$COMMAND" -- \
+          "${evidence[@]}" "${allow[@]}" --command "$COMMAND" -- \
           "${args[@]}" --junitxml=diffcone-results/diffcone.xml

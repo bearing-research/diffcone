@@ -17,7 +17,8 @@ only the selected targets would skip tests. 3 wins when both apply.
 --allow-incomplete-discovery is given, and refuses (exit 2) when the working
 tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
-the runner's exit code (0 when nothing was selected or with --dry-run). ``validate`` exits
+the runner's exit code (0 when nothing was selected or with --dry-run; pytest's
+5 counts as 0), or 3 when a selected target was not collected. ``validate`` exits
 0 when every outcome change was selected, 1 when some were missed, 2 on
 errors. ``check`` exits 0 when every new failure of the full run was
 selected, 1 when the plan missed one, 2 when an input cannot be read.
@@ -28,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import subprocess
 import sys
 import time
 import traceback
@@ -167,7 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--command",
         dest="runner_command",
         metavar="COMMAND",
-        help='runner command line (default: "python -m pytest" or "asv run"); run in --repo',
+        help=(
+            'runner command line (default: "python -m pytest", or "asv run --python=same", '
+            "which benchmarks the checkout in the current environment); run in --repo"
+        ),
     )
     r.add_argument("--dry-run", action="store_true", help="print the command instead of running")
     r.add_argument(
@@ -529,9 +534,50 @@ def _collect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_exit_code(returncode: int, missing: bool) -> int:
+    """``run``'s exit code from the runner's. Selected targets that did not run
+    make it 3 (the run may have skipped tests) unless the runner failed on its
+    own; pytest's 5 (no tests ran) is 0 when every selected test was collected
+    and skipped or deselected by the project's own options."""
+    if missing:
+        return returncode if returncode not in (0, 5) else 3
+    return 0 if returncode == 5 else returncode
+
+
+def _repo_problem(repo: str) -> str | None:
+    """Why ``--repo`` cannot be used: it must be the top level of a git
+    working tree, since module names and runner ids are relative to it and a
+    subdirectory would silently analyse something else."""
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None  # not a repository: the command reports that itself
+    if top and Path(top).resolve() != Path(repo).resolve():
+        try:
+            sub = Path(repo).resolve().relative_to(Path(top).resolve()).as_posix()
+        except ValueError:
+            sub = repo
+        return (
+            f"--repo {repo} is inside the repository at {top}, not its top level; pass "
+            f"--repo {top} (and --source-root {sub} to analyse that directory)"
+        )
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "repo", None) is not None:
+        problem = _repo_problem(args.repo)
+        if problem:
+            print(f"diffcone: error: {problem}", file=sys.stderr)
+            return 2
     if args.command == "evidence":
         return _list_evidence(Path(args.repo))
     if args.command == "collect":
@@ -543,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
     options = DiscoveryOptions(
         external_fixtures=frozenset(args.external_fixtures),
         well_known_fixtures=not args.no_well_known_fixtures,
+        runner_args=tuple(getattr(args, "runner_args", None) or ()),
     )
 
     cache = None
@@ -668,9 +715,16 @@ def main(argv: list[str] | None = None) -> int:
                     extra=args.runner_args,
                     dry_run=args.dry_run,
                 )
+            if outcome.unknown:
+                print(
+                    f"diffcone: pytest collected {len(outcome.unknown)} test(s) the plan does not "
+                    f"know (e.g. {outcome.unknown[0]}); they were run too, since the plan cannot "
+                    "say whether the change reaches them",
+                    file=sys.stderr,
+                )
             if outcome.missing:
                 print(
-                    f"diffcone: warning: pytest did not collect {len(outcome.missing)} selected "
+                    f"diffcone: error: pytest did not collect {len(outcome.missing)} selected "
                     f"target(s), so they did not run (e.g. {outcome.missing[0]}); discovery "
                     "and collection disagree",
                     file=sys.stderr,
@@ -681,12 +735,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"selected (plan {status})",
                 file=sys.stderr,
             )
-            if not outcome.selected:
+            if args.dry_run:
+                if not outcome.selected:
+                    print("diffcone: nothing selected; not running", file=sys.stderr)
+                    return 0
+                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
+            if outcome.returncode is None:
+                # Nothing ran: an empty selection (a whole-suite fallback ran
+                # something even when no static target was selected).
                 print("diffcone: nothing selected; not running", file=sys.stderr)
                 return 0
-            if args.dry_run:
-                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
-            return outcome.returncode or 0
+            return _run_exit_code(outcome.returncode, bool(outcome.missing))
         if args.command == "validate":
             result = build_plan(load_evidence())
             validation = validate_pytest(

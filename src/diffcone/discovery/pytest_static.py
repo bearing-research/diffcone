@@ -508,7 +508,19 @@ def _load_toml(raw: bytes) -> dict[str, Any]:
         return {}
 
 
-def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
+# pytest options that change what is collected in ways discovery does not
+# model: given after ``--``, they make the target list possibly short.
+UNMODELLED_COLLECTION_OPTIONS = (
+    "-c",
+    "--config-file",
+    "-o",
+    "--override-ini",
+    "--rootdir",
+    "--pyargs",
+)
+
+
+def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) -> dict[str, Any]:
     """Return python_files/classes/functions/testpaths and where they came from."""
     config: dict[str, Any] = {
         "source": None,
@@ -554,7 +566,9 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         section = _ini_section(files["setup.cfg"], "tool:pytest")
         if section is not None:
             config["source"] = "setup.cfg"
-    if section:
+    if section is None and runner_args:
+        section = {}
+    if section is not None and (section or runner_args):
         for key in (
             "python_files",
             "python_classes",
@@ -566,7 +580,7 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
                 values = _split(section[key])
                 if values:
                     config[key] = values
-        addopts = _split(section.get("addopts", ""))
+        addopts = _split(section.get("addopts", "")) + tuple(runner_args)
         config["addopts_plugins"] = tuple(_addopts_plugins(addopts))
         config["doctest_modules"] = "--doctest-modules" in addopts
         modes = _option_values(addopts, "--import-mode")
@@ -1335,7 +1349,20 @@ def discover_pytest(
     snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
 ) -> DiscoveryResult:
     result = DiscoveryResult(runner=RUNNER)
-    config = read_pytest_config(snapshot)
+    config = read_pytest_config(snapshot, options.runner_args)
+    for arg in options.runner_args:
+        option = arg.split("=", 1)[0]
+        if option in UNMODELLED_COLLECTION_OPTIONS or (
+            option.startswith("-o") and option != "-o" and not option.startswith("--")
+        ):
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "unmodelled_runner_option",
+                    f"the run passes {arg!r} to pytest, which changes what it collects in a way "
+                    "discovery does not model",
+                )
+            )
     result.config = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()}
     python_files = tuple(config["python_files"])
     # ``testpaths`` as pytest uses it: entries that exist (when none does,

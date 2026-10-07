@@ -129,6 +129,10 @@ class Failure:
     already: bool  # the baseline run failed it too
 
 
+# The ``--run`` name of diffcone's own selective run: its misses fail the check.
+OWN_RUN = "diffcone"
+
+
 @dataclass
 class RunReport:
     name: str
@@ -157,8 +161,15 @@ class CheckReport:
         return [f for f in self.failures if not f.selected and not f.already]
 
     @property
+    def not_run(self) -> list[str]:
+        """New failures diffcone's own selective run (``--run diffcone=...``)
+        did not run: the plan may have selected them, but they were never
+        executed (collection disagreed, a fallback ran something else)."""
+        return [t for r in self.runs if r.name == OWN_RUN for t in r.misses]
+
+    @property
     def ok(self) -> bool:
-        return not self.misses
+        return not self.misses and not self.not_run
 
 
 def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str]]:
@@ -272,6 +283,7 @@ def load_plan(path: str | Path) -> dict:
 def to_dict(report: CheckReport) -> dict:
     return {
         "ok": report.ok,
+        "not_run": report.not_run,
         "plan": {
             "status": report.plan_status,
             "discovery_incomplete": report.discovery_incomplete,
@@ -339,13 +351,18 @@ def to_text(report: CheckReport) -> str:
         )
         lines.extend(f"  NOT RUN {t}" for t in r.misses)
         lines.extend(f"  DISAGREES {t}" for t in r.disagreements)
-    lines.append("OK: every new failure was selected" if report.ok else "MISS")
+    if report.not_run:
+        lines.append(
+            f"diffcone's run did not run {len(report.not_run)} new failure(s) (see NOT RUN above)"
+        )
+    lines.append("OK: every new failure was selected and run" if report.ok else "MISS")
     return "\n".join(lines) + "\n"
 
 
 def to_markdown(report: CheckReport) -> str:
     new = [f for f in report.failures if not f.already]
-    verdict = "no miss" if report.ok else f"**{len(report.misses)} missed**"
+    missed = len(report.misses) + len(report.not_run)
+    verdict = "no miss" if report.ok else f"**{missed} missed**"
     lines = [
         f"### diffcone check: {verdict}",
         "",

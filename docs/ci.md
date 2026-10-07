@@ -111,8 +111,10 @@ write JUnit XML (`--junitxml=full.xml`) and upload it, then add:
           full: full/full.xml
 ```
 
-The check writes its result to the job summary. It doesn't fail the
-workflow unless you set `fail-on-miss: true`. Tests that already failed in
+The check writes its result to the job summary. A miss is a new failure
+of the full run that the plan didn't select, or that diffcone's own run
+didn't execute. It doesn't fail the workflow unless you set
+`fail-on-miss: true`. Tests that already failed in
 the nightly run are reported as already failing, not as misses.
 
 ## How the cache is shared
@@ -143,7 +145,9 @@ unchanged files.
 on, see [execution evidence](guides/evidence.md#run-with-a-recording)) and
 `junit` (where to keep the recording run's JUnit XML; default
 `.diffcone/baseline.xml`). `run` also takes `base` (default `HEAD^1`, the
-target branch of the pull request's merge commit).
+target branch of the pull request's merge commit) and
+`allow-incomplete-discovery` (default `false`; see
+[when the target list may be short](reference/discovery.md#when-the-target-list-may-be-short)).
 
 `check` takes `full` (required: the full run's JUnit XML), `results` (the
 directory `run` wrote; default `diffcone-results`), `others` (more

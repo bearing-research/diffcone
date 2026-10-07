@@ -42,9 +42,12 @@ Environment variables:
                                what tests do (pandas' ``PANDAS_FUTURE``),
                                recorded with the environment and checked
 ``DIFFCONE_CHECK_ENV``         check mode: the environment hash evidence was
-                               recorded under; on a mismatch the plugin
-                               writes ``DIFFCONE_CHECK_REPORT`` and stops the
-                               session before any test runs
+                               recorded under; the plugin always writes
+                               ``DIFFCONE_CHECK_REPORT`` (``{"match": bool,
+                               "environment": {...}}``) and, on a mismatch,
+                               stops the session before any test runs
+``DIFFCONE_CHECK_ONLY``        with check mode: stop after the check (the
+                               evidence plan selected nothing to run)
 
 Files written per process: ``process-<pid>.json`` (code table, import-time
 records, environment, errors) and ``tests-<pid>.bin`` (length-prefixed
@@ -480,15 +483,20 @@ def pytest_configure(config):
     expected = os.environ.get("DIFFCONE_CHECK_ENV")
     if expected:
         env = environment()
-        if environment_hash(env) != expected:
-            report = os.environ.get("DIFFCONE_CHECK_REPORT")
-            if report:
-                with open(report, "w") as f:
-                    json.dump(env, f)
+        match = environment_hash(env) == expected
+        # Written whether or not it matches: a run without a report was not
+        # checked, and diffcone does not trust its evidence plan.
+        report = os.environ.get("DIFFCONE_CHECK_REPORT")
+        if report:
+            with open(report, "w") as f:
+                json.dump({"match": match, "environment": env}, f)
+        if not match:
             pytest.exit(
                 "diffcone: the environment differs from the one the evidence was recorded in",
                 returncode=4,
             )
+        if os.environ.get("DIFFCONE_CHECK_ONLY"):
+            pytest.exit("diffcone: the environment matches the evidence", returncode=0)
     if OUT is not None:
         try:
             os.makedirs(OUT, exist_ok=True)

@@ -57,6 +57,10 @@ class DiscoveryOptions:
     # Consult the well-known plugin fixture table; every assumed name is
     # reported in an ``external_fixture`` discovery note.
     well_known_fixtures: bool = True
+    # pytest options the run adds after ``--``, read as if they were in
+    # ``addopts`` (``--doctest-modules`` collects doctests; options discovery
+    # cannot model make it incomplete).
+    runner_args: tuple[str, ...] = ()
 
 
 # Note kinds that mean the target list may be short of what the runner
@@ -77,6 +81,8 @@ INCOMPLETE_NOTE_KINDS = frozenset(
         # A module or class attribute with a test's name bound to something
         # discovery cannot follow (``TestMachine = Machine.TestCase``).
         "unmodelled_test_binding",
+        # An option given to pytest after ``--`` that discovery cannot model.
+        "unmodelled_runner_option",
         # Evidence mode: pytest collected tests at the recorded commit that
         # were not targets there.
         "collected_not_target",

@@ -66,17 +66,17 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 
 | id | finding | status |
 |---|---|---|
-| R1 | `run --evidence` skips the environment check when the evidence plan selects nothing ("nothing selected; not running", exit 0) though the environment differs from the recording; the CI action takes this path. | open |
-| R2 | The selection plugin compares paths against an unresolved root: a relative or symlinked `--repo` deselects every test (exit 5); `collect --repo <relative>` aborts with a false "installed copy" error. | open |
-| R3 | Selected targets that did not run are a warning only; `run` exits with pytest's code. | open |
-| R4 | `--repo` naming a subdirectory of a git repository silently analyses the top level (wrong module names, changes missed). | open |
-| R5 | `validate`/`corpus` parse verbose output: with `-q` in addopts nothing is parsed and they report OK. | open |
-| R6 | `check` ignores misses of diffcone's own run (`NOT RUN`) in its verdict; the run action's plan.json can differ from the plan `run` executed (fallbacks). | open |
-| R7 | Every selected test in a module skipped at import (`importorskip`) makes `run` exit 5 (a false failure). | open |
-| R8 | pytest options after `--` that widen collection (`--doctest-modules`) are invisible to discovery and their tests are deselected. | open |
-| R9 | `run`'s whole-suite fallback with 0 static pytest targets prints "nothing selected; not running" and returns 0 although the suite ran (plausible). | plausible |
-| R10 | Actions accept `diffcone plan` exit 2 (`|| [ $? -le 3 ]`); `run` action has no `allow-incomplete-discovery` input. | open |
-| R11 | Default `asv run` benchmarks the configured branch, not the checkout (plausible). | plausible |
+| R1 | `run --evidence` skips the environment check when the evidence plan selects nothing ("nothing selected; not running", exit 0) though the environment differs from the recording; the CI action takes this path. | fixed (run batch) |
+| R2 | The selection plugin compares paths against an unresolved root: a relative or symlinked `--repo` deselects every test (exit 5); `collect --repo <relative>` aborts with a false "installed copy" error. | fixed (run batch) |
+| R3 | Selected targets that did not run are a warning only; `run` exits with pytest's code. | fixed (run batch) |
+| R4 | `--repo` naming a subdirectory of a git repository silently analyses the top level (wrong module names, changes missed). | fixed (run batch) |
+| R5 | `validate`/`corpus` parse verbose output: with `-q` in addopts nothing is parsed and they report OK. | fixed (run batch) |
+| R6 | `check` ignores misses of diffcone's own run (`NOT RUN`) in its verdict; the run action's plan.json can differ from the plan `run` executed (fallbacks). | fixed (run batch) |
+| R7 | Every selected test in a module skipped at import (`importorskip`) makes `run` exit 5 (a false failure). | fixed (run batch) |
+| R8 | pytest options after `--` that widen collection (`--doctest-modules`) are invisible to discovery and their tests are deselected. | fixed (run batch) |
+| R9 | `run`'s whole-suite fallback with 0 static pytest targets prints "nothing selected; not running" and returns 0 although the suite ran (plausible). | fixed (run batch) |
+| R10 | Actions accept `diffcone plan` exit 2 (`|| [ $? -le 3 ]`); `run` action has no `allow-incomplete-discovery` input. | fixed (run batch) |
+| R11 | Default `asv run` benchmarks the configured branch, not the checkout (plausible). | fixed (run batch) |
 
 ## Evidence and Cython (E)
 
@@ -93,7 +93,7 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 | E9 | Adding a module-level `__getattr__`/`__dir__` is not treated as a special-method change. | open |
 | E10 | A Cython function with `@cython.profile(False)` is never recorded; changes to it select nothing. | open |
 | E11 | Environment fingerprint omits sibling editable installs, `sys.flags`, `PYTHONWARNINGS`, `PYTHONPATH`, pytest plugins and options; `PYTHONHASHSEED=random` accepted (plausible). | plausible |
-| E12 | A missing environment-check report counts as a match (a wrapper stripping `DIFFCONE_CHECK_ENV`) (plausible). | plausible |
+| E12 | A missing environment-check report counts as a match (a wrapper stripping `DIFFCONE_CHECK_ENV`) (plausible). | fixed (run batch: the check always reports; no report is a mismatch) |
 
 ## Not misses (fix while there)
 
