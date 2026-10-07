@@ -1136,10 +1136,14 @@ report:</p>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--evidence<span class="w"> </span>auto<span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
 <p>A recording is only valid in the environment it was made in. Before any
-test runs, <code>run</code> checks that the Python version, the installed packages and
-a few environment variables (<code>PYTHONHASHSEED</code>, <code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>)
-match the recording. If they don't, it falls back to a plan from the code
-and tells you what differed. If your tests also depend on your own
+test runs, even when the plan selects nothing, <code>run</code> checks that the Python
+version and its <code>-O</code> setting, the installed packages, your <code>PYTHONPATH</code>
+and a few environment variables (<code>PYTHONHASHSEED</code>, <code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>,
+<code>PYTHONWARNINGS</code>) match the recording. If they don't, it falls back to a
+plan from the code and tells you what differed. A package installed in
+editable mode from outside your repository (<code>pip install -e ../lib</code>)
+counts as installed: diffcone doesn't see edits to its code, as with any
+other installed package. If your tests also depend on your own
 environment variables, record them with <code>--env-var</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>diffcone<span class="w"> </span>collect<span class="w"> </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--env-var<span class="w"> </span>MYAPP_MODE<span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
