@@ -13,6 +13,7 @@ from diffcone.indexer.definitions import (
     _flatten_chain,
     _future_annotations,
     _has_decorator,
+    _is_inert_decorator,
     _is_special_method,
     _is_staticmethod,
     _rebound_names,
@@ -444,8 +445,16 @@ class Resolver(FirstPass):
                             previous.get(name, "") + "|" + attributes.get(name, "")
                         )
                 self.out.class_attributes[symbol_id] = attributes
+                creators = list(stmt.decorator_list) + [k.value for k in stmt.keywords]
+                if creators and self._decorators_may_read_docs(
+                    creators, scope, Scope(module=scope)
+                ):
+                    self.out.doc_decorated.add(symbol_id)
                 self.out.class_bases[symbol_id] = tuple(sorted(set(cscope.bases)))
-                if not cscope.plain or not cscope.complete:
+                # Open: decorators or keywords, or a base outside the index
+                # that may consume the body (``Enum``, a framework model); not
+                # ``object``, ``Exception`` or a typing/abc base.
+                if not cscope.plain or cscope.external_base:
                     self.out.open_classes.add(symbol_id)
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
@@ -453,6 +462,38 @@ class Resolver(FirstPass):
                 if symbol_id is None:
                     continue
                 self._resolve_function(scope, stmt, symbol_id, class_scope)
+
+    def _decorators_may_read_docs(
+        self, decorators: list[ast.expr], module: ModuleScope, where: Scope
+    ) -> bool:
+        """Whether any decorator (or metaclass) may read the docstring of what
+        it decorates: one that resolves to nothing visible (external,
+        unresolved, a value), or in-scope code that reads ``__doc__`` (the
+        decorator itself, a factory whose wrapper does, a class's
+        ``__init__``/``__new__``/``__call__``). Known inert ones never do."""
+        for dec in decorators:
+            if _is_inert_decorator(dec, module):
+                continue
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            parts = _flatten_chain(target)
+            if parts is None:
+                return True
+            node = self.resolve_chain(parts, where)
+            if not isinstance(node, Resolved) or node.detail:
+                return True
+            symbol = self.index.symbols.get(node.symbol)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD, CLASS):
+                return True
+            if symbol.kind == CLASS:
+                hooks = [
+                    self.index.symbols.get(f"{symbol.id}.{m}")
+                    for m in ("__init__", "__new__", "__call__")
+                ]
+                if any(h is not None and h.reads_docstrings for h in hooks):
+                    return True
+            elif symbol.reads_docstrings:
+                return True
+        return False
 
     def _resolve_function(
         self,
@@ -525,6 +566,8 @@ class Resolver(FirstPass):
                 at_import.visit(node.returns)
         for dec in node.decorator_list:
             outer.visit(dec)
+        if self._decorators_may_read_docs(node.decorator_list, scope, outer_scope):
+            self.out.doc_decorated.add(symbol_id)
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
             if arg.annotation is not None:

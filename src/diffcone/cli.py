@@ -151,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     _add_evidence(p)
     p.add_argument("--format", choices=("json", "text"), default="json")
+    p.add_argument(
+        "runner_args",
+        nargs="*",
+        help="pytest arguments the run will use (after --): options that change what pytest "
+        "collects, such as --doctest-modules, are read by discovery",
+    )
 
     r = sub.add_parser(
         "run",

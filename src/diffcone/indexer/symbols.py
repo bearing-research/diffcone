@@ -73,16 +73,33 @@ def _doc_reads(body: list[ast.stmt]):
             else:
                 stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
             continue
+        # Reads only: ``__doc__ = """..."""`` assigns a docstring, it reads none.
         if isinstance(node, ast.Name) and node.id == "__doc__":
-            yield node
+            if isinstance(node.ctx, ast.Load):
+                yield node
         elif isinstance(node, ast.Attribute) and node.attr == "__doc__":
-            yield node
+            if isinstance(node.ctx, ast.Load):
+                yield node
         elif isinstance(node, ast.Call):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name == "getdoc":
                 yield node
         stack.extend(ast.iter_child_nodes(node))
+
+
+def _reads_docstrings_deep(node: ast.AST) -> bool:
+    """Like _reads_docstrings, nested definitions included."""
+    for inner in ast.walk(node):
+        if isinstance(inner, (ast.Name, ast.Attribute)) and isinstance(inner.ctx, ast.Load):
+            if getattr(inner, "id", None) == "__doc__" or getattr(inner, "attr", None) == "__doc__":
+                return True
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "getdoc":
+                return True
+    return False
 
 
 def _reads_docstrings(body: list[ast.stmt]) -> bool:
@@ -294,10 +311,6 @@ class FirstPass(IndexerState):
                     )
 
                 body_hash, definition_hash, doc_hash = class_hashes()
-                if any(n.decorator_list or n.keywords for n in nodes):
-                    # A decorator or metaclass receives the class with its
-                    # docstring, and may run it (a ``@doc``-style formatter).
-                    definition_hash = _digest(definition_hash + "|doc:" + doc_hash)
                 symbol = Symbol(
                     id=symbol_id,
                     kind=CLASS,
@@ -383,19 +396,15 @@ class FirstPass(IndexerState):
                     )
 
                 annotation_hash, body_hash, definition_hash, doc_hash = function_hashes()
-                if not all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list):
-                    # The decorator receives the function with its docstring,
-                    # and may run it (pandas' ``@doc`` formats it at import).
-                    definition_hash = _digest(definition_hash + "|doc:" + doc_hash)
                 deferred = (
                     _future_annotations(scope)
                     and all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list)
                     and (class_scope is None or class_scope.plain)
                 )
-                inert = all(_inert_def(n, scope) for n in nodes) and (
+                header = all(_inert_def(n, scope) for n in nodes) and (
                     class_scope is None or class_scope.plain
                 )
-                inert = inert and (deferred or not any(_has_annotations(n) for n in nodes))
+                inert = header and (deferred or not any(_has_annotations(n) for n in nodes))
                 symbol = Symbol(
                     id=symbol_id,
                     kind=METHOD if class_scope is not None else FUNCTION,
@@ -411,7 +420,10 @@ class FirstPass(IndexerState):
                     annotation_hash=annotation_hash,
                     deferred_annotations=deferred,
                     inert_definition=inert,
-                    reads_docstrings=any(_reads_docstrings(n.body) for n in nodes),
+                    inert_header=header,
+                    # Nested functions are not symbols: a decorator factory's
+                    # wrapper reading ``f.__doc__`` counts for the factory.
+                    reads_docstrings=any(_reads_docstrings_deep(n) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue

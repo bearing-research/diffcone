@@ -149,6 +149,7 @@ class _Output:
     class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     open_classes: set[str] = field(default_factory=set)
+    doc_decorated: set[str] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -167,6 +168,7 @@ class _Output:
         self.class_attributes.update(other.class_attributes)
         self.class_bases.update(other.class_bases)
         self.open_classes |= other.open_classes
+        self.doc_decorated |= other.doc_decorated
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -225,6 +227,7 @@ def _output_to_dict(out: _Output) -> dict:
         "reflection": sorted(list(r) for r in out.reflection),
         "class_bases": {c: list(b) for c, b in sorted(out.class_bases.items())},
         "open_classes": sorted(out.open_classes),
+        "doc_decorated": sorted(out.doc_decorated),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -290,6 +293,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.class_attributes = {c: dict(a) for c, a in data["class_attributes"].items()}
     out.class_bases = {c: tuple(b) for c, b in data["class_bases"].items()}
     out.open_classes = set(data["open_classes"])
+    out.doc_decorated = set(data["doc_decorated"])
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(
@@ -356,7 +360,7 @@ def _facts_to_dict(
         record["members"],
         record["variables"],
         record["mutations"],
-        [[s.id, s.kind, s.module] for s in symbols],
+        [[s.id, s.kind, s.module, s.reads_docstrings] for s in symbols],
         [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
     ]
     record["env"] = _digest(json.dumps(env, sort_keys=True))

@@ -89,14 +89,36 @@ def _is_subsequence(before: tuple[str, ...], after: tuple[str, ...]) -> bool:
     return all(entry in remaining for entry in before)
 
 
+def _runtime_imports(symbol: Symbol, modules: set[str]) -> set[str]:
+    """The in-scope modules a module's own top-level code imports when it
+    runs, from its import layout: not imports in function bodies (not in the
+    layout) or under ``if TYPE_CHECKING:``, which never run."""
+    found: set[str] = set()
+    for entry in symbol.import_layout:
+        context, _, statement = entry.rpartition("|")
+        if "TYPE_CHECKING" in context:
+            continue
+        words = statement.split()
+        if words[:1] == ["import"] and len(words) >= 2:
+            names = [words[1]]
+        elif words[:1] == ["from"] and len(words) >= 4:
+            names = [words[1], f"{words[1]}.{words[3]}"]
+        else:
+            continue
+        for name in names:
+            # ``import a.b.c`` runs ``a`` and ``a.b`` too.
+            parts = name.split(".")
+            for i in range(1, len(parts) + 1):
+                if ".".join(parts[:i]) in modules:
+                    found.add(".".join(parts[:i]))
+    return found
+
+
 def _import_closures(index: SourceIndex) -> dict[str, set[str]]:
-    """Each module's transitive import closure (itself included)."""
-    imports: dict[str, set[str]] = defaultdict(set)
-    for e in index.edges:
-        if e.kind == IMPORTS and e.target in index.symbols:
-            source = index.symbols.get(e.source)
-            if source is not None:
-                imports[source.module].add(e.target)
+    """Each module's transitive closure of the modules importing it runs
+    (itself included)."""
+    modules = {s.id for s in index.symbols.values() if s.kind == MODULE}
+    imports = {m: _runtime_imports(index.symbols[m], modules) for m in modules}
     closures: dict[str, set[str]] = {}
 
     def closure(module: str) -> set[str]:
@@ -111,7 +133,7 @@ def _import_closures(index: SourceIndex) -> dict[str, set[str]]:
             closures[module] = seen
         return closures[module]
 
-    return {module: closure(module) for module in list(imports)}
+    return {module: closure(module) for module in modules}
 
 
 def _module_additions_matter(
@@ -119,19 +141,22 @@ def _module_additions_matter(
     added: frozenset[tuple[str, str, str]],
     base_closures: dict[str, set[str]],
     base: SourceIndex,
+    b: Symbol,
+    h: Symbol,
 ) -> bool:
-    """Whether edges added to a module change what importing it does: its
-    import-time code references something new, or an added import reaches
-    an in-scope module that importing it did not run before (a registration
-    import such as ``import pkg.json_handler``). A module new in head is
+    """Whether a module's additions change what importing it does: its
+    import-time code references something new, or an import that now runs
+    at import reaches an in-scope module importing it did not run before (a
+    registration import such as ``import pkg.json_handler``, one moved out of
+    a function or out of ``if TYPE_CHECKING:``). A module new in head is
     added, and reached through its own change."""
     closure = base_closures.get(module, {module})
-    for kind, target, _detail in added:
+    for kind, _target, _detail in added:
         if kind not in (IMPORTS, IMPORTS_NAME):
             return True
-        if kind == IMPORTS and target in base.symbols and target not in closure:
-            return True
-    return False
+    modules = {s.id for s in base.symbols.values() if s.kind == MODULE}
+    newly_run = _runtime_imports(h, modules) - _runtime_imports(b, modules)
+    return bool(newly_run - closure)
 
 
 def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
@@ -184,11 +209,19 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             if not before <= after:
                 kinds.append(DEPENDENCIES_CHANGED)
             elif h.kind != MODULE or _module_additions_matter(
-                symbol_id, after - before, base_closures, base
+                symbol_id, after - before, base_closures, base, b, h
             ):
                 kinds.append(DEPENDENCIES_ADDED)
             elif IMPORTS_ADDED not in kinds:
                 kinds.append(IMPORTS_ADDED)
+        elif (
+            h.kind == MODULE
+            and IMPORTS_ADDED in kinds
+            and _module_additions_matter(symbol_id, frozenset(), base_closures, base, b, h)
+        ):
+            # No new edge (a TYPE_CHECKING copy already had it), but the
+            # import now runs.
+            kinds.append(DEPENDENCIES_ADDED)
         if kinds:
             changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))
     return changes

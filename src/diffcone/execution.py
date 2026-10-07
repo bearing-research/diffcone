@@ -1427,6 +1427,7 @@ def collect_evidence(
         tempfile.TemporaryDirectory(prefix="diffcone-collect-") as tmp,
     ):
         base_env = _checkout_env(cwd, source_roots)
+        base_env["DIFFCONE_COLLECT_REPO"] = str(Path(repo).resolve())
         base_env.setdefault("PYTHONHASHSEED", "0")
         if env_variables:
             base_env["DIFFCONE_ENV_VARIABLES"] = ",".join(sorted(set(env_variables)))

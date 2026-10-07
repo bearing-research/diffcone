@@ -361,7 +361,7 @@ def to_text(report: CheckReport) -> str:
 
 def to_markdown(report: CheckReport) -> str:
     new = [f for f in report.failures if not f.already]
-    missed = len(report.misses) + len(report.not_run)
+    missed = len({f.test for f in report.misses} | set(report.not_run))
     verdict = "no miss" if report.ok else f"**{missed} missed**"
     lines = [
         f"### diffcone check: {verdict}",

@@ -106,3 +106,85 @@ Fixed in the evidence batch: the stale texts below, `.diffcone/.gitignore`, malf
 - `.diffcone/` could carry its own `.gitignore` (`*`), as pytest's cache does.
 - Stale text: `report.py` `SCOPE_DESCRIPTION["not_resolved"]` (ships in every report), `declarations.py` docstring ("the head one"), `manifest.py` docstring ("temporary", "future work"), `planner.plan()` docstring ("two committed revisions"), `pytest_static.py` docstring (config bullet; "bases defined elsewhere are reported"), `asv_static.py` docstring (config location), `design.md` ("Four notes", "not modelled: base classes in other modules"), `collection_check.py` `NODE_FILE` suffixes.
 - `declarations.py`: any `GitError` is read as "no diffcone.toml" (plausible).
+
+# Round 2 (2026-10-07)
+
+A second round of five reviews: the fix diff itself (regressions), then
+static planning, discovery, evidence mode and the documented user journeys
+and CI actions from angles the first round did not try. Same rule: every
+confirmed miss is fixed with a regression scenario; regressions and
+precision blow-ups introduced by round 1's fixes come first.
+
+## Regressions from round 1's fixes (F)
+
+| id | finding | status |
+|---|---|---|
+| F1 | P6: a docstring edit under any decorator not on the inert list is a definition change, so a DOC commit selects everything (pandas cebedf3f94 `@set_module`: 2 -> 24878 tests; networkx 92f497e2eb: 0 -> 5532). Only decorators that read docstrings, or that the analysis cannot see, should fold it in. | fixed (round 2, F batch) |
+| F2 | E2/E3: `open_classes` counts every class with an external base, `object` and `Exception` included, so evidence mode escalates ordinary class-body edits and class additions. | fixed (round 2, F batch) |
+| F3 | E3: adding any annotated function (no `from __future__ import annotations`) escalates its module in evidence mode: annotations make `inert_definition` false. | fixed (round 2, F batch) |
+| F4 | E11: after `collect --rev`, the project's own editable install (pointing at the real repository, not the temporary worktree) is fingerprinted, so every later evidence run mismatches. | fixed (round 2, F batch) |
+| F5 | P2: the base import closure counts function-local and `TYPE_CHECKING` imports, so moving a registration import to the top of the module is judged already run (a miss). | fixed (round 2, F batch) |
+| F6 | I3: the import layout ignores ordinary statements, so moving an import across `os.environ[...] = ...`, `sys.path.insert`, `warnings.filterwarnings` in the same block is invisible (a miss). | fixed (round 2, F batch) |
+| F7 | The run action plans without the pytest args `run` gets (doctest options now feed discovery), so plan.json and `selected` can differ from what ran; `--junitxml` in the run args misses the warm discovery cache. | fixed (round 2, F batch) |
+| F8 | `check --format markdown` counts a plan miss twice (also a NOT RUN of diffcone's run). | fixed (round 2, F batch) |
+| F9 | `--source-root ./src` is not normalised (old: silent miss; now: a wrong "holds no Python file" error). | fixed (round 2, F batch) |
+| F10 | Import-layout labels omit `with`/`for`/`match` headers: moving an import between two `with` blocks is invisible (plausible). | fixed (round 2, F batch: with/for/match headers in the layout) |
+
+## Static planning (S)
+
+| id | finding | status |
+|---|---|---|
+| S1 | A src layout planned with the default root `.` names `src/calc/ops.py` `src.calc.ops`; `from calc.ops import add` resolves to nothing, counted as external: complete plan, 0 selected (getting-started's own journey; every static fallback in CI). | open |
+| S2 | Functions reached only through a registering decorator (`@show.register`, `@register` filling a registry, `@app.command`, a class registered by `__init_subclass__` whose special methods change) are unreachable. | open |
+| S3 | Class scope: class-level defs are missing from the class body's own scope (a method name used in the body resolves to a module-level homonym), and class bindings leak into lambdas and comprehensions in the class body. | open |
+| S4 | Star imports lose to earlier bindings: `from a import f` then `from b import *` (or two star imports, the settings pattern) resolves `f` to the first; at runtime the last wins. | open |
+| S5 | Added imports from outside the source roots (`from json import dumps` fixing a NameError, `from __future__ import annotations`, a builtin shadowed by an import) are invisible: unresolved/external references are not in dependency signatures. | open |
+| S6 | `exec`/`eval`/`compile` of text read from a file is bounded by the import closure; the file need not be imported (`exec(open("version.py").read())`, plugin loaders). | open |
+| S7 | Names consumed through strings (`monkeypatch.setattr("a.b.X", ...)`, `mock.patch("a.b.c")`, a string `skipif` condition) or deleted literal variables used by other modules' tests are not dependencies. | open |
+| S8 | An import-time write to another module's globals (`settings.DEBUG = True` in a conftest) reaches only the writer's module. | open |
+| S9 | `setup.py` (and other build hooks) is indexed as a module nobody imports, so a build change selects nothing. | open |
+
+## Discovery (D, continued)
+
+| id | finding | status |
+|---|---|---|
+| D13 | Session-wide hooks (`pytest_collection_modifyitems`, `pytest_configure`, `pytest_sessionstart`, ...) in conftests off a test's path are not its dependencies. | open |
+| D14 | The ini option `usefixtures` is not read. | open |
+| D15 | Doctests get no fixture closure: autouse fixtures (the usual `doctest_namespace` filler, as in pandas), plugins, ini `usefixtures`. | open |
+| D16 | An ASV module `setup` that is imported (`from .common import setup`, 33 pandas modules) is not a dependency. | open |
+| D17 | `pytest_plugins` in a test module registers the plugin for the session; its autouse fixtures and hooks reach every test. | open |
+| D18 | Hooks and xunit functions bound by import or assignment (`from x import pytest_generate_tests`) are invisible. | open |
+| D19 | Lifecycle names missing: `setUpModule`/`tearDownModule`, `asyncSetUp`/`asyncTearDown`, Django `setUpTestData`, a class-level `pytest_generate_tests`. | open |
+| D20 | `@staticmethod` tests lose their first fixture (the first parameter is dropped as `self`). | open |
+| D21 | `x = pytest.fixture(f, autouse=True)` (one call) is not recognised. | open |
+| D22 | Collected tests not targets, unreported: a TestCase with `__init__`; nested test classes inherited from a base; star imports re-exporting imported names; a non-literal `__all__`; `-o`/positional paths in addopts; doctests outside the roots; non-literal `getfixturevalue` over a fixture list; collection hooks in plugin modules. | open |
+| D23 | A `pytest11` plugin of a sibling package in the repository is not loaded. | open |
+| D24 | Runner configuration outside the source roots (`pyproject.toml`'s pytest table with roots `src tests`, `asv.conf.json`, a root conftest) changes without selecting anything. | open |
+| D25 | ASV: module-level aliases (`time_alias = _impl`), `benchmark_name`, `timeraw_` code strings, `benchmark_dir` with `..` (0 targets, complete). | open |
+| D26 | `from django.test import TestCase` in a test module is `imported_test_out_of_scope` (exit 3 for every Django test module). | open |
+
+## Evidence mode (E, continued)
+
+| id | finding | status |
+|---|---|---|
+| E13 | Windows: recorded paths keep `\\`, so nothing maps to a symbol and almost nothing is selected. | open |
+| E14 | xdist "compute once" session fixtures: only the computing worker's tests are credited. | open |
+| E15 | A thread outliving its test runs project code no record names. | open |
+| E16 | A generator or coroutine re-entered with `.throw()`/`.close()` is not seen (PY_THROW). | open |
+| E17 | Python 3.14 subinterpreters are not flagged. | open |
+| E18 | An indexed `.py` file read as data (`exec(open(...))`, `inspect.getsource`) selects nothing when it changes. | open |
+| E19 | Compiled/build file suffixes incomplete and case-sensitive (`Cargo.toml`, `.c.src`, `.F90`, `.pyf`, `.i`). | open |
+| E20 | Files opened by C code (`sqlite3.connect`, `ctypes.dlopen`, `os.access`) are not touches. | open |
+
+## Running and CI (R, continued)
+
+| id | finding | status |
+|---|---|---|
+| R12 | The run action fails every PR when the recorded commit cannot be fetched (force-pushed main). | open |
+| R13 | A shallow (depth 1) checkout lacks `HEAD^1`: plan exits 2 with an opaque message. | open |
+| R14 | Unknown-revision errors do not name the revision. | open |
+| R15 | WORKTREE plans select everything once `__pycache__` exists in a repo that does not ignore it; ASV `results/` blocks `collect`. | open |
+| R16 | `run -o FILE` writes nothing on a real run. | open |
+| R17 | Overlapping key prefixes (`diffcone-ubuntu`, `diffcone-ubuntu-py312`) restore another environment's recording and baseline. | plausible |
+| R18 | The nightly re-records but cannot save when main has not moved. | plausible |
+| R19 | Docs: src-layout roots missing from several journeys; cli.md snapshot claim and exit codes for collect/prune/evidence; report.md rule list. | open |

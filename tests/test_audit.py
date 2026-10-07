@@ -1385,3 +1385,180 @@ def test_d12_a_configured_collecting_plugin_makes_discovery_incomplete(repo):
         },
     )
     assert "plugin_collects_files" in notes
+
+
+# F1: a docstring edit counts only where a decorator may read it.
+
+
+def test_f1_a_decorator_that_never_reads_docstrings_keeps_doc_edits_free(repo):
+    deco = (
+        "def set_module(name):\n    def wrap(f):\n        f.__module__ = name\n"
+        "        return f\n    return wrap\n"
+    )
+    a = (
+        "from pkg.deco import set_module\n\n\n@set_module('pkg')\ndef f():\n"
+        '    """{doc}"""\n    return 1\n'
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/deco.py": deco,
+            "pkg/a.py": a.format(doc="Old."),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg.a import f\n\n\ndef test_f():\n    f()\n",
+        }
+    )
+    head = repo.commit({"pkg/a.py": a.format(doc="New, longer.")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == set()
+
+
+def test_f1_a_decorator_the_analysis_cannot_see_may_read_it(repo):
+    a = 'import click\n\n\n@click.command()\ndef cli():\n    """{doc}"""\n    return 1\n'
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": a.format(doc="Old."),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg.a import cli\n\n\ndef test_help():\n    cli\n",
+        }
+    )
+    head = repo.commit({"pkg/a.py": a.format(doc="New help text.")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_a.py::test_help"}
+
+
+# F2, F3: evidence mode escalates creation-time effects, not ordinary classes.
+
+
+@needs_monitoring
+def test_f2_f3_ordinary_class_and_annotated_function_edits_stay_precise(repo):
+    util = (
+        "class Conf(object):\n    LIMIT = {limit}\n\n\nclass Err(ValueError):\n    pass\n\n\n"
+        "def helper():\n    return 1\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/util.py": util.format(limit=1),
+            "tests/__init__.py": "",
+            "tests/test_u.py": (
+                "from lib.util import helper\n\n\ndef test_helper():\n    helper()\n"
+            ),
+        },
+        {
+            "lib/util.py": util.format(limit=2)
+            + "\n\nclass New(object):\n    pass\n\n\ndef added(x: int) -> int:\n    return x\n"
+        },
+    )
+    assert chosen == set()
+
+
+def test_f4_the_projects_editable_install_is_not_environment_under_collect_rev(
+    tmp_path, monkeypatch
+):
+    from diffcone import collect
+
+    repo, worktree = tmp_path / "repo", tmp_path / "worktree"
+    repo.mkdir()
+    worktree.mkdir()
+    monkeypatch.setenv("DIFFCONE_COLLECT_ROOT", str(worktree))
+    monkeypatch.setenv("DIFFCONE_COLLECT_REPO", str(repo))
+    assert collect._in_checkout(str((repo / "src").resolve()))
+    assert collect._in_checkout(str((worktree / "src").resolve()))
+    assert not collect._in_checkout(str((tmp_path / "sibling").resolve()))
+
+
+# F5: an import that now runs at import time counts, wherever it was before.
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (
+            "def load():\n    import pkg.plugin\n",
+            "import pkg.plugin\n\n\ndef load():\n    pass\n",
+        ),
+        (
+            "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import pkg.plugin\n",
+            "from typing import TYPE_CHECKING\n\nimport pkg.plugin\n\n"
+            "if TYPE_CHECKING:\n    import pkg.plugin\n",
+        ),
+    ],
+)
+def test_f5_an_import_newly_run_at_import_reaches_the_importers(repo, before, after):
+    base = repo.commit({**PLUGIN, "pkg/a.py": before})
+    head = repo.commit({"pkg/a.py": after})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_use" in selected(plan)
+    assert "bench.time_noop" in unselected(plan)
+
+
+# F6: an import moved across ordinary statements is a change.
+
+
+def test_f6_an_import_moved_across_a_statement_is_a_change(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/config.py": "import os\n\nMODE = os.environ.get('MODE', 'slow')\n",
+            "pkg/app.py": "import os\n\nos.environ['MODE'] = 'fast'\nimport pkg.config\n",
+            "tests/__init__.py": "",
+            "tests/test_app.py": (
+                "import pkg.app\nfrom pkg.config import MODE\n\n\n"
+                "def test_mode():\n    assert MODE == 'fast'\n"
+            ),
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    head = repo.commit(
+        {"pkg/app.py": "import os\n\nimport pkg.config\nos.environ['MODE'] = 'fast'\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_app.py::test_mode" in selected(plan)
+    assert "bench.time_noop" in unselected(plan)
+
+
+# F7, F8, F9.
+
+
+def test_f7_plan_reads_the_runs_pytest_arguments(repo, tmp_path, capsys):
+    rev = repo.commit(
+        {"calc/__init__.py": "", "calc/ops.py": "def f():\n    '''\n    >>> 1\n    1\n    '''\n"}
+    )
+    out = tmp_path / "plan.json"
+    main(["plan", "--repo", str(repo.path), "--base", rev, "--head", rev, "--discover",
+          "pytest", "-o", str(out), "--", "--doctest-modules"])  # fmt: skip
+    ids = {t["runner_id"] for t in json.loads(out.read_text())["unselected_targets"]}
+    assert "calc/ops.py::calc.ops.f" in ids
+
+
+def test_f8_a_miss_is_counted_once_in_the_summary(tmp_path):
+    from diffcone.check import check, load_plan, read_junit, to_markdown
+
+    plan = {
+        "status": "complete",
+        "discovery_incomplete": False,
+        "selected_targets": [],
+        "unselected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+    (tmp_path / "full.xml").write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_x">'
+        '<failure message="boom"/></testcase></testsuite></testsuites>'
+    )
+    (tmp_path / "dc.xml").write_text("<testsuites><testsuite/></testsuites>")
+    report = check(
+        load_plan(tmp_path / "plan.json"),
+        read_junit(tmp_path / "full.xml"),
+        runs={"diffcone": read_junit(tmp_path / "dc.xml")},
+    )
+    assert "**1 missed**" in to_markdown(report)
+
+
+def test_f9_a_dot_slash_source_root_is_the_same_root():
+    from diffcone.snapshot import split_root
+
+    assert split_root("./src") == split_root("src") == ("src", "")

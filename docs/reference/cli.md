@@ -42,7 +42,7 @@ Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).
 Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.
 
 ```text
-diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
+diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
 ```
 
 | Option | Default | Description |
@@ -60,6 +60,7 @@ diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
 | `--format` `FORMAT` | `json` | One of `json`, `text`. |
+| `runner_args ...` (after `--`) |  | Pytest arguments the run will use (after --): options that change what pytest collects, such as --doctest-modules, are read by discovery. |
 
 ## `diffcone run`
 

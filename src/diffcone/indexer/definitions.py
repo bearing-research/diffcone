@@ -37,16 +37,27 @@ def _import_layout(scope: ModuleScope) -> tuple[str, ...]:
     out: list[str] = []
 
     def walk(body: list[ast.stmt], context: str) -> None:
+        # Ordinary statements before an import in its block: an import moved
+        # across ``os.environ[...] = ...`` or ``sys.path.insert`` changes what
+        # it runs with. Counted, not hashed: editing them is a body change.
+        before = 0
         for stmt in body:
             if isinstance(stmt, DEF_NODES):
                 continue
             if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                 for entry in _import_entries(scope, stmt):
-                    out.append(f"{context}|{entry}")
+                    out.append(f"{context}#{before}|{entry}")
                 continue
+            before += 1
             label = type(stmt).__name__
             if isinstance(stmt, (ast.If, ast.While)):
                 label += f"({ast.unparse(stmt.test)})"
+            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                label += f"({', '.join(ast.unparse(i) for i in stmt.items)})"
+            elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+                label += f"({ast.unparse(stmt.target)} in {ast.unparse(stmt.iter)})"
+            elif isinstance(stmt, ast.Match):
+                label += f"({ast.unparse(stmt.subject)})"
             for attr in ("body", "orelse", "finalbody"):
                 child = getattr(stmt, attr, None)
                 if isinstance(child, list) and child:

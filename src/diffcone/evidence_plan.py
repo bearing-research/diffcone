@@ -499,9 +499,16 @@ class _Observers:
     # -- rules -------------------------------------------------------------------
 
     def run(self) -> None:
+        decorated = self.c.doc_decorated | self.other.doc_decorated
         for change in self.changes:
             if change.carries_impact:
                 self._change(change)
+            elif DOCSTRING_CHANGED in change.changes and change.id in decorated:
+                # Its decorator reads the docstring when the module is
+                # imported: no record shows that, the import-time state does.
+                self._escalate_change(
+                    change, f"{change.id} docstring_changed: its decorator reads it at import"
+                )
         cython = self._cython()
         for path in _changed_unanalysed_files(self.c, self.other):
             if path in cython:
@@ -808,7 +815,9 @@ class _Observers:
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
                 self._sites(symbol, change, label)
-                inert = all(s.inert_definition for s in (change.base, change.head) if s is not None)
+                # Decorators and defaults are what can register a function;
+                # its annotations cannot.
+                inert = all(s.inert_header for s in (change.base, change.head) if s is not None)
                 if not inert and change.id not in self.test_code.entries:
                     # ``@register def two()``: the decorator runs at import and
                     # may change shared state no test's record names.

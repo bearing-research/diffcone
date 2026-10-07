@@ -172,7 +172,10 @@ def split_root(spec: str) -> tuple[str, str]:
     imports. The directory is normalised (``.`` and ``""`` are the root).
     """
     directory, sep, prefix = spec.partition("=")
-    directory = directory.strip().strip("/")
+    directory = directory.strip()
+    while directory.startswith("./"):
+        directory = directory[2:]
+    directory = directory.strip("/")
     directory = "" if directory in ("", ".") else directory
     prefix = prefix.strip() if sep else ""
     if sep and (not prefix or not all(p.isidentifier() for p in prefix.split("."))):

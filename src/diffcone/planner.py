@@ -681,6 +681,16 @@ def plan_from_indexes(
     # A symbol reading docstrings (``f.__doc__``, ``getdoc(cls)``, its
     # module's ``__doc__``) sees a docstring-only change of what it references.
     documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
+    # A docstring its decorator reads (pandas' ``@doc`` formats it) changes
+    # what the decorator does when the module is imported.
+    decorated = documented & (base.doc_decorated | head.doc_decorated)
+    for change in seeded:
+        if change.id in decorated:
+            for node in (change.id, change.symbol.module):
+                if node not in mode:
+                    mode[node] = BEHAVIOR
+                    via[node] = None
+                    queue.append(node)
     if documented:
         for index in (base, head):
             read: dict[str, set[str]] = {

@@ -74,6 +74,9 @@ class Symbol:
     # the name (inert decorators, literal defaults, deferred or no
     # annotations, a plain class for methods).
     inert_definition: bool = False
+    # Functions: the decorators and defaults alone run nothing (annotations
+    # aside): adding such a function registers nothing anywhere.
+    inert_header: bool = False
     # The symbol's own code reads a docstring (``obj.__doc__``, ``__doc__``,
     # ``getdoc(obj)``): a docstring change of what it references, or of its
     # module, reaches it.
@@ -173,6 +176,11 @@ class SourceIndex:
     # (``Enum``, a dataclass-like framework base). Evidence mode escalates an
     # attribute change of one rather than trusting readers of the name.
     open_classes: set[str] = field(default_factory=set)
+    # Functions and classes whose decorators (or metaclass) may read their
+    # docstring: one the analysis cannot see, or in-scope code that reads
+    # ``__doc__`` (pandas' ``@doc``). A docstring-only change of one runs at
+    # import; of any other symbol it runs nothing.
+    doc_decorated: set[str] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

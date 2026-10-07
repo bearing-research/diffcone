@@ -35,6 +35,9 @@ Environment variables:
 ``DIFFCONE_COLLECT_OUT``       directory for the raw records; recording is
                                off without it
 ``DIFFCONE_COLLECT_ROOT``      the checkout root (default: the current directory)
+``DIFFCONE_COLLECT_REPO``      the repository it was made from (``collect --rev``
+                               runs a temporary worktree); the project's own
+                               editable install there is not environment
 ``DIFFCONE_COLLECT_PACKAGES``  comma-separated top-level packages of the
                                project: a module of one of them loaded from
                                outside the root means an installed copy ran
@@ -125,8 +128,18 @@ def _editable(dist) -> str | None:
 
 
 def _in_checkout(path: str) -> bool:
-    root = os.path.realpath(os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd())
-    return path == root or path.startswith(root + os.sep)
+    """Inside the checkout being run, or the repository it was made from
+    (``collect --rev`` runs a temporary worktree, while the project's own
+    editable install points at the repository)."""
+    roots = {
+        os.path.realpath(r)
+        for r in (
+            os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd(),
+            os.environ.get("DIFFCONE_COLLECT_REPO") or "",
+        )
+        if r
+    }
+    return any(path == root or path.startswith(root + os.sep) for root in roots)
 
 
 def environment() -> dict:

@@ -85,8 +85,11 @@ runs:
           echo "::warning::no diffcone evidence restored; planning statically"
         fi
         cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
+        # The same pytest arguments as the run below (doctest options change
+        # what discovery finds), so plan.json is the plan the run executes.
         diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" -o diffcone-results/plan.json || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
+          "${evidence[@]}" -o diffcone-results/plan.json -- "${args[@]}" \
+          || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
         python3 -c "import json; p = json.load(open('diffcone-results/plan.json')); \
           print('selected=%d' % len(p['selected_targets']))" >> "$GITHUB_OUTPUT"
         allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)

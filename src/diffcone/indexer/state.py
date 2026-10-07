@@ -46,6 +46,7 @@ class IndexerState:
             class_attributes=self.index.class_attributes,
             class_bases=self.index.class_bases,
             open_classes=self.index.open_classes,
+            doc_decorated=self.index.doc_decorated,
         )
         self.out = self._global
         # Symbols and class scopes added by the module being indexed, and
