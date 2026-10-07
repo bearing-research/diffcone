@@ -61,7 +61,10 @@ The first release.
   `plan --evidence` selects the tests whose record meets the change, and
   plans the rest statically or selects everything, saying which.
   `run --collect` advances the record to the new commit. `--env-var`
-  records project variables that change what tests do.
+  records project variables that change what tests do. Tests that start a
+  subprocess or subinterpreter, or leave a thread running, are always
+  selected; a shared fixture computed once by one xdist worker is credited
+  to every test using it.
 - Cython: with a `profile=True` build recorded on Python 3.13+, edits to
   function bodies and to the names a file binds outside functions select
   the tests that executed the code concerned.

@@ -2366,3 +2366,153 @@ def test_r17_r18_record_keys_end_the_prefix_and_never_repeat():
     assert "restore-keys: ${{ inputs.key-prefix }}--\n" in run
     # R12: a recording that cannot be fetched leaves a static plan.
     assert "planning statically" in run.split("cannot be fetched", 1)[1].split("\n", 1)[0]
+
+
+# E13-E20 (round 2): evidence mode.
+
+
+def test_e13_recorded_paths_use_forward_slashes(monkeypatch):
+    from diffcone import collect
+
+    monkeypatch.setattr(collect.os, "sep", "\\")
+    monkeypatch.setattr(collect, "ROOTS", ("C:\\repo\\",))
+    assert collect._relative("C:\\repo\\lib\\m.py") == "lib/m.py"
+
+
+@needs_monitoring
+def test_e14_a_fixture_computed_in_another_process_is_credited(repo, tmp_path):
+    cache = tmp_path / "cache.json"
+    conftest = (
+        "import json\nimport os\n\nimport pytest\n\nfrom lib.compute import compute\n\n"
+        f"CACHE = {str(cache)!r}\n\n\n"
+        "@pytest.fixture(scope='session')\ndef table():\n"
+        "    if os.path.exists(CACHE):\n        with open(CACHE) as f:\n"
+        "            return json.load(f)\n"
+        "    value = compute()\n    with open(CACHE, 'w') as f:\n        json.dump(value, f)\n"
+        "    return value\n"
+    )
+    compute = "def compute():\n    return [{}]\n"
+    base = repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "lib/__init__.py": "",
+            "lib/compute.py": compute.format(1),
+            "lib/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/conftest.py": conftest,
+            "tests/test_a.py": "def test_a(table):\n    assert table\n",
+            "tests/test_b.py": "def test_b(table):\n    assert table\n",
+            "tests/test_c.py": "from lib.other import g\n\n\ndef test_c():\n    g()\n",
+        }
+    )
+    # Two pytest processes, as two xdist workers: the first computes.
+    py = sys.executable
+    command = (
+        f'sh -c \'{py} -m pytest "$@" tests/test_a.py tests/test_c.py && '
+        f'{py} -m pytest "$@" tests/test_b.py\' sh'
+    )
+    evidence = repo.collect(command=command)
+    head = repo.commit({"lib/compute.py": compute.format(2)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=evidence)
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "test",
+    [
+        # E15: a thread the test leaves running.
+        "import threading\nimport time\n\n\ndef test_t():\n"
+        "    threading.Thread(target=time.sleep, args=(5,), daemon=True).start()\n",
+        # E17: a subinterpreter.
+        "import pytest\n\n\ndef test_t():\n"
+        "    interpreters = pytest.importorskip('concurrent.interpreters')\n"
+        "    interpreters.create().close()\n",
+    ],
+)
+def test_e15_e17_code_the_recording_cannot_see_flags_its_test(repo, test):
+    if "interpreters" in test and sys.version_info < (3, 14):
+        pytest.skip("subinterpreters need Python 3.14")
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_t.py": test,
+            "tests/test_u.py": "def test_u():\n    pass\n",
+        },
+        {"lib/other.py": "def g():\n    return 2\n"},
+    )
+    assert chosen == {"tests/test_t.py::test_t"}
+
+
+@needs_monitoring
+def test_e16_a_generator_reentered_by_throw_is_credited(repo):
+    worker = (
+        "STATE = []\n\n\ndef _worker():\n    while True:\n        try:\n            yield\n"
+        "        except ValueError:\n            STATE.append({})\n\n\nW = _worker()\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/w.py": worker.format(1),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from lib.w import W\n\n\ndef test_start():\n    next(W)\n",
+            "tests/test_b.py": (
+                "from lib.w import STATE, W\n\n\n"
+                "def test_throw():\n    W.throw(ValueError)\n    assert STATE == [1]\n"
+            ),
+        },
+        {"lib/w.py": worker.format(2)},
+    )
+    assert "tests/test_b.py::test_throw" in chosen
+
+
+@needs_monitoring
+def test_e18_a_source_file_read_as_data_selects_its_reader(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/version.py": "VERSION = '1'\n",
+            "tests/__init__.py": "",
+            "tests/test_v.py": (
+                "from pathlib import Path\n\nimport lib\n\n\ndef test_v():\n"
+                "    text = (Path(lib.__file__).parent / 'version.py').read_text()\n"
+                "    assert \"'1'\" in text\n"
+            ),
+            "tests/test_u.py": "def test_u():\n    pass\n",
+        },
+        {"lib/version.py": "VERSION = '2'\n"},
+    )
+    assert chosen == {"tests/test_v.py::test_v"}
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "body, change",
+    [
+        (
+            "import sqlite3\n\n\ndef test_t():\n    sqlite3.connect('data/app.db').close()\n",
+            {"data/app.db": "changed\n"},
+        ),
+        (
+            "import os\n\n\ndef test_t():\n    assert not os.access('data/flag', os.R_OK)\n",
+            {"data/flag": "on\n"},
+        ),
+    ],
+)
+def test_e20_files_opened_by_c_code_are_touches(repo, body, change):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "data/app.db": "",
+            "tests/__init__.py": "",
+            "tests/test_t.py": body,
+            "tests/test_u.py": "def test_u():\n    pass\n",
+        },
+        change,
+    )
+    assert chosen == {"tests/test_t.py::test_t"}

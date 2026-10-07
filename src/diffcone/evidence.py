@@ -165,6 +165,10 @@ class _Raw:
     environment: dict
     environment_hash: str
     collected: set[str] | None = None
+    # A shared fixture (by key) -> what its setup ran in any process, and
+    # the shared fixtures each test used.
+    fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
+    test_fixtures: dict[str, set[str]] = field(default_factory=dict)
 
 
 def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _Raw:
@@ -232,6 +236,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             for module_path in modules:
                 module = owners.module_of_path.get(module_path)
                 raw.import_by[symbol].add(module or UNINDEXED_MODULE + module_path)
+        for key, w in data.get("fixtures", {}).items():
+            symbols, paths, dirs, flags = raw.fixtures.setdefault(key, (set(), set(), set(), 0))
+            for c in w["codes"]:
+                if symbol_of[c] is not None:
+                    symbols.add(symbol_of[c])
+                elif file_of[c] is not None:
+                    paths.add(file_of[c])
+            paths.update(w["paths"])
+            dirs.update(w["dirs"])
+            raw.fixtures[key] = (symbols, paths, dirs, flags | w["flags"])
         tests_file = directory / f"tests-{pid}.bin"
         if data["wrote_tests"]:
             if not tests_file.exists():
@@ -259,6 +273,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 paths.update(record["paths"])
                 dirs.update(record["dirs"])
                 raw.tests[name] = (symbols, paths, dirs, flags | record["flags"])
+                raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
     orphans = [
         p
         for p in glob.glob(str(directory / "tests-*.bin"))
@@ -272,6 +287,18 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
     if any(env != environments[0] for env in environments):
         raise EvidenceError("the test processes ran in different environments")
     raw.environment = environments[0]
+    # A shared fixture set up in several processes (xdist workers) may have
+    # run its real work in one only (a file lock, a cache file the others
+    # read): every test using it is credited with what it ran anywhere.
+    for name, keys in raw.test_fixtures.items():
+        symbols, paths, dirs, flags = raw.tests[name]
+        for key in keys:
+            f_symbols, f_paths, f_dirs, f_flags = raw.fixtures.get(key, (set(), set(), set(), 0))
+            symbols |= f_symbols
+            paths |= f_paths
+            dirs |= f_dirs
+            flags |= f_flags
+        raw.tests[name] = (symbols, paths, dirs, flags)
     return raw
 
 

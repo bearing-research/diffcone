@@ -15,13 +15,18 @@ What it records, per test (parameter cases folded into their function, as
 
 * the code objects executed in the test's setup, call and teardown, and in
   the setup of every non-function-scoped fixture the test activated
-  (credited to every such test, not only the first). ``sys.monitoring``
-  ``PY_START`` and ``PY_RESUME`` (a generator or coroutine resumed in a
-  later test) with DISABLE, re-armed at every window boundary;
-* the repository paths it opened, ``stat``ed or listed (audit hooks, and
-  wrappers of ``os.stat``/``os.lstat``, which never warn, so the extra frame
-  cannot move a warning's ``stacklevel``);
-* whether it started a subprocess.
+  (credited to every such test, not only the first; and the keys of those
+  fixtures, so the fold credits what another process's setup of the same
+  fixture ran too: an xdist "compute once" fixture runs in one worker).
+  ``sys.monitoring`` ``PY_START`` and ``PY_RESUME`` (a generator or
+  coroutine resumed in a later test) with DISABLE, re-armed at every window
+  boundary, and ``PY_THROW`` (re-entered by ``.throw()``/``.close()``);
+* the repository paths it opened, ``stat``ed, ``access``ed or listed (audit
+  hooks, ``sqlite3.connect`` and ``ctypes.dlopen`` included, and wrappers
+  of ``os.stat``/``os.lstat``/``os.access``, which never warn, so the extra
+  frame cannot move a warning's ``stacklevel``), with ``/`` separators;
+* whether it started a subprocess or a subinterpreter, or left a thread
+  running (code no record names runs there).
 
 Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
@@ -63,12 +68,14 @@ from __future__ import annotations
 import functools
 import gc
 import hashlib
+import importlib
 import json
 import os
 import platform
 import re
 import struct
 import sys
+import threading
 import zlib
 from typing import Any
 from urllib.parse import urlparse
@@ -101,6 +108,9 @@ SUBPROCESS_EVENTS = frozenset(
         "_winapi.CreateProcess",
     }
 )
+# Files opened by C code, which raises no ``open`` event: the first
+# argument is the path.
+C_OPEN_EVENTS = frozenset({"sqlite3.connect", "ctypes.dlopen"})
 LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
 
 
@@ -221,7 +231,9 @@ recording = False
 
 
 def _window() -> dict:
-    return {"codes": set(), "paths": set(), "dirs": set(), "flags": 0}
+    # ``fixtures``: the non-function-scoped fixtures a test used, by key, so
+    # a fixture another process (an xdist worker) set up is credited too.
+    return {"codes": set(), "paths": set(), "dirs": set(), "flags": 0, "fixtures": set()}
 
 
 import_window = _window()
@@ -250,7 +262,8 @@ def _relative(path: str) -> str | None:
             rel = path[len(root) :]
             if rel.startswith(IGNORED_DIRS) or any(p in rel for p in INSTALLED):
                 return None
-            return rel
+            # Records use ``/`` on every platform, as the index does.
+            return rel.replace(os.sep, "/") if os.sep != "/" else rel
     return None
 
 
@@ -326,6 +339,22 @@ def _on_resume(code, offset):
     except Exception as exc:
         _error("PY_RESUME", exc)
     return mon.DISABLE
+
+
+def _on_throw(code, offset, exc):
+    # A generator or coroutine re-entered by ``.throw()`` or ``.close()``:
+    # resumed like PY_RESUME, but this event cannot be disabled.
+    if code not in codes and _code_path(code.co_filename) is None:
+        return
+    try:
+        i = codes.get(code)
+        if i is None:
+            i = codes[code] = len(table)
+            table.append([_code_path(code.co_filename), code.co_firstlineno, code.co_qualname])
+        for w in _windows():
+            w["codes"].add(i)
+    except Exception as err:
+        _error("PY_THROW", err)
 
 
 def _on_return(code, offset, retval):
@@ -407,6 +436,9 @@ def _audit(event, args):
                 _touch(args[0])
         elif event in LISTING_EVENTS:
             _touch(args[0] if args and args[0] is not None else ".", listing=True)
+        elif event in C_OPEN_EVENTS:
+            if args and isinstance(args[0], (str, bytes, os.PathLike)):
+                _touch(args[0])
         elif event in SUBPROCESS_EVENTS:
             for w in _windows():
                 w["flags"] |= FLAG_SUBPROCESS
@@ -417,23 +449,29 @@ def _audit(event, args):
 def _flag_multiprocessing_spawns() -> None:
     """``multiprocessing``'s spawn and forkserver start methods launch their
     children through ``_posixsubprocess.fork_exec``, which raises no audit
-    event: flag the test from the function they all go through."""
-    try:
-        import multiprocessing.util as mp_util
-    except ImportError:  # pragma: no cover - no multiprocessing on this platform
-        return
-    original = getattr(mp_util, "spawnv_passfds", None)
+    event: flag the test from the function they all go through. A
+    subinterpreter (``concurrent.interpreters``, Python 3.14) raises none
+    either, and runs code this interpreter's monitoring does not see."""
+    for module, name in (("multiprocessing.util", "spawnv_passfds"), ("_interpreters", "create")):
+        try:
+            _flag_calls(importlib.import_module(module), name)
+        except ImportError:  # not on this platform or version
+            pass
+
+
+def _flag_calls(module, name: str) -> None:
+    original = getattr(module, name, None)
     if original is None or getattr(original, "__diffcone__", False):
         return
 
     @functools.wraps(original)
-    def spawnv_passfds(*args, **kwargs):
+    def flagged(*args, **kwargs):
         for w in _windows():
             w["flags"] |= FLAG_SUBPROCESS
         return original(*args, **kwargs)
 
-    setattr(spawnv_passfds, "__diffcone__", True)  # noqa: B010
-    setattr(mp_util, "spawnv_passfds", spawnv_passfds)  # noqa: B010
+    setattr(flagged, "__diffcone__", True)  # noqa: B010
+    setattr(module, name, flagged)
 
 
 def _wrap_stat(original):
@@ -511,6 +549,7 @@ class _Writer:
         self.acc["paths"] |= w["paths"]
         self.acc["dirs"] |= w["dirs"]
         self.acc["flags"] |= w["flags"]
+        self.acc["fixtures"] |= w["fixtures"]
 
     def flush(self) -> None:
         if self.current is None:
@@ -521,6 +560,7 @@ class _Writer:
                 "paths": sorted(self.acc["paths"]),
                 "dirs": sorted(self.acc["dirs"]),
                 "flags": self.acc["flags"],
+                "fixtures": sorted(self.acc["fixtures"]),
             }
         ).encode()
         name = self.current.encode()
@@ -556,10 +596,15 @@ def _start() -> None:
     mon.register_callback(TOOL, mon.events.PY_RESUME, _on_resume)
     mon.register_callback(TOOL, mon.events.PY_RETURN, _on_return)
     mon.register_callback(TOOL, mon.events.PY_UNWIND, _on_unwind)
-    mon.set_events(TOOL, mon.events.PY_START | mon.events.PY_RESUME | mon.events.PY_UNWIND)
+    mon.register_callback(TOOL, mon.events.PY_THROW, _on_throw)
+    mon.set_events(
+        TOOL,
+        mon.events.PY_START | mon.events.PY_RESUME | mon.events.PY_UNWIND | mon.events.PY_THROW,
+    )
     sys.addaudithook(_audit)
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
+    os.access = _wrap_stat(os.access)
     # functools.cache goes through it too; a deliberate patch of the stdlib.
     functools.lru_cache = _tracking_lru_cache  # ty: ignore[invalid-assignment]
     _flag_multiprocessing_spawns()
@@ -648,6 +693,10 @@ def pytest_fixture_setup(fixturedef, request):
         _drop(w)
 
 
+def fixture_key(key: tuple[str, str, str]) -> str:
+    return "\x1f".join(key)
+
+
 def _drop(window: dict) -> None:
     for i in range(len(active) - 1, -1, -1):
         if active[i] is window:
@@ -681,12 +730,21 @@ def pytest_runtest_protocol(item, nextitem):
     mine = _window()
     active.append(mine)
     importing.clear()  # no import is running when a test starts
+    threads = set(threading.enumerate())
     mon.restart_events()
     try:
         return (yield)
     finally:
         _drop(mine)
         mon.restart_events()
+        try:
+            # A thread the test started that is still running runs code no
+            # record names (between tests, or credited to later ones): the
+            # test is flagged like one that started a subprocess.
+            if any(t.is_alive() and t not in threads for t in threading.enumerate()):
+                mine["flags"] |= FLAG_SUBPROCESS
+        except Exception as exc:
+            _error("threads", exc)
         try:
             defs = list(used_fixtures.pop(item.nodeid, ()))
             info = getattr(item, "_fixtureinfo", None)
@@ -695,9 +753,9 @@ def pytest_runtest_protocol(item, nextitem):
                     defs.extend(info.name2fixturedefs.get(name, ()))
             for fixturedef in defs:
                 if fixturedef.scope != "function":
-                    shared = fixture_windows.get(
-                        (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
-                    )
+                    key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
+                    mine["fixtures"].add(fixture_key(key))
+                    shared = fixture_windows.get(key)
                     if shared:
                         mine["codes"] |= shared["codes"]
                         mine["paths"] |= shared["paths"]
@@ -736,6 +794,7 @@ def _finish():
             mon.events.PY_RESUME,
             mon.events.PY_RETURN,
             mon.events.PY_UNWIND,
+            mon.events.PY_THROW,
         ):
             mon.register_callback(TOOL, event, None)
         mon.free_tool_id(TOOL)
@@ -762,6 +821,17 @@ def _finish():
         "import_by": {str(k): sorted(v) for k, v in import_by.items()},
         "hook_phase": sorted(hook_codes),
         "outside_modules": sorted(outside),
+        # What each shared fixture ran here: a fixture computed once for
+        # every worker (a file lock and a cache file) runs its code in one.
+        "fixtures": {
+            fixture_key(key): {
+                "codes": sorted(w["codes"]),
+                "paths": sorted(w["paths"]),
+                "dirs": sorted(w["dirs"]),
+                "flags": w["flags"],
+            }
+            for key, w in sorted(fixture_windows.items())
+        },
         "environment": env,
         "environment_hash": environment_hash(env),
         "wrote_tests": writer is not None,

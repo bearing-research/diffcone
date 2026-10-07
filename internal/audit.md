@@ -167,14 +167,14 @@ precision blow-ups introduced by round 1's fixes come first.
 
 | id | finding | status |
 |---|---|---|
-| E13 | Windows: recorded paths keep `\\`, so nothing maps to a symbol and almost nothing is selected. | open |
-| E14 | xdist "compute once" session fixtures: only the computing worker's tests are credited. | open |
-| E15 | A thread outliving its test runs project code no record names. | open |
-| E16 | A generator or coroutine re-entered with `.throw()`/`.close()` is not seen (PY_THROW). | open |
-| E17 | Python 3.14 subinterpreters are not flagged. | open |
-| E18 | An indexed `.py` file read as data (`exec(open(...))`, `inspect.getsource`) selects nothing when it changes. | open |
+| E13 | Windows: recorded paths keep `\\`, so nothing maps to a symbol and almost nothing is selected. | fixed (round 2, E batch) |
+| E14 | xdist "compute once" session fixtures: only the computing worker's tests are credited. | fixed (round 2, E batch) |
+| E15 | A thread outliving its test runs project code no record names. | fixed (round 2, E batch) |
+| E16 | A generator or coroutine re-entered with `.throw()`/`.close()` is not seen (PY_THROW). | fixed (round 2, E batch) |
+| E17 | Python 3.14 subinterpreters are not flagged. | fixed (round 2, E batch) |
+| E18 | An indexed `.py` file read as data (`exec(open(...))`, `inspect.getsource`) selects nothing when it changes. | fixed (round 2, E batch) |
 | E19 | Compiled/build file suffixes incomplete and case-sensitive (`Cargo.toml`, `.c.src`, `.F90`, `.pyf`, `.i`). | fixed (round 2) |
-| E20 | Files opened by C code (`sqlite3.connect`, `ctypes.dlopen`, `os.access`) are not touches. | open |
+| E20 | Files opened by C code (`sqlite3.connect`, `ctypes.dlopen`, `os.access`) are not touches. | fixed (round 2, E batch) |
 
 ## Running and CI (R, continued)
 

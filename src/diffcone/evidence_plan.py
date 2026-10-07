@@ -541,6 +541,12 @@ class _Observers:
             if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):
                 what = f"{change.id} {'/'.join(change.changes)}"
                 self._file(symbol.path, what, names=True)
+        # A source file is also data to whoever reads it as a file
+        # (``exec(open("version.py").read())``, ``inspect.getsource``): its
+        # edit reaches the tests that opened it.
+        for path in sorted({c.symbol.path for c in self.changes} - set(self.files)):
+            if path.endswith(".py") and path not in BUILD_SCRIPTS:
+                self._file(path, "edited", names=False)
         for path, what in sorted(self.outside.items()):
             if path.rsplit("/", 1)[-1] == "conftest.py":
                 # pytest loads it for tests that never ran a line of it (a new
