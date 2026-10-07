@@ -7,6 +7,7 @@ test or benchmark whose outcome changes was not selected.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 
 import pytest
@@ -2597,6 +2598,34 @@ def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, prob
                 "import subprocess\nimport sys\n\nfrom lib.core import f\n\n\ndef test_p():\n"
                 f"    subprocess.run([sys.executable] + {probe}, capture_output=True)\n"
                 "    f()\n"
+            ),
+        },
+        {"lib/other.py": "def g():\n    return 2\n"},
+    )
+    assert ("tests/test_p.py::test_p" in chosen) is flagged
+
+
+@needs_monitoring
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv")
+@pytest.mark.parametrize(
+    "command, flagged",
+    [
+        # strata caches this probe; the recorder clears project caches before
+        # each test, so every test that reached it was flagged.
+        ("['uv', 'python', 'list', '--only-installed']", False),
+        ("['uv', 'run', '--no-project', 'python', '-c', 'pass']", True),
+    ],
+)
+def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_p.py": (
+                "import subprocess\n\n\ndef test_p():\n"
+                f"    subprocess.run({command}, capture_output=True)\n"
             ),
         },
         {"lib/other.py": "def g():\n    return 2\n"},

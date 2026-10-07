@@ -451,17 +451,27 @@ def _audit(event, args):
 
 # Single-letter interpreter options that take no value and load no code.
 _PLAIN_OPTIONS = frozenset({"-I", "-E", "-S", "-s", "-B", "-u", "-O", "-OO", "-q", "-P"})
+# Other programs' queries that run no Python of the project: (program, the
+# arguments that start the command line). ``uv run``, ``git`` (hooks) and
+# console scripts can run project code and are not here.
+_INERT_QUERIES = (
+    ("uv", ("python", "list")),
+    ("uv", ("python", "find")),
+    ("uv", ("python", "dir")),
+    ("uv", ("--version",)),
+    ("uv", ("-V",)),
+)
 # Ways a ``-c`` snippet could load code that is not written in it.
 _CODE_LOADERS = re.compile(r"\b(exec|eval|open|runpy|import_module|__import__|compile)\b")
 
 
 def _inert_probe(event: str, args: tuple) -> bool:
-    """Whether a subprocess is a Python interpreter running a ``-c`` snippet
-    that cannot run project code (``python -c "import sys;
-    print(sys.version_info)"``, how tools probe an interpreter's version):
-    the snippet names no project package and loads no code by name. Anything
-    else (``-m``, a script, another program, ``os.system``) may run project
-    code where this process cannot see it."""
+    """Whether a subprocess cannot run project code: a Python interpreter
+    running a ``-c`` snippet that names no project package and loads no code
+    by name (``python -c "import sys; print(sys.version_info)"``, how tools
+    probe an interpreter's version), or one of ``_INERT_QUERIES`` (``uv
+    python list``). Anything else (``-m``, a script, another program,
+    ``os.system``) may run project code where this process cannot see it."""
     if event == "subprocess.Popen":
         argv = args[1] if len(args) > 1 else None
     elif event in ("os.posix_spawn", "os.exec"):
@@ -477,7 +487,12 @@ def _inert_probe(event: str, args: tuple) -> bool:
     if not argv:
         return False
     program = argv[0]
-    if not (os.path.basename(program).startswith("python") or program == sys.executable):
+    name = os.path.basename(program)
+    if any(
+        name == tool and tuple(argv[1 : 1 + len(start)]) == start for tool, start in _INERT_QUERIES
+    ):
+        return True
+    if not (name.startswith("python") or program == sys.executable):
         return False
     i = 1
     while i < len(argv) and argv[i] in _PLAIN_OPTIONS:

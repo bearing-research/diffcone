@@ -64,7 +64,7 @@ report:
 - Tests with no recording (new tests, for example), tests whose recording
   was unstable, and tests that started a subprocess or a subinterpreter are
   always selected. A `python -c` snippet that can't run your code (a
-  version check) doesn't count. Code that background threads are running
+  version check) or `uv python list` doesn't count. Code that background threads are running
   while a test runs is credited to that test.
 - Changes to compiled sources, build files and configuration select every
   test.

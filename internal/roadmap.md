@@ -598,8 +598,13 @@ print(sys.version_info...)`); 866 only leave a thread running (strata's
   then `-c CODE`, where CODE names none of the project's top-level packages
   (`DIFFCONE_COLLECT_PACKAGES`, as a word) and none of `exec`, `eval`,
   `open`, `runpy`, `import_module`, `__import__`, `compile`, runs no project
-  code: it does not flag the test. Anything else (`-m`, a script, `uv run`,
-  a shell, `os.system`) still does.
+  code: it does not flag the test. Nor does a short list of other programs'
+  queries that run no Python of the project (`uv python list|find|dir`,
+  `uv --version`): strata caches `uv python list` with `lru_cache`, the
+  recorder clears project caches before each test so that cached work is
+  recorded, and so every test reaching it ran, and was flagged for, the
+  query (1 852 tests). Anything else (`-m`, a script, `uv run`, `git`,
+  whose hooks may run project code, a shell, `os.system`) still does.
 * *Threads.* The E15 flag (a test that leaves a thread running is always
   selected) protects the wrong test: code the thread runs during that test
   is already recorded for it. The gap is a later test during which a

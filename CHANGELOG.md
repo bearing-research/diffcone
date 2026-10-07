@@ -18,7 +18,8 @@ selection rules.
 ### Execution evidence
 
 - A test that runs a `python -c` snippet that can't run project code (an
-  interpreter version check) is no longer always selected.
+  interpreter version check) or `uv python list` is no longer always
+  selected.
 - A test that leaves a thread running is no longer always selected;
   instead every test is credited with the code background threads are in
   the middle of while it runs, which also covers a later test running
