@@ -340,9 +340,13 @@ unbounded.
 every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
 directly, via `.keys()`, or as the first name of a `for key, value in
-D.items()` target), a dict literal's string values (`D[key]`, `D.values()`,
-or the second name of a `for key, value in D.items()` target) or a sequence
-literal's elements (`L[i]`, a slice excepted), a variable assigned
+D.items()` target), a dict literal's string values (`D[key]`,
+`D.get(key)`, `D.get(key, None)`, `D.values()`, or the second name of a `for
+key, value in D.items()` target) or a sequence literal's elements (`L[i]`,
+a slice excepted), the strings in the tuples a dict or sequence literal
+holds, indexed twice (`target = D.get(name)` then `target[0]`, a PEP 562
+lazy-export `__getattr__`: which position a string holds is not kept, so
+every string of every tuple is a candidate), a variable assigned
 only such values (in the function or at module level) and never mutated in
 place (a `REGISTRY = {}` that any module fills with `REGISTRY[k] = v`, an
 `append`, an `update` or a `del` is not the literal it was assigned, in
@@ -962,7 +966,14 @@ Further rules (pre-release audit, round 2):
   `conftest.py` or `asv.conf.json`) selects every target, as a changed
   unanalysed file under the roots does.
 * A test framework's `*TestCase` imported into a test module (`from
-  django.test import TestCase`) yields no tests and is not reported.
+  django.test import TestCase`) yields no tests and is not reported; nor
+  does a library's test helper named like a test class whose `__init__`
+  keeps pytest from collecting it (`LIBRARY_NON_TESTS`: starlette's and
+  FastAPI's `TestClient`, aiohttp's `TestClient` and `TestServer`, ...).
+* Only the conftests pytest loads count: in a collected directory (under a
+  `testpaths` entry, or anywhere without one) or in a directory above an
+  entry. A sibling package's own `packages/x/tests/conftest.py` is never
+  imported by a session collecting `tests/`.
 
 Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),

@@ -14,6 +14,21 @@ from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES
 # beside what iterating it yields (stored under NAME itself). No identifier
 # contains a bracket, so the two can never collide.
 INDEXED = "[]"
+# What indexing an *element* of the literal yields: a table of tuples
+# (``{"Config": ("pkg.config", "Config")}``) indexed twice, as a lazy-export
+# ``__getattr__`` does with ``target = TABLE.get(name)`` then
+# ``import_module(target[0])``.
+NESTED = INDEXED + INDEXED
+
+
+def literal_keys(name: str) -> tuple[str, str, str]:
+    """Every table key a binding of ``name`` writes."""
+    return name, name + INDEXED, name + NESTED
+
+
+def literal_base(key: str) -> str:
+    """The name a table key belongs to."""
+    return key.split("[", 1)[0]
 
 
 def _constant_string(expr: ast.expr) -> str | None:
@@ -69,9 +84,30 @@ def _string_candidates(
     # ``D.values()`` over a dict literal with string values yields them.
     if (receiver := _dict_method_receiver(expr, "values")) is not None:
         return _indexed(receiver, local_literals, module_literals)
-    # ``D[key]`` / ``L[i]``: one of the literal's values (a slice is not one).
+    # ``D[key]`` / ``L[i]`` / ``D.get(key)``: one of the literal's values (a
+    # slice is not one).
+    if (receiver := _item_receiver(expr)) is not None:
+        return _indexed(receiver, local_literals, module_literals)
+    return None
+
+
+def _item_receiver(expr: ast.expr) -> ast.expr | None:
+    """``D`` when ``expr`` takes one item of ``D``: ``D[key]`` (not a slice),
+    or ``D.get(key)`` / ``D.get(key, None)``, whose ``None`` is no string."""
     if isinstance(expr, ast.Subscript) and not isinstance(expr.slice, ast.Slice):
-        return _indexed(expr.value, local_literals, module_literals)
+        return expr.value
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr == "get"
+        and not expr.keywords
+        and 1 <= len(expr.args) <= 2
+        and (
+            len(expr.args) == 1
+            or (isinstance(expr.args[1], ast.Constant) and expr.args[1].value is None)
+        )
+    ):
+        return expr.func.value
     return None
 
 
@@ -108,7 +144,44 @@ def _indexed(
         if key in local_literals:
             return local_literals[key]
         return module_literals.get(key)
+    # ``TABLE[key][i]``: an element of one of the table's values.
+    if (receiver := _item_receiver(expr)) is not None:
+        return _nested(receiver, local_literals, module_literals)
     return None
+
+
+def _nested(
+    expr: ast.expr,
+    local_literals: dict[str, tuple[str, ...] | None],
+    module_literals: dict[str, tuple[str, ...] | None],
+) -> tuple[str, ...] | None:
+    """Every string indexing an element of ``expr`` may yield, or None when
+    unbounded: a dict display whose values (or a sequence display whose
+    elements) are all sequence displays of string literals, flattened. Which
+    position a string holds is not kept, so ``target[0]`` may be any of them:
+    a superset."""
+    if isinstance(expr, ast.Dict):
+        if any(key is None for key in expr.keys):
+            return None
+        items: list[ast.expr] = list(expr.values)
+    elif isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
+        items = list(expr.elts)
+    elif isinstance(expr, ast.Name):
+        key = expr.id + NESTED
+        if key in local_literals:
+            return local_literals[key]
+        return module_literals.get(key)
+    else:
+        return None
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, (ast.Tuple, ast.List, ast.Set)):
+            return None
+        strings = _constant_strings(item.elts)
+        if strings is None:
+            return None
+        out.extend(strings)
+    return tuple(dict.fromkeys(out))
 
 
 def _dict_method_receiver(expr: ast.expr, method: str) -> ast.expr | None:
@@ -142,13 +215,18 @@ def _collect_literal_bindings(
             found[name] = None if (name in found and found[name] is None) else values
 
     def bind(
-        name: str, values: tuple[str, ...] | None, indexed: tuple[str, ...] | None = None
+        name: str,
+        values: tuple[str, ...] | None,
+        indexed: tuple[str, ...] | None = None,
+        nested: tuple[str, ...] | None = None,
     ) -> None:
         merge(name, values)
         merge(name + INDEXED, indexed)
+        merge(name + NESTED, nested)
 
     def unbind(name: str) -> None:
-        found[name] = found[name + INDEXED] = None
+        for key in literal_keys(name):
+            found[key] = None
 
     # Name stores the forms below bind; every other store of a name
     # (``+=``, walrus, ``with ... as``, unpacking, ``except ... as``, an
@@ -173,10 +251,11 @@ def _collect_literal_bindings(
         if isinstance(n, ast.Assign):
             values = _string_candidates(n.value, found, module_literals)
             items = _indexed(n.value, found, module_literals)
+            nested = _nested(n.value, found, module_literals)
             for target in n.targets:
                 if isinstance(target, ast.Name):
                     handled.add(id(target))
-                    bind(target.id, values, items)
+                    bind(target.id, values, items, nested)
         elif isinstance(n, ast.AnnAssign) and n.value is not None:
             if isinstance(n.target, ast.Name):
                 handled.add(id(n.target))
@@ -184,6 +263,7 @@ def _collect_literal_bindings(
                     n.target.id,
                     _string_candidates(n.value, found, module_literals),
                     _indexed(n.value, found, module_literals),
+                    _nested(n.value, found, module_literals),
                 )
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
             handled.add(id(n.target))

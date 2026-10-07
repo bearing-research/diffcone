@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from diffcone.testing import (
     asv_target,
     changes,
@@ -2715,6 +2717,83 @@ def test_a_mutated_table_keeps_its_items_loop_dynamic(repo):
     ]
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"t::test_cli", "bench_cli.Load.time_load"}
+    assert [u for u in plan.unresolved if u.kind == "dynamic"]
+
+
+LAZY_INIT = (
+    "import importlib\n\n"
+    "_LAZY = {{'Config': ('pkg.config', 'Config'), 'Plan': ('pkg.plan', 'Plan')}}\n\n\n"
+    "def __getattr__(name):\n"
+    "{lookup}"
+    "    module = importlib.import_module(target[0])\n"
+    "    return getattr(module, target[1])\n"
+)
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        "    target = _LAZY.get(name)\n"
+        "    if target is None:\n        raise AttributeError(name)\n",
+        "    target = _LAZY[name]\n",
+    ],
+)
+def test_a_lazy_export_table_bounds_its_dynamic_import(repo, lookup):
+    """A PEP 562 lazy export (strata's ``__init__``): the module imported
+    is the first item of one of the table's tuples, never any module in
+    scope. Unbounded, it selected every test of every commit."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": LAZY_INIT.format(lookup=lookup),
+            "pkg/config.py": "class Config:\n    LEVEL = 1\n",
+            "pkg/plan.py": "class Plan:\n    pass\n",
+            "pkg/other.py": "STAMP = len('other')\n",
+            "tests/test_lazy.py": (
+                "import pkg\n\n\ndef test_config():\n    assert pkg.Config.LEVEL == 1\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import STAMP\n\n\n"
+                "class Other:\n    def time_other(self):\n        return STAMP\n"
+            ),
+        }
+    )
+    targets = [
+        py_target("t::test_config", "tests.test_lazy.test_config"),
+        asv_target("bench_other.Other.time_other", "benchmarks.bench_other.Other.time_other"),
+    ]
+    other = repo.commit({"pkg/other.py": "STAMP = len('other!')\n"})
+    plan = repo.plan(base, other, targets)
+    assert selected(plan) == {"bench_other.Other.time_other"}
+    assert not [u for u in plan.unresolved if u.kind == "dynamic"]
+
+    config = repo.commit({"pkg/config.py": "class Config:\n    LEVEL = 2\n"})
+    plan = repo.plan(other, config, targets)
+    assert selected(plan) == {"t::test_config"}
+
+
+def test_a_mutated_lazy_export_table_stays_dynamic(repo):
+    """Another module adding an entry makes the table unbounded again."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": LAZY_INIT.format(lookup="    target = _LAZY[name]\n"),
+            "pkg/config.py": "class Config:\n    LEVEL = 1\n",
+            "pkg/plan.py": "class Plan:\n    pass\n",
+            "pkg/extra.py": ("from pkg import _LAZY\n\n_LAZY['Other'] = ('pkg.other', 'STAMP')\n"),
+            "pkg/other.py": "STAMP = len('other')\n",
+            "tests/test_lazy.py": ("import pkg\n\n\ndef test_other():\n    assert pkg.Other\n"),
+            "benchmarks/bench_plan.py": (
+                "from pkg.plan import Plan\n\n\n"
+                "class Make:\n    def time_plan(self):\n        return Plan()\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/other.py": "STAMP = len('other!')\n"})
+    targets = [
+        py_target("t::test_other", "tests.test_lazy.test_other"),
+        asv_target("bench_plan.Make.time_plan", "benchmarks.bench_plan.Make.time_plan"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert "t::test_other" in selected(plan)
     assert [u for u in plan.unresolved if u.kind == "dynamic"]
 
 

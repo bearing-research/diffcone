@@ -6,6 +6,23 @@ All notable changes to diffcone. The format follows
 may change the report schema, the cache and evidence store formats, or
 selection rules.
 
+## [Unreleased]
+
+### Planning
+
+- A dynamic import through a literal table of tuples is bounded by the
+  table: a PEP 562 lazy-export `__getattr__` (`target =
+  _LAZY.get(name)`, then `import_module(target[0])`) no longer reaches every
+  module. `D.get(key)` reads a literal dict like `D[key]`.
+
+### Discovery
+
+- Importing a library's test helper whose name looks like a test class
+  (`from fastapi.testclient import TestClient`, aiohttp's `TestServer`) no
+  longer reports an incomplete target list.
+- A conftest pytest does not load (a sibling package's tests, outside
+  `testpaths`) is no longer read or reported.
+
 ## [0.1.0] - 2026-10-07
 
 The first release.

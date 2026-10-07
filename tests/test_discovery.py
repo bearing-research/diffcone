@@ -1451,3 +1451,58 @@ def test_plugins_declared_by_a_plugin_are_loaded_too(repo):
     plan = repo.plan(base, head, [bench], discover_runners=["pytest"])
     assert selected(plan) == {"tests/test_x.py::test_plain", "tests/test_x.py::test_http"}
     assert "bench.time_noop" in unselected(plan)
+
+
+def _notes(repo, files):
+    rev = repo.commit(files)
+    plan = repo.plan(rev, rev, [], discover_runners=["pytest"])
+    return [(n.kind, n.path) for d in plan.discovery for n in d.notes]
+
+
+def test_a_library_test_client_import_is_not_an_incomplete_target_list(repo):
+    """``from fastapi.testclient import TestClient`` matches ``Test*``, but the
+    class defines ``__init__`` and pytest never collects it: no note, so the
+    plan does not exit 3 (strata imports it in 50 test modules)."""
+    notes = _notes(
+        repo,
+        {
+            "tests/__init__.py": "",
+            "tests/test_api.py": (
+                "from fastapi.testclient import TestClient\n"
+                "from mylib.testing import TestHarness\n\n\n"
+                "def test_api():\n    assert TestClient\n"
+            ),
+        },
+    )
+    kinds = [path for kind, path in notes if kind == "imported_test_out_of_scope"]
+    # One a library is not known to ship as a helper is still reported.
+    assert kinds == ["tests/test_api.py"]
+    assert not any("TestClient" in str(n) for n in notes if n[0] == "imported_test_out_of_scope")
+
+
+def test_a_conftest_pytest_does_not_load_is_not_read(repo):
+    """With ``testpaths = ["tests"]``, a sibling package's conftest is never
+    imported: its unnameable directory is no incomplete target list, and its
+    session hooks are not dependencies. The root conftest, above the
+    testpath, is loaded and still counts."""
+    hook = "def pytest_collection_modifyitems(items):\n    items.sort(key=str{})\n"
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            "pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+            "conftest.py": hook.format(""),
+            "packages/my-pkg/tests/conftest.py": hook.format(""),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    plan = repo.plan(base, base, [bench], discover_runners=["pytest"])
+    assert not plan.incomplete_discovery
+    sibling = repo.commit({"packages/my-pkg/tests/conftest.py": hook.format(", reverse=True")})
+    plan = repo.plan(base, sibling, [bench], discover_runners=["pytest"])
+    assert selected(plan) == set()
+    root = repo.commit({"conftest.py": hook.format(", reverse=True")})
+    plan = repo.plan(sibling, root, [bench], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_a.py::test_a"}

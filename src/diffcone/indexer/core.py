@@ -17,7 +17,7 @@ from diffcone.indexer.facts import (
     _output_to_dict,
     _tuples,
 )
-from diffcone.indexer.literals import INDEXED
+from diffcone.indexer.literals import literal_keys
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.syntax import _digest, decode_source
 from diffcone.model import REFERENCES, Edge, SourceIndex, Symbol
@@ -268,7 +268,8 @@ class Indexer(DynamicBounds):
         for module, name in mutated:
             target = self.scopes.get(module)
             if target is not None and name in target.literal_names:
-                target.literal_names[name] = target.literal_names[name + INDEXED] = None
+                for key in literal_keys(name):
+                    target.literal_names[key] = None
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other

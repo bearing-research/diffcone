@@ -29,8 +29,10 @@ Collected:
   ``__all__`` is computed, except names this module defines itself;
   a name imported from outside the source roots is reported
   (``imported_test_out_of_scope``), since whether it yields tests is
-  unknown, except unittest's names and a test framework's ``*TestCase``
-  (``from django.test import TestCase``), which yield none; a class
+  unknown, except unittest's names, a test framework's ``*TestCase``
+  (``from django.test import TestCase``) and a library's test helper pytest
+  never collects (``LIBRARY_NON_TESTS``: ``from fastapi.testclient import
+  TestClient``), which yield none; a class
   that defines test methods but does not match ``python_classes`` is
   reported too (``uncollected_test_class``): a plugin may collect it, as
   SQLAlchemy's testing plugin collects ``<Name>Test``;
@@ -50,6 +52,8 @@ Collected:
   in pytest 9's order; INI values split as a shell would; an ``addopts``
   override of the configuration (``-o``, ``-c``, ``--rootdir``,
   ``--pyargs``) or path is reported (``unmodelled_runner_option``);
+* only the conftests pytest loads: in a collected directory, or in one
+  above a ``testpaths`` entry;
 * a ``conftest.py`` outside the source roots is reported
   (``conftest_outside_roots``) and is an unknown dependency
   (``conftest:<path>``) of every test under it, so those tests are always
@@ -514,6 +518,20 @@ TESTCASE_FRAMEWORKS = frozenset(
         "IPython",
     }
 )
+
+
+# Classes named like tests that libraries ship for tests to use, by module:
+# each defines ``__init__``, so pytest never collects one (it warns and moves
+# on), and importing one into a test module (``from fastapi.testclient import
+# TestClient``) adds no test.
+LIBRARY_NON_TESTS: dict[str, frozenset[str]] = {
+    "starlette.testclient": frozenset({"TestClient"}),
+    "fastapi.testclient": frozenset({"TestClient"}),
+    "litestar.testing": frozenset({"TestClient"}),
+    "falcon.testing": frozenset({"TestClient"}),
+    "aiohttp.test_utils": frozenset({"TestClient", "TestServer"}),
+    "werkzeug.test": frozenset({"TestResponse"}),
+}
 
 
 def _framework_base(
@@ -1387,6 +1405,24 @@ def _testpath_exists(entry: str, paths: set[str]) -> bool:
     return any(p == tp or p.startswith(tp + "/") for p in paths)
 
 
+def _conftest_loaded(path: str, testpaths: tuple[str, ...], norecursedirs: tuple[str, ...]) -> bool:
+    """Whether pytest loads the conftest at ``path``: it is in a directory
+    pytest collects (under a ``testpaths`` entry, or anywhere without one),
+    or in a directory above an entry (pytest loads those first)."""
+    if not _collected_dir(path, norecursedirs):
+        return False
+    if _under_testpaths(path, testpaths):
+        return True
+    directory = str(PurePosixPath(path).parent)
+    for raw in testpaths:
+        tp = _normalise_testpath(raw)
+        if any(ch in tp for ch in "*?["):
+            return True  # a glob: where it matches is not worth guessing
+        if directory == "." or tp.startswith(directory + "/"):
+            return True
+    return False
+
+
 def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
     """Whether ``path`` lies under one of pytest's ``testpaths`` entries.
 
@@ -1691,7 +1727,15 @@ def discover_pytest(
                     path,
                 )
             )
-    conftest_paths = [p for p in snapshot.files if PurePosixPath(p).name == "conftest.py"]
+    norecurse = tuple(config["norecursedirs"])
+    # Only the conftests pytest loads: those on the way to a testpaths entry
+    # and those in directories it collects. One elsewhere (a sibling
+    # package's own test suite) is never imported.
+    conftest_paths = [
+        p
+        for p in snapshot.files
+        if PurePosixPath(p).name == "conftest.py" and _conftest_loaded(p, testpaths, norecurse)
+    ]
     # A conftest outside the source roots is not read: its fixtures, hooks
     # and import-time code are invisible, so every test under it depends on
     # it as an unknown (selected, with this note saying why).
@@ -1700,7 +1744,7 @@ def discover_pytest(
         for p in snapshot.python_paths
         if PurePosixPath(p).name == "conftest.py"
         and p not in snapshot.files
-        and _collected_dir(p, tuple(config["norecursedirs"]))
+        and _conftest_loaded(p, testpaths, norecurse)
     )
 
     def outside_conftests_of(path: str) -> list[str]:
@@ -2636,6 +2680,7 @@ def _collect_module_tests(
                         outside.split(".")[0] in TESTCASE_FRAMEWORKS
                         and alias.name.endswith("TestCase")
                     )
+                    or alias.name in LIBRARY_NON_TESTS.get(outside, ())
                 ):
                     result.notes.append(
                         DiscoveryNote(

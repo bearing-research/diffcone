@@ -8,9 +8,11 @@ from dataclasses import dataclass, field
 
 from diffcone.indexer.literals import (
     INDEXED,
+    NESTED,
     _collect_literal_bindings,
     _literal_strings,
     _string_candidates,
+    literal_base,
 )
 
 
@@ -132,9 +134,7 @@ class Scope:
             if self.literal_parent is not None:
                 parent = self.literal_parent.literal_names
                 names = {
-                    k: v
-                    for k, v in parent.items()
-                    if k.removesuffix(INDEXED) not in self.literal_bound
+                    k: v for k, v in parent.items() if literal_base(k) not in self.literal_bound
                 }
             if self.literal_node is not None:
                 names.update(
@@ -142,6 +142,7 @@ class Scope:
                 )
             names.update(self.literal_extra)
             names.update({k + INDEXED: None for k in self.literal_extra})
+            names.update({k + NESTED: None for k in self.literal_extra})
             self._literal_cache = names
         return self._literal_cache
 
