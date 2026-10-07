@@ -94,7 +94,8 @@ def _help(action: argparse.Action) -> str:
         parts.append("One of " + ", ".join(f"`{c}`" for c in action.choices) + ".")
     if isinstance(action, argparse._AppendAction) and "repeatable" not in (action.help or ""):
         parts.append("Repeatable.")
-    if action.required:
+    # Python 3.11's argparse marks a ``nargs="*"`` positional required.
+    if action.required and action.option_strings:
         parts.insert(0, "**Required.**")
     # ``<repo>`` would be read as an HTML tag.
     text = " ".join(p for p in parts if p).replace("<", "&lt;").replace(">", "&gt;")
