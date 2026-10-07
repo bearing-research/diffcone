@@ -1130,7 +1130,8 @@ selection rules.</p>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
-  interpreter version check) is no longer always selected.</li>
+  interpreter version check) or <code>uv python list</code> is no longer always
+  selected.</li>
 <li>A test that leaves a thread running is no longer always selected;
   instead every test is credited with the code background threads are in
   the middle of while it runs, which also covers a later test running
