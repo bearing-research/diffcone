@@ -118,6 +118,12 @@ class Scope:
     method: str = ""
     # ``self_name`` names the class (``cls`` of a classmethod), not an instance.
     self_is_class: bool = False
+    # A class body's own scope: the members it has defined (``value =
+    # property(_get)`` names the method) resolve before module names, and
+    # scopes nested in it (lambdas, comprehensions, functions) do not see the
+    # class's names at all, as Python's scoping rules say.
+    class_members: dict[str, str] = field(default_factory=dict)
+    class_level: bool = False
 
     @property
     def literal_names(self) -> dict[str, tuple[str, ...] | None]:

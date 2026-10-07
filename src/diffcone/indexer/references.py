@@ -43,6 +43,23 @@ if TYPE_CHECKING:
     from diffcone.indexer.resolver import Resolver
 
 
+# Calls that read a file's text or bytes: code built from them is not the
+# program's own.
+FILE_READS = frozenset(
+    {"open", "read", "read_text", "read_bytes", "get_data", "read_binary", "files", "readlines"}
+)
+
+
+def _reads_files(node: ast.AST) -> bool:
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in FILE_READS:
+                return True
+    return False
+
+
 class _ReferenceCollector(ast.NodeVisitor):
     """Walk a symbol's code and record edges / unresolved references.
 
@@ -77,7 +94,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.scope = Scope(
             module=outer.module,
             local_imports=outer.local_imports,
-            locals=outer.locals | bound,
+            # A class body's names are not visible in scopes nested in it.
+            locals=(set() if outer.class_level else outer.locals) | bound,
             self_name=None if outer.self_name in bound else outer.self_name,
             self_class=None if outer.self_name in bound else outer.self_class,
             self_is_class=outer.self_is_class,
@@ -431,7 +449,23 @@ class _ReferenceCollector(ast.NodeVisitor):
             ):
                 self.indexer.out.reflection.add((self.source, f"{name}()"))
             if builtin and parts[0] in DYNAMIC_CALLS:
-                self._dynamic(f"{name}()")
+                code = node.args[0] if node.args else None
+                literal = isinstance(code, ast.Constant) and isinstance(code.value, str)
+                scope_node = self.scope.literal_node or self.scope.module.tree
+                if (
+                    parts[0] in ("exec", "eval")
+                    and code is not None
+                    and not literal
+                    and (
+                        _reads_files(code) or (scope_node is not None and _reads_files(scope_node))
+                    )
+                ):
+                    # Code read from a file at run time (``exec(open("plugin.py")
+                    # .read())``) can import anything; code generated from the
+                    # program's own templates reaches only what its module can.
+                    self._dynamic(f"{name}() of code read at run time: an import of anything")
+                else:
+                    self._dynamic(f"{name}()")
             elif builtin and parts[0] == "__import__":
                 self._import_module(node, "__import__")
             elif builtin and parts[0] == "getattr":

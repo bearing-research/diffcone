@@ -134,12 +134,12 @@ precision blow-ups introduced by round 1's fixes come first.
 
 | id | finding | status |
 |---|---|---|
-| S1 | A src layout planned with the default root `.` names `src/calc/ops.py` `src.calc.ops`; `from calc.ops import add` resolves to nothing, counted as external: complete plan, 0 selected (getting-started's own journey; every static fallback in CI). | open |
-| S2 | Functions reached only through a registering decorator (`@show.register`, `@register` filling a registry, `@app.command`, a class registered by `__init_subclass__` whose special methods change) are unreachable. | open |
-| S3 | Class scope: class-level defs are missing from the class body's own scope (a method name used in the body resolves to a module-level homonym), and class bindings leak into lambdas and comprehensions in the class body. | open |
-| S4 | Star imports lose to earlier bindings: `from a import f` then `from b import *` (or two star imports, the settings pattern) resolves `f` to the first; at runtime the last wins. | open |
-| S5 | Added imports from outside the source roots (`from json import dumps` fixing a NameError, `from __future__ import annotations`, a builtin shadowed by an import) are invisible: unresolved/external references are not in dependency signatures. | open |
-| S6 | `exec`/`eval`/`compile` of text read from a file is bounded by the import closure; the file need not be imported (`exec(open("version.py").read())`, plugin loaders). | open |
+| S1 | A src layout planned with the default root `.` names `src/calc/ops.py` `src.calc.ops`; `from calc.ops import add` resolves to nothing, counted as external: complete plan, 0 selected (getting-started's own journey; every static fallback in CI). | fixed (round 2, S batch) |
+| S2 | Functions reached only through a registering decorator (`@show.register`, `@register` filling a registry, `@app.command`, a class registered by `__init_subclass__` whose special methods change) are unreachable. | fixed (round 2, S batch) |
+| S3 | Class scope: class-level defs are missing from the class body's own scope (a method name used in the body resolves to a module-level homonym), and class bindings leak into lambdas and comprehensions in the class body. | fixed (round 2, S batch) |
+| S4 | Star imports lose to earlier bindings: `from a import f` then `from b import *` (or two star imports, the settings pattern) resolves `f` to the first; at runtime the last wins. | fixed (round 2, S batch) |
+| S5 | Added imports from outside the source roots (`from json import dumps` fixing a NameError, `from __future__ import annotations`, a builtin shadowed by an import) are invisible: unresolved/external references are not in dependency signatures. | fixed (round 2, S batch) |
+| S6 | `exec`/`eval`/`compile` of text read from a file is bounded by the import closure; the file need not be imported (`exec(open("version.py").read())`, plugin loaders). | fixed (round 2, S batch) |
 | S7 | Names consumed through strings (`monkeypatch.setattr("a.b.X", ...)`, `mock.patch("a.b.c")`, a string `skipif` condition) or deleted literal variables used by other modules' tests are not dependencies. | open |
 | S8 | An import-time write to another module's globals (`settings.DEBUG = True` in a conftest) reaches only the writer's module. | open |
 | S9 | `setup.py` (and other build hooks) is indexed as a module nobody imports, so a build change selects nothing. | open |

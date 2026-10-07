@@ -205,6 +205,38 @@ A name or dotted chain `a.b.c` is resolved from its base:
    symbol is never misattributed to a third-party package.
 8. Builtins and dunder names are ignored, unless the program binds the same
    name itself.
+
+Further rules (pre-release audit, round 2):
+
+* A class body's own scope holds its members: a name used there (or in a
+  method's decorators and defaults) that the class defines resolves to the
+  member and, since order is not tracked, to the module's binding too.
+  Lambdas, comprehensions and functions nested in a class body do not see
+  the class's names.
+* Star imports bind like any import: a name bound by a star import and by
+  anything else, or by several star imports, depends on every in-scope
+  candidate (the last binding wins at runtime).
+* An absolute import whose top-level name is not in scope but names an
+  analysed package under a plain directory (`calc` for `src.calc` when the
+  root is `.`) is an unbounded dynamic import naming the likely source root,
+  not a third-party one.
+* `exec`/`eval` of code read from a file at run time (the argument, or the
+  scope it is in, calls `open`, `read_text`, `get_data`, ...) is an
+  unbounded dynamic import; code generated from the program's own strings
+  stays bounded by the import closure.
+* Registration: a decorator not known inert records the function it
+  decorates; after resolution, the decorator's receiver (`show` in
+  `@show.register(int)`, `app` in `@app.command`), each variable a decorator
+  function writes into (a `REG` filled by `@register`), and a base class
+  with `__init_subclass__` get `references` edges (detail `registers`) to
+  what they hold. Impact through such an edge is REGISTERED: it reaches the
+  code that later calls the registry, not the import-time code that
+  registers.
+* Dependency signatures include each symbol's unresolved and external
+  references (when its body did not change), so a name that starts resolving
+  (`from json import dumps` fixing a NameError, a builtin shadowed by an
+  import) is `dependencies_added`; a change to `from __future__` imports is
+  a module definition change.
 9. Anything else → unresolved bare name.
 
 Attribute steps walk from module to submodule, module member, module

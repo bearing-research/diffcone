@@ -94,8 +94,12 @@ from diffcone.snapshot import (
     split_root,
 )
 
-BEHAVIOR = 1
-STRUCTURAL = 2
+# Impact modes, weakest first. REGISTERED: what a registry holds changed (a
+# function ``@app.command`` registered): code that later calls the registry
+# behaves differently, the import-time code that registers does not.
+REGISTERED = 1
+BEHAVIOR = 2
+STRUCTURAL = 3
 
 RULE_DEPENDENCY = "dependency"
 RULE_UNRESOLVED_NAME_MATCH = "unresolved_name_match"
@@ -349,9 +353,15 @@ def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[st
     return {item: tuple(r) for item, r in revs.items()}
 
 
-def _propagate(edge: Edge, target_mode: int, target_change: SymbolChange | None) -> int | None:
+def _propagate(
+    edge: Edge, target_mode: int, target_change: SymbolChange | None, source_is_module: bool
+) -> int | None:
     if edge.kind == DEFINED_IN:
         return STRUCTURAL if target_mode == STRUCTURAL else None
+    if edge.detail == "registers":
+        return REGISTERED
+    if target_mode == REGISTERED and source_is_module:
+        return None  # registering ran at import, unchanged
     if edge.kind in (IMPORTS, IMPORTS_NAME):
         if target_change is not None and DELETED in target_change.changes:
             return STRUCTURAL
@@ -732,15 +742,22 @@ def plan_from_indexes(
                 mode[symbol] = BEHAVIOR
                 via[symbol] = None
                 queue.append(symbol)
+    module_nodes = {
+        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
+    }
     while queue:
         node = queue.popleft()
         node_mode = mode[node]
         for source, edge, revs in graph.reverse.get(node, ()):
-            new_mode = _propagate(edge, node_mode, change_by_id.get(node))
+            new_mode = _propagate(edge, node_mode, change_by_id.get(node), source in module_nodes)
             if new_mode is None or new_mode <= mode.get(source, 0):
                 continue
             mode[source] = new_mode
-            via[source] = (edge, revs, node)
+            # A node whose mode rises keeps its old explanation when the new
+            # one would lead back through itself (REG -> register -> REG): the
+            # explanation must end at a change, not loop.
+            if source not in via or not _leads_to(via, node, source):
+                via[source] = (edge, revs, node)
             queue.append(source)
     # The runner imports a target's module to reach it, so the module's
     # import-time code runs before the target whether or not a hand-written
@@ -959,6 +976,21 @@ def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
+def _leads_to(
+    via: dict[str, tuple[Edge, tuple[str, ...], str] | None], start: str, target: str
+) -> bool:
+    """Whether the explanation chain from ``start`` passes through ``target``."""
+    seen: set[str] = set()
+    current: str | None = start
+    while current is not None and current not in seen:
+        if current == target:
+            return True
+        seen.add(current)
+        link = via.get(current)
+        current = link[2] if link is not None else None
+    return False
+
+
 def _explain(
     node: str,
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None],
@@ -971,10 +1003,12 @@ def _explain(
     current = node
     rule = RULE_DEPENDENCY
     pending: tuple[str, str, tuple[str, ...]] | None = None  # (source, detail, revs)
+    walked: set[str] = set()
     while True:
         link = via[current]
-        if link is None:
+        if link is None or current in walked:
             break
+        walked.add(current)
         edge, revs, nxt = link
         if edge.kind == DECLARED and rule == RULE_DEPENDENCY:
             # The path only holds because the project said so; say which rule

@@ -74,11 +74,24 @@ class SymbolChange:
         return self.kind == CLASS and BODY_CHANGED in self.changes
 
 
+# Dependency-signature kinds for references outside the edge graph.
+UNRESOLVED_SIG = "unresolved"
+EXTERNAL_SIG = "external"
+
+
 def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str, str, str]]]:
+    """Each symbol's outgoing edges, and its unresolved and external
+    references: a name that starts resolving to a third-party module (the
+    ``from json import dumps`` that fixes a NameError) changes what the
+    symbol does as much as a new edge does."""
     grouped: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for e in index.edges:
         if e.kind != DEFINED_IN:
             grouped[e.source].add((e.kind, e.target, e.detail))
+    for u in index.unresolved:
+        grouped[u.symbol].add((UNRESOLVED_SIG, f"{u.kind}:{u.name}", ""))
+    for x in index.external:
+        grouped[x.symbol].add((EXTERNAL_SIG, x.module, ""))
     return {source: frozenset(sig) for source, sig in grouped.items()}
 
 
@@ -152,7 +165,9 @@ def _module_additions_matter(
     added, and reached through its own change."""
     closure = base_closures.get(module, {module})
     for kind, _target, _detail in added:
-        if kind not in (IMPORTS, IMPORTS_NAME):
+        # A new third-party import is not import-time code of the project's
+        # (installed code is assumed unchanged); anything else is.
+        if kind not in (IMPORTS, IMPORTS_NAME, EXTERNAL_SIG):
             return True
     modules = {s.id for s in base.symbols.values() if s.kind == MODULE}
     newly_run = _runtime_imports(h, modules) - _runtime_imports(b, modules)
@@ -192,10 +207,12 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         if b.kind != h.kind:
             kinds.append(DEFINITION_CHANGED)
         elif b.definition_hash != h.definition_hash:
+            future = {i for i in set(b.imports) ^ set(h.imports) if i.startswith("from __future__")}
             if (
                 b.kind == MODULE
                 and set(b.imports) <= set(h.imports)
                 and _is_subsequence(b.import_layout, h.import_layout)
+                and not future
             ):
                 kinds.append(IMPORTS_ADDED)
             else:
@@ -205,11 +222,22 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             kinds.append(ANNOTATIONS_CHANGED if deferred else DEFINITION_CHANGED)
         before = base_deps.get(symbol_id, empty)
         after = head_deps.get(symbol_id, empty)
+        if BODY_CHANGED in kinds or DEFINITION_CHANGED in kinds:
+            # The edit itself explains new unresolved and external references;
+            # they matter on their own only when a binding moved under them.
+            before = frozenset(d for d in before if d[0] not in (UNRESOLVED_SIG, EXTERNAL_SIG))
+            after = frozenset(d for d in after if d[0] not in (UNRESOLVED_SIG, EXTERNAL_SIG))
+        # A name that stopped being unresolved now resolves: an addition, not
+        # a redirect (which is a resolved dependency lost or moved).
+        lost = {d for d in before - after if d[0] != UNRESOLVED_SIG}
+        resolved_now = any(d[0] == UNRESOLVED_SIG for d in before - after)
         if before != after:
-            if not before <= after:
+            if lost:
                 kinds.append(DEPENDENCIES_CHANGED)
-            elif h.kind != MODULE or _module_additions_matter(
-                symbol_id, after - before, base_closures, base, b, h
+            elif (
+                h.kind != MODULE
+                or resolved_now
+                or _module_additions_matter(symbol_id, after - before, base_closures, base, b, h)
             ):
                 kinds.append(DEPENDENCIES_ADDED)
             elif IMPORTS_ADDED not in kinds:

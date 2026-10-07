@@ -58,6 +58,9 @@ class IndexerState:
         self._descendants: dict[str, tuple[str, ...]] = {}
         # Import bindings being resolved (guards self-referential imports).
         self._resolving_bindings: set[tuple[str, str]] = set()
+        # Top-level import name -> the analysed package it most likely means
+        # under another root (see Resolver._misrooted); built on first use.
+        self._misrooted_names: dict[str, str] | None = None
         # Classes with an unresolved ``super().<name>``, per name (final pass).
         self._super_misses: dict[str, set[str]] = defaultdict(set)
 

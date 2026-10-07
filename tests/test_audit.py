@@ -1562,3 +1562,238 @@ def test_f9_a_dot_slash_source_root_is_the_same_root():
     from diffcone.snapshot import split_root
 
     assert split_root("./src") == split_root("src") == ("src", "")
+
+
+# S1: a src layout under the root ``.`` is not silently third-party.
+
+
+def test_s1_an_import_the_roots_name_differently_is_unbounded(repo):
+    base = repo.commit(
+        {
+            "src/calc/__init__.py": "",
+            "src/calc/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_calc.py": (
+                "from calc.ops import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+            ),
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    head = repo.commit({"src/calc/ops.py": "def add(a, b):\n    return a - b\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_calc.py::test_add" in selected(plan)
+    assert any("source root" in u.detail for u in plan.unresolved)
+
+
+# S5: imports from outside the source roots change what a name means.
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (
+            "def f():\n    return dumps({})\n",
+            "from json import dumps\n\n\ndef f():\n    return dumps({})\n",
+        ),
+        (
+            "def f(x):\n    return round(x)\n",
+            "from math import floor as round\n\n\ndef f(x):\n    return round(x)\n",
+        ),
+        (
+            "import dataclasses\n\n\n@dataclasses.dataclass\nclass D:\n    x: int = 0\n\n\n"
+            "def f():\n    return dataclasses.fields(D)[0].type\n",
+            "from __future__ import annotations\n\nimport dataclasses\n\n\n@dataclasses.dataclass\n"
+            "class D:\n    x: int = 0\n\n\ndef f():\n    return dataclasses.fields(D)[0].type\n",
+        ),
+    ],
+)
+def test_s5_an_import_from_outside_the_roots_reaches_the_names_users(repo, before, after):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": before,
+            "pkg/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": (
+                "from pkg.m import f\n\n\n"
+                "def test_f():\n    f(1.5) if f.__code__.co_argcount else f()\n"
+            ),
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({"pkg/m.py": after})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_m.py::test_f" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S4: a star import may rebind a name bound earlier.
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "from pkg.a import helper\nfrom pkg.b import *\n",
+        "def helper():\n    return 0\n\n\nfrom pkg.b import *\n",
+        "from pkg.a import *\nfrom pkg.b import *\n",
+        "from pkg.a import *\n\ntry:\n    from pkg.b import *\nexcept ImportError:\n    pass\n",
+    ],
+)
+def test_s4_a_later_star_import_reaches_the_names_users(repo, binding):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "def helper():\n    return 1\n",
+            "pkg/b.py": "def helper():\n    return 2\n",
+            "pkg/s.py": binding + "\n\ndef use():\n    return helper()\n",
+            "pkg/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_s.py": "from pkg.s import use\n\n\ndef test_use():\n    use()\n",
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({"pkg/b.py": "def helper():\n    return 22\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_s.py::test_use" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S3: class-body scoping.
+
+
+@pytest.mark.parametrize(
+    ("body", "changed"),
+    [
+        # A method name used in the class body, with a module-level homonym.
+        (
+            "def _get(self):\n    return 0\n\n\nclass C:\n    def _get(self):\n        return 1\n\n"
+            "    value = property(_get)\n\n\ndef make():\n    return C().value\n",
+            ("    def _get(self):\n        return 1\n", "    def _get(self):\n        return 11\n"),
+        ),
+        # A class binding is invisible inside a comprehension of the class body.
+        (
+            "def scale(x):\n    return x\n\n\nclass C:\n    scale = 10\n"
+            "    ITEMS = [scale(x) for x in range(3)]\n\n\ndef make():\n    return C.ITEMS\n",
+            ("def scale(x):\n    return x\n", "def scale(x):\n    return -x\n"),
+        ),
+    ],
+)
+def test_s3_class_body_names_resolve_as_python_scopes_them(repo, body, changed):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": body,
+            "pkg/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from pkg.m import make\n\n\ndef test_make():\n    make()\n",
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({"pkg/m.py": body.replace(*changed)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_m.py::test_make" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S6: code read from a file at run time can reach anything.
+
+
+def test_s6_exec_of_a_files_text_reaches_that_file(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/helpers.py": "def h():\n    return 1\n",
+            "pkg/m.py": (
+                "import os\n\nns = {}\nhere = os.path.dirname(__file__)\n"
+                "exec(open(os.path.join(here, 'helpers.py')).read(), ns)\n"
+                "h = ns['h']\n"
+            ),
+            "pkg/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from pkg.m import h\n\n\ndef test_h():\n    assert h() == 1\n",
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({"pkg/helpers.py": "def h():\n    return 22\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_m.py::test_h" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)
+
+
+# S2: functions a decorator registers are reached through what holds them.
+
+
+@pytest.mark.parametrize(
+    ("files", "changed"),
+    [
+        (
+            {
+                "pkg/__init__.py": "from pkg import impls\n",
+                "pkg/core.py": (
+                    "from functools import singledispatch\n\n\n@singledispatch\n"
+                    "def show(x):\n    return 'obj'\n"
+                ),
+                "pkg/impls.py": (
+                    "from pkg.core import show\n\n\n"
+                    "@show.register(int)\ndef _(x):\n    return 'int'\n"
+                ),
+                "tests/test_r.py": (
+                    "import pkg\nfrom pkg.core import show\n\n\ndef test_r():\n    show(1)\n"
+                ),
+            },
+            ("pkg/impls.py", "'int'", "'INT'"),
+        ),
+        (
+            {
+                "pkg/__init__.py": "",
+                "pkg/reg.py": (
+                    "REG = {}\n\n\n"
+                    "def register(fn):\n    REG[fn.__name__] = fn\n    return fn\n\n\n"
+                    "def dispatch(name):\n    return REG[name]()\n"
+                ),
+                "pkg/handlers.py": (
+                    "from pkg.reg import register\n\n\n@register\ndef hello():\n    return 1\n"
+                ),
+                "tests/test_r.py": (
+                    "import pkg.handlers\nfrom pkg.reg import dispatch\n\n\n"
+                    "def test_r():\n    dispatch('hello')\n"
+                ),
+            },
+            ("pkg/handlers.py", "return 1", "return 11"),
+        ),
+        (
+            {
+                "pkg/__init__.py": "",
+                "pkg/app.py": (
+                    "class App:\n    def __init__(self):\n        self.commands = {}\n\n"
+                    "    def command(self, fn):\n"
+                    "        self.commands[fn.__name__] = fn\n        return fn\n\n"
+                    "    def run(self, name):\n        return self.commands[name]()\n\n\n"
+                    "app = App()\n"
+                ),
+                "pkg/cli.py": (
+                    "from pkg.app import app\n\n\n@app.command\ndef hello():\n    return 1\n"
+                ),
+                "tests/test_r.py": (
+                    "import pkg.cli\nfrom pkg.app import app\n\n\n"
+                    "def test_r():\n    app.run('hello')\n"
+                ),
+            },
+            ("pkg/cli.py", "return 1", "return 11"),
+        ),
+    ],
+)
+def test_s2_a_registered_function_reaches_users_of_the_registry(repo, files, changed):
+    path, old, new = changed
+    base = repo.commit(
+        {
+            **files,
+            "pkg/other.py": "def g():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_g():\n    g()\n",
+        }
+    )
+    head = repo.commit({path: files[path].replace(old, new)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_r.py::test_r" in selected(plan)
+    assert "tests/test_other.py::test_g" in unselected(plan)

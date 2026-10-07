@@ -150,6 +150,9 @@ class _Output:
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     open_classes: set[str] = field(default_factory=set)
     doc_decorated: set[str] = field(default_factory=set)
+    # (decorated symbol, decorator symbol or "", receiver symbol or ""): who
+    # may hold the decorated function afterwards (see Indexer._registrations).
+    decorations: set[tuple[str, str, str]] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -169,6 +172,7 @@ class _Output:
         self.class_bases.update(other.class_bases)
         self.open_classes |= other.open_classes
         self.doc_decorated |= other.doc_decorated
+        self.decorations |= other.decorations
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -228,6 +232,7 @@ def _output_to_dict(out: _Output) -> dict:
         "class_bases": {c: list(b) for c, b in sorted(out.class_bases.items())},
         "open_classes": sorted(out.open_classes),
         "doc_decorated": sorted(out.doc_decorated),
+        "decorations": sorted(list(d) for d in out.decorations),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -294,6 +299,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.class_bases = {c: tuple(b) for c, b in data["class_bases"].items()}
     out.open_classes = set(data["open_classes"])
     out.doc_decorated = set(data["doc_decorated"])
+    out.decorations = {(a, b, c) for a, b, c in data["decorations"]}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(

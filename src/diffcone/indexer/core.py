@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections import defaultdict
 
 from diffcone.indexer.dynamics import DynamicBounds
 from diffcone.indexer.facts import (
@@ -19,7 +20,7 @@ from diffcone.indexer.facts import (
 from diffcone.indexer.literals import INDEXED
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.syntax import _digest, decode_source
-from diffcone.model import Edge, SourceIndex, Symbol
+from diffcone.model import REFERENCES, Edge, SourceIndex, Symbol
 from diffcone.snapshot import Snapshot, child_modules, module_name_for
 
 
@@ -127,6 +128,7 @@ class Indexer(DynamicBounds):
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
         self._resolve_param_dynamics()
+        self._registrations()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -148,6 +150,35 @@ class Indexer(DynamicBounds):
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
+
+    def _registrations(self) -> None:
+        """Edges to code a decorator or a base class may keep and call later:
+        from the decorator's receiver (``show`` holds what
+        ``@show.register(int)`` registers, ``app`` what ``@app.command``
+        does), from each variable a decorator function writes into (the
+        ``REG`` a ``@register`` fills), and from a base class whose
+        ``__init_subclass__`` runs for its in-scope subclasses. Computed over
+        the whole index on every build, as the class model's other global
+        edges are."""
+        writers: dict[str, set[str]] = defaultdict(set)
+        for e in self.index.edges:
+            if e.detail == "mutated_by":
+                writers[e.target].add(e.source)
+        for decorated, decorator, receiver in sorted(self._global.decorations):
+            if receiver:
+                self.index.edges.add(Edge(receiver, decorated, REFERENCES, "registers"))
+            for variable in sorted(writers.get(decorator, ())):
+                self.index.edges.add(Edge(variable, decorated, REFERENCES, "registers"))
+        for cls, bases in sorted(self.index.class_bases.items()):
+            stack, seen = list(bases), set(bases)
+            while stack:
+                base = stack.pop()
+                if f"{base}.__init_subclass__" in self.index.symbols:
+                    self.index.edges.add(Edge(base, cls, REFERENCES, "registers"))
+                for up in self.index.class_bases.get(base, ()):
+                    if up not in seen:
+                        seen.add(up)
+                        stack.append(up)
 
     def _parse(self, path: str, module: str) -> ast.Module | None:
         try:
