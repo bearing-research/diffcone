@@ -16,7 +16,8 @@ What it records, per test (parameter cases folded into their function, as
 * the code objects executed in the test's setup, call and teardown, and in
   the setup of every non-function-scoped fixture the test activated
   (credited to every such test, not only the first). ``sys.monitoring``
-  ``PY_START`` with DISABLE, re-armed at every window boundary;
+  ``PY_START`` and ``PY_RESUME`` (a generator or coroutine resumed in a
+  later test) with DISABLE, re-armed at every window boundary;
 * the repository paths it opened, ``stat``ed or listed (audit hooks, and
   wrappers of ``os.stat``/``os.lstat``, which never warn, so the extra frame
   cannot move a warning's ``stacklevel``);
@@ -73,7 +74,7 @@ import pytest
 
 TOOL = 3
 FLAG_SUBPROCESS = 1
-ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL")
+ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL", "PYTHONWARNINGS")
 
 
 def _variables() -> tuple[str, ...]:
@@ -93,6 +94,8 @@ SUBPROCESS_EVENTS = frozenset(
         "os.fork",
         "os.forkpty",
         "os.startfile",
+        # Windows' process creation (multiprocessing's spawn there).
+        "_winapi.CreateProcess",
     }
 )
 LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
@@ -101,24 +104,29 @@ LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
 # --------------------------------------------------------------------------- environment
 
 
-def _editable(dist) -> bool:
-    """An editable install from a local directory: a source checkout, whose
-    version string (``3.0.0.dev0+1234.gabcdef``) changes with every commit.
-    Its code is what the index reads, not part of the environment."""
+def _editable(dist) -> str | None:
+    """The local directory of an editable install, else None. The checkout's
+    own (a source checkout, whose version string ``3.0.0.dev0+1234.gabcdef``
+    changes with every commit) is code the index reads, not environment."""
     try:
         text = dist.read_text("direct_url.json")
     except Exception:
-        return False
+        return None
     if not text:
-        return False
+        return None
     try:
         data = json.loads(text)
     except ValueError:
-        return False
-    return (
-        bool(data.get("dir_info", {}).get("editable"))
-        and urlparse(data.get("url", "")).scheme == "file"
-    )
+        return None
+    url = urlparse(data.get("url", ""))
+    if not (data.get("dir_info", {}).get("editable") and url.scheme == "file"):
+        return None
+    return os.path.realpath(url.path)
+
+
+def _in_checkout(path: str) -> bool:
+    root = os.path.realpath(os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd())
+    return path == root or path.startswith(root + os.sep)
 
 
 def environment() -> dict:
@@ -133,16 +141,35 @@ def environment() -> dict:
             name = dist.metadata["Name"] or ""
         except Exception:
             name = ""
-        if not name or _editable(dist):
+        if not name:
             continue
-        dists.add(f"{name.lower().replace('_', '-')}=={dist.version}")
+        local = _editable(dist)
+        if local is not None and _in_checkout(local):
+            continue
+        entry = f"{name.lower().replace('_', '-')}=={dist.version}"
+        # A sibling editable install (``pip install -e ../lib``) is not traced
+        # either, but where it lives is part of what runs.
+        dists.add(entry + (f" @ {local}" if local is not None else ""))
+    # The user's own entries: diffcone's plugin directory and the checkout's
+    # source roots (``collect`` puts them first; a recorded commit's checkout
+    # is a temporary worktree) are diffcone's, not the environment's.
+    pythonpath = [
+        p
+        for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if p
+        and not os.path.basename(p.rstrip(os.sep)).startswith("diffcone-plugin-")
+        and not _in_checkout(os.path.realpath(p))
+    ]
     return {
         "implementation": sys.implementation.name,
         "python": sys.version,
         "platform": sys.platform,
         "machine": platform.machine(),
+        # ``-O`` strips asserts, and the calls inside them.
+        "optimize": sys.flags.optimize,
         "distributions": sorted(dists),
         "variables": {k: os.environ.get(k) for k in _variables()},
+        "pythonpath": pythonpath,
     }
 
 
@@ -198,7 +225,11 @@ def _error(where: str, exc: BaseException) -> None:
 
 def _relative(path: str) -> str | None:
     """The checkout-relative path, "" for the root itself; None outside the
-    checkout, and for an environment kept inside it (``.venv``)."""
+    checkout, and for an environment kept inside it (``.venv``). Normalised
+    first: a module imported through ``sys.path.insert(0, ".../tests/../src")``
+    (a common conftest idiom) has ``..`` in its code objects' file names."""
+    if os.path.isabs(path):
+        path = os.path.normpath(path)
     for root in ROOTS:
         if path + os.sep == root:
             return ""
@@ -266,6 +297,24 @@ def _on_start(code, offset):
     return mon.DISABLE
 
 
+def _on_resume(code, offset):
+    # A generator or coroutine started earlier (in another test, at import)
+    # and resumed now: the running test executes its code too.
+    try:
+        rel = _code_path(code.co_filename)
+        if rel is None:
+            return mon.DISABLE
+        i = codes.get(code)
+        if i is None:
+            i = codes[code] = len(table)
+            table.append([rel, code.co_firstlineno, code.co_qualname])
+        for w in _windows():
+            w["codes"].add(i)
+    except Exception as exc:
+        _error("PY_RESUME", exc)
+    return mon.DISABLE
+
+
 def _on_return(code, offset, retval):
     try:
         if code.co_name == "<module>" and importing:
@@ -291,6 +340,11 @@ def _on_unwind(code, offset, exc):
 # --------------------------------------------------------------------------- paths
 
 
+# Loader methods that read a package's data for its caller
+# (``pkgutil.get_data``, ``importlib.resources``), not to import a module.
+DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
+
+
 def _actor() -> str:
     """Who touched a path: ``import`` when the import system did (it finds
     modules, which the index covers), ``project`` when project code is on
@@ -299,7 +353,7 @@ def _actor() -> str:
     frame = sys._getframe(2)
     while frame is not None:
         name = frame.f_code.co_filename
-        if name.startswith("<frozen importlib"):
+        if name.startswith("<frozen importlib") and frame.f_code.co_name not in DATA_READERS:
             return "import"
         if _relative(name) is not None:
             return "project"
@@ -345,6 +399,28 @@ def _audit(event, args):
                 w["flags"] |= FLAG_SUBPROCESS
     except Exception as exc:
         _error(f"audit {event}", exc)
+
+
+def _flag_multiprocessing_spawns() -> None:
+    """``multiprocessing``'s spawn and forkserver start methods launch their
+    children through ``_posixsubprocess.fork_exec``, which raises no audit
+    event: flag the test from the function they all go through."""
+    try:
+        import multiprocessing.util as mp_util
+    except ImportError:  # pragma: no cover - no multiprocessing on this platform
+        return
+    original = getattr(mp_util, "spawnv_passfds", None)
+    if original is None or getattr(original, "__diffcone__", False):
+        return
+
+    @functools.wraps(original)
+    def spawnv_passfds(*args, **kwargs):
+        for w in _windows():
+            w["flags"] |= FLAG_SUBPROCESS
+        return original(*args, **kwargs)
+
+    setattr(spawnv_passfds, "__diffcone__", True)  # noqa: B010
+    setattr(mp_util, "spawnv_passfds", spawnv_passfds)  # noqa: B010
 
 
 def _wrap_stat(original):
@@ -464,14 +540,16 @@ def _start() -> None:
         errors.append(f"sys.monitoring tool id {TOOL} is taken ({exc}); nothing was recorded")
         return
     mon.register_callback(TOOL, mon.events.PY_START, _on_start)
+    mon.register_callback(TOOL, mon.events.PY_RESUME, _on_resume)
     mon.register_callback(TOOL, mon.events.PY_RETURN, _on_return)
     mon.register_callback(TOOL, mon.events.PY_UNWIND, _on_unwind)
-    mon.set_events(TOOL, mon.events.PY_START | mon.events.PY_UNWIND)
+    mon.set_events(TOOL, mon.events.PY_START | mon.events.PY_RESUME | mon.events.PY_UNWIND)
     sys.addaudithook(_audit)
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
     # functools.cache goes through it too; a deliberate patch of the stdlib.
     functools.lru_cache = _tracking_lru_cache  # ty: ignore[invalid-assignment]
+    _flag_multiprocessing_spawns()
     recording = True
 
 
@@ -640,7 +718,12 @@ def _finish():
     finished = True
     if recording:
         mon.set_events(TOOL, 0)
-        for event in (mon.events.PY_START, mon.events.PY_RETURN, mon.events.PY_UNWIND):
+        for event in (
+            mon.events.PY_START,
+            mon.events.PY_RESUME,
+            mon.events.PY_RETURN,
+            mon.events.PY_UNWIND,
+        ):
             mon.register_callback(TOOL, event, None)
         mon.free_tool_id(TOOL)
     try:

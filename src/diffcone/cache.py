@@ -45,7 +45,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 22  # 22: import layout; 21: docstrings that code runs or reads
+INDEX_FORMAT = 23  # 23: open classes; 22: import layout; 21: docstrings
 
 
 def _indexer_fingerprint() -> str:
@@ -94,6 +94,7 @@ def index_to_dict(index: SourceIndex) -> dict:
             c: dict(sorted(a.items())) for c, a in sorted(index.class_attributes.items())
         },
         "class_bases": {c: list(b) for c, b in sorted(index.class_bases.items())},
+        "open_classes": sorted(index.open_classes),
         "cython": {
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
@@ -132,6 +133,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         reflection={(s, d) for s, d in data["reflection"]},
         class_attributes={c: dict(a) for c, a in data["class_attributes"].items()},
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
+        open_classes=set(data["open_classes"]),
         cython={
             path: CythonModule(
                 path,

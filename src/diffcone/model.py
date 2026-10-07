@@ -168,6 +168,11 @@ class SourceIndex:
     # Evidence mode walks class hierarchies with it; static planning does not
     # use it.
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Classes whose creation may run code that reads their attributes:
+    # decorators, keywords (a metaclass), or a base the index cannot see
+    # (``Enum``, a dataclass-like framework base). Evidence mode escalates an
+    # attribute change of one rather than trusting readers of the name.
+    open_classes: set[str] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

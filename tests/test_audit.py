@@ -1138,3 +1138,235 @@ def test_r8_unknown_collected_tests_are_run_not_dropped(repo, capsys):
     )
     result = run_selected(plan, "pytest", cwd=repo.path, command=PYTEST, extra=["-q"])
     assert result.unknown == ["tests/test_ops.py::test_x"]
+
+
+# E: evidence mode. Each case records at base, changes one thing, and checks
+# that the test whose outcome changes is selected.
+
+needs_monitoring = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+
+
+def _evidence_selects(repo, files, change, roots=None):
+    base = repo.commit({".gitignore": "__pycache__/\n.diffcone/\n", **files})
+    evidence = repo.collect(source_roots=roots)
+    head = repo.commit(change)
+    plan = repo.plan(
+        base, head, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    return selected(plan)
+
+
+GEN = (
+    "def _counter():\n    n = 0\n    while True:\n        n += {step}\n        yield n\n\n\n"
+    "_ids = _counter()\n\n\ndef next_id():\n    return next(_ids)\n"
+)
+
+
+@needs_monitoring
+def test_e5_a_generator_resumed_in_a_later_test_is_credited_to_it(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/gen.py": GEN.format(step=1),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from lib.gen import next_id\n\n\ndef test_a():\n    next_id()\n",
+            "tests/test_b.py": (
+                "from lib.gen import next_id\n\n\ndef test_b():\n"
+                "    assert next_id() + 1 == next_id()\n"
+            ),
+        },
+        {"lib/gen.py": GEN.format(step=2)},
+    )
+    assert "tests/test_b.py::test_b" in chosen
+
+
+@needs_monitoring
+def test_e7_a_file_read_through_pkgutil_selects_its_readers(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/data.json": '{"v": 1}\n',
+            "lib/cfg.py": (
+                "import json\nimport pkgutil\n\n\ndef load():\n"
+                "    return json.loads(pkgutil.get_data('lib', 'data.json'))['v']\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/test_cfg.py": "from lib.cfg import load\n\n\ndef test_load():\n    load()\n",
+        },
+        {"lib/data.json": '{"v": 2}\n'},
+    )
+    assert "tests/test_cfg.py::test_load" in chosen
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    ("module", "before", "after"),
+    [
+        (
+            "from dataclasses import asdict, dataclass\n\n\n@dataclass\nclass Config:\n"
+            "    x: int = {v}\n\n\ndef make():\n    return asdict(Config())\n",
+            "0",
+            "1",
+        ),
+        (
+            "from enum import Enum\n\n\nclass Config(Enum):\n    RED = {v}\n\n\n"
+            "def make():\n    return Config(1).name\n",
+            "1",
+            "2",
+        ),
+    ],
+)
+def test_e2_an_attribute_consumed_at_class_creation_reaches_its_users(repo, module, before, after):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/cfg.py": module.format(v=before),
+            "tests/__init__.py": "",
+            "tests/test_cfg.py": "from lib.cfg import make\n\n\ndef test_make():\n    make()\n",
+        },
+        {"lib/cfg.py": module.format(v=after)},
+    )
+    assert "tests/test_cfg.py::test_make" in chosen
+
+
+REG = (
+    "REGISTRY = []\n\n\ndef register(f):\n    REGISTRY.append(f)\n    return f\n\n\n"
+    "def count():\n    return len(REGISTRY)\n"
+)
+SUBS = (
+    "class Base:\n    registry = []\n\n    def __init_subclass__(cls, **kw):\n"
+    "        super().__init_subclass__(**kw)\n        Base.registry.append(cls)\n\n\n"
+    "def names():\n    return [c.__name__ for c in Base.registry]\n"
+)
+
+
+@needs_monitoring
+def test_e3_adding_a_registering_definition_reaches_the_registrys_users(repo):
+    handlers = "from lib.reg import register\n\n\n@register\ndef one():\n    return 1\n"
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "from lib import handlers\n",
+            "lib/reg.py": REG,
+            "lib/handlers.py": handlers,
+            "tests/__init__.py": "",
+            "tests/test_r.py": (
+                "import lib\nfrom lib.reg import count\n\n\n"
+                "def test_count():\n    assert count() == 1\n"
+            ),
+        },
+        {"lib/handlers.py": handlers + "\n\n@register\ndef two():\n    return 2\n"},
+    )
+    assert "tests/test_r.py::test_count" in chosen
+
+
+@needs_monitoring
+def test_e3_adding_a_subclass_whose_base_registers_it(repo):
+    plugins = "from lib.base import Base\n\n\nclass A(Base):\n    pass\n"
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "from lib import plugins\n",
+            "lib/base.py": SUBS,
+            "lib/plugins.py": plugins,
+            "tests/__init__.py": "",
+            "tests/test_p.py": (
+                "import lib\nfrom lib.base import names\n\n\n"
+                "def test_names():\n    assert names() == ['A']\n"
+            ),
+        },
+        {"lib/plugins.py": plugins + "\n\nclass B(Base):\n    pass\n"},
+    )
+    assert "tests/test_p.py::test_names" in chosen
+
+
+STAR = "__all__ = [{}]\n\n\ndef one():\n    return 1\n\n\ndef two():\n    return 2\n"
+
+
+@needs_monitoring
+def test_e8_e9_star_import_names_and_module_getattr(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/a.py": STAR.format("'one'"),
+            "lib/c.py": (
+                "from lib.a import *\n\n\ndef has_two():\n    try:\n        two\n"
+                "    except NameError:\n        return False\n    return True\n"
+            ),
+            "lib/mod.py": "def helper():\n    return 1\n",
+            "lib/use.py": (
+                "def flag():\n    try:\n        from lib.mod import FEATURE\n"
+                "    except ImportError:\n        return False\n    return FEATURE\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/test_b.py": "from lib.c import has_two\n\n\ndef test_two():\n    has_two()\n",
+            "tests/test_use.py": "from lib.use import flag\n\n\ndef test_flag():\n    flag()\n",
+        },
+        {
+            "lib/a.py": STAR.format("'one', 'two'"),
+            "lib/mod.py": (
+                "def helper():\n    return 1\n\n\ndef __getattr__(name):\n"
+                "    if name == 'FEATURE':\n        return True\n    raise AttributeError(name)\n"
+            ),
+        },
+    )
+    assert {"tests/test_b.py::test_two", "tests/test_use.py::test_flag"} <= chosen
+
+
+@needs_monitoring
+def test_e1_e6_code_reached_through_dotdot_paths_and_files_outside_the_roots(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "src/lib/__init__.py": "",
+            "src/lib/core.py": "def f():\n    return 1\n",
+            "conftest.py": "import pytest\n\n\n@pytest.fixture\ndef val():\n    return 1\n",
+            "tests/conftest.py": (
+                "import os\nimport sys\n\n"
+                "sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))\n"
+            ),
+            "tests/test_x.py": (
+                "from lib.core import f\n\n\ndef test_x():\n    f()\n\n\n"
+                "def test_val(val):\n    pass\n"
+            ),
+        },
+        {"src/lib/core.py": "def f():\n    return 22\n"},
+        roots=["src", "tests"],
+    )
+    assert "tests/test_x.py::test_x" in chosen
+
+
+def test_e10_a_cython_function_with_profiling_off_selects_through_its_callers():
+    from diffcone.cython import read
+
+    module = read(
+        "pkg/_fast.pyx",
+        "cimport cython\n\n@cython.profile(False)\ncdef int _scale(int x):\n    return x * 3\n\n"
+        "def tripled(int x):\n    return _scale(x)\n",
+    )
+    flags = {f.name: f.unprofiled for f in module.functions}
+    assert flags == {"_scale": True, "tripled": False}
+
+
+@needs_monitoring
+def test_e4_a_spawned_multiprocessing_child_flags_its_test(repo):
+    work = (
+        "import multiprocessing as mp\n\n\ndef square(x):\n    return x * {k}\n\n\n"
+        "def run():\n    with mp.get_context('spawn').Pool(1) as pool:\n"
+        "        return pool.map(square, [3])[0]\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/work.py": work.format(k="x"),
+            "tests/__init__.py": "",
+            "tests/test_w.py": "from lib.work import run\n\n\ndef test_spawn():\n    run()\n",
+        },
+        {"lib/work.py": work.format(k="2")},
+    )
+    assert "tests/test_w.py::test_spawn" in chosen

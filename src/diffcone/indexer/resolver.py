@@ -445,6 +445,8 @@ class Resolver(FirstPass):
                         )
                 self.out.class_attributes[symbol_id] = attributes
                 self.out.class_bases[symbol_id] = tuple(sorted(set(cscope.bases)))
+                if not cscope.plain or not cscope.complete:
+                    self.out.open_classes.add(symbol_id)
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
                 symbol_id = members.get(stmt.name)

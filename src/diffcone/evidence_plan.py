@@ -23,16 +23,25 @@ observed by"), and a test is selected when its record meets E:
 * a class body: the attributes whose statements changed, through every
   reader of those names and the lookup and reflection sites; an opaque
   body statement, a dunder attribute or a changed class statement (bases,
-  decorators, keywords) escalates. A special method (``__eq__``) is used
-  without being named, so a change to one reaches every member of the
-  class's hierarchy;
+  decorators, keywords) escalates, and so does any attribute change of a
+  class whose creation may read its body (``SourceIndex.open_classes``:
+  decorators, keywords, a base the index cannot see, such as a dataclass
+  field default or an ``Enum`` member; or an ancestor with
+  ``__init_subclass__``). A special method (``__eq__``) is used without
+  being named, so a change to one reaches every member of the class's
+  hierarchy; a module's ``__getattr__``/``__dir__`` escalates its module;
 * an added or deleted name: its readers, the unbounded lookup and
   reflection sites that can see the namespace, and for a deletion the
-  modules importing it (their import now fails);
-* module-level code: escalates the module;
-* a non-Python file: the tests that touched it or a directory above it;
-  everything when it is compiled source, build or pytest configuration, or
-  was touched outside every test;
+  modules importing it (their import now fails); an added or deleted
+  definition that runs code at import (a decorated function, a class whose
+  creation runs code) escalates too;
+* module-level code: escalates the module, and so does a change to
+  ``__all__`` (what star imports bind);
+* a non-Python file, or any file outside the source roots (read from a
+  git diff, since the index holds only the roots): the tests that touched
+  it or a directory above it; everything when it is compiled source, build
+  or pytest configuration, a ``conftest.py`` outside the roots, or was
+  touched outside every test;
 * test code other than a function body: the tests that list the symbol as
   a lifecycle dependency (a fixture) or are collected from its class or a
   subclass, and for a test module's variable (``pytestmark``) every test
@@ -53,6 +62,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from pathlib import Path
 
 from diffcone.classify import (
     ADDED,
@@ -98,6 +108,8 @@ from diffcone.model import (
     Symbol,
 )
 from diffcone.planner import (
+    OWN_DIRS,
+    OWN_FILES,
     RULE_ANALYSIS_ERROR,
     RULE_CHANGED_TARGET,
     RULE_CYTHON_CALLER,
@@ -131,6 +143,7 @@ from diffcone.planner import (
     merge_targets,
     plan_from_indexes,
 )
+from diffcone.snapshot import changed_paths, split_root
 
 # Sources no Python-level event reports: compiled into extensions, or read
 # by pytest or the build before the recorder starts.
@@ -423,6 +436,10 @@ class _Observers:
         self.direct: dict[str, Reason] = {}
         self.fallbacks: list[Fallback] = []
         self.files: dict[str, tuple[str, bool]] = {}  # changed path -> (what, names too)
+        # Changed paths outside the source roots (set by plan_with_evidence):
+        # the index reads none of them, but the recorder saw what tests ran
+        # and opened there.
+        self.outside: dict[str, str] = {}
         self.seed_changes: set[str] = set()
         self.seed_nodes: dict[str, str] = {}
         self.escalated_modules: set[str] = set()
@@ -497,6 +514,17 @@ class _Observers:
             if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):
                 what = f"{change.id} {'/'.join(change.changes)}"
                 self._file(symbol.path, what, names=True)
+        for path, what in sorted(self.outside.items()):
+            if path.rsplit("/", 1)[-1] == "conftest.py":
+                # pytest loads it for tests that never ran a line of it (a new
+                # autouse fixture, a hook): no record can vouch for them.
+                self._select_all(
+                    RULE_UNOBSERVED_FILE,
+                    f"{path} {what}: a conftest.py outside the source roots, which the "
+                    "index does not read",
+                )
+            else:
+                self._file(path, what, names=what != "edited")
 
     def _cython(self) -> set[str]:
         """Cython sources (roadmap item 7): the paths this rule handled.
@@ -559,8 +587,8 @@ class _Observers:
             return
         self._observe(sid, rule, detail, None)
         self._cython_import_effect(sid, label)
-        if function.nogil or function.cpdef:
-            kind = "nogil" if function.nogil else "cpdef"
+        if function.nogil or function.cpdef or function.unprofiled:
+            kind = "nogil" if function.nogil else ("cpdef" if function.cpdef else "profile(False)")
             for caller in self._cython_callers(path, function.name):
                 self._observe(
                     caller,
@@ -715,7 +743,7 @@ class _Observers:
                 if caller_id in found or (caller_path, caller.name) == (path, name):
                     continue
                 found.add(caller_id)
-                if caller.nogil or caller.cpdef:
+                if caller.nogil or caller.cpdef or caller.unprofiled:
                     stack.append((caller_path, caller.name))
         return sorted(found)
 
@@ -780,6 +808,11 @@ class _Observers:
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
                 self._sites(symbol, change, label)
+                inert = all(s.inert_definition for s in (change.base, change.head) if s is not None)
+                if not inert and change.id not in self.test_code.entries:
+                    # ``@register def two()``: the decorator runs at import and
+                    # may change shared state no test's record names.
+                    self._escalate_change(change, f"{label}: its definition runs code at import")
             elif kinds & {DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
                 self._readers(change.id, change, label)
                 self._sites(symbol, change, label)
@@ -792,7 +825,17 @@ class _Observers:
                 container = self.symbols.get(symbol.container)
                 if container is not None and container.kind == CLASS:
                     self._hierarchy(container.id, change, label)
+                elif container is not None and container.kind == MODULE:
+                    # A module ``__getattr__``/``__dir__`` (PEP 562) serves every
+                    # lookup the module does not answer, wherever it is made.
+                    self._escalate_change(
+                        change, f"{label}: a module's {symbol.name} serves its missing names"
+                    )
             return
+        if symbol.kind == VARIABLE and symbol.name == "__all__":
+            # What ``from m import *`` binds in every star importer: no record
+            # names the variable, the import statement reads it.
+            self._escalate_change(change, f"{label}: star imports of the module bind its names")
         if symbol.kind == VARIABLE:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
             self._readers(change.id, change, label)
@@ -810,6 +853,10 @@ class _Observers:
                 self._sites(symbol, change, label)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
+                if self._runs_on_creation(symbol.id):
+                    # ``class B(Base)`` whose base registers subclasses, a
+                    # decorated or metaclassed class: creating it runs code.
+                    self._escalate_change(change, f"{label}: creating the class runs code")
                 return
             before = self.c.class_attributes.get(symbol.id, {})
             after = self.other.class_attributes.get(symbol.id, {})
@@ -830,6 +877,25 @@ class _Observers:
             return
         self._escalate_change(change, f"{label}: not a kind evidence can bound")
 
+    def _runs_on_creation(self, class_id: str) -> bool:
+        """Whether creating the class may run code that reads its attributes:
+        it or an ancestor is open (decorators, keywords, a base outside the
+        index) or an ancestor defines ``__init_subclass__``."""
+        for index in (self.c, self.other):
+            seen = {class_id}
+            stack = [class_id]
+            while stack:
+                cls = stack.pop()
+                if cls in index.open_classes:
+                    return True
+                if cls != class_id and f"{cls}.__init_subclass__" in index.symbols:
+                    return True
+                for base in index.class_bases.get(cls, ()):
+                    if base not in seen:
+                        seen.add(base)
+                        stack.append(base)
+        return False
+
     def _class_body(self, symbol: Symbol, change: SymbolChange, label: str) -> None:
         before = self.c.class_attributes.get(symbol.id, {})
         after = self.other.class_attributes.get(symbol.id, {})
@@ -842,6 +908,13 @@ class _Observers:
             self._escalate_change(
                 change,
                 f"{label}: its body runs code that binds no plain attribute, or a special one",
+            )
+            return
+        if self._runs_on_creation(symbol.id):
+            # A dataclass field default, an Enum member: consumed when the class
+            # is created, and used through generated code that never names it.
+            self._escalate_change(
+                change, f"{label}: its creation (a decorator, metaclass or base) reads its body"
             )
             return
         for name in sorted(names):
@@ -1085,6 +1158,25 @@ class _Observers:
         self.files[path] = (what, names)
 
 
+def _changed_outside_roots(
+    repo: Path, commit: str, other: SourceIndex, source_roots: list[str] | None
+) -> dict[str, str]:
+    """Paths changed between the recorded commit and ``other`` that lie
+    outside every source root (none when a root is the repository itself)."""
+    dirs = [split_root(r)[0] for r in (source_roots or ["."])]
+    if "" in dirs:
+        return {}
+    revision = other.snapshot.commit
+    changed = changed_paths(repo, commit, revision, other.snapshot.kind)
+    return {
+        path: what
+        for path, what in changed.items()
+        if not any(path.startswith(d + "/") for d in dirs)
+        and path not in OWN_FILES
+        and not path.startswith(OWN_DIRS)
+    }
+
+
 def plan_with_evidence(
     base: SourceIndex,
     head: SourceIndex,
@@ -1129,6 +1221,8 @@ def plan_with_evidence(
     for side, other in pairs:
         runner_only = _runner_only(evidence_index, other, pytest_targets)
         obs = _Observers(evidence_index, other, evidence, test_code, declared, runner_only)
+        if repo:
+            obs.outside = _changed_outside_roots(Path(repo), evidence.commit, other, source_roots)
         obs.run()
         observed.append(obs)
         fallbacks += obs.fallbacks

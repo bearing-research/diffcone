@@ -56,6 +56,7 @@ from dataclasses import dataclass, field
 CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
 
 _HEAD = re.compile(r"^(\s*)(cpdef|cdef|def)\b")
+_UNPROFILED = re.compile(r"@\s*(?:cython\.)?(?:profile|linetrace)\s*\(\s*False\s*\)")
 _CLASS = re.compile(
     r"^(\s*)(?:cdef\s+(?:(?:public|readonly|final)\s+)*class|class)\s+([A-Za-z_]\w*)"
 )
@@ -82,6 +83,9 @@ class CythonFunction:
     cpdef: bool
     names: frozenset[str] = field(default_factory=frozenset, compare=False)
     python: bool = False  # def or cpdef: Python code can see it
+    # ``@cython.profile(False)`` or ``@cython.linetrace(False)``: a profiled
+    # build never reports it, like a ``nogil`` function.
+    unprofiled: bool = False
 
     @property
     def scope(self) -> str:
@@ -312,6 +316,7 @@ def read(path: str, text: str) -> CythonModule:
                 cpdef=header.lstrip().startswith("cpdef"),
                 names=frozenset(names),
                 python=header.lstrip().startswith(("def", "cpdef")),
+                unprofiled=any(_UNPROFILED.search(_code(lines[b])) for b in range(first, j + 1)),
             )
         )
         covered.update(range(first, last + 1))

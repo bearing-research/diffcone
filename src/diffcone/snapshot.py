@@ -128,6 +128,29 @@ def file_id(repo: Path, revision: str, path: str) -> str | None:
     return out.decode().strip() or None
 
 
+def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str, str]:
+    """Every path whose content differs between ``commit`` and a snapshot
+    (``kind``: a commit, the index or the working tree, untracked files
+    included), as path -> "added", "deleted" or "edited"."""
+    if kind == KIND_WORKTREE:
+        args = ["diff", "--name-status", "-z", "--no-renames", commit]
+    elif kind == KIND_INDEX:
+        args = ["diff", "--cached", "--name-status", "-z", "--no-renames", commit]
+    else:
+        args = ["diff", "--name-status", "-z", "--no-renames", commit, revision]
+    fields = _git(repo, args).decode("utf-8", "surrogateescape").split("\0")
+    out: dict[str, str] = {}
+    for status, path in zip(fields[0::2], fields[1::2], strict=False):
+        if path:
+            out[path] = {"A": "added", "D": "deleted"}.get(status[:1], "edited")
+    if kind == KIND_WORKTREE:
+        untracked = _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
+        for raw in untracked.split(b"\0"):
+            if raw:
+                out.setdefault(raw.decode("utf-8", "surrogateescape"), "added")
+    return out
+
+
 def resolve_commit(repo: Path, revision: str) -> str:
     out = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"])
     commit = out.decode().strip()

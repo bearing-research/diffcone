@@ -73,10 +73,14 @@ diffcone run --base main --head HEAD --discover pytest \
 ```
 
 A recording is only valid in the environment it was made in. Before any
-test runs, `run` checks that the Python version, the installed packages and
-a few environment variables (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`)
-match the recording. If they don't, it falls back to a plan from the code
-and tells you what differed. If your tests also depend on your own
+test runs, even when the plan selects nothing, `run` checks that the Python
+version and its `-O` setting, the installed packages, your `PYTHONPATH`
+and a few environment variables (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`,
+`PYTHONWARNINGS`) match the recording. If they don't, it falls back to a
+plan from the code and tells you what differed. A package installed in
+editable mode from outside your repository (`pip install -e ../lib`)
+counts as installed: diffcone doesn't see edits to its code, as with any
+other installed package. If your tests also depend on your own
 environment variables, record them with `--env-var`:
 
 ```bash

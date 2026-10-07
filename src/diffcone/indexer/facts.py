@@ -148,6 +148,7 @@ class _Output:
     reflection: set[tuple[str, str]] = field(default_factory=set)
     class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    open_classes: set[str] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -165,6 +166,7 @@ class _Output:
         self.reflection |= other.reflection
         self.class_attributes.update(other.class_attributes)
         self.class_bases.update(other.class_bases)
+        self.open_classes |= other.open_classes
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -222,6 +224,7 @@ def _output_to_dict(out: _Output) -> dict:
         "escapes": sorted(out.escapes),
         "reflection": sorted(list(r) for r in out.reflection),
         "class_bases": {c: list(b) for c, b in sorted(out.class_bases.items())},
+        "open_classes": sorted(out.open_classes),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -286,6 +289,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.reflection = {(s, d) for s, d in data["reflection"]}
     out.class_attributes = {c: dict(a) for c, a in data["class_attributes"].items()}
     out.class_bases = {c: tuple(b) for c, b in data["class_bases"].items()}
+    out.open_classes = set(data["open_classes"])
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(

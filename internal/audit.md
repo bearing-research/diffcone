@@ -82,17 +82,17 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 
 | id | finding | status |
 |---|---|---|
-| E1 | `co_filename` is not normalised: a module imported via `sys.path` with `..` (`tests/../src/...`) maps to no symbol, so its tests record nothing of it. | open |
-| E2 | Class-body attribute changes consumed at class creation (`@dataclass` field defaults, `Enum` members, metaclasses, `__init_subclass__`) reach only readers of the attribute name. | open |
-| E3 | Adding or deleting a decorated function or a subclass (registration at import) never escalates; only DEFINITION_CHANGED does. | open |
-| E4 | `multiprocessing` spawn/forkserver children are not flagged (no audited event). | open |
-| E5 | Only `PY_START` is monitored: a generator or coroutine started earlier and resumed in a later test is not credited to it. | open |
-| E6 | Changed `.py` files outside the source roots are never listed; the unresolved-fixture fallback is suppressed for an unindexed root `conftest.py`. | open |
-| E7 | Files read through `pkgutil.get_data` are classified as import activity and dropped. | open |
-| E8 | A changed `__all__` does not reach star importers. | open |
-| E9 | Adding a module-level `__getattr__`/`__dir__` is not treated as a special-method change. | open |
-| E10 | A Cython function with `@cython.profile(False)` is never recorded; changes to it select nothing. | open |
-| E11 | Environment fingerprint omits sibling editable installs, `sys.flags`, `PYTHONWARNINGS`, `PYTHONPATH`, pytest plugins and options; `PYTHONHASHSEED=random` accepted (plausible). | plausible |
+| E1 | `co_filename` is not normalised: a module imported via `sys.path` with `..` (`tests/../src/...`) maps to no symbol, so its tests record nothing of it. | fixed (evidence batch) |
+| E2 | Class-body attribute changes consumed at class creation (`@dataclass` field defaults, `Enum` members, metaclasses, `__init_subclass__`) reach only readers of the attribute name. | fixed (evidence batch) |
+| E3 | Adding or deleting a decorated function or a subclass (registration at import) never escalates; only DEFINITION_CHANGED does. | fixed (evidence batch) |
+| E4 | `multiprocessing` spawn/forkserver children are not flagged (no audited event). | fixed (evidence batch) |
+| E5 | Only `PY_START` is monitored: a generator or coroutine started earlier and resumed in a later test is not credited to it. | fixed (evidence batch) |
+| E6 | Changed `.py` files outside the source roots are never listed; the unresolved-fixture fallback is suppressed for an unindexed root `conftest.py`. | fixed (evidence batch) |
+| E7 | Files read through `pkgutil.get_data` are classified as import activity and dropped. | fixed (evidence batch) |
+| E8 | A changed `__all__` does not reach star importers. | fixed (evidence batch) |
+| E9 | Adding a module-level `__getattr__`/`__dir__` is not treated as a special-method change. | fixed (evidence batch) |
+| E10 | A Cython function with `@cython.profile(False)` is never recorded; changes to it select nothing. | fixed (evidence batch) |
+| E11 | Environment fingerprint omits sibling editable installs, `sys.flags`, `PYTHONWARNINGS`, `PYTHONPATH`, pytest plugins and options; `PYTHONHASHSEED=random` accepted (plausible). | fixed (evidence batch: optimize, PYTHONWARNINGS, PYTHONPATH and sibling editables fingerprinted; sibling editable code is not traced, documented) |
 | E12 | A missing environment-check report counts as a match (a wrapper stripping `DIFFCONE_CHECK_ENV`) (plausible). | fixed (run batch: the check always reports; no report is a mismatch) |
 
 ## Not misses (fix while there)
