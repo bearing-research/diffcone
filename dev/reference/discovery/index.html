@@ -1094,13 +1094,16 @@ the doctest options in <code>addopts</code>.</p>
 <p><strong>What each test depends on</strong>, besides its own code:</p>
 <ul>
 <li>its fixtures, requested by parameter or <code>usefixtures</code>, and the fixtures
-  those use, resolved the way pytest does: class, then module, then each
+  those use, resolved the way pytest does: class (including the fixtures
+  it inherits from base classes in other modules), then module, then each
   <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> and your
   project's own pytest plugins. A fixture is found under every name a module
   binds it to, as in pytest: an alias (<code>box2 = box</code>) or an import (<code>from
   tests.helpers import engine</code>), unless the fixture sets its own <code>name=</code>.
   A name the test parametrizes is a parameter, not a fixture, for the test
   and for every fixture it uses;</li>
+<li>marks such as <code>usefixtures</code> and <code>parametrize</code> on its class and the
+  class's base classes;</li>
 <li>autouse fixtures that apply to it;</li>
 <li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions;</li>
 <li>its module, and every <code>conftest.py</code> on its path with their <code>pytest_*</code>
