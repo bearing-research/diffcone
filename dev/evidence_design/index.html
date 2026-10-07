@@ -1,0 +1,2106 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Which tests and benchmarks a change to Python code can affect, and why">
+      
+      
+      
+        <link rel="canonical" href="https://bearing-research.github.io/diffcone/dev/evidence_design/">
+      
+      
+        <link rel="prev" href="../design/">
+      
+      
+        <link rel="next" href="../evaluation/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.68">
+    
+    
+      
+        <title>Evidence design - diffcone</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="diffcone" class="md-header__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            diffcone
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Evidence design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="diffcone" class="md-nav__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    diffcone
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Guides
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Guides
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Planning
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Running and checking
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Execution evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CI with GitHub Actions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Commands
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Target manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/declarations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Report
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/discovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Static discovery
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Limitations
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Background
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Background
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Design
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evidence design
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evidence design
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#why" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Why
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-0-independent-of-all-this-files-the-index-does-not-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Step 0, independent of all this: files the index does not read
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-idea-and-why-it-is-sound" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The idea, and why it is sound
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-recorded" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What is recorded
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-change-is-observed-by-e" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What a change is observed by (E)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-assumptions-and-what-guards-each" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The assumptions, and what guards each
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-and-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Storage and lifecycle
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interface-and-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Interface and architecture
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-will-be-checked" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        How it will be checked
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refinements-for-the-implementation-2026-09-25" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Refinements for the implementation (2026-09-25)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spike-results-2026-09-24" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Spike results (2026-09-24)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Decisions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evaluation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Roadmap
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Development
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#why" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Why
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#step-0-independent-of-all-this-files-the-index-does-not-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Step 0, independent of all this: files the index does not read
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-idea-and-why-it-is-sound" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The idea, and why it is sound
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-is-recorded" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What is recorded
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-change-is-observed-by-e" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What a change is observed by (E)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-assumptions-and-what-guards-each" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The assumptions, and what guards each
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-and-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Storage and lifecycle
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#interface-and-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Interface and architecture
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-it-will-be-checked" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        How it will be checked
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#refinements-for-the-implementation-2026-09-25" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Refinements for the implementation (2026-09-25)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spike-results-2026-09-24" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Spike results (2026-09-24)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Decisions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="Navigation" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="./.." class="md-path__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-path__item">
+        <a href="../design/" class="md-path__link">
+          
+  
+  <span class="md-ellipsis">
+    Background
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+    <a href="https://github.com/bearing-research/diffcone/edit/main/docs/evidence_design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="execution-evidence-design-proposal">Execution evidence: design proposal<a class="headerlink" href="#execution-evidence-design-proposal" title="Permanent link">&para;</a></h1>
+<p>Status: <strong>being implemented</strong> (roadmap item 5 lists the stages). Step 0
+has shipped. The spike on pandas passed its go/no-go ("Spike results").
+Four of the five decisions at the end are answered. "Refinements for the
+implementation" records where the implementation departs from the tables
+below, and why.</p>
+<h2 id="why">Why<a class="headerlink" href="#why" title="Permanent link">&para;</a></h2>
+<p>Static planning cannot help pandas (evaluation.md, "pandas: the primary
+target"). A change almost anywhere selects 26 026 of 26 027 targets, and the
+measurements show why no static rule changes that. Untyped calls
+(<code>x.round()</code> may be any <code>round</code>) tie every symbol to every test.
+Annotations would type a third of them and move nothing. And even with
+perfect typing, about 40 % of library symbols are reached from a
+1 742-symbol core around <code>DataFrame</code> that every test enters. Telling which
+test's DataFrame takes which path needs to know what each test actually
+does, and only running it says that.</p>
+<p>This design adds one fact that reading the code cannot supply: <strong>which
+functions each test executed</strong>, recorded in a real run. Static analysis
+keeps doing what it does well: it defines what changed, and for changes
+that are not plain body edits it says which code <em>observes</em> the change. It
+stops being asked for transitive reach, which is where pandas explodes.</p>
+<h2 id="step-0-independent-of-all-this-files-the-index-does-not-read">Step 0, independent of all this: files the index does not read<a class="headerlink" href="#step-0-independent-of-all-this-files-the-index-does-not-read" title="Permanent link">&para;</a></h2>
+<p>A commit that changes only a non-Python file gets an empty, complete plan
+today. That breaks the governing rule, and it was verified on a fixture
+repository: changing a JSON file that the code reads, or a Cython <code>.pyx</code>
+module, gives no changes, no fallback, no selection and exit 0. In pandas'
+last 81 commits, 7 (9 %) touch compiled sources (<code>.pyx</code>, <code>.pxd</code>, <code>.c</code>,
+<code>.h</code>) and 7 touch no <code>.py</code> file at all.</p>
+<p>The static fix is a fallback: a changed file under a source root that the
+index does not read selects every target (<code>unanalysed_file_changed</code>). The
+open question is only which files count (decision 1). Execution evidence
+answers it precisely for data files (see "Files"), but static mode needs
+its own answer, and this should ship first whatever is decided about the
+rest.</p>
+<h2 id="the-idea-and-why-it-is-sound">The idea, and why it is sound<a class="headerlink" href="#the-idea-and-why-it-is-sound" title="Permanent link">&para;</a></h2>
+<p>Collect, at some commit C, the set of symbols <code>X(T)</code> each test T executed.
+To plan C → head, compute E: the symbols whose execution would <em>notice</em> the
+change. Select T when <code>X(T) ∩ E ≠ ∅</code>.</p>
+<p><strong>The argument (first divergence).</strong> Run T at C and at head, same
+environment, same inputs. The two runs execute the same instructions until
+the first point where they differ. At that point T is executing some code
+g, and either g itself changed, or g read something that changed (a
+variable's value, a lookup in a namespace that gained or lost a name, a
+signature, a file). Everything before that point was identical, so the
+run at C executed g too: <code>g ∈ X(T)</code>. So if E contains every changed symbol
+<em>and every reader of every changed thing</em>, a test whose <code>X(T)</code> misses E
+runs identically at head and cannot be affected.</p>
+<p>Three things make it concrete:</p>
+<ul>
+<li><strong>Readers are one hop, not a closure.</strong> Static analysis gives E by
+  following edges one step back from what changed, and coverage replaces
+  everything further out. One hop is what stays small in pandas: the
+  explosion lives in the closure.</li>
+<li><strong>The argument needs assumptions static mode does not</strong>: the run is
+  deterministic, T does not depend on what earlier tests left behind, and
+  the environment is the same. Each has a guard or a detector below, and
+  what remains is stated, not hidden (decision 2).</li>
+<li><strong>It cannot say anything about what it did not observe</strong>: code executed
+  outside the test's window, code in compiled extensions, subprocesses.
+  Those fall back to static planning or to selecting the test.</li>
+</ul>
+<h2 id="what-is-recorded">What is recorded<a class="headerlink" href="#what-is-recorded" title="Permanent link">&para;</a></h2>
+<p>A pytest plugin shipped inside diffcone (stdlib only). It is loaded into
+the project's own test process with <code>-p</code>, and diffcone's source directory
+is put on <code>PYTHONPATH</code>, so nothing is installed into the project. It
+records per test node id, folded to the target id the way <code>validate</code>
+folds parameter cases:</p>
+<table>
+<thead>
+<tr>
+<th>record</th>
+<th>what</th>
+<th>mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>X(T)</code></td>
+<td>symbols executed during T's setup, call and teardown</td>
+<td><code>sys.monitoring</code> <code>PY_START</code> (Python 3.12+), disabled per code object after its first hit and re-armed per test with <code>restart_events()</code></td>
+</tr>
+<tr>
+<td>fixture shares</td>
+<td>setup/teardown symbols of every non-function-scoped fixture instance, credited to <em>every</em> test that uses it, not just the first</td>
+<td>a hookwrapper on <code>pytest_fixture_setup</code> records each instance's setup window, re-arming the tracer as it opens (code the test already ran is otherwise disabled and would be missing from the fixture's window); teardown windows are still to be designed. A test is credited with every fixture it <em>activated</em>, read from its request during teardown (<code>request.getfixturevalue</code> included, which <code>item.fixturenames</code> misses)</td>
+</tr>
+<tr>
+<td><code>X_import</code></td>
+<td>symbols executed outside every test window (imports, collection, conftest bodies, session hooks)</td>
+<td>the same tracer, outside windows</td>
+</tr>
+<tr>
+<td>import attribution</td>
+<td>for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running)</td>
+<td>a stack of modules pushed at a <code>&lt;module&gt;</code> code object's <code>PY_START</code> and popped at its <code>PY_RETURN</code> (a local event) or <code>PY_UNWIND</code> (an import that raises, such as <code>pytest.importorskip</code> at module level); events re-armed at each push and pop</td>
+</tr>
+<tr>
+<td><code>F(T)</code></td>
+<td>repository files T opened</td>
+<td>an audit hook on <code>open</code> (<code>sys.addaudithook</code>)</td>
+</tr>
+<tr>
+<td><code>P(T)</code></td>
+<td>T started a subprocess</td>
+<td>audit hooks on <code>subprocess.Popen</code>, <code>os.exec*</code>, <code>os.posix_spawn</code>, <code>os.fork</code></td>
+</tr>
+<tr>
+<td>environment</td>
+<td>Python version, platform, installed distributions and versions, <code>PYTHONHASHSEED</code>, <code>TZ</code>, pytest plugins and options</td>
+<td>read inside the test process at session start</td>
+</tr>
+</tbody>
+</table>
+<p>The tracer starts when the plugin module is imported, not in
+<code>pytest_configure</code>: <code>-p</code> plugins load before the initial conftests, and a
+root conftest usually imports the project, whose import-time code (for
+pandas, its decorators and registrations) would otherwise go unrecorded.</p>
+<p><strong>Names looked up dynamically are not recorded.</strong> The spike wrapped
+<code>getattr</code> and <code>hasattr</code> to record them, and that changed test outcomes: the
+wrapper's frame moves the <code>stacklevel</code> of warnings, and pandas checks it.
+No pure-Python wrapper avoids that frame, so the name-based rows below use
+the static stand-in: the tests that <em>executed</em> an unbounded lookup site
+that can see the namespace in question.</p>
+<p>Code objects map to symbols by file and first line, against diffcone's own
+index of commit C (innermost symbol whose line range contains the code
+object's first line). Nested functions, lambdas and comprehensions land in
+their enclosing symbol; a module's own code maps to the module symbol.
+A code object from a file outside the checkout that has the same
+module path as a file inside it means the suite ran an installed copy. That
+makes the whole collection invalid, and it is refused, using the check
+<code>validate</code> already does (<code>shadowed_files</code>).</p>
+<p>The monitoring tool id is claimed with <code>sys.monitoring.use_tool_id</code>. If the
+id is taken (coverage.py holds id 1), the collection fails loudly rather
+than recording nothing.</p>
+<h2 id="what-a-change-is-observed-by-e">What a change is observed by (E)<a class="headerlink" href="#what-a-change-is-observed-by-e" title="Permanent link">&para;</a></h2>
+<p>For each change diffcone classifies between C and head:</p>
+<table>
+<thead>
+<tr>
+<th>change</th>
+<th>E, what is selected</th>
+<th>escalates to static</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>body changed, <code>f</code></td>
+<td><code>{f}</code></td>
+<td>when a library or conftest import ran <code>f</code>: its result is baked into objects built at import. When a <em>test</em> module's import ran it, the tests that executed that module's code instead</td>
+</tr>
+<tr>
+<td>docstring changed</td>
+<td>the doctest target (as today) + static readers of <code>__doc__</code> (<code>inspect.getdoc</code>, <code>.__doc__</code>)</td>
+<td>when read at import (<code>@doc</code>, <code>Appender</code>)</td>
+</tr>
+<tr>
+<td>signature or defaults changed</td>
+<td><code>{f}</code> + its static callers (resolved references and name matches of its name) + introspection sites (<code>inspect.signature</code>)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>decorators changed</td>
+<td>as a signature change; for a fixture (in a test module or a conftest), every test in its scope, since <code>autouse</code>, <code>scope</code>, <code>params</code> and <code>name</code> change who runs it</td>
+<td>library code and conftests' non-fixture functions: always, since decorators run at import and may register. A test function's own decorators: never, since they reach only that test</td>
+</tr>
+<tr>
+<td>added or deleted name <code>n</code> in module or class N</td>
+<td>static readers of <code>n</code> (resolved, imported, name-matched), enumeration sites (<code>dir</code>, <code>vars</code>, <code>__dict__</code>, <code>inspect.getmembers</code>, star imports), the symbol itself, and the unbounded lookup sites that can see N: for a method, reads off objects from elsewhere; for a module-level name, reads off modules and <code>globals()</code>/<code>vars()</code>. For test code, only lookup sites in test code: nothing else holds a test module or a runner-only test instance</td>
+<td>—</td>
+</tr>
+<tr>
+<td>added or deleted fixture</td>
+<td>the tests in its visibility scope that request that name: a new fixture can shadow a conftest one they used (static discovery knows which)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>added, deleted or changed pytest hook (<code>pytest_*</code> in a conftest or plugin)</td>
+<td>everything</td>
+<td>—</td>
+</tr>
+<tr>
+<td>added or deleted module</td>
+<td>static readers (importers)</td>
+<td>— (only code that names it reaches it, and that code changed too)</td>
+</tr>
+<tr>
+<td>added or deleted special method (<code>__eq__</code>, <code>__len__</code>…) in class C</td>
+<td>members of C's hierarchy + static readers of C and of its subclasses (whoever builds or checks an instance)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>variable value changed, <code>v</code></td>
+<td>static readers of <code>v</code> (by name too, which covers <code>getattr(obj, "v")</code> with a literal), and the enumeration and unbounded lookup sites that can see its namespace (a <code>getattr</code> with a computed name reads the value too; a variable runs no code the record could show); the same for a variable that captured the value</td>
+<td>when a library or conftest import reads <code>v</code>: module or class top-level code reading it (<code>Y = DEFAULT * 2</code>), or code an import ran. A test module's top-level read selects that module's tests</td>
+</tr>
+<tr>
+<td>class structure changed (bases, metaclass, class decorators, class body)</td>
+<td>every member of C, its bases and its subclasses + static readers of those classes</td>
+<td>class decorators and metaclasses: always</td>
+</tr>
+<tr>
+<td>module-level statements or imports changed</td>
+<td>—</td>
+<td>always: they run at import</td>
+</tr>
+<tr>
+<td>a test or fixture changed</td>
+<td>selected (<code>changed_target</code>, as today)</td>
+<td>—</td>
+</tr>
+<tr>
+<td>changed file the index does not read</td>
+<td>tests with the file in <code>F(T)</code>, or with code from it in <code>X(T)</code> (a <code>.py</code> outside the source roots)</td>
+<td>when opened or executed at import; compiled sources always (see below)</td>
+</tr>
+</tbody>
+</table>
+<p>"Escalates to static" means that one change is planned statically and the
+rest of the commit still uses evidence; selection is the union over all
+changes. The static half runs <strong>without dynamic seeds</strong>. A dynamic
+reference a test executed is in its record through the code it reached, so
+the executed lookup sites that can see the escalated module are added to E
+instead: closure-bounded ones whose module's import closure holds it, reads
+off objects from elsewhere, and, for a library module, imports named at
+run time. A test module's import-time objects reach library code only
+while its own tests run, and those tests are selected, or through its
+importers, which static planning follows. So a test module escalates to its
+own tests plus static reach, not to every lookup site. Without that, one
+unbounded import in pandas (<code>_get_plot_backend</code>) made every escalation
+select everything.</p>
+<p><strong>Compiled code.</strong> A <code>.pyx</code> change is invisible to a Python tracer. The
+first version escalates it. The follow-up maps a changed <code>.pyx</code>/<code>.pxd</code> to
+its extension module and follows <code>cimport</code> edges among the extension
+modules. It then selects the tests that executed a Python function
+referencing any affected module. That is sound only once a test's use of
+extension <em>objects</em> is covered too (a <code>Timestamp</code> returned by one extension
+and used through another), so it needs its own measurement before it
+replaces escalation.</p>
+<p><strong>Targets without evidence</strong> (added since C, or never collected) are
+selected. <strong>ASV targets</strong> have no evidence in the first version and keep
+static selection.</p>
+<h2 id="the-assumptions-and-what-guards-each">The assumptions, and what guards each<a class="headerlink" href="#the-assumptions-and-what-guards-each" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>assumption</th>
+<th>what breaks it</th>
+<th>guard</th>
+<th>detector</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>same environment</td>
+<td>a different numpy, a missing optional dependency, another Python</td>
+<td>the environment fingerprint must match the run; if it doesn't, fall back to static</td>
+<td>—</td>
+</tr>
+<tr>
+<td>determinism</td>
+<td>hash-seed-dependent ordering, time, randomness</td>
+<td><code>PYTHONHASHSEED</code> pinned to the recorded value in <code>run</code>; <code>TZ</code> in the fingerprint</td>
+<td>optional second collection in reverse order: tests whose <code>X(T)</code> differs are <strong>unstable</strong> and always selected</td>
+</tr>
+<tr>
+<td>test isolation</td>
+<td>a value one test computes and caches is served to a later test, which then never executes the computation</td>
+<td><code>functools.cache</code>/<code>lru_cache</code> caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (<code>lru_cache</code> is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures)</td>
+<td>the reverse-order collection also catches order dependence between two tests</td>
+</tr>
+<tr>
+<td>complete observation</td>
+<td>subprocesses, threads outliving their test, code run from strings</td>
+<td><code>P(T)</code> → always selected; strings run by <code>exec</code> belong to the function that ran them, which is in <code>X(T)</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td>fresh evidence</td>
+<td>evidence from an old C</td>
+<td>changes are always C → head, so older evidence selects more, never less</td>
+<td>age reported</td>
+</tr>
+</tbody>
+</table>
+<p>What remains is stated in the report and in AGENTS.md: a lazily computed
+value on an object shared by three or more tests (pandas'
+<code>cache_readonly</code>, 171 uses, on an object shared across tests), time- or
+network-dependent paths, and state kept in module-level dictionaries.
+These can make a test's recorded path shorter than its real one. A
+periodic full run under collection (nightly in CI) detects them after the
+fact. Every test that fails there but went unselected in the runs since is
+reported as a miss.</p>
+<h2 id="storage-and-lifecycle">Storage and lifecycle<a class="headerlink" href="#storage-and-lifecycle" title="Permanent link">&para;</a></h2>
+<p><code>.diffcone/evidence/&lt;commit&gt;-&lt;environment hash&gt;.sqlite</code>:
+<code>meta</code> (commit, environment, command, diffcone version, time), <code>symbols</code>
+(index to symbol id), <code>sets</code> (deduplicated compressed bitmaps over the
+symbol table: parametrized tests share sets), <code>tests</code> (target id, set id,
+flags: subprocess, unstable), <code>files</code>, <code>import_phase</code>, <code>import_by</code>. Expected
+size for pandas: about 26 000 targets over about 37 000 symbols, which is
+tens of megabytes before deduplication. That has to be measured (spike).</p>
+<p><strong>Advancing without a full run.</strong> After <code>run --collect</code> executes the
+selected tests under the plugin at head, the store can be written for head
+without running the rest. By the argument above, an unselected test runs
+identically at head, so its C record <em>is</em> its head record. Selected tests
+get their fresh head records. That is how evidence stays fresh without a
+full suite per commit, and the nightly full run resets any drift.
+Implemented as <code>run --collect</code> (2026-10-05); the rules for records the run
+did not produce, process-wide data and refusals are in roadmap item 6.</p>
+<h2 id="interface-and-architecture">Interface and architecture<a class="headerlink" href="#interface-and-architecture" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>diffcone collect --command CMD [--reverse-order]</code>: runs the whole suite
+  under the plugin at a clean checkout of HEAD and writes a store.</li>
+<li><code>diffcone plan ... --evidence auto|PATH</code>: uses the newest store whose
+  environment matches. Evidence is off by default: static mode stays the
+  default and the reference.</li>
+<li><code>diffcone run ... --evidence auto [--collect]</code>: as today; with
+  <code>--collect</code>, advances the store to head.</li>
+<li><code>diffcone evidence</code>: lists stores, their commits, environments and ages.</li>
+</ul>
+<p>Layers: the plugin (<code>src/diffcone/collect.py</code>) is new, and it runs <em>inside</em>
+the project's process. It must never change an outcome: no output, and
+every exception is caught and recorded as a collection error, which
+invalidates the store. <code>execution.py</code> stays the only module that starts
+project code. The planner gets the store as an explicit <code>Evidence</code>
+structure keyed by target id. It stays free of pytest imports and treats
+evidence like a manifest: data that a runner integration produced. <code>plan</code>
+still never runs project code.</p>
+<p><strong>Report</strong> (<code>schema_version</code> 3): <code>analysis.evidence</code> gives the store's
+commit, environment, age, and C → head changes that came from commits
+outside base..head. New reason rules each carry what was observed, never
+an inferred path:</p>
+<ul>
+<li><code>executed_changed</code>: "T executed <code>f</code> in the evidence run at C; <code>f</code> changed".</li>
+<li><code>executed_reader</code>: "T executed <code>g</code>; <code>g</code> references <code>v</code> (edge); <code>v</code> changed".</li>
+<li><code>lookup_site</code>: "T executed <code>g</code>, which looks attributes up by a name nothing
+  bounds and can see N; <code>n</code> was added to N".</li>
+<li><code>opened_file</code>: "T opened <code>pandas/tests/io/data/x.csv</code>; it changed".</li>
+<li><code>escalated</code>: "<code>f</code> ran at import: static planning for this change".</li>
+<li><code>cython_caller</code>: "T executed the Cython function <code>g</code>, which names <code>f</code>; <code>f</code>
+  is <code>nogil</code> or <code>cpdef</code> and changed" (a profiled build does not always
+  report those itself; roadmap item 7).</li>
+</ul>
+<p>Plus fallbacks: <code>no_evidence</code>, <code>unstable</code>, <code>subprocess</code>,
+<code>environment_mismatch</code>.</p>
+<h2 id="how-it-will-be-checked">How it will be checked<a class="headerlink" href="#how-it-will-be-checked" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Spike (go/no-go): done, and it passed.</strong> See "Spike results" below.</li>
+<li><strong>Scenarios</strong> for every row of both tables above, mixing pytest and ASV
+   targets (ASV falling back to static), each asserting exact targets and
+   reasons: a change seen only through a dynamic name, through an opened
+   file, through import-time code, through a shared fixture, a
+   subprocess-spawning test, an unstable test, an environment mismatch,
+   a target with no evidence.</li>
+<li><strong>Recall on pandas.</strong> Collect at an older commit C0 and plan C0 → c for
+   recent commits c. Run the whole suite at each c with <code>validate
+   --coverage</code>: every test that executes a changed symbol at c, and every
+   test whose outcome changes, must be selected. <strong>Done when</strong> that holds
+   on at least 20 pandas commits, and the 28-repository corpus re-planned
+   with evidence shows no miss and states its savings against static.
+   The pandas half is done (2026-10-05): 100 % recall on 20 commit pairs,
+   evaluation.md "pandas: recall of evidence plans".</li>
+</ol>
+<h2 id="refinements-for-the-implementation-2026-09-25">Refinements for the implementation (2026-09-25)<a class="headerlink" href="#refinements-for-the-implementation-2026-09-25" title="Permanent link">&para;</a></h2>
+<p>Working the tables above into code turned up the following. Each one widens
+selection or states something the tables left implicit; none narrows it.</p>
+<ul>
+<li><strong>Evidence at C for a plan base → head.</strong> A test that runs identically at C
+  and at base, and identically at C and at head, runs identically at base
+  and head. So evidence from any C plans C → base and C → head, and the
+  selection is their union. The tables' "C → head" alone is not enough:
+  a head that reverts a change made between C and base shows no change
+  C → head at all.</li>
+<li><strong>Files a test touched, not only opened.</strong> <code>F(T)</code> becomes two sets:</li>
+<li>the repository paths T opened or <code>stat</code>ed. Opens come from the audit
+    hook. <code>os.stat</code> and <code>os.lstat</code> are wrapped: they never warn, so the
+    wrapper's frame cannot move a warning's <code>stacklevel</code> the way wrapping
+    <code>getattr</code> did.</li>
+<li>the directories T listed, from the <code>os.listdir</code> and <code>os.scandir</code> audit
+    events.</li>
+</ul>
+<p>An edited file selects the tests that opened or <code>stat</code>ed it. An added or
+  deleted file also selects the tests that listed a directory above it. That
+  covers <code>os.path.exists</code> on a file that was absent at C, and a directory
+  walk that meets a new file. Added and deleted <code>.py</code> files go through the
+  same rule, since a package scan finds modules by listing.
+* <strong>Who touched a path.</strong> The import system lists and <code>stat</code>s package
+  directories, and pytest's collection walks and <code>stat</code>s every file. Neither
+  is the test's behaviour, and outside the test windows they would make
+  every file look read at import. So the recorder looks at the stack:
+  - events raised under the import system (<code>&lt;frozen importlib…&gt;</code>) are
+    dropped; modules are the index's business;
+  - inside a test window everything else counts, because a library or a
+    plugin fixture may read a file for the test;
+  - outside every window, an event counts only when project code is on the
+    stack. It is credited to the module being imported (a parametrize list
+    globbed at import escalates that module), or to no module when it
+    happens in a hook, which selects everything.
+* <strong>Readers are followed through values.</strong> A reader of a changed thing is
+  handled by its kind:
+  - a function is added to E;
+  - a variable (its initialiser captured the thing) is treated as changed
+    itself, recursively;
+  - a module's or class's top-level code escalates: that module is planned
+    statically as if its import-time code had changed.</p>
+<p>The spike checked module and class readers only for variables; the
+  implementation applies the rule to every change kind, because a changed
+  signature stored in a module-level dispatch table is read at import too.
+* <strong>Import effects seed the importing module.</strong> When changed code (or a
+  reader) ran during the import of module M, M is escalated as a module-level
+  change: planned statically, with every symbol of M added to E. That covers
+  a test module and a library module the same way. A test module's static
+  reach is its own tests (their lifecycle dependency on it) and its
+  importers. The spike credited only the tests that executed M's code, which
+  missed another test module importing a value M built. Code that ran
+  outside any test and outside any import (session hooks, collection) is
+  escalated itself. The record closes when the session finishes, after
+  session fixtures are torn down: code that runs later (terminal summary,
+  unconfigure) runs after every test, so no outcome depends on it, and
+  pytest-xdist kills a worker that has not exited ten seconds after it
+  reported done, which would cut a later record short. An importing module outside the source roots selects
+  everything.
+* <strong>Definition changes reach dynamic callers.</strong> A call through <code>getattr</code>
+  with an unbounded name fails to bind at C before the callee starts, so
+  the callee is not in the caller's record. A changed signature, default,
+  decorator or annotation therefore adds the unbounded lookup sites that
+  can see the namespace, as an added or deleted name does.
+* <strong>Class attributes are not symbols.</strong> A class-attribute edit shows up
+  only as the class's <code>body_changed</code>. So the index records, per class, a hash
+  of each plainly assigned attribute, of the other body statements together,
+  and of the class statement itself (bases, keywords, decorators), in a field
+  static planning does not use. A changed attribute reaches the readers of
+  its name: resolved <code>self.x</code> edges and name matches, plus lookup and
+  reflection sites. A changed statement, an opaque body statement or a
+  dunder attribute escalates. The class's <code>definition_changed</code> also fires
+  when a member is only added or deleted, since the member list is part of
+  that hash. That case is the member's own change, because code notices a
+  new or missing attribute only by looking it up. A special method (<code>__eq__</code>)
+  is used without being named, so a change to one reaches every member of
+  the class's hierarchy.
+* <strong>Reflection sites.</strong> An unbounded lookup is not the only way to observe
+  names. Code can also enumerate them (<code>dir</code>, <code>vars</code>, <code>__dict__</code>,
+  <code>inspect.getmembers</code>), test for them (<code>hasattr</code>), or read signatures
+  (<code>inspect.signature</code>, <code>get_type_hints</code>). The indexer records these sites
+  in a field static planning does not use, and they join the lookup sites
+  for added, deleted and redefined names.
+* <strong>Test code.</strong> Test modules are the modules holding a pytest target, or
+  the entry of one; conftests are test code too. Any change in test code
+  other than a function body also selects the tests in its scope. That
+  covers <code>pytestmark</code>, fixture decorators and parameters, and fixture
+  shadowing, none of which has a static reader. The scope is:
+  - the tests listing the symbol as a lifecycle dependency (a fixture as
+    discovery resolves it at head, autouse included);
+  - the tests collected from its class or a subclass;
+  - for a test module's variable (<code>pytestmark</code>), the module's tests.</p>
+<p>A fixture's old users ran it, so their records hold it. <code>pytest_plugins</code>, <code>collect_ignore</code> and
+  <code>collect_ignore_glob</code> in a conftest, and any function named <code>pytest_*</code>,
+  select everything.
+* <strong>Test classes only pytest holds.</strong> Names on a test class, and on a test
+  module, are looked up by very few sites. On pandas, a one-line test edit
+  otherwise selected 6 588 tests through every unbounded lookup in the test
+  tree. Three bounds apply:
+  - <em>A test class.</em> A member of a class whose instances only pytest holds
+    is seen only by lookup sites inside that class, its bases and its
+    subclasses. This is the planner's runner-only rule with two changes:
+    - a class that is only ever a base of test classes counts too, since
+      its instances are the test classes' instances (pandas'
+      <code>ExtensionTests</code> combines a dozen <code>Base*Tests</code>);
+    - a <code>.instance</code> or <code>.cls</code> read does not turn the rule off. The tests
+      that executed such a read are selected instead, because a test
+      object handed on is used within that test. (pandas' IPython tests
+      read <code>ip.instance</code>, which turns the static rule off for all of
+      pandas.)
+  - <em>A test module or conftest.</em> A module-level name there is seen only
+    by lookup sites that import the module, plus the tests that executed a
+    <code>.module</code> or <code>sys.modules</code> read.
+  - <em>A test's own change</em> reaches the targets it is the entry of, not its
+    class's scope.
+* <strong>Unresolved fixtures.</strong> Static mode selects every test with a fixture
+  discovery cannot resolve. In evidence mode that test's record holds the
+  fixture it ran. The fallback therefore applies only when a module that
+  uses pytest added, deleted or redefined a function or class, which could
+  be a fixture discovery doesn't see.
+* <strong>Skipped tests.</strong> A test skipped by a mark never runs its body, so its
+  record lacks its own entry. A test is therefore also selected when its
+  entry symbol, or a class or module containing it, changed
+  (<code>changed_target</code>).
+* <strong>Fixture teardown.</strong> A generator fixture's teardown is the same code
+  object as its setup, so it is already credited to every user.
+  A finalizer registered with <code>addfinalizer</code> runs in the last user's
+  window, and a run that selects only that user tears the fixture down
+  there too. No separate teardown window is needed.
+* <strong>Files that no Python-level event reports.</strong> Some files are read before
+  the plugin starts or by a build step: pytest's configuration (<code>pytest.ini</code>,
+  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>), build and dependency
+  descriptions, and compiled sources. A change to one of these selects
+  everything. A file read only by compiled code (an HDF5 library opening a
+  path in C) is not observed. That is a stated residual.
+* <strong>Environment.</strong> The fingerprint covers:
+  - the Python implementation and version, and the platform;
+  - every installed distribution and its version, except the project's own
+    editable installs, whose version string changes with each commit;
+  - <code>PYTHONHASHSEED</code>, <code>TZ</code>, <code>LANG</code> and <code>LC_ALL</code>.</p>
+<p><code>collect</code> pins <code>PYTHONHASHSEED</code> to 0 when it is unset, and <code>run
+  --evidence</code> sets the recorded value.</p>
+<h2 id="spike-results-2026-09-24">Spike results (2026-09-24)<a class="headerlink" href="#spike-results-2026-09-24" title="Permanent link">&para;</a></h2>
+<p>A prototype recorder and analysis (<code>scripts/evidence_spike/</code>, kept as the
+starting point, not as the implementation) ran on
+pandas at <code>3f57341</code>. The recorder is the table above without fixture
+teardown windows, <code>P(T)</code> or the environment capture, so the cost below is
+for that subset (the missing parts are per session or per fixture, not per
+call); pandas
+was built in place with Python 3.13, with pandas' CI marker
+filter (<code>not slow and not network and not db and not single_cpu</code>) on
+8 workers.</p>
+<p><strong>Cost.</strong> Each measured against a plain run straight after it on the same
+machine: the recorder before the review fixes took 194 s against 155 s
+(<strong>1.25×</strong> wall, 1.49× CPU), the corrected one 194 s against 134 s
+(<strong>1.45×</strong> wall, 1.41× CPU). Plain runs varied more than traced ones. The outcomes were identical every time: 187 615 passed
+and the same 13 failed. The record is 27 MB for 22 258 folded tests. A test executes a median of 134
+pandas symbols (p90 328) of the 37 307. <code>test_round</code> executes 121, where
+static reach said all of them.</p>
+<p><strong>Selection.</strong> The 79 commits before <code>3f57341</code> were replayed against that
+record, with E and escalation as in the tables above. Evidence at the head
+stood in for evidence at each parent, which estimates size but is not a
+recall claim.</p>
+<table>
+<thead>
+<tr>
+<th>selection</th>
+<th>commits</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>under 1 %</td>
+<td>11</td>
+</tr>
+<tr>
+<td>1–5 %</td>
+<td>20</td>
+</tr>
+<tr>
+<td>5–25 %</td>
+<td>20</td>
+</tr>
+<tr>
+<td>25–75 %</td>
+<td>4</td>
+</tr>
+<tr>
+<td>75–100 %</td>
+<td>24</td>
+</tr>
+</tbody>
+</table>
+<p>Median <strong>6.4 %</strong> (p25 4.4 %, p75 99.7 %), against 100 % for static planning
+on every one of them; 51 of 79 select under a quarter. Of the 24 commits
+over 75 %: 13 escalate a library change (module-level edits in
+<code>pandas.core.frame</code> and <code>pandas.core.missing</code>, a variable read by
+<code>config_init</code>'s top-level code, <code>DataFrame</code> or <code>SparseArray</code> read at import,
+library code run by a conftest), 8 change a compiled source, a template or
+a lockfile, 1 changes pytest hooks in the root conftest, and 2 are broad on
+evidence alone. No commit failed to analyse (a failure would count as
+selecting everything).</p>
+<p><strong>Review corrections.</strong> A code review of the first version of these
+numbers found gaps, all now fixed, and re-ran them (the first version
+reported a median of 6.9 %, 49 under a quarter):
+- import-time escalation was skipped for body edits that also add or
+  redirect calls;
+- a variable read by module or class top-level code never escalated;
+- decorator comparison read only the first <code>@overload</code> stub and missed
+  definitions under <code>if</code>/<code>try</code>;
+- added or deleted variables skipped the lookup-site rule;
+- fixture decorator changes in test code were treated like a test's own
+  decorators, and conftests under <code>pandas/tests/</code> like test modules;
+- in the recorder, a shared fixture's window missed code the test had
+  already run, fixtures obtained with <code>getfixturevalue</code> were never
+  credited, and caches created after collection were never cleared.</p>
+<p>Fixing these moved 25 commits: 9 up (the import-time and hook cases) and
+16 down. The downward moves come from dropping an over-broad rule. The
+first version added a function's callers whenever a body edit also added
+a call, but callers see new behaviour only by executing the function,
+which puts it in their record already. Callers now count only when the
+definition itself changes.</p>
+<p><strong>Later correction</strong> (2026-10-06, found while extending the rules to Cython
+names, roadmap item 8): a changed variable's <em>value</em> reached only its
+readers, so a test reading it through <code>getattr(module, name)</code> with a
+computed name, or through <code>vars(module)</code>, was missed; a variable runs no
+code of its own for the record to show. A changed value now reaches the
+lookup and reflection sites that can see its namespace, as an added or
+deleted name did. The numbers above predate this and can only rise.</p>
+<p><strong>What the spike corrected in this design</strong> (each is folded into the
+tables above): names cannot be recorded by wrapping; the tracer must start
+at plugin import; imports that raise end with an unwind; escalation must
+leave dynamic seeds to the evidence; test code's decorators and added test
+functions do not escalate; added modules do not escalate. It also found
+two rows the design lacked: fixture shadowing and pytest hooks.</p>
+<p><strong>Not measured by the spike</strong>: recall (step 3), the bases and subclasses
+of a changed class (members of the class itself only), fixture teardown,
+subprocess and unstable tests, environment capture, and ASV.</p>
+<h2 id="decisions">Decisions<a class="headerlink" href="#decisions" title="Permanent link">&para;</a></h2>
+<p>Answered (2026-09-24):</p>
+<ol>
+<li><strong>Step 0: every file.</strong> Any changed non-Python file under a source root
+   selects everything, including a <code>README.md</code> under a <code>.</code> root. It shipped
+   as the <code>unanalysed_file_changed</code> fallback (design.md), and its cost on
+   the recorded corpora is in evaluation.md.</li>
+<li><strong>The assumptions: opt-in only.</strong> Evidence mode is accepted with its
+   stated residuals as an explicit opt-in. Static stays the default, and
+   the nightly miss audit is part of the mode, not advice.</li>
+<li><strong>Scope</strong> follows from 2: runtime tracing moves into scope for the
+   collector only, when the mode is implemented. AGENTS.md changes with
+   that implementation, not before.</li>
+<li><strong>Collection needs Python 3.12+</strong> (<code>sys.monitoring</code>). There is no 3.11
+   fallback; a collection on an older interpreter is refused.</li>
+</ol>
+<p>Open:</p>
+<ol>
+<li><strong>Where collection runs.</strong> Nightly in CI is the natural producer for
+   pandas, and developers would download that store. That makes the
+   environment fingerprint the thing to get right. Local-only collection
+   is simpler, but it costs every developer a full traced run. The spike
+   measured 1.25–1.45× a plain run for pandas (3 minutes on 8 workers), which
+   makes local collection affordable. The fingerprint question stays open.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../design/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Design">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Design
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../evaluation/" class="md-footer__link md-footer__link--next" aria-label="Next: Evaluation">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Evaluation
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2026 Bearing Research
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["content.code.copy","content.action.edit","navigation.footer","navigation.indexes","navigation.instant","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight","toc.follow"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"alias":true,"provider":"mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      
+    
+  </body>
+</html>

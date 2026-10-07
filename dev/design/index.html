@@ -1,0 +1,2920 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Which tests and benchmarks a change to Python code can affect, and why">
+      
+      
+      
+        <link rel="canonical" href="https://bearing-research.github.io/diffcone/dev/design/">
+      
+      
+        <link rel="prev" href="../limitations/">
+      
+      
+        <link rel="next" href="../evidence_design/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.68">
+    
+    
+      
+        <title>Design - diffcone</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="diffcone" class="md-header__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            diffcone
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="diffcone" class="md-nav__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    diffcone
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Guides
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Guides
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Planning
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Running and checking
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Execution evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CI with GitHub Actions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Commands
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Target manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/declarations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Report
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/discovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Static discovery
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Limitations
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Background
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Background
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Design
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Design
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pipeline
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#snapshot-reader" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Snapshot reader
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#symbol-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Symbol identity
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Hashes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-edges" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Dependency edges
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dependency edges">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolution-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Resolution rules
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#beforeafter-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Before/after analysis
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#impact-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Impact propagation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#uncertainty-and-fallbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Uncertainty and fallbacks
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#index-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Index cache
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Index cache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#module-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Module cache
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#determinism" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Determinism
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#static-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static discovery
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Static discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pytest" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        pytest
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#asv" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        ASV
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-name-match-cannot-land-on-a-method-only-the-test-runner-can-call" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        A name match cannot land on a method only the test runner can call
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#attributes-read-off-an-object" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Attributes read off an object
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#declared-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Declared dependencies
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution and validation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evidence-mode-opt-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Evidence mode (opt-in)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-gaps-by-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Known gaps (by design)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../evidence_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evidence design
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evaluation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Roadmap
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Development
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Pipeline
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Pipeline">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#snapshot-reader" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Snapshot reader
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#symbol-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Symbol identity
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hashes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Hashes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dependency-edges" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Dependency edges
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dependency edges">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#resolution-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Resolution rules
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#beforeafter-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Before/after analysis
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#impact-propagation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Impact propagation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#uncertainty-and-fallbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Uncertainty and fallbacks
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#index-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Index cache
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Index cache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#module-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Module cache
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#determinism" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Determinism
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#static-discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static discovery
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Static discovery">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pytest" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        pytest
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#asv" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        ASV
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#a-name-match-cannot-land-on-a-method-only-the-test-runner-can-call" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        A name match cannot land on a method only the test runner can call
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#attributes-read-off-an-object" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Attributes read off an object
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#declared-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Declared dependencies
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#execution-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution and validation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evidence-mode-opt-in" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Evidence mode (opt-in)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-gaps-by-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Known gaps (by design)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="Navigation" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="./.." class="md-path__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-path__item">
+        <a href="././" class="md-path__link">
+          
+  
+  <span class="md-ellipsis">
+    Background
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+    <a href="https://github.com/bearing-research/diffcone/edit/main/docs/design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="diffcone-design">Diffcone design<a class="headerlink" href="#diffcone-design" title="Permanent link">&para;</a></h1>
+<p>This document describes what the current implementation does. Planned work
+lives in <a href="../roadmap/">roadmap.md</a>.</p>
+<h2 id="pipeline">Pipeline<a class="headerlink" href="#pipeline" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Git snapshot reader        diffcone/snapshot.py
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  -&gt; Source index          diffcone/indexer/     (symbols, hashes, edges, unresolved refs)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  -&gt; Change classifier     diffcone/classify.py
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  -&gt; Impact planner        diffcone/planner.py
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  -&gt; Reports               diffcone/report.py    (JSON and text)
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>Static discovery           diffcone/discovery/   (head snapshot -&gt; manifest targets)
+</code></pre></div>
+<p>Each stage exchanges plain dataclasses (<code>diffcone/model.py</code>). The planner
+does not import pytest or ASV; targets are opaque records produced by the
+manifest, by discovery, or both (a manifest entry overrides a discovered
+target with the same runner and id).</p>
+<h3 id="snapshot-reader">Snapshot reader<a class="headerlink" href="#snapshot-reader" title="Permanent link">&para;</a></h3>
+<p><code>read_snapshot(repo, revision, source_roots)</code> returns one of three snapshot
+kinds, and the kind travels with the index into the report:</p>
+<table>
+<thead>
+<tr>
+<th><code>revision</code></th>
+<th>kind</th>
+<th>contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>any git revision</td>
+<td><code>commit</code></td>
+<td><code>.py</code> files under the source roots from the object store (<code>git ls-tree</code> + <code>git cat-file --batch</code>); nothing is checked out</td>
+</tr>
+<tr>
+<td><code>INDEX</code></td>
+<td><code>index</code></td>
+<td>staged content of tracked files (<code>git ls-files --cached</code>, blobs read as <code>:path</code>)</td>
+</tr>
+<tr>
+<td><code>WORKTREE</code></td>
+<td><code>worktree</code></td>
+<td>files on disk: tracked and untracked (<code>git ls-files --cached --others --exclude-standard</code>), ignored files excluded, tracked files deleted on disk absent</td>
+</tr>
+</tbody>
+</table>
+<p><code>INDEX</code> and <code>WORKTREE</code> record <code>HEAD</code> as their commit and carry a description
+that says "uncommitted". A frozen <code>SnapshotInfo</code> (revision, commit, kind,
+description) travels unchanged from the reader through the index to the
+report, which exposes it as <code>analysis.&lt;side&gt;</code>, plus <code>working_tree_analyzed</code>,
+<code>uncommitted_analyzed</code> and a derived <code>scope.analyzed</code> sentence; the text
+report prints both descriptions and the same sentence. Runner configuration
+for discovery is read from the same snapshot (staged or on-disk files
+respectively). Unknown revisions are fatal (exit 2).</p>
+<p>Edge cases: skip-worktree entries (sparse checkouts) are not on disk by
+design, so <code>WORKTREE</code> reads them from the index instead of reporting
+deletions; paths that are unmerged during a merge have no staged content, so
+<code>INDEX</code> records an analysis error for each (the plan degrades and selects
+everything), while <code>WORKTREE</code> sees the conflict markers as a parse error
+with the same effect.</p>
+<p>Symlinks: git stores a symlink as a blob holding its target, and pytest
+collects through linked directories (pydantic links
+<code>tests/pydantic_core -&gt; ../pydantic-core/tests</code>). All three kinds expand a
+tracked symlink under the source roots whose relative target stays inside
+the repository: a file link takes its target's content at the link's
+path; a directory link adds every <code>.py</code> file under its target at the same
+relative path under the link, so its modules and targets are named as
+pytest names them. Links inside an expanded tree are not followed again,
+and absolute links or links leaving the repository are ignored.</p>
+<h2 id="symbol-identity">Symbol identity<a class="headerlink" href="#symbol-identity" title="Permanent link">&para;</a></h2>
+<p>A symbol's identity is its dotted qualified name:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Identity</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>module</td>
+<td>module path relative to a source root</td>
+<td><code>pkg.service</code></td>
+</tr>
+<tr>
+<td>class</td>
+<td>module + class name (nested classes chain)</td>
+<td><code>pkg.models.Model</code></td>
+</tr>
+<tr>
+<td>function</td>
+<td>module + name</td>
+<td><code>pkg.service.run</code></td>
+</tr>
+<tr>
+<td>method</td>
+<td>module + class + name</td>
+<td><code>pkg.models.Model.save</code></td>
+</tr>
+<tr>
+<td>variable</td>
+<td>module + name, for a top-level <code>NAME = &lt;expr&gt;</code> bound exactly once</td>
+<td><code>attr.ib</code> (an alias), <code>pkg.config.LIMIT</code></td>
+</tr>
+</tbody>
+</table>
+<p>Line numbers and file paths are metadata. Inserting blank lines or comments
+does not change identity or any hash. Functions defined inside functions are
+part of the enclosing function's body, not separate symbols. Several
+definitions with the same name in one scope (overloads, property setters,
+conditional definitions) are one symbol whose hashes cover all of them;
+for a class defined more than once, the members of all its definitions
+are indexed together, so a method defined in each <code>if</code>/<code>else</code> variant is
+one symbol as well. A package whose <code>__init__.py</code> binds a name that is
+also one of its submodules (<code>pkg/__init__.py</code> defining <code>retry</code> next to
+<code>pkg/retry.py</code>) keeps <code>pkg.retry</code> for the module and gives the binding
+the identity <code>pkg.__init__.retry</code> (manifests name it that way too). The
+attribute <code>pkg.retry</code>, and <code>from pkg import retry</code>, resolve to both the
+binding and the module (an edge to each, the one to the module with
+detail <code>module</code>), since the binding normally wins at runtime but either
+may be meant; <code>import pkg.retry</code> and <code>from pkg.retry import x</code> are the
+module. The same holds when the package re-exports a name of the
+submodule (<code>from .main import main</code> in <code>pkg/__init__.py</code>, a common
+pattern): <code>pkg.main</code> is the re-exported function and the module. A
+package whose <code>__init__</code> imports a submodule of itself that is not in the
+snapshot (a compiled extension) resolves that name as unresolved.</p>
+<p>Source roots are mapped to module names with the longest matching root
+winning; <code>pkg/__init__.py</code> is module <code>pkg</code>. A root may carry a module
+prefix, <code>DIR=PREFIX</code> (<code>--source-root api/tests=api_tests</code>): its modules
+are named <code>PREFIX.&lt;path&gt;</code> and the directory itself is the package
+<code>PREFIX</code>. The prefixed name is diffcone's identity only, never used to
+resolve an import (pytest's <code>importlib</code> import mode, the case this
+serves, gives such modules no importable name either). Two files that map to the same
+module name are an analysis error (the second is skipped and the plan is
+degraded), which is the condition under which one pytest session would
+fail with an import file mismatch too.</p>
+<p><strong>Monorepos.</strong> One plan models one pytest session: pass the source roots
+of every package that session imports plus the test tree it collects. A
+repository whose packages each carry a <code>tests/</code> tree run as separate
+sessions (opentelemetry-python: <code>tox -e test-opentelemetry-sdk</code> runs
+<code>opentelemetry-sdk/tests</code> alone) is planned once per session, for example
+<code>--source-root opentelemetry-api/src --source-root opentelemetry-sdk/src
+--source-root tests/opentelemetry-test-utils/src --source-root
+opentelemetry-sdk/tests</code>. Planning the API and SDK test trees together
+collides on <code>trace.test_globals</code> and <code>context</code> and degrades exactly as a
+default-mode pytest session would; when a session really collects both
+(<code>--import-mode=importlib</code>), give each tree a prefix
+(<code>opentelemetry-api/tests=api_tests</code>, <code>opentelemetry-sdk/tests=sdk_tests</code>)
+and the trees keep distinct identities. A repository that runs one
+session over several packages (hatch: <code>src</code>, <code>backend/src</code>, <code>tests</code>) is
+one plan. Cross-package imports resolve like any other in-scope import
+because module names are global across roots.</p>
+<h2 id="hashes">Hashes<a class="headerlink" href="#hashes" title="Permanent link">&para;</a></h2>
+<p>Hashes are SHA-1 prefixes of <code>ast.dump(node, include_attributes=False)</code>, so
+whitespace, comments and positions never matter.</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th><code>body_hash</code></th>
+<th><code>definition_hash</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>function/method</td>
+<td>body statements</td>
+<td>arguments (names, defaults, annotations), decorators, return annotation, sync/async</td>
+</tr>
+<tr>
+<td>class</td>
+<td>class-level statements excluding member definitions</td>
+<td>bases, keywords, decorators, <strong>sorted member names</strong></td>
+</tr>
+<tr>
+<td>variable</td>
+<td>the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: <code>REGISTRY[k] = v</code>, <code>NAMES.append(x)</code>); those statements' lines are the variable's for coverage</td>
+<td>(none)</td>
+</tr>
+<tr>
+<td>module</td>
+<td>top-level statements excluding definitions, imports and variable symbols</td>
+<td>the set of import bindings (<code>import a as b</code>, <code>from m import n</code>), independent of grouping and order</td>
+</tr>
+</tbody>
+</table>
+<p>The docstring is excluded from every body hash and hashed on its own:
+a docstring-only edit is reported as <code>docstring_changed</code> and carries no
+impact (docstrings do not change behaviour; doctests, which would, are not
+modelled). Consequences: adding or
+removing a method is a class definition change; removing or redirecting an
+import binding is a module definition change, while <em>adding</em> one is the
+non-structural <code>imports_added</code>. Definitions nested inside <code>if</code>/<code>try</code>/<code>with</code>
+blocks are still symbols and are excluded from their scope's body hash.</p>
+<h2 id="dependency-edges">Dependency edges<a class="headerlink" href="#dependency-edges" title="Permanent link">&para;</a></h2>
+<p><code>Edge(source, target, kind, detail)</code> means <em>source depends on target</em>.</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Source → target</th>
+<th>Produced by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>references</code></td>
+<td>function/class/module → symbol</td>
+<td>resolved name or attribute chain; <code>detail</code> is <code>attribute:NAME</code> when the reference resolves to a module- or class-level variable (the module/class symbol stands in for it) or <code>module</code> when a module object itself is referenced</td>
+</tr>
+<tr>
+<td><code>references</code> (detail <code>mutated_by</code>)</td>
+<td>variable → function/module</td>
+<td>the target assigns into, augments, deletes from or calls a mutating method (<code>update</code>, <code>append</code>, ...) on the variable, so readers of the variable depend on its writers</td>
+</tr>
+<tr>
+<td><code>defined_in</code></td>
+<td>member → container</td>
+<td>every class, function and method</td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td>module or function → module</td>
+<td><code>import m</code>, <code>from m import sub</code>, <code>importlib.import_module("m")</code></td>
+</tr>
+<tr>
+<td><code>imports_name</code></td>
+<td>module → symbol</td>
+<td>module-level <code>from m import name</code></td>
+</tr>
+<tr>
+<td><code>entry</code></td>
+<td>target → symbol</td>
+<td>manifest</td>
+</tr>
+<tr>
+<td><code>lifecycle</code></td>
+<td>target → symbol</td>
+<td>manifest</td>
+</tr>
+<tr>
+<td><code>unresolved_name_match</code></td>
+<td>function → changed symbol</td>
+<td>synthesised by the planner, see below</td>
+</tr>
+</tbody>
+</table>
+<h3 id="resolution-rules">Resolution rules<a class="headerlink" href="#resolution-rules" title="Permanent link">&para;</a></h3>
+<p>A name or dotted chain <code>a.b.c</code> is resolved from its base:</p>
+<ol>
+<li><code>self</code>/<code>cls</code> (the first parameter of a non-static method) → the enclosing
+   class; <code>self.m</code> resolves through the class's MRO (below).</li>
+<li>A function-local import alias.</li>
+<li>A binding of the current scope (parameter, assignment, <code>except ... as</code>,
+   <code>with ... as</code>, nested def name, function-local import) → <strong>local</strong>,
+   except a parameter whose default is a module-level variable, which
+   aliases that variable for reads and in-place mutations
+   (<code>def build(registry=REGISTRY): registry[k] = v</code>). Decorators, defaults
+   and annotations are resolved in the enclosing scope, where the
+   function's own parameters do not exist yet;
+   <code>local.attr</code> becomes an unresolved attribute reference bounded by <code>attr</code>.
+   Nested functions, lambdas and comprehensions are separate scopes: a
+   comprehension variable or an inner function's parameter never shadows a
+   reference made outside it, while an inner scope still sees the enclosing
+   function's locals.</li>
+<li>A module-level definition in the same module.</li>
+<li>A module-level import alias (<code>import a.b as x</code>, <code>from a import b</code>,
+   relative forms). Absolute module names are resolved against the snapshot;
+   modules outside the source roots are <em>external</em> (recorded, not edges).
+   A missing submodule of an analysed package is <em>unresolved</em>, not external.</li>
+<li>A module-level variable → its <code>variable</code> symbol when it is a simple
+   top-level assignment bound once (its right-hand side's references are
+   the variable's edges, so an alias <code>ib = attrib</code> depends on <code>attrib</code>);
+   otherwise (rebound, unpacked, assigned inside a block) the module symbol
+   (<code>attribute:NAME</code>).</li>
+<li>Star imports: every analysed star-imported module is consulted (in order,
+   recursively) before an out-of-scope star import is blamed, so an in-scope
+   symbol is never misattributed to a third-party package.</li>
+<li>Builtins and dunder names are ignored, unless the program binds the same
+   name itself.</li>
+<li>Anything else → unresolved bare name.</li>
+</ol>
+<p>Attribute steps walk from module to submodule, module member, module
+variable or star-imported name; from class to method, nested class or class
+variable, searching the class and then its bases in MRO order. Base names
+are resolved where the class statement executes: the enclosing class body
+for a nested class, then the module. Bases are resolved on demand (a dotted
+base such as <code>Zed.Inner</code> may need another class's MRO first) and MROs are
+memoised only once every class's bases are known. The linearisation is the
+class followed by its bases depth-first left-to-right keeping the last
+occurrence of a repeated base, which matches C3 for ordinary hierarchies;
+inheritance cycles stop at the repeated class. A base that is external,
+dynamic (<code>Generic[T]</code>, <code>namedtuple(...)</code>) or unknown marks the class
+incomplete: a lookup that passes such a class before finding a hit records
+the edge <em>and</em> a name-bounded unresolved reference, since an override in
+the unknown part of the hierarchy could win. <code>super().m</code> inside a method
+resolves <code>m</code> starting after the enclosing class in its MRO. A lookup on
+<code>self</code>/<code>cls</code> dispatches at runtime, so besides the MRO hit it also records
+<code>references</code> edges (detail <code>override</code>, or <code>override:attribute:NAME</code> for a
+class-attribute rebinding) to whatever the attribute resolves to on each
+in-scope descendant when that differs from the base hit: a method the
+descendant defines, one it inherits from a mixin outside the base's
+hierarchy, or a rebinding. A change to <code>Sub.step</code> (or <code>Mixin.step</code>) reaches
+callers of <code>Base.run</code> that invoke <code>self.step()</code>. Override methods share the
+dispatched call's site and escape status for literal propagation. Explicit
+<code>Base.step</code> and <code>super().step</code> do not dispatch and get no override edges. Referencing a
+class (<code>Foo(...)</code>, subclassing) also adds edges to the <code>__init__</code> and
+<code>__new__</code> found through its MRO, so constructor changes reach callers. A step that cannot
+be taken yields an unresolved attribute reference bounded by the attribute
+name. Once a chain reaches a value of unknown type (a local, a failed
+step, a variable, a function, a class-level binding) it stops there, and
+every attribute name after that point is recorded as a name-bounded
+reference too: <code>client.session.send()</code> on an unknown <code>client</code> records
+<code>session</code> and <code>send</code>, <code>DEFAULT.send()</code> on a module-level instance
+records an edge to <code>DEFAULT</code> and the name <code>send</code>. An attribute whose base is not a name
+chain (<code>Foo().run</code>, <code>items[0].run</code>, <code>make().run</code>) records an unresolved
+attribute reference for <code>run</code> and the base expression is analysed on its
+own, so <code>Foo</code> still gets a reference edge.</p>
+<p>Creating a class runs code of its bases and metaclass, so a class
+statement depends on the <code>__init_subclass__</code> that each in-scope base
+finds through its MRO (their union covers the one the new class's MRO
+picks) and on an in-scope <code>metaclass=</code>'s <code>__new__</code> and <code>__init__</code> (edge
+details <code>__init_subclass__</code>, <code>__new__</code>, <code>__init__</code>). The dependency is
+recorded for the class and for what runs the statement: the module for a
+top-level class (it is created on import), the enclosing function for a
+class defined in a function body (a test that subclasses a view).</p>
+<p>Special methods run without being named: <code>==</code> runs <code>__eq__</code>, <code>len()</code>
+runs <code>__len__</code>, calling an instance runs <code>__call__</code>, <code>with</code> runs
+<code>__enter__</code>/<code>__exit__</code>, a missing attribute runs <code>__getattr__</code>. A class
+therefore depends on each special method it defines (every
+<code>__dunder__</code> method except <code>__init__</code>, <code>__new__</code> and <code>__init_subclass__</code>,
+which are reached explicitly): a <code>references</code> edge with detail
+<code>special_method</code>. Whatever references the class (constructs it,
+subclasses it, a factory returning instances) is reached by a change to
+one of them, inherited ones through the subclass-to-base edge; the edge
+does not invalidate the class's other methods (<code>defined_in</code> carries only
+structural impact). Inside <code>__getattr__</code>/<code>__getattribute__</code>,
+<code>getattr(x, name)</code> with <code>name</code> the method's own name parameter is not a
+dynamic reference: the method runs only for an access <code>obj.&lt;name&gt;</code>, and
+every such access records <code>&lt;name&gt;</code> itself.</p>
+<p>A class with a base outside the source roots (directly or anywhere in
+its in-scope MRO, or the subscripted base of <code>Base[T]</code>) may have any of
+its methods called by that code: httpx calls a transport's
+<code>handle_request</code>, <code>logging</code> calls a handler's <code>emit</code>, <code>json</code> calls an
+encoder's <code>default</code>. Such a class depends on every method it defines
+(edge detail <code>external_base</code>), so whatever references the class is
+reached. Bases that only add structure do not count: builtins (<code>object</code>,
+<code>dict</code>, <code>Exception</code>), <code>abc.ABC</code>, and <code>Generic</code>, <code>Protocol</code>, <code>NamedTuple</code>
+and <code>TypedDict</code> from <code>typing</code> or <code>typing_extensions</code>.</p>
+<p>Module and class bodies are analysed without entering the definitions they
+contain; those are symbols with their own edges.</p>
+<p><code>importlib.import_module</code> and <code>importlib.__import__</code> are recognised under
+any spelling the module's or function's imports give them (<code>from
+importlib import import_module</code>, <code>import importlib as il</code>). A relative
+name (<code>import_module(f"..templates.{name}", __name__)</code>) is resolved as
+<code>importlib.util.resolve_name</code> does when the <code>package</code> argument is a
+literal, <code>__name__</code> (the module's name) or <code>__package__</code> (its package);
+under a <code>DIR=PREFIX</code> root the indexed name is not the runtime one, so
+only a literal <code>package</code> resolves there. Any other relative name is
+unbounded.</p>
+<p><code>getattr(x, name)</code> and <code>importlib.import_module(name)</code> are expanded over
+every string <code>name</code> may hold when that is bounded: a string literal, a
+tuple/list/set of literals, a dict literal with string keys (iterated
+directly, via <code>.keys()</code>, or as the first name of a <code>for key, value in
+D.items()</code> target), a dict literal's string values (<code>D[key]</code>, <code>D.values()</code>,
+or the second name of a <code>for key, value in D.items()</code> target) or a sequence
+literal's elements (<code>L[i]</code>, a slice excepted), a variable assigned
+only such values (in the function or at module level) and never mutated in
+place (a <code>REGISTRY = {}</code> that any module fills with <code>REGISTRY[k] = v</code>, an
+<code>append</code>, an <code>update</code> or a <code>del</code> is not the literal it was assigned, in
+the scope that mutates it and everywhere the variable is visible), or a
+<code>for</code> variable iterating over one
+(<code>for attr in ("body", "orelse"): getattr(stmt, attr)</code>). Each candidate is
+resolved like <code>x.&lt;candidate&gt;</code> or an import. A string built at runtime with a
+literal prefix (<code>f"attr.{name}"</code>, <code>"attr." + name</code>, <code>"attr.%s" % name</code>,
+<code>"attr.{}".format(name)</code>) bounds the candidates to what carries that
+prefix: <code>import_module</code> expands to <code>imports</code> edges to every in-scope module
+under it (a prefix matching no in-scope module is an external reference),
+and <code>getattr</code> to every in-scope symbol name starting with it. When the name
+is one of the enclosing function's parameters, the literal strings that every resolved
+call site passes for it (positionally, by keyword, or via the parameter's
+default) are used instead, so <code>def _attr(stream, attr): getattr(stream,
+attr)</code> called as <code>_attr(s, "encoding")</code> and <code>_attr(s, "errors")</code> is bounded
+to those two names. The call sites are plain calls, <code>obj.m(...)</code> and
+<code>self.m(...)</code> (shared with dispatched overrides), <code>super().m(...)</code>, and
+constructions: <code>Foo(...)</code> or <code>cls(...)</code> is a call site of the <code>__init__</code>
+its MRO resolves to (any subclass's for <code>cls</code>), with <code>self</code> implicit. The
+function stays dynamic if its body rebinds the parameter; if it escapes
+(used as a value: a bare reference, <code>getattr(mod, "f")</code> returning it, or
+<code>super().m</code> not called), or its name occurs as an unresolved reference so
+callers may be unknown (an unresolved <code>super().m</code> in class K counts only
+for an <code>m</code> that follows K in the MRO of K or of one of its subclasses);
+if it is an <code>__init__</code> and a class that inherits it escapes; or if it has
+no resolved call site or any call site is unbounded (<code>*args</code>, a
+non-literal). A class escapes when it is referenced other than as a
+callee, a base class, the second argument of the builtin
+<code>isinstance</code>/<code>issubclass</code> or the first of <code>typing.cast</code>. Annotations
+count as escapes: injector, FastAPI's <code>Depends()</code> and pydantic build
+instances from them with arguments no call shows; <code>cls</code> as a
+value in a classmethod, <code>type(self)</code> and <code>self.__class__</code> make the class
+and every in-scope subclass escape. Expanding a <code>getattr</code> can make a
+function escape, or record a name-bounded reference (a candidate that
+does not resolve on its receiver, or a name after a chain stops), either
+of which can unbound another expansion, so expansion is repeated until
+both the escape set and the unresolved names are stable.</p>
+<p>The name can also be an instance attribute: <code>getattr(hooks,
+self.identifier)</code> in a method of class C is expanded over what
+<code>self.identifier</code> may hold. That is bounded only when every class in the
+MRO of C or of an in-scope subclass of C is plain (no class decorators or
+keywords such as <code>metaclass=</code>, every base in scope or <code>object</code>), none of
+them defines the attribute at class level or defines <code>__setattr__</code>,
+<code>__delattr__</code>, <code>__getattr__</code> or <code>__getattribute__</code>, none uses
+<code>setattr(self, ...)</code>, <code>delattr(self, ...)</code>, <code>self.__dict__</code> or <code>vars(self)</code>,
+and every write of <code>self.&lt;attr&gt;</code> in their methods is a single-target
+assignment in <code>__init__</code> of a parameter the body does not rebind, a
+literal, or a name chain that resolves to a symbol. A write through any
+other receiver (<code>obj.identifier = ...</code>), <code>setattr(obj, "identifier",
+...)</code> / <code>monkeypatch.setattr</code> / <code>patch.object</code> naming it, or one of those
+with an unbounded name, or a write into another object's <code>__dict__</code>,
+leaves the attribute (or every attribute) unbounded everywhere, since the
+receiver's type is unknown; so does any use of another object's
+<code>__dict__</code> (aliased, reassigned, <code>|=</code>). A class in that hierarchy that
+escapes, or whose name occurs as an unresolved reference, may have
+subclasses the index cannot see (<code>class S(Base)</code> with <code>Base = Foo if X
+else Bar</code>), so it leaves the attribute unbounded too. A parameter binding takes the literals of the
+<code>__init__</code>'s call sites as above. When every write binds a symbol
+(<code>self.handler = process</code>), <code>self.handler</code> and <code>self.handler.x</code> also get
+edges (detail <code>self.handler</code>) to that symbol, alongside the name-bounded
+unresolved reference an unknown attribute always records. Only when the
+name is unbounded do <code>getattr</code>,
+<code>eval</code>, <code>exec</code>, <code>__import__</code>, <code>globals()</code>, <code>vars()</code> and <code>import_module</code>
+mark the enclosing symbol as having a <strong>dynamic</strong> reference.</p>
+<p>Method identity and method-call resolution are separate: <code>Model.save</code> is a
+symbol, but <code>obj.save()</code> on an untyped <code>obj</code> is an unresolved attribute
+reference, never a resolved call.</p>
+<h2 id="beforeafter-analysis">Before/after analysis<a class="headerlink" href="#beforeafter-analysis" title="Permanent link">&para;</a></h2>
+<p>Both revisions are indexed independently. The classifier compares symbols by
+identity and reports:</p>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>added</code> / <code>deleted</code></td>
+<td>present in only one revision</td>
+</tr>
+<tr>
+<td><code>body_changed</code></td>
+<td><code>body_hash</code> differs</td>
+</tr>
+<tr>
+<td><code>definition_changed</code></td>
+<td>kind or <code>definition_hash</code> differs</td>
+</tr>
+<tr>
+<td><code>dependencies_changed</code></td>
+<td>an outgoing non-containment edge was removed or redirected (a call was redirected, an alias now points elsewhere, an import stopped resolving)</td>
+</tr>
+<tr>
+<td><code>dependencies_added</code></td>
+<td>outgoing edges were only added (a new import binding, a new call); non-structural</td>
+</tr>
+<tr>
+<td><code>imports_added</code></td>
+<td>a module gained import bindings and lost none; non-structural</td>
+</tr>
+<tr>
+<td><code>docstring_changed</code></td>
+<td>only the docstring differs; non-structural, no impact</td>
+</tr>
+<tr>
+<td><code>annotations_changed</code></td>
+<td>only a function's annotations differ and they are never evaluated at import (see Import time); behaviour-level, non-structural</td>
+</tr>
+</tbody>
+</table>
+<p>A symbol whose only changes are <code>imports_added</code>, <code>dependencies_added</code>
+and/or <code>docstring_changed</code> is reported but seeds no impact: nothing an existing dependent can observe
+differs, and a member whose own resolution moved because of the addition
+carries its own <code>dependencies_changed</code>. In practice this means adding a
+name to a test module's import list no longer selects every test that lists
+the module as a lifecycle dependency.</p>
+<p>Symbols of a module that failed to parse in one revision are skipped rather
+than reported as added/deleted; the analysis error fallback covers them.</p>
+<p>The planner works on the <strong>union</strong> of both revisions' edges, each tagged with
+the revisions it exists in. A dependency that only existed in base (a deleted
+callee) still carries impact to its former consumers.</p>
+<h2 id="impact-propagation">Impact propagation<a class="headerlink" href="#impact-propagation" title="Permanent link">&para;</a></h2>
+<p>Each changed symbol seeds a backward search. A node carries impact in one of
+two modes:</p>
+<ul>
+<li><strong>behaviour</strong>: the symbol's runtime behaviour may differ;</li>
+<li><strong>structural</strong>: the symbol was added/deleted, its definition changed,
+  a dependency was removed or redirected, or (for classes) its body changed;
+  this invalidates everything defined inside it. Pure additions (an import
+  binding, a dependency edge) are not structural: they cannot break an
+  existing member, and a member whose own resolution changed because of them
+  carries its own <code>dependencies_changed</code>. Class bodies are structural because
+  class-level attributes such as ASV <code>params</code>, pytest marks, or registries
+  shape how every method runs without being referenced textually. Module
+  bodies are not structural (a constant edit does not invalidate every
+  function of the module), but they run at import (below).</li>
+</ul>
+<p>Import time. Importing a module runs its top-level statements, variable
+initialisers, class bodies, decorators and defaults, and whatever those
+call; tests import at collection, and some re-import a package inside a
+test (httpx, trio). So a change that runs at import (a module body change,
+a variable, a class, a function's definition, an added or deleted
+definition) seeds its module, and an <code>imports</code> edge carries
+behaviour-level impact from the imported module to the importer: every
+module and function that imports it, transitively, is affected, and
+through each test's dependency on its own module, every test that
+imports it. A function body change does not run at import; when
+import-time code calls the function, the module's edge to it carries the
+change. Import-time code includes more than top-level statements:
+decorators (<code>@app.get("/")</code> builds a route handler), default values,
+annotations when evaluated eagerly, and class statements (bases, class
+decorators, class bodies, nested classes) all run when the module is
+imported, so their references are recorded for the module as well as
+for the function or class they belong to. <code>runpy.run_module</code> imports by
+name like <code>importlib.import_module</code>; <code>runpy.run_path</code> is an unbounded
+dynamic import. A module-level variable bound to a literal (constants,
+and tuples, lists, sets or dicts of literals) with no module-level
+mutation runs no code when the module is imported, so it does not seed
+its module and only its readers are reached; <code>__all__</code> is never inert,
+since it decides what <code>from m import *</code> binds. A <code>def</code> statement runs code at import only through its
+decorators, its defaults and its annotations when they are evaluated
+eagerly: a function whose decorators are inert (<code>overload</code>, <code>override</code>
+or <code>final</code> imported from <code>typing</code> or <code>typing_extensions</code>; a project
+decorator of the same name is not), whose defaults are literals, whose annotations are
+absent or deferred (<code>from __future__ import annotations</code>), and which is
+module-level or in a plain class, only binds its name, so adding,
+deleting or redefining it does not seed its module (deleting or rebinding
+the name reaches its users through deletion and resolution edges). An
+annotation-only change to such a function is <code>annotations_changed</code>:
+behaviour-level for its callers and referrers (typer, FastAPI and
+pydantic read annotations when called), neither structural nor
+import-time. Measured on the validated repositories: mean selection
+70.3 % to 69.7 % over 171 commits; it also keeps a new test in a test
+module from re-selecting the module's other tests. Measured before adoption (evaluation.md, roadmap history): mean
+selection rose from 58 % to 70 % over 171 validated commits and from 63 %
+to 71 % over the census; the rule follows the governing rule that a plan
+may select more than needed but must not miss.</p>
+<p>Edge rules (impact flows from the edge's target back to its source):</p>
+<table>
+<thead>
+<tr>
+<th>Edge kind</th>
+<th>Propagates when</th>
+<th>Resulting mode</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>references</code>, <code>entry</code>, <code>lifecycle</code>, <code>unresolved_name_match</code></td>
+<td>always</td>
+<td>behaviour</td>
+</tr>
+<tr>
+<td><code>defined_in</code></td>
+<td>container is structurally affected</td>
+<td>structural</td>
+</tr>
+<tr>
+<td><code>imports</code></td>
+<td>imported module affected (import-time code)</td>
+<td>behaviour (structural if deleted)</td>
+</tr>
+<tr>
+<td><code>imports_name</code></td>
+<td>imported name was <strong>deleted</strong></td>
+<td>structural</td>
+</tr>
+</tbody>
+</table>
+<p>So: changing a function body reaches its callers and their callers; adding a
+method or editing a class attribute invalidates all methods of the class;
+deleting a symbol that a test module imports at module level invalidates
+every test in that module; editing a module-level constant reaches the
+functions that reference it and every target whose module imports the
+module (it runs at import).</p>
+<h2 id="uncertainty-and-fallbacks">Uncertainty and fallbacks<a class="headerlink" href="#uncertainty-and-fallbacks" title="Permanent link">&para;</a></h2>
+<p>Unknown is never treated as unaffected:</p>
+<ul>
+<li><strong>Name-bounded unresolved references.</strong> For every unresolved bare name or
+  attribute <code>NAME</code> in a symbol, and every known function, method or class
+  in either revision whose short name is <code>NAME</code>, the planner adds an
+  <code>unresolved_name_match</code> edge through a per-name pseudo-node (so the edge
+  count is linear, and the pseudo-node is collapsed out of reported paths).
+  Impact then flows through those edges like any other: <code>obj.save()</code> is
+  affected when <em>any</em> <code>save</code> changes, and also when any <code>save</code> calls
+  something that changed. Dunder names are excluded from matching: they
+  exist on nearly every class and would bound nothing (constructors are
+  reached through class references instead). The report lists each
+  unresolved reference with the matches that actually carry impact
+  (<code>matched_affected_symbols</code>).</li>
+<li><strong>Dynamic references.</strong> A symbol containing a dynamic attribute access,
+  <code>eval</code>, <code>exec</code>, <code>globals()</code> or <code>vars()</code> is treated as affected whenever an
+  impact-carrying change lies in a module its own module can reach through
+  imports (the module itself and its transitive import closure, over both
+  revisions), since that is what its globals can name (rule
+  <code>dynamic_reference</code>). A dynamic <em>import</em> (<code>__import__</code>,
+  <code>importlib.import_module</code> or the builtin <code>__import__</code> with an unbounded
+  name) can reach anything. Such an import is attributed to the <em>caller that
+  named the module</em>, not to the helper that runs it: resolving the parameter
+  per call site means a caller passing a literal only depends on that module,
+  and only a caller passing something unbounded keeps the dynamic reference.
+  A caller that passes its own parameter on is followed a few levels further
+  out (pandas' <code>skip_if_no(name)</code> hands it to <code>import_optional_dependency</code>),
+  and where the helper escapes or has no call site in scope the callers are
+  unknown and the seed stays on the helper. An unbounded import
+  stays always-on; the reason says which of the two fired, since "any
+  module in scope may be the one" and "reachable from its module's
+  imports" are different claims. A project-defined function named <code>vars</code>
+  or <code>getattr</code> is not mistaken for the builtin.</li>
+<li><strong>A discovered target the base snapshot did not have</strong> is selected
+  (<code>new_target</code>), whatever its entry symbol did: <code>from support import
+  test_shared as test_new</code> adds a test while touching no symbol impact
+  would travel along. This is why discovery runs at the base snapshot as
+  well as the head; only the snapshot is read again, so the base index
+  still comes from the cache. A manifest names targets without saying when
+  they appeared, so the rule applies to discovered targets only.</li>
+<li><strong>Entry symbol or lifecycle dependency not found in either revision</strong>: the
+  target is selected (<code>entry_symbol_unresolved</code>,
+  <code>lifecycle_dependency_unresolved</code>).</li>
+<li><strong>Code the runner itself runs</strong> (<code>runner_dependency</code>). pytest's own
+  process imports <code>_pytest</code>, <code>pytest</code>, <code>pluggy</code>, <code>iniconfig</code>,
+  <code>exceptiongroup</code>, <code>tomli</code>, <code>colorama</code>, and <code>packaging.version</code> /
+  <code>packaging.requirements</code> (discovery's <code>RUNNER_MODULES</code>); pytest calls
+  pluggy's hooks for every test. When those modules, anything under them
+  or their import closure are in the source roots, a changed symbol there
+  selects every target of that runner (discovered or from a manifest),
+  since no project code references what the runner calls. Other runners'
+  targets are unaffected.</li>
+<li><strong>A changed file the index does not read</strong> (<code>unanalysed_file_changed</code>,
+  scope all targets). The index parses Python only, but a data file the
+  code opens, a compiled extension's source (<code>.pyx</code>, <code>.pxd</code>, <code>.c</code>) or a
+  configuration file changes behaviour just as well, and nothing says who
+  reads it. So any non-Python file under a source root that was added,
+  deleted or edited selects every target, and the fallback names the
+  files. Files are compared by git blob id: a commit's comes from
+  <code>ls-tree</code>, the staged index's from <code>ls-files --stage</code>. For the working
+  tree, files git reports unmodified keep their staged id, and the rest
+  are hashed by <code>git hash-object</code>, which applies the same filters as
+  <code>git add</code>, so an untouched working tree matches its commit exactly.
+  This is deliberately every file: under a <code>.</code> root a <code>README.md</code> edit
+  selects everything, because the analysis cannot tell that no code reads
+  it. diffcone's own files (<code>.diffcone/</code>, <code>diffcone.toml</code>, whose
+  declarations are read from both revisions anyway) are excluded. Not
+  seen: files outside every source root. A root that leaves out a data
+  directory leaves its changes out too.</li>
+<li><strong>Analysis errors</strong> (unparsable file, identity collision): every target is
+  selected (<code>analysis_error</code>, scope <code>all_targets</code>), the report status is
+  <code>degraded</code> and the CLI exits 1. An error can never produce an empty plan.</li>
+</ul>
+<p>Every reason in the report carries either a full edge path ending at a
+changed symbol (with its change kinds) or the name of the fallback rule.
+Reasons produced by any of the above rules are flagged <code>conservative</code>.</p>
+<h2 id="index-cache">Index cache<a class="headerlink" href="#index-cache" title="Permanent link">&para;</a></h2>
+<p>A committed snapshot's <code>SourceIndex</code> is a pure function of the commit, the
+source roots and the index format, so <code>diffcone/cache.py</code> stores it as JSON
+under <code>&lt;repo&gt;/.diffcone/cache/index/&lt;sha256(format, commit, roots)&gt;.json</code>
+and serves it on later plans. <code>WORKTREE</code> and <code>INDEX</code> snapshots are never
+cached whole (nothing identifies their content), and a head snapshot that
+discovery needs files for is read rather than served. The cache is an
+optimisation only: a hit must yield a byte-identical plan to a miss (tests
+compare the reports and assert git is not read on a hit), writes are
+atomic, write failures are silent, and <code>--no-cache</code> / <code>--cache-dir</code> control
+it. <code>INDEX_FORMAT</code> is bumped whenever the indexer's output for the same
+input can change; the fingerprint also covers the Python minor version,
+since <code>ast.dump</code> output (hence every hash) may differ between versions.</p>
+<h3 id="module-cache">Module cache<a class="headerlink" href="#module-cache" title="Permanent link">&para;</a></h3>
+<p>Alongside the whole-index entries, <code>ModuleCache</code> keeps per-module results
+in one SQLite file (<code>modules.sqlite</code>) for every snapshot kind, including
+the working tree. Indexing is split into stages so each is a pure function
+of something cacheable:</p>
+<ul>
+<li><strong>Facts, per file.</strong> Pass 1 of a module (its symbols with hashes and line
+  ranges, import table, bindings, literal names, class scopes with their
+  base name chains, <code>defined_in</code> edges) depends only on the file's text,
+  its module name and path, so it is stored under a key of those plus the
+  index format and indexer fingerprint. A served module is not parsed at
+  all. A module whose symbols collide with an earlier module's (an error
+  either way) is indexed afresh so the errors come out exactly as without
+  a cache, and a record is never stored for a module that collided.</li>
+<li><strong>Environment fingerprint.</strong> After every class's bases are resolved
+  (always run; it is cheap and its edges are part of the index), a digest
+  is taken of everything a module's resolution can read from other
+  modules: each module's observable facts (names, kinds, members, imports,
+  bindings, star imports; digested once per file and stored with its
+  facts) plus every class's resolved bases and completeness, and the
+  source-root specs (whether a module's <code>__name__</code> is its indexed name
+  depends on them). A body edit
+  leaves it unchanged; adding, removing or renaming a symbol changes it.</li>
+<li><strong>Resolution, per module.</strong> Pass 2 writes (edges, unresolved and
+  external references, call sites, escapes, parameter tables, deferred
+  parameter- and attribute-dynamic uses, whose function scopes are
+  serialised, instance-attribute writes and reads, and attribute
+  unbounding) go to a
+  per-module output, merged into the index and stored under
+  <code>&lt;facts key&gt;-&lt;fingerprint&gt;</code>. Only a module whose file or environment
+  changed is parsed and resolved again. Parameter- and attribute-dynamic
+  expansion needs every module's call sites and writes, so it stays a
+  final pass over the merged outputs.</li>
+</ul>
+<p>Loads and stores are batched (one query per pass, one transaction per
+build); with one file per record, opening thousands of files cost more
+than resolving. The cache is invisible by construction and by test: every
+indexer unit test builds its index plain, through a cold cache and through
+a warm one and compares them; every scenario fixture plans uncached, cold
+and warm (with the whole-index entries removed so the module cache is what
+answers) and compares the reports; a test asserts that a one-line body
+edit re-parses and re-resolves exactly one module. A malformed record is
+treated as a miss (a facts record is fully built before it is installed).
+Facts rows are kept for every distinct file content seen; resolution rows
+only for the latest fingerprint each file was resolved against, so the
+file is bounded by the number of distinct file contents. Reads open the
+database read-only, so a cache directory that cannot be written still
+serves hits.</p>
+<p>Cost, warm <code>plan --base HEAD --head WORKTREE --discover pytest</code> wall time
+through the installed entry point (about 0.1 s of it is interpreter
+start-up): click (75 files, 555 tests) 0.27 s, was 0.75 s; pytest (3 486
+discovered tests) 1.2 s; a synthetic tree of 2 501 modules 0.90 s with a
+clean tree and 1.0 s with a pending one-line edit that selects 1 000
+tests. On the synthetic tree, indexing the working tree fell from 1.1 s to
+0.27 s in-process; the planner (0.4 to 0.55 s) is now the largest phase.</p>
+<h2 id="determinism">Determinism<a class="headerlink" href="#determinism" title="Permanent link">&para;</a></h2>
+<p>Files, symbols, edges and adjacency lists are sorted; the search is a
+breadth-first traversal over sorted neighbours. Two runs on the same inputs
+produce byte-identical reports.</p>
+<h2 id="static-discovery">Static discovery<a class="headerlink" href="#static-discovery" title="Permanent link">&para;</a></h2>
+<p>Discovery runs on the head snapshot only (targets that exist to run), reads
+runner configuration files from the repository root (<code>pytest.ini</code>,
+<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>, <code>asv.conf.json</code>) and never imports
+project code. Each runner module reproduces a documented subset of its
+collection rules and emits notes for what it cannot handle. Every produced
+target is validated against the index; a target whose entry symbol is not
+indexed carries a <code>missing_symbol</code> note and falls into the planner's
+<code>entry_symbol_unresolved</code> fallback.</p>
+<h3 id="pytest">pytest<a class="headerlink" href="#pytest" title="Permanent link">&para;</a></h3>
+<p>Configuration: a <code>pytest.ini</code> at the root is the config file whenever it
+exists (even empty), otherwise <code>pyproject.toml</code> (<code>[tool.pytest.ini_options]</code>,
+or pytest 9's native <code>[tool.pytest]</code> table), <code>tox.ini</code>, <code>setup.cfg</code> in that
+order. <code>testpaths</code> entries may be directories, files or globs
+(<code>tests/integ*</code>); a leading <code>./</code> is ignored.</p>
+<p>Collected: files matching <code>python_files</code> under the source roots (a pattern
+without <code>/</code> matches the basename, one with <code>/</code> the path, as pytest's
+<code>fnmatch_ex</code> does -- pytest matches absolute paths, so such a pattern is
+effectively prefixed with <code>*/</code> and scrapy's <code>test_*/__init__.py</code> collects
+<code>tests/test_settings/__init__.py</code>; restricted to <code>testpaths</code> if set); module-level functions matching <code>python_functions</code>;
+methods of classes matching <code>python_classes</code> that have no <code>__init__</code>,
+including methods inherited from base classes (own definitions win): a
+base defined in the same module, or imported from a module in the source
+roots (networkx's <code>TestDiGraph(BaseGraphTester)</code>) or named through one
+(<code>base.NDArrayBacked2DTests</code>), whose own bases then resolve in the module
+that defines it; a class such a module only imports is followed to the
+module that defines it (pandas's <code>tests/extension/base/__init__.py</code>
+re-exports its submodules' classes); a base that resolves to neither
+yields an <code>unknown_base_class</code> note; nested test classes; methods whose
+name starts with <code>test</code> in classes that reach a base ending in <code>TestCase</code>
+anywhere in that chain, whatever the class itself is called (pytest's
+unittest plugin collects it: django-rest-framework's
+<code>XffSpoofingTests(XffTestingBase)</code>). Node ids follow
+pytest (<code>path::Class::method</code>); the entry symbol of an inherited test is the
+method where it is defined, and the collecting class is a lifecycle
+dependency. Parameter cases are not enumerated.</p>
+<p>A test class imported into a module is collected there with everything it
+inherits, its bases resolved in the module that defines it (urllib3's
+<code>test_pyopenssl.py</code> imports <code>TestHTTPS_TLSv1</code>, whose tests are nearly all
+on its bases).</p>
+<p>A test module may also re-run another's tests with <code>from &lt;module&gt; import
+*</code>: the star binds what that module's <code>__all__</code> lists, or every name it
+defines that does not start with an underscore (names it imported itself
+are not followed), minus the names the importing module defines, and each
+one becomes a target whose entry is where it is defined. poetry's <code>sync</code>
+tests are the <code>install</code> tests imported this way.</p>
+<p>Four notes mean the target list may be short of what the runner collects
+-- <code>uncollected_test_class</code>, <code>unknown_base_class</code>,
+<code>imported_test_out_of_scope</code>, <code>unparsed_file</code> and <code>plugin_collects_files</code> (a conftest or
+plugin that binds <code>pytest_collect_file</code>, <code>pytest_collect_directory</code> or
+<code>pytest_pycollect_makeitem</code>, as a function or a value: scrapy's
+<code>docs/conftest.py</code> binds a Sybil instance and its <code>.rst</code> files become
+doctests) -- as opposed to the ones that only widen a
+target's dependencies. The report carries <code>discovery_incomplete</code>, <code>plan</code>
+exits 3, and <code>run</code> refuses without <code>--allow-incomplete-discovery</code>: a
+degraded plan runs too much, an incomplete one would run too little, and
+only the second can miss.</p>
+<p>Evidence settles what discovery cannot know. The recorder keeps every test
+pytest collected at the recorded commit C, before any deselection, in the
+environment <code>run</code> checks before any test runs. With evidence, such a note
+stops counting (it becomes <code>settled_by_evidence</code>) when the same note stood
+at C, its file is unchanged since C, and pytest collected nothing at C
+that was not a target there. A test it did collect that was not a target
+is a gap the recording proves (<code>collected_not_target</code>), and keeps the plan
+incomplete. pandas' only note, a helper class with a method named
+<code>test_method</code>, is settled this way. When <code>run</code> falls back to the static
+plan because the environment differs and that plan is incomplete, it runs
+the whole suite.</p>
+<p><code>unparsed_file</code> covers two cases. A file that does not parse is also an
+analysis error, so the plan degrades and selects everything. A file that
+cannot be named from any source root -- a directory component that is not
+a Python identifier, such as pytest-asyncio's <code>docs/how-to-guides</code> -- is
+dropped instead: pytest imports a test file by its basename and collects
+it regardless, so its tests are not targets. Naming that directory with a
+<code>DIR=PREFIX</code> source root makes them targets (197 of pytest-asyncio's
+tests become 208).</p>
+<p>A plugin may collect what these rules do not: SQLAlchemy's testing plugin
+collects <code>&lt;Name&gt;Test</code>, so alembic's suite is 2387 tests of which these
+rules find 23. Discovery does not guess, and does not stay silent either:
+a class that defines test methods but does not match <code>python_classes</code> is
+reported (<code>uncollected_test_class</code>), so a plan over such a project shows
+that its target list is not the suite. Targets a plugin creates have to
+come from a manifest.</p>
+<p>Fixtures are functions decorated with a dotted name ending in <code>fixture</code> or
+<code>yield_fixture</code>, or module-level bindings of the form
+<code>name = pytest.fixture(...)(function)</code>; <code>name=</code> and <code>autouse=True</code> keyword
+arguments are honoured.
+Requests follow pytest's <code>getfuncargnames</code>: parameter names minus <code>self</code>,
+<code>request</code>, parameters with defaults, arguments injected by <code>mock.patch</code> /
+<code>patch.object</code> decorators (unless <code>new</code> is given) on the function or, for
+<code>test*</code> methods, on its class and in-module bases (each such class
+decorator injects one more argument, as <code>unittest.mock</code> patches every
+<code>test*</code> attribute at class definition), arguments supplied by
+hypothesis <code>@given</code> (keyword strategies by name, positional strategies
+filling the last parameters), and names supplied by
+<code>@pytest.mark.parametrize</code> on the function, class, enclosing classes or
+module (<code>indirect</code> names stay requests). <code>@pytest.mark.usefixtures(...)</code>
+on the function, class, enclosing classes or module adds requests.
+Resolution order is class fixtures (the class, then its in-module bases,
+then enclosing classes), module fixtures, <code>conftest.py</code> from the test's
+directory outward, then plugin modules: those named in <code>pytest_plugins</code>
+(conftest declarations are global) and the project's own <code>pytest11</code> entry
+points from <code>pyproject.toml</code> (<code>[project.entry-points]</code> or
+<code>[tool.poetry.plugins]</code>) or <code>setup.cfg</code>, and modules loaded with <code>-p name</code>
+in <code>addopts</code> (a pytest-internal name such as <code>pytester</code> resolves to
+<code>_pytest.&lt;name&gt;</code> when that module is in scope, as in pytest's own
+repository), following one level of
+<code>from ... import</code> re-exports so a plugin package's <code>__init__</code> exposes the
+fixtures and hooks it imports (matched on the original name; a fixture keeps
+its own name under an alias). Hooks defined in or imported into those
+plugin modules are lifecycle dependencies of every test. Nearest scope wins; a fixture that requests its
+own name (<code>def db(db)</code>) resolves to the next definition outward; requests
+are resolved transitively along the same chain; autouse fixtures anywhere
+on the chain apply.</p>
+<p>Lifecycle dependencies of a test: the resolved fixture symbols, the test
+module and its own <code>pytest_*</code> hooks, the module-level <code>pytestmark</code>,
+<code>pytest_plugins</code>, <code>collect_ignore</code> and <code>collect_ignore_glob</code> variables of
+the module and its conftests when they are variable symbols (<code>pytest_generate_tests</code> applies to
+every test in the module), every conftest module on the chain and its
+<code>pytest_*</code> hook functions, <code>setup_module</code>/<code>teardown_module</code>/
+<code>setup_function</code>/<code>teardown_function</code> if present, and the class's (or its
+in-module bases') xunit/unittest setup/teardown methods if present. A
+fixture found at no in-scope level is a pytest builtin (ignored), a name a
+well-known plugin provides (<code>WELL_KNOWN_PLUGIN_FIXTURES</code> in
+<code>pytest_static.py</code>: <code>mocker</code> from pytest-mock, <code>fp</code> from pytest-subprocess,
+<code>httpx_mock</code>, <code>freezer</code>, <code>anyio_backend</code>, <code>benchmark</code>, <code>db</code>, ...) or one
+declared with <code>--assume-external-fixture</code>, in which case it is assumed to
+come from the installed plugin and reported in an <code>external_fixture</code> note
+with its request count and origin (<code>--no-well-known-fixtures</code> turns the
+table off), or otherwise unknown and becomes <code>fixture:&lt;name&gt;</code>; a name
+supplied only by <code>pytest_generate_tests</code> is reported the same way. A name
+defined in scope always wins over the table, and a project requesting one
+of these names without the plugin would fail at collection, so the
+assumption never hides a real dependency. Measured on pipx (699 tests):
+before the table, 153 tests were selected on every change because of
+<code>mocker</code> and <code>fake_process</code> alone.</p>
+<p>Imported tests: pytest collects every module attribute that matches the
+naming rules, so a function or class imported into a test module is a
+test of that module (fastapi's tutorial tests import <code>test_read_main</code> from
+<code>docs_src</code>). It is named by the bound name, its entry is the defining
+symbol, and its fixtures resolve from the importing module. A matching
+name imported from outside the source roots is reported
+(<code>imported_test_out_of_scope</code>) rather than made a target: whether pytest
+collects anything from it is unknown (<code>unittest.TestCase</code> yields
+nothing), and what it would run is outside the index.</p>
+<p>Doctests, as pytest collects them (injector: <code>--doctest-modules
+--doctest-glob=*.md</code>). With <code>--doctest-modules</code> in <code>addopts</code>, every
+docstring with examples in a collected module (outside <code>norecursedirs</code>,
+not <code>setup.py</code> or <code>__main__.py</code>) is a target named as pytest names it,
+<code>path::module.Qualified.name</code>, with the owning symbol as entry. Examples
+run with the module's globals, so each doctest has the lifecycle
+dependency <code>dynamic:&lt;module&gt;</code> (and one per in-scope module an example
+imports); the planner treats <code>dynamic:&lt;module&gt;</code> like a dynamic reference,
+affected by any impact-carrying change in the module's import closure. A
+docstring-only change of a target's entry symbol selects the target
+(<code>entry_docstring_changed</code>; for a doctest the docstring is the test). Text
+files matching <code>--doctest-glob</code> (default <code>test*.txt</code>) that contain
+examples are targets whose entry is not a symbol, so they are always
+selected: the index does not read them, and a change to them is invisible.</p>
+<p>Not modelled: <code>request.getfixturevalue</code> with a name that is not a literal, fixture visibility rules of
+<code>pytest_plugins</code> declared outside the root conftest (accepted anyway),
+fixtures of plugins outside the well-known table, doctests of objects
+added through <code>__test__</code> or assigned rather than defined, base classes
+defined in other modules,
+and <code>conftest.py</code> files outside the source roots.</p>
+<h3 id="asv">ASV<a class="headerlink" href="#asv" title="Permanent link">&para;</a></h3>
+<p>Collected: <code>.py</code> files under <code>benchmark_dir</code> (default <code>benchmarks</code>; read
+from <code>asv.conf.json</code>, whose <code>//</code> and <code>/* */</code> comments are stripped, with an
+<code>unparsable_config</code> note if it still fails to parse). ASV resolves
+<code>benchmark_dir</code> against the directory holding that file, which is usually
+not the repository root -- numpy and networkx keep both under <code>benchmarks/</code>,
+pandas under <code>asv_bench/</code> -- so the snapshot reads <code>asv.conf.json</code> up to
+three levels down and the shallowest one wins; benchmark ids stay relative
+to the real benchmark directory, as <code>asv run --bench</code> expects. Files whose
+path components
+do not start with an underscore; functions and methods of
+non-underscore classes named with <code>time_</code>, <code>timeraw_</code>, <code>mem_</code>, <code>peakmem_</code> or
+<code>track_</code>. Benchmark ids are <code>&lt;module relative to benchmark_dir&gt;.&lt;Class&gt;.&lt;method&gt;</code>.</p>
+<p>ASV reads a benchmark class's attributes, inherited ones included, so base
+classes count: one defined in the same module, or imported from any module
+in the source roots (a shared base often lives in the package under test,
+not under <code>benchmark_dir</code>), is followed with the subclass's own definitions
+winning. The benchmark is named after the subclass and entered at the
+method that defines it. A base that resolves to neither is an
+<code>unknown_base_class</code> note, which counts as incomplete discovery.</p>
+<p>Lifecycle dependencies: the module, module-level <code>setup</code>/<code>setup_cache</code>/
+<code>teardown</code>, and the class's <code>setup</code>/<code>setup_cache</code>/<code>teardown</code>, inherited ones
+included. Class attributes (<code>params</code>, <code>timeout</code>, ...) reach every method
+through the structural class-body rule; module attributes through the module
+dependency.</p>
+<p>Not modelled: <code>params</code> expansion, a <code>benchmark_dir</code> outside the source roots
+(targets get <code>missing_symbol</code> notes).</p>
+<h3 id="a-name-match-cannot-land-on-a-method-only-the-test-runner-can-call">A name match cannot land on a method only the test runner can call<a class="headerlink" href="#a-name-match-cannot-land-on-a-method-only-the-test-runner-can-call" title="Permanent link">&para;</a></h3>
+<p>An attribute on an untyped receiver matches every symbol of that name
+(above), and that includes methods of test classes: in pandas, library code
+says <code>x.dtype</code>, <code>x.index</code>, <code>x.copy</code> thousands of times, and each matched a
+fixture or helper of the same name on some test class -- 7 007 references,
+reaching 154 test classes.</p>
+<p>Those edges are impossible when the class is only ever instantiated by the
+test runner. A call <code>obj.m()</code> reaches <code>C.m</code> only if <code>obj</code> is an instance of
+C or a subclass; pytest creates the instances of a test class to run its
+tests, and if the analysed code never constructs the class, never refers to
+it as a value and never hands an instance on, those are the only instances
+and they never leave the class's own methods. So the members of such a class
+are not name-match candidates. Calls on <code>self</code> inside it are resolved
+through the MRO and are unaffected.</p>
+<p>A class counts as runner-instantiated when it owns the entry symbol of a
+discovered pytest target or is a collecting class among a target's
+lifecycle dependencies. It keeps its members as candidates when it is
+<em>held</em>: an instance or the class is passed on (<code>escaped_classes</code>, which also
+catches <code>self</code> passed as an argument), a symbol outside every runner class
+refers to it, or a held subclass inherits from it. pytest's <code>request.instance</code>
+hands a test instance to other code, so any read of an attribute named
+<code>instance</code> turns the rule off for the whole plan. The residual assumption
+is that a test instance is not stored somewhere outside its class by other
+means (<code>GLOBAL = self</code>).</p>
+<h3 id="attributes-read-off-an-object">Attributes read off an object<a class="headerlink" href="#attributes-read-off-an-object" title="Permanent link">&para;</a></h3>
+<p><code>def invoke(obj, name): getattr(obj, name)()</code> reads an object its own module
+never names, so the import-closure bound above does not cover it: the object
+comes from a caller and may belong to any module. What bounds it instead is
+the other end. The index records, per call site, the class each argument is
+an instance of where the argument says so (<code>C()</code> passes an instance of <code>C</code>,
+<code>C</code> passes the class), and a class whose instances are handed to other code
+gains an edge to each of its members: whoever holds one may read any
+attribute off it by a name nothing resolves, so <em>referring to that class
+depends on its members</em>, not only on its structure.</p>
+<p>An object also reaches such code out of a factory, and nothing at that
+call site names its class: <code>obj = make(); invoke(obj, name)</code>. So a
+function whose every <code>return</code> yields a class returns those classes (both,
+when it picks between two), a call site records the function an argument
+came out of beside the class it is, and a local assigned exactly once from
+such a call carries the same answer. The two are joined once every module
+is indexed. One return that yields anything else and the function says
+nothing: binding a class that may never reach the caller would be a guess.</p>
+<p>A return the analysis cannot type is therefore still a hole -- an object
+built by a <code>classmethod</code>, or handed back through a chain of such calls --
+and the way to close one is to type more receivers, not to widen the
+fallback: the fallback version was implemented and measured, and costs
+five corpus repositories every saving they have (evaluation.md).</p>
+<p>Two narrower bounds are also computed, and are sound rather than
+heuristic: a receiver that is a parameter is whatever the call sites pass,
+and a receiver that is <code>self.&lt;attr&gt;</code> is what <code>__init__</code> bound it to,
+recursing into the constructions. Both are precise and neither recovered
+anything measurable on the corpora, because real receivers arrive through
+several hops.</p>
+<h3 id="declared-dependencies">Declared dependencies<a class="headerlink" href="#declared-dependencies" title="Permanent link">&para;</a></h3>
+<p>A registry filled at import time, a plugin resolved through entry points, a
+handler named in a data file: the dependency is real and no static rule can
+find it, so the project states it in <code>diffcone.toml</code> at the repository root.
+It is read from <em>both</em> revisions, as every other edge is, so a commit that
+deletes a declaration while changing what it pointed at still selects what
+depended on it.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[[edges]]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">from</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.registry.dispatch"</span><span class="w">   </span><span class="c1"># a symbol or a module, in either revision</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">to</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.handlers.json_handler"</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">why</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"handlers register themselves through entry points"</span>
+</code></pre></div>
+<p>An endpoint may name a module or a class, which stands for everything in
+it: the edge is added between every member of each side, since a change to
+one member is what such a declaration is about and the container node alone
+would never see it. Each edge joins the union graph with its own kind, and a
+selection whose path crosses one is explained by the <code>declared_dependency</code>
+rule with the project's <code>why</code> on the step, never as an ordinary dependency
+(a name match anywhere on the path outranks it: that one is diffcone's
+guess, this one is the project's statement).</p>
+<p>Declarations only <em>add</em> edges, so they can only widen selection: a wrong one
+costs a test that runs anyway, and no declaration can make the plan miss.
+These are analysis errors, so the plan degrades and selects everything,
+because a declaration that silently does nothing is the outcome worth
+failing on: a file that does not parse, an unknown key at any level (a
+singular <code>[[edge]]</code> declares nothing), a file that exists but cannot be
+read, an endpoint that is in neither revision, and a pair of containers
+whose members would join more than 5 000 pairs.</p>
+<p>Telling diffcone that a dynamic reference reaches <em>only</em> certain modules is
+the opposite trade (it narrows on the project's authority) and is not
+implemented; see the roadmap.</p>
+<h2 id="execution-and-validation">Execution and validation<a class="headerlink" href="#execution-and-validation" title="Permanent link">&para;</a></h2>
+<p><code>run</code> executes the checkout, so a plan made from a commit or the index only
+describes what will run while the checkout holds that code: it refuses (exit
+2) when any <code>.py</code> file under the source roots differs between the analysed
+snapshot and the working tree, unless <code>--allow-mismatched-worktree</code> says to
+go ahead. Differences elsewhere (a manifest, a README, an extra commit that
+touches neither) do not block it, and neither does a plan that selected
+nothing, since nothing would run.</p>
+<p><code>diffcone/execution.py</code> is the only module that runs project code, and only
+from the <code>run</code> and <code>validate</code> commands after a plan exists.</p>
+<ul>
+<li><code>run</code> builds the runner command for the selected targets. For pytest it
+  does not name them on the command line: pytest imports the conftests of
+  command-line paths while parsing its configuration, and a conftest that
+  skips at module level (<code>pytest.importorskip</code>, as in pandas'
+  <code>tests/io/pytables</code>) then kills the session instead of skipping its
+  directory. So pytest collects from its own starting points, as in a full
+  run, and the plugin <code>-p diffcone_select</code> (<code>selection.py</code>) deselects every
+  item whose test is not selected, matching it by the file relative to the
+  repository and the rest of the node id. A selected target pytest did not
+  collect (outside a directory or module that skipped) is reported as a
+  warning, since a node id on the command line used to fail loudly. The
+  cost is one full collection. <code>--dry-run</code> prints the equivalent command
+  with node ids appended. ASV gets a <code>--bench</code> regex. That regex is
+  <code>^(name|name|...)($|\()</code>, not <code>...$</code>: ASV matches it against a benchmark's
+  name, and against <code>name(param0, param1, ...)</code> for a parameterised one, so
+  an anchored pattern selects none of those (58 of networkx's 59) and <code>run</code>
+  would report success having run nothing. It exits with the runner's exit
+  code, 0 when nothing was selected.</li>
+<li><code>validate</code> (pytest only) runs the full suite at base and head with <code>-v</code>
+  and parses the per-test outcome lines, folding parameter cases into their
+  function and keeping the worst outcome. Commits are checked out into
+  temporary detached worktrees that are removed afterwards; <code>WORKTREE</code> runs
+  in the repository; <code>INDEX</code> is not supported. <code>--setup-command</code> runs a
+  shell command inside each checkout before its suite, for build-generated
+  git-ignored files a fresh checkout lacks (pytest's own <code>_version.py</code>). Each run gets the checkout's
+  source roots first on <code>PYTHONPATH</code>, so the checkout's code wins over an
+  installed (editable) copy of the project; with a <code>src</code> layout the working
+  directory alone would not achieve that and the suite would silently test
+  the installed revision. A relative executable in <code>--command</code>
+  (<code>.venv/bin/python</code>) is resolved against the current directory and then
+  the repository before the suites run in their temporary worktrees, and a
+  missing executable is a plain error. With <code>--coverage</code> this is verified: a measured
+  file outside the checkout that shadows a checkout file is an error. Every test whose outcome
+  differs between the snapshots must be selected; otherwise it is reported
+  as missed and the command exits 1. New tests count as outcome changes;
+  tests that ran at base and no longer exist at head are reported as
+  removed, not missed (there is nothing to select). This is a necessary, not sufficient, check: behaviour changes
+  that keep the same outcome are not visible to it.</li>
+<li>
+<p><code>validate --coverage</code> runs <em>both</em> suites under the coverage tracer so
+  their outcomes are comparable (a recursion-depth or timing-sensitive test
+  can flip under <code>sys.settrace</code>; comparing an uninstrumented base with an
+  instrumented head produced false misses on structlog), and makes the head
+  run also record
+  <code>--cov=. --cov-context=test</code> into a temporary coverage database (the
+  project's own <code>addopts</code> stay in force, so the same tests are collected)
+  with a minimal coverage config of its own (a project's <code>source</code>/<code>omit</code>
+  usually exclude the tests, which would make added tests unattributable;
+  <code>branch</code>/<code>parallel</code> change the database layout) and reads it directly:
+  both the <code>line_bits</code> and <code>arc</code> tables, paths resolved against the
+  checkout, contexts folded to the test function.
+  The base run's database is kept as well (in a corpus, per commit
+  alongside its cached outcomes) and read with the line ranges of the
+  changed symbols <em>as they were at base</em>, so a test that executed a symbol
+  deleted or moved in head is attributed too; a test that no longer exists
+  at head is <code>removed</code>, not affected, since nothing could select it.
+  A test is <em>dynamically affected</em> when it executed a line owned by a
+  changed symbol, at either side, whose change carries impact
+  (additive-only changes are not ground truth: nothing executed behaves
+  differently). Ownership
+  mirrors the planner's rules: a function or method owns its lines
+  including its decorators; a module or class owns only the lines outside
+  its members unless its change is structural, in which case all its lines
+  count (a constant edit does not make every function in the module
+  "executed changed code", but adding a method does for the whole class).
+  Recall is caught / dynamically affected and must be 100 % for the command
+  to succeed; precision (dynamically affected among selected) is reported,
+  not enforced, because conservative selection is by design. Lines executed
+  at import/collection time carry no test context and are ignored; a run
+  that records no contexts at all is an error, never an OK. The run sets
+  <code>COVERAGE_CORE=ctrace</code> unless already set: coverage.py's default
+  <code>sys.monitoring</code> core disables a line after its first execution, which
+  silently credits only the first test to run each line and makes
+  per-test contexts unusable.</p>
+</li>
+<li>
+<p><code>corpus</code> drives <code>validate</code> over a commit range with a shared outcome
+  cache (each committed snapshot's suite runs once when serial; coverage
+  runs are per pair), records per-commit selection, savings, outcome and
+  coverage results, and reports micro-averaged recall and precision plus
+  mean savings. Commits that touch no <code>.py</code> file are skipped unless
+  requested, since the planner cannot see them and their outcome changes
+  would only ever be misses of the static approach itself.</p>
+</li>
+<li><code>corpus --jobs N</code> validates pairs in parallel threads, each in its own
+  temporary worktrees and coverage database. The outcome cache is shared
+  with a no-wait policy: a snapshot another job has already produced is
+  reused, otherwise the job runs it itself and offers the result. Nobody
+  waits on another job, because in a linear history each pair's base is
+  the previous pair's head and waiting would serialise the corpus; the
+  price is at most one extra suite run per pair. The report is identical
+  to the serial one, and any exception (Ctrl-C included) cancels the pairs
+  that have not started. Suites that write to shared locations (a
+  hard-coded temp path) can interfere, so the default is 1.</li>
+</ul>
+<h2 id="evidence-mode-opt-in">Evidence mode (opt-in)<a class="headerlink" href="#evidence-mode-opt-in" title="Permanent link">&para;</a></h2>
+<p>The rules and their justification are in <a href="../evidence_design/">evidence_design.md</a>;
+<code>src/diffcone/evidence_plan.py</code>'s docstring is the authoritative list of what
+is implemented. In short:</p>
+<ul>
+<li><code>diffcone collect</code> runs the whole pytest suite once under a recorder
+  (<code>src/diffcone/collect.py</code>, Python 3.12+ <code>sys.monitoring</code>). The recorder
+  keeps, per test (parameter cases folded), the symbols executed and the
+  repository paths opened, <code>stat</code>ed or listed. Outside tests it keeps what
+  imports, collection and hooks ran, and which module's import ran it. The
+  store is <code>.diffcone/evidence/&lt;commit&gt;-&lt;environment&gt;.sqlite</code>. Collection
+  refuses a dirty tree, an installed copy of the project, a crashed worker
+  and any error inside the recorder.</li>
+<li><code>plan --evidence auto|PATH</code> plans C → base and C → head from the store's
+  commit C and selects their union. For each change it computes E, the
+  symbols whose execution would notice the change, and selects the tests
+  whose record meets E. A non-body change adds one hop of static readers.
+  Values are followed through variables that captured them, and names
+  through unbounded lookup and reflection sites. What ran at import
+  escalates the importing module to static planning (<code>plan_from_indexes</code>
+  with explicit <code>Seeds</code>, without dynamic pseudo-seeds).</li>
+<li>A pytest target is always selected, whatever E says, when:</li>
+<li>it has no record, or its record is unstable or started a subprocess
+    (<code>no_evidence</code>, <code>unstable</code>, <code>subprocess</code>);</li>
+<li>its entry or a container of it changed (<code>changed_target</code>);</li>
+<li>a conftest or fixture change puts it in scope (<code>test_scope</code>);</li>
+<li>a hook, compiled source or configuration file changed
+    (<code>pytest_hook_changed</code>, <code>unobserved_file_changed</code>).</li>
+<li>ASV targets, which have no evidence, keep their static decision.</li>
+</ul>
+<p>The index carries two fields only evidence mode reads: <code>reflection</code>
+(sites that observe names or signatures without naming them) and
+<code>class_attributes</code> (per-attribute hashes of class bodies). Static planning
+ignores both, so static plans are unchanged.</p>
+<h2 id="known-gaps-by-design">Known gaps (by design)<a class="headerlink" href="#known-gaps-by-design" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Dynamic dispatch: <code>self.m()</code> resolves to the MRO definition plus in-scope
+  overrides; overrides in classes outside the source roots cannot be seen,
+  and a call through an unknown receiver stays name-bounded. The MRO is an approximation of C3
+  and ignores metaclasses and <code>__getattr__</code>.</li>
+<li>Import-time effects on the module's own members: a module body change
+  reaches importers, but does not invalidate every function defined in
+  the same module (functions that read module state have their own edges).</li>
+<li>Walrus assignments inside comprehensions bind in the enclosing scope in
+  Python but are treated as comprehension-local here.</li>
+<li>Decorators that rewrite the decorated function are treated as ordinary
+  references.</li>
+<li>Parameterised targets are selected as a whole.</li>
+<li>Argument-insensitive: a CLI entry point that registers every subcommand
+  handler (argparse <code>set_defaults(func=...)</code>, a dict of callables)
+  references all of them, so every test that drives the CLI is selected
+  on any command change regardless of the arguments it passes (pipx in
+  evaluation.md). Which handler a test reaches is a property of its
+  argument strings, which are not analysed.</li>
+<li>Instance attributes assume <code>__init__</code> ran: an object built without it
+  (<code>object.__new__</code>, a subclass whose <code>__init__</code> neither writes the
+  attribute nor calls <code>super().__init__</code>) has no instance value, and a
+  construction through a path the index cannot see (a class taken from a
+  registry by unresolved name, code outside the source roots) passes
+  arguments that are not counted.</li>
+<li>Any file under a source root that does not parse (invalid syntax,
+  Python 2 code) is an analysis error and forces select-all, even a data
+  file that no module imports and pytest never collects (pygments and
+  black in the census). Python 2 is not supported. Choose source roots
+  that leave such files out. A file is read in the encoding it declares:
+  a PEP 263 coding cookie or a BOM, UTF-8 otherwise, as Python itself
+  reads it (<code>tokenize.detect_encoding</code>), so a legitimately latin-1 file
+  is analysed rather than failing to decode.</li>
+<li>Special methods are reached through their class: an instance obtained
+  without any reference to its class in the source roots (from external
+  code, <code>pickle</code>, <code>copy</code>) does not connect its user to the class's
+  special methods.</li>
+<li>External code calling methods by protocol without inheritance: an
+  object with no base outside the source roots but handed to external
+  code (a file-like object passed to <code>json.load</code>, a callback object)
+  has the methods that code calls reached only through name matches.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../limitations/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Limitations">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Limitations
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../evidence_design/" class="md-footer__link md-footer__link--next" aria-label="Next: Evidence design">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Evidence design
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2026 Bearing Research
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["content.code.copy","content.action.edit","navigation.footer","navigation.indexes","navigation.instant","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight","toc.follow"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"alias":true,"provider":"mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2090 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Which tests and benchmarks a change to Python code can affect, and why">
+      
+      
+      
+        <link rel="canonical" href="https://bearing-research.github.io/diffcone/dev/reference/cli/">
+      
+      
+        <link rel="prev" href="../../ci/">
+      
+      
+        <link rel="next" href="../manifest/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.68">
+    
+    
+      
+        <title>Commands - diffcone</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../assets/stylesheets/modern/main.595f2bf5.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="diffcone" class="md-header__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            diffcone
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Commands
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="diffcone" class="md-nav__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    diffcone
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Guides
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Guides
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Planning
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/running/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Running and checking
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Execution evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../ci/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CI with GitHub Actions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Commands
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Commands
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Exit codes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone plan</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone run</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone validate</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-corpus" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone corpus</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-collect" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone collect</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone check</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-prune" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone prune</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone evidence</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-discover" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone discover</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Target manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../declarations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Report
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../discovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Static discovery
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Limitations
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Background
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Background
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Design
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../evidence_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evidence design
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Evaluation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Roadmap
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Development
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Exit codes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone plan</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone run</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone validate</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-corpus" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone corpus</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-collect" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone collect</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-check" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone check</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-prune" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone prune</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone evidence</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-discover" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone discover</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="Navigation" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="../.." class="md-path__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-path__item">
+        <a href="././" class="md-path__link">
+          
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+    <a href="https://github.com/bearing-research/diffcone/edit/main/docs/reference/cli.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="command-reference">Command reference<a class="headerlink" href="#command-reference" title="Permanent link">&para;</a></h1>
+<p>Generated from the command-line parser (<code>scripts/docs_cli.py</code>); <code>diffcone
+&lt;command&gt; --help</code> prints the same. Every command that takes snapshots
+accepts a git revision, <code>INDEX</code> (the staged content) or <code>WORKTREE</code> (the
+files on disk, ignored files excluded).</p>
+<h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
+<p><code>plan</code> and <code>discover</code>:</p>
+<ul>
+<li><code>0</code>: plan produced, analysis complete.</li>
+<li><code>1</code>: plan produced, but analysis errors forced selecting everything.</li>
+<li><code>2</code>: no plan (bad arguments, an unreadable manifest, an unknown revision).</li>
+<li><code>3</code>: plan produced, but discovery may be short of what the runner
+  collects.</li>
+</ul>
+<p><code>1</code> and <code>3</code> are opposite failures: <code>1</code> selects too much, <code>3</code> means the
+target list itself may be short, so running only the selected targets
+could skip tests. <code>3</code> wins when both apply.</p>
+<p><code>run</code> exits with the runner's own code (0 when nothing was selected, or
+with <code>--dry-run</code>). It refuses with <code>2</code> when the working tree differs from
+the snapshot the plan analysed (unless <code>--allow-mismatched-worktree</code>), and
+with <code>3</code> when discovery may be incomplete (unless
+<code>--allow-incomplete-discovery</code>).</p>
+<p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
+<code>1</code> when some were missed, <code>2</code> on errors. <code>check</code> exits <code>0</code> when every new
+failure of the full run was selected, <code>1</code> when the plan missed one, <code>2</code>
+when an input cannot be read.</p>
+<h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>
+<p>Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).</p>
+<p>Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--base</code> <code>BASE</code></td>
+<td></td>
+<td><strong>Required.</strong> Base snapshot: a git revision, INDEX or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--head</code> <code>HEAD</code></td>
+<td></td>
+<td><strong>Required.</strong> Head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on disk, ignored files excluded).</td>
+</tr>
+<tr>
+<td><code>--targets</code> <code>TARGETS</code></td>
+<td></td>
+<td>Path to a JSON target manifest.</td>
+</tr>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names.</td>
+</tr>
+<tr>
+<td><code>--discover</code> <code>RUNNER</code></td>
+<td></td>
+<td>Statically discover targets for a runner (pytest, asv); repeatable. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--assume-external-fixture</code> <code>NAME</code></td>
+<td></td>
+<td>Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable.</td>
+</tr>
+<tr>
+<td><code>--no-well-known-fixtures</code></td>
+<td></td>
+<td>Do not assume fixtures of well-known pytest plugins; report them as unresolved.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+<tr>
+<td><code>--evidence</code> <code>auto&#124;PATH</code></td>
+<td></td>
+<td>Opt-in execution evidence (see <code>diffcone collect</code>): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically.</td>
+</tr>
+<tr>
+<td><code>--format</code> <code>FORMAT</code></td>
+<td><code>json</code></td>
+<td>One of <code>json</code>, <code>text</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-run"><code>diffcone run</code><a class="headerlink" href="#diffcone-run" title="Permanent link">&para;</a></h2>
+<p>Plan, then execute only the selected targets with the runner's CLI.</p>
+<p>Build a plan exactly like <code>plan</code>, then invoke the runner on the selected targets (pytest node ids, or an asv --bench pattern). Nothing is executed during analysis. Arguments after <code>--</code> are passed to the runner.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,asv}] [--command COMMAND] [--dry-run] [--allow-mismatched-worktree] [--allow-incomplete-discovery] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--collect] [runner_args ...]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--base</code> <code>BASE</code></td>
+<td></td>
+<td><strong>Required.</strong> Base snapshot: a git revision, INDEX or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--head</code> <code>HEAD</code></td>
+<td></td>
+<td><strong>Required.</strong> Head snapshot: a git revision, INDEX or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--targets</code> <code>TARGETS</code></td>
+<td></td>
+<td>Path to a JSON target manifest.</td>
+</tr>
+<tr>
+<td><code>--runner</code> <code>RUNNER</code></td>
+<td><code>pytest</code></td>
+<td>Which runner to execute. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>Runner command line (default: "python -m pytest" or "asv run"); run in --repo.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td></td>
+<td>Print the command instead of running.</td>
+</tr>
+<tr>
+<td><code>--allow-mismatched-worktree</code></td>
+<td></td>
+<td>Run even when the checkout is not the snapshot the plan analysed.</td>
+</tr>
+<tr>
+<td><code>--allow-incomplete-discovery</code></td>
+<td></td>
+<td>Run even when discovery reports tests the runner may collect that are not targets.</td>
+</tr>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names.</td>
+</tr>
+<tr>
+<td><code>--discover</code> <code>RUNNER</code></td>
+<td></td>
+<td>Statically discover targets for a runner (pytest, asv); repeatable. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--assume-external-fixture</code> <code>NAME</code></td>
+<td></td>
+<td>Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable.</td>
+</tr>
+<tr>
+<td><code>--no-well-known-fixtures</code></td>
+<td></td>
+<td>Do not assume fixtures of well-known pytest plugins; report them as unresolved.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+<tr>
+<td><code>--evidence</code> <code>auto&#124;PATH</code></td>
+<td></td>
+<td>Opt-in execution evidence (see <code>diffcone collect</code>): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically.</td>
+</tr>
+<tr>
+<td><code>--collect</code></td>
+<td></td>
+<td>With --evidence: record the selected tests too and advance the store to head (their new records, the old ones for every other test); needs a clean checkout of head and the pytest arguments the store was collected with.</td>
+</tr>
+<tr>
+<td><code>runner_args ...</code> (after <code>--</code>)</td>
+<td></td>
+<td>Extra runner arguments (after --).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-validate"><code>diffcone validate</code><a class="headerlink" href="#diffcone-validate" title="Permanent link">&para;</a></h2>
+<p>Run the full pytest suite at both snapshots and check the plan against it.</p>
+<p>Outcome-based validation: runs the whole pytest suite at base and head (commits in temporary git worktrees, WORKTREE in place), then reports every test whose pass/fail outcome changed but was not selected. Behaviour changes that keep the same outcome are invisible to this check.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAND] [--coverage] [--setup-command SETUP_COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--base</code> <code>BASE</code></td>
+<td></td>
+<td><strong>Required.</strong> Base snapshot: a git revision or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--head</code> <code>HEAD</code></td>
+<td></td>
+<td><strong>Required.</strong> Head snapshot: a git revision or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--targets</code> <code>TARGETS</code></td>
+<td></td>
+<td>Path to a JSON target manifest.</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>Pytest command line (default: "python -m pytest").</td>
+</tr>
+<tr>
+<td><code>--coverage</code></td>
+<td></td>
+<td>Also run the head suite under pytest-cov with per-test contexts and require every test that executed a changed symbol to be selected (reports recall/precision).</td>
+</tr>
+<tr>
+<td><code>--setup-command</code> <code>SETUP_COMMAND</code></td>
+<td></td>
+<td>Shell command run inside each temporary checkout before its suite (recreate build-generated files such as a setuptools-scm _version.py).</td>
+</tr>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names.</td>
+</tr>
+<tr>
+<td><code>--discover</code> <code>RUNNER</code></td>
+<td></td>
+<td>Statically discover targets for a runner (pytest, asv); repeatable. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--assume-external-fixture</code> <code>NAME</code></td>
+<td></td>
+<td>Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable.</td>
+</tr>
+<tr>
+<td><code>--no-well-known-fixtures</code></td>
+<td></td>
+<td>Do not assume fixtures of well-known pytest plugins; report them as unresolved.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+<tr>
+<td><code>--evidence</code> <code>auto&#124;PATH</code></td>
+<td></td>
+<td>Opt-in execution evidence (see <code>diffcone collect</code>): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically.</td>
+</tr>
+<tr>
+<td><code>--format</code> <code>FORMAT</code></td>
+<td><code>text</code></td>
+<td>One of <code>json</code>, <code>text</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-corpus"><code>diffcone corpus</code><a class="headerlink" href="#diffcone-corpus" title="Permanent link">&para;</a></h2>
+<p>Validate the plan for every commit in a range and aggregate recall/precision.</p>
+<p>Replay history: for each commit in A..B (first-parent order) plan parent -&gt; commit and validate it like <code>validate</code>, then aggregate outcome misses, coverage recall/precision and selection savings. Each commit's suite runs once; coverage runs are per pair. Commits touching no .py file are skipped unless --all-commits is given.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>diffcone corpus [-h] --range REVISION_RANGE [--targets TARGETS] [--command COMMAND] [--coverage] [--setup-command SETUP_COMMAND] [--all-commits] [--max MAX_COMMITS] [--evidence auto|PATH] [--jobs JOBS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--format {json,text}]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--range</code> <code>RANGE</code></td>
+<td></td>
+<td><strong>Required.</strong> Git range, e.g. main~20..main.</td>
+</tr>
+<tr>
+<td><code>--targets</code> <code>TARGETS</code></td>
+<td></td>
+<td>Path to a JSON target manifest.</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>Pytest command line (default: "python -m pytest").</td>
+</tr>
+<tr>
+<td><code>--coverage</code></td>
+<td></td>
+<td>Also measure coverage recall/precision.</td>
+</tr>
+<tr>
+<td><code>--setup-command</code> <code>SETUP_COMMAND</code></td>
+<td></td>
+<td>Shell command run inside each temporary checkout before its suite.</td>
+</tr>
+<tr>
+<td><code>--all-commits</code></td>
+<td></td>
+<td>Validate commits without .py changes too.</td>
+</tr>
+<tr>
+<td><code>--max</code> <code>MAX</code></td>
+<td></td>
+<td>Only the last N commits of the range.</td>
+</tr>
+<tr>
+<td><code>--evidence</code> <code>auto&#124;PATH</code></td>
+<td></td>
+<td>Plan every pair with execution evidence: a fixed store, or auto for the store at the nearest ancestor of each commit.</td>
+</tr>
+<tr>
+<td><code>--jobs</code> <code>JOBS</code></td>
+<td><code>1</code></td>
+<td>Validate this many pairs in parallel, each in its own temporary worktrees (default 1; suites that write to shared locations can interfere).</td>
+</tr>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names.</td>
+</tr>
+<tr>
+<td><code>--discover</code> <code>RUNNER</code></td>
+<td></td>
+<td>Statically discover targets for a runner (pytest, asv); repeatable. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--assume-external-fixture</code> <code>NAME</code></td>
+<td></td>
+<td>Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable.</td>
+</tr>
+<tr>
+<td><code>--no-well-known-fixtures</code></td>
+<td></td>
+<td>Do not assume fixtures of well-known pytest plugins; report them as unresolved.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+<tr>
+<td><code>--format</code> <code>FORMAT</code></td>
+<td><code>text</code></td>
+<td>One of <code>json</code>, <code>text</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-collect"><code>diffcone collect</code><a class="headerlink" href="#diffcone-collect" title="Permanent link">&para;</a></h2>
+<p>Run the whole pytest suite under the evidence recorder and store what each test executed.</p>
+<p>Execution evidence (opt-in): run the whole suite once with diffcone's recorder (Python 3.12+) and write .diffcone/evidence/<commit>-<environment>.sqlite: the symbols each test executed and the repository files it touched, at a commit. Without --rev the repository itself runs and must be clean. Arguments after <code>--</code> are passed to pytest.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>diffcone collect [-h] [--repo REPO] [--source-root DIR[=PREFIX]] [--rev REV] [--command COMMAND] [--setup-command SETUP_COMMAND] [--reverse-check] [--env-var NAME] [--no-cache] [--cache-dir CACHE_DIR] [runner_args ...]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>As for plan (repeatable; default: .).</td>
+</tr>
+<tr>
+<td><code>--rev</code> <code>REV</code></td>
+<td></td>
+<td>Collect at this commit, in a temporary worktree (default: the clean HEAD).</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>Pytest command line (default: "python -m pytest").</td>
+</tr>
+<tr>
+<td><code>--setup-command</code> <code>SETUP_COMMAND</code></td>
+<td></td>
+<td>Shell command run inside the temporary checkout (with --rev).</td>
+</tr>
+<tr>
+<td><code>--reverse-check</code></td>
+<td></td>
+<td>Run the suite a second time in reverse order; tests whose records differ are marked unstable and always selected.</td>
+</tr>
+<tr>
+<td><code>--env-var</code> <code>NAME</code></td>
+<td></td>
+<td>An environment variable that changes what tests do (pandas' PANDAS_FUTURE): recorded with the environment, and a run where it differs uses no evidence (repeatable).</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not use the index cache.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+<tr>
+<td><code>runner_args ...</code> (after <code>--</code>)</td>
+<td></td>
+<td>Extra pytest arguments (after --).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-check"><code>diffcone check</code><a class="headerlink" href="#diffcone-check" title="Permanent link">&para;</a></h2>
+<p>Check a plan against a full run's JUnit XML: was every failing test selected?</p>
+<p>Read a plan (diffcone plan --format json) and the JUnit XML of a full pytest run, and report every test that failed or errored there but was not selected. A failure the --baseline run also had is reported as already failing. Each --run is a selective run (diffcone's own, or another selector's such as pytest-testmon) compared on the same failures. Runs nothing.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>diffcone check [-h] --plan PLAN --full JUNIT [--baseline JUNIT] [--run NAME=JUNIT] [--format {text,markdown,json}] [--output OUTPUT]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--plan</code> <code>PLAN</code></td>
+<td></td>
+<td><strong>Required.</strong> The plan, as JSON.</td>
+</tr>
+<tr>
+<td><code>--full</code> <code>JUNIT</code></td>
+<td></td>
+<td><strong>Required.</strong> JUnit XML of the full run (repeatable: several files are one run).</td>
+</tr>
+<tr>
+<td><code>--baseline</code> <code>JUNIT</code></td>
+<td></td>
+<td>JUnit XML of a run without the change (e.g. the nightly run at the evidence commit): its failures are not misses. Repeatable.</td>
+</tr>
+<tr>
+<td><code>--run</code> <code>NAME=JUNIT</code></td>
+<td></td>
+<td>JUnit XML of a selective run to compare (repeatable).</td>
+</tr>
+<tr>
+<td><code>--format</code> <code>FORMAT</code></td>
+<td><code>text</code></td>
+<td>One of <code>text</code>, <code>markdown</code>, <code>json</code>.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-prune"><code>diffcone prune</code><a class="headerlink" href="#diffcone-prune" title="Permanent link">&para;</a></h2>
+<p>Shrink the cache to what planning at given commits reads.</p>
+<p>Delete every cached index and discovery result except those of the --keep commits, and every per-module record except those of their files (which also serve later commits and the working tree sharing them). For a cache shipped between CI runs: keep the commit the evidence was recorded at.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>diffcone prune [-h] [--repo REPO] --keep REV [--source-root DIR[=PREFIX]] [--cache-dir CACHE_DIR]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--keep</code> <code>REV</code></td>
+<td></td>
+<td><strong>Required.</strong> Commit to keep (repeatable).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>As for plan (repeatable; default: .).</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>The cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-evidence"><code>diffcone evidence</code><a class="headerlink" href="#diffcone-evidence" title="Permanent link">&para;</a></h2>
+<p>List the evidence stores of a repository.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>diffcone evidence [-h] [--repo REPO]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="diffcone-discover"><code>diffcone discover</code><a class="headerlink" href="#diffcone-discover" title="Permanent link">&para;</a></h2>
+<p>Statically discover targets in a snapshot and emit a manifest.</p>
+<p>Discover pytest tests and/or ASV benchmarks in a snapshot (a git revision, INDEX or WORKTREE) without importing them, and print a target manifest (JSON) for <code>diffcone plan --targets</code>. The output states which snapshot kind was read.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--rev</code> <code>REV</code></td>
+<td><code>HEAD</code></td>
+<td>Snapshot to discover in: revision, INDEX or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--repo</code> <code>REPO</code></td>
+<td><code>.</code></td>
+<td>Path to the git repository (default: .).</td>
+</tr>
+<tr>
+<td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
+<td></td>
+<td>Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names.</td>
+</tr>
+<tr>
+<td><code>--discover</code> <code>RUNNER</code></td>
+<td></td>
+<td>Statically discover targets for a runner (pytest, asv); repeatable. One of <code>pytest</code>, <code>asv</code>.</td>
+</tr>
+<tr>
+<td><code>--assume-external-fixture</code> <code>NAME</code></td>
+<td></td>
+<td>Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable.</td>
+</tr>
+<tr>
+<td><code>--no-well-known-fixtures</code></td>
+<td></td>
+<td>Do not assume fixtures of well-known pytest plugins; report them as unresolved.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the result to this file instead of stdout.</td>
+</tr>
+<tr>
+<td><code>--no-cache</code></td>
+<td></td>
+<td>Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX.</td>
+</tr>
+<tr>
+<td><code>--cache-dir</code> <code>CACHE_DIR</code></td>
+<td></td>
+<td>Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache).</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../../ci/" class="md-footer__link md-footer__link--prev" aria-label="Previous: CI with GitHub Actions">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                CI with GitHub Actions
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../manifest/" class="md-footer__link md-footer__link--next" aria-label="Next: Target manifest">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Target manifest
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2026 Bearing Research
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"../..","features":["content.code.copy","content.action.edit","navigation.footer","navigation.indexes","navigation.instant","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight","toc.follow"],"redirect":null,"search":"../../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"alias":true,"provider":"mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      
+    
+  </body>
+</html>
