@@ -655,10 +655,11 @@ pytest (`path::Class::method`); the entry symbol of an inherited test is the
 method where it is defined, and the collecting class is a lifecycle
 dependency. Parameter cases are not enumerated.
 
-A test class imported into a module is collected there with everything it
-inherits, its bases resolved in the module that defines it (urllib3's
-`test_pyopenssl.py` imports `TestHTTPS_TLSv1`, whose tests are nearly all
-on its bases).
+A test class imported into a module is collected there as if defined
+there, with everything it inherits, its class fixtures, marks, xunit
+setup and nested classes, its bases resolved in the module that defines it
+(urllib3's `test_pyopenssl.py` imports `TestHTTPS_TLSv1`, whose tests are
+nearly all on its bases).
 
 A test module may also re-run another's tests with `from <module> import
 *`: the star binds what that module's `__all__` lists, or every name it
@@ -723,20 +724,25 @@ module a test imports from.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
 `patch.object` decorators (unless `new` is given) on the function or, for
-`test*` methods, on its class and in-module bases (each such class
+`test*` methods, on its class and its bases (each such class
 decorator injects one more argument, as `unittest.mock` patches every
 `test*` attribute at class definition), arguments supplied by
 hypothesis `@given` (keyword strategies by name, positional strategies
 filling the last parameters), and names supplied by
-`@pytest.mark.parametrize` on the function, class, enclosing classes or
-module (`indirect` names stay requests). Such a name is supplied throughout
+`@pytest.mark.parametrize` on the function, class, its bases, enclosing
+classes or module (`indirect` names stay requests; pytest reads a class's
+marks along its MRO, so a base's marks apply to every subclass). Such a name is supplied throughout
 the test's fixture closure, not only to the test: a fixture that requests it
 (`set_engine(engine, ext)` under a class-level `parametrize("engine, ext")`)
 gets the parameter, and a fixture of that name is replaced, with its own
 requests pruned, as pytest does. `@pytest.mark.usefixtures(...)`
-on the function, class, enclosing classes or module adds requests.
-Resolution order is class fixtures (the class, then its in-module bases,
-then enclosing classes), module fixtures, `conftest.py` from the test's
+on the function, class, its bases, enclosing classes or module adds
+requests. Resolution order is class fixtures (one level per class: pytest
+registers them from `dir(cls)`, so the level holds the class's own
+fixtures and those of its bases in any module in the source roots, the
+nearest definition of an attribute hiding the others; a subclass fixture
+requesting its own name therefore reaches past the base's override to the
+next level), then enclosing classes, module fixtures, `conftest.py` from the test's
 directory outward, then plugin modules: those named in `pytest_plugins`
 (conftest declarations are global) and the project's own `pytest11` entry
 points from `pyproject.toml` (`[project.entry-points]` or
@@ -759,7 +765,7 @@ the module and its conftests when they are variable symbols (`pytest_generate_te
 every test in the module), every conftest module on the chain and its
 `pytest_*` hook functions, `setup_module`/`teardown_module`/
 `setup_function`/`teardown_function` if present, and the class's (or its
-in-module bases') xunit/unittest setup/teardown methods if present. A
+bases') xunit/unittest setup/teardown methods if present. A
 fixture found at no in-scope level is a pytest builtin (ignored), a name a
 well-known plugin provides (`WELL_KNOWN_PLUGIN_FIXTURES` in
 `pytest_static.py`: `mocker` from pytest-mock, `fp` from pytest-subprocess,

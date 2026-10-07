@@ -574,16 +574,31 @@ def test_a_fixture_on_a_base_class_reaches_the_tests_that_list_it(repo):
     assert "test_scope" in rules(plan, SUB_VALUE)
 
 
+GENERATED = "tests/test_gen.py::test_gen"
+
+
 def test_an_unresolved_fixture_needs_no_fallback_when_no_fixture_changed(repo):
-    base, ev = _collected(repo, BASE_TESTS)
+    files = {
+        **BASE_TESTS,
+        "tests/test_gen.py": """\
+def pytest_generate_tests(metafunc):
+    if "gen" in metafunc.fixturenames:
+        metafunc.parametrize("gen", [1])
+
+
+def test_gen(gen):
+    assert gen == 1
+""",
+    }
+    base, ev = _collected(repo, files)
     head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
     plan = _plan(repo, base, head, ev)
-    # Discovery cannot resolve `value` (a fixture on a base class in another
-    # file), but the record holds what the test ran, and no module that uses
-    # pytest changed a definition.
+    # Discovery cannot resolve `gen` (supplied by pytest_generate_tests), but
+    # the record holds what the test ran, and no module that uses pytest
+    # changed a definition.
     assert selected(plan) == {ADD, "bench_ops.TimeOps.time_add"}
     static = repo.plan(base, head, ASV, discover_runners=["pytest"])
-    assert "lifecycle_dependency_unresolved" in rules(static, SUB_VALUE)
+    assert "lifecycle_dependency_unresolved" in rules(static, GENERATED)
 
 
 COMBINED = {

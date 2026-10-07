@@ -1181,3 +1181,91 @@ def test_a_fixture_replaced_by_parametrize_does_not_select_its_test(repo):
     plan = plan_for("pkg/other.py", "1", "2")
     assert selected(plan) == {always}
     assert "bench.time_noop" in unselected(plan)
+
+
+INHERITED_CLASS = {
+    "tests/__init__.py": "",
+    "tests/base/__init__.py": "",
+    "tests/conftest.py": (
+        "import pytest\n\n\n"
+        "@pytest.fixture\ndef data():\n    return 'conftest-data'\n\n\n"
+        "@pytest.fixture\ndef marked():\n    return 'marked'\n"
+    ),
+    "tests/base/setitem.py": (
+        "import pytest\n\n\n"
+        "@pytest.mark.usefixtures('marked')\n"
+        "@pytest.mark.parametrize('ext', ['.x'])\n"
+        "class BaseSetitem:\n"
+        "    def setup_method(self):\n        self.ready = True\n\n"
+        "    @pytest.fixture\n    def full_indexer(self, ext):\n        return 'indexer' + ext\n\n"
+        "    @pytest.fixture\n    def data(self):\n        return 'base-data'\n\n"
+        "    def test_inherited(self, full_indexer):\n        assert self.ready\n"
+    ),
+    "tests/test_numpy.py": (
+        "import pytest\n\nfrom tests.base.setitem import BaseSetitem\n\n\n"
+        "class TestNumpy(BaseSetitem):\n"
+        "    @pytest.fixture\n    def data(self, data):\n        return 'sub:' + data\n\n"
+        "    def test_override(self, full_indexer, data):\n        pass\n"
+    ),
+    "tests/test_imported.py": "from tests.base.setitem import BaseSetitem as TestImported\n",
+}
+
+
+def test_a_test_class_inherits_fixtures_and_marks_from_bases_anywhere(repo):
+    """pytest reads a class's fixtures from ``dir(cls)`` and its marks along
+    the MRO, wherever the bases are defined; a subclass fixture requesting
+    its own name reaches past the base's to the conftest's; an imported
+    class is collected with its fixtures, marks and xunit setup."""
+    rev = repo.commit(INHERITED_CLASS)
+    targets = by_id(run_discovery(repo, rev, "pytest"))
+    base = "tests.base.setitem.BaseSetitem"
+    for test in (
+        "tests/test_numpy.py::TestNumpy::test_inherited",
+        "tests/test_numpy.py::TestNumpy::test_override",
+        "tests/test_imported.py::TestImported::test_inherited",
+    ):
+        deps = set(targets[test].lifecycle_dependencies)
+        assert {f"{base}.full_indexer", "tests.conftest.marked"} <= deps, test
+        assert not any(d.startswith("fixture:") for d in deps), test
+        assert f"{base}.data" not in deps, test
+    override = set(targets["tests/test_numpy.py::TestNumpy::test_override"].lifecycle_dependencies)
+    assert {"tests.test_numpy.TestNumpy.data", "tests.conftest.data"} <= override
+    imported = set(
+        targets["tests/test_imported.py::TestImported::test_inherited"].lifecycle_dependencies
+    )
+    assert f"{base}.setup_method" in imported
+
+
+def test_fixtures_and_marks_from_a_base_elsewhere_select_their_tests(repo):
+    """Before, the base's ``full_indexer`` was unresolved (its tests selected
+    on every change, the narrowing this guards) and the base's
+    ``usefixtures('marked')`` was no dependency at all (a miss)."""
+    bench = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+    base = repo.commit(
+        {
+            **INHERITED_CLASS,
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+            "pkg/__init__.py": "",
+            "pkg/other.py": "X = 1\n",
+        }
+    )
+    every = {
+        "tests/test_numpy.py::TestNumpy::test_inherited",
+        "tests/test_numpy.py::TestNumpy::test_override",
+        "tests/test_imported.py::TestImported::test_inherited",
+    }
+
+    def plan_for(path, old, new):
+        repo.git("reset", "-q", "--hard", base)  # each edit on its own
+        head = repo.commit({path: INHERITED_CLASS.get(path, "X = 1\n").replace(old, new)})
+        return repo.plan(base, head, [bench], discover_runners=["pytest"])
+
+    assert selected(plan_for("tests/conftest.py", "'marked'", "'m'")) == every
+    assert selected(plan_for("tests/conftest.py", "'conftest-data'", "'d'")) == {
+        "tests/test_numpy.py::TestNumpy::test_override"
+    }
+    assert selected(plan_for("tests/base/setitem.py", "'indexer'", "'i'")) == every
+    plan = plan_for("pkg/other.py", "1", "2")
+    assert selected(plan) == set()
+    assert "bench.time_noop" in unselected(plan)

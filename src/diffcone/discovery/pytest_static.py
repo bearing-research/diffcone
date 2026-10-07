@@ -18,8 +18,10 @@ Collected:
   ``TestCase`` anywhere in that chain, whatever the class is called;
 * functions and classes imported into a test module (``from docs_src.app
   import test_read_main``) that match the naming rules, named by the bound
-  name, with the defining symbol as entry; an imported class brings what it
-  inherits, its bases resolved in the module that defines it; ``from <module> import *``
+  name, with the defining symbol as entry; an imported class is collected
+  as a class defined here (inheritance, class fixtures, marks, xunit
+  setup, nested classes), its bases resolved in the module that defines
+  it; ``from <module> import *``
   brings in what the module's ``__all__`` lists, or every name it defines
   that does not start with an underscore (poetry's sync tests are the
   install tests, star-imported), except names this module defines itself;
@@ -38,10 +40,14 @@ Lifecycle dependencies attached to each test:
 * fixtures requested by parameter name (excluding parameters with defaults,
   ``parametrize`` argnames unless ``indirect``, and arguments injected by
   ``mock.patch`` decorators on the function or, for ``test*`` methods, on
-  its class and in-module base classes), by ``@pytest.mark.usefixtures`` on the
-  function, class (including enclosing classes) or module (``pytestmark``),
-  and transitively by other fixtures, resolved in pytest's order: class and
-  its in-module bases, module, nearest ``conftest.py`` outward, then
+  its class and base classes), by ``@pytest.mark.usefixtures`` on the
+  function, class (including enclosing classes and every base class, as
+  pytest reads marks along the MRO) or module (``pytestmark``),
+  and transitively by other fixtures, resolved in pytest's order: class
+  (its own fixtures and those it inherits from bases in any module in the
+  source roots, the nearest definition of an attribute hiding the rest, as
+  ``dir(cls)`` sees them), enclosing classes, module, nearest
+  ``conftest.py`` outward, then
   ``pytest_plugins`` modules within the source roots; a fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
@@ -593,7 +599,6 @@ class Fixture:
 class ModuleFacts:
     parsed: ParsedModule
     fixtures: dict[str, Fixture] = field(default_factory=dict)
-    class_fixtures: dict[str, dict[str, Fixture]] = field(default_factory=dict)  # class id ->
     hooks: list[str] = field(default_factory=list)
     # Collection hooks this module binds (as a def or an assignment): they
     # make tests out of files or objects these rules do not model.
@@ -858,24 +863,32 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             and isinstance(stmt.value, ast.Name)
         ):
             facts.bindings.append(("alias", stmt.targets[0].id, "", stmt.value.id))
-    for cls in scope_classes(body):
-        _collect_class_fixtures(facts, cls, parsed.member_id(cls.name))
     facts.plugins = _plugins_from_body(body)
     facts.usefixtures = _usefixtures_from_pytestmark(body)
     return facts
 
 
-def _collect_class_fixtures(facts: ModuleFacts, cls: ast.ClassDef, class_id: str) -> None:
-    fixtures: dict[str, Fixture] = {}
-    for func in scope_functions(cls.body):
+def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> dict[str, Fixture]:
+    """The fixtures pytest registers for a class, which it reads from
+    ``dir(cls)``: ``owners`` is the class and its resolved bases, nearest
+    first, wherever they are defined. Each attribute comes from the nearest
+    owner defining it, so an override hides the base's fixture (and a
+    fixture requesting its own name reaches past both); two attributes
+    registering one name resolve to the alphabetically last, as pytest
+    registers them in ``dir`` order."""
+    attrs: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
+    for owner, owner_id in owners:
+        for func in scope_functions(owner.body):
+            attrs.setdefault(func.name, (func, owner_id))
+    level: dict[str, Fixture] = {}
+    for attr, (func, owner_id) in sorted(attrs.items()):
         is_fixture, explicit, autouse = _is_fixture(func)
         if is_fixture:
-            name = explicit or func.name
-            symbol = f"{class_id}.{func.name}"
-            fixtures[name] = Fixture(name, symbol, autouse, _fixture_requests(func, True))
-    facts.class_fixtures[class_id] = fixtures
-    for inner in scope_classes(cls.body):
-        _collect_class_fixtures(facts, inner, f"{class_id}.{inner.name}")
+            name = explicit or attr
+            level[name] = Fixture(
+                name, f"{owner_id}.{attr}", autouse, _fixture_requests(func, True)
+            )
+    return level
 
 
 # --------------------------------------------------------------------------- discovery
@@ -900,22 +913,23 @@ class _Resolver:
         self.unresolved = unresolved
         self.assumed = assumed  # external fixture name -> requesting tests
 
-    def chain(self, class_ids: list[str]) -> list[dict[str, Fixture]]:
-        levels: list[dict[str, Fixture]] = []
-        for class_id in reversed(class_ids):  # innermost class first
-            levels.append(self.module.class_fixtures.get(class_id, {}))
+    def chain(self, class_levels: list[dict[str, Fixture]]) -> list[dict[str, Fixture]]:
+        levels = list(class_levels)  # innermost class first
         levels.append(self.module.fixtures)
         levels.extend(c.fixtures for c in self.conftests)
         levels.extend(p.fixtures for p in self.plugins)
         return levels
 
     def lifecycle(
-        self, class_ids: list[str], requests: list[str], supplied: frozenset[str] = frozenset()
+        self,
+        class_levels: list[dict[str, Fixture]],
+        requests: list[str],
+        supplied: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Fixtures the test's closure reaches. A ``supplied`` name (directly
         parametrized on the test) is a parameter at every depth, as pytest
         replaces the fixture of that name and prunes what it requests."""
-        levels = self.chain(class_ids)
+        levels = self.chain(class_levels)
         deps: list[str] = []
         seen: set[tuple[str, int]] = set()
         # (name, first level to search): a fixture that requests its own name
@@ -1436,7 +1450,7 @@ def _collect_module_tests(
     def add(
         nodeid: str,
         entry: str,
-        class_ids: list[str],
+        class_levels: list[dict[str, Fixture]],
         requests: list[str],
         extra: list[str],
         marks: Marks,
@@ -1445,7 +1459,7 @@ def _collect_module_tests(
             result.notes.append(
                 DiscoveryNote(RUNNER, "missing_symbol", f"{nodeid}: {entry} is not in the index")
             )
-        deps = module_deps + extra + resolver.lifecycle(class_ids, requests, marks.supplied)
+        deps = module_deps + extra + resolver.lifecycle(class_levels, requests, marks.supplied)
         result.targets.append(Target(RUNNER, nodeid, entry, tuple(sorted(set(deps)))))
 
     # Module scopes reached through base classes: name -> (parsed, classes,
@@ -1567,6 +1581,94 @@ def _collect_module_tests(
                 )
         return chain
 
+    def walk_class(
+        cls: ast.ClassDef,
+        prefix_ids: list[str],
+        nodeid_prefix: str,
+        inherited: Marks,
+        outer: list[dict[str, Fixture]] | None = None,
+        name: str | None = None,
+        class_id: str | None = None,
+        scope: _Scope | None = None,
+    ) -> None:
+        """Targets of a class collected here as ``name`` (its own name, or the
+        one a test module imports it under, with ``class_id`` and ``scope``
+        where it is defined); ``outer`` are the enclosing classes' fixture
+        levels, innermost first."""
+        name = name or cls.name
+        # pytest's unittest plugin collects a TestCase subclass whatever it is
+        # called, and the base that brings TestCase in may be several classes
+        # and modules away (DRF's ``XffSpoofingTests(XffTestingBase)``).
+        unittest_style = _is_unittest_class(cls) or any(
+            _is_unittest_class(base) for base, _ in mro(cls, nodeid_prefix, quiet=True, scope=scope)
+        )
+        if not (unittest_style or _matches(classes, name)) or _has_init(cls):
+            # A class pytest's own rules skip, but that defines test methods,
+            # is a class some plugin collects (SQLAlchemy's testing plugin
+            # collects ``<Name>Test``): report it rather than guess either way.
+            if (
+                cls.name not in base_names
+                and not _has_init(cls)
+                and any(
+                    _matches(functions, f.name) and not _is_fixture(f)[0]
+                    for f in scope_functions(cls.body)
+                )
+            ):
+                symbol = (
+                    f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
+                )
+                detail = (
+                    f"{nodeid_prefix}::{cls.name}: defines test methods but does not "
+                    "match python_classes; a pytest plugin may collect it, and what it "
+                    "collects is not a target"
+                )
+                if uncollected is not None:
+                    uncollected.append((symbol, detail))
+            return
+        if class_id is None:
+            class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
+        nodeid = f"{nodeid_prefix}::{name}"
+        bases = mro(cls, nodeid, scope=scope)
+        # Fixture lookup: this class with what it inherits, then outer classes.
+        class_levels = [_class_level([(cls, class_id), *bases]), *(outer or [])]
+        # Marks: the enclosing scopes', the bases' (pytest reads marks along
+        # the MRO), then the class's own.
+        class_marks = inherited
+        for owner, _ in [*reversed(bases), (cls, class_id)]:
+            class_marks = class_marks + _marks_from_expressions(owner.decorator_list)
+            class_marks = class_marks + _marks_from_pytestmark(owner.body)
+        # ``@patch`` on a class (or on a base, whose patched methods are
+        # inherited and patched again) injects into every ``test*`` method.
+        class_injected = _injected_patch_count(cls.decorator_list) + sum(
+            _injected_patch_count(owner.decorator_list) for owner, _ in bases
+        )
+        # Methods: own definitions win over inherited ones.
+        methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
+        for owner, owner_id in reversed(bases):
+            for f in scope_functions(owner.body):
+                methods[f.name] = (f, owner_id)
+        for f in scope_functions(cls.body):
+            methods[f.name] = (f, class_id)
+        setup = [
+            f"{owner_id}.{method}"
+            for method, (_, owner_id) in methods.items()
+            if method in CLASS_SETUP_METHODS
+        ]
+        extra = setup + [class_id] if bases else setup
+        for method, (func, owner_id) in sorted(methods.items()):
+            if _is_fixture(func)[0]:
+                continue
+            if not (_matches(functions, method) or (unittest_style and method.startswith("test"))):
+                continue
+            marks = class_marks + _marks_from_expressions(func.decorator_list)
+            requests = list(_fixture_requests(func, True, marks, class_injected))
+            requests += list(marks.usefixtures)
+            add(f"{nodeid}::{method}", f"{owner_id}.{method}", class_levels, requests, extra, marks)
+        for inner in scope_classes(cls.body):
+            walk_class(
+                inner, prefix_ids + [class_id], nodeid, class_marks, class_levels, scope=scope
+            )
+
     for func in scope_functions(parsed.tree.body):
         if not _matches(functions, func.name) or _is_fixture(func)[0]:
             continue
@@ -1636,104 +1738,30 @@ def _collect_module_tests(
                 continue
             entry = origin.parsed.member_id(alias.name)
             if isinstance(node, ast.ClassDef):
-                if not is_class or _has_init(node):
+                if not is_class:
                     continue
-                # The class is collected here, with everything it inherits:
-                # urllib3's test_pyopenssl.py imports TestHTTPS_TLSv1, whose
-                # tests are almost all defined on its bases.
-                origin_scope = scope_for(origin.parsed.module)
-                methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
-                for owner_cls, owner_id in reversed(
-                    mro(node, nodeid, scope=origin_scope) if origin_scope else []
-                ):
-                    for f in scope_functions(owner_cls.body):
-                        methods[f.name] = (f, owner_id)
-                for f in scope_functions(node.body):
-                    methods[f.name] = (f, entry)
-                for name, (method, owner_id) in sorted(methods.items()):
-                    if _matches(functions, name) and not _is_fixture(method)[0]:
-                        requests = list(_fixture_requests(method, True, module_marks))
-                        add(
-                            f"{nodeid}::{name}",
-                            f"{owner_id}.{name}",
-                            [],
-                            requests,
-                            [],
-                            module_marks,
-                        )
+                # The class is collected here as if defined here, with
+                # everything it inherits (urllib3's test_pyopenssl.py imports
+                # TestHTTPS_TLSv1, whose tests are almost all defined on its
+                # bases), its bases resolved where it is defined.
+                origin_scope = scope_for(origin.parsed.module) or (
+                    origin.parsed,
+                    {c.name: c for c in scope_classes(origin.parsed.tree.body)},
+                    {},
+                )
+                walk_class(
+                    node,
+                    [],
+                    parsed.path,
+                    module_marks,
+                    name=bound,
+                    class_id=entry,
+                    scope=origin_scope,
+                )
             elif is_function and not _is_fixture(node)[0]:
                 marks = module_marks + _marks_from_expressions(node.decorator_list)
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
                 add(nodeid, entry, [], requests, [origin.parsed.module], marks)
-
-    def walk_class(
-        cls: ast.ClassDef, prefix_ids: list[str], nodeid_prefix: str, inherited: Marks
-    ) -> None:
-        # pytest's unittest plugin collects a TestCase subclass whatever it is
-        # called, and the base that brings TestCase in may be several classes
-        # and modules away (DRF's ``XffSpoofingTests(XffTestingBase)``).
-        unittest_style = _is_unittest_class(cls) or any(
-            _is_unittest_class(base) for base, _ in mro(cls, nodeid_prefix, quiet=True)
-        )
-        if not (unittest_style or _matches(classes, cls.name)) or _has_init(cls):
-            # A class pytest's own rules skip, but that defines test methods,
-            # is a class some plugin collects (SQLAlchemy's testing plugin
-            # collects ``<Name>Test``): report it rather than guess either way.
-            if (
-                cls.name not in base_names
-                and not _has_init(cls)
-                and any(
-                    _matches(functions, f.name) and not _is_fixture(f)[0]
-                    for f in scope_functions(cls.body)
-                )
-            ):
-                symbol = (
-                    f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
-                )
-                detail = (
-                    f"{nodeid_prefix}::{cls.name}: defines test methods but does not "
-                    "match python_classes; a pytest plugin may collect it, and what it "
-                    "collects is not a target"
-                )
-                if uncollected is not None:
-                    uncollected.append((symbol, detail))
-            return
-        class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
-        nodeid = f"{nodeid_prefix}::{cls.name}"
-        bases = mro(cls, nodeid)
-        # Fixture lookup: this class, then its in-module bases, then outer classes.
-        class_ids = prefix_ids + [b_id for _, b_id in reversed(bases)] + [class_id]
-        class_marks = inherited + _marks_from_expressions(cls.decorator_list)
-        class_marks = class_marks + _marks_from_pytestmark(cls.body)
-        # ``@patch`` on a class (or on a base, whose patched methods are
-        # inherited and patched again) injects into every ``test*`` method.
-        class_injected = _injected_patch_count(cls.decorator_list) + sum(
-            _injected_patch_count(owner.decorator_list) for owner, _ in bases
-        )
-        # Methods: own definitions win over inherited ones.
-        methods: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
-        for owner, owner_id in reversed(bases):
-            for f in scope_functions(owner.body):
-                methods[f.name] = (f, owner_id)
-        for f in scope_functions(cls.body):
-            methods[f.name] = (f, class_id)
-        setup = [
-            f"{owner_id}.{name}"
-            for name, (_, owner_id) in methods.items()
-            if name in CLASS_SETUP_METHODS
-        ]
-        extra = setup + [class_id] if bases else setup
-        for name, (func, owner_id) in sorted(methods.items()):
-            if _is_fixture(func)[0]:
-                continue
-            if not (_matches(functions, name) or (unittest_style and name.startswith("test"))):
-                continue
-            marks = class_marks + _marks_from_expressions(func.decorator_list)
-            requests = list(_fixture_requests(func, True, marks, class_injected))
-            requests += list(marks.usefixtures)
-            add(f"{nodeid}::{name}", f"{owner_id}.{name}", class_ids, requests, extra, marks)
-        for inner in scope_classes(cls.body):
-            walk_class(inner, prefix_ids + [class_id], nodeid, class_marks)
 
     for cls in scope_classes(parsed.tree.body):
         walk_class(cls, [], parsed.path, module_marks)
