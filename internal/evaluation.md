@@ -1353,6 +1353,26 @@ fixtures are followed exactly (`BUILTIN_REQUESTS`).
 Like `collection_check.py`, this is the check to run on a new repository,
 and after any change to discovery's fixture rules.
 
+## After the pre-release audit (2026-10-07)
+
+The audit (internal/audit.md) fixed every confirmed miss, then both
+oracle scripts and a corpus sample were run again on the final code:
+
+* `fixture_check.py` over the 42 census repositories and pandas: no test
+  uses a fixture its dependencies miss.
+* `collection_check.py` over the same: every collected test is a target,
+  except in alembic, cattrs, itsdangerous, pygments, pytest-asyncio and
+  scrapy, where each gap carries an incomplete-discovery note (exit 3): a
+  plugin's own collection (SQLAlchemy's, pytest-typing's, pygments' and
+  Sybil's), a source root the project needs (itsdangerous, pytest-asyncio).
+  coverage.py's collect-only output defeats the script's parser; its
+  fixture audit covered all 1188 tests.
+* `diffcone corpus` over the last 15 commits of flask, requests, rich,
+  pluggy, more-itertools and marshmallow: no outcome missed on any commit
+  validated. Commits whose suite does not collect in today's environment
+  (older flask and rich commits) are errors, now labelled ERRORS rather
+  than MISSES.
+
 ## Are name-match selections worth their cost?
 
 The census attributes 9 % of selections to name matches alone, and the

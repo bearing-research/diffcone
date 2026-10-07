@@ -1216,6 +1216,18 @@ def corpus_to_dict(report: CorpusReport) -> dict:
     }
 
 
+def _corpus_verdict(report: CorpusReport) -> str:
+    """OK, MISSES when a plan missed something, ERRORS when nothing was
+    missed but some commits could not be validated (a suite that does not
+    run in this environment is not a miss, and not a pass either)."""
+    if report.ok:
+        return "OK"
+    missed = report.outcome_missed or any(
+        e.validation is not None and not e.validation.ok for e in report.entries
+    )
+    return "MISSES" if missed else "ERRORS"
+
+
 def corpus_to_text(report: CorpusReport) -> str:
     def pct(x: float | None) -> str:
         return "n/a" if x is None else f"{x:.0%}"
@@ -1224,7 +1236,7 @@ def corpus_to_text(report: CorpusReport) -> str:
         f"corpus {report.revision_range}: {len(report.validated)} validated, "
         f"{sum(1 for e in report.entries if e.skipped)} skipped, "
         f"{sum(1 for e in report.entries if e.error)} error(s); "
-        f"{'OK' if report.ok else 'MISSES'}",
+        f"{_corpus_verdict(report)}",
         f"  outcome changes: {report.outcome_changed} (missed {report.outcome_missed}); "
         f"mean savings {pct(report.mean_savings)}",
     ]
