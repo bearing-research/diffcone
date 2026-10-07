@@ -1204,7 +1204,7 @@ when an input cannot be read.</p>
 <h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>
 <p>Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).</p>
 <p>Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
 </code></pre></div>
 <table>
 <thead>
@@ -1279,6 +1279,11 @@ when an input cannot be read.</p>
 <td><code>--format</code> <code>FORMAT</code></td>
 <td><code>json</code></td>
 <td>One of <code>json</code>, <code>text</code>.</td>
+</tr>
+<tr>
+<td><code>runner_args ...</code> (after <code>--</code>)</td>
+<td></td>
+<td>Pytest arguments the run will use (after --): options that change what pytest collects, such as --doctest-modules, are read by discovery.</td>
 </tr>
 </tbody>
 </table>
