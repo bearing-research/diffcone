@@ -1153,6 +1153,8 @@ module. Class attributes such as <code>params</code> count as part of the class.
   <code>--source-root .</code> for tests in <code>tests/</code>);</li>
 <li>a test bound to something discovery can't follow
   (<code>TestMachine = Machine.TestCase</code>);</li>
+<li>a plugin your configuration turns on that collects files of its own
+  (pytest-typing's <code>typing_checkers</code>, <code>--nbval</code>, <code>--markdown-docs</code>);</li>
 <li>a test file that can't be parsed.</li>
 </ul>
 <p>Each one appears as a note in the report's <code>discovery</code> section, and the

@@ -866,6 +866,12 @@ object of unknown type is matched against every function and method
 named <code>run</code>, so it's selected whenever any of them changes. Instance
 attributes are resolved only when every assignment is a simple one in
 <code>__init__</code>.</dd>
+<dt><strong>Plugins that collect files of their own.</strong></dt>
+<dd>diffcone reports the collecting plugins it recognises from your
+configuration. A plugin that collects files just by being installed is
+invisible to a plan from the code. Whenever <code>run</code> starts pytest, it
+runs every collected test the plan doesn't know, and a recording
+captures what pytest really collected.</dd>
 <dt><strong>Dynamic code is bounded by imports, if at all.</strong></dt>
 <dd>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
 with a computed name is treated as affected by any change in the
