@@ -52,6 +52,11 @@ class Symbol:
     # Modules only: canonical import bindings ("import a as b", "from m import n"),
     # sorted. Lets the classifier tell additions from removals/redirections.
     imports: tuple[str, ...] = ()
+    # Modules only: each import binding with the block it sits in, in source
+    # order. Moving an import (under ``if TYPE_CHECKING:``, into a ``try``)
+    # or reordering imports changes what runs at import, though the set of
+    # bindings is the same: only pure insertions are ``imports_added``.
+    import_layout: tuple[str, ...] = ()
     # Hash of the docstring alone; body_hash excludes it. A docstring-only edit
     # is reported as docstring_changed and carries no impact, except where
     # code runs it: under a non-inert decorator (or a class decorator or

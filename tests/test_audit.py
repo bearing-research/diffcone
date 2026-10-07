@@ -415,3 +415,277 @@ def test_p6_a_docstring_read_through_doc_selects_the_reader(repo):
 def test_p6_a_plain_docstring_edit_still_selects_nothing(repo):
     plan = _doc_plan(repo, '"""Plain."""', '"""Plain, documented."""')
     assert selected(plan) == set()
+
+
+# I1: every module-level binding of a name is a dependency of its users.
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "import sys\n\nif sys.version_info >= (3, 8):\n    from pkg.new import impl\n"
+        "else:\n    from pkg.old import impl\n",
+        "def impl():\n    return 0\n\n\ntry:\n    from pkg.new import impl\n"
+        "except ImportError:\n    pass\n",
+        "try:\n    from pkg.new import impl\nexcept ImportError:\n"
+        "    def impl():\n        return 0\n",
+        "try:\n    from pkg.old import impl\nexcept ImportError:\n    from pkg.new import impl\n",
+    ],
+)
+def test_i1_every_binding_of_a_name_reaches_its_users(repo, binding):
+    files = {
+        "asv.conf.json": ASV_CONF,
+        "pkg/__init__.py": "",
+        "pkg/new.py": "def impl():\n    return 1\n",
+        "pkg/old.py": "def impl():\n    return 2\n",
+        "pkg/a.py": binding + "\n\ndef use():\n    return impl()\n",
+        "tests/__init__.py": "",
+        "tests/test_a.py": "from pkg.a import use\n\n\ndef test_use():\n    use()\n",
+        "tests/test_other.py": "def test_other():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench.py": "from pkg.a import use\n\n\ndef time_use():\n    use()\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/new.py": "def impl():\n    return 10\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_a.py::test_use", "bench.time_use"}
+    assert "tests/test_other.py::test_other" in unselected(plan)
+
+
+# I2: a name rebound by any form is no longer the literal it was bound to.
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "def use():\n    name = 'fast'\n    name += '_path'\n    return getattr(impls, name)()\n",
+        "def use():\n    name = 'fast'\n    if (name := name + '_path'):\n"
+        "        return getattr(impls, name)()\n",
+        "def use():\n    name = 'fast'\n    name, _ = name + '_path', 1\n"
+        "    return getattr(impls, name)()\n",
+        "def use():\n    name = 'fast'\n\n    def grow():\n        nonlocal name\n"
+        "        name += '_path'\n\n    grow()\n    return getattr(impls, name)()\n",
+        "NAME = 'fast'\nNAME += '_path'\n\n\ndef use():\n    return getattr(impls, NAME)()\n",
+        "NAME = 'fast'\n\n\ndef grow():\n    global NAME\n    NAME = NAME + '_path'\n\n\n"
+        "grow()\n\n\ndef use():\n    return getattr(impls, NAME)()\n",
+    ],
+)
+def test_i2_a_rebound_name_is_not_bounded_by_its_first_literal(repo, use):
+    base = repo.commit(
+        {
+            "asv.conf.json": ASV_CONF,
+            "pkg/__init__.py": "",
+            "pkg/impls.py": "def fast():\n    return 1\n\n\ndef fast_path():\n    return 2\n",
+            "pkg/a.py": "from pkg import impls\n\n\n" + use,
+            "pkg/b.py": "def other():\n    return 3\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg.a import use\n\n\ndef test_use():\n    use()\n",
+            "tests/test_b.py": "from pkg.b import other\n\n\ndef test_other():\n    other()\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    impls = "def fast():\n    return 1\n\n\ndef fast_path():\n    return 20\n"
+    head = repo.commit({"pkg/impls.py": impls})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_use" in selected(plan)
+    assert {"tests/test_b.py::test_other", "bench.time_noop"} <= unselected(plan)
+
+
+# I3: moving or reordering imports changes what runs at import.
+
+PLUGIN = {
+    "asv.conf.json": ASV_CONF,
+    "pkg/__init__.py": "",
+    "pkg/registry.py": "HANDLERS = {}\n",
+    "pkg/plugin.py": "from pkg.registry import HANDLERS\n\nHANDLERS['p'] = 1\n",
+    "pkg/other.py": "def g():\n    return 2\n",
+    "pkg/extra.py": "E = 1\n",
+    "tests/__init__.py": "",
+    "tests/test_a.py": (
+        "import pkg.a\nfrom pkg.registry import HANDLERS\n\n\n"
+        "def test_use():\n    assert HANDLERS['p'] == 1\n"
+    ),
+    "tests/test_other.py": "from pkg.other import g\n\n\ndef test_other():\n    g()\n",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench.py": "def time_noop():\n    pass\n",
+}
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        # Into an existing ``if TYPE_CHECKING:`` block: never runs any more.
+        (
+            "from typing import TYPE_CHECKING\n\nimport pkg.plugin\n\n"
+            "if TYPE_CHECKING:\n    import pkg.extra\n",
+            "from typing import TYPE_CHECKING\n\n"
+            "if TYPE_CHECKING:\n    import pkg.extra\n    import pkg.plugin\n",
+        ),
+        # Into an ``except`` branch: runs only when the ``try`` fails.
+        (
+            "import pkg.plugin\n\ntry:\n    import pkg.other\n"
+            "except ImportError:\n    import pkg.extra\n",
+            "try:\n    import pkg.other\n"
+            "except ImportError:\n    import pkg.extra\n    import pkg.plugin\n",
+        ),
+    ],
+)
+def test_i3_moving_an_import_is_a_change(repo, before, after):
+    base = repo.commit({**PLUGIN, "pkg/a.py": before})
+    head = repo.commit({"pkg/a.py": after})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_use" in selected(plan)
+    assert "bench.time_noop" in unselected(plan)
+
+
+def test_i3_reordering_imports_is_a_definition_change(repo):
+    base = repo.commit({**PLUGIN, "pkg/a.py": "import pkg.plugin\nimport pkg.other\n"})
+    head = repo.commit({"pkg/a.py": "import pkg.other\nimport pkg.plugin\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert [(c.id, c.changes) for c in plan.changes] == [("pkg.a", ("definition_changed",))]
+
+
+def test_i3_adding_an_import_elsewhere_is_still_only_an_addition(repo):
+    base = repo.commit({**PLUGIN, "pkg/a.py": "import pkg.plugin\n"})
+    head = repo.commit({"pkg/a.py": "import pkg.plugin\nimport pkg.registry\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert [(c.id, c.changes) for c in plan.changes] == [("pkg.a", ("imports_added",))]
+    assert selected(plan) == set()
+
+
+# I4: an import in a class body runs at import too.
+
+
+def test_i4_an_import_in_a_class_body_reaches_the_importers(repo):
+    base = repo.commit(
+        {
+            **PLUGIN,
+            "pkg/plugin.py": "X = 1\n",
+            "pkg/a.py": "class A:\n    import pkg.plugin\n",
+            "tests/test_a.py": "import pkg.a\n\n\ndef test_use():\n    pass\n",
+        }
+    )
+    head = repo.commit({"pkg/plugin.py": "raise RuntimeError('broken')\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_use" in selected(plan)
+    assert {"tests/test_other.py::test_other", "bench.time_noop"} <= unselected(plan)
+
+
+# I5: a module __getattr__ serves the names the module does not bind.
+
+
+def test_i5_a_name_served_by_module_getattr_reaches_its_users(repo):
+    base = repo.commit(
+        {
+            "asv.conf.json": ASV_CONF,
+            "pkg/__init__.py": (
+                "import importlib\n\n\ndef __getattr__(name):\n"
+                "    if name == 'thing':\n"
+                "        return importlib.import_module('pkg._impl').real\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "pkg/_impl.py": "def real():\n    return 1\n",
+            "pkg/other.py": "def g():\n    return 2\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg import thing\n\n\ndef test_use():\n    thing()\n",
+            "tests/test_other.py": "from pkg.other import g\n\n\ndef test_other():\n    g()\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    head = repo.commit({"pkg/_impl.py": "def real():\n    return 10\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_use" in selected(plan)
+    assert {"tests/test_other.py::test_other", "bench.time_noop"} <= unselected(plan)
+
+
+# I6: a relative import above the top-level package is unknown, not external.
+
+
+def test_i6_a_relative_import_above_the_package_is_unbounded(repo):
+    """With the root ``tests`` while ``tests/__init__.py`` exists, the test
+    module is ``test_x`` here but ``tests.test_x`` at runtime: what
+    ``from . import helpers`` imports is not known."""
+    base = repo.commit(
+        {
+            "tests/__init__.py": "",
+            "tests/helpers.py": "def make():\n    return 1\n",
+            "tests/test_x.py": (
+                "from . import helpers\n\n\ndef test_use():\n    assert helpers.make() == 1\n"
+            ),
+            "tests/bench_x.py": "def time_noop():\n    pass\n",
+        }
+    )
+    head = repo.commit({"tests/helpers.py": "def make():\n    return 2\n"})
+    targets = [
+        py_target("tests/test_x.py::test_use", "test_x.test_use", "test_x"),
+        asv_target("bench_x.time_noop", "bench_x.time_noop"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["tests"])
+    assert selected(plan) == {"tests/test_x.py::test_use"}
+
+
+# I7: a module variable's annotation runs at import.
+
+
+def test_i7_a_module_variable_annotation_change_runs_at_import(repo):
+    base = repo.commit(
+        {
+            "asv.conf.json": ASV_CONF,
+            "pkg/__init__.py": "",
+            "pkg/check.py": (
+                "def check(n):\n    if n > 1:\n        raise ValueError(n)\n    return int\n"
+            ),
+            "pkg/a.py": "from pkg.check import check\n\nX: check(1) = 3\n",
+            "pkg/b.py": "def g():\n    return 2\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "import pkg.a\n\n\ndef test_a():\n    pass\n",
+            "tests/test_b.py": "from pkg.b import g\n\n\ndef test_b():\n    g()\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "def time_noop():\n    pass\n",
+        }
+    )
+    head = repo.commit({"pkg/a.py": "from pkg.check import check\n\nX: check(2) = 3\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_a.py::test_a" in selected(plan)
+    assert {"tests/test_b.py::test_b", "bench.time_noop"} <= unselected(plan)
+
+
+CONSTANT = (
+    "TIMEOUT: int = {}\n\n\ndef read():\n    return TIMEOUT\n\n\ndef other():\n    return 1\n"
+)
+
+
+def test_i7_a_value_change_of_an_annotated_constant_reaches_only_its_readers(repo):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": CONSTANT.format(30),
+            "tests/__init__.py": "",
+            "tests/test_read.py": "from pkg.a import read\n\n\ndef test_read():\n    read()\n",
+            "tests/test_other.py": "from pkg.a import other\n\n\ndef test_other():\n    other()\n",
+        }
+    )
+    head = repo.commit({"pkg/a.py": CONSTANT.format(31)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_read.py::test_read"}
+
+
+# I8: a cached index reports errors under the revision as spelt this time.
+
+
+def test_i8_cached_errors_name_the_revision_as_given(repo, tmp_path):
+    from diffcone.cache import IndexCache
+    from diffcone.planner import plan
+    from diffcone.report import to_dict
+
+    repo.commit({"pkg/__init__.py": "", "pkg/bad.py": "def f(:\n"})
+    repo.git("tag", "v1")
+    sha = repo.git("rev-parse", "HEAD").strip()
+    head = repo.commit({"pkg/ok.py": "X = 1\n"})
+    cache = IndexCache(tmp_path / "cache")
+    plan(repo.path, "v1", head, None, cache=cache)  # stores the index under v1's spelling
+    cached = to_dict(plan(repo.path, sha, head, None, cache=cache))
+    fresh = to_dict(plan(repo.path, sha, head, None))
+    assert cached["analysis_errors"] == fresh["analysis_errors"]

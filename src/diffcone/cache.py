@@ -45,7 +45,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 21  # 21: docstrings that code runs or reads
+INDEX_FORMAT = 22  # 22: import layout; 21: docstrings that code runs or reads
 
 
 def _indexer_fingerprint() -> str:
@@ -115,6 +115,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         s = dict(s)
         s["line_ranges"] = tuple(tuple(r) for r in s["line_ranges"])
         s["imports"] = tuple(s["imports"])
+        s["import_layout"] = tuple(s["import_layout"])
         symbol = Symbol(**s)
         symbols[symbol.id] = symbol
     return SourceIndex(

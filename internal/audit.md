@@ -36,14 +36,14 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 
 | id | finding | status |
 |---|---|---|
-| I1 | A module-level name bound more than once (`if/else` or `try/except` imports, a def plus a fallback import) resolves to one binding; changes to the other are invisible. | open |
-| I2 | Literal-string tracking misses rebinding (`+=`, walrus, `with ... as`, tuple unpacking, `nonlocal`, module `NAME += ...`, `global NAME` assigned in a function), so `getattr`/`import_module` are bounded to a stale name. | open |
-| I3 | Moving or reordering imports is not detected (imports are stripped from body hashes and kept as an unordered set): moving `import pkg.plugin` under `if TYPE_CHECKING:` changes nothing. | open |
-| I4 | Imports in a class body create no import edge. | open |
-| I5 | A module-level `__getattr__` (PEP 562 lazy loading) has no dependents: `from pkg import thing` served by it is bounded by name only. | open |
-| I6 | A relative import above the top-level package resolves to module `""` and is recorded as external, not unresolved. | open |
-| I7 | A module-level variable's annotation is not hashed (evaluated at import without `from __future__ import annotations`). | open |
-| I8 | A cached whole index keeps the revision spelling first used in `errors[].revision` (cached and uncached reports differ). | open |
+| I1 | A module-level name bound more than once (`if/else` or `try/except` imports, a def plus a fallback import) resolves to one binding; changes to the other are invisible. | fixed (indexer batch) |
+| I2 | Literal-string tracking misses rebinding (`+=`, walrus, `with ... as`, tuple unpacking, `nonlocal`, module `NAME += ...`, `global NAME` assigned in a function), so `getattr`/`import_module` are bounded to a stale name. | fixed (indexer batch) |
+| I3 | Moving or reordering imports is not detected (imports are stripped from body hashes and kept as an unordered set): moving `import pkg.plugin` under `if TYPE_CHECKING:` changes nothing. | fixed (indexer batch) |
+| I4 | Imports in a class body create no import edge. | fixed (indexer batch) |
+| I5 | A module-level `__getattr__` (PEP 562 lazy loading) has no dependents: `from pkg import thing` served by it is bounded by name only. | fixed (indexer batch) |
+| I6 | A relative import above the top-level package resolves to module `""` and is recorded as external, not unresolved. | fixed (indexer batch) |
+| I7 | A module-level variable's annotation is not hashed (evaluated at import without `from __future__ import annotations`). | fixed (indexer batch) |
+| I8 | A cached whole index keeps the revision spelling first used in `errors[].revision` (cached and uncached reports differ). | fixed (indexer batch) |
 
 ## Discovery (D)
 

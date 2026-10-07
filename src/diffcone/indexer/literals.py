@@ -150,27 +150,43 @@ def _collect_literal_bindings(
     def unbind(name: str) -> None:
         found[name] = found[name + INDEXED] = None
 
+    # Name stores the forms below bind; every other store of a name
+    # (``+=``, walrus, ``with ... as``, unpacking, ``except ... as``, an
+    # import, a match capture, ``global``/``nonlocal``) leaves it unbounded.
+    handled: set[int] = set()
+
     # Source order matters: ``names = {...}`` must be seen before the loop
     # that iterates it, so children are pushed reversed onto the LIFO stack.
     stack: list[ast.AST] = list(reversed(list(ast.iter_child_nodes(node))))
     while stack:
         n = stack.pop()
         if isinstance(n, NESTED_SCOPES):
+            # Not entered, but it may rebind names of this scope: ``nonlocal``
+            # or ``global`` declarations, a walrus inside a comprehension.
+            for inner in ast.walk(n):
+                if isinstance(inner, (ast.Global, ast.Nonlocal)):
+                    for name in inner.names:
+                        unbind(name)
+                elif isinstance(inner, ast.NamedExpr) and isinstance(inner.target, ast.Name):
+                    unbind(inner.target.id)
             continue
         if isinstance(n, ast.Assign):
             values = _string_candidates(n.value, found, module_literals)
             items = _indexed(n.value, found, module_literals)
             for target in n.targets:
                 if isinstance(target, ast.Name):
+                    handled.add(id(target))
                     bind(target.id, values, items)
         elif isinstance(n, ast.AnnAssign) and n.value is not None:
             if isinstance(n.target, ast.Name):
+                handled.add(id(n.target))
                 bind(
                     n.target.id,
                     _string_candidates(n.value, found, module_literals),
                     _indexed(n.value, found, module_literals),
                 )
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
+            handled.add(id(n.target))
             bind(n.target.id, _string_candidates(n.iter, found, module_literals))
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Tuple):
             # ``for key, value in D.items()``: over a dict display both the
@@ -183,10 +199,27 @@ def _collect_literal_bindings(
                 items = _indexed(receiver, found, module_literals)
             for i, elt in enumerate(elts):
                 if isinstance(elt, ast.Name):
+                    handled.add(id(elt))
                     bind(elt.id, keys if i == 0 else items)
-        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            if id(n) not in handled:
+                unbind(n.id)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Del):
+            # ``del name`` binds no new value (a later read fails): it only
+            # leaves a name that had no binding yet unbounded.
             if n.id not in found:
                 unbind(n.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            unbind(n.name)
+        elif isinstance(n, ast.alias):
+            unbind(n.asname or n.name.split(".")[0])
+        elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name:
+            unbind(n.name)
+        elif isinstance(n, ast.MatchMapping) and n.rest:
+            unbind(n.rest)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            for name in n.names:
+                unbind(name)
         elif (mutated := _mutated_name(n)) is not None:
             # ``d[k] = v`` / ``d.append(x)``: the literal is not what it was.
             unbind(mutated)
@@ -285,7 +318,8 @@ def _collect_store_names(stmt: ast.AST) -> set[str]:
 class _LocalBindings(ast.NodeVisitor):
     """Collect the names a function, lambda or class body binds in its own
     scope. Nested functions, lambdas and comprehensions get their own scope;
-    only their names (for defs) are bound here. ``global`` names are excluded.
+    only their names (for defs) are bound here. ``global`` and ``nonlocal``
+    names are excluded.
     """
 
     def __init__(self) -> None:
@@ -331,6 +365,9 @@ class _LocalBindings(ast.NodeVisitor):
 
     def visit_Global(self, node: ast.Global) -> None:
         self.globals.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.globals.update(node.names)  # the enclosing function's, not local
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:

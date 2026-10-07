@@ -32,6 +32,7 @@ from diffcone.indexer.scopes import (
     Scope,
     Unresolved,
     _absolute_module,
+    relative_import_escapes,
 )
 from diffcone.indexer.symbols import FirstPass
 from diffcone.indexer.syntax import (
@@ -50,6 +51,7 @@ from diffcone.model import (
     MODULE,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
+    UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME,
     VARIABLE,
     Edge,
@@ -57,6 +59,37 @@ from diffcone.model import (
     Symbol,
     UnresolvedReference,
 )
+
+
+def _with_alternatives(bindings: list[Node]) -> Node:
+    """The node for a name bound several ways at module level: the first
+    binding (a definition, else the last import), carrying the in-scope
+    symbols and modules of the others as alternatives. When the first one
+    names nothing in scope (an external fallback tried first) an in-scope
+    alternative takes its place, so the reference is not merely external."""
+    in_scope: list[str] = []
+    for node in bindings:
+        if isinstance(node, Resolved):
+            in_scope.append(node.symbol)
+        elif isinstance(node, ModuleNode):
+            in_scope.append(node.module)
+    primary = bindings[0]
+    if not isinstance(primary, (Resolved, ModuleNode)):
+        primary = next((b for b in bindings if isinstance(b, Resolved)), primary)
+    if not isinstance(primary, Resolved):
+        return primary
+    others = tuple(dict.fromkeys(i for i in in_scope if i != primary.symbol))
+    if not others:
+        return primary
+    return Resolved(
+        primary.symbol,
+        primary.detail,
+        primary.uncertain_attr,
+        primary.receiver,
+        primary.overrides,
+        primary.also,
+        others,
+    )
 
 
 class Resolver(FirstPass):
@@ -396,6 +429,13 @@ class Resolver(FirstPass):
                     for inner in stmt.body:
                         if not isinstance(inner, DEF_NODES):
                             collector.visit(inner)
+                # An import in the class body runs when the class is created,
+                # at import: the class and the module depend on the imported
+                # module's import-time code, as for a module-level import.
+                for inner in iter_scope_statements(stmt.body):
+                    if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                        for source in (symbol_id, scope.name):
+                            self._import_edges(source, scope, inner, local=True)
                 attributes = _class_attributes(stmt)
                 previous = self.out.class_attributes.get(symbol_id)
                 if previous is not None:  # a conditional second definition
@@ -517,6 +557,18 @@ class Resolver(FirstPass):
             for alias in node.names:
                 self._module_import_edge(source, alias.name)
         elif isinstance(node, ast.ImportFrom):
+            if relative_import_escapes(scope.name, scope.is_package, node.level):
+                written = "." * node.level + (node.module or "")
+                self.out.unresolved.add(
+                    UnresolvedReference(
+                        source,
+                        UNRESOLVED_DYNAMIC,
+                        written,
+                        f"import from {written}: above the top-level package of {scope.name} "
+                        "(check the source roots)",
+                    )
+                )
+                return
             base = _absolute_module(scope, node.module, node.level)
             self._module_import_edge(source, base)
             if not self._module_in_scope(base):
@@ -576,10 +628,18 @@ class Resolver(FirstPass):
         consulted before an external star import is blamed, so an in-scope
         symbol is never misattributed to a third-party package.
         """
-        if name in target.members:
-            return Resolved(target.members[name])
-        if name in target.imports:
-            return self._import_binding_node(target.imports[name])
+        if name in target.members or name in target.imports:
+            # Every binding of the name: a definition beside an import of the
+            # same name (a fallback), and imports one of which overwrites
+            # another in a try/except or if/else.
+            bindings: list[Node] = []
+            if name in target.members:
+                bindings.append(Resolved(target.members[name]))
+            if name in target.imports:
+                bindings.append(self._import_binding_node(target.imports[name]))
+            for binding in target.alt_imports.get(name, ()):
+                bindings.append(self._import_binding_node(binding))
+            return _with_alternatives(bindings)
         if name in target.variables:
             return Resolved(target.variables[name])
         if name in target.bindings:
@@ -604,6 +664,10 @@ class Resolver(FirstPass):
         return External(external) if external is not None else None
 
     def _import_binding_node(self, binding: ImportBinding) -> Node:
+        if not binding.module:
+            # Bound by a relative import above the top-level package (see
+            # _import_edges, which records the import as unbounded).
+            return Unresolved(UNRESOLVED_ATTRIBUTE, binding.attr or "")
         if not self._module_in_scope(binding.module):
             if self._module_in_scope(binding.module.split(".")[0]):
                 # ``pkg.missing`` inside an analysed package: not an external
@@ -653,6 +717,13 @@ class Resolver(FirstPass):
             if target is None:
                 return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
             found = self._lookup_in_module(target, attr, set())
+            if found is None or isinstance(found, Unresolved):
+                lazy = target.members.get("__getattr__")
+                if lazy is not None:
+                    # PEP 562: a module ``__getattr__`` serves names the module
+                    # does not bind (lazy loading): the reference depends on it,
+                    # and stays bounded by the name for what it hands back.
+                    return Resolved(lazy, uncertain_attr=attr)
             return found if found is not None else Unresolved(UNRESOLVED_ATTRIBUTE, attr)
         if isinstance(node, External):
             return node
@@ -762,6 +833,9 @@ class Resolver(FirstPass):
             for module in node.also:
                 if module != source:
                     self.out.edges.add(Edge(source, module, kind, "module"))
+            for other in node.alternatives:
+                if other != source:
+                    self.out.edges.add(Edge(source, other, kind, "alternative binding"))
             if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 for hook in ("__init__", "__new__"):

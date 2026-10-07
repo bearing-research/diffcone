@@ -13,6 +13,7 @@ from diffcone.indexer.definitions import (
     _flatten_chain,
     _future_annotations,
     _has_annotations,
+    _import_layout,
     _inert_def,
     _is_inert_decorator,
     _is_literal,
@@ -106,7 +107,9 @@ class FirstPass(IndexerState):
         scope.import_nodes = [s for s in stmts if isinstance(s, (ast.Import, ast.ImportFrom))]
         if register_imports:
             for node in scope.import_nodes:
-                self._register_imports(scope, node, scope.imports, scope.star_imports)
+                self._register_imports(
+                    scope, node, scope.imports, scope.star_imports, scope.alt_imports
+                )
         body = _split_docstring(scope.tree.body)[1]
         return stmts, body, _variable_statements(scope, body)
 
@@ -119,6 +122,7 @@ class FirstPass(IndexerState):
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
         scope.mutations = frozenset(_module_mutations(scope.tree))
         imports = tuple(sorted(_canonical_imports(scope)))
+        layout = _import_layout(scope)
         # A variable statement is its own symbol, so it leaves the module's
         # body hash; one rebinding a def or class name (``helper = 3`` after
         # ``def helper``) is not a variable symbol and stays in it.
@@ -143,10 +147,11 @@ class FirstPass(IndexerState):
                 lineno=1,
                 body_hash=module_body_hash,
                 docstring_hash=module_doc_hash,
-                definition_hash=_digest("\n".join(imports)),
+                definition_hash=_digest("\n".join(imports) + "|layout|" + "\n".join(layout)),
                 container=None,
                 line_ranges=((1, _end_line(scope.tree)),),
                 imports=imports,
+                import_layout=layout,
                 reads_docstrings=module_reads_doc,
             )
         )
@@ -180,6 +185,14 @@ class FirstPass(IndexerState):
                 path=scope.path,
                 lineno=stmt.lineno,
                 body_hash=hash_nodes([value, *mutators.get(name, [])]),
+                # An annotation is evaluated at import unless deferred: a
+                # change to it is a definition change (see classify).
+                annotation_hash=(
+                    _digest(hash_nodes([stmt.annotation]))
+                    if isinstance(stmt, ast.AnnAssign)
+                    else ""
+                ),
+                deferred_annotations=_future_annotations(scope),
                 definition_hash="",
                 container=scope.name,
                 line_ranges=tuple(
@@ -203,20 +216,28 @@ class FirstPass(IndexerState):
         node: ast.stmt,
         table: dict[str, ImportBinding],
         stars: list[str],
+        alternatives: dict[str, list[ImportBinding]] | None = None,
     ) -> None:
+        def bind(name: str, binding: ImportBinding) -> None:
+            previous = table.get(name)
+            if alternatives is not None and previous is not None and previous != binding:
+                if previous not in alternatives.setdefault(name, []):
+                    alternatives[name].append(previous)
+            table[name] = binding
+
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.asname:
-                    table[alias.asname] = ImportBinding(alias.name, None)
+                    bind(alias.asname, ImportBinding(alias.name, None))
                 else:
-                    table[alias.name.split(".")[0]] = ImportBinding(alias.name.split(".")[0], None)
+                    bind(alias.name.split(".")[0], ImportBinding(alias.name.split(".")[0], None))
         elif isinstance(node, ast.ImportFrom):
             base = _absolute_module(scope, node.module, node.level)
             for alias in node.names:
                 if alias.name == "*":
                     stars.append(base)
                 else:
-                    table[alias.asname or alias.name] = ImportBinding(base, alias.name)
+                    bind(alias.asname or alias.name, ImportBinding(base, alias.name))
 
     def _index_definitions(
         self,

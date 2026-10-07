@@ -82,6 +82,13 @@ def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str,
     return {source: frozenset(sig) for source, sig in grouped.items()}
 
 
+def _is_subsequence(before: tuple[str, ...], after: tuple[str, ...]) -> bool:
+    """Whether ``after`` is ``before`` with entries inserted: every import
+    kept its block and its order relative to the others."""
+    remaining = iter(after)
+    return all(entry in remaining for entry in before)
+
+
 def _import_closures(index: SourceIndex) -> dict[str, set[str]]:
     """Each module's transitive import closure (itself included)."""
     imports: dict[str, set[str]] = defaultdict(set)
@@ -160,7 +167,11 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         if b.kind != h.kind:
             kinds.append(DEFINITION_CHANGED)
         elif b.definition_hash != h.definition_hash:
-            if b.kind == MODULE and set(b.imports) <= set(h.imports):
+            if (
+                b.kind == MODULE
+                and set(b.imports) <= set(h.imports)
+                and _is_subsequence(b.import_layout, h.import_layout)
+            ):
                 kinds.append(IMPORTS_ADDED)
             else:
                 kinds.append(DEFINITION_CHANGED)

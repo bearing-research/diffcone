@@ -62,6 +62,11 @@ class ModuleScope:
     # tree is parsed on demand only when the module must be re-resolved.
     tree: ast.Module | None
     imports: dict[str, ImportBinding] = field(default_factory=dict)
+    # Other import bindings of a name ``imports`` holds the last one of
+    # (``try: from a import f`` / ``except ImportError: from b import f``,
+    # ``if``/``else`` imports): which one is live is not known statically,
+    # so a reference to the name depends on every one.
+    alt_imports: dict[str, list[ImportBinding]] = field(default_factory=dict)
     star_imports: list[str] = field(default_factory=list)
     bindings: set[str] = field(default_factory=set)
     members: dict[str, str] = field(default_factory=dict)
@@ -157,6 +162,9 @@ class Resolved:
     # Modules the name may also denote: ``pkg.retry`` when ``pkg`` binds
     # ``retry`` and has a submodule ``retry`` (see member_symbol_id).
     also: tuple[str, ...] = ()
+    # Other symbols or modules the name may be bound to (see
+    # ModuleScope.alt_imports): each is a dependency as well.
+    alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,6 +207,19 @@ def resolve_relative_module(current: str, is_package: bool, module: str | None, 
     if module:
         return f"{base}.{module}" if base else module
     return base
+
+
+def relative_import_escapes(current: str, is_package: bool, level: int) -> bool:
+    """Whether ``from <'.' * level>... import`` climbs above the top-level
+    package of ``current``: at runtime that is an error, or the module has
+    another name there than its source root gives it (``tests/__init__.py``
+    exists but the root is ``tests``). Either way what it imports is unknown."""
+    if level == 0:
+        return False
+    parts = current.split(".") if current else []
+    if not is_package:
+        parts = parts[:-1]
+    return len(parts) < level
 
 
 def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) -> str:

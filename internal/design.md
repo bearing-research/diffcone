@@ -127,8 +127,8 @@ whitespace, comments and positions never matter.
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
-| variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | (none) |
-| module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
+| variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | the annotation, hashed apart: a change to it is `definition_changed` and runs at import unless the module defers annotations |
+| module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping, plus their layout: each binding with the blocks it sits in, in order. Only a pure insertion is `imports_added`; moving an import (under `if TYPE_CHECKING:`, into an `except`) or reordering imports is a definition change |
 
 The docstring is excluded from every body hash and hashed on its own:
 a docstring-only edit is reported as `docstring_changed` and carries no
@@ -156,7 +156,7 @@ blocks are still symbols and are excluded from their scope's body hash.
 | `references` | function/class/module → symbol | resolved name or attribute chain; `detail` is `attribute:NAME` when the reference resolves to a module- or class-level variable (the module/class symbol stands in for it) or `module` when a module object itself is referenced |
 | `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, so readers of the variable depend on its writers |
 | `defined_in` | member → container | every class, function and method |
-| `imports` | module or function → module | `import m`, `from m import sub`, `importlib.import_module("m")` |
+| `imports` | module, class or function → module | `import m`, `from m import sub`, `importlib.import_module("m")`; an import in a class body gives the class and its module the edge, as it runs when the class is created |
 | `imports_name` | module → symbol | module-level `from m import name` |
 | `entry` | target → symbol | manifest |
 | `lifecycle` | target → symbol | manifest; the lifecycle dependencies the same target had at the base are added to the head target's (a fixture, conftest or setup it used before the change still counts); a target whose manifest does not list its entry's module also reaches that module, after the search, as the runner imports it |
@@ -186,6 +186,15 @@ A name or dotted chain `a.b.c` is resolved from its base:
    relative forms). Absolute module names are resolved against the snapshot;
    modules outside the source roots are *external* (recorded, not edges).
    A missing submodule of an analysed package is *unresolved*, not external.
+   A name bound several ways at module level (a definition and a fallback
+   import, imports in `try`/`except` or `if`/`else` branches) depends on
+   every binding: the first (the definition, else the last import) resolves
+   the name and the in-scope others get `references` edges too
+   (`alternative binding`), since which one is live is not known
+   statically. A relative import climbing above the top-level package
+   (often a source root that names the module differently from runtime,
+   `tests/__init__.py` under the root `tests`) is recorded as an unbounded
+   dynamic import, not an external one.
 6. A module-level variable → its `variable` symbol when it is a simple
    top-level assignment bound once (its right-hand side's references are
    the variable's edges, so an alias `ib = attrib` depends on `attrib`);
@@ -199,7 +208,9 @@ A name or dotted chain `a.b.c` is resolved from its base:
 9. Anything else → unresolved bare name.
 
 Attribute steps walk from module to submodule, module member, module
-variable or star-imported name; from class to method, nested class or class
+variable or star-imported name, and, for a name the module does not bind,
+to the module's own `__getattr__` (PEP 562 lazy loading) when it defines
+one, keeping an unresolved reference bounded by the name beside the edge; from class to method, nested class or class
 variable, searching the class and then its bases in MRO order. Base names
 are resolved where the class statement executes: the enclosing class body
 for a nested class, then the module. Bases are resolved on demand (a dotted
@@ -294,7 +305,11 @@ place (a `REGISTRY = {}` that any module fills with `REGISTRY[k] = v`, an
 `append`, an `update` or a `del` is not the literal it was assigned, in
 the scope that mutates it and everywhere the variable is visible), or a
 `for` variable iterating over one
-(`for attr in ("body", "orelse"): getattr(stmt, attr)`). Each candidate is
+(`for attr in ("body", "orelse"): getattr(stmt, attr)`). Any other store of
+such a name makes it unbounded: `+=`, a walrus (also one inside a
+comprehension), `with ... as`, tuple unpacking, `except ... as`, an import,
+a match capture, and a `global` or `nonlocal` declaration in the scope or in
+a function nested in it. Each candidate is
 resolved like `x.<candidate>` or an import. A string built at runtime with a
 literal prefix (`f"attr.{name}"`, `"attr." + name`, `"attr.%s" % name`,
 `"attr.{}".format(name)`) bounds the candidates to what carries that

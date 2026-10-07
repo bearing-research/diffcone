@@ -28,6 +28,47 @@ def _canonical_imports(scope: ModuleScope) -> set[str]:
     return out
 
 
+def _import_layout(scope: ModuleScope) -> tuple[str, ...]:
+    """Each module-level import binding, in source order, prefixed with the
+    blocks it sits in (``if <test>``, ``try``, ``except``, ``else``, ...):
+    what runs at import depends on where an import is, not only on which
+    names are bound."""
+    assert scope.tree is not None
+    out: list[str] = []
+
+    def walk(body: list[ast.stmt], context: str) -> None:
+        for stmt in body:
+            if isinstance(stmt, DEF_NODES):
+                continue
+            if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                for entry in _import_entries(scope, stmt):
+                    out.append(f"{context}|{entry}")
+                continue
+            label = type(stmt).__name__
+            if isinstance(stmt, (ast.If, ast.While)):
+                label += f"({ast.unparse(stmt.test)})"
+            for attr in ("body", "orelse", "finalbody"):
+                child = getattr(stmt, attr, None)
+                if isinstance(child, list) and child:
+                    walk(child, f"{context}/{label}.{attr}")
+            for i, handler in enumerate(getattr(stmt, "handlers", []) or []):
+                walk(handler.body, f"{context}/{label}.except{i}")
+            for i, case in enumerate(getattr(stmt, "cases", []) or []):
+                walk(case.body, f"{context}/{label}.case{i}")
+
+    walk(scope.tree.body, "")
+    return tuple(out)
+
+
+def _import_entries(scope: ModuleScope, node: ast.Import | ast.ImportFrom) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [f"import {a.name}" + (f" as {a.asname}" if a.asname else "") for a in node.names]
+    base = _absolute_module(scope, node.module, node.level)
+    return [
+        f"from {base} import {a.name}" + (f" as {a.asname}" if a.asname else "") for a in node.names
+    ]
+
+
 def _class_attributes(node: ast.ClassDef) -> dict[str, str]:
     """Each name a class body binds by plain assignment, with a hash of the
     statements binding it; every other non-definition statement (a loop, a

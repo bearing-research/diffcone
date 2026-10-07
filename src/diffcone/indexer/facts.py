@@ -317,6 +317,9 @@ def _facts_to_dict(
     the environment fingerprint that keys second-pass outputs."""
     record = {
         "imports": {k: [b.module, b.attr] for k, b in scope.imports.items()},
+        "alt_imports": {
+            k: [[b.module, b.attr] for b in v] for k, v in sorted(scope.alt_imports.items())
+        },
         "star_imports": list(scope.star_imports),
         "bindings": sorted(scope.bindings),
         "members": dict(scope.members),
@@ -343,6 +346,7 @@ def _facts_to_dict(
     env = [
         scope.name,
         record["imports"],
+        record["alt_imports"],
         record["star_imports"],
         record["bindings"],
         record["members"],

@@ -371,7 +371,10 @@ def _runs_at_import(change: SymbolChange) -> bool:
     if symbol.kind in (MODULE, CLASS):
         return True
     if symbol.kind == VARIABLE:
-        # Binding a literal runs nothing; a computed value does.
+        # Binding a literal runs nothing; a computed value does, and so does
+        # an eagerly evaluated annotation that changed (definition_changed).
+        if DEFINITION_CHANGED in change.changes:
+            return True
         return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
     if not {ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes):
         return False
@@ -1034,7 +1037,11 @@ def _index_snapshot(
                     revision=revision,
                     description=commit_description(commit, revision),
                 )
-                cached = replace(cached, snapshot=info)
+                cached = replace(
+                    cached,
+                    snapshot=info,
+                    errors=[replace(e, revision=revision) for e in cached.errors],
+                )
                 return cached, None
     snapshot = read_snapshot(repo_path, revision, roots, with_config=with_config)
     index = build_index(snapshot, module_cache=cache.modules if cache is not None else None)

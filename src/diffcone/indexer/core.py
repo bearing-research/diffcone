@@ -173,6 +173,9 @@ class Indexer(DynamicBounds):
         is stored, so a malformed record (which raises) or one whose symbols
         collide with an earlier module's (returns False) leaves no trace."""
         imports = {k: ImportBinding(m, a) for k, (m, a) in record["imports"].items()}
+        alt_imports = {
+            k: [ImportBinding(m, a) for m, a in v] for k, v in record["alt_imports"].items()
+        }
         star_imports = list(record["star_imports"])
         bindings = set(record["bindings"])
         members = dict(record["members"])
@@ -185,6 +188,7 @@ class Indexer(DynamicBounds):
             data = dict(data)
             data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
             data["imports"] = tuple(data["imports"])
+            data["import_layout"] = tuple(data["import_layout"])
             symbols.append(Symbol(**data))
         classes: dict[str, ClassScope] = {}
         for data in record["classes"]:
@@ -208,6 +212,7 @@ class Indexer(DynamicBounds):
             if symbol_id != self._member_id(scope.name, name):
                 return False
         scope.imports, scope.star_imports, scope.bindings = imports, star_imports, bindings
+        scope.alt_imports = alt_imports
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
         scope.mutations = mutations
         scope.env_digest = env_digest
