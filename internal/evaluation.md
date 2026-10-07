@@ -1373,6 +1373,27 @@ oracle scripts and a corpus sample were run again on the final code:
   (older flask and rich commits) are errors, now labelled ERRORS rather
   than MISSES.
 
+## After the second audit round (2026-10-07)
+
+Round 2 (internal/audit.md) fixed every finding, then the same checks ran
+again on the final code, in environments rebuilt from scratch:
+
+* `fixture_check.py` over the 42 census repositories and pandas (22 801
+  tests): no test uses a fixture its dependencies miss. build's
+  `globals()`-generated fixtures have no symbol; their users carry
+  `fixture:` placeholders and are always selected.
+* `collection_check.py` over the same: every collected test is a target,
+  except in the same six repositories as before (alembic, cattrs,
+  itsdangerous, pygments, pytest-asyncio, scrapy), each with
+  incomplete-discovery notes. Targets pytest did not collect come from
+  modules this environment skips wholesale (pandas's numba and pyarrow
+  tests, 2 407) or files that fail to collect without a plugin (scrapy, 3
+  146): over-selection.
+* `diffcone corpus` over the last 15 commits of flask, requests, rich,
+  pluggy, more-itertools and marshmallow: no outcome missed on any commit
+  validated (36 validated, 51 outcome changes). Older flask and rich
+  commits do not collect in today's environment and are errors.
+
 ## Are name-match selections worth their cost?
 
 The census attributes 9 % of selections to name matches alone, and the
