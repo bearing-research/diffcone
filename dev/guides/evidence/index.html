@@ -1095,7 +1095,10 @@ environment. diffcone itself can run on another Python version.</p>
 </div>
 <h2 id="record">Record<a class="headerlink" href="#record" title="Permanent link">&para;</a></h2>
 <p>From a clean checkout of a commit, run your suite under the recorder.
-Arguments after <code>--</code> are passed to pytest:</p>
+Arguments after <code>--</code> are passed to pytest. The examples use the default
+source root; for a <code>src</code> layout, add <code>--source-root src --source-root .</code>
+to every command here, <code>collect</code> included (a recording keeps its source
+roots, and plans must use the same ones):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone<span class="w"> </span>collect<span class="w"> </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
 <p>This writes a recording to <code>.diffcone/evidence/</code>: for each test, the

@@ -1172,9 +1172,12 @@
 
 <h1 id="commands">Commands<a class="headerlink" href="#commands" title="Permanent link">&para;</a></h1>
 <p>Every command and its options. <code>diffcone &lt;command&gt; --help</code> prints the same
-information. Wherever a command takes a snapshot (<code>--base</code>, <code>--head</code>,
-<code>--rev</code>), you can pass a git revision, <code>INDEX</code> (your staged changes) or
-<code>WORKTREE</code> (the files on disk).</p>
+information. <code>plan</code>, <code>run</code> and <code>discover</code> take a snapshot (<code>--base</code>,
+<code>--head</code>, <code>--rev</code>) as a git revision, <code>INDEX</code> (your staged changes) or
+<code>WORKTREE</code> (the files on disk); <code>validate</code> and <code>corpus</code> run your suite, so
+they take a revision or <code>WORKTREE</code>; <code>collect --rev</code> takes a revision. A
+revision the repository does not have is an error that names it (and says
+so when the clone is shallow).</p>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
 <p><code>plan</code> and <code>discover</code>:</p>
 <ul>
@@ -1200,7 +1203,9 @@ repository, and with <code>3</code> when discovery may be incomplete (unless
 <p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
 <code>1</code> when some were missed, <code>2</code> on errors. <code>check</code> exits <code>0</code> when every new
 failure of the full run was selected, <code>1</code> when the plan missed one, <code>2</code>
-when an input cannot be read.</p>
+when an input cannot be read. <code>collect</code>, <code>prune</code> and <code>evidence</code> exit <code>0</code>
+on success (<code>collect</code> records whatever the suite's own results) and <code>2</code> on
+errors.</p>
 <h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>
 <p>Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).</p>
 <p>Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.</p>
@@ -1258,7 +1263,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
 <td></td>
-<td>Write the result to this file instead of stdout.</td>
+<td>Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON).</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>
@@ -1369,7 +1374,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
 <td></td>
-<td>Write the result to this file instead of stdout.</td>
+<td>Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON).</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>
@@ -1470,7 +1475,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
 <td></td>
-<td>Write the result to this file instead of stdout.</td>
+<td>Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON).</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>
@@ -1581,7 +1586,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
 <td></td>
-<td>Write the result to this file instead of stdout.</td>
+<td>Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON).</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>
@@ -1815,7 +1820,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
 <td></td>
-<td>Write the result to this file instead of stdout.</td>
+<td>Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON).</td>
 </tr>
 <tr>
 <td><code>--no-cache</code></td>

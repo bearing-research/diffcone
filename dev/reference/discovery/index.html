@@ -1081,16 +1081,19 @@ each one understands.</p>
 <code>pytest.ini</code>, <code>.pytest.ini</code>, <code>pyproject.toml</code> (<code>[tool.pytest.ini_options]</code>
 or <code>[tool.pytest]</code>), <code>tox.ini</code> or <code>setup.cfg</code>, in pytest's order:
 <code>testpaths</code>,
-<code>python_files</code>, <code>python_classes</code>, <code>python_functions</code>, <code>norecursedirs</code>, and
-the doctest options in <code>addopts</code>.</p>
+<code>python_files</code>, <code>python_classes</code>, <code>python_functions</code>, <code>norecursedirs</code>,
+<code>usefixtures</code>, and the doctest options in <code>addopts</code>.</p>
 <p><strong>Tests</strong> found:</p>
 <ul>
 <li>test functions and methods, following your naming settings;</li>
-<li>test classes (without an <code>__init__</code>), including nested classes;</li>
+<li>test classes (without an <code>__init__</code>, unless they are
+  <code>unittest.TestCase</code> subclasses), including nested classes and nested
+  classes inherited from a base class;</li>
 <li><code>unittest.TestCase</code> subclasses, whatever their names;</li>
 <li>tests inherited from base classes, including base classes in other
   modules;</li>
-<li>tests imported into a test module, by name or with <code>from module import *</code>;</li>
+<li>tests imported into a test module, by name or with <code>from module import *</code>,
+  including tests the other module imported itself;</li>
 <li>tests bound to another name (<code>test_alias = test_orig</code>), <code>runTest</code> in a
   <code>unittest.TestCase</code> without <code>test*</code> methods, and functions marked
   <code>__test__ = True</code>;</li>
@@ -1098,11 +1101,15 @@ the doctest options in <code>addopts</code>.</p>
 </ul>
 <p><strong>What each test depends on</strong>, besides its own code:</p>
 <ul>
-<li>its fixtures, requested by parameter or <code>usefixtures</code>, and the fixtures
+<li>its fixtures, requested by parameter, <code>usefixtures</code> (the mark or the
+  configuration option) or <code>request.getfixturevalue</code> (every fixture it can
+  see, when the name isn't written out), and the fixtures
   those use, resolved the way pytest does: class (including the fixtures
   it inherits from base classes in other modules), then module, then each
-  <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> (and the
-  plugins those list) and your project's own pytest plugins. A fixture is found under every name a module
+  <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> (in any
+  conftest or test module, and the plugins those list) and the pytest
+  plugins of your project and of other packages in the repository. A
+  fixture is found under every name a module
   binds it to, as in pytest: an alias (<code>box2 = box</code>) or an import (<code>from
   tests.helpers import engine</code>), unless the fixture sets its own <code>name=</code>.
   A name the test parametrizes is a parameter, not a fixture, for the test
@@ -1112,12 +1119,23 @@ the doctest options in <code>addopts</code>.</p>
   by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>);</li>
 <li>autouse fixtures that apply to it, including ones whose <code>autouse=</code> is a
   variable;</li>
-<li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions;</li>
+<li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions, and unittest's
+  <code>setUpModule</code>, <code>setUp</code>, <code>asyncSetUp</code>, <code>setUpClass</code> and their teardowns;</li>
 <li>its module, and every <code>conftest.py</code> on its path with their <code>pytest_*</code>
-  hooks.</li>
+  hooks, including hooks they import;</li>
+<li>hooks that run for the whole session, such as
+  <code>pytest_collection_modifyitems</code> and <code>pytest_configure</code>, in any
+  <code>conftest.py</code> and in your plugins.</li>
 </ul>
-<p>A doctest depends on everything its module can reach; a doctest in a text
+<p>A doctest depends on everything its module can reach, and on the fixtures
+pytest gives it: autouse fixtures (such as one that fills
+<code>doctest_namespace</code>) and the <code>usefixtures</code> option. A doctest in a text
 file is always selected.</p>
+<p>A <code>conftest.py</code> outside your source roots can't be read, so the tests under
+it are always selected and the report says why; add a source root that
+contains it. A change to your runner configuration or build script
+(<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>, <code>setup.py</code>, a <code>conftest.py</code>,
+<code>asv.conf.json</code>) outside your source roots selects every target.</p>
 <h3 id="fixtures-from-installed-plugins">Fixtures from installed plugins<a class="headerlink" href="#fixtures-from-installed-plugins" title="Permanent link">&para;</a></h3>
 <p>A fixture that isn't defined in your source roots usually comes from an
 installed plugin. diffcone recognises the fixtures of well-known plugins
@@ -1140,17 +1158,23 @@ parameter cases together.</p>
 functions and methods whose names start with <code>time_</code>, <code>timeraw_</code>, <code>mem_</code>,
 <code>peakmem_</code> or <code>track_</code> (or <code>Time</code>, <code>Timeraw</code>, <code>Mem</code>, <code>PeakMem</code>, <code>Track</code>
 followed by a capital), including inherited ones and ones imported into a
-benchmark module, in every module under <code>benchmark_dir</code> as ASV walks it. Each depends on its
-class's and module's <code>setup</code>, <code>setup_cache</code> and <code>teardown</code>, and on its
-module. Class attributes such as <code>params</code> count as part of the class.</p>
+benchmark module, in every module under <code>benchmark_dir</code> as ASV walks it,
+named as ASV names them (a <code>benchmark_name</code> you set is used). Each depends
+on its class's and module's <code>setup</code>, <code>setup_cache</code> and <code>teardown</code> (also
+when imported from another module), and on its module. Class attributes
+such as <code>params</code> count as part of the class. A <code>timeraw_</code> benchmark also
+depends on the modules its code imports; if its code isn't a plain string,
+it is always selected.</p>
 <h2 id="when-the-target-list-may-be-short">When the target list may be short<a class="headerlink" href="#when-the-target-list-may-be-short" title="Permanent link">&para;</a></h2>
 <p>Some things can't be known by reading the source:</p>
 <ul>
 <li>a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;</li>
 <li>a test base class, or an imported test, from outside your source roots;</li>
-<li>a test file outside your source roots (with <code>--source-root src</code>, add
-  <code>--source-root .</code> for tests in <code>tests/</code>);</li>
+<li>a test file, benchmark file or doctest module outside your source roots
+  (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>);</li>
+<li>options in <code>addopts</code> that change what pytest collects (<code>-o</code>, <code>-c</code>,
+  <code>--rootdir</code>, <code>--pyargs</code>, or a path to test);</li>
 <li>a test bound to something discovery can't follow
   (<code>TestMachine = Machine.TestCase</code>);</li>
 <li>a plugin your configuration turns on that collects files of its own

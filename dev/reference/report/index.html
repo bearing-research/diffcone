@@ -1178,17 +1178,157 @@ summary of the same information). The report's format is versioned by
 <a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"affected_dependencies"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"tests.test_calc.test_square"</span><span class="p">]</span>
 <a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="p">}</span>
 </code></pre></div>
-<p><code>rules</code> says how the target was selected:</p>
-<ul>
-<li><code>dependency</code>: a chain of calls, references or imports connects it to a
-  change, shown in <code>dependency_explanations</code>;</li>
-<li><code>changed_target</code> or <code>new_target</code>: the test itself changed or is new;</li>
-<li>other rules name a fallback: something diffcone couldn't bound, such as
-  a fixture it couldn't find or a dynamic import. <code>conservative</code> is <code>true</code>
-  when any rule is one of these.</li>
-</ul>
-<p>With execution evidence, the rules name what the recorded run observed,
-such as <code>executed_changed</code> (the test ran a changed function).</p>
+<p><code>rules</code> says how the target was selected. <code>conservative</code> is <code>true</code> when
+any of them is a fallback: something diffcone couldn't bound, so it
+selected the target to be safe.</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Fallback</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dependency</code></td>
+<td></td>
+<td>A chain of calls, references or imports connects the target to a change (the target's own code included), shown in <code>dependency_explanations</code>.</td>
+</tr>
+<tr>
+<td><code>new_target</code></td>
+<td></td>
+<td>The target is new.</td>
+</tr>
+<tr>
+<td><code>entry_docstring_changed</code></td>
+<td></td>
+<td>The target's docstring changed; for a doctest, the docstring is the test.</td>
+</tr>
+<tr>
+<td><code>declared_dependency</code></td>
+<td></td>
+<td>A dependency declared in <code>diffcone.toml</code> connects it to a change.</td>
+</tr>
+<tr>
+<td><code>dynamic_reference</code></td>
+<td>yes</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), and a change could be among them.</td>
+</tr>
+<tr>
+<td><code>unresolved_name_match</code></td>
+<td>yes</td>
+<td>It reaches a call diffcone couldn't resolve, whose name matches a changed function or method.</td>
+</tr>
+<tr>
+<td><code>entry_symbol_unresolved</code></td>
+<td>yes</td>
+<td>Its own code wasn't found in either snapshot.</td>
+</tr>
+<tr>
+<td><code>lifecycle_dependency_unresolved</code></td>
+<td>yes</td>
+<td>Something it depends on wasn't found: a fixture diffcone couldn't find, a <code>conftest.py</code> outside the source roots, a benchmark's code it couldn't read.</td>
+</tr>
+<tr>
+<td><code>analysis_error</code></td>
+<td>yes</td>
+<td>A file couldn't be analysed, so every target is selected.</td>
+</tr>
+<tr>
+<td><code>runner_dependency</code></td>
+<td>yes</td>
+<td>Code the test runner itself imports changed.</td>
+</tr>
+<tr>
+<td><code>unanalysed_file_changed</code></td>
+<td>yes</td>
+<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration or build script changed outside them.</td>
+</tr>
+</tbody>
+</table>
+<p>With execution evidence, the rules name what the recorded run observed:</p>
+<table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Fallback</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>executed_changed</code></td>
+<td></td>
+<td>The test ran a changed function.</td>
+</tr>
+<tr>
+<td><code>executed_reader</code></td>
+<td></td>
+<td>The test ran code that reads a changed value or definition.</td>
+</tr>
+<tr>
+<td><code>touched_file</code></td>
+<td></td>
+<td>The test read a file that changed.</td>
+</tr>
+<tr>
+<td><code>changed_target</code></td>
+<td></td>
+<td>The test's own code, or its class or module, changed.</td>
+</tr>
+<tr>
+<td><code>test_scope</code></td>
+<td></td>
+<td>Test code it shares a scope with changed (a mark, fixture or parameter).</td>
+</tr>
+<tr>
+<td><code>escalated</code></td>
+<td></td>
+<td>The change can't be judged from a recording (code that runs on import, for example), so it was planned from the code.</td>
+</tr>
+<tr>
+<td><code>cython_caller</code></td>
+<td></td>
+<td>The test ran Cython code that calls a changed function the recording can't see.</td>
+</tr>
+<tr>
+<td><code>lookup_site</code></td>
+<td>yes</td>
+<td>The test looked a name up dynamically where a name was added or removed.</td>
+</tr>
+<tr>
+<td><code>no_evidence</code></td>
+<td>yes</td>
+<td>The test has no recording (a new test, for example).</td>
+</tr>
+<tr>
+<td><code>unstable</code></td>
+<td>yes</td>
+<td>The test's recordings differed between runs.</td>
+</tr>
+<tr>
+<td><code>subprocess</code></td>
+<td>yes</td>
+<td>The test started a subprocess, which the recording can't follow.</td>
+</tr>
+<tr>
+<td><code>pytest_hook_changed</code></td>
+<td>yes</td>
+<td>A pytest hook or what decides what pytest loads changed.</td>
+</tr>
+<tr>
+<td><code>unobserved_file_changed</code></td>
+<td>yes</td>
+<td>A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a <code>conftest.py</code> outside the source roots, Cython outside functions or without a profiled build.</td>
+</tr>
+<tr>
+<td><code>unindexed_import</code></td>
+<td>yes</td>
+<td>Changed code ran while a file outside the source roots was being imported.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="exit-codes">Exit codes<a class="headerlink" href="#exit-codes" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

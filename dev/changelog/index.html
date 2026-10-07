@@ -1037,9 +1037,14 @@ selection rules.</p>
   other modules, marks stored in variables, parametrized names supplied to
   fixtures, plugins declared by plugins, and overrides of fixtures that
   pytest and installed plugins request, tests bound by assignment,
-  <code>runTest</code>, pytest 9's <code>pytest.toml</code>, doctests)
-  and ASV benchmarks, without importing project code; what it cannot see
-  it reports. <code>diffcone discover</code> writes the targets as a manifest.</li>
+  <code>runTest</code>, pytest 9's <code>pytest.toml</code>, doctests with their fixtures,
+  session-wide hooks from any conftest, the <code>usefixtures</code> option, plugins
+  of sibling packages) and ASV benchmarks (<code>benchmark_name</code>, imported
+  <code>setup</code>, the code a <code>timeraw_</code> benchmark runs), without importing
+  project code; what it cannot see it reports. A conftest outside the
+  source roots keeps its tests always selected, and a changed runner
+  configuration or build file outside them selects everything.
+  <code>diffcone discover</code> writes the targets as a manifest.</li>
 <li>Dependencies the analysis cannot see can be declared in <code>diffcone.toml</code>.</li>
 <li>A target depends on everything it depended on at the base too, and on
   its module's import even when a hand-written manifest does not list the

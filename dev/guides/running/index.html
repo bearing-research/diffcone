@@ -1017,6 +1017,9 @@
 <h1 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h1>
 <p>Planning never runs your code. These commands run tests after a plan
 exists, using the command line you give them.</p>
+<p>The examples use the default source root, the repository itself. For a
+<code>src</code> layout, add <code>--source-root src --source-root .</code> to each command, as
+in <a href="../planning/#source-roots">planning</a>.</p>
 <h2 id="run-the-selected-tests">Run the selected tests<a class="headerlink" href="#run-the-selected-tests" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone<span class="w"> </span>run<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>WORKTREE<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--<span class="w"> </span>-x
@@ -1062,7 +1065,7 @@ selected, and exits with <code>1</code> if there is one. Options:</p>
 <p><code>diffcone validate</code> runs your whole suite on both snapshots and reports any
 test whose result changed but wasn't selected:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>diffcone<span class="w"> </span>validate<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span>--source-root<span class="w"> </span>src<span class="w"> </span>--source-root<span class="w"> </span>tests<span class="w"> </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span>--source-root<span class="w"> </span>src<span class="w"> </span>--source-root<span class="w"> </span>.<span class="w"> </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span>
 </code></pre></div>
 <p>Commits are checked out into temporary worktrees; <code>WORKTREE</code> runs in
 place. With <code>--coverage</code> (which needs pytest-cov installed where your tests
