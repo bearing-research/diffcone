@@ -60,7 +60,7 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 | D9 | Doctests: module names under pytest's default `prepend` mode differ from source-root names; modules that cannot be named are dropped without a note; `_docstrings` misses defs under `if`/`try` and `__test__`; text globs other than `.txt/.rst/.md` find nothing. | fixed (discovery batch) |
 | D10 | ASV: underscore modules excluded; `benchmark_dir/__init__.py` skipped; imported classes and functions not collected; CamelCase prefixes (`TimeX`, `TrackX`, ...) not recognised; class attribute aliases not collected. | fixed (discovery batch) |
 | D11 | A function with `__test__ = True` whose name does not match is collected by pytest. | fixed (discovery batch) |
-| D12 | An installed plugin that collects other files (pytest-typing's `tests/*.md` in cattrs, configured by `typing_checkers`; Sybil, nbval) yields tests discovery cannot see and does not report (found by the corpus re-run of collection_check after the discovery batch). A recording settles them (`collected_not_target`). | open |
+| D12 | An installed plugin that collects other files (pytest-typing's `tests/*.md` in cattrs, configured by `typing_checkers`; Sybil, nbval) yields tests discovery cannot see and does not report (found by the corpus re-run of collection_check after the discovery batch). A recording settles them (`collected_not_target`). | fixed where it can be (evidence batch): configured collecting plugins are reported (`plugin_collects_files`); `run` executes every collected test the plan does not know (R8); a recording settles the rest. A plugin collecting with no configuration at all stays invisible to a static plan that selects nothing (documented limitation) |
 
 ## Running, checking, actions (R)
 
@@ -96,6 +96,8 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 | E12 | A missing environment-check report counts as a match (a wrapper stripping `DIFFCONE_CHECK_ENV`) (plausible). | fixed (run batch: the check always reports; no report is a mismatch) |
 
 ## Not misses (fix while there)
+
+Fixed in the evidence batch: the stale texts below, `.diffcone/.gitignore`, malformed TOML tables and non-object `asv.conf.json`, malformed or truncated evidence stores (an `EvidenceError`, a malformed store skipped when listing), ASV relative imports in `__init__.py` (D10). The rest remain as listed.
 
 - Over-selection: `norecursedirs` not applied to test files; no `__test__ = False`; ASV relative imports in `__init__.py` give a spurious `unknown_base_class`; WORKTREE follows symlinks leaving the repo; `find_store` ignores the environment when choosing among stores.
 - Crashes on malformed input: non-table `tool.pytest`/`ini_options`, non-object `asv.conf.json`; store meta missing keys, truncated `tests-*.bin`.

@@ -508,6 +508,24 @@ def _load_toml(raw: bytes) -> dict[str, Any]:
         return {}
 
 
+# Configuration that switches on an installed plugin's own collection of
+# files discovery does not read: an ini key, or an option in addopts or
+# after ``--``. Reported (``plugin_collects_files``); a recording settles it.
+COLLECTING_PLUGIN_KEYS = {
+    "typing_checkers": "pytest-typing (collects type-check cases from .md files)",
+    "nb_test_files": "pytest-notebook (collects notebooks)",
+    "doctest_plus": "pytest-doctestplus (collects doctests from text files)",
+    "doctest_rst": "pytest-doctestplus (collects doctests from .rst files)",
+}
+COLLECTING_PLUGIN_OPTIONS = {
+    "--nbval": "nbval (collects notebooks)",
+    "--nbval-lax": "nbval (collects notebooks)",
+    "--markdown-docs": "pytest-markdown-docs (collects code blocks from .md files)",
+    "--doctest-rst": "pytest-doctestplus (collects doctests from .rst files)",
+    "--doctest-plus": "pytest-doctestplus (collects doctests)",
+    "--mypy-testing-base": "pytest-mypy-plugins (collects .yml cases)",
+}
+
 # pytest options that change what is collected in ways discovery does not
 # model: given after ``--``, they make the target list possibly short.
 UNMODELLED_COLLECTION_OPTIONS = (
@@ -532,6 +550,7 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
         "addopts_plugins": (),  # ``-p name`` entries in addopts
         "doctest_modules": False,  # ``--doctest-modules`` in addopts
         "import_mode": "prepend",  # ``--import-mode`` in addopts
+        "collecting_plugins": (),  # configured plugins with collection of their own
         "doctest_globs": ("test*.txt",),  # ``--doctest-glob`` patterns
         "norecursedirs": DEFAULT_NORECURSEDIRS,
     }
@@ -581,6 +600,16 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
                 if values:
                     config[key] = values
         addopts = _split(section.get("addopts", "")) + tuple(runner_args)
+        config["collecting_plugins"] = tuple(
+            sorted(
+                {COLLECTING_PLUGIN_KEYS[k] for k in section if k in COLLECTING_PLUGIN_KEYS}
+                | {
+                    COLLECTING_PLUGIN_OPTIONS[a.split("=", 1)[0]]
+                    for a in addopts
+                    if a.split("=", 1)[0] in COLLECTING_PLUGIN_OPTIONS
+                }
+            )
+        )
         config["addopts_plugins"] = tuple(_addopts_plugins(addopts))
         config["doctest_modules"] = "--doctest-modules" in addopts
         modes = _option_values(addopts, "--import-mode")
@@ -1350,6 +1379,14 @@ def discover_pytest(
 ) -> DiscoveryResult:
     result = DiscoveryResult(runner=RUNNER)
     config = read_pytest_config(snapshot, options.runner_args)
+    for plugin in config["collecting_plugins"]:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "plugin_collects_files",
+                f"the configuration turns on {plugin}: what it collects is not a target",
+            )
+        )
     for arg in options.runner_args:
         option = arg.split("=", 1)[0]
         if option in UNMODELLED_COLLECTION_OPTIONS or (

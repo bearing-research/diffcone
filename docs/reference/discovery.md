@@ -92,6 +92,8 @@ Some things can't be known by reading the source:
   `--source-root .` for tests in `tests/`);
 - a test bound to something discovery can't follow
   (`TestMachine = Machine.TestCase`);
+- a plugin your configuration turns on that collects files of its own
+  (pytest-typing's `typing_checkers`, `--nbval`, `--markdown-docs`);
 - a test file that can't be parsed.
 
 Each one appears as a note in the report's `discovery` section, and the

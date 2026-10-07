@@ -29,6 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
@@ -238,11 +239,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             blob = tests_file.read_bytes()
             i = 0
             while i < len(blob):
-                n, m = struct.unpack_from("<II", blob, i)
-                i += 8
-                name = blob[i : i + n].decode()
-                i += n
-                record = json.loads(zlib.decompress(blob[i : i + m]))
+                try:
+                    n, m = struct.unpack_from("<II", blob, i)
+                    i += 8
+                    name = blob[i : i + n].decode()
+                    i += n
+                    record = json.loads(zlib.decompress(blob[i : i + m]))
+                except (struct.error, zlib.error, UnicodeDecodeError, ValueError) as exc:
+                    raise EvidenceError(
+                        f"process {pid} wrote a truncated or corrupt test file ({exc})"
+                    ) from exc
                 i += m
                 symbols, paths, dirs, flags = raw.tests.setdefault(name, (set(), set(), set(), 0))
                 for c in record["codes"]:
@@ -465,7 +471,7 @@ def store_name(evidence: Evidence) -> str:
 
 def write_store(evidence: Evidence, directory: Path) -> Path:
     """Write atomically: a reader never sees half a store."""
-    directory.mkdir(parents=True, exist_ok=True)
+    make_own_dir(directory)
     target = directory / store_name(evidence)
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     os.close(fd)
@@ -559,32 +565,33 @@ def load_store(path: Path) -> Evidence:
         import_by: dict[str, set[str]] = defaultdict(set)
         for symbol, module in db.execute("SELECT symbol, module FROM import_by"):
             import_by[symbol].add(module)
-    except (sqlite3.Error, KeyError, ValueError, zlib.error) as exc:
+        evidence = Evidence(
+            commit=meta["commit"],
+            source_roots=meta["source_roots"],
+            environment=meta["environment"],
+            environment_hash=meta["environment_hash"],
+            command=meta["command"],
+            created=meta["created"],
+            symbols=symbols,
+            paths=paths,
+            tests=tests,
+            import_phase=frozenset(meta["import_phase"]),
+            hook_phase=frozenset(meta["hook_phase"]),
+            import_by={s: frozenset(m) for s, m in import_by.items()},
+            import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
+            import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
+            import_subprocess=meta["import_subprocess"],
+            reverse_checked=meta["reverse_checked"],
+            advanced_from=meta.get("advanced_from"),
+            full_commit=meta.get("full_commit") or meta["commit"],
+            collected=frozenset(meta["collected"]) if meta.get("collected") is not None else None,
+            location=path,
+        )
+    except (sqlite3.Error, KeyError, TypeError, ValueError, AttributeError, zlib.error) as exc:
         raise EvidenceError(f"cannot read evidence recording {path}: {exc}") from exc
     finally:
         db.close()
-    return Evidence(
-        commit=meta["commit"],
-        source_roots=meta["source_roots"],
-        environment=meta["environment"],
-        environment_hash=meta["environment_hash"],
-        command=meta["command"],
-        created=meta["created"],
-        symbols=symbols,
-        paths=paths,
-        tests=tests,
-        import_phase=frozenset(meta["import_phase"]),
-        hook_phase=frozenset(meta["hook_phase"]),
-        import_by={s: frozenset(m) for s, m in import_by.items()},
-        import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
-        import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
-        import_subprocess=meta["import_subprocess"],
-        reverse_checked=meta["reverse_checked"],
-        advanced_from=meta.get("advanced_from"),
-        full_commit=meta.get("full_commit") or meta["commit"],
-        collected=frozenset(meta["collected"]) if meta.get("collected") is not None else None,
-        location=path,
-    )
+    return evidence
 
 
 @dataclass(frozen=True)
@@ -686,8 +693,8 @@ def list_stores(repo: Path) -> list[StoreInfo]:
             continue
         if meta.get("format") != STORE_FORMAT:
             continue
-        found.append(
-            StoreInfo(
+        try:
+            info = StoreInfo(
                 path,
                 meta["commit"],
                 meta["environment_hash"],
@@ -698,5 +705,7 @@ def list_stores(repo: Path) -> list[StoreInfo]:
                 meta.get("advanced_from"),
                 meta.get("full_commit") or meta["commit"],
             )
-        )
+        except (KeyError, TypeError, AttributeError):
+            continue  # a malformed store is skipped, not fatal to every plan
+        found.append(info)
     return sorted(found, key=lambda s: -s.created)

@@ -67,6 +67,22 @@ def _indexer_fingerprint() -> str:
 INDEXER_FINGERPRINT = _indexer_fingerprint()
 
 
+def make_own_dir(directory: Path) -> None:
+    """Create a directory of diffcone's, and give the ``.diffcone`` it sits in
+    a ``.gitignore`` of its own (as pytest does for ``.pytest_cache``), so the
+    cache and recordings never show up as untracked files of the project."""
+    directory.mkdir(parents=True, exist_ok=True)
+    for parent in (directory, *directory.parents):
+        if parent.name == ".diffcone":
+            ignore = parent / ".gitignore"
+            if not ignore.exists():
+                try:
+                    ignore.write_text("# created by diffcone\n*\n", "utf-8")
+                except OSError:
+                    pass
+            break
+
+
 def default_cache_dir(repo: Path) -> Path:
     return repo / ".diffcone" / "cache"
 
@@ -202,7 +218,7 @@ class ModuleCache:
                 if not self.path.exists():
                     return None
                 return sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True, timeout=10)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            make_own_dir(self.path.parent)
             conn = sqlite3.connect(self.path, timeout=10)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
@@ -368,7 +384,7 @@ class DiscoveryCache:
             "config": result.config,
         }
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_own_dir(path.parent)
             fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -407,7 +423,7 @@ class IndexCache:
     def store(self, index: SourceIndex, source_roots: list[str]) -> None:
         path = self._path(index.snapshot.commit, source_roots)
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            make_own_dir(path.parent)
             # Write atomically so a concurrent reader never sees a partial file.
             fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:

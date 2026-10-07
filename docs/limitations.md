@@ -27,6 +27,13 @@ everything.
     attributes are resolved only when every assignment is a simple one in
     `__init__`.
 
+**Plugins that collect files of their own.**
+:   diffcone reports the collecting plugins it recognises from your
+    configuration. A plugin that collects files just by being installed is
+    invisible to a plan from the code. Whenever `run` starts pytest, it
+    runs every collected test the plan doesn't know, and a recording
+    captures what pytest really collected.
+
 **Dynamic code is bounded by imports, if at all.**
 :   A function that uses `eval`, `exec`, `globals()`, `vars()` or `getattr`
     with a computed name is treated as affected by any change in the

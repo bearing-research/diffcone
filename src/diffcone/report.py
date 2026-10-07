@@ -30,7 +30,7 @@ SCOPE_DESCRIPTION = {
         "type inference and dynamic dispatch on receivers of unknown type",
         "instance attributes and arbitrary object.method() calls (name-bounded fallback)",
         "dynamic imports / getattr / eval with non-literal arguments (dynamic fallback)",
-        "pytest fixture or ASV setup discovery (must be declared in the manifest)",
+        "code outside the source roots and installed packages (assumed unchanged)",
     ],
 }
 

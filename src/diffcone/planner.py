@@ -1234,7 +1234,7 @@ def plan(
     cache: IndexCache | None = None,
     evidence: Evidence | None = None,
 ) -> Plan:
-    """Analyse two committed revisions and produce a selection plan.
+    """Analyse two snapshots and produce a selection plan.
 
     Targets come from the manifest, from static discovery of the head
     snapshot for each runner in ``discover_runners``, or both. ``base`` and

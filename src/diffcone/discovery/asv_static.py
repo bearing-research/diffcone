@@ -85,6 +85,10 @@ def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
         config["source"] = f"{name} (unparsable, defaults used)"
         config["error"] = str(exc)
         return config
+    if not isinstance(data, dict):
+        config["source"] = f"{name} (not an object, defaults used)"
+        config["error"] = "the configuration is not a JSON object"
+        return config
     config["source"] = name
     bench_dir = data.get("benchmark_dir")
     if isinstance(bench_dir, str) and bench_dir.strip():

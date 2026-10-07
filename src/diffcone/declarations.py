@@ -3,8 +3,9 @@
 A registry filled at import time, a plugin resolved through entry points, a
 handler named in a YAML file: the dependency is real and no static rule can
 find it, so the project states it in ``diffcone.toml`` at the repository
-root. The file is read from the snapshot being analysed (the head one), so a
-declaration is versioned with the code it describes.
+root. The file is read from both snapshots being compared, so a declaration
+is versioned with the code it describes, and one the change deletes still
+counts.
 
     # diffcone.toml
     [[edges]]

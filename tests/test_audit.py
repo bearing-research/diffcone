@@ -1370,3 +1370,18 @@ def test_e4_a_spawned_multiprocessing_child_flags_its_test(repo):
         {"lib/work.py": work.format(k="2")},
     )
     assert "tests/test_w.py::test_spawn" in chosen
+
+
+# D12: a configured plugin that collects its own files is reported.
+
+
+def test_d12_a_configured_collecting_plugin_makes_discovery_incomplete(repo):
+    _, notes = _discovered(
+        repo,
+        {
+            "pyproject.toml": '[tool.pytest.ini_options]\ntyping_checkers = ["mypy"]\n',
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tests/test_types.md": "# cases\n",
+        },
+    )
+    assert "plugin_collects_files" in notes
