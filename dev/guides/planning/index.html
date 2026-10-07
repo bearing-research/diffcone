@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://bearing-research.github.io/diffcone/dev/guides/planning/">
       
       
-        <link rel="prev" href="../../getting-started/">
+        <link rel="prev" href="../../concepts/">
       
       
         <link rel="next" href="../running/">
@@ -288,6 +288,32 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  How it works
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -316,10 +342,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
             
   
   
@@ -337,8 +363,8 @@
           </label>
         
         
-          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
-            <label class="md-nav__title" for="__nav_3">
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_4">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -413,10 +439,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#snapshots" class="md-nav__link">
+  <a href="#choose-what-to-compare" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Snapshots
+        Choose what to compare
       </span>
     </span>
   </a>
@@ -435,22 +461,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#targets" class="md-nav__link">
+  <a href="#find-the-targets" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Targets
+        Find the targets
       </span>
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Targets">
+    <nav class="md-nav" aria-label="Find the targets">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#static-discovery" class="md-nav__link">
+  <a href="#discover-them" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Static discovery
+        Discover them
       </span>
     </span>
   </a>
@@ -458,10 +484,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#a-manifest" class="md-nav__link">
+  <a href="#list-them-in-a-manifest" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        A manifest
+        List them in a manifest
       </span>
     </span>
   </a>
@@ -474,10 +500,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#telling-diffcone-what-it-cannot-see" class="md-nav__link">
+  <a href="#declare-dependencies-diffcone-cant-see" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Telling diffcone what it cannot see
+        Declare dependencies diffcone can't see
       </span>
     </span>
   </a>
@@ -485,21 +511,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-a-change-selects" class="md-nav__link">
+  <a href="#speed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        What a change selects
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-cache" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        The cache
+        Speed
       </span>
     </span>
   </a>
@@ -623,8 +638,6 @@
       
         
       
-        
-      
     
     
     
@@ -638,10 +651,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
             
   
   
@@ -659,8 +672,8 @@
           </label>
         
         
-          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
-            <label class="md-nav__title" for="__nav_4">
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_5">
               <span class="md-nav__icon md-icon"></span>
               
   
@@ -684,60 +697,6 @@
     
   
   Commands
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/manifest/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Target manifest
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../reference/declarations/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  diffcone.toml
 
     
   </span>
@@ -811,6 +770,68 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Target manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/declarations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../limitations/" class="md-nav__link">
         
   
@@ -826,192 +847,6 @@
   
 
       </a>
-    </li>
-  
-
-                
-              
-            </ul>
-          </nav>
-        
-      
-    </li>
-  
-
-    
-      
-      
-  
-  
-  
-  
-    
-    
-      
-        
-      
-        
-      
-        
-      
-        
-      
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
-        
-          
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Background
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        
-          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-            <label class="md-nav__title" for="__nav_5">
-              <span class="md-nav__icon md-icon"></span>
-              
-  
-  Background
-
-            </label>
-            <ul class="md-nav__list" data-md-scrollfix>
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Design
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../evidence_design/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Evidence design
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../evaluation/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Evaluation
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-                
-                  
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../roadmap/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-  Roadmap
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-                
-              
-            </ul>
-          </nav>
-        
-      
     </li>
   
 
@@ -1109,10 +944,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#snapshots" class="md-nav__link">
+  <a href="#choose-what-to-compare" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Snapshots
+        Choose what to compare
       </span>
     </span>
   </a>
@@ -1131,22 +966,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#targets" class="md-nav__link">
+  <a href="#find-the-targets" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Targets
+        Find the targets
       </span>
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Targets">
+    <nav class="md-nav" aria-label="Find the targets">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#static-discovery" class="md-nav__link">
+  <a href="#discover-them" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Static discovery
+        Discover them
       </span>
     </span>
   </a>
@@ -1154,10 +989,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#a-manifest" class="md-nav__link">
+  <a href="#list-them-in-a-manifest" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        A manifest
+        List them in a manifest
       </span>
     </span>
   </a>
@@ -1170,10 +1005,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#telling-diffcone-what-it-cannot-see" class="md-nav__link">
+  <a href="#declare-dependencies-diffcone-cant-see" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Telling diffcone what it cannot see
+        Declare dependencies diffcone can't see
       </span>
     </span>
   </a>
@@ -1181,21 +1016,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-a-change-selects" class="md-nav__link">
+  <a href="#speed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        What a change selects
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-cache" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        The cache
+        Speed
       </span>
     </span>
   </a>
@@ -1291,111 +1115,133 @@
 
 
 <h1 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h1>
-<p><code>diffcone plan</code> compares two snapshots and reports which targets a change
-can affect. It reads files and git objects only: no checkout, no import,
-no test run.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone<span class="w"> </span>plan<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span>--discover<span class="w"> </span>asv<span class="w"> </span><span class="se">\</span>
+<p><code>diffcone plan</code> compares two snapshots and reports which targets the
+changes between them can affect. It reads files and git objects only: it
+doesn't check anything out, import your code, or run tests.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone<span class="w"> </span>plan<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">    </span>--source-root<span class="w"> </span>src<span class="w"> </span>--source-root<span class="w"> </span>.<span class="w"> </span>--format<span class="w"> </span>text
 </code></pre></div>
-<h2 id="snapshots">Snapshots<a class="headerlink" href="#snapshots" title="Permanent link">&para;</a></h2>
-<p><code>--base</code> and <code>--head</code> each name a snapshot:</p>
-<ul>
-<li><strong>a git revision</strong> (<code>main</code>, <code>HEAD~3</code>, a commit hash), read from git's
-  objects, whatever is checked out;</li>
-<li><strong><code>INDEX</code></strong>, the staged content;</li>
-<li><strong><code>WORKTREE</code></strong>, the files on disk, tracked or untracked, ignored files
-  excluded.</li>
-</ul>
-<p><code>--head WORKTREE</code> is the everyday developer loop ("what does my unfinished
-change affect?"); <code>--head HEAD</code> is the CI form. The report always names the
-kind of each snapshot (<code>analysis.head.kind</code>, <code>uncommitted_analyzed</code>), so a
-plan of a working tree never looks like a plan of a commit.</p>
-<p>Both revisions are analysed, not only the head: a deleted function, a
-removed call or a redirected import still selects the tests that used to
-reach it.</p>
+<h2 id="choose-what-to-compare">Choose what to compare<a class="headerlink" href="#choose-what-to-compare" title="Permanent link">&para;</a></h2>
+<p><code>--base</code> and <code>--head</code> each take a git revision, <code>INDEX</code> or <code>WORKTREE</code>
+(<a href="../../concepts/#snapshots">snapshots</a>). Common combinations:</p>
+<table>
+<thead>
+<tr>
+<th>You want to check</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Uncommitted work, before you commit</td>
+<td><code>--base HEAD --head WORKTREE</code></td>
+</tr>
+<tr>
+<td>A branch, before you open a pull request</td>
+<td><code>--base main --head WORKTREE</code></td>
+</tr>
+<tr>
+<td>A pull request in CI</td>
+<td><code>--base origin/main --head HEAD</code></td>
+</tr>
+<tr>
+<td>Only what you have staged</td>
+<td><code>--base HEAD --head INDEX</code></td>
+</tr>
+</tbody>
+</table>
 <h2 id="source-roots">Source roots<a class="headerlink" href="#source-roots" title="Permanent link">&para;</a></h2>
-<p>A source root is a directory whose <code>.py</code> files are analysed as a module
-tree. Module names come from the <strong>longest</strong> root containing a file: with
-<code>--source-root src --source-root .</code>, <code>src/calc/ops.py</code> is <code>calc.ops</code> and
-<code>tests/test_calc.py</code> is <code>tests.test_calc</code>. With only <code>--source-root tests</code>,
-that test module would be <code>test_calc</code>.</p>
-<p>Pick the roots your code is imported from: for a <code>src</code> layout, <code>src</code> and
-<code>.</code> (or <code>src</code> and <code>tests</code>); for a flat layout, <code>.</code> alone (the default).
-Files outside every root are not analysed; a test that imports them is
-planned as if they were external libraries.</p>
-<p>When one pytest session collects several test trees whose files share
-names (<code>--import-mode=importlib</code> in a monorepo), give each tree its own
-namespace with <code>--source-root DIR=PREFIX</code>: <code>--source-root
-packages/api/tests=api_tests</code> names <code>packages/api/tests/test_x.py</code>
-<code>api_tests.test_x</code>. Plan once per pytest session otherwise: two files
-mapping to one module name are an analysis error, as pytest would report an
-import mismatch.</p>
-<h2 id="targets">Targets<a class="headerlink" href="#targets" title="Permanent link">&para;</a></h2>
-<p>Targets are what a plan selects from: pytest tests, ASV benchmarks, or
-anything else a runner can run by name. They come from static discovery,
-from a manifest, or both.</p>
-<h3 id="static-discovery">Static discovery<a class="headerlink" href="#static-discovery" title="Permanent link">&para;</a></h3>
-<p><code>--discover pytest</code> and <code>--discover asv</code> find targets in the head snapshot
-by reproducing the runner's collection rules from the source, without
-importing it. For pytest that means its configuration (<code>python_files</code>,
-<code>python_classes</code>, <code>python_functions</code>, <code>testpaths</code>, <code>addopts</code> doctests),
-test functions and classes, inherited and star-imported tests, and each
-test's fixtures, resolved the way pytest resolves them. The
-<a href="../../reference/discovery/">discovery reference</a> lists exactly what is
-modelled.</p>
-<p>What discovery cannot see, it reports. A fixture it cannot find makes the
-test's selection conservative (the report says so); a class a plugin might
-collect, a base class outside the source roots or an imported test it
-cannot follow make the plan exit <code>3</code>: the target list may be short of what
-pytest collects, and running only the selected targets could skip tests.
-<code>diffcone run</code> refuses such a plan unless given
-<code>--allow-incomplete-discovery</code>; with <a href="../evidence/">execution evidence</a>, a
-recording of the real collection can settle the doubt instead.</p>
-<p>Fixtures from well-known plugins (<code>mocker</code>, <code>httpx_mock</code>, <code>freezer</code>,
-<code>benchmark</code>, ...) are assumed external; name others with
-<code>--assume-external-fixture NAME</code>.</p>
-<p>To see what discovery finds, write it out as a manifest:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>discover<span class="w"> </span>--rev<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span>--discover<span class="w"> </span>asv<span class="w"> </span><span class="se">\</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>--source-root<span class="w"> </span>src<span class="w"> </span>--source-root<span class="w"> </span>.<span class="w"> </span>-o<span class="w"> </span>targets.json
+<p>A source root is a directory that diffcone treats as an import root, the
+way Python's <code>sys.path</code> does. Module names come from the closest root that
+contains a file:</p>
+<table>
+<thead>
+<tr>
+<th>Roots</th>
+<th><code>src/calc/ops.py</code></th>
+<th><code>tests/test_calc.py</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.</code> (the default)</td>
+<td><code>src.calc.ops</code></td>
+<td><code>tests.test_calc</code></td>
+</tr>
+<tr>
+<td><code>src</code> and <code>.</code></td>
+<td><code>calc.ops</code></td>
+<td><code>tests.test_calc</code></td>
+</tr>
+<tr>
+<td><code>src</code> and <code>tests</code></td>
+<td><code>calc.ops</code></td>
+<td><code>test_calc</code></td>
+</tr>
+</tbody>
+</table>
+<p>Use the roots your code is actually imported from. For a <code>src</code> layout,
+that's usually <code>--source-root src --source-root .</code>; for a flat layout, the
+default is fine. Files outside every root are not analysed, so code there
+is treated like a third-party library.</p>
+<p>If one pytest session collects several test directories whose files share
+names (common in monorepos that use <code>--import-mode=importlib</code>), give each
+directory its own namespace with <code>DIR=PREFIX</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>plan<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span>--source-root<span class="w"> </span>packages/api/src<span class="w"> </span>--source-root<span class="w"> </span>packages/api/tests<span class="o">=</span>api_tests
 </code></pre></div>
-<h3 id="a-manifest">A manifest<a class="headerlink" href="#a-manifest" title="Permanent link">&para;</a></h3>
-<p><code>--targets targets.json</code> supplies targets explicitly: for a runner without
-discovery, or to correct one. Discovery and a manifest combine, and a
-manifest entry overrides a discovered target with the same id. The format
-is in the <a href="../../reference/manifest/">manifest reference</a>.</p>
-<h2 id="telling-diffcone-what-it-cannot-see">Telling diffcone what it cannot see<a class="headerlink" href="#telling-diffcone-what-it-cannot-see" title="Permanent link">&para;</a></h2>
-<p>Some dependencies are real but invisible to any static rule: a registry
-filled at import time, a plugin resolved through entry points. Declare them
-in <code>diffcone.toml</code> at the repository root, and the plan follows them,
-explaining the selection in your words:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[[edges]]</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">from</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.registry.dispatch"</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">to</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.handlers.json_handler"</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">why</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"handlers register themselves through entry points"</span>
+<h2 id="find-the-targets">Find the targets<a class="headerlink" href="#find-the-targets" title="Permanent link">&para;</a></h2>
+<h3 id="discover-them">Discover them<a class="headerlink" href="#discover-them" title="Permanent link">&para;</a></h3>
+<p><code>--discover pytest</code> and <code>--discover asv</code> find targets by reading your
+configuration and test files, the way the runner would collect them,
+without importing anything. To see what discovery finds, write it to a
+file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>diffcone<span class="w"> </span>discover<span class="w"> </span>--rev<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span>--source-root<span class="w"> </span>src<span class="w"> </span>--source-root<span class="w"> </span>.<span class="w"> </span>-o<span class="w"> </span>targets.json
 </code></pre></div>
-<p>Declarations only add edges, so they can only select more. See the
-<a href="../../reference/declarations/"><code>diffcone.toml</code> reference</a>.</p>
-<h2 id="what-a-change-selects">What a change selects<a class="headerlink" href="#what-a-change-selects" title="Permanent link">&para;</a></h2>
-<p>In short (the <a href="../../design/">design</a> has the precise rules):</p>
+<p>For pytest, discovery follows each test's fixtures, so a change to a
+fixture or a <code>conftest.py</code> selects the tests that use it. Fixtures from
+well-known plugins (<code>mocker</code>, <code>httpx_mock</code>, <code>freezer</code>, <code>benchmark</code> and
+others) are recognised automatically. If your tests use fixtures from
+another installed plugin, name them with <code>--assume-external-fixture NAME</code>;
+otherwise diffcone can't see what they depend on and selects their tests
+every time.</p>
+<div class="admonition note">
+<p class="admonition-title">When the plan exits with code 3</p>
+<p>Exit code <code>3</code> means your runner may collect tests that diffcone can't
+see: for example a pytest plugin that collects classes by its own
+naming rules, or a test base class outside your source roots. The
+report's <code>discovery</code> section lists each case. Running only the selected
+tests could skip some, so <code>diffcone run</code> refuses unless you pass
+<code>--allow-incomplete-discovery</code>. See
+<a href="../../reference/discovery/#when-the-target-list-may-be-short">static discovery</a>.</p>
+</div>
+<h3 id="list-them-in-a-manifest">List them in a manifest<a class="headerlink" href="#list-them-in-a-manifest" title="Permanent link">&para;</a></h3>
+<p>For a runner without discovery, or to adjust what discovery finds, pass a
+<a href="../../reference/manifest/">target manifest</a> with <code>--targets targets.json</code>.
+You can combine it with <code>--discover</code>; manifest entries replace discovered
+targets with the same ID.</p>
+<h2 id="declare-dependencies-diffcone-cant-see">Declare dependencies diffcone can't see<a class="headerlink" href="#declare-dependencies-diffcone-cant-see" title="Permanent link">&para;</a></h2>
+<p>Some dependencies aren't visible in the code: a plugin registered through
+entry points, a handler named in a configuration file. Declare them in a
+<code>diffcone.toml</code> at the repository root:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[[edges]]</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">from</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.registry.dispatch"</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">to</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.handlers.json_handler"</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">why</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"handlers register themselves through entry points"</span>
+</code></pre></div>
+<p>Now a change to <code>json_handler</code> selects the tests that reach <code>dispatch</code>. See
+the <a href="../../reference/declarations/"><code>diffcone.toml</code> reference</a>.</p>
+<h2 id="speed">Speed<a class="headerlink" href="#speed" title="Permanent link">&para;</a></h2>
+<p>diffcone caches its analysis in <code>.diffcone/cache/</code> (add <code>.diffcone/</code> to
+your <code>.gitignore</code>). Committed snapshots are analysed once, and every file
+is cached by its content, so planning your working tree again only re-reads
+the files you changed. Cached and uncached plans are identical.</p>
 <ul>
-<li>A changed function or method body selects the targets that reach it
-  through calls and references, transitively.</li>
-<li>A changed definition (decorators, defaults, a class body, bases, a
-  removed or redirected import) changes every member it shapes.</li>
-<li>A change that runs at import (module-level code, a constant, a class
-  body) reaches every target whose module imports that module, directly or
-  not.</li>
-<li>A new or changed target is always selected.</li>
-<li>What cannot be bounded (a dynamic import, <code>eval</code>, a file that does not
-  parse) widens the selection and is reported as a fallback, never dropped.</li>
+<li><code>--no-cache</code> turns the cache off; <code>--cache-dir</code> moves it.</li>
+<li><code>diffcone prune --keep HEAD</code> removes everything the cache doesn't need
+  for planning from a commit, which keeps a cache saved between CI runs
+  small.</li>
 </ul>
-<h2 id="the-cache">The cache<a class="headerlink" href="#the-cache" title="Permanent link">&para;</a></h2>
-<p>Committed snapshots are indexed once and cached under <code>.diffcone/cache/</code>
-(add <code>.diffcone/</code> to <code>.gitignore</code>), and every module's analysis is cached
-by its content, so planning the working tree again re-reads only the files
-that changed. A cached plan is identical to an uncached one. <code>--no-cache</code>
-and <code>--cache-dir</code> control it; <code>diffcone prune --keep REV</code> shrinks it to
-what planning at given commits reads, for a cache shipped between CI runs.</p>
 
 
 
@@ -1433,7 +1279,7 @@ what planning at given commits reads, for a cache shipped between CI runs.</p>
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../../getting-started/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Getting started">
+          <a href="../../concepts/" class="md-footer__link md-footer__link--prev" aria-label="Previous: How it works">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
@@ -1443,7 +1289,7 @@ what planning at given commits reads, for a cache shipped between CI runs.</p>
                 Previous
               </span>
               <div class="md-ellipsis">
-                Getting started
+                How it works
               </div>
             </div>
           </a>

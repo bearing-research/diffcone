@@ -10,16 +10,10 @@
         <loc>https://bearing-research.github.io/diffcone/dev/ci/</loc>
       </url>
       <url>
-        <loc>https://bearing-research.github.io/diffcone/dev/design/</loc>
+        <loc>https://bearing-research.github.io/diffcone/dev/concepts/</loc>
       </url>
       <url>
         <loc>https://bearing-research.github.io/diffcone/dev/development/</loc>
-      </url>
-      <url>
-        <loc>https://bearing-research.github.io/diffcone/dev/evaluation/</loc>
-      </url>
-      <url>
-        <loc>https://bearing-research.github.io/diffcone/dev/evidence_design/</loc>
       </url>
       <url>
         <loc>https://bearing-research.github.io/diffcone/dev/getting-started/</loc>
@@ -50,8 +44,5 @@
       </url>
       <url>
         <loc>https://bearing-research.github.io/diffcone/dev/reference/report/</loc>
-      </url>
-      <url>
-        <loc>https://bearing-research.github.io/diffcone/dev/roadmap/</loc>
       </url>
 </urlset>
