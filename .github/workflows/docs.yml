@@ -6,8 +6,10 @@ name: Docs
 # Until the first release, "dev" carries "latest" so links to it work.
 #
 # Versions are kept on the gh-pages branch by mike (Zensical's fork, until
-# Zensical versions natively), and the whole branch is published through
-# GitHub Actions (Settings > Pages > Source: GitHub Actions).
+# Zensical versions natively), and Pages publishes that branch itself
+# (Settings > Pages > Source: Deploy from a branch, gh-pages, /). Publishing
+# through an Actions deployment instead keys each deployment by commit, so a
+# release tag on a commit main already deployed would publish nothing new.
 
 on:
   push:
@@ -39,12 +41,7 @@ jobs:
       group: docs-deploy
       cancel-in-progress: false
     permissions:
-      contents: write  # push gh-pages
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      contents: write  # push gh-pages, which Pages publishes
     steps:
       - uses: actions/checkout@v7
         with:
@@ -66,12 +63,3 @@ jobs:
             uv run --group docs mike deploy --push --update-aliases dev latest
           fi
           uv run --group docs mike set-default --push latest
-      - name: The gh-pages branch, as a Pages artifact
-        run: |
-          mkdir "$RUNNER_TEMP/pages"
-          git archive gh-pages | tar -x -C "$RUNNER_TEMP/pages"
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: ${{ runner.temp }}/pages
-      - id: deployment
-        uses: actions/deploy-pages@v5
