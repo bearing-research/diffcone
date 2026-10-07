@@ -6,7 +6,7 @@ All notable changes to diffcone. The format follows
 may change the report schema, the cache and evidence store formats, or
 selection rules.
 
-## [0.1.0] - 2026-10-06
+## [0.1.0] - 2026-10-07
 
 The first release.
 
