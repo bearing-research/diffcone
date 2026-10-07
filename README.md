@@ -72,15 +72,15 @@ their import names.
 ## Documentation
 
 **[bearing-research.github.io/diffcone](https://bearing-research.github.io/diffcone/)**:
-[getting started](https://bearing-research.github.io/diffcone/getting-started/),
-guides to [planning](https://bearing-research.github.io/diffcone/guides/planning/),
-[running and checking](https://bearing-research.github.io/diffcone/guides/running/),
-[execution evidence](https://bearing-research.github.io/diffcone/guides/evidence/)
-and [CI](https://bearing-research.github.io/diffcone/ci/), the
-[command reference](https://bearing-research.github.io/diffcone/reference/cli/),
-[limitations](https://bearing-research.github.io/diffcone/limitations/), and how
-it works in the [design](https://bearing-research.github.io/diffcone/design/)
-and [evaluation](https://bearing-research.github.io/diffcone/evaluation/).
+[getting started](https://bearing-research.github.io/diffcone/latest/getting-started/),
+guides to [planning](https://bearing-research.github.io/diffcone/latest/guides/planning/),
+[running and checking](https://bearing-research.github.io/diffcone/latest/guides/running/),
+[execution evidence](https://bearing-research.github.io/diffcone/latest/guides/evidence/)
+and [CI](https://bearing-research.github.io/diffcone/latest/ci/), the
+[command reference](https://bearing-research.github.io/diffcone/latest/reference/cli/),
+[limitations](https://bearing-research.github.io/diffcone/latest/limitations/), and how
+it works in the [design](https://bearing-research.github.io/diffcone/latest/design/)
+and [evaluation](https://bearing-research.github.io/diffcone/latest/evaluation/).
 
 ## Status
 
@@ -90,7 +90,7 @@ acceptance scenarios; recall has been measured on 34 public repositories
 and on pandas. See the
 [changelog](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md)
 for what each release contains and the
-[roadmap](https://bearing-research.github.io/diffcone/roadmap/) for what is
+[roadmap](https://bearing-research.github.io/diffcone/latest/roadmap/) for what is
 next.
 
 ## Development
@@ -102,7 +102,7 @@ uv run ruff check src tests scripts && uv run ruff format --check src tests scri
 uv run ty check
 ```
 
-See [development](https://bearing-research.github.io/diffcone/development/) and
+See [development](https://bearing-research.github.io/diffcone/latest/development/) and
 [AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md)
 for the rules that apply when changing selection behaviour.
 

@@ -36,6 +36,11 @@ nav = [
   { "Development" = "development.md" },
 ]
 
+# The version menu reads versions.json, which mike writes (docs.yml).
+[project.extra.version]
+provider = "mike"
+alias = true
+
 [project.theme]
 language = "en"
 features = [
