@@ -1176,8 +1176,10 @@ write JUnit XML (<code>--junitxml=full.xml</code>) and upload it, then add:</p>
 <a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">          </span><span class="nt">full</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">full/full.xml</span>
 </code></pre></div>
-<p>The check writes its result to the job summary. It doesn't fail the
-workflow unless you set <code>fail-on-miss: true</code>. Tests that already failed in
+<p>The check writes its result to the job summary. A miss is a new failure
+of the full run that the plan didn't select, or that diffcone's own run
+didn't execute. It doesn't fail the workflow unless you set
+<code>fail-on-miss: true</code>. Tests that already failed in
 the nightly run are reported as already failing, not as misses.</p>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>The recording is saved with <code>actions/cache</code> under <code>&lt;key-prefix&gt;-&lt;commit&gt;</code>,
@@ -1224,7 +1226,9 @@ unchanged files.</p>
 on, see <a href="../guides/evidence/#run-with-a-recording">execution evidence</a>) and
 <code>junit</code> (where to keep the recording run's JUnit XML; default
 <code>.diffcone/baseline.xml</code>). <code>run</code> also takes <code>base</code> (default <code>HEAD^1</code>, the
-target branch of the pull request's merge commit).</p>
+target branch of the pull request's merge commit) and
+<code>allow-incomplete-discovery</code> (default <code>false</code>; see
+<a href="../reference/discovery/#when-the-target-list-may-be-short">when the target list may be short</a>).</p>
 <p><code>check</code> takes <code>full</code> (required: the full run's JUnit XML), <code>results</code> (the
 directory <code>run</code> wrote; default <code>diffcone-results</code>), <code>others</code> (more
 selective runs to compare, as <code>NAME=JUNIT</code> pairs), and <code>fail-on-miss</code>.</p>

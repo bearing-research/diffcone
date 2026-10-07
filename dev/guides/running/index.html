@@ -1052,7 +1052,9 @@ selected, and exits with <code>1</code> if there is one. Options:</p>
 <li><code>--baseline base.xml</code> takes a run from before the change. Tests that
   failed there too are reported as already failing, not as misses.</li>
 <li><code>--run NAME=JUNIT</code> adds a selective run to compare on the same failures:
-  diffcone's own run of the plan, or another test-selection tool's.</li>
+  diffcone's own run of the plan, or another test-selection tool's. Name
+  diffcone's own run <code>diffcone</code> (<code>--run diffcone=diffcone.xml</code>): a new
+  failure it didn't execute is a miss too, even if the plan selected it.</li>
 <li><code>--format markdown</code> writes a summary table for a CI job summary, and
   <code>--format json</code> a report for scripts.</li>
 </ul>

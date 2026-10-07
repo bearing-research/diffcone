@@ -1191,9 +1191,11 @@ target list itself may be short, so running only the selected targets
 could skip tests. <code>3</code> wins when both apply. A manifest written by
 <code>discover</code> keeps its notes, so a plan made from it exits <code>3</code> as well.</p>
 <p><code>run</code> exits with the runner's own code (0 when nothing was selected, or
-with <code>--dry-run</code>). It refuses with <code>2</code> when the working tree differs from
-the snapshot the plan analysed (unless <code>--allow-mismatched-worktree</code>), and
-with <code>3</code> when discovery may be incomplete (unless
+with <code>--dry-run</code>; pytest's <code>5</code>, no test ran, counts as <code>0</code>), and with <code>3</code>
+when a selected test was not collected. It refuses with <code>2</code> when the
+working tree differs from the snapshot the plan analysed (unless
+<code>--allow-mismatched-worktree</code>) or <code>--repo</code> is not the top of a git
+repository, and with <code>3</code> when discovery may be incomplete (unless
 <code>--allow-incomplete-discovery</code>).</p>
 <p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
 <code>1</code> when some were missed, <code>2</code> on errors. <code>check</code> exits <code>0</code> when every new
@@ -1317,7 +1319,7 @@ when an input cannot be read.</p>
 <tr>
 <td><code>--command</code> <code>COMMAND</code></td>
 <td></td>
-<td>Runner command line (default: "python -m pytest" or "asv run"); run in --repo.</td>
+<td>Runner command line (default: "python -m pytest", or "asv run --python=same", which benchmarks the checkout in the current environment); run in --repo.</td>
 </tr>
 <tr>
 <td><code>--dry-run</code></td>
