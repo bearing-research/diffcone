@@ -1,9 +1,9 @@
-# Command reference
+# Commands
 
-Generated from the command-line parser (`scripts/docs_cli.py`); `diffcone
-<command> --help` prints the same. Every command that takes snapshots
-accepts a git revision, `INDEX` (the staged content) or `WORKTREE` (the
-files on disk, ignored files excluded).
+Every command and its options. `diffcone <command> --help` prints the same
+information. Wherever a command takes a snapshot (`--base`, `--head`,
+`--rev`), you can pass a git revision, `INDEX` (your staged changes) or
+`WORKTREE` (the files on disk).
 
 ## Exit codes
 
@@ -53,7 +53,7 @@ diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--
 | `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
-| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically. |
+| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
 | `--format` `FORMAT` | `json` | One of `json`, `text`. |
 
 ## `diffcone run`
@@ -84,8 +84,8 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 | `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
-| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically. |
-| `--collect` |  | With --evidence: record the selected tests too and advance the store to head (their new records, the old ones for every other test); needs a clean checkout of head and the pytest arguments the store was collected with. |
+| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
+| `--collect` |  | With --evidence: record the selected tests too and advance the recording to head (their new records, the old ones for every other test); needs a clean checkout of head and the pytest arguments the recording was made with. |
 | `runner_args ...` (after `--`) |  | Extra runner arguments (after --). |
 
 ## `diffcone validate`
@@ -114,7 +114,7 @@ diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command CO
 | `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
-| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the store at the nearest ancestor commit; other runners' targets are planned statically. |
+| `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
 | `--format` `FORMAT` | `text` | One of `json`, `text`. |
 
 ## `diffcone corpus`
@@ -136,7 +136,7 @@ diffcone corpus [-h] --range REVISION_RANGE [--targets TARGETS] [--command COMMA
 | `--setup-command` `SETUP_COMMAND` |  | Shell command run inside each temporary checkout before its suite. |
 | `--all-commits` |  | Validate commits without .py changes too. |
 | `--max` `MAX` |  | Only the last N commits of the range. |
-| `--evidence` <code>auto&#124;PATH</code> |  | Plan every pair with execution evidence: a fixed store, or auto for the store at the nearest ancestor of each commit. |
+| `--evidence` <code>auto&#124;PATH</code> |  | Plan every pair with execution evidence: a fixed recording, or auto for the recording at the nearest ancestor of each commit. |
 | `--jobs` `JOBS` | `1` | Validate this many pairs in parallel, each in its own temporary worktrees (default 1; suites that write to shared locations can interfere). |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--source-root` `DIR[=PREFIX]` |  | Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names. |
@@ -166,7 +166,7 @@ diffcone collect [-h] [--repo REPO] [--source-root DIR[=PREFIX]] [--rev REV] [--
 | `--command` `COMMAND` |  | Pytest command line (default: "python -m pytest"). |
 | `--setup-command` `SETUP_COMMAND` |  | Shell command run inside the temporary checkout (with --rev). |
 | `--reverse-check` |  | Run the suite a second time in reverse order; tests whose records differ are marked unstable and always selected. |
-| `--env-var` `NAME` |  | An environment variable that changes what tests do (pandas' PANDAS_FUTURE): recorded with the environment, and a run where it differs uses no evidence (repeatable). |
+| `--env-var` `NAME` |  | An environment variable that changes what tests do (a feature flag, say): recorded with the environment, and a run where it differs uses no evidence (repeatable). |
 | `--no-cache` |  | Do not use the index cache. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `runner_args ...` (after `--`) |  | Extra pytest arguments (after --). |
@@ -209,7 +209,7 @@ diffcone prune [-h] [--repo REPO] --keep REV [--source-root DIR[=PREFIX]] [--cac
 
 ## `diffcone evidence`
 
-List the evidence stores of a repository.
+List the evidence recordings of a repository.
 
 ```text
 diffcone evidence [-h] [--repo REPO]

@@ -164,13 +164,13 @@ failed".
 selected tests on pytest's command line. pytest collects from its own
 starting points and `-p diffcone_select` (`src/diffcone/selection.py`)
 deselects the rest, so conftests load as in a full run (see the `run`
-bullet in `docs/design.md`). Selected targets pytest did not collect are
+bullet in `internal/design.md`). Selected targets pytest did not collect are
 reported. `--collect` now says plainly when pytest stopped before any test
 process finished, instead of folding an empty record directory. An
 upstream fix is still worth filing: other tools that pass node ids hit the
 same crash.
 
-**Unblocked: roadmap item 6's done-when** (`docs/roadmap.md`, "6.
+**Unblocked: roadmap item 6's done-when** (`internal/roadmap.md`, "6.
 Advancing an evidence store"). `run --collect` is implemented, tested on the
 fixture repository and pushed (`59c5f01`). The pandas chain check stopped
 at its first advance (commit `4e48725269`) because of this crash; rerun it
@@ -195,9 +195,9 @@ with the fix.
 * Done when: 100 % recall over the chained plans against the saved coverage
   runs, and every test's advanced record matching the full recording at
   the anchors, with any differences explained. Then record the result in
-  `docs/evaluation.md`, and update roadmap item 6's status.
+  `internal/evaluation.md`, and update roadmap item 6's status.
 
 **Already confirmed:** pandas recall of evidence plans is 100 % over 20
-commit pairs (`docs/evaluation.md`, "pandas: recall of evidence plans").
+commit pairs (`internal/evaluation.md`, "pandas: recall of evidence plans").
 The remaining stage-4 work for evidence, the corpus re-plan, was deferred
 by the user.

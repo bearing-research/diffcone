@@ -1,4 +1,4 @@
-"""Spike analysis: execution evidence on pandas, following docs/evidence_design.md.
+"""Spike analysis: execution evidence on pandas, following internal/evidence_design.md.
 
 Usage: python analyse2.py REPO EVIDENCE_DIR CACHE_DIR OUT_JSON COMMIT...
 

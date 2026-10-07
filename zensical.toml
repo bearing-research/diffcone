@@ -12,6 +12,7 @@ site_dir = "site"
 nav = [
   { "Home" = "index.md" },
   { "Getting started" = "getting-started.md" },
+  { "How it works" = "concepts.md" },
   { "Guides" = [
     { "Planning" = "guides/planning.md" },
     { "Running and checking" = "guides/running.md" },
@@ -20,21 +21,16 @@ nav = [
   ] },
   { "Reference" = [
     { "Commands" = "reference/cli.md" },
-    { "Target manifest" = "reference/manifest.md" },
-    { "diffcone.toml" = "reference/declarations.md" },
     { "Report" = "reference/report.md" },
     { "Static discovery" = "reference/discovery.md" },
-    { "Limitations" = "limitations.md" },
+    { "Target manifest" = "reference/manifest.md" },
+    { "diffcone.toml" = "reference/declarations.md" },
   ] },
-  { "Background" = [
-    { "Design" = "design.md" },
-    { "Evidence design" = "evidence_design.md" },
-    { "Evaluation" = "evaluation.md" },
-    { "Roadmap" = "roadmap.md" },
-  ] },
+  { "Limitations" = "limitations.md" },
   { "Changelog" = "changelog.md" },
   { "Development" = "development.md" },
 ]
+
 
 # The version menu reads versions.json, which mike writes (docs.yml).
 [project.extra.version]

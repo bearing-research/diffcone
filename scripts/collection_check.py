@@ -1,7 +1,7 @@
 """Measure static discovery against what pytest really collects.
 
 Discovery reproduces each runner's documented collection rules without
-importing anything (docs/design.md). This script checks that claim the only
+importing anything (internal/design.md). This script checks that claim the only
 way it can be checked: it asks the runner what it collects and diffs the
 answer against the targets discovery produces for the same snapshot. It
 executes project code, so it is a script, not part of planning.

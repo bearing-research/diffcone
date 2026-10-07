@@ -530,10 +530,10 @@ def test_run_collect_refusals(repo, capsys):
     head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
     # Other pytest arguments could deselect cases the old record covered.
     assert _run_collect(repo, ev.commit, head, "--", "-q") == 2
-    assert "differ from the ones the store was collected with" in capsys.readouterr().err
+    assert "differ from the ones the recording was made with" in capsys.readouterr().err
     (repo.path / "pkg" / "ops.py").write_text(OPS + "\n# edited\n", "utf-8")
     assert _run_collect(repo, ev.commit, "WORKTREE") == 2
-    assert "a store describes a commit" in capsys.readouterr().err
+    assert "a recording describes a commit" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         main(["run", "--repo", str(repo.path), "--base", ev.commit, "--head", head])
     with pytest.raises(SystemExit):

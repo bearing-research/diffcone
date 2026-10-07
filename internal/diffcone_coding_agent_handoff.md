@@ -154,9 +154,9 @@ Create or update:
 
 **`README.md`:** What Diffcone does, its development status, the supported prototype workflow, and current limitations.
 
-**`docs/design.md`:** Symbol identities, dependency representation, before/after analysis, change classification, and fallback behavior.
+**`internal/design.md`:** Symbol identities, dependency representation, before/after analysis, change classification, and fallback behavior.
 
-**`docs/roadmap.md`:** Next milestones: real runner discovery, working-tree analysis, broader resolution support, and validated execution integration.
+**`internal/roadmap.md`:** Next milestones: real runner discovery, working-tree analysis, broader resolution support, and validated execution integration.
 
 **`AGENTS.md`:** Preserve the scope boundaries and require regression scenarios for changes that narrow selection.
 

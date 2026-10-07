@@ -1,4 +1,4 @@
-"""Evidence-mode scenarios (docs/evidence_design.md).
+"""Evidence-mode scenarios (internal/evidence_design.md).
 
 Each records real evidence in a fixture repository (``diffcone collect``
 runs its suite under the recorder), commits a change and plans with that

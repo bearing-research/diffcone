@@ -3,17 +3,15 @@
 [![CI](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml/badge.svg)](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml)
 [![Docs](https://github.com/bearing-research/diffcone/actions/workflows/docs.yml/badge.svg)](https://bearing-research.github.io/diffcone/)
 
-**Which tests and benchmarks can a change to Python code affect, and why?**
+**Run the tests your change can affect, and know why each one was picked.**
 
-diffcone reads two snapshots of a repository (two commits, or a commit and
-your working tree), works out which functions, methods and classes changed,
-and follows the dependencies back to the tests and benchmarks that can
-observe them. Every selection comes with the path that connects it to a
-change, or the rule that made diffcone select it without one. It never runs
-your code to plan.
+diffcone compares two versions of a Python repository, finds the functions,
+methods and classes that changed, and follows the code's dependencies back
+to the tests and benchmarks that can observe them. Each selected test comes
+with the reason it was selected.
 
 ```console
-$ diffcone plan --base HEAD~1 --head HEAD --discover pytest \
+$ diffcone plan --base main --head WORKTREE --discover pytest \
     --source-root src --source-root . --format text
 ...
 changed symbols (1):
@@ -24,26 +22,25 @@ selected targets (2):
     - dependency: calc.ops.mul body_changed
   pytest: tests/test_calc.py::test_square
     - dependency: calc.ops.mul body_changed
-      ... -> tests.test_calc.test_square -[references]-> calc.ops.square -[references]-> calc.ops.mul
 
 unselected targets (1):
   pytest: tests/test_calc.py::test_add
 ```
 
-- **Explainable:** a selection is a dependency path or an explicit fallback
-  rule, never a guess or a score.
-- **Conservative:** what it cannot bound (a dynamic import, a file that does
-  not parse, a plugin it cannot see) widens the selection and is reported. A
-  plan may run more tests than needed; it is built not to run fewer.
-- **Runner-independent:** pytest tests and ASV benchmarks are both targets,
-  found by static discovery that never imports your code.
-- **Evidence when static analysis is not enough:** record once what each
-  test executed, and a large library where everything imports everything
-  (pandas) stops selecting nearly the whole suite for nearly every change.
+- **Every selection is explained:** the report shows the chain of calls and
+  references from each test to the change.
+- **It errs on the side of running more:** when diffcone can't tell what a
+  change reaches, it selects more tests and says why.
+- **It never runs your code to plan:** planning reads files and git history
+  only.
+- **pytest and ASV:** tests and benchmarks are found from your
+  configuration and source, the way each runner collects them.
+- **Execution evidence:** for large codebases where nearly everything
+  imports everything, record once what each test ran and plan from that.
 
 ## Install
 
-Python 3.11+ and git; no other dependencies.
+Python 3.11 or later and git; no other dependencies.
 
 ```bash
 uv tool install diffcone    # or: pipx install diffcone, pip install diffcone
@@ -52,48 +49,45 @@ uv tool install diffcone    # or: pipx install diffcone, pip install diffcone
 ## Use
 
 ```bash
-# what can my uncommitted change affect?
+# Which tests can my uncommitted changes affect?
 diffcone plan --base main --head WORKTREE --discover pytest --format text
 
-# run only that (arguments after -- go to pytest)
+# Run only those tests (arguments after -- go to pytest)
 diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" -- -x
 
-# record what each test executes, then plan on it (Python 3.12+ in the project)
+# Record what each test runs, then plan from the recording (Python 3.12+)
 diffcone collect --command "uv run pytest" -- -n 8
 diffcone plan --base main --head HEAD --discover pytest --evidence auto -o plan.json
 
-# did the plan select every test that failed in a full run?
+# Did the plan select every test that failed in a full run?
 diffcone check --plan plan.json --full full.xml
 ```
 
-With a `src` layout, add `--source-root src --source-root .` so modules get
+For a `src` layout, add `--source-root src --source-root .` so modules get
 their import names.
 
 ## Documentation
 
+Read the documentation at
 **[bearing-research.github.io/diffcone](https://bearing-research.github.io/diffcone/)**:
-[getting started](https://bearing-research.github.io/diffcone/latest/getting-started/),
-guides to [planning](https://bearing-research.github.io/diffcone/latest/guides/planning/),
-[running and checking](https://bearing-research.github.io/diffcone/latest/guides/running/),
-[execution evidence](https://bearing-research.github.io/diffcone/latest/guides/evidence/)
-and [CI](https://bearing-research.github.io/diffcone/latest/ci/), the
-[command reference](https://bearing-research.github.io/diffcone/latest/reference/cli/),
-[limitations](https://bearing-research.github.io/diffcone/latest/limitations/), and how
-it works in the [design](https://bearing-research.github.io/diffcone/latest/design/)
-and [evaluation](https://bearing-research.github.io/diffcone/latest/evaluation/).
+
+- [Getting started](https://bearing-research.github.io/diffcone/latest/getting-started/)
+- [How it works](https://bearing-research.github.io/diffcone/latest/concepts/)
+- Guides: [planning](https://bearing-research.github.io/diffcone/latest/guides/planning/),
+  [running and checking](https://bearing-research.github.io/diffcone/latest/guides/running/),
+  [execution evidence](https://bearing-research.github.io/diffcone/latest/guides/evidence/),
+  [CI with GitHub Actions](https://bearing-research.github.io/diffcone/latest/ci/)
+- [Command reference](https://bearing-research.github.io/diffcone/latest/reference/cli/)
+  and [limitations](https://bearing-research.github.io/diffcone/latest/limitations/)
 
 ## Status
 
-Alpha (0.1). Planning, static pytest and ASV discovery, running, validating
-and checking plans, and execution evidence are implemented and covered by
-acceptance scenarios; recall has been measured on 34 public repositories
-and on pandas. See the
+diffcone is alpha software. Its selections have been checked against the
+full test suites of 34 open-source projects. See the
 [changelog](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md)
-for what each release contains and the
-[roadmap](https://bearing-research.github.io/diffcone/latest/roadmap/) for what is
-next.
+for what each release contains.
 
-## Development
+## Contributing
 
 ```bash
 uv sync
@@ -102,10 +96,9 @@ uv run ruff check src tests scripts && uv run ruff format --check src tests scri
 uv run ty check
 ```
 
-See [development](https://bearing-research.github.io/diffcone/latest/development/) and
-[AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md)
-for the rules that apply when changing selection behaviour.
+See the [development guide](https://bearing-research.github.io/diffcone/latest/development/)
+and [AGENTS.md](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md).
 
 ## License
 
-MIT, see [LICENSE](https://github.com/bearing-research/diffcone/blob/main/LICENSE).
+MIT; see [LICENSE](https://github.com/bearing-research/diffcone/blob/main/LICENSE).

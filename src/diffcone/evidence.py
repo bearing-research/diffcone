@@ -8,7 +8,7 @@ result in ``.diffcone/evidence/<commit>-<environment>.sqlite``.
 
 Nothing here runs project code, and the planner treats an :class:`Evidence`
 the way it treats a manifest: data a runner integration produced. See
-docs/evidence_design.md.
+internal/evidence_design.md.
 """
 
 from __future__ import annotations
@@ -377,9 +377,9 @@ def advance(
     safe: a test without a record is selected."""
     if fresh is not None:
         if fresh.environment_hash != previous.environment_hash:
-            raise EvidenceError("the run's environment differs from the store's")
+            raise EvidenceError("the run's environment differs from the recording's")
         if sorted(fresh.source_roots) != sorted(previous.source_roots):
-            raise EvidenceError("the run's source roots differ from the store's")
+            raise EvidenceError("the run's source roots differ from the recording's")
     sources = [previous] + ([fresh] if fresh is not None else [])
     tests: dict[str, tuple[Evidence, TestRecord, int]] = {
         name: (previous, record, 0)
@@ -539,12 +539,12 @@ def load_store(path: Path) -> Evidence:
     try:
         db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        raise EvidenceError(f"cannot open evidence store {path}: {exc}") from exc
+        raise EvidenceError(f"cannot open evidence recording {path}: {exc}") from exc
     try:
         meta = _meta(db)
         if meta.get("format") != STORE_FORMAT:
             raise EvidenceError(
-                f"evidence store {path} has format {meta.get('format')}, this diffcone "
+                f"evidence recording {path} has format {meta.get('format')}, this diffcone "
                 f"reads {STORE_FORMAT}; collect it again"
             )
         symbols = [n for _, n in db.execute("SELECT id, name FROM symbols ORDER BY id")]
@@ -560,7 +560,7 @@ def load_store(path: Path) -> Evidence:
         for symbol, module in db.execute("SELECT symbol, module FROM import_by"):
             import_by[symbol].add(module)
     except (sqlite3.Error, KeyError, ValueError, zlib.error) as exc:
-        raise EvidenceError(f"cannot read evidence store {path}: {exc}") from exc
+        raise EvidenceError(f"cannot read evidence recording {path}: {exc}") from exc
     finally:
         db.close()
     return Evidence(
@@ -609,7 +609,7 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
     if spec != "auto":
         path = Path(spec)
         if not path.exists():
-            raise EvidenceError(f"no evidence store at {spec}")
+            raise EvidenceError(f"no evidence recording at {spec}")
         return path
     best: tuple[int, float, Path] | None = None
     missing: list[str] = []
@@ -639,7 +639,7 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
         hints = []
         if missing:
             hints.append(
-                f"the store(s) at {', '.join(c[:12] for c in missing)} are for commits this "
+                f"the recording(s) at {', '.join(c[:12] for c in missing)} are for commits this "
                 f"checkout does not have; fetch them (git fetch --depth=1 origin {missing[0]})"
             )
         shallow = subprocess.run(
@@ -650,11 +650,11 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
         )
         if shallow.stdout.strip() == "true":
             hints.append(
-                "this clone is shallow, so whether a store's commit is an ancestor cannot be "
-                "told: fetch the history, or pass the store's path to --evidence"
+                "this clone is shallow, so whether a recording's commit is an ancestor cannot "
+                "be told: fetch the history, or pass the recording's path to --evidence"
             )
         raise EvidenceError(
-            f"no evidence store with source roots {source_roots} at an ancestor of "
+            f"no evidence recording with source roots {source_roots} at an ancestor of "
             f"{reference[:12]}; record one with `diffcone collect`"
             + "".join(f"; {h}" for h in hints)
         )

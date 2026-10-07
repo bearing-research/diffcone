@@ -9,7 +9,7 @@ inputs:
     description: Cache key prefix naming the job this evidence stands for (one per environment).
     required: true
   command:
-    description: The pytest command line, without arguments (e.g. "pixi run -e py313 python -m pytest").
+    description: The pytest command line, without arguments (e.g. "uv run python -m pytest").
     required: true
   pytest-args:
     description: Arguments passed to pytest (markers, -n, paths), as one shell-quoted string.

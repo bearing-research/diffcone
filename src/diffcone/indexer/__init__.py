@@ -5,7 +5,7 @@ hashes bodies and definitions, and resolves the statically resolvable subset
 of references into explicit dependency edges. Everything that cannot be
 resolved is recorded as an :class:`UnresolvedReference`, never dropped.
 
-Supported subset (see docs/design.md):
+Supported subset (see internal/design.md):
 
 * module-level functions, classes, methods (and nested classes) as symbols;
 * bare names and dotted attribute chains rooted at a module-level definition,

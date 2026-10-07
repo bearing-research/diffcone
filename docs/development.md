@@ -35,11 +35,24 @@ def test_a_body_change_selects_its_callers(repo):
     assert selected(plan) == {"tests/test_ops.py::test_f"}
 ```
 
-The rules for changing selection behaviour (any change that narrows
-selection needs a regression scenario; recall comes before precision) are in
-[`AGENTS.md`](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md),
-and every planned item has a design sketch in the [roadmap](roadmap.md).
+## Design documents
 
-The command reference is generated from the parser: after changing an
-option, run `uv run python scripts/docs_cli.py` (a test fails until you
-do).
+The design notes for contributors live in the repository rather than on
+this site:
+
+- [`internal/design.md`](https://github.com/bearing-research/diffcone/blob/main/internal/design.md):
+  the analysis rules in detail.
+- [`internal/evidence_design.md`](https://github.com/bearing-research/diffcone/blob/main/internal/evidence_design.md):
+  how execution evidence works, and the assumptions it relies on.
+- [`internal/evaluation.md`](https://github.com/bearing-research/diffcone/blob/main/internal/evaluation.md):
+  measurements on real repositories.
+- [`internal/roadmap.md`](https://github.com/bearing-research/diffcone/blob/main/internal/roadmap.md):
+  planned work, each item with a design sketch.
+- [`AGENTS.md`](https://github.com/bearing-research/diffcone/blob/main/AGENTS.md):
+  the rules for changing what diffcone selects. In short: a change that
+  makes diffcone select fewer tests needs a test showing it's still
+  correct.
+
+The command reference is generated from the command-line parser. After
+changing an option, run `uv run python scripts/docs_cli.py`; a test fails
+until you do.

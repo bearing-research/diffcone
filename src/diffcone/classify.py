@@ -60,7 +60,7 @@ class SymbolChange:
         Class bodies count: class-level attributes (ASV ``params``, pytest
         marks, registries) shape how every method runs even when no method
         references them textually. Module bodies do not; members that use
-        module state carry their own edges (see docs/design.md).
+        module state carry their own edges (see internal/design.md).
         """
         if STRUCTURAL & set(self.changes):
             return True

@@ -1536,7 +1536,7 @@ any change at all.
 
 ## pandas: recall of evidence plans (20 commit pairs)
 
-Execution evidence (`docs/evidence_design.md`) was checked for recall on the
+Execution evidence (`internal/evidence_design.md`) was checked for recall on the
 25 first-parent commits `ebbcd61` .. `3f57341` with
 `scripts/evidence_recall.py`. Evidence was recorded at every sixth commit
 (`ebbcd61`, `474e826`, `8f68498`, `9f54350`, `3f57341`), and each of the

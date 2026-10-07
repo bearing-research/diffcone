@@ -1,9 +1,9 @@
-# `diffcone.toml`
+# diffcone.toml
 
-Some dependencies are real but invisible to static analysis: a registry
-filled at import time, a plugin resolved through entry points, a handler
-named in a YAML file. Declare them in `diffcone.toml` at the repository
-root:
+Some dependencies can't be seen in the code: a plugin registered through
+entry points, a handler named in a configuration file, a registry filled
+when a module is imported. Declare them in a `diffcone.toml` file at the
+root of your repository:
 
 ```toml
 [[edges]]
@@ -16,25 +16,23 @@ from = "pkg.cli"
 to = "pkg.plugins"
 ```
 
-Each `[[edges]]` entry says that `from` depends on `to`: a change to `to`
-selects the targets that reach `from`, and the report explains the
-selection as "declared in diffcone.toml" with your `why`.
+Each `[[edges]]` entry says that `from` depends on `to`. A change to `to`
+then selects every target that reaches `from`, and the report explains the
+selection with your `why`.
 
-| Key | Meaning |
+| Key | Description |
 |---|---|
-| `from` | Required. The dependent: a symbol (`pkg.mod.func`, `pkg.mod.Class.method`) or a module or class, which stands for everything in it. |
+| `from` | Required. The code that depends on something: a function, method, class or module, by its import path. A class or module includes everything defined in it. |
 | `to` | Required. What it depends on, named the same way. |
-| `why` | Optional. Shown in the report. |
+| `why` | Optional. A short explanation, shown in the report. |
 
-The rules:
+Declarations can only add dependencies, so they can only make diffcone
+select more tests, never fewer.
 
-- **Declarations only add edges**, so they can only select more: a wrong
-  one costs a test that runs anyway, and none can make a plan miss.
-- The file is read from both snapshots, so a declaration is versioned with
-  the code it describes.
-- An endpoint that exists in neither snapshot, an unknown key, or a file
-  that does not parse is an **analysis error** (the plan selects everything
-  and exits `1`) rather than a declaration that silently does nothing.
-- A module or class endpoint expands to its members; a declaration joining
-  more than 5 000 symbol pairs is refused as an error, so declare the
-  symbols that depend on each other instead.
+diffcone reads the file from both snapshots, so it changes along with your
+code. A declaration that names something that doesn't exist, an unknown
+key, or a file that doesn't parse is reported as an analysis error: the
+plan then selects every target, so a typo can't silently remove tests from
+a plan. A declaration between two very large modules (more than 5,000
+pairs of symbols) is also an error; declare the specific functions
+instead.

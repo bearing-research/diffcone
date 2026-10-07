@@ -2,45 +2,71 @@
 
 ## Install
 
-diffcone needs Python 3.11+ and git, and nothing else. Install the command
-with any of:
+diffcone needs Python 3.11 or later and git. It has no other dependencies.
 
-```bash
-uv tool install diffcone
-pipx install diffcone
-pip install diffcone
-```
+=== "uv"
 
-or the development version, `uv tool install
-git+https://github.com/bearing-research/diffcone`. Check it with
-`diffcone --version`.
+    ```bash
+    uv tool install diffcone
+    ```
 
-diffcone does not need to be installed in your project's environment to
-plan: it reads files and git objects, and never imports your code. The
-commands that run your tests (`run`, `validate`, `collect`) take the
-command that runs them, so your project keeps its own environment.
+=== "pipx"
 
-## A first plan
+    ```bash
+    pipx install diffcone
+    ```
 
-Take a small project with a `src` layout:
+=== "pip"
 
-```text
-src/calc/ops.py          tests/test_calc.py
------------------        ------------------------------------
-def add(a, b):           from calc.ops import add, mul, square
-    return a + b
-                         def test_add():
-def mul(a, b):               assert add(1, 2) == 3
-    return a * b
-                         def test_mul():
-def square(a):               assert mul(2, 3) == 6
-    return mul(a, a)
-                         def test_square():
-                             assert square(3) == 9
-```
+    ```bash
+    pip install diffcone
+    ```
 
-Change `mul` to `return b * a`, commit, and ask diffcone what the commit
-can affect:
+Check the installation with `diffcone --version`.
+
+You don't need to install diffcone into your project's environment.
+Planning only reads your files, and the commands that run tests take the
+command your project already uses, such as `uv run pytest`.
+
+## Plan a change
+
+Here is a small project with a `src` layout:
+
+=== "src/calc/ops.py"
+
+    ```python
+    def add(a, b):
+        return a + b
+
+
+    def mul(a, b):
+        return a * b
+
+
+    def square(a):
+        return mul(a, a)
+    ```
+
+=== "tests/test_calc.py"
+
+    ```python
+    from calc.ops import add, mul, square
+
+
+    def test_add():
+        assert add(1, 2) == 3
+
+
+    def test_mul():
+        assert mul(2, 3) == 6
+
+
+    def test_square():
+        assert square(3) == 9
+    ```
+
+Change `mul` to `return b * a`, commit, and ask diffcone which tests the
+commit can affect:
 
 ```console
 $ diffcone plan --base HEAD~1 --head HEAD --discover pytest \
@@ -71,72 +97,65 @@ unresolved relationships: 0 (0 matching an affected symbol, 0 dynamic)
 discovery (pytest): 3 target(s), 0 note(s)
 ```
 
-What happened:
+Here is what each option did:
 
+- `--base HEAD~1 --head HEAD` compares the commit with its parent.
 - `--discover pytest` found the three tests by reading pytest's
-  configuration and collection rules, without importing anything.
-- `--source-root src --source-root .` named the modules: `src/calc/ops.py`
-  is `calc.ops`, `tests/test_calc.py` is `tests.test_calc`
-  ([source roots](guides/planning.md#source-roots)).
-- `calc.ops.mul` changed its body. `test_mul` calls it, and `test_square`
-  reaches it through `square`; the paths show each step. `test_add` has no
-  path to it.
+  configuration and the test files.
+- `--source-root src --source-root .` tells diffcone where modules are
+  imported from, so `src/calc/ops.py` is the module `calc.ops`. See
+  [source roots](guides/planning.md#source-roots).
 
-Before committing, plan the working tree instead: `--base HEAD --head
-WORKTREE`. The report says which kind of snapshot it read, so a plan of
-uncommitted files never passes for a plan of a commit.
+`test_mul` calls `mul` directly, and `test_square` reaches it through
+`square`, so both are selected. `test_add` has no path to `mul`.
 
-## Reading the report
+!!! tip "Plan before you commit"
 
-Without `--format text`, `plan` prints JSON, the form tools read. The parts
-you will use most:
+    Use `--head WORKTREE` to plan the files on disk, including uncommitted
+    edits: `diffcone plan --base HEAD --head WORKTREE --discover pytest`.
 
-```json
-{
-  "status": "complete",
-  "changed_symbols": [
-    {"id": "calc.ops.mul", "kind": "function", "changes": ["body_changed"], ...}
-  ],
-  "selected_targets": [
-    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_mul", "rules": ["dependency"], ...},
-    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_square", "rules": ["dependency"], ...}
-  ],
-  "unselected_targets": [
-    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_add",
-     "reason": "no dependency path from this target to a changed symbol in either revision", ...}
-  ],
-  "fallback_decisions": []
-}
-```
+## Run the selected tests
 
-- `status` is `complete`, or `degraded` when an analysis error (a file that
-  does not parse, say) forced selecting everything.
-- Each selected target lists the `rules` that selected it. `dependency`
-  means a real path; others name a fallback, and `fallback_decisions` says
-  where the analysis gave up bounding a change and why.
-- `dependency_explanations` holds the edge paths shown above.
-
-The [report reference](reference/report.md) lists every section.
-
-The exit code matters in scripts: `0` a complete plan, `1` a degraded one
-(selects everything), `2` no plan, `3` discovery may be short of what
-pytest collects ([exit codes](reference/cli.md#exit-codes)).
-
-## Running what it selected
+`diffcone run` plans the same way, then runs only the selected tests.
+Arguments after `--` are passed to pytest:
 
 ```bash
 diffcone run --base main --head WORKTREE --discover pytest \
     --source-root src --source-root . --command "uv run pytest" -- -x
 ```
 
-`run` plans exactly like `plan`, then runs pytest on the selected tests
-(arguments after `--` go to pytest). See
-[running and checking](guides/running.md).
+## Use the JSON report
 
-## Next
+Without `--format text`, `diffcone plan` prints a JSON report for scripts
+and CI:
 
-- Add `.diffcone/` to `.gitignore`: diffcone caches indexes there, so the
-  next plan only re-reads the files that changed.
-- If nearly every change selects nearly every test (a large library with a
-  central module everything imports), try
+```json
+{
+  "status": "complete",
+  "changed_symbols": [
+    {"id": "calc.ops.mul", "kind": "function", "changes": ["body_changed"]}
+  ],
+  "selected_targets": [
+    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_mul", "rules": ["dependency"]},
+    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_square", "rules": ["dependency"]}
+  ],
+  "unselected_targets": [
+    {"runner": "pytest", "runner_id": "tests/test_calc.py::test_add",
+     "reason": "no dependency path from this target to a changed symbol in either revision"}
+  ]
+}
+```
+
+(Some fields are left out here; the [report reference](reference/report.md)
+lists them all.) Check the exit code in scripts: `0` means a complete plan,
+and other codes are described in the
+[command reference](reference/cli.md#exit-codes).
+
+## Next steps
+
+- Add `.diffcone/` to your `.gitignore`. diffcone keeps a cache there, so
+  later plans only re-read the files that changed.
+- Read [How it works](concepts.md) to understand what makes a test
+  selected.
+- If almost every change selects almost every test, try
   [execution evidence](guides/evidence.md).

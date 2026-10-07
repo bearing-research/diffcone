@@ -109,8 +109,8 @@ def _add_evidence(p: argparse.ArgumentParser) -> None:
         "--evidence",
         metavar="auto|PATH",
         help="opt-in execution evidence (see `diffcone collect`): select pytest targets on "
-        "what each test executed when recorded. auto picks the store at the nearest ancestor "
-        "commit; other runners' targets are planned statically",
+        "what each test executed when recorded. auto picks the recording at the nearest "
+        "ancestor commit; other runners' targets are planned statically",
     )
 
 
@@ -181,9 +181,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--collect",
         action="store_true",
-        help="with --evidence: record the selected tests too and advance the store to head "
+        help="with --evidence: record the selected tests too and advance the recording to head "
         "(their new records, the old ones for every other test); needs a clean checkout of "
-        "head and the pytest arguments the store was collected with",
+        "head and the pytest arguments the recording was made with",
     )
     r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
 
@@ -256,8 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument(
         "--evidence",
         metavar="auto|PATH",
-        help="plan every pair with execution evidence: a fixed store, or auto for the store "
-        "at the nearest ancestor of each commit",
+        help="plan every pair with execution evidence: a fixed recording, or auto for the "
+        "recording at the nearest ancestor of each commit",
     )
     c.add_argument(
         "--jobs",
@@ -313,7 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="env_variables",
         default=[],
         metavar="NAME",
-        help="an environment variable that changes what tests do (pandas' PANDAS_FUTURE): "
+        help="an environment variable that changes what tests do (a feature flag, say): "
         "recorded with the environment, and a run where it differs uses no evidence "
         "(repeatable)",
     )
@@ -380,7 +380,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pr.add_argument("--cache-dir", help="the cache (default: <repo>/.diffcone/cache)")
 
-    ls = sub.add_parser("evidence", help="list the evidence stores of a repository")
+    ls = sub.add_parser("evidence", help="list the evidence recordings of a repository")
     ls.add_argument("--repo", default=".", help="path to the git repository (default: .)")
 
     d = sub.add_parser(
@@ -474,7 +474,7 @@ def _write(text: str, output: str | None) -> int:
 def _list_evidence(repo: Path) -> int:
     stores = list_stores(repo)
     if not stores:
-        print("no evidence stores (diffcone collect writes one)")
+        print("no evidence recordings (diffcone collect writes one)")
         return 0
     for store in stores:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(store.created))
@@ -637,7 +637,7 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                 elif args.collect:
-                    reason = checked.not_advanced or "the environment differs from the store's"
+                    reason = checked.not_advanced or "the environment differs from the recording's"
                     print(f"diffcone: evidence not advanced: {reason}", file=sys.stderr)
                 if checked.mismatch is not None:
                     recorded = load_store(Path(result.evidence["store"])).environment

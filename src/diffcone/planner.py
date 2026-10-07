@@ -26,7 +26,7 @@ function's decorators or defaults, an added or deleted definition) also
 seeds its module, so every module that transitively imports it is reached.
 
 Every selection is backed by a concrete edge path or an explicit fallback
-rule. See docs/design.md.
+rule. See internal/design.md.
 """
 
 from __future__ import annotations

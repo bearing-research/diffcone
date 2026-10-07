@@ -1264,22 +1264,22 @@ def advance_refusal(
     dirty = _dirty(repo)
     if dirty:
         return (
-            f"the working tree has {len(dirty)} change(s) (e.g. {dirty[0]}); a store "
+            f"the working tree has {len(dirty)} change(s) (e.g. {dirty[0]}); a recording "
             "describes a commit, so commit them first"
         )
     if plan.head.kind == KIND_COMMIT and plan.head.commit != resolve_commit(repo, "HEAD"):
         return f"head {plan.head.revision} is not the checked-out commit"
     if sorted(plan.source_roots) != sorted(evidence.source_roots):
         return (
-            f"the plan's source roots {plan.source_roots} differ from the store's "
+            f"the plan's source roots {plan.source_roots} differ from the recording's "
             f"{evidence.source_roots}"
         )
     wanted = shlex.join(_collect_argv(command, extra))
     if wanted != evidence.command:
         return (
-            "the pytest command and arguments differ from the ones the store was "
-            f"collected with, so a new record could cover other cases:\n  store: "
-            f"{evidence.command}\n  now:   {wanted}"
+            "the pytest command and arguments differ from the ones the recording was "
+            f"made with, so a new record could cover other cases:\n  recording: "
+            f"{evidence.command}\n  now:       {wanted}"
         )
     return None
 

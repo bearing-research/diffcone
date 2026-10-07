@@ -1,123 +1,134 @@
 # Execution evidence
 
-Static planning cannot tell which tests of a large, tightly connected
-library reach a change: in pandas nearly every change selects nearly every
-test, because nearly everything imports the module that changed. Evidence
-adds the one fact reading code cannot supply: which functions each test
-actually executed, in a recorded run. On pandas, evidence plans select a
-median of a few percent of the suite where static plans select all of it
-([evaluation](../evaluation.md)).
+Reading the code works well when changes stay local. In a large library
+where nearly every module imports a few central ones, a change to a
+central module can reach nearly every test, so a plan selects nearly the
+whole suite.
 
-Evidence is opt-in. It needs Python 3.12+ in the project's environment
-(the recorder uses `sys.monitoring`); diffcone itself may run on another
-interpreter.
+Execution evidence fixes this. You record once which functions each test
+actually ran, and diffcone selects the tests whose recorded run touches the
+change.
+
+!!! info "Requirements"
+
+    Recording needs Python 3.12 or later in your project's test
+    environment. diffcone itself can run on another Python version.
 
 ## Record
 
+From a clean checkout of a commit, run your suite under the recorder.
+Arguments after `--` are passed to pytest:
+
 ```bash
-# at a clean checkout; arguments after -- go to pytest
 diffcone collect --command "uv run pytest" -- -n 8
-diffcone evidence          # list the recordings (stores)
 ```
 
-`collect` runs the whole suite once under a recorder and writes a store,
-`.diffcone/evidence/<commit>-<environment>.sqlite`: the functions each test
-executed and the repository files it touched, at that commit. It records
-the checkout as it is, so the checkout must be clean (or pass `--rev REV`
-to record a commit in a temporary worktree). `--reverse-check` runs the
-suite a second time in reverse order and marks tests whose records differ
-as unstable; those are always selected.
+This writes a recording to `.diffcone/evidence/`: for each test, the
+functions it ran and the files it read. To record a different commit
+without checking it out, add `--rev REV`. `diffcone evidence` lists your
+recordings:
 
-## Plan with it
+```bash
+diffcone evidence
+```
+
+Some tests behave differently depending on what ran before them. Add
+`--reverse-check` to run the suite a second time in reverse order; tests
+whose recordings differ are marked unstable and always selected.
+
+## Plan with a recording
 
 ```bash
 diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
 ```
 
-`--evidence auto` picks the store at the nearest ancestor of the head
-(`--evidence PATH` names one). A test is selected when its record meets the
-change: it executed a changed function, a reader of a changed definition
-or value, or a lookup that could see a changed name, or it touched a
-changed file. A recording from an older commit still works: the plan
-covers the changes between the recorded commit and both snapshots.
+`--evidence auto` uses the recording from the closest earlier commit (or
+pass a recording's path). The recording doesn't need to be at your base:
+diffcone also accounts for the changes made since it was recorded.
 
-What evidence cannot bound is planned statically or selects everything,
-and the report names the rule each time:
+A test is selected when, in its recorded run, it:
 
-- changes that run at import, which reach every importer as in a static
-  plan;
-- tests with no record, an unstable record, or that started a subprocess;
-- compiled sources (C, build files) and configuration.
+- ran a function that changed;
+- read a value or definition that changed;
+- looked up a name dynamically where a name was added or removed; or
+- read a file that changed.
 
-ASV targets keep static selection.
+Some changes can't be judged from a recording, and diffcone says so in the
+report:
 
-## Run with it
+- Code that runs on import is planned from the code instead, as without
+  evidence.
+- Tests with no recording (new tests, for example), tests whose recording
+  was unstable, and tests that started a subprocess are always selected.
+- Changes to compiled sources, build files and configuration select every
+  test.
+
+ASV benchmarks are always planned from the code.
+
+## Run with a recording
 
 ```bash
 diffcone run --base main --head HEAD --discover pytest \
     --command "uv run pytest" --evidence auto -- -n 8
 ```
 
-The records assume the environment they were made in, so before any test
-runs, `run` checks inside the test process that the interpreter, the
-installed distributions and a few variables match the recording:
-`PYTHONHASHSEED` (which `run` sets as recorded), `TZ`, `LANG`, `LC_ALL`, and
-any variable the project names with `collect --env-var NAME` (pandas'
-`PANDAS_FUTURE`, say). If they differ, the evidence says nothing about this
-environment: `run` runs the static plan instead, or the whole suite if that
-plan's discovery may be incomplete, and says why.
+A recording is only valid in the environment it was made in. Before any
+test runs, `run` checks that the Python version, the installed packages and
+a few environment variables (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`)
+match the recording. If they don't, it falls back to a plan from the code
+and tells you what differed. If your tests also depend on your own
+environment variables, record them with `--env-var`:
 
-The recording also settles a doubt static discovery cannot: whether a
-plugin collects a class pytest's own rules skip. A plan that would exit `3`
-for such a class does not when the recorded collection shows nothing
-beyond the targets and the class's file has not changed since.
+```bash
+diffcone collect --command "uv run pytest" --env-var MYAPP_MODE -- -n 8
+```
 
-## Keep it current
+## Keep the recording current
+
+Recording the whole suite for every commit would be slow. With `--collect`,
+`run` records the tests it runs and writes a new recording for the head:
+fresh records for the tests it ran, and the earlier ones for the tests it
+didn't select, which behave the same at the head.
 
 ```bash
 diffcone run --base main --head HEAD --discover pytest \
     --command "uv run pytest" --evidence auto --collect -- -n 8
 ```
 
-With `--collect`, `run` also records the tests it runs and writes a store
-for the head: their new records, and the old ones for every test the plan
-did not select (they run identically at the head). The next plan starts
-from there, without a full suite run per commit. It needs a clean checkout
-of the head and the pytest arguments the store was collected with, and
-writes nothing if the environment differs or pytest stops early.
+This needs a clean checkout of the head and the same pytest arguments the
+recording was made with. If the environment differs or pytest stops early,
+no recording is written.
 
-In CI, a nightly full recording on the default branch serves the day's
-pull requests: see [CI](../ci.md).
+In CI, a common setup records the full suite once a night on your default
+branch and plans each pull request from it. See [CI](../ci.md).
 
 ## Cython
 
-Compiled Cython code (`.pyx`, `.pxd`, `.pxi`) is covered when the evidence
-was recorded against a build with Cython's `profile=True` directive, on
-Python 3.13+ (where a profiled build reports to `sys.monitoring`); the
-test runs themselves use the ordinary build.
+diffcone can also select tests for changes to Cython code (`.pyx`, `.pxd`,
+`.pxi`) when the recording was made with a build compiled with Cython's
+`profile=True` directive, on Python 3.13 or later. Your test runs can keep
+using your normal build.
 
-- An edit to a function's body selects the tests that executed it; for a
-  `nogil` or `cpdef` function, which a profiled build does not always
-  report, also the tests that executed a Cython function naming it.
-- An edit outside function bodies (an import, a declaration, a constant, a
-  class attribute, a function added) selects the tests that executed a
-  Cython function that can see and names what changed, and for a name
-  Python can see, the tests that ran Python code reading it.
-- A module without Cython records, code outside functions that binds
-  nothing by name (a bare call, a docstring, a compiler directive,
-  `include`), a deleted name Python can see, and C sources or build files
-  still select everything.
+With such a recording:
 
-diffcone does not build your project; building with `profile=True` for the
-recording is up to you.
+- a change inside a Cython function selects the tests that ran it (or ran a
+  function that calls it);
+- a change outside functions (an import, a constant, a declaration, a new
+  function) selects the tests that ran code using the changed name.
+
+Changes diffcone can't attribute to a name, such as a compiler directive or
+a C source file, select every test. diffcone doesn't build your project;
+you provide the profiled build for recording.
 
 ## Shallow clones
 
-Planning needs the recorded commit's objects. In a shallow clone, fetch it
-(`git fetch --depth=1 origin <commit>`); diffcone names the commit when it
-is missing. `--evidence auto` cannot tell ancestry in a shallow clone, so
-pass the store's path there.
+Planning needs the recorded commit to be present in git. In a shallow clone
+(common in CI), fetch it first; diffcone names the commit when it's
+missing:
 
-The assumptions evidence rests on (the same environment, deterministic
-tests, test isolation) and what each rule covers are in the
-[evidence design](../evidence_design.md).
+```bash
+git fetch --depth=1 origin <commit>
+```
+
+In a shallow clone, `--evidence auto` can't tell which commits are
+ancestors, so pass the recording's path instead.

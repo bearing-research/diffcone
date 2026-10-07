@@ -18,12 +18,12 @@ from diffcone.cli import build_parser
 OUT = Path(__file__).resolve().parent.parent / "docs" / "reference" / "cli.md"
 
 INTRO = """\
-# Command reference
+# Commands
 
-Generated from the command-line parser (`scripts/docs_cli.py`); `diffcone
-<command> --help` prints the same. Every command that takes snapshots
-accepts a git revision, `INDEX` (the staged content) or `WORKTREE` (the
-files on disk, ignored files excluded).
+Every command and its options. `diffcone <command> --help` prints the same
+information. Wherever a command takes a snapshot (`--base`, `--head`,
+`--rev`), you can pass a git revision, `INDEX` (your staged changes) or
+`WORKTREE` (the files on disk).
 
 ## Exit codes
 

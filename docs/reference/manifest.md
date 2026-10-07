@@ -1,9 +1,9 @@
 # Target manifest
 
-The manifest is the interchange format between discovery and the planner,
-and the way to hand-author targets for a runner without discovery.
-`diffcone discover -o targets.json` writes one; `--targets targets.json`
-reads one.
+A manifest lists targets explicitly. Use one for a runner that has no
+discovery, or to adjust what discovery finds. `diffcone discover -o
+targets.json` writes a manifest of the discovered targets, and `--targets
+targets.json` reads one.
 
 ```json
 {
@@ -25,17 +25,20 @@ reads one.
 }
 ```
 
-| Field | Meaning |
+| Field | Description |
 |---|---|
-| `source_roots` | Optional. The source roots the symbols are named against; `--source-root` on the command line overrides it. |
-| `runner` | A label: `pytest` and `asv` can be run by `diffcone run`, any other runner only planned. |
-| `runner_id` | How the runner names the target: a pytest node ID without parameters, an ASV benchmark name. |
-| `entry_symbol` | The dotted identity of the test or benchmark function: the module (named from its source root), then classes and the function. |
-| `lifecycle_dependencies` | Symbols the runner executes for the target outside its body: pytest fixtures, ASV `setup`/`setup_cache`, a module symbol (which makes module-level state such as `pytestmark` or `pytest.importorskip` count). `fixture:<name>` marks a fixture that could not be resolved: the target is then selected conservatively. |
+| `source_roots` | Optional. The [source roots](../guides/planning.md#source-roots) the names below use. `--source-root` overrides it. |
+| `runner` | Which runner runs the target. `diffcone run` supports `pytest` and `asv`; other runners can be planned but not run. |
+| `runner_id` | The name the runner uses for the target: a pytest node ID (without parameters) or an ASV benchmark name. |
+| `entry_symbol` | The test or benchmark function, as an import path: module, then classes, then function. |
+| `lifecycle_dependencies` | Code the runner runs for this target outside its own function: pytest fixtures, ASV `setup` and `setup_cache`, or a module (so module-level code such as `pytestmark` counts). |
 
-diffcone does not infer lifecycle dependencies from naming conventions:
-discovery finds them by pytest's and ASV's rules, or you list them. A
-target's parameter cases are not modelled; a target is selected as a whole.
-Combined with discovery, a manifest entry overrides a discovered target
-with the same `runner` and `runner_id`. A manifest may also be a bare JSON
-list of targets.
+A manifest may also be just the list of targets, without the surrounding
+object.
+
+When you combine a manifest with `--discover`, a manifest entry replaces a
+discovered target with the same `runner` and `runner_id`.
+
+A dependency written `fixture:<name>` marks a fixture whose definition
+couldn't be found. diffcone can't tell what such a fixture depends on, so
+it selects the target on every change.

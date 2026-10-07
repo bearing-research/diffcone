@@ -1,58 +1,78 @@
 # Static discovery
 
-Discovery turns the head snapshot into targets without importing or
-running project code: it reproduces a documented subset of each runner's
-collection rules from the source, and reports what it cannot resolve
-instead of guessing. The full rules are in the design's
-[pytest](../design.md#pytest) and [ASV](../design.md#asv) sections.
+`--discover pytest` and `--discover asv` find targets by reading your
+configuration and test files, without importing them. This page lists what
+each one understands.
 
 ## pytest
 
-- **Configuration** from `pytest.ini`, `pyproject.toml`
-  (`[tool.pytest.ini_options]`), `tox.ini` or `setup.cfg`: `python_files`,
-  `python_classes`, `python_functions`, `testpaths`, `norecursedirs`, and
-  doctest options in `addopts`.
-- **Tests:** test functions, `Test*` classes without `__init__`, nested
-  classes, `unittest.TestCase` methods whatever the class is named, tests
-  inherited from base classes (in other modules too), and test suites
-  re-run through `from module import *`.
-- **Lifecycle dependencies** of each test: its fixtures (by parameter, by
-  `usefixtures`, transitively), resolved as pytest resolves them (class,
-  module, nearest `conftest.py` outward, `pytest_plugins` modules and the
-  project's own `pytest11` entry-point plugins in the source roots);
-  autouse fixtures; xunit setup functions; its module; and every
-  `conftest.py` on its path with their `pytest_*` hooks.
-- **Fixtures it cannot find:** assumed to come from an installed plugin
-  when a well-known plugin provides them (`mocker`, `httpx_mock`,
-  `freezer`, `anyio_backend`, `benchmark`, ...; each assumption is listed
-  in the report; `--no-well-known-fixtures` turns this off) or when named
-  with `--assume-external-fixture NAME`. Any other becomes the dependency
-  `fixture:<name>`, which selects the test conservatively.
-- **Doctests**, as pytest collects them (`--doctest-modules`,
-  `--doctest-glob`): a docstring's examples depend on everything its
-  module's globals can reach, and a text-file doctest is always selected.
+**Configuration** is read from `pytest.ini`, `pyproject.toml`
+(`[tool.pytest.ini_options]`), `tox.ini` or `setup.cfg`: `testpaths`,
+`python_files`, `python_classes`, `python_functions`, `norecursedirs`, and
+the doctest options in `addopts`.
 
-Parameter cases (`parametrize`, `pytest_generate_tests`) are not separate
-targets: a test is selected as a whole.
+**Tests** found:
+
+- test functions and methods, following your naming settings;
+- test classes (without an `__init__`), including nested classes;
+- `unittest.TestCase` subclasses, whatever their names;
+- tests inherited from base classes, including base classes in other
+  modules;
+- tests imported into a test module with `from module import *`;
+- doctests, when `--doctest-modules` or `--doctest-glob` is set.
+
+**What each test depends on**, besides its own code:
+
+- its fixtures, requested by parameter or `usefixtures`, and the fixtures
+  those use, resolved the way pytest does: class, then module, then each
+  `conftest.py` outward, then plugins listed in `pytest_plugins` and your
+  project's own pytest plugins;
+- autouse fixtures that apply to it;
+- xunit-style `setup_*` and `teardown_*` functions;
+- its module, and every `conftest.py` on its path with their `pytest_*`
+  hooks.
+
+A doctest depends on everything its module can reach; a doctest in a text
+file is always selected.
+
+### Fixtures from installed plugins
+
+A fixture that isn't defined in your source roots usually comes from an
+installed plugin. diffcone recognises the fixtures of well-known plugins
+(`mocker`, `httpx_mock`, `freezer`, `anyio_backend`, `benchmark` and
+others), and lists each one it assumes in the report. Name fixtures from
+other plugins with `--assume-external-fixture NAME`. A fixture diffcone
+can't find otherwise is reported, and the tests that use it are selected
+on every change, since diffcone can't tell what the fixture depends on.
+
+### Parametrized tests
+
+Each test is a single target: diffcone selects or skips all of its
+parameter cases together.
 
 ## ASV
 
-`benchmark_dir` from `asv.conf.json`; `time_`, `timeraw_`, `mem_`,
-`peakmem_` and `track_` functions and methods, inherited ones included.
-Their lifecycle dependencies are the class's and module's `setup`,
-`setup_cache` and `teardown` and the module itself; class attributes such
-as `params` reach the benchmarks through the class body.
+`benchmark_dir` is read from `asv.conf.json`. Benchmarks are the
+functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
+`peakmem_` or `track_`, including inherited ones. Each depends on its
+class's and module's `setup`, `setup_cache` and `teardown`, and on its
+module. Class attributes such as `params` count as part of the class.
 
 ## When the target list may be short
 
-Some things discovery cannot know: what a pytest plugin collects by its own
-rules (SQLAlchemy's testing plugin collects classes named `<Name>Test`), a
-base class or imported test outside the source roots, a file that cannot be
-parsed. Each is a note in the report, and together they make the plan exit
-`3`, since running only the selected targets could skip tests the runner
-collects. With [execution evidence](../guides/evidence.md), a recording of
-the real collection can settle a note.
+Some things can't be known by reading the source:
 
-To compare discovery with what pytest really collects in your project, run
-`scripts/collection_check.py --repo DIR --command CMD` from a checkout of
-diffcone.
+- a pytest plugin that collects tests by its own rules, such as classes
+  with a different naming pattern;
+- a test base class, or an imported test, from outside your source roots;
+- a test file that can't be parsed.
+
+Each one appears as a note in the report's `discovery` section, and the
+plan exits with code `3`: running only the selected tests could skip
+tests your runner would collect. You can:
+
+- widen your source roots so the missing code is analysed;
+- list the missing tests in a [manifest](manifest.md); or
+- use [execution evidence](../guides/evidence.md): a recording captures
+  what pytest really collected, which settles these notes when nothing was
+  missed.

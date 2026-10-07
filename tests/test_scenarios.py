@@ -1,4 +1,4 @@
-"""Acceptance scenarios from notes/diffcone_coding_agent_handoff.md.
+"""Acceptance scenarios from internal/diffcone_coding_agent_handoff.md.
 
 Every scenario mixes pytest-labelled and ASV-labelled targets so that the
 engine is exercised as runner-independent. Assertions check exact target

@@ -82,10 +82,10 @@ in `tests/test_scenarios.py` that:
 * asserts the exact selected and unselected sets and the rules/paths behind
   them, not just that the command succeeds.
 
-Update `docs/design.md` when resolution or propagation rules change, and keep
+Update `internal/design.md` when resolution or propagation rules change, and keep
 `README.md` honest about what is implemented versus planned. New work starts
-as a design sketch in `docs/roadmap.md` (mechanism, trade-off, done-when);
-re-run the corpora in `docs/evaluation.md` when selection rules change.
+as a design sketch in `internal/roadmap.md` (mechanism, trade-off, done-when);
+re-run the corpora in `internal/evaluation.md` when selection rules change.
 
 ## Commands
 

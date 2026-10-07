@@ -5,7 +5,7 @@ which repository paths it touched (evidence.py). A test that runs
 identically at C and at a snapshot cannot differ there, so a plan base ->
 head is the union of two plans from C: C -> base and C -> head (one when C
 is the base). For each, every change is turned into E, the symbols whose
-execution would *notice* it (docs/evidence_design.md, "What a change is
+execution would *notice* it (internal/evidence_design.md, "What a change is
 observed by"), and a test is selected when its record meets E:
 
 * a function body: the function itself; if it ran during an import, the

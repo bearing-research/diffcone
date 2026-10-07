@@ -3,7 +3,7 @@
 Plans (never validates) the last few Python-touching commits of many
 public pytest projects and attributes every selected test to one cause,
 so selection rules can be ranked by how often they matter across
-projects rather than by one corpus (docs/roadmap.md, "Selection
+projects rather than by one corpus (internal/roadmap.md, "Selection
 census"). Planning runs no project code, so nothing is installed.
 
     uv run python scripts/census.py run --work DIR -o census.json [--jobs 4]

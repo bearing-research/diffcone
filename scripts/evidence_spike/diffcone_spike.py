@@ -17,7 +17,7 @@ exist at collection and those made later (``functools.lru_cache`` is wrapped
 at plugin load to register them). Shared fixtures are credited through the
 fixtures a test actually activated, ``request.getfixturevalue`` included.
 Opened files come from an audit hook. Looked-up names are not recorded:
-wrapping ``getattr`` changed pandas test outcomes (docs/evidence_design.md).
+wrapping ``getattr`` changed pandas test outcomes (internal/evidence_design.md).
 """
 
 from __future__ import annotations
