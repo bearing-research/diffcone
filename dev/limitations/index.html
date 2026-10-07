@@ -856,7 +856,9 @@ tests that actually used the changed code.</dd>
 <dt><strong>Class-level changes affect every method.</strong></dt>
 <dd>A change to a class's body (its bases, decorators or class attributes)
 affects all of its methods. Removing or redirecting an import affects
-the whole importing module; adding one doesn't.</dd>
+the whole importing module; adding one affects only the code that uses
+the new name, unless the imported module runs code of its own that
+the importing module did not run before.</dd>
 <dt><strong>Calls through objects of unknown type are matched by name.</strong></dt>
 <dd>diffcone doesn't infer types. <code>self.method()</code> and <code>cls.method()</code> are
 resolved through the class hierarchy, but a call like <code>obj.run()</code> on an

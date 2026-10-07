@@ -1072,12 +1072,14 @@ symbol, and classifies each difference:</p>
 </tr>
 <tr>
 <td>dependencies changed</td>
-<td>It now calls or imports something different.</td>
+<td>It now calls or imports something different, or a name it uses now resolves (a missing import was added).</td>
 </tr>
 </tbody>
 </table>
 <p>Formatting and comments are not changes: moving a function down the file or
-adding blank lines selects nothing.</p>
+adding blank lines selects nothing. Neither is a docstring edit, unless code
+uses the docstring: a decorator that rewrites it, or code that reads
+<code>__doc__</code>.</p>
 <h2 id="from-a-change-to-a-test">From a change to a test<a class="headerlink" href="#from-a-change-to-a-test" title="Permanent link">&para;</a></h2>
 <p>diffcone links symbols by the calls, references and imports it can resolve
 in the code. To plan, it starts from each test and follows those links: a

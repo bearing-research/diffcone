@@ -1040,6 +1040,11 @@ selection rules.</p>
   and ASV benchmarks, without importing project code; what it cannot see
   it reports. <code>diffcone discover</code> writes the targets as a manifest.</li>
 <li>Dependencies the analysis cannot see can be declared in <code>diffcone.toml</code>.</li>
+<li>A target depends on everything it depended on at the base too, and on
+  its module's import even when a hand-written manifest does not list the
+  module; an added import selects the code that now resolves through it;
+  a docstring edit selects only where code runs or reads the docstring.
+  Unknown manifest keys are errors.</li>
 <li>Indexes, discovery and per-module results are cached under
   <code>.diffcone/cache/</code>; a cached plan is identical to an uncached one.
   <code>diffcone prune --keep REV</code> shrinks the cache to what planning at given

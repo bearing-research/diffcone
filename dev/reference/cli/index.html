@@ -1179,14 +1179,17 @@ information. Wherever a command takes a snapshot (<code>--base</code>, <code>--h
 <p><code>plan</code> and <code>discover</code>:</p>
 <ul>
 <li><code>0</code>: plan produced, analysis complete.</li>
-<li><code>1</code>: plan produced, but analysis errors forced selecting everything.</li>
-<li><code>2</code>: no plan (bad arguments, an unreadable manifest, an unknown revision).</li>
+<li><code>1</code>: plan produced, but analysis errors (a file that does not parse, a
+  source root with no Python file) forced selecting everything.</li>
+<li><code>2</code>: no plan (bad arguments, an unreadable manifest, an unknown revision,
+  or an internal error).</li>
 <li><code>3</code>: plan produced, but discovery may be short of what the runner
   collects.</li>
 </ul>
 <p><code>1</code> and <code>3</code> are opposite failures: <code>1</code> selects too much, <code>3</code> means the
 target list itself may be short, so running only the selected targets
-could skip tests. <code>3</code> wins when both apply.</p>
+could skip tests. <code>3</code> wins when both apply. A manifest written by
+<code>discover</code> keeps its notes, so a plan made from it exits <code>3</code> as well.</p>
 <p><code>run</code> exits with the runner's own code (0 when nothing was selected, or
 with <code>--dry-run</code>). It refuses with <code>2</code> when the working tree differs from
 the snapshot the plan analysed (unless <code>--allow-mismatched-worktree</code>), and
