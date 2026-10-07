@@ -43,7 +43,8 @@ jobs:
 ```
 
 `key-prefix` names the recording; use one per test environment (operating
-system, Python version) if you record several. If the recording fails (a
+system, Python version) if you record several. For a `src` layout, add
+`source-roots: src .` to both `record` and `run`. If the recording fails (a
 collection error, for example), nothing is saved and pull requests keep
 using the previous one.
 
@@ -119,8 +120,12 @@ the nightly run are reported as already failing, not as misses.
 
 ## How the cache is shared
 
-The recording is saved with `actions/cache` under `<key-prefix>-<commit>`,
-and pull requests restore the newest one. GitHub lets pull requests,
+Each recording is saved with `actions/cache` under its own key,
+`<key-prefix>--<commit>-<run>`, and pull requests restore the newest one
+with their prefix (`diffcone-ubuntu` never restores a recording of
+`diffcone-ubuntu-py312`). If a recording's commit is no longer on the
+branch (after a force push), the run plans without it and says so. A
+shallow checkout is deepened until the base revision is there. GitHub lets pull requests,
 including those from forks, read caches saved on the default branch but
 never write them, so a pull request can't change the recording. The
 `cache-mode` settings above give each job only the access it needs.

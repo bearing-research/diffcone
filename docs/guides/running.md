@@ -3,6 +3,10 @@
 Planning never runs your code. These commands run tests after a plan
 exists, using the command line you give them.
 
+The examples use the default source root, the repository itself. For a
+`src` layout, add `--source-root src --source-root .` to each command, as
+in [planning](planning.md#source-roots).
+
 ## Run the selected tests
 
 ```bash
@@ -62,7 +66,7 @@ test whose result changed but wasn't selected:
 
 ```bash
 diffcone validate --base main --head HEAD --discover pytest \
-    --source-root src --source-root tests --command "uv run pytest"
+    --source-root src --source-root . --command "uv run pytest"
 ```
 
 Commits are checked out into temporary worktrees; `WORKTREE` runs in

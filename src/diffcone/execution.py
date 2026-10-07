@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -35,11 +36,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from diffcone.cache import IndexCache
+from diffcone.discovery.asv_static import strip_json_comments
 from diffcone.evidence import EVIDENCE_DIR, Evidence, EvidenceError, advance, fold, write_store
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
-from diffcone.snapshot import GitError, _git, resolve_commit, split_root
+from diffcone.snapshot import GitError, _git, is_bytecode, resolve_commit, split_root
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run --python=same"}
 
@@ -1344,14 +1346,50 @@ def advance_refusal(
 
 
 def _dirty(repo: Path) -> list[str]:
+    """Changes in the working tree that make it differ from its commit.
+    Untracked output nobody runs does not count: Python's bytecode (in a
+    repository that does not ignore it) and ASV's results, environments and
+    HTML beside its configuration."""
     status = _git(repo, ["status", "--porcelain", "--untracked-files=normal"]).decode(
         "utf-8", "surrogateescape"
     )
-    return [
-        line[3:]
-        for line in status.splitlines()
-        if line[3:] and not line[3:].startswith(str(EVIDENCE_DIR.parts[0]) + "/")
-    ]
+    outputs = _asv_output_dirs(repo)
+    found = []
+    for line in status.splitlines():
+        path = line[3:]
+        if not path or path.startswith(str(EVIDENCE_DIR.parts[0]) + "/"):
+            continue
+        if line.startswith("??") and (
+            is_bytecode(path) or any(path.startswith(d + "/") for d in outputs)
+        ):
+            continue
+        found.append(path)
+    return found
+
+
+def _asv_output_dirs(repo: Path) -> list[str]:
+    """Where ASV writes beside each tracked ``asv.conf.json``: its
+    ``results_dir``, ``env_dir`` and ``html_dir`` (``results``, ``env`` and
+    ``html`` by default), repository-relative."""
+    listed = _git(repo, ["ls-files", "-z", "--", "asv.conf.json", "*/asv.conf.json"])
+    dirs: list[str] = []
+    for raw in listed.split(b"\0"):
+        if not raw:
+            continue
+        path = raw.decode("utf-8", "surrogateescape")
+        here = posixpath.dirname(path)
+        try:
+            text = (repo / path).read_text("utf-8", "replace")
+            data = json.loads(strip_json_comments(text))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        for key, default in (("results_dir", "results"), ("env_dir", "env"), ("html_dir", "html")):
+            value = data.get(key, default)
+            if isinstance(value, str) and value.strip():
+                dirs.append(posixpath.normpath(posixpath.join(here, value.strip())))
+    return dirs
 
 
 def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> dict[str, str]:

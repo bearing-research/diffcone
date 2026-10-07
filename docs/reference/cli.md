@@ -1,9 +1,12 @@
 # Commands
 
 Every command and its options. `diffcone <command> --help` prints the same
-information. Wherever a command takes a snapshot (`--base`, `--head`,
-`--rev`), you can pass a git revision, `INDEX` (your staged changes) or
-`WORKTREE` (the files on disk).
+information. `plan`, `run` and `discover` take a snapshot (`--base`,
+`--head`, `--rev`) as a git revision, `INDEX` (your staged changes) or
+`WORKTREE` (the files on disk); `validate` and `corpus` run your suite, so
+they take a revision or `WORKTREE`; `collect --rev` takes a revision. A
+revision the repository does not have is an error that names it (and says
+so when the clone is shallow).
 
 ## Exit codes
 
@@ -33,7 +36,9 @@ repository, and with `3` when discovery may be incomplete (unless
 `validate` and `corpus` exit `0` when every outcome change was selected,
 `1` when some were missed, `2` on errors. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
-when an input cannot be read.
+when an input cannot be read. `collect`, `prune` and `evidence` exit `0`
+on success (`collect` records whatever the suite's own results) and `2` on
+errors.
 
 ## `diffcone plan`
 
@@ -55,7 +60,7 @@ diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
 | `--assume-external-fixture` `NAME` |  | Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable. |
 | `--no-well-known-fixtures` |  | Do not assume fixtures of well-known pytest plugins; report them as unresolved. |
-| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
+| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON). |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
@@ -87,7 +92,7 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
 | `--assume-external-fixture` `NAME` |  | Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable. |
 | `--no-well-known-fixtures` |  | Do not assume fixtures of well-known pytest plugins; report them as unresolved. |
-| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
+| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON). |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
@@ -117,7 +122,7 @@ diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command CO
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
 | `--assume-external-fixture` `NAME` |  | Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable. |
 | `--no-well-known-fixtures` |  | Do not assume fixtures of well-known pytest plugins; report them as unresolved. |
-| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
+| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON). |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
@@ -149,7 +154,7 @@ diffcone corpus [-h] --range REVISION_RANGE [--targets TARGETS] [--command COMMA
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
 | `--assume-external-fixture` `NAME` |  | Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable. |
 | `--no-well-known-fixtures` |  | Do not assume fixtures of well-known pytest plugins; report them as unresolved. |
-| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
+| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON). |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--format` `FORMAT` | `text` | One of `json`, `text`. |
@@ -243,6 +248,6 @@ diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [-
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
 | `--assume-external-fixture` `NAME` |  | Pytest fixture provided by an installed plugin; not reported as unresolved (fixtures of well-known plugins such as pytest-mock's mocker are assumed by default). Repeatable. |
 | `--no-well-known-fixtures` |  | Do not assume fixtures of well-known pytest plugins; report them as unresolved. |
-| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
+| `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout (run: the command with --dry-run, otherwise the plan that ran, as plan writes it in JSON). |
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |

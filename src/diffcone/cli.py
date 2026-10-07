@@ -100,7 +100,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
         action="store_true",
         help="do not assume fixtures of well-known pytest plugins; report them as unresolved",
     )
-    p.add_argument("--output", "-o", help="write the result to this file instead of stdout")
+    p.add_argument(
+        "--output",
+        "-o",
+        help="write the result to this file instead of stdout (run: the command with "
+        "--dry-run, otherwise the plan that ran, as plan writes it in JSON)",
+    )
     p.add_argument(
         "--no-cache",
         action="store_true",
@@ -644,6 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--collect needs --evidence and the pytest runner, without --dry-run")
             evidence = load_evidence()
             result = build_plan(evidence)
+            ran_plan = result
             will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
             # Only worth refusing when something would actually execute.
             mismatch = worktree_mismatch(Path(args.repo), result) if will_run else None
@@ -677,9 +683,15 @@ def main(argv: list[str] | None = None) -> int:
                     if refusal:
                         print(f"diffcone: cannot advance the evidence: {refusal}", file=sys.stderr)
                         return 2
+                static_plans: list = []
+
+                def static_plan():
+                    static_plans.append(build_plan(None))
+                    return static_plans[-1]
+
                 checked = run_with_evidence(
                     result,
-                    lambda: build_plan(None),
+                    static_plan,
                     cwd=Path(args.repo),
                     command=args.runner_command,
                     extra=args.runner_args,
@@ -712,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
                     for line in environment_differences(recorded, checked.mismatch)[:8]:
                         print(f"  {line}", file=sys.stderr)
                 outcome = checked.ran
+                if checked.static is not None and static_plans:
+                    ran_plan = static_plans[-1]
             else:
                 outcome = run_selected(
                     result,
@@ -721,6 +735,12 @@ def main(argv: list[str] | None = None) -> int:
                     extra=args.runner_args,
                     dry_run=args.dry_run,
                 )
+            if args.output and not args.dry_run:
+                # The plan that ran (the static one when the evidence did not
+                # apply), as ``plan -o`` writes it.
+                code = _write(to_json(ran_plan), args.output)
+                if code:
+                    return code
             if outcome.unknown:
                 print(
                     f"diffcone: pytest collected {len(outcome.unknown)} test(s) the plan does not "

@@ -1894,3 +1894,475 @@ def test_e19_build_inputs_select_everything_in_evidence_mode(repo, path):
         {path: "X = 22\n" if path == "setup.py" else "! changed\n"},
     )
     assert "tests/test_m.py::test_f" in chosen
+
+
+# D13-D26 (round 2): discovery.
+
+LIB = {
+    "lib/__init__.py": "",
+    "lib/core.py": "def value():\n    return 1\n",
+    "tests/__init__.py": "",
+}
+BENCH = {
+    "asv.conf.json": ASV_CONF,
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench.py": "def time_noop():\n    pass\n",
+}
+
+
+def _change_selects(repo, files, change, roots=None):
+    base = repo.commit({**LIB, **BENCH, **files})
+    head = repo.commit(change)
+    plan = repo.plan(base, head, [], roots, discover_runners=["pytest", "asv"])
+    assert "bench.time_noop" in unselected(plan)
+    return selected(plan)
+
+
+def test_d13_a_session_wide_hook_off_the_tests_path_is_a_dependency(repo):
+    hook = "def pytest_collection_modifyitems(items):\n    items[:] = [i for i in items if {}]\n"
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/a/__init__.py": "",
+            "tests/a/conftest.py": hook.format("True"),
+            "tests/a/test_a.py": "def test_a():\n    pass\n",
+            "tests/b/__init__.py": "",
+            "tests/b/test_b.py": "def test_b():\n    pass\n",
+        },
+        {"tests/a/conftest.py": hook.format("'test_b' not in i.name")},
+    )
+    assert chosen == {"tests/a/test_a.py::test_a", "tests/b/test_b.py::test_b"}
+
+
+def test_d14_the_ini_usefixtures_option_is_requested_by_every_test(repo):
+    fixture = (
+        "import pytest\n\n\n@pytest.fixture\n"
+        "def env(monkeypatch):\n    monkeypatch.setenv('M', '{}')\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\nusefixtures = ['env']\n",
+            "tests/conftest.py": fixture.format("1"),
+            "tests/test_m.py": "import os\n\n\ndef test_m():\n    assert os.environ['M'] == '1'\n",
+        },
+        {"tests/conftest.py": fixture.format("2")},
+    )
+    assert chosen == {"tests/test_m.py::test_m"}
+
+
+def test_d15_doctests_depend_on_the_autouse_fixtures_that_fill_their_namespace(repo):
+    conftest = (
+        "import pytest\n\nfrom lib import helpers\n\n\n@pytest.fixture(autouse=True)\n"
+        "def add_np(doctest_namespace):\n    doctest_namespace['K'] = helpers.k()\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--doctest-modules'\n",
+            "conftest.py": conftest,
+            "lib/helpers.py": "def k():\n    return 1\n",
+            "lib/doc.py": 'def f():\n    """\n    >>> K\n    1\n    """\n',
+        },
+        {"lib/helpers.py": "def k():\n    return 2\n"},
+    )
+    assert "lib/doc.py::lib.doc.f" in chosen
+
+
+def test_d16_an_imported_asv_module_setup_is_a_dependency(repo):
+    base = repo.commit(
+        {
+            "asv.conf.json": ASV_CONF,
+            "benchmarks/__init__.py": "",
+            "benchmarks/common.py": "def setup():\n    global N\n    N = 1\n",
+            "benchmarks/bench.py": "from .common import setup\n\n\ndef time_x():\n    pass\n",
+            "benchmarks/other.py": "def time_y():\n    pass\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        }
+    )
+    head = repo.commit({"benchmarks/common.py": "def setup():\n    global N\n    N = 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"bench.time_x"}
+
+
+def test_d17_a_test_modules_pytest_plugins_reach_every_test(repo):
+    plug = "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef seed():\n    return {}\n"
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/plug.py": plug.format("1"),
+            "tests/test_a.py": "pytest_plugins = ['tests.plug']\n\n\ndef test_a():\n    pass\n",
+            "tests/test_b.py": "def test_b():\n    pass\n",
+        },
+        {"tests/plug.py": plug.format("2")},
+    )
+    assert chosen == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+
+
+# A fixture the hooks below parametrize, so the test resolves every name.
+N_FIXTURE = "import pytest\n\n\n@pytest.fixture\ndef n():\n    return 0\n"
+
+
+def test_d18_a_hook_bound_by_import_is_a_dependency(repo):
+    gen = (
+        "def pytest_generate_tests(metafunc):\n"
+        "    if 'n' in metafunc.fixturenames:\n"
+        "        metafunc.parametrize('n', [{}])\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/conftest.py": N_FIXTURE,
+            "tests/common.py": gen.format("1"),
+            "tests/test_g.py": (
+                "from tests.common import pytest_generate_tests  # noqa\n\n\n"
+                "def test_g(n):\n    assert n\n"
+            ),
+            "tests/test_h.py": "def test_h():\n    pass\n",
+        },
+        {"tests/common.py": gen.format("0")},
+    )
+    assert chosen == {"tests/test_g.py::test_g"}
+
+
+@pytest.mark.parametrize(
+    "kind, setup",
+    [
+        ("module", "def setUpModule():\n    global N\n    N = {}\n"),
+        (
+            "async",
+            "class TestA(unittest.IsolatedAsyncioTestCase):\n"
+            "    async def asyncSetUp(self):\n        self.n = {}\n\n"
+            "    def test_a(self):\n        pass\n",
+        ),
+        (
+            "generate",
+            "class TestA:\n    def pytest_generate_tests(self, metafunc):\n"
+            "        metafunc.parametrize('n', [{}])\n\n"
+            "    def test_a(self, n):\n        pass\n",
+        ),
+    ],
+)
+def test_d19_unittest_and_class_level_lifecycle_names(repo, kind, setup):
+    tail = "\n\nclass TestA(unittest.TestCase):\n    def test_a(self):\n        pass\n"
+    module = "import unittest\n\n\n" + setup + (tail if kind == "module" else "")
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/conftest.py": N_FIXTURE,
+            "tests/test_a.py": module.format("1"),
+            "tests/test_b.py": "def test_b():\n    pass\n",
+        },
+        {"tests/test_a.py": module.format("2")},
+    )
+    assert chosen == {"tests/test_a.py::TestA::test_a"}
+
+
+def test_d20_a_staticmethod_test_keeps_its_first_fixture(repo):
+    fixture = "import pytest\n\n\n@pytest.fixture\ndef value():\n    return {}\n"
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/conftest.py": fixture.format("1"),
+            "tests/test_s.py": (
+                "class TestS:\n    @staticmethod\n    def test_s(value):\n        assert value\n"
+            ),
+            "tests/test_t.py": "def test_t():\n    pass\n",
+        },
+        {"tests/conftest.py": fixture.format("2")},
+    )
+    assert chosen == {"tests/test_s.py::TestS::test_s"}
+
+
+def test_d21_a_fixture_made_in_one_call_is_recognised(repo):
+    conftest = (
+        "import pytest\n\n\ndef _env():\n    return {}\n\n\n"
+        "env = pytest.fixture(_env, autouse=True)\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/sub/__init__.py": "",
+            "tests/sub/conftest.py": conftest.format("1"),
+            "tests/sub/test_s.py": "def test_s():\n    pass\n",
+            "tests/test_t.py": "def test_t():\n    pass\n",
+        },
+        {"tests/sub/conftest.py": conftest.format("2")},
+    )
+    assert chosen == {"tests/sub/test_s.py::test_s"}
+
+
+def test_d22_collected_tests_discovery_used_to_drop(repo):
+    targets, notes = _discovered(
+        repo,
+        {
+            "tests/__init__.py": "",
+            # A TestCase with ``__init__`` is still collected.
+            "tests/test_init.py": (
+                "import unittest\n\n\nclass TestI(unittest.TestCase):\n"
+                "    def __init__(self, *a):\n        super().__init__(*a)\n\n"
+                "    def test_i(self):\n        pass\n"
+            ),
+            # Nested classes are inherited.
+            "tests/test_nested.py": (
+                "class Base:\n    class TestInner:\n"
+                "        def test_n(self):\n            pass\n\n\n"
+                "class TestChild(Base):\n    pass\n"
+            ),
+            # A star import re-exports what the module imported, and a
+            # computed ``__all__`` is a superset.
+            "tests/impl.py": "class TestImpl:\n    def test_x(self):\n        pass\n",
+            "tests/base.py": "from tests.impl import TestImpl  # noqa\n",
+            "tests/test_star.py": "from tests.base import *  # noqa\n",
+            "tests/computed.py": (
+                "__all__ = ['helper'] + ['test_c']\n\n\ndef helper():\n    pass\n\n\n"
+                "def test_c():\n    pass\n"
+            ),
+            "tests/test_computed.py": "from tests.computed import *  # noqa\n",
+        },
+    )
+    assert {
+        "tests/test_init.py::TestI::test_i",
+        "tests/test_nested.py::TestChild::TestInner::test_n",
+        "tests/test_star.py::TestImpl::test_x",
+        "tests/test_computed.py::test_c",
+    } <= targets
+    assert "imported_test_out_of_scope" not in notes
+
+
+def test_d22_a_dynamic_getfixturevalue_depends_on_every_visible_fixture(repo):
+    conftest = (
+        "import pytest\n\n\n@pytest.fixture\ndef small():\n    return {}\n\n\n"
+        "@pytest.fixture\ndef big():\n    return 10\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            "tests/conftest.py": conftest.format("1"),
+            "tests/test_d.py": (
+                "import pytest\n\n\n@pytest.mark.parametrize('name', ['sm' + 'all', 'big'])\n"
+                "def test_d(request, name):\n    assert request.getfixturevalue(name)\n"
+            ),
+            "tests/test_e.py": "def test_e():\n    pass\n",
+        },
+        {"tests/conftest.py": conftest.format("2")},
+    )
+    assert chosen == {"tests/test_d.py::test_d"}
+
+
+@pytest.mark.parametrize(
+    "files, note",
+    [
+        (
+            {
+                "pyproject.toml": (
+                    "[tool.pytest.ini_options]\naddopts = '-o python_files=check_*.py'\n"
+                )
+            },
+            "unmodelled_runner_option",
+        ),
+        (
+            {
+                "pyproject.toml": "[tool.pytest.ini_options]\naddopts = 'tests/special.py'\n",
+                "tests/special.py": "def test_s():\n    pass\n",
+            },
+            "unmodelled_runner_option",
+        ),
+        (
+            {
+                "tests/plug.py": "def pytest_collect_file(parent, file_path):\n    return None\n",
+                "tests/conftest.py": "pytest_plugins = ['tests.plug']\n",
+            },
+            "plugin_collects_files",
+        ),
+    ],
+)
+def test_d22_unmodelled_collection_is_reported(repo, files, note):
+    _, notes = _discovered(
+        repo, {"tests/__init__.py": "", "tests/test_a.py": "def test_a():\n    pass\n", **files}
+    )
+    assert note in notes
+
+
+def test_d22_doctests_outside_the_roots_are_reported(repo):
+    rev = repo.commit(
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--doctest-modules'\n",
+            "src/lib/__init__.py": "",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "scripts/tool.py": 'def f():\n    """\n    >>> 1\n    1\n    """\n',
+        }
+    )
+    plan = repo.plan(rev, rev, [], ["src", "tests=tests"], discover_runners=["pytest"])
+    notes = {(n.kind, n.path) for d in plan.discovery for n in d.notes}
+    assert ("test_file_outside_roots", "scripts/tool.py") in notes
+
+
+def test_d23_a_sibling_packages_pytest11_plugin_is_loaded(repo):
+    plug = "import pytest\n\n\n@pytest.fixture(autouse=True)\ndef seed():\n    return {}\n"
+    chosen = _change_selects(
+        repo,
+        {
+            "plugpkg/pyproject.toml": (
+                "[project]\nname = 'plugpkg'\n\n"
+                "[project.entry-points.pytest11]\nplugpkg = 'plugpkg.fixtures'\n"
+            ),
+            "plugpkg/plugpkg/__init__.py": "",
+            "plugpkg/plugpkg/fixtures.py": plug.format("1"),
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        },
+        {"plugpkg/plugpkg/fixtures.py": plug.format("2")},
+        roots=["plugpkg", "."],
+    )
+    assert chosen == {"tests/test_a.py::test_a"}
+
+
+@pytest.mark.parametrize(
+    "path, before, after",
+    [
+        (
+            "pyproject.toml",
+            "[tool.pytest.ini_options]\naddopts = ''\n",
+            "[tool.pytest.ini_options]\naddopts = '-W error'\n",
+        ),
+        ("conftest.py", "X = 1\n", "X = 2\n"),
+    ],
+)
+def test_d24_runner_configuration_outside_the_roots_selects_everything(repo, path, before, after):
+    base = repo.commit(
+        {
+            path: before,
+            "src/lib/__init__.py": "",
+            "src/lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "def test_m():\n    pass\n",
+        }
+    )
+    head = repo.commit({path: after})
+    plan = repo.plan(base, head, [], ["src", "tests=tests"], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_m.py::test_m"}
+
+
+def test_d24_a_conftest_outside_the_roots_is_an_unknown_dependency(repo):
+    base = repo.commit(
+        {
+            "conftest.py": "X = 1\n",
+            "src/lib/__init__.py": "",
+            "src/lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "def test_m():\n    pass\n",
+        }
+    )
+    head = repo.commit({"src/lib/m.py": "def f():\n    return 2\n"})
+    plan = repo.plan(base, head, [], ["src", "tests=tests"], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_m.py::test_m"}
+    notes = {n.kind for d in plan.discovery for n in d.notes}
+    assert "conftest_outside_roots" in notes
+
+
+def test_d25_asv_aliases_benchmark_names_and_timeraw_code(repo):
+    base = repo.commit(
+        {
+            "lib/__init__.py": "",
+            "lib/core.py": "def value():\n    return 1\n",
+            "bench/asv.conf.json": '{"version": 1, "benchmark_dir": "../benchmarks"}',
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": (
+                "def _impl():\n    pass\n\n\ntime_alias = _impl\n\n\n"
+                "def time_named():\n    pass\n\n\n"
+                "time_named.benchmark_name = 'custom.time_named'\n\n\n"
+                "def timeraw_import():\n    return 'from lib.core import value; value()'\n\n\n"
+                "def time_other():\n    pass\n"
+            ),
+        }
+    )
+    head = repo.commit({"lib/core.py": "def value():\n    return 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["asv"])
+    assert {t.runner_id for t in plan.targets} == {
+        "bench._impl",
+        "custom.time_named",
+        "bench.timeraw_import",
+        "bench.time_other",
+    }
+    assert selected(plan) == {"bench.timeraw_import"}
+
+
+def test_d26_a_django_testcase_import_is_not_reported(repo):
+    _, notes = _discovered(
+        repo,
+        {
+            "tests/__init__.py": "",
+            "tests/test_a.py": (
+                "from django.test import TestCase\n\n\nclass TestA(TestCase):\n"
+                "    def test_a(self):\n        pass\n"
+            ),
+        },
+    )
+    assert "imported_test_out_of_scope" not in notes
+
+
+# R12-R19 (round 2): running and CI.
+
+
+def test_r13_r14_an_unknown_revision_is_named_and_a_shallow_clone_says_so(repo, tmp_path, capsys):
+    repo.commit({"lib/__init__.py": "", "lib/m.py": "X = 1\n"})
+    code = main(["plan", "--repo", str(repo.path), "--base", "nosuch", "--head", "HEAD",
+                 "--discover", "pytest"])  # fmt: skip
+    assert code == 2
+    assert "'nosuch'" in capsys.readouterr().err
+    shallow = tmp_path / "shallow"
+    repo.git("clone", "-q", "--depth", "1", f"file://{repo.path}", str(shallow))
+    code = main(["plan", "--repo", str(shallow), "--base", "HEAD^1", "--head", "HEAD",
+                 "--discover", "pytest"])  # fmt: skip
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "'HEAD^1'" in err and "shallow" in err
+
+
+def test_r15_untracked_bytecode_is_not_a_change(repo):
+    from diffcone.execution import _dirty
+
+    base = repo.commit(
+        {
+            "asv.conf.json": ASV_CONF,
+            "lib/__init__.py": "",
+            "lib/m.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    f()\n",
+            "tests/test_n.py": "def test_n():\n    pass\n",
+        }
+    )
+    (repo.path / "lib" / "__pycache__").mkdir()
+    (repo.path / "lib" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\0")
+    plan = repo.plan(base, "WORKTREE", [], discover_runners=["pytest"])
+    assert selected(plan) == set()
+    # ASV's output beside its configuration does not make the tree dirty
+    # for ``collect`` either.
+    (repo.path / "results").mkdir()
+    (repo.path / "results" / "benchmarks.json").write_text("{}")
+    assert _dirty(repo.path) == []
+
+
+def test_r16_run_output_is_the_plan_that_ran(repo, tmp_path, capsys):
+    base = repo.commit({**CALC})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("return a + b", "return b + a")})
+    out = tmp_path / "plan.json"
+    code = main(["run", "--repo", str(repo.path), "--base", base, "--head", head,
+                 "--discover", "pytest", "--command", PYTEST, "-o", str(out)])  # fmt: skip
+    assert code == 0, capsys.readouterr().err
+    data = json.loads(out.read_text())
+    assert data["selected_targets"]
+
+
+def test_r17_r18_record_keys_end_the_prefix_and_never_repeat():
+    from pathlib import Path
+
+    actions = Path(__file__).resolve().parent.parent / "actions"
+    record = (actions / "record" / "action.yml").read_text()
+    run = (actions / "run" / "action.yml").read_text()
+    assert 'key=$PREFIX--$commit-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in record
+    assert "restore-keys: ${{ inputs.key-prefix }}--\n" in run
+    # R12: a recording that cannot be fetched leaves a static plan.
+    assert "planning statically" in run.split("cannot be fetched", 1)[1].split("\n", 1)[0]

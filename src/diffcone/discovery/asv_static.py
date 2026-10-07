@@ -31,15 +31,26 @@ imported from any module in the source roots (a shared base often lives in
 the package under test), is followed, with the subclass's own definitions
 winning; one that resolves nowhere is an ``unknown_base_class`` note.
 
-Not modelled: ``params`` expansion (a benchmark is one target),
-``benchmark_dir`` outside the source roots.
+Also: an attribute bound to a function (``time_alias = _impl``) is a
+benchmark when the attribute's name matches, named after the function; a
+literal ``benchmark_name`` set on a function replaces its name (and its last
+part is what is matched); the module's ``setup``/``teardown`` count when
+imported (``from .common import setup``) too; a ``timeraw_`` benchmark
+depends (``dynamic:``) on the in-scope modules its returned code imports,
+and on an unknown (always selected) when that code is not a literal string.
+Benchmark files under ``benchmark_dir`` but outside the source roots are
+reported (``test_file_outside_roots``).
+
+Not modelled: ``params`` expansion (a benchmark is one target).
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import posixpath
 import re
+import textwrap
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -92,7 +103,9 @@ def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
     config["source"] = name
     bench_dir = data.get("benchmark_dir")
     if isinstance(bench_dir, str) and bench_dir.strip():
-        resolved = (here / bench_dir.strip().strip("/")).as_posix()
+        # ``"../benchmarks"`` beside a nested config: normalised, so it is
+        # compared with repository paths as they are.
+        resolved = posixpath.normpath((here / bench_dir.strip().rstrip("/")).as_posix())
         config["benchmark_dir"] = resolved.removeprefix("./").strip("/")
     elif str(here) != ".":
         # No benchmark_dir: ASV's default is ``benchmarks`` beside the config.
@@ -224,6 +237,68 @@ def _public_defs(pm: ParsedModule) -> list[str]:
     ]
 
 
+def _benchmark_names(body: list[ast.stmt]) -> dict[str, str]:
+    """``time_x.benchmark_name = "custom.name"`` in a module or class body:
+    function name -> the name ASV gives the benchmark instead."""
+    out: dict[str, str] = {}
+    for stmt in body:
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Attribute)
+            and stmt.targets[0].attr == "benchmark_name"
+            and isinstance(stmt.targets[0].value, ast.Name)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        ):
+            out[stmt.targets[0].value.id] = stmt.value.value
+    return out
+
+
+# A ``timeraw_`` benchmark whose code could not be read: an unknown
+# dependency, so the benchmark is always selected.
+TIMERAW_UNANALYSED = "timeraw:unanalysed"
+
+
+def _timeraw_deps(func: ast.FunctionDef | ast.AsyncFunctionDef, index: SourceIndex) -> list[str]:
+    """What a ``timeraw_`` benchmark runs: it returns code (a string, or a
+    pair of code and setup strings) that ASV runs in a fresh interpreter, so
+    its dependencies are what that code imports (``dynamic:<module>`` for
+    each in-scope module it names). Code that is not a literal cannot be
+    read: TIMERAW_UNANALYSED."""
+    if not func.name.lower().startswith("timeraw"):
+        return []
+    deps: list[str] = []
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Return) or node.value is None:
+            continue
+        values = list(node.value.elts) if isinstance(node.value, ast.Tuple) else [node.value]
+        for value in values:
+            if isinstance(value, ast.Call) and value.args:  # ``textwrap.dedent("...")``
+                value = value.args[0]
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                return [TIMERAW_UNANALYSED]
+            try:
+                code = ast.parse(textwrap.dedent(value.value))
+            except SyntaxError:
+                return [TIMERAW_UNANALYSED]
+            for inner in ast.walk(code):
+                names = (
+                    [a.name for a in inner.names]
+                    if isinstance(inner, ast.Import)
+                    else [inner.module or ""]
+                    if isinstance(inner, ast.ImportFrom) and not inner.level
+                    else []
+                )
+                for name in names:
+                    parts = name.split(".")
+                    for i in range(len(parts), 0, -1):
+                        if ".".join(parts[:i]) in index.modules:
+                            deps.append(f"dynamic:{'.'.join(parts[:i])}")
+                            break
+    return deps
+
+
 def discover_asv(
     snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
 ) -> DiscoveryResult:
@@ -242,6 +317,18 @@ def discover_asv(
     bench_dir = config["benchmark_dir"]
     prefix = bench_dir + "/"
     paths = [p for p in snapshot.files if p.startswith(prefix) and p.endswith(".py")]
+    outside = [p for p in snapshot.python_paths if p.startswith(prefix) and p not in snapshot.files]
+    if outside:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "test_file_outside_roots",
+                f"{len(outside)} benchmark file(s) under {bench_dir!r} are outside the source "
+                f"roots (first: {outside[0]}), so their benchmarks are not targets; add a source "
+                "root that contains them",
+                outside[0],
+            )
+        )
     if not paths:
         result.notes.append(
             DiscoveryNote(RUNNER, "no_benchmarks", f"no .py files under {bench_dir!r}")
@@ -305,17 +392,18 @@ def discover_asv(
     def qualified(*names: str) -> str:
         return ".".join(n for n in names if n)
 
+    added: set[str] = set()
     for pm in parsed:
         rel = PurePosixPath(pm.path[len(prefix) :]).with_suffix("")
         parts = [p for p in rel.parts if p != "__init__"]
         # The package's own __init__ has no module prefix in ASV's names.
         bench_module = ".".join(parts)
         body = pm.tree.body
-        module_deps = [pm.module] + [
-            pm.member_id(f.name) for f in scope_functions(body) if f.name in LIFECYCLE_NAMES
-        ]
 
         def add(runner_id: str, entry: str, deps: list[str]) -> None:
+            if runner_id in added:
+                return  # two attributes bound to one function: one benchmark
+            added.add(runner_id)
             if entry not in index.symbols:
                 result.notes.append(
                     DiscoveryNote(
@@ -343,28 +431,64 @@ def discover_asv(
             functions[func.name] = (func, pm)
         for cls in scope_classes(body):
             classes[cls.name] = (cls, pm)
+        # ``time_alias = _impl``: another attribute bound to the function.
+        for stmt in body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and isinstance(stmt.value, ast.Name)
+                and stmt.value.id in functions
+            ):
+                functions[stmt.targets[0].id] = functions[stmt.value.id]
+        # The module's ``setup``/``teardown``, defined there or imported
+        # (``from .common import setup``), run around each benchmark.
+        module_deps = [pm.module] + [
+            owner.member_id(func.name)
+            for name, (func, owner) in sorted(functions.items())
+            if name in LIFECYCLE_NAMES
+        ]
+        custom = _benchmark_names(body)
         for bound, (func, owner) in sorted(functions.items()):
-            if not bound.startswith("_") and _is_benchmark(func.name):
-                # Named by the function's own name (``func.__name__``).
-                add(qualified(bench_module, func.name), owner.member_id(func.name), module_deps)
+            if bound.startswith("_"):
+                continue
+            # ASV matches the attribute name, or the last part of a
+            # ``benchmark_name``, and names the benchmark by that name or
+            # the function's own (``func.__name__``).
+            name = custom.get(func.name) if owner is pm else None
+            if not _is_benchmark(name.split(".")[-1] if name else bound):
+                continue
+            add(
+                name or qualified(bench_module, func.name),
+                owner.member_id(func.name),
+                module_deps + _timeraw_deps(func, index),
+            )
         for bound, (cls, owner) in sorted(classes.items()):
             if bound.startswith("_"):
                 continue
-            class_id = owner.member_id(cls.name)
             runner_prefix = qualified(bench_module, cls.name)  # ``klass.__name__``
             # ASV reads the class's attributes, inherited ones included; the
             # subclass's own definitions win, so bases are applied first.
             methods: dict[str, str] = {}
-            for base_cls, base_mod in reversed(bases_of(cls, owner, runner_prefix)):
-                _class_methods(base_cls, base_mod.member_id(base_cls.name), methods)
-            _class_methods(cls, class_id, methods)
+            nodes: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+            for base_cls, base_mod in [
+                *reversed(bases_of(cls, owner, runner_prefix)),
+                (cls, owner),
+            ]:
+                base_id = base_mod.member_id(base_cls.name)
+                _class_methods(base_cls, base_id, methods)
+                nodes.update({f"{base_id}.{f.name}": f for f in scope_functions(base_cls.body)})
             deps = module_deps + [
                 symbol for name, symbol in methods.items() if name in LIFECYCLE_NAMES
             ]
             if owner is not pm:
                 deps.append(owner.module)
+            custom = _benchmark_names(cls.body)
             for name, symbol in sorted(methods.items()):
-                if _is_benchmark(name):
-                    add(f"{runner_prefix}.{name}", symbol, deps)
+                renamed = custom.get(name)
+                if not _is_benchmark(renamed.split(".")[-1] if renamed else name):
+                    continue
+                code_deps = _timeraw_deps(nodes[symbol], index) if symbol in nodes else []
+                add(renamed or f"{runner_prefix}.{name}", symbol, deps + code_deps)
     result.targets.sort()
     return result

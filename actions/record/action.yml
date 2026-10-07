@@ -70,7 +70,10 @@ runs:
         diffcone prune --keep HEAD "${roots[@]}"
         commit=$(git rev-parse HEAD)
         find .diffcone/evidence -name '*.sqlite' ! -name "$commit-*" -delete
-        echo "key=$PREFIX-$commit" >> "$GITHUB_OUTPUT"
+        # ``--`` ends the prefix, so ``diffcone-ubuntu--`` never matches
+        # ``diffcone-ubuntu-py312--...``; the run id makes every recording a
+        # new entry, so a nightly on an unchanged branch still saves.
+        echo "key=$PREFIX--$commit-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       id: record
     - name: Save
       uses: actions/cache/save@v6

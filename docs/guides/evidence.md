@@ -17,7 +17,10 @@ change.
 ## Record
 
 From a clean checkout of a commit, run your suite under the recorder.
-Arguments after `--` are passed to pytest:
+Arguments after `--` are passed to pytest. The examples use the default
+source root; for a `src` layout, add `--source-root src --source-root .`
+to every command here, `collect` included (a recording keeps its source
+roots, and plans must use the same ones):
 
 ```bash
 diffcone collect --command "uv run pytest" -- -n 8

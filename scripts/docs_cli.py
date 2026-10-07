@@ -21,9 +21,12 @@ INTRO = """\
 # Commands
 
 Every command and its options. `diffcone <command> --help` prints the same
-information. Wherever a command takes a snapshot (`--base`, `--head`,
-`--rev`), you can pass a git revision, `INDEX` (your staged changes) or
-`WORKTREE` (the files on disk).
+information. `plan`, `run` and `discover` take a snapshot (`--base`,
+`--head`, `--rev`) as a git revision, `INDEX` (your staged changes) or
+`WORKTREE` (the files on disk); `validate` and `corpus` run your suite, so
+they take a revision or `WORKTREE`; `collect --rev` takes a revision. A
+revision the repository does not have is an error that names it (and says
+so when the clone is shallow).
 
 ## Exit codes
 
@@ -53,7 +56,9 @@ repository, and with `3` when discovery may be incomplete (unless
 `validate` and `corpus` exit `0` when every outcome change was selected,
 `1` when some were missed, `2` on errors. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
-when an input cannot be read.
+when an input cannot be read. `collect`, `prune` and `evidence` exit `0`
+on success (`collect` records whatever the suite's own results) and `2` on
+errors.
 """
 
 

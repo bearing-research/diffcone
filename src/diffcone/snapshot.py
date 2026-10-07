@@ -51,6 +51,7 @@ CONFIG_FILES = (
 # are read too -- shallowest first, and only a few levels down.
 ASV_CONFIG = "asv.conf.json"
 ASV_CONFIG_DEPTH = 3
+NESTED_CONFIGS = (ASV_CONFIG, "pyproject.toml", "setup.cfg")
 
 WORKTREE = "WORKTREE"
 INDEX = "INDEX"
@@ -146,17 +147,43 @@ def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str
     if kind == KIND_WORKTREE:
         untracked = _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
         for raw in untracked.split(b"\0"):
-            if raw:
-                out.setdefault(raw.decode("utf-8", "surrogateescape"), "added")
+            path = raw.decode("utf-8", "surrogateescape")
+            if path and not is_bytecode(path):
+                out.setdefault(path, "added")
     return out
 
 
 def resolve_commit(repo: Path, revision: str) -> str:
-    out = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"])
+    try:
+        out = _git(repo, ["rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}"])
+    except GitError:
+        out = b""
     commit = out.decode().strip()
     if not commit:
-        raise GitError(f"revision {revision!r} does not name a commit")
+        hint = ""
+        if is_shallow(repo):
+            hint = (
+                "; this clone is shallow and may not have it: fetch more history (git fetch "
+                "--deepen=1 for a parent such as HEAD^1, or git fetch origin <branch>; in GitHub "
+                "Actions, actions/checkout with fetch-depth: 2 or 0)"
+            )
+        raise GitError(f"revision {revision!r} does not name a commit in {repo}{hint}")
     return commit
+
+
+def is_bytecode(path: str) -> bool:
+    """Whether ``path`` is compiled bytecode Python writes beside the code
+    (``__pycache__``, ``.pyc``): never part of a snapshot, even in a
+    repository that does not ignore it."""
+    return "__pycache__" in path.rstrip("/").split("/") or path.endswith((".pyc", ".pyo"))
+
+
+def is_shallow(repo: Path) -> bool:
+    """Whether ``repo`` is a shallow clone (its history is cut off)."""
+    try:
+        return _git(repo, ["rev-parse", "--is-shallow-repository"]).strip() == b"true"
+    except GitError:
+        return False
 
 
 def split_root(spec: str) -> tuple[str, str]:
@@ -364,14 +391,16 @@ def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) ->
     return ids
 
 
-def _nested_asv_configs(listing: bytes) -> list[str]:
-    """Paths of ``asv.conf.json`` below the root in a newline-separated file
-    listing, shallowest first and no deeper than ASV_CONFIG_DEPTH."""
+def _nested_configs(listing: bytes) -> list[str]:
+    """Paths of ``asv.conf.json``, and of the package metadata a sibling
+    package declares its pytest plugins in (``pyproject.toml``,
+    ``setup.cfg``), below the root in a newline-separated file listing,
+    shallowest first and no deeper than ASV_CONFIG_DEPTH."""
     found = []
     for raw in listing.split(b"\n"):
         path = raw.decode("utf-8", "surrogateescape").strip()
         parts = path.split("/")
-        if len(parts) > 1 and parts[-1] == ASV_CONFIG and len(parts) <= ASV_CONFIG_DEPTH:
+        if len(parts) > 1 and parts[-1] in NESTED_CONFIGS and len(parts) <= ASV_CONFIG_DEPTH:
             found.append(path)
     return sorted(found, key=lambda p: (p.count("/"), p))
 
@@ -425,7 +454,7 @@ def read_commit_snapshot(
         root = list_root_files(repo, commit)
         names = [n for n in CONFIG_FILES if n in root]
         whole_tree = _git(repo, ["ls-tree", "-r", "--name-only", commit])
-        nested = _nested_asv_configs(whole_tree)
+        nested = _nested_configs(whole_tree)
         config_files = read_files(repo, commit, names + nested)
         python_paths = _python_paths(whole_tree)
     return Snapshot(
@@ -502,7 +531,7 @@ def read_index_snapshot(
     python_paths: tuple[str, ...] = ()
     if with_config:
         listing = _git(repo, ["ls-files", "-z", "--cached"]).replace(b"\0", b"\n")
-        nested = _nested_asv_configs(listing)
+        nested = _nested_configs(listing)
         config_files.update(read_files(repo, "", nested, label=INDEX))
         python_paths = _python_paths(listing)
     return Snapshot(
@@ -581,7 +610,7 @@ def read_worktree_snapshot(
             if full.is_file():
                 config_files[name] = full.read_bytes()
         listing = _git(repo, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-        for name in _nested_asv_configs(listing.replace(b"\0", b"\n")):
+        for name in _nested_configs(listing.replace(b"\0", b"\n")):
             full = repo / name
             if full.is_file():
                 config_files[name] = full.read_bytes()
@@ -609,6 +638,7 @@ def read_worktree_snapshot(
                     p
                     for tag, p in listed
                     if not p.endswith(".py")
+                    and not (tag == TAG_OTHER and is_bytecode(p))
                     and (
                         (repo / p).is_file()
                         or (repo / p).is_symlink()

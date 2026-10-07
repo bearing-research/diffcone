@@ -748,11 +748,14 @@ setup and nested classes, its bases resolved in the module that defines it
 nearly all on its bases).
 
 A test module may also re-run another's tests with `from <module> import
-*`: the star binds what that module's `__all__` lists, or every name it
-defines that does not start with an underscore (names it imported itself
-are not followed), minus the names the importing module defines, and each
-one becomes a target whose entry is where it is defined. poetry's `sync`
-tests are the `install` tests imported this way.
+*`: the star binds what that module's `__all__` lists when it is one
+literal list, every public name the module binds (definitions, imports and
+assignments) when it has none, and both plus every string named when
+`__all__` is computed (`base.__all__ + [...]`, `+=`, `.extend`), a
+superset; minus the names the importing module defines. Each one is
+followed through re-exports to the module defining it and becomes a target
+entered there. poetry's `sync` tests are the `install` tests imported this
+way.
 
 These notes mean the target list may be short of what the runner collects
 -- `uncollected_test_class`, `unknown_base_class`,
@@ -914,13 +917,59 @@ files matching `--doctest-glob` (default `test*.txt`) that contain
 examples are targets whose entry is not a symbol, so they are always
 selected: the index does not read them, and a change to them is invisible.
 
-Not modelled: `request.getfixturevalue` with a name that is not a literal, fixture visibility rules of
+Further rules (pre-release audit, round 2):
+
+* Hooks pytest calls for the whole session (any not in
+  `PATH_SCOPED_HOOKS`, the hooks pytest calls through a node's
+  path-filtered hook proxy: `pytest_collection_modifyitems`,
+  `pytest_configure`, `pytest_sessionstart`, ...) are dependencies of every
+  test, from every conftest, not only those on the test's path. Import-time
+  code of an off-path conftest is not (making every conftest a dependency
+  of every test would select the suite whenever any fixture is added).
+* `pytest_plugins` in a test module registers the plugin for the session
+  (pytest's `consider_module`), so it is a global plugin like a conftest's.
+* The ini option `usefixtures` is requested by every test and doctest.
+* Doctests get pytest's fixture closure for a `DoctestItem`: the module's
+  and its conftests' autouse fixtures, plugin fixtures, the ini
+  `usefixtures`, `doctest_namespace` (an autouse fixture usually fills it,
+  as pandas's root conftest does), and the session-wide hooks.
+* A hook or xunit function bound by import or assignment (`from x import
+  pytest_generate_tests`, `setup_module = _setup`, a star import) is a
+  dependency like one defined there, followed to its definition.
+* Also lifecycle: `setUpModule`/`tearDownModule`, `asyncSetUp`/
+  `asyncTearDown`, Django's `setUpTestData`, a class-level
+  `pytest_generate_tests`. A `@staticmethod` test keeps its first
+  parameter as a request. `x = pytest.fixture(f, autouse=True)` is a
+  fixture.
+* A TestCase with `__init__` is collected (only plain classes are skipped
+  for it); nested test classes inherited from a base are collected under
+  the subclass.
+* `request.getfixturevalue` with a non-literal argument requests every
+  fixture visible from the test (`*`).
+* An `addopts` entry that overrides the configuration (`-o`, `-c`,
+  `--rootdir`, `--pyargs`) or names a path is reported
+  (`unmodelled_runner_option`); so is a collection hook in a plugin module
+  (`plugin_collects_files`) and, with `--doctest-modules`, a module outside
+  the source roots (`test_file_outside_roots`).
+* `pytest11` entry points of sibling packages in the repository (their
+  `pyproject.toml`/`setup.cfg` up to three levels down) are plugins too: a
+  development environment installs them.
+* A `conftest.py` outside the source roots is reported
+  (`conftest_outside_roots`) and every test under it gets the unknown
+  dependency `conftest:<path>`, so it is always selected. A changed runner
+  configuration or build file outside the source roots (a root
+  `pyproject.toml`, `tox.ini`, `setup.cfg`, pytest config, `setup.py`, any
+  `conftest.py` or `asv.conf.json`) selects every target, as a changed
+  unanalysed file under the roots does.
+* A test framework's `*TestCase` imported into a test module (`from
+  django.test import TestCase`) yields no tests and is not reported.
+
+Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
 fixtures of plugins outside the well-known table, doctests of objects
 added through `__test__` (reported) or assigned rather than defined,
 installed plugins that collect files of their own (pytest-typing, Sybil,
-nbval: not reported; a recording settles them),
-and `conftest.py` files outside the source roots.
+nbval: not reported; a recording settles them).
 
 ### ASV
 
@@ -951,8 +1000,17 @@ included. Class attributes (`params`, `timeout`, ...) reach every method
 through the structural class-body rule; module attributes through the module
 dependency.
 
-Not modelled: `params` expansion, a `benchmark_dir` outside the source roots
-(targets get `missing_symbol` notes).
+ASV matches a function on the attribute name it is bound to and names it
+after the function (`time_alias = _impl` is `<module>._impl`), or by a
+literal `benchmark_name` set on it (matched on its last part); the module's
+`setup`/`teardown` count when imported (`from .common import setup`); a
+`timeraw_` benchmark depends (`dynamic:`) on the in-scope modules its
+returned code imports, and on the unknown `timeraw:unanalysed` (always
+selected) when that code is not a literal string; `benchmark_dir` is
+normalised (`../benchmarks`); benchmark files under it but outside the
+source roots are reported (`test_file_outside_roots`).
+
+Not modelled: `params` expansion.
 
 ### A name match cannot land on a method only the test runner can call
 

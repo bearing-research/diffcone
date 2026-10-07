@@ -26,9 +26,14 @@ The first release.
   other modules, marks stored in variables, parametrized names supplied to
   fixtures, plugins declared by plugins, and overrides of fixtures that
   pytest and installed plugins request, tests bound by assignment,
-  `runTest`, pytest 9's `pytest.toml`, doctests)
-  and ASV benchmarks, without importing project code; what it cannot see
-  it reports. `diffcone discover` writes the targets as a manifest.
+  `runTest`, pytest 9's `pytest.toml`, doctests with their fixtures,
+  session-wide hooks from any conftest, the `usefixtures` option, plugins
+  of sibling packages) and ASV benchmarks (`benchmark_name`, imported
+  `setup`, the code a `timeraw_` benchmark runs), without importing
+  project code; what it cannot see it reports. A conftest outside the
+  source roots keeps its tests always selected, and a changed runner
+  configuration or build file outside them selects everything.
+  `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.
 - A target depends on everything it depended on at the base too, and on
   its module's import even when a hand-written manifest does not list the

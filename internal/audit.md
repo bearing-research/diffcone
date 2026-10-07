@@ -148,20 +148,20 @@ precision blow-ups introduced by round 1's fixes come first.
 
 | id | finding | status |
 |---|---|---|
-| D13 | Session-wide hooks (`pytest_collection_modifyitems`, `pytest_configure`, `pytest_sessionstart`, ...) in conftests off a test's path are not its dependencies. | open |
-| D14 | The ini option `usefixtures` is not read. | open |
-| D15 | Doctests get no fixture closure: autouse fixtures (the usual `doctest_namespace` filler, as in pandas), plugins, ini `usefixtures`. | open |
-| D16 | An ASV module `setup` that is imported (`from .common import setup`, 33 pandas modules) is not a dependency. | open |
-| D17 | `pytest_plugins` in a test module registers the plugin for the session; its autouse fixtures and hooks reach every test. | open |
-| D18 | Hooks and xunit functions bound by import or assignment (`from x import pytest_generate_tests`) are invisible. | open |
-| D19 | Lifecycle names missing: `setUpModule`/`tearDownModule`, `asyncSetUp`/`asyncTearDown`, Django `setUpTestData`, a class-level `pytest_generate_tests`. | open |
-| D20 | `@staticmethod` tests lose their first fixture (the first parameter is dropped as `self`). | open |
-| D21 | `x = pytest.fixture(f, autouse=True)` (one call) is not recognised. | open |
-| D22 | Collected tests not targets, unreported: a TestCase with `__init__`; nested test classes inherited from a base; star imports re-exporting imported names; a non-literal `__all__`; `-o`/positional paths in addopts; doctests outside the roots; non-literal `getfixturevalue` over a fixture list; collection hooks in plugin modules. | open |
-| D23 | A `pytest11` plugin of a sibling package in the repository is not loaded. | open |
-| D24 | Runner configuration outside the source roots (`pyproject.toml`'s pytest table with roots `src tests`, `asv.conf.json`, a root conftest) changes without selecting anything. | open |
-| D25 | ASV: module-level aliases (`time_alias = _impl`), `benchmark_name`, `timeraw_` code strings, `benchmark_dir` with `..` (0 targets, complete). | open |
-| D26 | `from django.test import TestCase` in a test module is `imported_test_out_of_scope` (exit 3 for every Django test module). | open |
+| D13 | Session-wide hooks (`pytest_collection_modifyitems`, `pytest_configure`, `pytest_sessionstart`, ...) in conftests off a test's path are not its dependencies. | fixed (round 2, D batch) |
+| D14 | The ini option `usefixtures` is not read. | fixed (round 2, D batch) |
+| D15 | Doctests get no fixture closure: autouse fixtures (the usual `doctest_namespace` filler, as in pandas), plugins, ini `usefixtures`. | fixed (round 2, D batch) |
+| D16 | An ASV module `setup` that is imported (`from .common import setup`, 33 pandas modules) is not a dependency. | fixed (round 2, D batch) |
+| D17 | `pytest_plugins` in a test module registers the plugin for the session; its autouse fixtures and hooks reach every test. | fixed (round 2, D batch) |
+| D18 | Hooks and xunit functions bound by import or assignment (`from x import pytest_generate_tests`) are invisible. | fixed (round 2, D batch) |
+| D19 | Lifecycle names missing: `setUpModule`/`tearDownModule`, `asyncSetUp`/`asyncTearDown`, Django `setUpTestData`, a class-level `pytest_generate_tests`. | fixed (round 2, D batch) |
+| D20 | `@staticmethod` tests lose their first fixture (the first parameter is dropped as `self`). | fixed (round 2, D batch) |
+| D21 | `x = pytest.fixture(f, autouse=True)` (one call) is not recognised. | fixed (round 2, D batch) |
+| D22 | Collected tests not targets, unreported: a TestCase with `__init__`; nested test classes inherited from a base; star imports re-exporting imported names; a non-literal `__all__`; `-o`/positional paths in addopts; doctests outside the roots; non-literal `getfixturevalue` over a fixture list; collection hooks in plugin modules. | fixed (round 2, D batch) |
+| D23 | A `pytest11` plugin of a sibling package in the repository is not loaded. | fixed (round 2, D batch) |
+| D24 | Runner configuration outside the source roots (`pyproject.toml`'s pytest table with roots `src tests`, `asv.conf.json`, a root conftest) changes without selecting anything. | fixed (round 2, D batch) |
+| D25 | ASV: module-level aliases (`time_alias = _impl`), `benchmark_name`, `timeraw_` code strings, `benchmark_dir` with `..` (0 targets, complete). | fixed (round 2, D batch) |
+| D26 | `from django.test import TestCase` in a test module is `imported_test_out_of_scope` (exit 3 for every Django test module). | fixed (round 2, D batch) |
 
 ## Evidence mode (E, continued)
 
@@ -180,11 +180,11 @@ precision blow-ups introduced by round 1's fixes come first.
 
 | id | finding | status |
 |---|---|---|
-| R12 | The run action fails every PR when the recorded commit cannot be fetched (force-pushed main). | open |
-| R13 | A shallow (depth 1) checkout lacks `HEAD^1`: plan exits 2 with an opaque message. | open |
-| R14 | Unknown-revision errors do not name the revision. | open |
-| R15 | WORKTREE plans select everything once `__pycache__` exists in a repo that does not ignore it; ASV `results/` blocks `collect`. | open |
-| R16 | `run -o FILE` writes nothing on a real run. | open |
-| R17 | Overlapping key prefixes (`diffcone-ubuntu`, `diffcone-ubuntu-py312`) restore another environment's recording and baseline. | plausible |
-| R18 | The nightly re-records but cannot save when main has not moved. | plausible |
-| R19 | Docs: src-layout roots missing from several journeys; cli.md snapshot claim and exit codes for collect/prune/evidence; report.md rule list. | open |
+| R12 | The run action fails every PR when the recorded commit cannot be fetched (force-pushed main). | fixed (round 2, R batch) |
+| R13 | A shallow (depth 1) checkout lacks `HEAD^1`: plan exits 2 with an opaque message. | fixed (round 2, R batch) |
+| R14 | Unknown-revision errors do not name the revision. | fixed (round 2, R batch) |
+| R15 | WORKTREE plans select everything once `__pycache__` exists in a repo that does not ignore it; ASV `results/` blocks `collect`. | fixed (round 2, R batch) |
+| R16 | `run -o FILE` writes nothing on a real run. | fixed (round 2, R batch) |
+| R17 | Overlapping key prefixes (`diffcone-ubuntu`, `diffcone-ubuntu-py312`) restore another environment's recording and baseline. | fixed (round 2, R batch) |
+| R18 | The nightly re-records but cannot save when main has not moved. | fixed (round 2, R batch) |
+| R19 | Docs: src-layout roots missing from several journeys; cli.md snapshot claim and exit codes for collect/prune/evidence; report.md rule list. | fixed (round 2, R batch) |

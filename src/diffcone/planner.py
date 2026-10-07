@@ -36,7 +36,7 @@ import gc
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 from diffcone.cache import IndexCache
@@ -83,10 +83,12 @@ from diffcone.model import (
     UnresolvedReference,
 )
 from diffcone.snapshot import (
+    CONFIG_FILES,
     INDEX,
     WORKTREE,
     GitError,
     Snapshot,
+    changed_paths,
     commit_description,
     file_id,
     read_snapshot,
@@ -180,6 +182,36 @@ def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]
         if base.other_files.get(p) != head.other_files.get(p)
         and p not in OWN_FILES
         and not p.startswith(OWN_DIRS)
+    )
+
+
+def _runner_files_outside_roots(
+    repo: Path, base: SourceIndex, head: SourceIndex, roots: list[str]
+) -> list[str]:
+    """Changed files outside the source roots that decide how the tests run:
+    the runners' configuration at the repository root (``pyproject.toml``'s
+    pytest table, ``tox.ini``, ``asv.conf.json`` anywhere), conftests and
+    the build scripts. Inside a root such a file is an unanalysed file; out
+    of every root nothing else would see it change."""
+    if "" in (split_root(r)[0] for r in roots):
+        return []
+    if base.snapshot.committed:
+        fixed, other = base.snapshot, head.snapshot
+    elif head.snapshot.committed:
+        fixed, other = head.snapshot, base.snapshot
+    else:
+        return []
+    changed = changed_paths(repo, fixed.commit, other.commit, other.kind)
+    dirs = [split_root(r)[0] for r in roots]
+    return sorted(
+        path
+        for path in changed
+        if not any(path.startswith(d + "/") for d in dirs)
+        and (
+            path in CONFIG_FILES
+            or path in BUILD_SCRIPTS
+            or PurePosixPath(path).name in ("conftest.py", "asv.conf.json")
+        )
     )
 
 
@@ -515,7 +547,10 @@ def plan_from_indexes(
     declarations: list[Declaration] | None = None,
     base_target_ids: set[str] | None = None,
     seeds: Seeds | None = None,
+    runner_files: Iterable[str] = (),
 ) -> Plan:
+    """``runner_files``: changed runner configuration outside the source
+    roots (_runner_files_outside_roots), which selects every target."""
     discovered = list(discovered or []) + _manifest_notes(manifest, discovered or [])
     discovered_ids = {t.runner_id for result in discovered for t in result.targets}
     declared = list(declarations or [])
@@ -675,6 +710,19 @@ def plan_from_indexes(
                 f"{len(unanalysed)} file(s) the analysis does not read changed under the source "
                 f"roots ({shown}{f', and {more} more' if more > 0 else ''}); code or tests may "
                 "read them, so every supplied target is selected",
+            )
+        )
+    outside = sorted(runner_files) if seeds is None else []
+    if outside:
+        shown = ", ".join(outside[:UNANALYSED_PATHS_SHOWN])
+        more = len(outside) - UNANALYSED_PATHS_SHOWN
+        fallbacks.append(
+            Fallback(
+                RULE_UNANALYSED_FILE,
+                "all_targets",
+                f"{len(outside)} runner configuration or build file(s) outside the source roots "
+                f"changed ({shown}{f', and {more} more' if more > 0 else ''}); they decide how "
+                "the tests run, so every supplied target is selected",
             )
         )
 
@@ -1401,4 +1449,5 @@ def plan(
         discovered=discovered,
         declarations=declared,
         base_target_ids=base_target_ids,
+        runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
     )
