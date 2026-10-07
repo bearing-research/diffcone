@@ -808,6 +808,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#discovery" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -982,6 +993,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#discovery" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1104,6 +1126,15 @@ selection rules.</p>
   table: a PEP 562 lazy-export <code>__getattr__</code> (<code>target =
   _LAZY.get(name)</code>, then <code>import_module(target[0])</code>) no longer reaches every
   module. <code>D.get(key)</code> reads a literal dict like <code>D[key]</code>.</li>
+</ul>
+<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A test that runs a <code>python -c</code> snippet that can't run project code (an
+  interpreter version check) is no longer always selected.</li>
+<li>A test that leaves a thread running is no longer always selected;
+  instead every test is credited with the code background threads are in
+  the middle of while it runs, which also covers a later test running
+  beside a thread that loops in one function.</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
