@@ -2421,16 +2421,16 @@ def test_e14_a_fixture_computed_in_another_process_is_credited(repo, tmp_path):
 @pytest.mark.parametrize(
     "test",
     [
-        # E15: a thread the test leaves running.
-        "import threading\nimport time\n\n\ndef test_t():\n"
-        "    threading.Thread(target=time.sleep, args=(5,), daemon=True).start()\n",
         # E17: a subinterpreter.
         "import pytest\n\n\ndef test_t():\n"
         "    interpreters = pytest.importorskip('concurrent.interpreters')\n"
         "    interpreters.create().close()\n",
+        # A subprocess running a script (not an inert probe, roadmap 10).
+        "import subprocess\nimport sys\n\n\ndef test_t():\n"
+        "    subprocess.run([sys.executable, '-c', 'import lib.other'], check=True)\n",
     ],
 )
-def test_e15_e17_code_the_recording_cannot_see_flags_its_test(repo, test):
+def test_e17_code_the_recording_cannot_see_flags_its_test(repo, test):
     if "interpreters" in test and sys.version_info < (3, 14):
         pytest.skip("subinterpreters need Python 3.14")
     chosen = _evidence_selects(
@@ -2516,3 +2516,89 @@ def test_e20_files_opened_by_c_code_are_touches(repo, body, change):
         change,
     )
     assert chosen == {"tests/test_t.py::test_t"}
+
+
+# Roadmap 10: threads and interpreter probes (strata trial).
+
+
+@needs_monitoring
+def test_e15_a_test_beside_a_looping_thread_is_credited_with_the_loop(repo):
+    """test_a starts a thread that stays inside one frame; test_b runs while
+    it loops and reads what the loop writes. The loop raises no event in
+    test_b's window, so only the frames credited at its start name it."""
+    loop = (
+        "import time\n\nSTATE = [0]\nSTOP = []\n\n\n"
+        "def loop():\n    while not STOP:\n        STATE[0] = {}\n        time.sleep(0.005)\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/bg.py": loop.format(1),
+            "lib/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": (
+                "import threading\nimport time\n\nfrom lib.bg import loop\n\n\n"
+                "def test_a():\n    threading.Thread(target=loop, daemon=True).start()\n"
+                "    time.sleep(0.05)\n"
+            ),
+            "tests/test_b.py": (
+                "import time\n\nfrom lib.bg import STATE, STOP\n\n\n"
+                "def test_b():\n    time.sleep(0.05)\n    assert STATE[0] == 1\n"
+                "    STOP.append(1)\n    time.sleep(0.05)  # the loop ends before test_c\n"
+            ),
+            "tests/test_c.py": "from lib.other import g\n\n\ndef test_c():\n    g()\n",
+        },
+        {"lib/bg.py": loop.format(2)},
+    )
+    assert {"tests/test_a.py::test_a", "tests/test_b.py::test_b"} <= chosen
+    assert "tests/test_c.py::test_c" not in chosen
+
+
+@needs_monitoring
+def test_a_thread_left_running_does_not_make_its_test_always_selected(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/other.py": "def g():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_t.py": (
+                "import threading\nimport time\n\n\ndef test_t():\n"
+                "    threading.Thread(target=time.sleep, args=(5,), daemon=True).start()\n"
+            ),
+            "tests/test_u.py": "from lib.other import g\n\n\ndef test_u():\n    g()\n",
+        },
+        {"lib/other.py": "def g():\n    return 2\n"},
+    )
+    assert chosen == {"tests/test_u.py::test_u"}
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "probe, flagged",
+    [
+        ("['-c', 'import sys; print(sys.version_info[:2])']", False),
+        ("['-I', '-c', 'import sys; print(sys.version_info[:2])']", False),
+        ("['-c', 'import lib.other']", True),
+        ("['-c', 'exec(open(\"x.py\").read())']", True),
+        ("['-m', 'json.tool', '--help']", True),
+    ],
+)
+def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, probe, flagged):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/other.py": "def g():\n    return 1\n",
+            "lib/core.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_p.py": (
+                "import subprocess\nimport sys\n\nfrom lib.core import f\n\n\ndef test_p():\n"
+                f"    subprocess.run([sys.executable] + {probe}, capture_output=True)\n"
+                "    f()\n"
+            ),
+        },
+        {"lib/other.py": "def g():\n    return 2\n"},
+    )
+    assert ("tests/test_p.py::test_p" in chosen) is flagged

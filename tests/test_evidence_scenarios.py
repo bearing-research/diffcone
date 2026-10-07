@@ -371,7 +371,7 @@ def test_two():
 
 
 def test_sub():
-    subprocess.run([sys.executable, "-c", "pass"], check=True)
+    subprocess.run([sys.executable, "-c", "import pkg.memo"], check=True)
 """,
     }
     base = repo.commit(files)

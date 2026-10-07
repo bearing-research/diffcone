@@ -62,8 +62,10 @@ report:
 - Code that runs on import is planned from the code instead, as without
   evidence.
 - Tests with no recording (new tests, for example), tests whose recording
-  was unstable, and tests that started a subprocess or a subinterpreter, or
-  left a thread running, are always selected.
+  was unstable, and tests that started a subprocess or a subinterpreter are
+  always selected. A `python -c` snippet that can't run your code (a
+  version check) doesn't count. Code that background threads are running
+  while a test runs is credited to that test.
 - Changes to compiled sources, build files and configuration select every
   test.
 

@@ -97,7 +97,7 @@ def test_listing():
 
 
 def test_subprocess():
-    subprocess.run([sys.executable, "-c", "pass"], check=True)
+    subprocess.run([sys.executable, "-c", "import pkg.ops"], check=True)
 """
 
 FILES = {

@@ -579,3 +579,46 @@ to get PR traffic onto a fork is open: replaying upstream PR heads means
 pushing to the user's GitHub account, which needs the user's approval) for
 long enough to see failures: each miss is fixed or explained, and the
 selection size and time saved are recorded in evaluation.md.
+
+## 10. Recorder precision: subprocesses and threads that hide nothing (strata trial)
+
+**Status.** In progress (2026-10-07). A recording of strata's unit suite
+(6 225 tests) flags 2 658 tests as always selected. A diagnostic run
+attributed the flags: 671 tests start a real subprocess (the notebook cell
+harness, `uv run`) and some 600 more use a shared fixture that does, which
+is right; 576 only run `python -c` version probes (`import sys;
+print(sys.version_info...)`); 866 only leave a thread running (strata's
+`MetricsWriter`, executor threads).
+
+**Mechanism.**
+
+* *Inert interpreter probes.* A subprocess whose command line is a Python
+  interpreter (its name starts with `python`, or it is `sys.executable`),
+  optional single-letter flags (`-I`, `-E`, `-S`, `-s`, `-B`, `-u`, `-O`),
+  then `-c CODE`, where CODE names none of the project's top-level packages
+  (`DIFFCONE_COLLECT_PACKAGES`, as a word) and none of `exec`, `eval`,
+  `open`, `runpy`, `import_module`, `__import__`, `compile`, runs no project
+  code: it does not flag the test. Anything else (`-m`, a script, `uv run`,
+  a shell, `os.system`) still does.
+* *Threads.* The E15 flag (a test that leaves a thread running is always
+  selected) protects the wrong test: code the thread runs during that test
+  is already recorded for it. The gap is a later test during which a
+  long-lived thread sits in one frame (a `while` loop): no new event fires,
+  so the loop is credited to nobody after the first test. So every window
+  that opens (a test, a shared fixture's setup) is credited with the
+  project code on every other thread's stack (`sys._current_frames()`),
+  and the flag goes. A background loop is then credited to every test that
+  runs beside it, which is what it can affect.
+
+**Trade-off.** Both narrow selection: a probe that does load project code
+by a route the word list misses would be missed. The list is the code
+loading Python offers; `PYTHONSTARTUP` only runs in interactive sessions,
+and a `.pth` file runs installed code, not the checkout's. Threads trade a
+flag on one test for credit on many, which widens per change but only
+where a loop really runs.
+
+**Done when** the strata recording's always-selected share falls by the
+probe and thread-only tests, with scenarios: a probe does not flag, a probe
+naming a project package or running a script does; a later test running
+beside a looping thread is selected when the loop body changes (missed
+before), and the thread's starter is no longer always selected.

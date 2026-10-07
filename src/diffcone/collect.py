@@ -25,8 +25,10 @@ What it records, per test (parameter cases folded into their function, as
   hooks, ``sqlite3.connect`` and ``ctypes.dlopen`` included, and wrappers
   of ``os.stat``/``os.lstat``/``os.access``, which never warn, so the extra
   frame cannot move a warning's ``stacklevel``), with ``/`` separators;
-* whether it started a subprocess or a subinterpreter, or left a thread
-  running (code no record names runs there).
+* whether it started a subprocess (other than a ``python -c`` probe that
+  can run no project code) or a subinterpreter: code no record names runs
+  there. The project code other threads are in the middle of when a window
+  opens is credited to it, as those threads run beside its test.
 
 Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
@@ -440,10 +442,72 @@ def _audit(event, args):
             if args and isinstance(args[0], (str, bytes, os.PathLike)):
                 _touch(args[0])
         elif event in SUBPROCESS_EVENTS:
-            for w in _windows():
-                w["flags"] |= FLAG_SUBPROCESS
+            if not _inert_probe(event, args):
+                for w in _windows():
+                    w["flags"] |= FLAG_SUBPROCESS
     except Exception as exc:
         _error(f"audit {event}", exc)
+
+
+# Single-letter interpreter options that take no value and load no code.
+_PLAIN_OPTIONS = frozenset({"-I", "-E", "-S", "-s", "-B", "-u", "-O", "-OO", "-q", "-P"})
+# Ways a ``-c`` snippet could load code that is not written in it.
+_CODE_LOADERS = re.compile(r"\b(exec|eval|open|runpy|import_module|__import__|compile)\b")
+
+
+def _inert_probe(event: str, args: tuple) -> bool:
+    """Whether a subprocess is a Python interpreter running a ``-c`` snippet
+    that cannot run project code (``python -c "import sys;
+    print(sys.version_info)"``, how tools probe an interpreter's version):
+    the snippet names no project package and loads no code by name. Anything
+    else (``-m``, a script, another program, ``os.system``) may run project
+    code where this process cannot see it."""
+    if event == "subprocess.Popen":
+        argv = args[1] if len(args) > 1 else None
+    elif event in ("os.posix_spawn", "os.exec"):
+        argv = args[1] if len(args) > 1 else None
+    else:
+        return False
+    if isinstance(argv, (str, bytes)) or argv is None:
+        return False
+    try:
+        argv = [os.fsdecode(a) for a in argv]
+    except TypeError:
+        return False
+    if not argv:
+        return False
+    program = argv[0]
+    if not (os.path.basename(program).startswith("python") or program == sys.executable):
+        return False
+    i = 1
+    while i < len(argv) and argv[i] in _PLAIN_OPTIONS:
+        i += 1
+    if i + 1 >= len(argv) or argv[i] != "-c":
+        return False
+    code = argv[i + 1]
+    if _CODE_LOADERS.search(code):
+        return False
+    return not any(re.search(rf"\b{re.escape(p)}\b", code) for p in PACKAGES)
+
+
+def _credit_running_threads(window: dict) -> None:
+    """Credit ``window`` with the project code every other thread is in the
+    middle of. A long-lived thread looping in one frame raises no event while
+    a later window is open, yet it runs beside that window's test."""
+    me = threading.get_ident()
+    for ident, frame in sys._current_frames().items():
+        if ident == me:
+            continue
+        while frame is not None:
+            code = frame.f_code
+            rel = _code_path(code.co_filename)
+            if rel is not None:
+                i = codes.get(code)
+                if i is None:
+                    i = codes[code] = len(table)
+                    table.append([rel, code.co_firstlineno, code.co_qualname])
+                window["codes"].add(i)
+            frame = frame.f_back
 
 
 def _flag_multiprocessing_spawns() -> None:
@@ -684,6 +748,10 @@ def pytest_fixture_setup(fixturedef, request):
     key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
     w = fixture_windows.setdefault(key, _window())
     active.append(w)
+    try:
+        _credit_running_threads(w)
+    except Exception as exc:
+        _error("threads", exc)
     # Code this test already ran is disabled; re-arm so the fixture's own
     # window sees everything its setup runs.
     mon.restart_events()
@@ -730,21 +798,16 @@ def pytest_runtest_protocol(item, nextitem):
     mine = _window()
     active.append(mine)
     importing.clear()  # no import is running when a test starts
-    threads = set(threading.enumerate())
+    try:
+        _credit_running_threads(mine)
+    except Exception as exc:
+        _error("threads", exc)
     mon.restart_events()
     try:
         return (yield)
     finally:
         _drop(mine)
         mon.restart_events()
-        try:
-            # A thread the test started that is still running runs code no
-            # record names (between tests, or credited to later ones): the
-            # test is flagged like one that started a subprocess.
-            if any(t.is_alive() and t not in threads for t in threading.enumerate()):
-                mine["flags"] |= FLAG_SUBPROCESS
-        except Exception as exc:
-            _error("threads", exc)
         try:
             defs = list(used_fixtures.pop(item.nodeid, ()))
             info = getattr(item, "_fixtureinfo", None)

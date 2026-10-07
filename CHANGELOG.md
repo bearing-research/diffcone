@@ -15,6 +15,15 @@ selection rules.
   _LAZY.get(name)`, then `import_module(target[0])`) no longer reaches every
   module. `D.get(key)` reads a literal dict like `D[key]`.
 
+### Execution evidence
+
+- A test that runs a `python -c` snippet that can't run project code (an
+  interpreter version check) is no longer always selected.
+- A test that leaves a thread running is no longer always selected;
+  instead every test is credited with the code background threads are in
+  the middle of while it runs, which also covers a later test running
+  beside a thread that loops in one function.
+
 ### Discovery
 
 - Importing a library's test helper whose name looks like a test class
