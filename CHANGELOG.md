@@ -29,6 +29,11 @@ The first release.
   and ASV benchmarks, without importing project code; what it cannot see
   it reports. `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.
+- A target depends on everything it depended on at the base too, and on
+  its module's import even when a hand-written manifest does not list the
+  module; an added import selects the code that now resolves through it;
+  a docstring edit selects only where code runs or reads the docstring.
+  Unknown manifest keys are errors.
 - Indexes, discovery and per-module results are cached under
   `.diffcone/cache/`; a cached plan is identical to an uncached one.
   `diffcone prune --keep REV` shrinks the cache to what planning at given

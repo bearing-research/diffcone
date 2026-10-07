@@ -38,10 +38,12 @@ symbol, and classifies each difference:
 | added or deleted | A new helper function, a removed method. |
 | body changed | The code inside a function changed. |
 | definition changed | Its signature, defaults, decorators or class bases changed. |
-| dependencies changed | It now calls or imports something different. |
+| dependencies changed | It now calls or imports something different, or a name it uses now resolves (a missing import was added). |
 
 Formatting and comments are not changes: moving a function down the file or
-adding blank lines selects nothing.
+adding blank lines selects nothing. Neither is a docstring edit, unless code
+uses the docstring: a decorator that rewrites it, or code that reads
+`__doc__`.
 
 ## From a change to a test
 

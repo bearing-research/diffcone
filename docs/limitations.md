@@ -15,7 +15,9 @@ everything.
 **Class-level changes affect every method.**
 :   A change to a class's body (its bases, decorators or class attributes)
     affects all of its methods. Removing or redirecting an import affects
-    the whole importing module; adding one doesn't.
+    the whole importing module; adding one affects only the code that uses
+    the new name, unless the imported module runs code of its own that
+    the importing module did not run before.
 
 **Calls through objects of unknown type are matched by name.**
 :   diffcone doesn't infer types. `self.method()` and `cls.method()` are

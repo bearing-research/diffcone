@@ -30,14 +30,17 @@ information. Wherever a command takes a snapshot (`--base`, `--head`,
 `plan` and `discover`:
 
 - `0`: plan produced, analysis complete.
-- `1`: plan produced, but analysis errors forced selecting everything.
-- `2`: no plan (bad arguments, an unreadable manifest, an unknown revision).
+- `1`: plan produced, but analysis errors (a file that does not parse, a
+  source root with no Python file) forced selecting everything.
+- `2`: no plan (bad arguments, an unreadable manifest, an unknown revision,
+  or an internal error).
 - `3`: plan produced, but discovery may be short of what the runner
   collects.
 
 `1` and `3` are opposite failures: `1` selects too much, `3` means the
 target list itself may be short, so running only the selected targets
-could skip tests. `3` wins when both apply.
+could skip tests. `3` wins when both apply. A manifest written by
+`discover` keeps its notes, so a plan made from it exits `3` as well.
 
 `run` exits with the runner's own code (0 when nothing was selected, or
 with `--dry-run`). It refuses with `2` when the working tree differs from

@@ -91,6 +91,7 @@ from diffcone.snapshot import (
     file_id,
     read_snapshot,
     resolve_commit,
+    split_root,
 )
 
 BEHAVIOR = 1
@@ -500,7 +501,7 @@ def plan_from_indexes(
     base_target_ids: set[str] | None = None,
     seeds: Seeds | None = None,
 ) -> Plan:
-    discovered = list(discovered or [])
+    discovered = list(discovered or []) + _manifest_notes(manifest, discovered or [])
     discovered_ids = {t.runner_id for result in discovered for t in result.targets}
     declared = list(declarations or [])
     targets = merge_targets(manifest, discovered)
@@ -607,9 +608,15 @@ def plan_from_indexes(
 
     # Targets join the graph as nodes with explicit dependency edges.
     dynamic_deps: dict[str, list[str]] = defaultdict(list)
+    # Target -> its entry's module, when the manifest does not list it.
+    entry_modules: dict[str, str] = {}
     for target in targets:
         if target.entry_symbol in known_symbols:
             graph.add(Edge(target.node_id, target.entry_symbol, ENTRY), ("manifest",))
+            entry = head.symbols.get(target.entry_symbol) or base.symbols.get(target.entry_symbol)
+            if entry is not None and entry.module != target.entry_symbol:
+                if entry.module not in target.lifecycle_dependencies:
+                    entry_modules[target.node_id] = entry.module
         else:
             fallbacks.append(
                 Fallback(
@@ -668,6 +675,22 @@ def plan_from_indexes(
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
             queue.append(symbol.module)
+    # A symbol reading docstrings (``f.__doc__``, ``getdoc(cls)``, its
+    # module's ``__doc__``) sees a docstring-only change of what it references.
+    documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
+    if documented:
+        for index in (base, head):
+            read: dict[str, set[str]] = {
+                s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings
+            }
+            for e in index.edges:
+                if e.source in read and e.kind != DEFINED_IN:
+                    read[e.source].add(e.target)
+            for reader, referenced in sorted(read.items()):
+                if reader not in mode and referenced & documented:
+                    mode[reader] = BEHAVIOR
+                    via[reader] = None
+                    queue.append(reader)
     seed_reasons = dict(seeds.nodes) if seeds is not None else {}
     for node in sorted(seed_reasons):
         if node not in mode:
@@ -706,6 +729,14 @@ def plan_from_indexes(
             mode[source] = new_mode
             via[source] = (edge, revs, node)
             queue.append(source)
+    # The runner imports a target's module to reach it, so the module's
+    # import-time code runs before the target whether or not a hand-written
+    # manifest lists the module (discovered targets always do). Applied after
+    # the search, so a target that a more specific path reaches keeps it.
+    for node_id, module in sorted(entry_modules.items()):
+        if node_id not in mode and module in mode:
+            mode[node_id] = BEHAVIOR
+            via[node_id] = (Edge(node_id, module, LIFECYCLE), ("manifest",), module)
 
     affected_by_name = {
         name: tuple(s for s in symbols if s in mode) for name, symbols in symbols_by_name.items()
@@ -1113,6 +1144,77 @@ def _settle_discovery(
     return out
 
 
+def _check_roots_match(
+    roots: list[str], base: str, base_index: SourceIndex, head: str, head_index: SourceIndex
+) -> None:
+    """A source root holding no Python file in either revision is almost
+    certainly a mistake (a typo, a path outside the repository), and would
+    plan nothing as complete: make it an analysis error, so the plan
+    selects everything and says why."""
+    paths = [
+        symbol.path
+        for index in (base_index, head_index)
+        for symbol in index.symbols.values()
+        if symbol.kind == MODULE
+    ]
+    for root in roots:
+        directory = split_root(root)[0]
+        if not directory:
+            continue
+        if not any(path.startswith(directory + "/") for path in paths):
+            head_index.errors.append(
+                AnalysisError(
+                    revision=head,
+                    path=directory,
+                    message=(
+                        f"source root {root!r} holds no Python file at {base} or {head}; "
+                        "check the path (it is relative to the repository)"
+                    ),
+                )
+            )
+
+
+def _manifest_notes(
+    manifest: Manifest | None, discovered: list[DiscoveryResult]
+) -> list[DiscoveryResult]:
+    """The notes ``discover`` wrote into a manifest, for runners this plan
+    did not discover itself: a target list it said may be short keeps the
+    plan at exit code 3."""
+    if manifest is None or not manifest.notes:
+        return []
+    fresh = {result.runner for result in discovered}
+    by_runner: dict[str, list[DiscoveryNote]] = defaultdict(list)
+    for runner, kind, detail, path in manifest.notes:
+        if runner not in fresh:
+            by_runner[runner].append(DiscoveryNote(runner, kind, detail, path))
+    return [
+        DiscoveryResult(runner, notes=notes, config={"from_manifest": True})
+        for runner, notes in sorted(by_runner.items())
+    ]
+
+
+def _with_base_lifecycle(
+    discovered: list[DiscoveryResult], base_lifecycle: dict[tuple[str, str], tuple[str, ...]]
+) -> list[DiscoveryResult]:
+    """Head targets with the lifecycle dependencies the same target had at
+    the base added: a fixture, conftest or setup the test used before the
+    change and no longer does (deleted with its autouse fixture, a removed
+    override) still decides whether the change reaches it, as every other
+    edge counts in both revisions."""
+    merged: list[DiscoveryResult] = []
+    for result in discovered:
+        targets = []
+        for target in result.targets:
+            before = base_lifecycle.get((target.runner, target.runner_id), ())
+            extra = [d for d in before if d not in target.lifecycle_dependencies]
+            if extra:
+                deps = tuple(sorted({*target.lifecycle_dependencies, *extra}))
+                target = replace(target, lifecycle_dependencies=deps)
+            targets.append(target)
+        merged.append(replace(result, targets=targets))
+    return merged
+
+
 @without_cyclic_gc
 def plan(
     repo: str | Path,
@@ -1159,6 +1261,7 @@ def plan(
     # to be new. Only the snapshot is read again (0.1 s on the largest
     # repositories); the base index still comes from the cache.
     base_target_ids: set[str] | None = None
+    base_lifecycle: dict[tuple[str, str], tuple[str, ...]] = {}
     if runners:
         base_commit = _cacheable_commit(repo_path, base) if discovery_cache is not None else None
         base_target_ids = set()
@@ -1176,6 +1279,9 @@ def plan(
                 if base_commit is not None and discovery_cache is not None:
                     discovery_cache.store(result, base_commit, roots, options)
             base_target_ids |= {target.runner_id for target in result.targets}
+            for target in result.targets:
+                base_lifecycle[(target.runner, target.runner_id)] = target.lifecycle_dependencies
+    _check_roots_match(roots, base, base_index, head, head_index)
     declared: list[Declaration] = []
     for revision, index in ((base, base_index), (head, head_index)):
         found, problems = load_declarations(repo_path, revision)
@@ -1195,6 +1301,7 @@ def plan(
         if head_commit is not None and discovery_cache is not None:
             for result in discovered:
                 discovery_cache.store(result, head_commit, roots, options)
+    discovered = _with_base_lifecycle(discovered, base_lifecycle)
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 

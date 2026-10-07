@@ -3,8 +3,11 @@
 Exit codes (plan / discover):
   0  plan produced, analysis complete
   1  plan produced, but analysis errors forced a conservative fallback
-  2  no plan (bad arguments, unreadable manifest, unknown revision)
+  2  no plan (bad arguments, unreadable manifest, unknown revision, a crash)
   3  plan produced, but discovery may be short of what the runner collects
+
+A manifest written by ``discover`` keeps its notes, so a plan made from it
+exits 3 as a plan that discovered the targets itself would.
 
 1 and 3 are opposite failures: 1 means too much was selected (the analysis
 gave up safely), 3 means the target list itself may be incomplete, so running
@@ -27,6 +30,7 @@ import json
 import shlex
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from diffcone import check as checking
@@ -763,14 +767,31 @@ def main(argv: list[str] | None = None) -> int:
                         "runner": r.runner,
                         "targets": len(r.targets),
                         "config": r.config,
-                        "notes": [{"kind": n.kind, "detail": n.detail} for n in r.notes],
+                        "notes": [
+                            {"kind": n.kind, "detail": n.detail, "path": n.path} for n in r.notes
+                        ],
                     }
                     for r in results
                 ],
             }
-            return _write(json.dumps(data, indent=2) + "\n", args.output)
-    except (ManifestError, GitError, EvidenceError) as exc:
+            code = _write(json.dumps(data, indent=2) + "\n", args.output)
+            if code:
+                return code
+            # The plan's codes: 3 when a runner may collect tests that are not
+            # targets, 1 when files could not be analysed.
+            if any(r.incomplete for r in results):
+                return 3
+            return 1 if index.errors else 0
+    except (ManifestError, GitError, EvidenceError, ValueError, OSError) as exc:
         print(f"diffcone: error: {exc}", file=sys.stderr)
+        return 2
+    except Exception:
+        # Exit 1 means "a plan, degraded": a crash must never look like one.
+        traceback.print_exc()
+        print(
+            "diffcone: internal error (a bug; please report it with the traceback above)",
+            file=sys.stderr,
+        )
         return 2
     parser.error("unknown command")  # pragma: no cover
     return 2  # pragma: no cover

@@ -53,7 +53,10 @@ class Symbol:
     # sorted. Lets the classifier tell additions from removals/redirections.
     imports: tuple[str, ...] = ()
     # Hash of the docstring alone; body_hash excludes it. A docstring-only edit
-    # is reported as docstring_changed and carries no impact.
+    # is reported as docstring_changed and carries no impact, except where
+    # code runs it: under a non-inert decorator (or a class decorator or
+    # metaclass) the docstring is part of the definition hash, and a module
+    # whose own code names ``__doc__`` has it in its body hash.
     docstring_hash: str = ""
     # Functions: hash of the parameter and return annotations, which
     # definition_hash excludes, and whether they are never evaluated at
@@ -66,6 +69,10 @@ class Symbol:
     # the name (inert decorators, literal defaults, deferred or no
     # annotations, a plain class for methods).
     inert_definition: bool = False
+    # The symbol's own code reads a docstring (``obj.__doc__``, ``__doc__``,
+    # ``getdoc(obj)``): a docstring change of what it references, or of its
+    # module, reaches it.
+    reads_docstrings: bool = False
 
 
 @dataclass(frozen=True, order=True)

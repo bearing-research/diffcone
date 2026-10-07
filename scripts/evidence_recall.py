@@ -203,7 +203,7 @@ def main() -> int:
             "coverage_affected": len(cov.affected) if cov else None,
             "coverage_missed": sorted(h.runner_id for h in cov.missed)[:50] if cov else None,
             "rules": _rule_counts(planned),
-            "escalated_modules": planned.evidence["escalated_modules"][:20],
+            "escalated_modules": (planned.evidence or {}).get("escalated_modules", [])[:20],
             "fallbacks": [f"{f.rule}: {f.detail[:160]}" for f in planned.fallbacks][:5],
             "plan_seconds": round(plan_seconds, 1),
         }

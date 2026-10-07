@@ -128,12 +128,20 @@ whitespace, comments and positions never matter.
 | function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
 | class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
 | variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | (none) |
-| module | top-level statements excluding definitions, imports and variable symbols | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
+| module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping and order |
 
 The docstring is excluded from every body hash and hashed on its own:
 a docstring-only edit is reported as `docstring_changed` and carries no
-impact (docstrings do not change behaviour; doctests, which would, are not
-modelled). Consequences: adding or
+impact, except where code runs or reads it. A function under a decorator
+that is not known inert, or a class with decorators or keywords (a
+metaclass), has its docstring in its definition hash: the decorator
+receives it at import (pandas' `@doc` formats it, and a bad placeholder
+breaks every importer). A module whose own code names `__doc__`
+(`ArgumentParser(description=__doc__)`) has its docstring in its body hash.
+A symbol whose code reads a docstring (`obj.__doc__`, `__doc__`,
+`getdoc(obj)`) is marked `reads_docstrings`, and the planner seeds it when
+something it references, or its module, has a docstring-only change.
+Doctests are targets of their own (see Discovery). Consequences: adding or
 removing a method is a class definition change; removing or redirecting an
 import binding is a module definition change, while *adding* one is the
 non-structural `imports_added`. Definitions nested inside `if`/`try`/`with`
@@ -151,7 +159,7 @@ blocks are still symbols and are excluded from their scope's body hash.
 | `imports` | module or function → module | `import m`, `from m import sub`, `importlib.import_module("m")` |
 | `imports_name` | module → symbol | module-level `from m import name` |
 | `entry` | target → symbol | manifest |
-| `lifecycle` | target → symbol | manifest |
+| `lifecycle` | target → symbol | manifest; the lifecycle dependencies the same target had at the base are added to the head target's (a fixture, conftest or setup it used before the change still counts); a target whose manifest does not list its entry's module also reaches that module, after the search, as the runner imports it |
 | `unresolved_name_match` | function → changed symbol | synthesised by the planner, see below |
 
 ### Resolution rules
@@ -363,17 +371,18 @@ identity and reports:
 | `body_changed` | `body_hash` differs |
 | `definition_changed` | kind or `definition_hash` differs |
 | `dependencies_changed` | an outgoing non-containment edge was removed or redirected (a call was redirected, an alias now points elsewhere, an import stopped resolving) |
-| `dependencies_added` | outgoing edges were only added (a new import binding, a new call); non-structural |
-| `imports_added` | a module gained import bindings and lost none; non-structural |
-| `docstring_changed` | only the docstring differs; non-structural, no impact |
+| `dependencies_added` | outgoing edges were only added; non-structural, behaviour-level: a name the symbol uses now resolves (a missing import added, a fallback import that now succeeds). For a module only when its import-time code gained a reference, or an added import reaches an in-scope module outside the module's base import closure, whose import-time code now runs (a registration import) |
+| `imports_added` | a module gained import bindings and lost none, and nothing new runs at its import; non-structural, no impact |
+| `docstring_changed` | only the docstring differs, and no code runs or reads it as above; non-structural, no impact |
 | `annotations_changed` | only a function's annotations differ and they are never evaluated at import (see Import time); behaviour-level, non-structural |
 
-A symbol whose only changes are `imports_added`, `dependencies_added`
-and/or `docstring_changed` is reported but seeds no impact: nothing an existing dependent can observe
+A symbol whose only changes are `imports_added` and/or `docstring_changed`
+is reported but seeds no impact: nothing an existing dependent can observe
 differs, and a member whose own resolution moved because of the addition
-carries its own `dependencies_changed`. In practice this means adding a
-name to a test module's import list no longer selects every test that lists
-the module as a lifecycle dependency.
+carries its own `dependencies_added` or `dependencies_changed`. In practice
+adding a name to a test module's import list selects only the tests that
+use the name. (Before the pre-release audit `dependencies_added` carried no
+impact either, and the commit that adds a missing import selected nothing.)
 
 Symbols of a module that failed to parse in one revision are skipped rather
 than reported as added/deleted; the analysis error fallback covers them.
@@ -393,7 +402,7 @@ two modes:
   this invalidates everything defined inside it. Pure additions (an import
   binding, a dependency edge) are not structural: they cannot break an
   existing member, and a member whose own resolution changed because of them
-  carries its own `dependencies_changed`. Class bodies are structural because
+  carries its own `dependencies_added`. Class bodies are structural because
   class-level attributes such as ASV `params`, pytest marks, or registries
   shape how every method runs without being referenced textually. Module
   bodies are not structural (a constant edit does not invalidate every

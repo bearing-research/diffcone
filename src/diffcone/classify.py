@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 
-from diffcone.model import CLASS, DEFINED_IN, MODULE, SourceIndex, Symbol
+from diffcone.model import CLASS, DEFINED_IN, IMPORTS, IMPORTS_NAME, MODULE, SourceIndex, Symbol
 
 ADDED = "added"
 DELETED = "deleted"
@@ -13,7 +13,13 @@ BODY_CHANGED = "body_changed"
 DEFINITION_CHANGED = "definition_changed"
 IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
 DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
-DEPENDENCIES_ADDED = "dependencies_added"  # edges were only added
+# Edges were only added. A name the symbol uses now resolves to something
+# (a missing import added, a fallback import that now succeeds): its own
+# behaviour changed. For a module, only when its import-time code gained a
+# reference, or an added import brings in-scope modules into its import
+# closure whose import-time code did not run before; new name bindings alone
+# are ``imports_added``, their users carrying their own added edges.
+DEPENDENCIES_ADDED = "dependencies_added"
 DOCSTRING_CHANGED = "docstring_changed"  # only the docstring differs
 # Only a function's annotations differ and they are never evaluated at import
 # (see Symbol.deferred_annotations): behaviour-level, not structural, not
@@ -29,8 +35,9 @@ STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED
 
 # Changes that are reported but carry no impact of their own: nothing an
 # existing dependent can observe differs (a member whose resolution moved
-# because of the addition carries its own dependencies_changed).
-NON_IMPACT = frozenset({IMPORTS_ADDED, DEPENDENCIES_ADDED, DOCSTRING_CHANGED})
+# because of the addition carries its own dependencies_added or
+# dependencies_changed).
+NON_IMPACT = frozenset({IMPORTS_ADDED, DOCSTRING_CHANGED})
 
 
 @dataclass(frozen=True, order=True)
@@ -75,6 +82,51 @@ def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str,
     return {source: frozenset(sig) for source, sig in grouped.items()}
 
 
+def _import_closures(index: SourceIndex) -> dict[str, set[str]]:
+    """Each module's transitive import closure (itself included)."""
+    imports: dict[str, set[str]] = defaultdict(set)
+    for e in index.edges:
+        if e.kind == IMPORTS and e.target in index.symbols:
+            source = index.symbols.get(e.source)
+            if source is not None:
+                imports[source.module].add(e.target)
+    closures: dict[str, set[str]] = {}
+
+    def closure(module: str) -> set[str]:
+        if module not in closures:
+            seen = {module}
+            stack = [module]
+            while stack:
+                for target in imports.get(stack.pop(), ()):
+                    if target not in seen:
+                        seen.add(target)
+                        stack.append(target)
+            closures[module] = seen
+        return closures[module]
+
+    return {module: closure(module) for module in list(imports)}
+
+
+def _module_additions_matter(
+    module: str,
+    added: frozenset[tuple[str, str, str]],
+    base_closures: dict[str, set[str]],
+    base: SourceIndex,
+) -> bool:
+    """Whether edges added to a module change what importing it does: its
+    import-time code references something new, or an added import reaches
+    an in-scope module that importing it did not run before (a registration
+    import such as ``import pkg.json_handler``). A module new in head is
+    added, and reached through its own change."""
+    closure = base_closures.get(module, {module})
+    for kind, target, _detail in added:
+        if kind not in (IMPORTS, IMPORTS_NAME):
+            return True
+        if kind == IMPORTS and target in base.symbols and target not in closure:
+            return True
+    return False
+
+
 def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     """Return every symbol that differs between the two revisions.
 
@@ -85,6 +137,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     changes: list[SymbolChange] = []
     base_deps = _dependency_signatures(base)
     head_deps = _dependency_signatures(head)
+    base_closures = _import_closures(base)
     empty: frozenset[tuple[str, str, str]] = frozenset()
     for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
         b = base.symbols.get(symbol_id)
@@ -117,7 +170,14 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         before = base_deps.get(symbol_id, empty)
         after = head_deps.get(symbol_id, empty)
         if before != after:
-            kinds.append(DEPENDENCIES_ADDED if before <= after else DEPENDENCIES_CHANGED)
+            if not before <= after:
+                kinds.append(DEPENDENCIES_CHANGED)
+            elif h.kind != MODULE or _module_additions_matter(
+                symbol_id, after - before, base_closures, base
+            ):
+                kinds.append(DEPENDENCIES_ADDED)
+            elif IMPORTS_ADDED not in kinds:
+                kinds.append(IMPORTS_ADDED)
         if kinds:
             changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))
     return changes

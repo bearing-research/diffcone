@@ -57,6 +57,41 @@ from diffcone.model import (
 from diffcone.snapshot import member_symbol_id
 
 
+def _doc_reads(body: list[ast.stmt]):
+    """``__doc__`` names and attributes, and ``getdoc(...)`` calls, in a
+    scope's own statements (not in nested definitions, which are symbols
+    of their own)."""
+    stack: list[ast.AST] = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, DEF_NODES):
+            # Decorators, defaults and bases run in this scope; the body not.
+            stack.extend(node.decorator_list)
+            if isinstance(node, ast.ClassDef):
+                stack.extend([*node.bases, *node.keywords])
+            else:
+                stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
+            continue
+        if isinstance(node, ast.Name) and node.id == "__doc__":
+            yield node
+        elif isinstance(node, ast.Attribute) and node.attr == "__doc__":
+            yield node
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "getdoc":
+                yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _reads_docstrings(body: list[ast.stmt]) -> bool:
+    return next(_doc_reads(body), None) is not None
+
+
+def _names_module_doc(body: list[ast.stmt]) -> bool:
+    return any(isinstance(n, ast.Name) for n in _doc_reads(body))
+
+
 class FirstPass(IndexerState):
     """Pass 1: modules and their definitions into symbols."""
 
@@ -84,10 +119,20 @@ class FirstPass(IndexerState):
         scope.literal_names = _collect_literal_bindings(scope.tree, {})
         scope.mutations = frozenset(_module_mutations(scope.tree))
         imports = tuple(sorted(_canonical_imports(scope)))
+        # A variable statement is its own symbol, so it leaves the module's
+        # body hash; one rebinding a def or class name (``helper = 3`` after
+        # ``def helper``) is not a variable symbol and stays in it.
+        defined = {s.name for s in stmts if isinstance(s, DEF_NODES)}
+        own_symbol = {id(stmt) for name, stmt in variable_stmts.items() if name not in defined}
         module_body_hash = hash_scope_body(
-            [s for s in body if s not in variable_stmts.values()], strip_imports=True
+            [s for s in body if id(s) not in own_symbol], strip_imports=True
         )
         module_doc_hash = _docstring_hash([scope.tree.body])
+        module_reads_doc = _reads_docstrings(scope.tree.body)
+        if module_reads_doc and _names_module_doc(scope.tree.body):
+            # ``ArgumentParser(description=__doc__)``: import-time code reads
+            # the module's own docstring.
+            module_body_hash = _digest(module_body_hash + "|doc:" + module_doc_hash)
         self._add_symbol(
             Symbol(
                 id=scope.name,
@@ -102,6 +147,7 @@ class FirstPass(IndexerState):
                 container=None,
                 line_ranges=((1, _end_line(scope.tree)),),
                 imports=imports,
+                reads_docstrings=module_reads_doc,
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
@@ -122,7 +168,7 @@ class FirstPass(IndexerState):
                 mutators[name].append(stmt)
         for name, stmt in variable_stmts.items():
             if name in scope.members:
-                continue  # also a def/class: Python's last binding wins; stay conservative
+                continue  # also a def/class: kept in the module body hash above
             symbol_id = self._member_id(scope.name, name)
             value = stmt.value
             assert value is not None  # _variable_statements keeps assignments with a value
@@ -227,6 +273,10 @@ class FirstPass(IndexerState):
                     )
 
                 body_hash, definition_hash, doc_hash = class_hashes()
+                if any(n.decorator_list or n.keywords for n in nodes):
+                    # A decorator or metaclass receives the class with its
+                    # docstring, and may run it (a ``@doc``-style formatter).
+                    definition_hash = _digest(definition_hash + "|doc:" + doc_hash)
                 symbol = Symbol(
                     id=symbol_id,
                     kind=CLASS,
@@ -239,6 +289,7 @@ class FirstPass(IndexerState):
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
                     docstring_hash=doc_hash,
+                    reads_docstrings=any(_reads_docstrings(n.body) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -311,6 +362,10 @@ class FirstPass(IndexerState):
                     )
 
                 annotation_hash, body_hash, definition_hash, doc_hash = function_hashes()
+                if not all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list):
+                    # The decorator receives the function with its docstring,
+                    # and may run it (pandas' ``@doc`` formats it at import).
+                    definition_hash = _digest(definition_hash + "|doc:" + doc_hash)
                 deferred = (
                     _future_annotations(scope)
                     and all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list)
@@ -335,6 +390,7 @@ class FirstPass(IndexerState):
                     annotation_hash=annotation_hash,
                     deferred_annotations=deferred,
                     inert_definition=inert,
+                    reads_docstrings=any(_reads_docstrings(n.body) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue

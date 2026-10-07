@@ -45,7 +45,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 20  # 20: Cython statements outside functions (evidence mode)
+INDEX_FORMAT = 21  # 21: docstrings that code runs or reads
 
 
 def _indexer_fingerprint() -> str:

@@ -329,8 +329,11 @@ def test_deleted_function_and_redirected_dependency(repo):
         "t::test_old",
         "t::test_unrelated_same_module",
         "b.time_run",
+        # benchmarks.bench imports pkg.service, whose imports changed: a
+        # target depends on its module's import (audit P4).
+        "b.time_b",
     }
-    assert unselected(plan) == {"t::test_a", "b.time_b"}
+    assert unselected(plan) == {"t::test_a"}
 
     # The redirected call is explained through run's own changed dependencies.
     r = reason(plan, "b.time_run")
@@ -729,8 +732,15 @@ def test_class_attribute_change_invalidates_methods(repo):
         "benchmarks.bench.TimeOps": ("body_changed",),
         "tests.test_marks.pytestmark": ("body_changed",),
     }
-    assert selected(plan) == {"b.TimeOps.time_add", "b.TimeOps.time_mul", "t::test_a"}
-    assert unselected(plan) == {"b.Other.time_other", "t::test_b"}
+    # The class body runs when benchmarks.bench is imported, before Other's
+    # benchmark too (audit P4).
+    assert selected(plan) == {
+        "b.TimeOps.time_add",
+        "b.TimeOps.time_mul",
+        "b.Other.time_other",
+        "t::test_a",
+    }
+    assert unselected(plan) == {"t::test_b"}
     r = reason(plan, "b.TimeOps.time_mul")
     assert [s.kind for s in r.path] == ["entry", "defined_in"]
     assert r.changed_symbol == "benchmarks.bench.TimeOps"
@@ -1084,7 +1094,7 @@ def test_adding_an_import_binding_is_not_structural(repo):
     ]
     plan = repo.plan(base, head, targets)
     assert changes(plan) == {
-        "tests.test_tools": ("imports_added", "dependencies_added"),
+        "tests.test_tools": ("imports_added",),
         "tests.test_tools.test_c": ("added",),
     }
     assert selected(plan) == {"t::test_c"}
@@ -1134,7 +1144,7 @@ def test_additive_module_change_does_not_seed_lifecycle_dependents(repo):
     )
     assert "tests.test_tools" in module_dep.target.lifecycle_dependencies
     assert changes(plan) == {
-        "tests.test_tools": ("imports_added", "dependencies_added"),
+        "tests.test_tools": ("imports_added",),
         "tests.test_tools.test_c": ("added",),
     }
     # The added import is not structural, and the added ``def`` is inert (no
@@ -1382,10 +1392,12 @@ def test_module_constant_change_reaches_only_its_users(repo):
     )
     plan3 = repo.plan(base, head3, targets)
     assert changes(plan3) == {
-        "pkg": ("imports_added", "dependencies_added"),
+        "pkg": ("imports_added",),
         "pkg.ib": ("body_changed", "dependencies_changed"),
     }
-    assert selected(plan3) == {"t::test_ib", "b.time_ib"}
+    # ``ib = other`` runs when ``pkg`` is imported, before every test of a
+    # module importing it (audit P4).
+    assert selected(plan3) == {"t::test_ib", "b.time_ib", "t::test_lazy", "t::test_other"}
 
 
 def test_in_place_mutation_of_a_module_registry_reaches_its_users(repo):
@@ -1428,8 +1440,10 @@ def test_in_place_mutation_of_a_module_registry_reaches_its_users(repo):
         "pkg.reg": ("body_changed",),
         "pkg.reg.REGISTRY": ("body_changed",),
     }
-    assert selected(plan) == {"t::test_lookup"}
-    assert unselected(plan) == {"t::test_other"}
+    # The mutation runs at import, before test_other too (audit P4); the
+    # reason for test_lookup is still the variable it reads.
+    assert selected(plan) == {"t::test_lookup", "t::test_other"}
+    assert [s.kind for s in reason(plan, "t::test_lookup").path][0] == "entry"
 
 
 def test_readers_depend_on_functions_that_mutate_a_variable(repo):
@@ -1703,12 +1717,12 @@ def test_package_binding_that_shadows_a_submodule(repo):
     head2 = repo.commit({"pkg/retry.py": retry.format(delay=1, value=1)})
     assert selected(repo.plan(head, head2, targets)) == {"t::test_jitter"}
     # The submodule's own init code changes: ``pkg.retry`` may denote the
-    # module, so the attribute's users are selected; test_jitter only imports
-    # a function that does not read module state (design.md, module bodies).
+    # module, so the attribute's users are selected, and test_jitter's module
+    # imports it, so its init code runs before test_jitter (audit P4).
     head3 = repo.commit({"pkg/retry.py": retry.format(delay=2, value=1)})
     plan3 = repo.plan(head2, head3, targets)
     assert changes(plan3) == {"pkg.retry": ("body_changed",)}
-    assert selected(plan3) == {"t::test_attr", "bench.time_retry"}
+    assert selected(plan3) == {"t::test_attr", "bench.time_retry", "t::test_jitter"}
     # scrapy: a test function in ``tests/test_walk/__init__.py`` (which pytest
     # does not collect) shadows the test module next to it.
     discovered = repo.plan(base, head, [], discover_runners=["pytest"])
@@ -3743,7 +3757,11 @@ def test_the_builtin_import_names_a_module_like_import_module(repo):
     assert not [u for u in plan.unresolved if u.kind == "dynamic"]
 
     needed = repo.commit({"pkg/needed.py": "STAMP = len('needed!')\n"})
-    assert selected(repo.plan(other, needed, targets)) == {"t::pkg"}
+    # bench_other's module imports pkg, whose import reaches pkg.needed (P4).
+    assert selected(repo.plan(other, needed, targets)) == {
+        "t::pkg",
+        "bench_other.Other.time_other",
+    }
 
 
 def test_a_builtin_import_of_an_unbounded_name_still_reaches_anything(repo):

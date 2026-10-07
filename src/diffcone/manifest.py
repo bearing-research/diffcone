@@ -1,9 +1,9 @@
-"""Temporary target manifest.
+"""Target manifest.
 
-This is an explicit integration boundary for the prototype: it tells the
-planner which runnable targets exist, which symbol each one enters through,
-and which setup/fixture symbols it depends on. Real pytest and ASV discovery
-are future work; naming conventions alone do not implement either.
+Tells the planner which runnable targets exist, which symbol each one enters
+through, and which setup/fixture symbols it depends on: hand-written, or
+written by ``diffcone discover`` from static discovery. Unknown keys are
+errors, so a misspelt key cannot silently drop dependencies.
 
 Format (JSON)::
 
@@ -16,14 +16,19 @@ Format (JSON)::
           "entry_symbol": "tests.test_calc.test_add",
           "lifecycle_dependencies": ["tests.conftest.db"]
         }
-      ]
+      ],
+      "discovery": {...}                         # optional, written by discover
     }
+
+``discovery`` carries the notes discovery made (``runners[].notes``); notes
+saying the target list may be short keep a plan made from the manifest at
+exit code 3, as a plan that discovered the targets itself would be.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +53,45 @@ class Target:
 class Manifest:
     targets: list[Target]
     source_roots: list[str] | None = None
+    # (runner, kind, detail, path) for each note ``discover`` recorded.
+    notes: list[tuple[str, str, str, str]] = field(default_factory=list)
+
+
+MANIFEST_KEYS = frozenset({"source_roots", "targets", "discovery"})
+TARGET_KEYS = frozenset({"runner", "runner_id", "entry_symbol", "lifecycle_dependencies"})
+
+
+def _unknown_keys(obj: dict[str, Any], allowed: frozenset[str], where: str) -> None:
+    unknown = sorted(set(obj) - allowed)
+    if unknown:
+        raise ManifestError(
+            f"{where}: unknown key(s) {', '.join(map(repr, unknown))} "
+            f"(allowed: {', '.join(sorted(allowed))})"
+        )
+
+
+def _discovery_notes(discovery: Any) -> list[tuple[str, str, str, str]]:
+    if not isinstance(discovery, dict) or not isinstance(discovery.get("runners", []), list):
+        raise ManifestError("manifest: 'discovery' must be an object with a 'runners' list")
+    notes: list[tuple[str, str, str, str]] = []
+    for i, runner in enumerate(discovery.get("runners", [])):
+        where = f"discovery.runners[{i}]"
+        if not isinstance(runner, dict) or not isinstance(runner.get("notes", []), list):
+            raise ManifestError(f"{where}: must be an object with a 'notes' list")
+        name = _require_str(runner, "runner", where)
+        for j, note in enumerate(runner.get("notes", [])):
+            if not isinstance(note, dict):
+                raise ManifestError(f"{where}.notes[{j}]: must be an object")
+            path = note.get("path", "")
+            notes.append(
+                (
+                    name,
+                    _require_str(note, "kind", f"{where}.notes[{j}]"),
+                    _require_str(note, "detail", f"{where}.notes[{j}]"),
+                    path if isinstance(path, str) else "",
+                )
+            )
+    return notes
 
 
 def _require_str(obj: dict[str, Any], key: str, where: str) -> str:
@@ -62,6 +106,7 @@ def parse_manifest(data: Any) -> Manifest:
         data = {"targets": data}
     if not isinstance(data, dict):
         raise ManifestError("manifest must be a JSON object or a list of targets")
+    _unknown_keys(data, MANIFEST_KEYS, "manifest")
     raw_targets = data.get("targets")
     if not isinstance(raw_targets, list):
         raise ManifestError("manifest: 'targets' must be a list")
@@ -77,6 +122,7 @@ def parse_manifest(data: Any) -> Manifest:
         where = f"targets[{i}]"
         if not isinstance(raw, dict):
             raise ManifestError(f"{where}: must be an object")
+        _unknown_keys(raw, TARGET_KEYS, where)
         runner = _require_str(raw, "runner", where)
         runner_id = _require_str(raw, "runner_id", where)
         entry = _require_str(raw, "entry_symbol", where)
@@ -88,7 +134,8 @@ def parse_manifest(data: Any) -> Manifest:
             raise ManifestError(f"{where}: duplicate target {runner}:{runner_id}")
         seen.add(key)
         targets.append(Target(runner, runner_id, entry, tuple(sorted(set(deps)))))
-    return Manifest(targets=targets, source_roots=source_roots)
+    notes = _discovery_notes(data["discovery"]) if "discovery" in data else []
+    return Manifest(targets=targets, source_roots=source_roots, notes=notes)
 
 
 def manifest_to_dict(

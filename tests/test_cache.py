@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from diffcone import cache as cache_mod
 from diffcone import planner as planner_mod
@@ -125,7 +126,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 20
+    assert cache_mod.INDEX_FORMAT == 21
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -419,7 +420,7 @@ def test_discovery_of_committed_snapshots_is_cached(repo, tmp_path, monkeypatch)
 
     monkeypatch.setattr(planner, "discover", counting)
     cache = IndexCache(tmp_path / "c")
-    args = dict(source_roots=["."], discover_runners=["pytest"])
+    args: dict[str, Any] = dict(source_roots=["."], discover_runners=["pytest"])
     first = planner.plan(repo.path, "HEAD~1", "HEAD", cache=cache, **args)
     assert calls == ["HEAD~1", "HEAD"]
     calls.clear()
@@ -450,7 +451,7 @@ def test_pruning_keeps_what_planning_at_the_kept_commit_reads(repo, tmp_path, mo
     second = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
     third = repo.commit({"pkg/ops.py": OPS.replace("a * b", "b * a")})
     cache_dir = tmp_path / "c"
-    args = dict(source_roots=["."], discover_runners=["pytest"])
+    args: dict[str, Any] = dict(source_roots=["."], discover_runners=["pytest"])
     planner.plan(repo.path, first, second, cache=IndexCache(cache_dir), **args)
     assert len(list((cache_dir / "index").glob("*.json"))) == 2
     assert len(list((cache_dir / "discovery").glob("*.json"))) == 2
