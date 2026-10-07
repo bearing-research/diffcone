@@ -49,17 +49,18 @@ Over-selection, crashes on rare input and stale text are listed at the end.
 
 | id | finding | status |
 |---|---|---|
-| D1 | Test files outside the source roots are invisible: `--source-root src` with tests in `tests/` plans "complete", 0 targets, exit 0. | open |
-| D2 | pytest 9's `pytest.toml` / `.pytest.toml` and `.pytest.ini` are not read; precedence differs from pytest's. | open |
-| D3 | Tests bound by assignment (`test_alias = test_orig`, `test_x = _helper`, class attribute `test_attr = f`, Hypothesis `TestMachine = Machine.TestCase`) are not collected or noted. | open |
-| D4 | unittest `runTest` (collected when a TestCase has no `test*` methods) is ignored. | open |
-| D5 | An imported unittest TestCase whose bound name does not match `python_classes` is dropped (also through star imports). | open |
-| D6 | Any base named `*TestCase` is excused from `unknown_base_class` even when it resolves nowhere (`SharedTestCase = make_base()`). | open |
-| D7 | `testpaths`: when no entry exists pytest collects from the rootdir (discovery: nothing); a file named in `testpaths` bypasses `python_files`. | open |
-| D8 | `addopts` is split on whitespace, not shlex: `--doctest-glob="*.rst"` keeps its quotes. | open |
-| D9 | Doctests: module names under pytest's default `prepend` mode differ from source-root names; modules that cannot be named are dropped without a note; `_docstrings` misses defs under `if`/`try` and `__test__`; text globs other than `.txt/.rst/.md` find nothing. | open |
-| D10 | ASV: underscore modules excluded; `benchmark_dir/__init__.py` skipped; imported classes and functions not collected; CamelCase prefixes (`TimeX`, `TrackX`, ...) not recognised; class attribute aliases not collected. | open |
-| D11 | A function with `__test__ = True` whose name does not match is collected by pytest. | open |
+| D1 | Test files outside the source roots are invisible: `--source-root src` with tests in `tests/` plans "complete", 0 targets, exit 0. | fixed (discovery batch) |
+| D2 | pytest 9's `pytest.toml` / `.pytest.toml` and `.pytest.ini` are not read; precedence differs from pytest's. | fixed (discovery batch) |
+| D3 | Tests bound by assignment (`test_alias = test_orig`, `test_x = _helper`, class attribute `test_attr = f`, Hypothesis `TestMachine = Machine.TestCase`) are not collected or noted. | fixed (discovery batch) |
+| D4 | unittest `runTest` (collected when a TestCase has no `test*` methods) is ignored. | fixed (discovery batch) |
+| D5 | An imported unittest TestCase whose bound name does not match `python_classes` is dropped (also through star imports). | fixed (discovery batch) |
+| D6 | Any base named `*TestCase` is excused from `unknown_base_class` even when it resolves nowhere (`SharedTestCase = make_base()`). | fixed (discovery batch) |
+| D7 | `testpaths`: when no entry exists pytest collects from the rootdir (discovery: nothing); a file named in `testpaths` bypasses `python_files`. | fixed (discovery batch) |
+| D8 | `addopts` is split on whitespace, not shlex: `--doctest-glob="*.rst"` keeps its quotes. | fixed (discovery batch) |
+| D9 | Doctests: module names under pytest's default `prepend` mode differ from source-root names; modules that cannot be named are dropped without a note; `_docstrings` misses defs under `if`/`try` and `__test__`; text globs other than `.txt/.rst/.md` find nothing. | fixed (discovery batch) |
+| D10 | ASV: underscore modules excluded; `benchmark_dir/__init__.py` skipped; imported classes and functions not collected; CamelCase prefixes (`TimeX`, `TrackX`, ...) not recognised; class attribute aliases not collected. | fixed (discovery batch) |
+| D11 | A function with `__test__ = True` whose name does not match is collected by pytest. | fixed (discovery batch) |
+| D12 | An installed plugin that collects other files (pytest-typing's `tests/*.md` in cattrs, configured by `typing_checkers`; Sybil, nbval) yields tests discovery cannot see and does not report (found by the corpus re-run of collection_check after the discovery batch). A recording settles them (`collected_not_target`). | open |
 
 ## Running, checking, actions (R)
 

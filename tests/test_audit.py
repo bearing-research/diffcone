@@ -689,3 +689,262 @@ def test_i8_cached_errors_name_the_revision_as_given(repo, tmp_path):
     cached = to_dict(plan(repo.path, sha, head, None, cache=cache))
     fresh = to_dict(plan(repo.path, sha, head, None))
     assert cached["analysis_errors"] == fresh["analysis_errors"]
+
+
+# D1: a test file outside the source roots is reported, not silently missed.
+
+
+def test_d1_test_files_outside_the_source_roots_make_discovery_incomplete(repo, tmp_path):
+    base = repo.commit(
+        {
+            "src/calc/__init__.py": "",
+            "src/calc/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_ops.py": "from calc.ops import add\n\n\ndef test_add():\n    add(1, 2)\n",
+        }
+    )
+    head = repo.commit({"src/calc/ops.py": "def add(a, b):\n    return b + a\n"})
+    code = main(
+        [
+            "plan",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--source-root",
+            "src",
+            "-o",
+            str(tmp_path / "plan.json"),
+        ]
+    )
+    assert code == 3
+    report = json.loads((tmp_path / "plan.json").read_text())
+    assert report["discovery_incomplete"]
+    notes = report["discovery"][0]["notes"]
+    assert any(n["kind"] == "test_file_outside_roots" for n in notes)
+
+
+# D2, D8: pytest 9's config files, in pytest's order; INI values split like a shell.
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("pytest.toml", '[pytest]\npython_files = ["check_*.py"]\n'),
+        (".pytest.toml", '[pytest]\npython_files = ["check_*.py"]\n'),
+        (".pytest.ini", "[pytest]\npython_files = check_*.py\n"),
+    ],
+)
+def test_d2_pytest_9_config_files_are_read_first(repo, name, text):
+    rev = repo.commit(
+        {
+            name: text,
+            # Lower precedence: must be ignored.
+            "pyproject.toml": '[tool.pytest.ini_options]\npython_files = ["test_*.py"]\n',
+            "tests/check_a.py": "def test_a():\n    pass\n",
+            "tests/test_b.py": "def test_b():\n    pass\n",
+        }
+    )
+    plan = repo.plan(rev, rev, [], discover_runners=["pytest"])
+    assert {t.runner_id for t in plan.targets} == {"tests/check_a.py::test_a"}
+
+
+def test_d8_quoted_addopts_lose_their_quotes(repo):
+    rev = repo.commit(
+        {
+            "pytest.ini": '[pytest]\naddopts = --doctest-glob="*.rst"\n',
+            "docs/guide.rst": ">>> 1 + 1\n2\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        }
+    )
+    plan = repo.plan(rev, rev, [], discover_runners=["pytest"])
+    assert "docs/guide.rst::guide.rst" in {t.runner_id for t in plan.targets}
+
+
+def _discovered(repo, files, runner="pytest"):
+    rev = repo.commit(files)
+    plan = repo.plan(rev, rev, [], discover_runners=[runner])
+    notes = {n.kind for d in plan.discovery for n in d.notes}
+    return {t.runner_id for t in plan.targets}, notes
+
+
+# D3, D4, D5, D11: what pytest collects beyond ``def test_*`` and ``class Test*``.
+
+
+def test_d3_tests_bound_by_assignment_are_targets(repo):
+    targets, notes = _discovered(
+        repo,
+        {
+            "tests/test_a.py": (
+                "import unittest\n\n\ndef test_orig():\n    pass\n\n\n"
+                "def _check():\n    pass\n\n\n"
+                "test_alias = test_orig\ntest_from_helper = _check\n\n\n"
+                "class TestK:\n    def test_m(self):\n        pass\n\n    test_attr = test_m\n\n\n"
+                "class Machine:\n    TestCase = unittest.TestCase\n\n\n"
+                "TestMachine = Machine.TestCase\n"
+                "test_data = [1, 2]\n"
+            ),
+        },
+    )
+    assert {
+        "tests/test_a.py::test_alias",
+        "tests/test_a.py::test_from_helper",
+        "tests/test_a.py::TestK::test_attr",
+    } <= targets
+    assert "unmodelled_test_binding" in notes  # TestMachine
+
+
+def test_d4_d5_unittest_runtest_and_imported_testcases_under_any_name(repo):
+    targets, _ = _discovered(
+        repo,
+        {
+            "tests/__init__.py": "",
+            "tests/base.py": (
+                "import unittest\n\n\nclass SharedChecks(unittest.TestCase):\n"
+                "    def test_shared(self):\n        pass\n"
+            ),
+            "tests/test_a.py": (
+                "import unittest\n\nfrom tests.base import SharedChecks as ImportedChecks\n\n\n"
+                "class RunOnly(unittest.TestCase):\n    def runTest(self):\n        pass\n"
+            ),
+        },
+    )
+    assert {
+        "tests/test_a.py::RunOnly::runTest",
+        "tests/test_a.py::ImportedChecks::test_shared",
+    } <= targets
+
+
+def test_d11_a_function_marked_test_is_collected(repo):
+    targets, _ = _discovered(
+        repo, {"tests/test_a.py": "def verify():\n    pass\n\n\nverify.__test__ = True\n"}
+    )
+    assert "tests/test_a.py::verify" in targets
+
+
+# D6: only a test framework's TestCase is excused as a base discovery cannot see.
+
+
+def test_d6_an_unresolvable_testcase_base_is_reported(repo):
+    _, notes = _discovered(
+        repo,
+        {
+            "tests/test_a.py": (
+                "import unittest\n\n\ndef make_base():\n    return unittest.TestCase\n\n\n"
+                "SharedTestCase = make_base()\n\n\n"
+                "class TestThing(SharedTestCase):\n    def test_x(self):\n        pass\n"
+            ),
+        },
+    )
+    assert "unknown_base_class" in notes
+
+
+def test_d6_a_framework_testcase_base_is_not(repo):
+    _, notes = _discovered(
+        repo,
+        {
+            "tests/test_a.py": (
+                "from django.test import TestCase\n\n\n"
+                "class TestThing(TestCase):\n    def test_x(self):\n        pass\n"
+            ),
+        },
+    )
+    assert "unknown_base_class" not in notes
+
+
+# D7: testpaths as pytest uses it.
+
+
+def test_d7_a_missing_testpaths_entry_falls_back_to_the_rootdir(repo):
+    targets, _ = _discovered(
+        repo,
+        {
+            "pytest.ini": "[pytest]\ntestpaths = test\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        },
+    )
+    assert targets == {"tests/test_a.py::test_a"}
+
+
+def test_d7_a_file_named_in_testpaths_bypasses_python_files(repo):
+    targets, _ = _discovered(
+        repo,
+        {
+            "pytest.ini": "[pytest]\ntestpaths = tests checks/smoke.py\n",
+            "checks/smoke.py": "def test_s():\n    pass\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        },
+    )
+    assert targets == {"tests/test_a.py::test_a", "checks/smoke.py::test_s"}
+
+
+# D9: doctests as pytest names and collects them.
+
+
+def test_d9_doctest_names_follow_pytests_import_mode(repo):
+    targets, _ = _discovered(
+        repo,
+        {
+            "pytest.ini": "[pytest]\naddopts = --doctest-modules\n",
+            "tools/helpers.py": "def f():\n    '''\n    >>> 1\n    1\n    '''\n",
+            "pkg/__init__.py": "",
+            "pkg/mod.py": (
+                "import sys\n\nif sys.platform:\n    def g():\n        '''\n        >>> 2\n"
+                "        2\n        '''\n"
+            ),
+        },
+    )
+    # No __init__.py in tools/: pytest imports the module as ``helpers``; a
+    # def under ``if`` is a module attribute like any other.
+    assert {"tools/helpers.py::helpers.f", "pkg/mod.py::pkg.mod.g"} <= targets
+
+
+def test_d9_doctests_discovery_cannot_read_are_reported(repo):
+    _, notes = _discovered(
+        repo,
+        {
+            "pytest.ini": "[pytest]\naddopts = --doctest-modules --doctest-glob=*.doctest\n",
+            "how-to/example.py": "def f():\n    '''\n    >>> 1\n    1\n    '''\n",
+            "docs/a.doctest": ">>> 1\n1\n",
+            "pkg/__init__.py": "",
+            "pkg/mod.py": "__test__ = {'extra': '>>> 1\\n1\\n'}\n",
+        },
+    )
+    assert {"unparsed_file", "unmodelled_test_binding"} <= notes
+
+
+# D10: ASV's own rules.
+
+
+def test_d10_asv_names_as_asv_does(repo):
+    targets, _ = _discovered(
+        repo,
+        {
+            "asv.conf.json": ASV_CONF,
+            "benchmarks/__init__.py": "def time_root():\n    pass\n",
+            "benchmarks/_common.py": (
+                "def time_private_module():\n    pass\n\n\n"
+                "class Base:\n    def time_base(self):\n        pass\n"
+            ),
+            "benchmarks/bench_a.py": (
+                "from ._common import Base\n\n\n"
+                "class Suite:\n    def TimeCamel(self):\n        pass\n\n"
+                "    def TrackCamel(self):\n        return 1\n\n"
+                "    def time_a(self):\n        pass\n\n    time_alias = time_a\n"
+            ),
+        },
+        runner="asv",
+    )
+    assert {
+        "time_root",
+        "_common.time_private_module",
+        "_common.Base.time_base",
+        "bench_a.Base.time_base",
+        "bench_a.Suite.TimeCamel",
+        "bench_a.Suite.TrackCamel",
+        "bench_a.Suite.time_a",
+        "bench_a.Suite.time_alias",
+    } <= targets

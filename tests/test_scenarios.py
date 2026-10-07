@@ -3116,17 +3116,20 @@ def test_asv_benchmarks_inherited_from_a_base_class(repo):
         "bench_ops.Ops.time_add": "benchmarks.bench_ops.Ops.time_add",
         # Inherited: named after the subclass, entered where it is defined.
         "bench_ops.Ops.time_mul": "pkg.benchbase.MulBase.time_mul",
+        # The imported base is a class in bench_ops' namespace: ASV collects
+        # it there too, under its own name (audit D10).
+        "bench_ops.MulBase.time_mul": "pkg.benchbase.MulBase.time_mul",
     }
     inherited = next(t for t in asv.targets if t.runner_id == "bench_ops.Ops.time_mul")
     assert "pkg.benchbase.MulBase.setup" in inherited.lifecycle_dependencies
     assert not [n for n in asv.notes if n.kind == "unknown_base_class"]
 
-    # Only the benchmark that reaches the changed function is selected.
+    # Only the benchmarks that reach the changed function are selected.
     head = repo.commit(
         {"pkg/ops.py": "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return b * a\n"}
     )
     plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
-    assert selected(plan) == {"bench_ops.Ops.time_mul"}
+    assert selected(plan) == {"bench_ops.Ops.time_mul", "bench_ops.MulBase.time_mul"}
 
 
 def test_an_asv_base_class_outside_the_source_roots_is_reported(repo):

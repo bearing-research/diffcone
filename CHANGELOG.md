@@ -25,7 +25,8 @@ The first release.
   by alias or import, fixtures and marks inherited from base classes in
   other modules, marks stored in variables, parametrized names supplied to
   fixtures, plugins declared by plugins, and overrides of fixtures that
-  pytest and installed plugins request, doctests)
+  pytest and installed plugins request, tests bound by assignment,
+  `runTest`, pytest 9's `pytest.toml`, doctests)
   and ASV benchmarks, without importing project code; what it cannot see
   it reports. `diffcone discover` writes the targets as a manifest.
 - Dependencies the analysis cannot see can be declared in `diffcone.toml`.

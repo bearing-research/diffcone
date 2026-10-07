@@ -651,11 +651,30 @@ indexed carries a `missing_symbol` note and falls into the planner's
 
 ### pytest
 
-Configuration: a `pytest.ini` at the root is the config file whenever it
-exists (even empty), otherwise `pyproject.toml` (`[tool.pytest.ini_options]`,
-or pytest 9's native `[tool.pytest]` table), `tox.ini`, `setup.cfg` in that
-order. `testpaths` entries may be directories, files or globs
-(`tests/integ*`); a leading `./` is ignored.
+Configuration, in pytest 9's order: `pytest.toml`, `.pytest.toml` (a
+`[pytest]` table), `pytest.ini`, `.pytest.ini` (each the config file
+whenever it exists, even empty), then `pyproject.toml`
+(`[tool.pytest.ini_options]`, or pytest 9's native `[tool.pytest]` table),
+`tox.ini`, `setup.cfg`. INI string values are split as a shell would
+(`--doctest-glob="*.rst"` loses its quotes). `testpaths` entries may be
+directories, files or globs (`tests/integ*`); a leading `./` is ignored;
+entries that do not exist are dropped, and when none exists pytest
+collects from the rootdir; a file named there is collected whatever
+`python_files` says (it is an initial path). A test file pytest would
+collect outside the source roots is reported (`test_file_outside_roots`).
+Tests bound by assignment (`test_alias = test_orig`, a class attribute
+`test_x = _check`) to a function or class defined there are targets
+entered at that definition; bound to anything else visible as a name or
+attribute (`TestMachine = Machine.TestCase`) they are reported
+(`unmodelled_test_binding`); data (`test_data = [...]`, a call's result) is
+not a test. `f.__test__ = True` collects `f` whatever its name; a
+unittest TestCase without `test*` methods runs `runTest`; an imported
+TestCase is collected whatever name it is bound to. A base named
+`*TestCase` that resolves nowhere is excused only when imported from a test
+framework (`TESTCASE_FRAMEWORKS`). Doctest items are named after the module
+as pytest's import mode names it: through `__init__.py` directories in the
+default `prepend`/`append` modes, by the source roots with
+`--import-mode=importlib`.
 
 Collected: files matching `python_files` under the source roots (a pattern
 without `/` matches the basename, one with `/` the path, as pytest's
@@ -692,9 +711,10 @@ are not followed), minus the names the importing module defines, and each
 one becomes a target whose entry is where it is defined. poetry's `sync`
 tests are the `install` tests imported this way.
 
-Four notes mean the target list may be short of what the runner collects
+These notes mean the target list may be short of what the runner collects
 -- `uncollected_test_class`, `unknown_base_class`,
-`imported_test_out_of_scope`, `unparsed_file` and `plugin_collects_files` (a conftest or
+`imported_test_out_of_scope`, `unparsed_file`, `test_file_outside_roots`,
+`unmodelled_test_binding`, `collected_not_target` (evidence) and `plugin_collects_files` (a conftest or
 plugin that binds `pytest_collect_file`, `pytest_collect_directory` or
 `pytest_pycollect_makeitem`, as a function or a value: scrapy's
 `docs/conftest.py` binds a Sybil instance and its `.rst` files become
@@ -854,8 +874,9 @@ selected: the index does not read them, and a change to them is invisible.
 Not modelled: `request.getfixturevalue` with a name that is not a literal, fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
 fixtures of plugins outside the well-known table, doctests of objects
-added through `__test__` or assigned rather than defined, base classes
-defined in other modules,
+added through `__test__` (reported) or assigned rather than defined,
+installed plugins that collect files of their own (pytest-typing, Sybil,
+nbval: not reported; a recording settles them),
 and `conftest.py` files outside the source roots.
 
 ### ASV

@@ -31,9 +31,20 @@ Collected:
   that defines test methods but does not match ``python_classes`` is
   reported too (``uncollected_test_class``): a plugin may collect it, as
   SQLAlchemy's testing plugin collects ``<Name>Test``;
-* configuration from ``pytest.ini``, ``pyproject.toml``
-  (``[tool.pytest.ini_options]``), ``tox.ini`` or ``setup.cfg`` at the
-  repository root.
+* tests bound by assignment (``test_alias = test_orig``, a class attribute
+  ``test_x = _check``) to a function or class defined there; one bound to
+  something not visible there (``TestMachine = Machine.TestCase``) is
+  reported (``unmodelled_test_binding``); a function marked
+  ``f.__test__ = True``; a unittest ``runTest`` when a TestCase has no
+  ``test*`` method; an imported TestCase whatever its bound name;
+* ``testpaths`` as pytest applies it: entries that exist (none existing
+  falls back to the rootdir), a file named there collected whatever
+  ``python_files`` says; a test file pytest would collect outside the source
+  roots is reported (``test_file_outside_roots``);
+* configuration from ``pytest.toml``, ``.pytest.toml``, ``pytest.ini``,
+  ``.pytest.ini``, ``pyproject.toml`` (``[tool.pytest.ini_options]`` or
+  ``[tool.pytest]``), ``tox.ini`` or ``setup.cfg`` at the repository root,
+  in pytest 9's order; INI values split as a shell would.
 
 Lifecycle dependencies attached to each test:
 
@@ -76,8 +87,9 @@ Lifecycle dependencies attached to each test:
 * the test module and its ``pytest_*`` hooks, every ``conftest.py`` on the
   path and each ``pytest_*`` hook function in those conftests;
 * xunit-style setup/teardown functions and methods when present;
-* for tests inherited from a base class defined in the same module, the
-  collecting class itself. Bases defined elsewhere are reported.
+* for inherited tests, the collecting class itself. Bases that resolve
+  nowhere are reported; a ``*TestCase`` base is excused only when it comes
+  from a test framework (``TESTCASE_FRAMEWORKS``).
 
 Doctests, as pytest collects them: with ``--doctest-modules`` in
 ``addopts``, every docstring with examples in a collected module (the
@@ -107,6 +119,7 @@ from __future__ import annotations
 import ast
 import configparser
 import doctest
+import shlex
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -416,12 +429,83 @@ MODULE_SETUP_FUNCTIONS = (
 # --------------------------------------------------------------------------- config
 
 
+# Test frameworks whose ``*TestCase`` bases contribute no tests of their own:
+# such a base outside the source roots is not reported as unknown.
+TESTCASE_FRAMEWORKS = frozenset(
+    {
+        "unittest",
+        "django",
+        "rest_framework",
+        "twisted",
+        "tornado",
+        "asynctest",
+        "aiounittest",
+        "absl",
+        "flask_testing",
+        "pyfakefs",
+        "aiohttp",
+        "IPython",
+    }
+)
+
+
+def _framework_base(
+    name: str,
+    parts: list[str],
+    imports_here: dict[str, tuple[str, str]],
+    module_prefixes: dict[str, dict[str, str]],
+    owner: Any,
+) -> bool:
+    """Whether a base that resolves to nothing in scope is a test framework's
+    ``TestCase`` (imported from one of TESTCASE_FRAMEWORKS), not a class
+    discovery merely cannot see (``SharedTestCase = make_base()``)."""
+    if len(parts) > 1:
+        prefixes = module_prefixes.get(owner.module, {})
+        source = prefixes.get(parts[0], parts[0])
+    elif name in imports_here:
+        source = imports_here[name][0]
+    else:
+        return False
+    return source.split(".")[0] in TESTCASE_FRAMEWORKS
+
+
+def _assigned(stmt: ast.stmt) -> tuple[str, ast.expr] | None:
+    """``(name, value)`` for ``name = <value>``, else None."""
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+        if isinstance(target, ast.Name):
+            return target.id, stmt.value
+    return None
+
+
 def _split(value: Any) -> tuple[str, ...]:
+    """An option's values: a list as TOML gives it, or an INI string split
+    the way pytest splits ``args`` options and ``addopts`` (shell-like, so
+    ``--doctest-glob="*.rst"`` loses its quotes)."""
     if isinstance(value, str):
-        return tuple(value.split())
+        try:
+            return tuple(shlex.split(value))
+        except ValueError:  # an unbalanced quote: pytest would fail; be lenient
+            return tuple(value.split())
     if isinstance(value, list):
         return tuple(str(v) for v in value)
     return ()
+
+
+def _toml_table(data: Any, *keys: str) -> dict[str, Any] | None:
+    """``data[keys[0]][keys[1]]...`` when every step is a table, else None."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data if isinstance(data, dict) else None
+
+
+def _load_toml(raw: bytes) -> dict[str, Any]:
+    try:
+        return tomllib.loads(raw.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return {}
 
 
 def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
@@ -435,24 +519,28 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         "entry_point_plugins": (),  # pytest11 entry points defined by the project itself
         "addopts_plugins": (),  # ``-p name`` entries in addopts
         "doctest_modules": False,  # ``--doctest-modules`` in addopts
+        "import_mode": "prepend",  # ``--import-mode`` in addopts
         "doctest_globs": ("test*.txt",),  # ``--doctest-glob`` patterns
         "norecursedirs": DEFAULT_NORECURSEDIRS,
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
-    # pytest's precedence: pytest.ini, pyproject.toml, tox.ini, setup.cfg.
-    if "pytest.ini" in files:
-        # pytest treats any pytest.ini as *the* config file, even an empty one.
-        section = _ini_section(files["pytest.ini"], "pytest") or {}
-        config["source"] = "pytest.ini"
+    # pytest's precedence (pytest 9): pytest.toml, .pytest.toml, pytest.ini,
+    # .pytest.ini, pyproject.toml, tox.ini, setup.cfg. The first four are the
+    # config file whenever present, even empty.
+    for name in ("pytest.toml", ".pytest.toml"):
+        if section is None and name in files:
+            section = _toml_table(_load_toml(files[name]), "pytest") or {}
+            config["source"] = name
+    for name in ("pytest.ini", ".pytest.ini"):
+        if section is None and name in files:
+            section = _ini_section(files[name], "pytest") or {}
+            config["source"] = name
     if section is None and "pyproject.toml" in files:
-        try:
-            data = tomllib.loads(files["pyproject.toml"].decode("utf-8"))
-            tool = data.get("tool", {}).get("pytest", {})
-        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-            tool = {}
-        section = tool.get("ini_options")
-        if section is not None:
+        tool = _toml_table(_load_toml(files["pyproject.toml"]), "tool", "pytest") or {}
+        ini_options = tool.get("ini_options")
+        if isinstance(ini_options, dict):
+            section = ini_options
             config["source"] = "pyproject.toml"
         elif tool:
             # pytest >= 9 native TOML table: [tool.pytest] with real TOML values.
@@ -481,6 +569,9 @@ def read_pytest_config(snapshot: Snapshot) -> dict[str, Any]:
         addopts = _split(section.get("addopts", ""))
         config["addopts_plugins"] = tuple(_addopts_plugins(addopts))
         config["doctest_modules"] = "--doctest-modules" in addopts
+        modes = _option_values(addopts, "--import-mode")
+        if modes:
+            config["import_mode"] = modes[-1]
         globs = _option_values(addopts, "--doctest-glob")
         if globs:
             config["doctest_globs"] = tuple(globs)
@@ -494,16 +585,13 @@ def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
     session, so their fixtures and hooks are visible everywhere."""
     modules: list[str] = []
     if "pyproject.toml" in files:
-        try:
-            data = tomllib.loads(files["pyproject.toml"].decode("utf-8"))
-        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-            data = {}
-        entries = data.get("project", {}).get("entry-points", {}).get("pytest11", {})
-        if isinstance(entries, dict):
+        data = _load_toml(files["pyproject.toml"])
+        for keys in (
+            ("project", "entry-points", "pytest11"),
+            ("tool", "poetry", "plugins", "pytest11"),
+        ):
+            entries = _toml_table(data, *keys) or {}
             modules += [str(v).split(":", 1)[0].strip() for v in entries.values()]
-        poetry = data.get("tool", {}).get("poetry", {}).get("plugins", {}).get("pytest11", {})
-        if isinstance(poetry, dict):
-            modules += [str(v).split(":", 1)[0].strip() for v in poetry.values()]
     if "setup.cfg" in files:
         section = _ini_section(files["setup.cfg"], "options.entry_points") or {}
         for line in str(section.get("pytest11", "")).splitlines():
@@ -1087,6 +1175,26 @@ def _has_init(cls: ast.ClassDef) -> bool:
     return any(f.name == "__init__" for f in scope_functions(cls.body))
 
 
+def _normalise_testpath(entry: str) -> str:
+    tp = entry.strip()
+    while tp.startswith("./"):
+        tp = tp[2:]
+    return tp.strip("/")
+
+
+def _testpath_exists(entry: str, paths: set[str]) -> bool:
+    """Whether a ``testpaths`` entry names a file or directory in the tree."""
+    tp = _normalise_testpath(entry)
+    if tp in ("", "."):
+        return True
+    if any(ch in tp for ch in "*?["):
+        return any(
+            fnmatch(p, tp) or any(fnmatch(str(parent), tp) for parent in PurePosixPath(p).parents)
+            for p in paths
+        )
+    return any(p == tp or p.startswith(tp + "/") for p in paths)
+
+
 def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
     """Whether ``path`` lies under one of pytest's ``testpaths`` entries.
 
@@ -1230,13 +1338,36 @@ def discover_pytest(
     config = read_pytest_config(snapshot)
     result.config = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()}
     python_files = tuple(config["python_files"])
+    # ``testpaths`` as pytest uses it: entries that exist (when none does,
+    # pytest collects from the rootdir), and files named there are collected
+    # whatever ``python_files`` says (they are initial paths).
+    every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
+    testpaths = tuple(tp for tp in config["testpaths"] if _testpath_exists(tp, every_path))
+    named_files = {_normalise_testpath(tp) for tp in testpaths if tp.endswith(".py")}
 
     test_paths = [
         p
         for p in snapshot.files
-        if any(_matches_python_file(p, pat) for pat in python_files)
-        and _under_testpaths(p, tuple(config["testpaths"]))
+        if (any(_matches_python_file(p, pat) for pat in python_files) or p in named_files)
+        and _under_testpaths(p, testpaths)
     ]
+    for path in snapshot.python_paths:
+        if (
+            path not in snapshot.files
+            and any(_matches_python_file(path, pat) for pat in python_files)
+            and _under_testpaths(path, testpaths)
+            and _collected_dir(path, tuple(config["norecursedirs"]))
+        ):
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "test_file_outside_roots",
+                    f"{path}: pytest collects it, but it is outside the source roots, so its "
+                    "tests are not targets; add a source root that contains it (for a src "
+                    "layout: --source-root src --source-root .)",
+                    path,
+                )
+            )
     conftest_paths = [p for p in snapshot.files if PurePosixPath(p).name == "conftest.py"]
     parsed, failed = parse_modules(snapshot, sorted(set(test_paths + conftest_paths)))
     for path in failed:
@@ -1397,7 +1528,7 @@ def discover_pytest(
                 )
             )
 
-    _collect_doctests(result, snapshot, index, config, facts_by_path)
+    _collect_doctests(result, snapshot, index, {**config, "testpaths": testpaths}, facts_by_path)
 
     for name, count in sorted(unresolved.items()):
         result.notes.append(
@@ -1437,6 +1568,25 @@ def _collect_doctests(
     testpaths = tuple(config["testpaths"])
     norecurse = tuple(config["norecursedirs"])
     parser = doctest.DocTestParser()
+    globs = tuple(config["doctest_globs"])
+    for path in sorted(snapshot.other_files):
+        # A file a glob matches but the snapshot does not read (only .txt,
+        # .rst and .md are read) holds doctests that are not targets.
+        if (
+            path not in snapshot.text_files
+            and any(fnmatch(PurePosixPath(path).name, g) for g in globs)
+            and _under_testpaths(path, testpaths)
+            and _collected_dir(path, norecurse)
+        ):
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "unparsed_file",
+                    f"{path}: a --doctest-glob matches it, but only .txt, .rst and .md files "
+                    "are read for doctests, so its examples are not targets",
+                    path,
+                )
+            )
     for path, content in sorted(snapshot.text_files.items()):
         name = PurePosixPath(path).name
         if not (
@@ -1461,8 +1611,37 @@ def _collect_doctests(
         and _collected_dir(p, norecurse)
         and PurePosixPath(p).name not in ("setup.py", "__main__.py")
     ]
-    parsed, _ = parse_modules(snapshot, sorted(paths))
+    parsed, failed = parse_modules(snapshot, sorted(paths))
+    for path in failed:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unparsed_file",
+                f"{path}: --doctest-modules collects its docstrings, but it did not parse or "
+                "cannot be named from any source root, so they are not targets",
+                path,
+            )
+        )
+    every_path = {*snapshot.python_paths, *snapshot.files}
     for pm in parsed:
+        if _assigns_name(pm.tree.body, "__test__"):
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "unmodelled_test_binding",
+                    f"{pm.path}: defines __test__, whose doctests pytest collects; they are "
+                    "not targets",
+                    pm.path,
+                )
+            )
+        # The name pytest gives the module (doctest items are named after it):
+        # by its packages in the default import modes, from the rootdir with
+        # importlib.
+        module_name = (
+            pm.module
+            if config["import_mode"] == "importlib"
+            else _package_module_name(pm.path, every_path)
+        )
         conftests = _conftest_chain(pm.path, facts_by_path)
         base_deps = [c.parsed.module for c in conftests] + [h for c in conftests for h in c.hooks]
         for qualname, symbol, docstring in _docstrings(pm):
@@ -1481,10 +1660,33 @@ def _collect_doctests(
                         deps.append("doctest:unparsed")
                     elif module in index.modules:
                         deps.append(f"dynamic:{module}")
-            name = pm.module if not qualname else f"{pm.module}.{qualname}"
+            name = module_name if not qualname else f"{module_name}.{qualname}"
             result.targets.append(
                 Target(RUNNER, f"{pm.path}::{name}", symbol, tuple(sorted(set(deps))))
             )
+
+
+def _assigns_name(body: list[ast.stmt], name: str) -> bool:
+    return any(
+        isinstance(stmt, (ast.Assign, ast.AnnAssign))
+        and any(
+            isinstance(t, ast.Name) and t.id == name
+            for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
+        )
+        for stmt in iter_scope_statements(body)
+    )
+
+
+def _package_module_name(path: str, paths: set[str]) -> str:
+    """The name pytest's ``prepend``/``append`` import modes give a module:
+    its directories count while each holds an ``__init__.py``."""
+    pure = PurePosixPath(path)
+    parts = [] if pure.name == "__init__.py" else [pure.stem]
+    directory = pure.parent
+    while str(directory) not in (".", "") and str(directory / "__init__.py") in paths:
+        parts.insert(0, directory.name)
+        directory = directory.parent
+    return ".".join(parts) or pure.parent.name
 
 
 def _docstrings(pm: ParsedModule) -> list[tuple[str, str, str]]:
@@ -1497,7 +1699,8 @@ def _docstrings(pm: ParsedModule) -> list[tuple[str, str, str]]:
         found.append(("", pm.module, doc))
 
     def walk(body: list[ast.stmt], prefix: str, container: str | None) -> None:
-        for node in body:
+        # Definitions under ``if``/``try`` are attributes like any other.
+        for node in iter_scope_statements(body):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             qual = f"{prefix}.{node.name}" if prefix else node.name
@@ -1725,7 +1928,14 @@ def _collect_module_tests(
                 defined_in[base_id] = base_scope[0].module
                 chain.append((base_cls, base_id))
                 queue.extend((b, base_scope) for b in base_cls.bases)
-            elif not (quiet or name.endswith("TestCase") or name in NO_TEST_BASES):
+            elif not (
+                quiet
+                or name in NO_TEST_BASES
+                or (
+                    name.endswith("TestCase")
+                    and _framework_base(name, parts, imports_here, module_prefixes, owner)
+                )
+            ):
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
@@ -1738,6 +1948,19 @@ def _collect_module_tests(
                 )
         return chain
 
+    module_funcs = {f.name: f for f in scope_functions(parsed.tree.body)}
+
+    def unmodelled(nodeid: str, value: str) -> None:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unmodelled_test_binding",
+                f"{nodeid} is bound to {value}, which discovery cannot follow; pytest "
+                "collects it if it is a test function or class, and it is not a target",
+                parsed.path,
+            )
+        )
+
     def walk_class(
         cls: ast.ClassDef,
         prefix_ids: list[str],
@@ -1747,11 +1970,13 @@ def _collect_module_tests(
         name: str | None = None,
         class_id: str | None = None,
         scope: _Scope | None = None,
+        imported: bool = False,
     ) -> None:
         """Targets of a class collected here as ``name`` (its own name, or the
         one a test module imports it under, with ``class_id`` and ``scope``
         where it is defined); ``outer`` are the enclosing classes' fixture
-        levels, innermost first."""
+        levels, innermost first. An ``imported`` class pytest's rules skip
+        is not reported: it is collected where it is defined, if anywhere."""
         name = name or cls.name
         # pytest's unittest plugin collects a TestCase subclass whatever it is
         # called, and the base that brings TestCase in may be several classes
@@ -1764,7 +1989,8 @@ def _collect_module_tests(
             # is a class some plugin collects (SQLAlchemy's testing plugin
             # collects ``<Name>Test``): report it rather than guess either way.
             if (
-                cls.name not in base_names
+                not imported
+                and cls.name not in base_names
                 and not _has_init(cls)
                 and any(
                     _matches(functions, f.name) and not _is_fixture(f)[0]
@@ -1808,33 +2034,115 @@ def _collect_module_tests(
                 methods[f.name] = (f, owner_id)
         for f in scope_functions(cls.body):
             methods[f.name] = (f, class_id)
+        # Test methods bound by assignment in a class body (``test_b =
+        # test_a``, ``test_x = _check``): pytest collects any attribute whose
+        # name matches and whose value is a function. Entry: the function.
+        entries: dict[str, str] = {}
+        for owner, owner_id in [*reversed(bases), (cls, class_id)]:
+            owner_defs = {f.name: f for f in scope_functions(owner.body)}
+            same_module = defined_in.get(owner_id, home) == parsed.module
+            for stmt in owner.body:
+                assigned = _assigned(stmt)
+                if assigned is None:
+                    continue
+                bound, value = assigned
+                if not (
+                    _matches(functions, bound) or (unittest_style and bound.startswith("test"))
+                ):
+                    continue
+                if isinstance(value, ast.Name) and value.id in owner_defs:
+                    methods[bound] = (owner_defs[value.id], owner_id)
+                    entries[bound] = f"{owner_id}.{value.id}"
+                elif isinstance(value, ast.Name) and same_module and value.id in module_funcs:
+                    methods[bound] = (module_funcs[value.id], parsed.module)
+                    entries[bound] = parsed.member_id(value.id)
+                elif isinstance(value, (ast.Name, ast.Attribute)):
+                    unmodelled(f"{nodeid}::{bound}", ast.unparse(value))
         setup = [
             f"{owner_id}.{method}"
             for method, (_, owner_id) in methods.items()
             if method in CLASS_SETUP_METHODS
         ]
         extra = setup + [class_id] if bases else setup
-        for method, (func, owner_id) in sorted(methods.items()):
-            if _is_fixture(func)[0]:
-                continue
-            if not (_matches(functions, method) or (unittest_style and method.startswith("test"))):
-                continue
+        collected = [
+            method
+            for method, (func, _) in methods.items()
+            if not _is_fixture(func)[0]
+            and (_matches(functions, method) or (unittest_style and method.startswith("test")))
+        ]
+        if unittest_style and not any(m.startswith("test") for m in collected):
+            # unittest: a TestCase with no ``test*`` method runs ``runTest``.
+            if "runTest" in methods:
+                collected.append("runTest")
+        for method in sorted(collected):
+            func, owner_id = methods[method]
             expand = expander(defined_in.get(owner_id, home))
             marks = class_marks + _marks_from_expressions(func.decorator_list, expand)
             requests = list(_fixture_requests(func, True, marks, class_injected))
             requests += list(marks.usefixtures)
-            add(f"{nodeid}::{method}", f"{owner_id}.{method}", class_levels, requests, extra, marks)
+            entry = entries.get(method, f"{owner_id}.{method}")
+            add(f"{nodeid}::{method}", entry, class_levels, requests, extra, marks)
         for inner in scope_classes(cls.body):
             walk_class(
                 inner, prefix_ids + [class_id], nodeid, class_marks, class_levels, scope=scope
             )
 
-    for func in scope_functions(parsed.tree.body):
-        if not _matches(functions, func.name) or _is_fixture(func)[0]:
-            continue
+    def module_test(func: ast.FunctionDef | ast.AsyncFunctionDef, bound: str) -> None:
         marks = module_marks + _marks_from_expressions(func.decorator_list, own_marks)
         requests = list(_fixture_requests(func, False, marks)) + list(marks.usefixtures)
-        add(f"{parsed.path}::{func.name}", parsed.member_id(func.name), [], requests, [], marks)
+        add(f"{parsed.path}::{bound}", parsed.member_id(func.name), [], requests, [], marks)
+
+    # ``f.__test__ = True``: pytest collects ``f`` whatever it is called.
+    marked_tests: set[str] = set()
+    for stmt in parsed.tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target = stmt.targets[0]
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "__test__"
+                and isinstance(target.value, ast.Name)
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value is True
+            ):
+                marked_tests.add(target.value.id)
+    for func in scope_functions(parsed.tree.body):
+        if not (_matches(functions, func.name) or func.name in marked_tests):
+            continue
+        if _is_fixture(func)[0]:
+            continue
+        module_test(func, func.name)
+
+    # Tests bound by assignment (``test_alias = test_orig``): pytest collects
+    # any module attribute whose name matches and whose value is a function
+    # or class. A value bound to something not visible here (an attribute,
+    # an imported name: Hypothesis's ``TestMachine = Machine.TestCase``) is
+    # reported; data (``test_data = [...]``, a call's result) is not a test.
+    module_classes_here = {c.name: c for c in scope_classes(parsed.tree.body)}
+    module_defined = {n.name for n in parsed.tree.body if isinstance(n, DEF_NODES)}
+    for stmt in parsed.tree.body:
+        assigned = _assigned(stmt)
+        if assigned is None or assigned[0] in module_defined:
+            continue
+        bound, value = assigned
+        is_function = _matches(functions, bound)
+        is_class = _matches(classes, bound)
+        if not (is_function or is_class):
+            continue
+        if isinstance(value, ast.Name) and value.id in module_funcs and is_function:
+            if not _is_fixture(module_funcs[value.id])[0]:
+                module_test(module_funcs[value.id], bound)
+        elif isinstance(value, ast.Name) and value.id in module_classes_here:
+            target = module_classes_here[value.id]
+            walk_class(
+                target,
+                [],
+                parsed.path,
+                module_marks,
+                name=bound,
+                class_id=parsed.member_id(target.name),
+            )
+        elif isinstance(value, (ast.Name, ast.Attribute)):
+            unmodelled(f"{parsed.path}::{bound}", ast.unparse(value))
 
     # pytest collects every module attribute matching the naming rules,
     # including functions and classes imported from elsewhere (fastapi's
@@ -1867,9 +2175,15 @@ def _collect_module_tests(
                 continue
             is_function = _matches(functions, bound)
             is_class = _matches(classes, bound)
-            if not (is_function or is_class):
-                continue
             origin = module_facts(source) if module_facts is not None else None
+            if not (is_function or is_class):
+                # Still a test when it is a unittest TestCase (collected
+                # whatever its name): walk any in-scope class it names.
+                if origin is None or not any(
+                    isinstance(n, ast.ClassDef) and n.name == alias.name
+                    for n in origin.parsed.tree.body
+                ):
+                    continue
             node = None
             if origin is not None:
                 node = next(
@@ -1898,8 +2212,6 @@ def _collect_module_tests(
                 continue
             entry = origin.parsed.member_id(alias.name)
             if isinstance(node, ast.ClassDef):
-                if not is_class:
-                    continue
                 # The class is collected here as if defined here, with
                 # everything it inherits (urllib3's test_pyopenssl.py imports
                 # TestHTTPS_TLSv1, whose tests are almost all defined on its
@@ -1917,6 +2229,7 @@ def _collect_module_tests(
                     name=bound,
                     class_id=entry,
                     scope=origin_scope,
+                    imported=True,
                 )
             elif is_function and not _is_fixture(node)[0]:
                 marks = module_marks + _marks_from_expressions(

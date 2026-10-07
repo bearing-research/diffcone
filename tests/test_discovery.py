@@ -230,6 +230,8 @@ def test_asv_discovery_rules(repo):
         "ops.TimeOps.peakmem_add",
         "ops.TimeOps.track_ratio",
         "sub.deep.mem_thing",
+        # ASV walks the package with pkgutil: underscore modules too (audit D10).
+        "_skipped.time_skipped",
     }
     module_level = targets["ops.time_module_level"]
     assert module_level.entry_symbol == "asv_bench.benchmarks.ops.time_module_level"

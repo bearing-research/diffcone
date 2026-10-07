@@ -35,7 +35,16 @@ class GitError(Exception):
     """Raised when git cannot supply the requested snapshot."""
 
 
-CONFIG_FILES = ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg", "asv.conf.json")
+CONFIG_FILES = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+    "asv.conf.json",
+)
 # ASV projects usually keep their configuration beside the benchmarks rather
 # than at the repository root (numpy and networkx use ``benchmarks/``, pandas
 # ``asv_bench/``), and ``benchmark_dir`` is relative to it, so nested copies
@@ -64,6 +73,10 @@ class Snapshot:
     # The content of the Cython sources among them (diffcone.cython).
     cython_files: dict[str, bytes] = field(default_factory=dict)
     text_files: dict[str, bytes] = field(default_factory=dict)
+    # Every ``.py`` path in the whole tree, roots or not (read only with
+    # ``with_config``): discovery reports test files pytest would collect
+    # outside the source roots instead of silently missing them.
+    python_paths: tuple[str, ...] = ()
 
     @property
     def revision(self) -> str:
@@ -337,6 +350,12 @@ def _nested_asv_configs(listing: bytes) -> list[str]:
     return sorted(found, key=lambda p: (p.count("/"), p))
 
 
+def _python_paths(listing: bytes) -> tuple[str, ...]:
+    """The ``.py`` paths in a newline-separated file listing, sorted."""
+    paths = (raw.decode("utf-8", "surrogateescape").strip() for raw in listing.split(b"\n"))
+    return tuple(sorted(p for p in paths if p.endswith(".py")))
+
+
 def _staged_config_files(repo: Path) -> dict[str, bytes]:
     out = _git(repo, ["ls-files", "-z", "--cached", "--", *CONFIG_FILES])
     names = [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
@@ -375,11 +394,14 @@ def read_commit_snapshot(
     real_files = read_files(repo, commit, sorted(set(aliases.values())))
     files.update({alias: real_files[real] for alias, real in aliases.items()})
     config_files: dict[str, bytes] = {}
+    python_paths: tuple[str, ...] = ()
     if with_config:
         root = list_root_files(repo, commit)
         names = [n for n in CONFIG_FILES if n in root]
-        nested = _nested_asv_configs(_git(repo, ["ls-tree", "-r", "--name-only", commit]))
+        whole_tree = _git(repo, ["ls-tree", "-r", "--name-only", commit])
+        nested = _nested_asv_configs(whole_tree)
         config_files = read_files(repo, commit, names + nested)
+        python_paths = _python_paths(whole_tree)
     return Snapshot(
         info=SnapshotInfo(
             revision=revision,
@@ -390,6 +412,7 @@ def read_commit_snapshot(
         source_roots=list(source_roots),
         files=dict(sorted(files.items())),
         config_files=config_files,
+        python_paths=python_paths,
         other_files={
             p: oid for _, oid, p in sorted(entries_ids, key=lambda e: e[2]) if not p.endswith(".py")
         },
@@ -450,10 +473,12 @@ def read_index_snapshot(
     real_files = read_files(repo, "", sorted(set(aliases.values())), label=INDEX)
     files.update({alias: real_files[real] for alias, real in aliases.items()})
     config_files = _staged_config_files(repo) if with_config else {}
+    python_paths: tuple[str, ...] = ()
     if with_config:
         listing = _git(repo, ["ls-files", "-z", "--cached"]).replace(b"\0", b"\n")
         nested = _nested_asv_configs(listing)
         config_files.update(read_files(repo, "", nested, label=INDEX))
+        python_paths = _python_paths(listing)
     return Snapshot(
         info=SnapshotInfo(
             revision=INDEX,
@@ -464,6 +489,7 @@ def read_index_snapshot(
         source_roots=list(source_roots),
         files=dict(sorted(files.items())),
         config_files=config_files,
+        python_paths=python_paths,
         errors=errors,
         other_files={
             p: oid
@@ -522,6 +548,7 @@ def read_worktree_snapshot(
             files[alias] = (repo / real).read_bytes()
     files = dict(sorted(files.items()))
     config_files: dict[str, bytes] = {}
+    python_paths: tuple[str, ...] = ()
     if with_config:
         for name in CONFIG_FILES:
             full = repo / name
@@ -532,6 +559,9 @@ def read_worktree_snapshot(
             full = repo / name
             if full.is_file():
                 config_files[name] = full.read_bytes()
+        python_paths = tuple(
+            p for p in _python_paths(listing.replace(b"\0", b"\n")) if (repo / p).is_file()
+        )
     return Snapshot(
         info=SnapshotInfo(
             revision=WORKTREE,
@@ -545,6 +575,7 @@ def read_worktree_snapshot(
         source_roots=list(source_roots),
         files=files,
         config_files=config_files,
+        python_paths=python_paths,
         other_files=_worktree_blob_ids(
             repo,
             sorted(

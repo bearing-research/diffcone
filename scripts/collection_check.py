@@ -55,7 +55,7 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 PARAM = re.compile(r"\[.*\]$")
 # The file part of a node id: a path with an extension pytest can collect.
-NODE_FILE = re.compile(r"^[\w./-]+\.(py|txt|rst|md)$")
+NODE_FILE = re.compile(r"^[\w./-]+\.[A-Za-z0-9]+$")
 
 
 def asv_selection(pattern: str, records: list[dict]) -> set[str]:

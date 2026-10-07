@@ -71,6 +71,12 @@ INCOMPLETE_NOTE_KINDS = frozenset(
         # A file pytest collects that could not be parsed or named: whatever
         # tests it holds are not targets.
         "unparsed_file",
+        # A file pytest collects lies outside the source roots, so it was
+        # never read: its tests are not targets.
+        "test_file_outside_roots",
+        # A module or class attribute with a test's name bound to something
+        # discovery cannot follow (``TestMachine = Machine.TestCase``).
+        "unmodelled_test_binding",
         # Evidence mode: pytest collected tests at the recorded commit that
         # were not targets there.
         "collected_not_target",

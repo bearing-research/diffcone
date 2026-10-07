@@ -6,8 +6,10 @@ each one understands.
 
 ## pytest
 
-**Configuration** is read from `pytest.ini`, `pyproject.toml`
-(`[tool.pytest.ini_options]`), `tox.ini` or `setup.cfg`: `testpaths`,
+**Configuration** is read from `pytest.toml`, `.pytest.toml`,
+`pytest.ini`, `.pytest.ini`, `pyproject.toml` (`[tool.pytest.ini_options]`
+or `[tool.pytest]`), `tox.ini` or `setup.cfg`, in pytest's order:
+`testpaths`,
 `python_files`, `python_classes`, `python_functions`, `norecursedirs`, and
 the doctest options in `addopts`.
 
@@ -18,7 +20,10 @@ the doctest options in `addopts`.
 - `unittest.TestCase` subclasses, whatever their names;
 - tests inherited from base classes, including base classes in other
   modules;
-- tests imported into a test module with `from module import *`;
+- tests imported into a test module, by name or with `from module import *`;
+- tests bound to another name (`test_alias = test_orig`), `runTest` in a
+  `unittest.TestCase` without `test*` methods, and functions marked
+  `__test__ = True`;
 - doctests, when `--doctest-modules` or `--doctest-glob` is set.
 
 **What each test depends on**, besides its own code:
@@ -70,7 +75,9 @@ parameter cases together.
 
 `benchmark_dir` is read from `asv.conf.json`. Benchmarks are the
 functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
-`peakmem_` or `track_`, including inherited ones. Each depends on its
+`peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`, `PeakMem`, `Track`
+followed by a capital), including inherited ones and ones imported into a
+benchmark module, in every module under `benchmark_dir` as ASV walks it. Each depends on its
 class's and module's `setup`, `setup_cache` and `teardown`, and on its
 module. Class attributes such as `params` count as part of the class.
 
@@ -81,6 +88,10 @@ Some things can't be known by reading the source:
 - a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;
 - a test base class, or an imported test, from outside your source roots;
+- a test file outside your source roots (with `--source-root src`, add
+  `--source-root .` for tests in `tests/`);
+- a test bound to something discovery can't follow
+  (`TestMachine = Machine.TestCase`);
 - a test file that can't be parsed.
 
 Each one appears as a note in the report's `discovery` section, and the
