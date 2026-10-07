@@ -1033,9 +1033,9 @@ selection rules.</p>
   collects (3).</li>
 <li>Static discovery of pytest tests (configuration, collection rules,
   inheritance, star-imported suites, the fixture chain with fixtures bound
-  by alias or import, doctests) and ASV
-  benchmarks, without importing project code; what it cannot see it
-  reports. <code>diffcone discover</code> writes the targets as a manifest.</li>
+  by alias or import and parametrized names supplied to fixtures, doctests)
+  and ASV benchmarks, without importing project code; what it cannot see
+  it reports. <code>diffcone discover</code> writes the targets as a manifest.</li>
 <li>Dependencies the analysis cannot see can be declared in <code>diffcone.toml</code>.</li>
 <li>Indexes, discovery and per-module results are cached under
   <code>.diffcone/cache/</code>; a cached plan is identical to an uncached one.
