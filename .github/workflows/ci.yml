@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
@@ -38,6 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Git identity for commits outside the fixtures
+        shell: bash
         run: |
           git config --global user.name "diffcone ci"
           git config --global user.email "ci@example.invalid"
@@ -45,6 +46,7 @@ jobs:
       # Evidence tests need Python 3.12+ (sys.monitoring) and skip below it;
       # the Cython tests build a small extension with the runner's C compiler.
       - run: uv run pytest -q
+        shell: bash
 
   package:
     runs-on: ubuntu-latest
