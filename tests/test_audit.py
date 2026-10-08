@@ -2691,4 +2691,4 @@ def test_record_checks_a_push_against_its_full_run_and_fails_on_a_confirmed_miss
     assert order.index("Plan the commit's change") < order.index("Record") < order.index("Save")
     assert order.index("Save") < order.index("Fail on test failures or misses")
     assert "--base HEAD^1 --head HEAD" in record
-    assert "rerun.xml" in record and "--baseline diffcone-results/previous.xml" in record
+    assert "rerun.xml" in record and '--baseline "$RESULTS/previous.xml"' in record
