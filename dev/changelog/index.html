@@ -1136,6 +1136,10 @@ selection rules.</p>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
   interpreter version check) or <code>uv python list</code> is no longer always
   selected.</li>
+<li>Editing a module that looks at its own file at import
+  (<code>Path(__file__).resolve()</code>) no longer replans all its importers from
+  the code: a stat of a source file records that it exists, not what it
+  holds.</li>
 <li>A test that leaves a thread running is no longer always selected;
   instead every test is credited with the code background threads are in
   the middle of while it runs, which also covers a later test running
