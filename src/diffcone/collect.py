@@ -602,12 +602,15 @@ def _inert_probe(event: str, args: tuple) -> bool:
         return False
     program = argv[0]
     name = os.path.basename(program)
+    # ``shutil.which("uv")`` is ``...\\uv.EXE`` on Windows.
+    tool_name = name.lower().removesuffix(".exe")
     try:
         runs = os.path.basename(os.fsdecode(executable)) if executable is not None else name
     except TypeError:
         return False
-    if runs == name and any(
-        name == tool and tuple(argv[1 : 1 + len(start)]) == start for tool, start in _INERT_QUERIES
+    if runs.lower().removesuffix(".exe") == tool_name and any(
+        tool_name == tool and tuple(argv[1 : 1 + len(start)]) == start
+        for tool, start in _INERT_QUERIES
     ):
         return True
     if not (_INTERPRETER.fullmatch(name) or program == sys.executable):

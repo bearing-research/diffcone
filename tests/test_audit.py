@@ -2822,3 +2822,15 @@ def test_a_version_probe_in_another_directory_stays_inert(repo):
         {"lib/core.py": "def f():\n    return 2\n"},
     )
     assert chosen == {"tests/test_f.py::test_f"}
+
+
+def test_a_uv_query_by_its_windows_name_is_inert(monkeypatch):
+    """``shutil.which("uv")`` names ``uv.EXE`` on Windows: 779 of strata's
+    2 606 Windows tests were flagged for ``uv python list``."""
+    from diffcone import collect
+
+    argv = ["/opt/tools/uv.EXE", "python", "list", "--only-installed"]
+    assert collect._inert_probe("subprocess.Popen", (argv[0], argv, None, None))
+    assert not collect._inert_probe(
+        "subprocess.Popen", (argv[0], ["/opt/tools/uv.EXE", "run", "x"], None, None)
+    )

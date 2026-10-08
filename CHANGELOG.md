@@ -6,6 +6,14 @@ All notable changes to diffcone. The format follows
 may change the report schema, the cache and evidence store formats, or
 selection rules.
 
+## [Unreleased]
+
+### Execution evidence
+
+- On Windows, `uv python list` run through the path `shutil.which` gives
+  (`...\uv.EXE`) is recognised as an inert query, as it is elsewhere; it
+  made a third of a Windows suite always selected.
+
 ## [0.2.0] - 2026-10-08
 
 ### Platforms
