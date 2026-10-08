@@ -407,6 +407,7 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
         **os.environ,
         "GITHUB_EVENT_NAME": "push",
         "RESULTS": str(results),
+        "CHECK": "true",
         "RECORDED": "success",
         "MISSES": "0",
         "FLAKY": "0",
@@ -422,9 +423,20 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
     env["CHECK_ERROR"] = ""
     subprocess.run([sys.executable, "-"], input=describe, text=True, env=env, check=True)
 
+    # A nightly recording without check: described too.
+    nightly = tmp_path / "runs" / "4" / "diffcone-a"
+    env = {**env, "RESULTS": str(nightly), "CHECK": "false", "RECORDED": "success"}
+    env["GITHUB_EVENT_NAME"] = "schedule"
+    subprocess.run([sys.executable, "-"], input=describe, text=True, env=env, check=True)
+    assert (nightly / "context.json").exists()  # the step makes the directory
+
     report = ci_report.build(ci_report.load(tmp_path / "runs"))
     cell = report.cells[0]
     assert report.ok
     assert (cell.pull_requests, cell.refused, cell.without_context) == (1, 1, 0)
-    assert (cell.pushes, cell.checked) == (2, 0)
-    assert dict(cell.not_checked) == {"the commit has no parent": 1, "the recording failed": 1}
+    assert (cell.pushes, cell.checked) == (3, 0)
+    assert dict(cell.not_checked) == {
+        "the commit has no parent": 1,
+        "the recording failed": 1,
+        "check is off": 1,
+    }

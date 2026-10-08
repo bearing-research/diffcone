@@ -331,7 +331,13 @@ def to_markdown(report: Report) -> str:
         f"### diffcone report: {'no miss' if report.ok else 'MISSES'}",
         "",
         f"{report.runs} workflow run(s) ({report.pull_request_runs} pull request, "
-        f"{report.push_runs} push)"
+        f"{report.push_runs} push"
+        + (
+            f", {other} other"
+            if (other := report.runs - report.pull_request_runs - report.push_runs)
+            else ""
+        )
+        + ")"
         + (f", {report.first} to {report.last}" if report.first else "")
         + ".",
         "",
@@ -385,10 +391,9 @@ def to_markdown(report: Report) -> str:
     pushes = [c for c in report.cells if c.pushes]
     if pushes:
         lines += [
-            "**Pushes to the default branch**",
+            "**Recordings** (full runs: pushes to the default branch, scheduled runs)",
             "",
-            "| job | pushes | checked | not checked | new failures | flaky | misses "
-            "| check errors |",
+            "| job | runs | checked | not checked | new failures | flaky | misses | check errors |",
             "|---|---|---|---|---|---|---|---|",
         ]
         for c in pushes:

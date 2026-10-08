@@ -37,11 +37,20 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
       - uses: bearing-research/diffcone/actions/record@v0.3.0
+        id: record
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
           pytest-args: -n auto
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: diffcone-ubuntu
+          path: ${{ steps.record.outputs.results }}
 ```
+
+The upload is optional: it keeps a description of the recording for
+[a report on recent runs](#report-on-recent-runs).
 
 `key-prefix` names the recording; use one per test environment (operating
 system, Python version) if you record several. For a `src` layout, add
@@ -189,8 +198,8 @@ recording; pull requests only restore it.
 
 Once every job runs through diffcone, a scheduled `report` job reads what
 the jobs uploaded and sums it up: for pull requests, the share of tests
-each job selected and how often it planned without a recording (and why);
-for pushes to the default branch, whether each was checked, its new
+each job selected and how often it planned without a recording (and what
+differed); for recordings, whether each pushed commit was checked, its new
 failures, flaky tests and misses. It adds the report as a comment on an
 issue labelled `diffcone-report`, and opens one issue, labelled
 `diffcone-miss`, for each test diffcone missed.

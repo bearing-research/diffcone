@@ -47,9 +47,10 @@ outputs:
     value: ${{ steps.check.outputs.misses }}
   results:
     description: >-
-      The directory holding the check's plan.json, verdict.json and verdict.md
-      (and the re-run's results), to upload as an artifact.
-    value: ${{ steps.plan.outputs.results }}
+      The directory to upload as an artifact (for diffcone report): the
+      context.json describing this recording and, with check, the check's
+      plan.json, verdict.json and verdict.md (and the re-run's results).
+    value: ${{ steps.describe.outputs.results }}
 runs:
   using: composite
   steps:
@@ -304,21 +305,25 @@ runs:
       with:
         path: .diffcone
         key: ${{ steps.record.outputs.key }}
-    - name: Describe the push for diffcone report
-      if: always() && inputs.check == 'true' && steps.plan.outputs.results != ''
+    - name: Describe the recording for diffcone report
+      if: always()
+      id: describe
       shell: bash
       env:
         RESULTS: ${{ runner.temp }}/diffcone-results
+        CHECK: ${{ inputs.check }}
         RECORDED: ${{ steps.record.outcome }}
         MISSES: ${{ steps.check.outputs.misses }}
         FLAKY: ${{ steps.check.outputs.flaky }}
         CHECK_ERROR: ${{ steps.check.outputs.check-error }}
       run: |
-        # What diffcone report reads about this push, whatever happened:
-        # written last, so a recording that failed is described too.
+        # What diffcone report reads about this recording, whatever
+        # happened: written last, so a recording that failed is described too.
+        echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
         "$(command -v python3 || command -v python)" - <<'PY'
         import json, os, subprocess
         results = os.environ["RESULTS"]
+        os.makedirs(results, exist_ok=True)  # without check, nothing else made it
         def read(name):
             try:
                 return open(os.path.join(results, name)).read().strip() or None
@@ -327,7 +332,12 @@ runs:
         recorded = os.environ["RECORDED"] == "success"
         sticky = os.path.exists(os.path.join(results, "sticky.json"))
         checked = recorded and not sticky and os.path.exists(os.path.join(results, "plan.json"))
-        note = read("check-note") if recorded else "the recording failed"
+        if not recorded:
+            note = "the recording failed"
+        elif os.environ["CHECK"] != "true":
+            note = "check is off"
+        else:
+            note = read("check-note")
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
         ).stdout.strip()
