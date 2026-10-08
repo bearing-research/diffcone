@@ -8,6 +8,14 @@ selection rules.
 
 ## [Unreleased]
 
+### Platforms
+
+- Windows is tested in CI (Python 3.11-3.14): commands are split without
+  POSIX escapes, the recorder plugin is copied where a symlink is not
+  allowed, the recorder reads Windows command lines and existence checks and
+  matches short (8.3) path names, and the actions find Python and the
+  venv's `Scripts` directory.
+
 ### CI
 
 - `record` takes `check: true` for a default branch whose every push runs
