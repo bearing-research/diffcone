@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       post:
-        description: Comment the report and open miss issues (off: the job summary only).
+        description: "Comment the report and open miss issues (off: the job summary only)."
         type: boolean
         default: true
 
