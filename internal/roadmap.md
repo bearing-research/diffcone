@@ -627,3 +627,23 @@ probe and thread-only tests, with scenarios: a probe does not flag, a probe
 naming a project package or running a script does; a later test running
 beside a looping thread is selected when the loop body changes (missed
 before), and the thread's starter is no longer always selected.
+
+**Measured on strata (2026-10-07)**, fresh recording at each commit's
+parent, CI arguments passed: 3-4 file commits select 13-15 % (the
+subprocess floor is 10 %); a 6-file notebook commit 28.7 %; an 8-file
+commit touching `server.py` 53.8 % (100 % before a stat of a source file
+stopped counting as a read). Static planning selects 100 % on every one.
+
+**Next, each needing its own sketch before code:**
+
+* *Readers of a test fake's member.* A method added to a test-only class
+  (`_FakePipe.read`) makes every library call `x.read()` on an unknown
+  receiver a reader, so every test that ran such library code is selected
+  (1 849 tests on one commit). Only tests that can hold an instance can
+  reach it: those that ran test code with a static reference to the class.
+* *Lookups on an external module the project writes to.* strata's tests
+  patch `builtins.open` and `builtins.__import__`, so `dir(builtins)` and
+  `hasattr(os, ...)` stay fully dynamic (1 102 tests on one commit).
+  Bounded instead by what is stored there: an edge from the lookup to each
+  stored value's references, dynamic only when a stored value cannot be
+  resolved.
