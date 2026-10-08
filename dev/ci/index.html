@@ -553,6 +553,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#or-record-on-every-push-to-the-default-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Or: record on every push to the default branch
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-the-cache-is-shared" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -949,6 +960,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#or-record-on-every-push-to-the-default-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Or: record on every push to the default branch
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-the-cache-is-shared" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1182,6 +1204,52 @@ of the full run that the plan didn't select, or that diffcone's own run
 didn't execute. It doesn't fail the workflow unless you set
 <code>fail-on-miss: true</code>. Tests that already failed in
 the nightly run are reported as already failing, not as misses.</p>
+<h2 id="or-record-on-every-push-to-the-default-branch">Or: record on every push to the default branch<a class="headerlink" href="#or-record-on-every-push-to-the-default-branch" title="Permanent link">&para;</a></h2>
+<p>If your default branch already runs the full suite on every push, that run
+can be the recording, and pull requests run only the selected tests. Each
+push then checks the plan for its own change against the full run, so a
+test diffcone should have selected fails the default branch's workflow.</p>
+<div class="highlight"><span class="filename">.github/workflows/tests.yml</span><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">on</span><span class="p">:</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">push</span><span class="p">:</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">branches</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">main</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">pull_request</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="nt">jobs</span><span class="p">:</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">tests</span><span class="p">:</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/checkout@v7</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">astral-sh/setup-uv@v10.2.0</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv sync --locked</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == 'push'</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/record@v0.2.0</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">          </span><span class="nt">check</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">          </span><span class="nt">fail-on-test-failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == 'pull_request'</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/run@v0.2.0</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
+<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
+<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
+</code></pre></div>
+<p>On a push, <code>record</code> with <code>check: true</code>:</p>
+<ol>
+<li>restores the newest recording and plans the commit's own change (its
+   first parent to it) from it;</li>
+<li>runs the full suite under the recorder and saves the new recording;</li>
+<li>compares the plan with the full run: a new failure the plan didn't
+   select is run again, and if it fails again it is a miss, which fails the
+   job. One that passes the second time is reported as flaky. Tests that
+   already failed in the previous push's run are not misses.</li>
+</ol>
+<p>With <code>fail-on-test-failure: true</code> a failing test fails the job too, as a
+plain test run would, after the recording is saved.</p>
+<p>As with the nightly setup, only runs on the default branch can save the
+recording; pull requests only restore it.</p>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>Each recording is saved with <code>actions/cache</code> under its own key,
 <code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run&gt;</code>, and pull requests restore the newest one
@@ -1228,9 +1296,11 @@ unchanged files.</p>
 </tbody>
 </table>
 <p><code>record</code> also takes <code>env-vars</code> (environment variables your tests depend
-on, see <a href="../guides/evidence/#run-with-a-recording">execution evidence</a>) and
+on, see <a href="../guides/evidence/#run-with-a-recording">execution evidence</a>),
 <code>junit</code> (where to keep the recording run's JUnit XML; default
-<code>.diffcone/baseline.xml</code>). <code>run</code> also takes <code>base</code> (default <code>HEAD^1</code>, the
+<code>.diffcone/baseline.xml</code>), <code>check</code> (default <code>false</code>: check each push's
+change against its full run, as above) and <code>fail-on-test-failure</code> (default
+<code>false</code>). <code>run</code> also takes <code>base</code> (default <code>HEAD^1</code>, the
 target branch of the pull request's merge commit) and
 <code>allow-incomplete-discovery</code> (default <code>false</code>; see
 <a href="../reference/discovery/#when-the-target-list-may-be-short">when the target list may be short</a>).</p>
