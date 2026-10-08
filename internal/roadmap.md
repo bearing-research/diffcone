@@ -706,6 +706,16 @@ workflow, once a release carries the action. Drop this item then.
   `miss-label` (empty skips either), `github-token`. Needs `actions: read`
   and `issues: write`.
 
+* *Elsewhere* (2026-10-08). `repository` reads another repository's runs
+  (a public one with the workflow's own token), `issues-repository` and
+  `issues-token` post elsewhere; issues posted elsewhere name the source
+  (report issue found by its title, so several projects share a tracker;
+  miss markers carry the source). Miss issues outside diffcone's tracker
+  carry a pre-filled link to a diffcone issue: a human decides what
+  leaves a project. `comment: on-problem` comments only when the report is
+  not ok. diffcone's own `report-strata.yml` reports strata's runs into
+  diffcone's tracker this way.
+
 **Trade-off.** Artifacts expire (90 days by default) and the window is
 what was uploaded; a run that uploaded nothing (cancelled before the
 upload step) is missing from the report, which counts runs per cell so the

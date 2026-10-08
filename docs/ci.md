@@ -240,9 +240,34 @@ expired are not reported.
 `report` takes `hours` (the window for the first report: runs that
 completed in this many hours before it; default `24`), `workflow` (only
 that workflow's runs; default all), `artifact-prefix` (default
-`diffcone-`), and `report-label` and `miss-label` (set either to an empty
-string to skip that issue). It reads what `run` and `record` upload from
-the same release on, so give all the actions the same tag.
+`diffcone-`), `report-label` and `miss-label` (set either to an empty
+string to skip that issue), and `comment` (`always`, the default, or
+`on-problem`: comment only when there is a miss, a failed check or an
+incomplete report; the job summary always has the report). It reads what
+`run` and `record` upload from the same release on, so give all the
+actions the same tag.
+
+Each miss issue has a link that opens a new issue on diffcone's tracker
+with the test and the plan's reason filled in. Nothing is sent until you
+review it and submit it.
+
+### Report on another repository
+
+`repository` reports on another repository's runs, and
+`issues-repository` posts somewhere else: a team can watch several
+projects from one place. A public repository's runs need no extra access;
+posting to another repository needs a token that can write its issues
+(`issues-token`, for example a fine-grained token saved as a secret).
+Issues posted elsewhere name the repository the runs came from, and each
+repository gets its own report issue.
+
+```yaml
+      - uses: bearing-research/diffcone/actions/report@v0.3.0
+        with:
+          repository: my-org/my-project
+          workflow: tests.yml
+          comment: on-problem
+```
 
 To read the same report locally, download the artifacts of some runs into
 one directory per run and run `diffcone report`:

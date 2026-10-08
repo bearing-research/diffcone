@@ -440,3 +440,106 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
         "the recording failed": 1,
         "check is off": 1,
     }
+
+
+FAKE_GH = """#!{python}
+import json, os, sys
+with open(os.environ["GH_LOG"], "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+args = sys.argv[1:]
+if args[:2] == ["issue", "create"]:
+    print("https://github.com/x/y/issues/7")
+elif args[:2] == ["issue", "list"] and "number,title" in args:
+    print(os.environ.get("GH_OPEN", "[]"))
+"""
+
+
+def _post(tmp_path, *, source, target, comment="always", ok="true", existing="[]"):
+    """Run the action's posting step against a fake gh; return its calls."""
+    if os.name == "nt":
+        pytest.skip("the fake gh is a POSIX script")
+    text = (ACTIONS / "report" / "action.yml").read_text()
+    body = next(b for b in re.findall(r"<<'PY'\n(.*?)\n *PY\n", text, re.S) if "UPSTREAM" in b)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_GH.format(python=sys.executable))
+    gh.chmod(0o755)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "report.md").write_text("### diffcone report\n")
+    miss = {
+        "cell": "diffcone-unit",
+        "commit": "a" * 40,
+        "run": "https://github.com/o/s/actions/runs/1",
+        "test": "tests/test_x.py::test_y",
+        "kind": "test",
+        "plan_reason": "no dependency on a changed symbol",
+    }
+    (out / "report.json").write_text(json.dumps({"misses": [miss]}))
+    log = tmp_path / "gh.log"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_LOG": str(log),
+        "GH_OPEN": existing,
+        "OUT": str(out),
+        "RUNS_REPO": source,
+        "ISSUES_REPO": target,
+        "COMMENT": comment,
+        "OK": ok,
+        "REPORT_LABEL": "diffcone-report",
+        "MISS_LABEL": "diffcone-miss",
+        "VERSION": "diffcone 0.3.0",
+    }
+    subprocess.run(
+        [sys.executable, "-"], input=textwrap.dedent(body), text=True, env=env, check=True
+    )
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def _created(calls):
+    return [c for c in calls if c[:2] == ["issue", "create"]]
+
+
+def test_reports_into_another_repository_name_their_source(tmp_path):
+    calls = _post(tmp_path, source="o/strata", target="bearing-research/diffcone")
+    assert all(c[-2:] == ["--repo", "bearing-research/diffcone"] for c in calls)
+    report, miss = _created(calls)
+    assert report[report.index("--title") + 1] == "diffcone report: o/strata"
+    title = miss[miss.index("--title") + 1]
+    assert title == f"[o/strata] diffcone missed tests/test_x.py::test_y at {'a' * 12}"
+    body = miss[miss.index("--body") + 1]
+    assert f"<!-- diffcone-miss o/strata {'a' * 40} tests/test_x.py::test_y -->" in body
+    assert "report it to diffcone" not in body  # already there
+    assert any(c[:3] == ["issue", "comment", "7"] for c in calls)
+
+
+def test_reports_at_home_offer_a_link_to_diffcone(tmp_path):
+    calls = _post(tmp_path, source="o/app", target="o/app")
+    report, miss = _created(calls)
+    assert report[report.index("--title") + 1] == "diffcone report"
+    body = miss[miss.index("--body") + 1]
+    assert "https://github.com/bearing-research/diffcone/issues/new?" in body
+    assert "tests%2Ftest_x.py%3A%3Atest_y" in body
+    assert miss[miss.index("--title") + 1].startswith("diffcone missed ")
+
+
+def test_the_report_issue_is_found_by_its_title(tmp_path):
+    """Several projects report into one tracker: each has its own issue."""
+    existing = json.dumps(
+        [{"number": 3, "title": "diffcone report: o/other"},
+         {"number": 5, "title": "diffcone report: o/strata"}]
+    )  # fmt: skip
+    calls = _post(tmp_path, source="o/strata", target="t/t", existing=existing)
+    assert ["issue", "comment", "5", "--body-file"] == [
+        c for c in calls if c[:2] == ["issue", "comment"]
+    ][0][:4]
+    assert len(_created(calls)) == 1  # the miss only
+
+
+def test_on_problem_comments_only_when_something_is_wrong(tmp_path):
+    quiet = _post(tmp_path / "a", source="o/a", target="o/a", comment="on-problem", ok="true")
+    assert not [c for c in quiet if c[:2] == ["issue", "comment"]]
+    loud = _post(tmp_path / "b", source="o/a", target="o/a", comment="on-problem", ok="false")
+    assert [c for c in loud if c[:2] == ["issue", "comment"]]

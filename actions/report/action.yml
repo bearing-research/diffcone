@@ -3,9 +3,10 @@ description: >-
   Report on the recent CI runs of diffcone run and diffcone record: download
   the results they uploaded (artifacts named with a common prefix), write
   the report to the job summary, comment it on a report issue, and open an
-  issue for each confirmed miss. Run it on a schedule. Needs the gh CLI
-  (GitHub-hosted runners have it) and the permissions actions: read and
-  issues: write.
+  issue for each confirmed miss. Run it on a schedule. The runs can be
+  another public repository's, and the issues can go to another
+  repository. Needs the gh CLI (GitHub-hosted runners have it) and the
+  permissions actions: read and issues: write.
 inputs:
   hours:
     description: >-
@@ -20,6 +21,26 @@ inputs:
   artifact-prefix:
     description: The name prefix of the artifacts holding the actions' results.
     default: "diffcone-"
+  repository:
+    description: >-
+      The repository whose runs are reported (owner/name); default this one.
+      Another public repository's runs can be read with this workflow's own
+      token.
+    default: ${{ github.repository }}
+  issues-repository:
+    description: >-
+      Where the report comment and the miss issues go (owner/name); default
+      this one. Writing to another repository needs issues-token.
+    default: ${{ github.repository }}
+  issues-token:
+    description: The token for writing issues; default github-token.
+    default: ""
+  comment:
+    description: >-
+      When to comment the report on the report issue: "always", or
+      "on-problem" (a miss, a failed check, an incomplete report). The job
+      summary always has it.
+    default: "always"
   report-label:
     description: >-
       Comment the report on the open issue with this label (created when
@@ -74,6 +95,7 @@ runs:
         WORKFLOW: ${{ inputs.workflow }}
         PREFIX: ${{ inputs.artifact-prefix }}
         RUNS: ${{ runner.temp }}/diffcone-runs
+        RUNS_REPO: ${{ inputs.repository }}
       run: |
         py=$(command -v python3 || command -v python)
         mkdir -p "$RUNS/runs"
@@ -105,7 +127,7 @@ runs:
         only=(); [ -n "$WORKFLOW" ] && only=(--workflow "$WORKFLOW")
         # Completed runs only: one still running has not uploaded everything
         # (and the run of this report is one of them).
-        gh run list --repo "$GITHUB_REPOSITORY" "${only[@]}" --created ">=$created" \
+        gh run list --repo "$RUNS_REPO" "${only[@]}" --created ">=$created" \
           --status completed --limit 1000 \
           --json databaseId,url,event,createdAt,updatedAt,headSha,headBranch,workflowName,conclusion \
           > "$RUNS/runs.json"
@@ -139,7 +161,7 @@ runs:
         PY
         count=0; errors=0
         while read -r id; do
-          if ! names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
+          if ! names=$(gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
             --jq ".artifacts[] | select(.expired | not) | select(.name | startswith(\"$PREFIX\")) | .name" \
             < /dev/null); then
             echo "::error::could not list the artifacts of run $id"
@@ -153,7 +175,7 @@ runs:
           fi
           count=$((count + 1))
           while IFS= read -r name; do
-            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n "$name" -D "$RUNS/runs/$id/$name" \
+            gh run download "$id" --repo "$RUNS_REPO" -n "$name" -D "$RUNS/runs/$id/$name" \
               < /dev/null && continue
             echo "::error::could not download $name of run $id"
             errors=$((errors + 1))
@@ -189,25 +211,35 @@ runs:
     - name: Comment the report and open miss issues
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.issues-token || inputs.github-token }}
         OUT: ${{ runner.temp }}/diffcone-report
+        RUNS_REPO: ${{ inputs.repository }}
+        ISSUES_REPO: ${{ inputs.issues-repository }}
+        COMMENT: ${{ inputs.comment }}
+        OK: ${{ steps.report.outputs.ok }}
         REPORT_LABEL: ${{ inputs.report-label }}
         MISS_LABEL: ${{ inputs.miss-label }}
       run: |
         py=$(command -v python3 || command -v python)
-        "$py" - <<'PY'
+        VERSION=$(diffcone --version | tr -d '\r') "$py" - <<'PY'
         import json, os, subprocess, sys
+        from urllib.parse import urlencode
 
-        repo = os.environ["GITHUB_REPOSITORY"]
+        UPSTREAM = "bearing-research/diffcone"
+        source = os.environ["RUNS_REPO"]
+        repo = os.environ["ISSUES_REPO"]
+        # Issues in another repository name the runs' repository: several
+        # projects can report into one tracker.
+        elsewhere = source != repo
         failed = 0
         out = os.environ["OUT"]
 
 
-        def gh(*args, capture=True):
+        def gh(*args):
             result = subprocess.run(
-                ["gh", *args, "--repo", repo], check=True, capture_output=capture, text=True
+                ["gh", *args, "--repo", repo], check=True, capture_output=True, text=True
             )
-            return result.stdout.strip() if capture else ""
+            return result.stdout.strip()
 
 
         def label(name, description):
@@ -219,20 +251,25 @@ runs:
             return url.rsplit("/", 1)[-1]
 
 
-        if os.environ["REPORT_LABEL"]:
+        if os.environ["COMMENT"] not in ("always", "on-problem"):
+            sys.exit(f"comment must be always or on-problem, not {os.environ['COMMENT']!r}")
+        wanted = os.environ["COMMENT"] == "always" or os.environ["OK"] != "true"
+        if os.environ["REPORT_LABEL"] and wanted:
             name = os.environ["REPORT_LABEL"]
+            title = f"diffcone report: {source}" if elsewhere else "diffcone report"
             label(name, "diffcone's reports over CI runs")
-            numbers = gh(
-                "issue", "list", "--label", name, "--state", "open", "--json", "number",
-                "--jq", ".[].number",
-            ).split()
+            found = json.loads(
+                gh("issue", "list", "--label", name, "--state", "open", "--limit", "100",
+                   "--json", "number,title")
+            )
+            numbers = [str(i["number"]) for i in found if i["title"] == title]
             number = min(numbers, key=int) if numbers else issue(
-                "diffcone report",
-                "diffcone's report action comments its reports over CI runs here.",
+                title,
+                f"diffcone's report action comments its reports over {source}'s CI runs here.",
                 name,
             )
             gh("issue", "comment", number, "--body-file", os.path.join(out, "report.md"))
-            print(f"commented the report on #{number}")
+            print(f"commented the report on {repo}#{number}")
 
         report = json.load(open(os.path.join(out, "report.json")))
         if os.environ["MISS_LABEL"] and report["misses"]:
@@ -246,11 +283,12 @@ runs:
             for miss in report["misses"]:
                 grouped.setdefault((miss["commit"], miss["test"]), []).append(miss)
             for (commit, test), found in grouped.items():
-                marker = f"<!-- diffcone-miss {commit} {test} -->"
+                marker = f"<!-- diffcone-miss {source} {commit} {test} -->"
                 if marker in existing:
                     continue
+                where = f"{source}@{commit}" if elsewhere else commit
                 lines = [
-                    f"`{test}` failed in the full run of {commit}, the plan of that commit's "
+                    f"`{test}` failed in the full run of {where}, the plan of that commit's "
                     "change (its first parent to it) did not select it, and it failed again "
                     "when re-run (or could not be re-run).",
                     "",
@@ -261,19 +299,39 @@ runs:
                 lines += [
                     "",
                     "The run's artifact holds the plan (plan.json) and the check's verdict.",
-                    "",
-                    marker,
                 ]
-                shown = test if len(test) <= 160 else test[:157] + "..."
+                if repo != UPSTREAM:
+                    # A human decides what leaves this repository.
+                    upstream = [
+                        f"{os.environ['VERSION']} missed a test it should have selected.",
+                        "",
+                        f"- test: `{test}` ({found[0]['kind']})",
+                        f"- the plan: {found[0]['plan_reason'] or 'no reason recorded'}",
+                        "",
+                        "(Reported from a diffcone report; add what you can share: the "
+                        "change, the code path from it to the test.)",
+                    ]
+                    query = urlencode(
+                        {"title": f"Missed test: {test[:120]}", "body": "\n".join(upstream)}
+                    )
+                    lines += [
+                        "",
+                        "If this is diffcone's fault, [report it to diffcone]"
+                        f"(https://github.com/{UPSTREAM}/issues/new?{query}) "
+                        "(review the text first: nothing is sent until you submit it).",
+                    ]
+                lines += ["", marker]
+                shown = test if len(test) <= 140 else test[:137] + "..."
+                prefix = f"[{source}] " if elsewhere else ""
                 try:
                     number = issue(
-                        f"diffcone missed {shown} at {commit[:12]}", "\n".join(lines), name
+                        f"{prefix}diffcone missed {shown} at {commit[:12]}", "\n".join(lines), name
                     )
                 except subprocess.CalledProcessError as exc:
                     print(f"::error::could not open an issue for {test}: {exc.stderr}")
                     failed += 1
                     continue
-                print(f"opened #{number} for {test} at {commit[:12]}")
+                print(f"opened {repo}#{number} for {test} at {commit[:12]}")
         sys.exit(1 if failed else 0)
         PY
     - name: Fail on an incomplete report

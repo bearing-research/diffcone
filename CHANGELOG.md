@@ -21,6 +21,12 @@ selection rules.
 - `record` describes every recording for `diffcone report`, also without
   `check` (a nightly recording) and when the recording failed: its
   `results` output always holds `context.json`.
+- `report` takes `repository` (report on another repository's runs; a
+  public one needs no extra access), `issues-repository` and
+  `issues-token` (post the report and miss issues elsewhere, each source
+  repository with its own report issue), and `comment: on-problem`
+  (comment only on a miss, a failed check or an incomplete report). Miss
+  issues outside diffcone's tracker link to a pre-filled diffcone issue.
 - `run -o` adds `evidence_not_used` (why the recording was not used, and
   what differed) to the plan it writes, and `diffcone report` shows those
   differences per job.

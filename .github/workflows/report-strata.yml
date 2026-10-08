@@ -1,0 +1,35 @@
+name: Report on strata
+
+# diffcone's nightly report over strata's CI (bearing-research/strata runs
+# every pytest job through diffcone and uploads the results). It runs here,
+# so the report and the miss issues land in diffcone's tracker with this
+# workflow's own token; strata is public, so reading its runs needs nothing
+# more. It uses this checkout's action: always the diffcone on main.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      post:
+        description: Comment the report and open miss issues (off: the job summary only).
+        type: boolean
+        default: true
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./actions/report
+        with:
+          repository: bearing-research/strata
+          workflow: ci.yml
+          comment: on-problem
+          report-label: ${{ (github.event_name != 'workflow_dispatch' || inputs.post) && 'diffcone-report' || '' }}
+          miss-label: ${{ (github.event_name != 'workflow_dispatch' || inputs.post) && 'diffcone-miss' || '' }}
