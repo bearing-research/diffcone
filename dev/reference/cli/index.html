@@ -695,6 +695,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#diffcone-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone report</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#diffcone-prune" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1041,6 +1052,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         <code>diffcone check</code>
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diffcone-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>diffcone report</code>
       </span>
     </span>
   </a>
@@ -1717,10 +1739,41 @@ errors.</p>
 </tr>
 </tbody>
 </table>
+<h2 id="diffcone-report"><code>diffcone report</code><a class="headerlink" href="#diffcone-report" title="Permanent link">&para;</a></h2>
+<p>Report on many CI runs of the diffcone actions: selection, checks, misses.</p>
+<p>Read the results the run and record actions uploaded, downloaded into one directory per workflow run (DIR/<run id>/run.json and DIR/<run id>/<artifact>/), and report per job: the share pull requests selected and why some were planned from the code, and for pushes whether each was checked, its new failures, flaky re-runs and confirmed misses. The report action downloads the directory. Runs nothing.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>diffcone report [-h] --dir DIR [--format {markdown,json}] [--output OUTPUT]
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--dir</code> <code>DIR</code></td>
+<td></td>
+<td><strong>Required.</strong> The directory of downloaded runs.</td>
+</tr>
+<tr>
+<td><code>--format</code> <code>FORMAT</code></td>
+<td><code>markdown</code></td>
+<td>One of <code>markdown</code>, <code>json</code>.</td>
+</tr>
+<tr>
+<td><code>--output</code>, <code>-o</code> <code>OUTPUT</code></td>
+<td></td>
+<td>Write the report to this file instead of stdout.</td>
+</tr>
+</tbody>
+</table>
 <h2 id="diffcone-prune"><code>diffcone prune</code><a class="headerlink" href="#diffcone-prune" title="Permanent link">&para;</a></h2>
 <p>Shrink the cache to what planning at given commits reads.</p>
 <p>Delete every cached index and discovery result except those of the --keep commits, and every per-module record except those of their files (which also serve later commits and the working tree sharing them). For a cache shipped between CI runs: keep the commit the evidence was recorded at.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>diffcone prune [-h] [--repo REPO] --keep REV [--source-root DIR[=PREFIX]] [--cache-dir CACHE_DIR]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>diffcone prune [-h] [--repo REPO] --keep REV [--source-root DIR[=PREFIX]] [--cache-dir CACHE_DIR]
 </code></pre></div>
 <table>
 <thead>
@@ -1755,7 +1808,7 @@ errors.</p>
 </table>
 <h2 id="diffcone-evidence"><code>diffcone evidence</code><a class="headerlink" href="#diffcone-evidence" title="Permanent link">&para;</a></h2>
 <p>List the evidence recordings of a repository.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>diffcone evidence [-h] [--repo REPO]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>diffcone evidence [-h] [--repo REPO]
 </code></pre></div>
 <table>
 <thead>
@@ -1776,7 +1829,7 @@ errors.</p>
 <h2 id="diffcone-discover"><code>diffcone discover</code><a class="headerlink" href="#diffcone-discover" title="Permanent link">&para;</a></h2>
 <p>Statically discover targets in a snapshot and emit a manifest.</p>
 <p>Discover pytest tests and/or ASV benchmarks in a snapshot (a git revision, INDEX or WORKTREE) without importing them, and print a target manifest (JSON) for <code>diffcone plan --targets</code>. The output states which snapshot kind was read.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
 </code></pre></div>
 <table>
 <thead>

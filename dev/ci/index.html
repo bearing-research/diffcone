@@ -564,6 +564,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#report-on-recent-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report on recent runs
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-the-cache-is-shared" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -971,6 +982,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#report-on-recent-runs" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report on recent runs
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#how-the-cache-is-shared" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1081,7 +1103,7 @@
 
 
 <h1 id="ci-with-github-actions">CI with GitHub Actions<a class="headerlink" href="#ci-with-github-actions" title="Permanent link">&para;</a></h1>
-<p>diffcone provides three composite actions for a common setup: record the
+<p>diffcone provides composite actions for a common setup: record the
 full test suite once a night on your default branch, then run only the
 affected tests on each pull request, using that recording.</p>
 <table>
@@ -1108,10 +1130,15 @@ affected tests on each pull request, using that recording.</p>
 <td>Optional, after a full run</td>
 <td>Checks that every test that failed in a full run was selected, and writes a summary.</td>
 </tr>
+<tr>
+<td><code>bearing-research/diffcone/actions/report</code></td>
+<td>Optional, on a schedule</td>
+<td>Reports on the recent runs of <code>run</code> and <code>record</code>, and opens an issue for each miss.</td>
+</tr>
 </tbody>
 </table>
 <p>Each action installs the diffcone version that matches its own tag, so
-reference all three by the same release tag (or commit), never by a
+reference them all by the same release tag (or commit), never by a
 branch.</p>
 <h2 id="record-nightly">Record nightly<a class="headerlink" href="#record-nightly" title="Permanent link">&para;</a></h2>
 <div class="highlight"><span class="filename">.github/workflows/diffcone-record.yml</span><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone record</span>
@@ -1222,19 +1249,25 @@ test diffcone should have selected fails the default branch's workflow.</p>
 <a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">astral-sh/setup-uv@v10.2.0</span>
 <a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">run</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv sync --locked</span>
 <a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == 'push'</span>
-<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/record@v0.2.0</span>
-<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
-<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
-<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
-<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">          </span><span class="nt">check</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">          </span><span class="nt">fail-on-test-failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == 'pull_request'</span>
-<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/run@v0.2.0</span>
-<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
-<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
-<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
-<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">        </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">record</span>
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/record@v0.2.0</span>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
+<a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
+<a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
+<a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a><span class="w">          </span><span class="nt">check</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a><span class="w">          </span><span class="nt">fail-on-test-failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github.event_name == 'pull_request'</span>
+<a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a><span class="w">        </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/run@v0.2.0</span>
+<a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a><span class="w">          </span><span class="nt">key-prefix</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
+<a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a><span class="w">          </span><span class="nt">command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">uv run python -m pytest</span>
+<a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a><span class="w">          </span><span class="nt">pytest-args</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">-n auto</span>
+<a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">actions/upload-artifact@v7</span>
+<a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a><span class="w">        </span><span class="nt">if</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">always()</span>
+<a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-ubuntu</span>
+<a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a><span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">${{ steps.record.outputs.results || 'diffcone-results' }}</span>
 </code></pre></div>
 <p>On a push, <code>record</code> with <code>check: true</code>:</p>
 <ol>
@@ -1257,6 +1290,49 @@ plain test run would, after the recording is saved. A test file that can't
 be collected stops the recording itself, which fails the job.</p>
 <p>As with the nightly setup, only runs on the default branch can save the
 recording; pull requests only restore it.</p>
+<h2 id="report-on-recent-runs">Report on recent runs<a class="headerlink" href="#report-on-recent-runs" title="Permanent link">&para;</a></h2>
+<p>Once every job runs through diffcone, a scheduled <code>report</code> job reads what
+the jobs uploaded and sums it up: for pull requests, the share of tests
+each job selected and how often it planned without a recording (and why);
+for pushes to the default branch, whether each was checked, its new
+failures, flaky tests and misses. It adds the report as a comment on an
+issue labelled <code>diffcone-report</code>, and opens one issue, labelled
+<code>diffcone-miss</code>, for each test diffcone missed.</p>
+<div class="highlight"><span class="filename">.github/workflows/diffcone-report.yml</span><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone report</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="nt">on</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">schedule</span><span class="p">:</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">cron</span><span class="p">:</span><span class="w"> </span><span class="s">"0</span><span class="nv"> </span><span class="s">6</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*</span><span class="nv"> </span><span class="s">*"</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">workflow_dispatch</span><span class="p">:</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="nt">permissions</span><span class="p">:</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span><span class="nt">actions</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">read</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span><span class="nt">issues</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="nt">jobs</span><span class="p">:</span>
+<a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="nt">report</span><span class="p">:</span>
+<a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">    </span><span class="nt">runs-on</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ubuntu-latest</span>
+<a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="nt">steps</span><span class="p">:</span>
+<a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/report@v0.3.0</span>
+<a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">          </span><span class="nt">workflow</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tests.yml</span>
+</code></pre></div>
+<p>The report reads the artifacts whose names start with <code>diffcone-</code>, so
+upload the results of <code>run</code> and <code>record</code> (as in the workflows above) under
+a name that starts with <code>diffcone-</code> and differs per job, and per cell of a
+matrix: <code>diffcone-${{ matrix.os }}-py${{ matrix.python-version }}</code>, for
+example. The report has one row per name.</p>
+<p><code>report</code> takes <code>hours</code> (the window: runs created in this many hours before
+now; default <code>24</code>), <code>workflow</code> (only that workflow's runs; default all),
+<code>artifact-prefix</code> (default <code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code>
+(set either to an empty string to skip that issue), and <code>fail-on-miss</code>
+(default <code>false</code>). Runs still in progress are left for the next report,
+and so are artifacts that have expired.</p>
+<p>To read the same report locally, download the artifacts of some runs into
+one directory per run and run <code>diffcone report</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span><span class="m">123456</span><span class="w"> </span>--pattern<span class="w"> </span><span class="s1">'diffcone-*'</span><span class="w"> </span>--dir<span class="w"> </span>runs/123456
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>diffcone<span class="w"> </span>report<span class="w"> </span>--dir<span class="w"> </span>runs
+</code></pre></div>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>Each recording is saved with <code>actions/cache</code> under its own key,
 <code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run id&gt;-&lt;attempt&gt;</code>, and pull requests restore the newest one

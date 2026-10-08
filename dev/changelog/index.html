@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -836,7 +847,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ci" class="md-nav__link">
+  <a href="#ci_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         CI
@@ -930,7 +941,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ci_1" class="md-nav__link">
+  <a href="#ci_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         CI
@@ -1032,6 +1043,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1071,7 +1093,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ci" class="md-nav__link">
+  <a href="#ci_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         CI
@@ -1165,7 +1187,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#ci_1" class="md-nav__link">
+  <a href="#ci_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         CI
@@ -1220,6 +1242,19 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone report --dir DIR</code> reports on many CI runs of the actions: per
+  job, the share pull requests selected and why some were planned from the
+  code, and for pushes whether each was checked, its new failures, flaky
+  re-runs and misses. It exits 1 on a miss or a check that failed.</li>
+<li>A new <code>report</code> action runs it on a schedule over the recent runs'
+  artifacts, comments the report on an issue, and opens an issue for each
+  miss.</li>
+<li><code>run</code> and <code>record</code> write <code>context.json</code> (what they did, and why a plan
+  was made from the code or a push was not checked) into the results they
+  upload; <code>run</code> also writes <code>ran.json</code>, the plan that ran.</li>
+</ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>On Windows, <code>uv python list</code> run through the path <code>shutil.which</code> gives
@@ -1235,7 +1270,7 @@ selection rules.</p>
   matches short (8.3) path names, and the actions find Python and the
   venv's <code>Scripts</code> directory.</li>
 </ul>
-<h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
+<h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>record</code> takes <code>check: true</code> for a default branch whose every push runs
   the full suite: it plans the push's own change from the previous
@@ -1349,7 +1384,7 @@ selection rules.</p>
   collects a class pytest's rules skip), so such plans no longer stop at
   exit 3.</li>
 </ul>
-<h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>
+<h3 id="ci_2">CI<a class="headerlink" href="#ci_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Composite GitHub Actions (<code>actions/record</code>, <code>actions/run</code>,
   <code>actions/check</code>) to record nightly on the default branch and plan, run
