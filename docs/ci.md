@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
-      - uses: bearing-research/diffcone/actions/record@v0.1.0
+      - uses: bearing-research/diffcone/actions/record@v0.2.0
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
@@ -63,7 +63,7 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
-      - uses: bearing-research/diffcone/actions/run@v0.1.0
+      - uses: bearing-research/diffcone/actions/run@v0.2.0
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
@@ -107,7 +107,7 @@ write JUnit XML (`--junitxml=full.xml`) and upload it, then add:
         with:
           name: diffcone-results
           path: diffcone-results
-      - uses: bearing-research/diffcone/actions/check@v0.1.0
+      - uses: bearing-research/diffcone/actions/check@v0.2.0
         with:
           full: full/full.xml
 ```

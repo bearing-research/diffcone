@@ -1394,6 +1394,41 @@ again on the final code, in environments rebuilt from scratch:
   validated (36 validated, 51 outcome changes). Older flask and rich
   commits do not collect in today's environment and are errors.
 
+## Before 0.2.0 (2026-10-07)
+
+0.2.0's rules came from a trial on strata (roadmap item 10): bounded lazy
+exports and lookups on external modules, `--ignore` and explicit paths,
+conftests pytest does not load, library test helpers, inert interpreter
+probes, crediting running threads, and the stat of a module's own file at
+import. A review of the 0.1.0..0.2.0 diff from three angles (static
+rules, the recorder and evidence mode, the actions and docs) found twelve
+misses, each with a reproduction: five where a 0.2 rule bounded a
+dependency it could not see (writes onto an external module through a
+local import, `sys.modules` or `import_module`; lazy tables changed
+through a package attribute or a list entry; `--ignore` applied to an
+initial path; an absolute path argument dropping the others), six in the
+recorder (a second `inspect.getsource` and size checks lost as stats; probes
+reaching project code through `cwd`, `PYTHONPATH`, `doctest.testfile` or a
+program merely named `python...`; Windows quoting), and the actions' check
+letting a miss through on a re-run or a non-test failure. All were fixed
+with scenarios that fail on the code before the fix; the probe rule now
+admits only built-in imports.
+
+On the final code: `fixture_check.py` over the 42 census repositories and
+pandas found no missed fixture; `collection_check.py` found gaps only in
+alembic, cattrs, itsdangerous, pygments, pytest-asyncio and scrapy, each
+with its incomplete-discovery notes, as before; `diffcone corpus` over the
+last 15 commits of flask, requests, rich, pluggy, more-itertools and
+marshmallow missed no outcome. CI passes on Linux, macOS and Windows,
+Python 3.11-3.14.
+
+On strata, evidence planning with a fresh recording selected 13-15 % of
+the unit tests for 3-4 file commits (10 % are tests that start the cell
+harness in a subprocess, always selected), 28.7 % for a 6-file notebook
+change and 53.8 % for an 8-file change touching `server.py`; static
+planning selected every test of every Python-touching commit. Recording
+took 1.4-3.9x the plain run on an 8-core laptop.
+
 ## Are name-match selections worth their cost?
 
 The census attributes 9 % of selections to name matches alone, and the

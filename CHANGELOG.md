@@ -6,7 +6,7 @@ All notable changes to diffcone. The format follows
 may change the report schema, the cache and evidence store formats, or
 selection rules.
 
-## [Unreleased]
+## [0.2.0] - 2026-10-07
 
 ### Platforms
 
@@ -138,4 +138,5 @@ The first release.
   `actions/check`) to record nightly on the default branch and plan, run
   and check each pull request against it; see `docs/ci.md`.
 
+[0.2.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.2.0
 [0.1.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.1.0
