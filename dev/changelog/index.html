@@ -1126,6 +1126,10 @@ selection rules.</p>
   table: a PEP 562 lazy-export <code>__getattr__</code> (<code>target =
   _LAZY.get(name)</code>, then <code>import_module(target[0])</code>) no longer reaches every
   module. <code>D.get(key)</code> reads a literal dict like <code>D[key]</code>.</li>
+<li>A lookup by a run-time name on a third-party or standard-library module
+  (<code>getattr(logging, level)</code>, <code>dir(builtins)</code>) no longer selects every test
+  that reaches it whenever anything in its import closure changes, unless
+  project code stores something on that module.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1139,6 +1143,9 @@ selection rules.</p>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
+<li><code>--ignore</code> and <code>--ignore-glob</code> (in <code>addopts</code> or after <code>--</code>) are honoured:
+  ignored tests are no longer targets, which <code>run</code> reported as selected
+  but not collected.</li>
 <li>Importing a library's test helper whose name looks like a test class
   (<code>from fastapi.testclient import TestClient</code>, aiohttp's <code>TestServer</code>) no
   longer reports an incomplete target list.</li>
