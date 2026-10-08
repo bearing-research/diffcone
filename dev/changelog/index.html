@@ -793,7 +793,18 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="[Unreleased]">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-10-08">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1039,7 +1050,18 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="[Unreleased]">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-10-08">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -1242,6 +1264,7 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone report --dir DIR</code> reports on many CI runs of the actions: per
@@ -1254,6 +1277,10 @@ selection rules.</p>
 <li><code>run</code> and <code>record</code> write <code>context.json</code> (what they did, and why a plan
   was made from the code or a push was not checked) into the results they
   upload; <code>run</code> also writes <code>ran.json</code>, the plan that ran.</li>
+<li>The verdict <code>record</code> keeps for a re-run of the same commit
+  (<code>.diffcone/check.json</code>) also says whether the push was checked and
+  whether the check itself failed, so a re-run reports a failed check as
+  one rather than as a miss.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
