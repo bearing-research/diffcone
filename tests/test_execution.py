@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -782,7 +783,7 @@ def test_validation_runs_with_checkout_source_roots_on_pythonpath(repo, monkeypa
     assert len(seen_env) == 2
     for env in seen_env:
         first, second = env["PYTHONPATH"].split(os.pathsep)[:2]
-        assert first.endswith("/src") and second.endswith("/tests")
+        assert Path(first).name == "src" and Path(second).name == "tests"
 
 
 def test_shadowed_files_detects_installed_copies(repo):

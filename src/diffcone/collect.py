@@ -75,6 +75,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import struct
 import sys
 import threading
@@ -511,6 +512,13 @@ def _inert_probe(event: str, args: tuple) -> bool:
         argv = args[1] if len(args) > 1 else None
     else:
         return False
+    if isinstance(argv, str) and os.name == "nt":
+        # Windows raises the event with the command line ``list2cmdline``
+        # built: split it the same way, quotes around an argument removed.
+        argv = [
+            a[1:-1] if len(a) > 1 and a[0] == a[-1] == '"' else a
+            for a in shlex.split(argv, posix=False)
+        ]
     if isinstance(argv, (str, bytes)) or argv is None:
         return False
     try:

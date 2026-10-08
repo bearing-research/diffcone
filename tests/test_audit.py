@@ -2380,7 +2380,8 @@ def test_e13_recorded_paths_use_forward_slashes(monkeypatch):
     from diffcone import collect
 
     monkeypatch.setattr(collect.os, "sep", "\\")
-    monkeypatch.setattr(collect, "ROOTS", ("C:\\repo\\",))
+    # As the recorder stores them: case-folded where the platform folds case.
+    monkeypatch.setattr(collect, "ROOTS", (collect.os.path.normcase("C:\\repo\\"),))
     assert collect._relative("C:\\repo\\lib\\m.py") == "lib/m.py"
 
 
