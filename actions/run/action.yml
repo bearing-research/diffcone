@@ -156,7 +156,7 @@ runs:
           context "$rc" ""
           exit "$rc"
         fi
-        "$(command -v python3 || command -v python)" -c "import json; p = json.load(open('diffcone-results/plan.json')); \
+        "$py" -c "import json; p = json.load(open('diffcone-results/plan.json')); \
           print('selected=%d' % len(p['selected_targets']))" | tr -d '\r' >> "$GITHUB_OUTPUT"
         allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)
         # ``-o``: the plan that ran (the static one when the environment

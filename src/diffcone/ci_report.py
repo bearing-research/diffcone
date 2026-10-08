@@ -27,6 +27,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+ARTIFACT_FILES = frozenset(
+    {"context.json", "plan.json", "ran.json", "verdict.json", "rerun-verdict.json"}
+)
+
 
 class ReportError(Exception):
     """The directory is not a report input."""
@@ -82,12 +86,13 @@ class Report:
     cells: list[CellReport]
     misses: list[Miss]
     earlier_misses: int = 0
+    unlisted_misses: int = 0
     check_errors: int = 0
 
     @property
     def ok(self) -> bool:
         """No confirmed miss and no check that failed to reach a verdict."""
-        return not self.misses and not self.earlier_misses and not self.check_errors
+        return not (self.misses or self.earlier_misses or self.unlisted_misses or self.check_errors)
 
 
 def _read(path: Path) -> dict[str, Any] | None:
@@ -105,6 +110,15 @@ def load(directory: str | Path) -> list[Artifact]:
     artifacts: list[Artifact] = []
     for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         run = _read(run_dir / "run.json") or {"id": run_dir.name}
+        loose = sorted(
+            p.name for p in run_dir.iterdir() if p.is_file() and p.name in ARTIFACT_FILES
+        )
+        if loose:
+            raise ReportError(
+                f"{run_dir} holds an artifact's files ({', '.join(loose)}) instead of one "
+                "directory per artifact; download with --pattern (gh run download RUN "
+                "--pattern 'diffcone-*' --dir DIR/RUN) so each artifact has its own"
+            )
         for art in sorted(p for p in run_dir.iterdir() if p.is_dir()):
             artifacts.append(
                 Artifact(
@@ -120,19 +134,20 @@ def load(directory: str | Path) -> list[Artifact]:
 
 
 def _confirmed(art: Artifact) -> list[tuple[str, str]]:
-    """The misses a push's check confirmed, as (test, kind). Only a test is
-    re-run; with no re-run verdict (nothing to re-run, or the re-run did not
-    run) every miss stands, and with one a test stands when it failed again."""
+    """The misses a push's check confirmed, as (test, kind), counted as the
+    record action counts them: what is not a test stands (nothing to
+    re-run); tests stand when there is no re-run verdict (the re-run ran
+    nothing), and otherwise the re-run's own misses are the confirmed ones."""
     if art.verdict is None:
         return []
     kinds = {f["test"]: f.get("kind", "unknown") for f in art.verdict.get("failures", [])}
-    again = set(art.rerun.get("misses", [])) if art.rerun is not None else None
-    out = []
-    for test in art.verdict.get("misses", []):
-        kind = kinds.get(test, "unknown")
-        if again is None or kind != "test" or test in again:
-            out.append((test, kind))
-    return out
+    standing = [(test, kinds.get(test, "unknown")) for test in art.verdict.get("misses", [])]
+    if art.rerun is None:
+        return standing
+    again = {f["test"]: f.get("kind", "unknown") for f in art.rerun.get("failures", [])}
+    return [(t, k) for t, k in standing if k != "test"] + [
+        (test, again.get(test, kinds.get(test, "unknown"))) for test in art.rerun.get("misses", [])
+    ]
 
 
 def _unselected_reason(plan: dict[str, Any] | None, test: str) -> str | None:
@@ -146,8 +161,7 @@ def build(artifacts: list[Artifact]) -> Report:
     cells: dict[str, CellReport] = {}
     runs: dict[str, dict[str, Any]] = {}
     misses: list[Miss] = []
-    earlier = 0
-    check_errors = 0
+    earlier = unlisted = check_errors = 0
     for art in artifacts:
         runs[str(art.run.get("id"))] = art.run
         cell = cells.setdefault(art.name, CellReport(art.name))
@@ -196,6 +210,11 @@ def build(artifacts: list[Artifact]) -> Report:
                 check_errors += 1
                 continue
             cell.misses += count
+            if context.get("sticky"):
+                # A verdict kept from an earlier run of the commit: a count,
+                # its details are in that run.
+                earlier += count
+                continue
             confirmed = _confirmed(art)
             for test, kind in confirmed:
                 misses.append(
@@ -208,9 +227,9 @@ def build(artifacts: list[Artifact]) -> Report:
                         reason=_unselected_reason(art.plan, test),
                     )
                 )
-            # A re-run of the commit's job keeps the verdict an earlier run
-            # reached, without its details; anything else unlisted counts too.
-            earlier += max(0, count - len(confirmed))
+            # The job counted more than its verdicts name (a verdict file
+            # missing from the artifact): still misses.
+            unlisted += max(0, count - len(confirmed))
     created = sorted(str(r["created_at"]) for r in runs.values() if r.get("created_at"))
     events = Counter(r.get("event") for r in runs.values())
     return Report(
@@ -222,6 +241,7 @@ def build(artifacts: list[Artifact]) -> Report:
         cells=sorted(cells.values(), key=lambda c: c.name),
         misses=misses,
         earlier_misses=earlier,
+        unlisted_misses=unlisted,
         check_errors=check_errors,
     )
 
@@ -273,6 +293,7 @@ def to_dict(report: Report) -> dict[str, Any]:
             for m in report.misses
         ],
         "earlier_misses": report.earlier_misses,
+        "unlisted_misses": report.unlisted_misses,
         "check_errors": report.check_errors,
     }
 
@@ -291,7 +312,7 @@ def to_markdown(report: Report) -> str:
         + ".",
         "",
     ]
-    if report.misses or report.earlier_misses:
+    if report.misses or report.earlier_misses or report.unlisted_misses:
         lines += [
             "**Misses**: tests that failed on a push, were not selected by the plan "
             "of its change, and failed again when re-run (or could not be re-run).",
@@ -305,6 +326,11 @@ def to_markdown(report: Report) -> str:
             lines.append(
                 f"- {report.earlier_misses} kept from an earlier run of the same commit "
                 "(see that run's job summary)"
+            )
+        if report.unlisted_misses:
+            lines.append(
+                f"- {report.unlisted_misses} counted by a job whose uploaded verdicts do not "
+                "name them (see the jobs' summaries)"
             )
         lines.append("")
     if report.check_errors:

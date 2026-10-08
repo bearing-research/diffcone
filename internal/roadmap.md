@@ -664,35 +664,47 @@ workflow, once a release carries the action. Drop this item then.
   fetchable, unusable), whether incomplete discovery was allowed, and the
   plan's and run's exit codes; `-o ran.json` is the plan that ran (the
   static one when the environment differs from the recording's). `record`
-  writes event, commit, whether the push was checked and, if not, why,
-  the recording compared with, misses, flaky re-runs, whether the check
-  itself failed, and whether the verdict was kept from an earlier run of
-  the commit. The report reads facts the actions wrote, never logs.
+  writes it in a last `always()` step, so a recording that failed is
+  described too: event, commit, whether it recorded, whether the push was
+  checked and, if not, why, the recording compared with, misses, flaky
+  re-runs, whether the check itself failed, and whether the verdict was
+  kept from an earlier run of the commit (`check.json` now keeps `checked`,
+  `check_note` and `check_error`, so a kept verdict says what it was). The
+  report reads facts the actions wrote, never logs.
 * *`diffcone report --dir DIR [--format markdown|json] [-o FILE]`.* Reads
   files only and runs nothing, like `check`. `DIR/<run id>/run.json` (id,
   URL, event, created time, head commit; optional: without it the run is
   its directory's name and the event the context's) and
   `DIR/<run id>/<artifact>/` with `context.json`, `ran.json` or
-  `plan.json`, `verdict.json`, `rerun-verdict.json`. Per artifact name
+  `plan.json`, `verdict.json`, `rerun-verdict.json`; an artifact's files
+  directly in a run's directory (`gh run download -n`) are an error, not
+  a run without results. Per artifact name
   (one job, or one matrix cell): pull-request runs (count, selected share
   median and max, plans made from the code and why, refusals over
   incomplete discovery, failed plans) and pushes (checked or not and why,
   new failures, flaky, misses, failed checks). Then each confirmed miss:
-  commit, test, kind, the plan's unselected reason. A miss is confirmed
-  when it is not a test (nothing to re-run), when there is no re-run
-  verdict (the re-run ran nothing), or when it failed again. A verdict kept
-  from an earlier run carries a count but no details and is reported as
-  such. Exit 1 on any miss or failed check, so a caller can act on it.
-* *`actions/report`.* `gh run list --created >=<cutoff> --status
-  completed` (a running workflow has not uploaded everything; the report's
-  own run is one), the runs' unexpired artifacts with the prefix, each
-  downloaded by name with a `run.json`; `diffcone report` to the job summary;
-  a comment on the open issue with `report-label` (created when missing);
-  one issue per confirmed (commit, test) with `miss-label`, listing the
-  cells, deduplicated by a marker comment in the body. Inputs: `hours`,
-  `workflow`, `artifact-prefix`, `report-label`, `miss-label` (empty skips
-  either), `fail-on-miss`, `github-token`. Needs `actions: read` and
-  `issues: write`.
+  commit, test, kind, the plan's unselected reason. Misses are counted as
+  the action counts them: what is not a test stands, and of the tests the
+  re-run's own misses (all of them when there is no re-run verdict). A
+  kept verdict carries a count only and is reported as such; a count its
+  uploaded verdicts do not name is reported too. Exit 1 on any miss or
+  failed check, so a caller can act on it.
+* *`actions/report`.* The window starts where the report workflow's last
+  successful run started (`hours` before now for the first): completed
+  runs whose last update is in it, listed from three days earlier, so a run
+  still going at one report, or a schedule GitHub delayed, falls in the
+  next. Each run's unexpired artifacts with the prefix (paginated) are
+  downloaded by name, with a `run.json`; a listing or download that fails,
+  or a window over `gh run list`'s 1000 runs, is said on top of the report
+  and fails the job, so the next report covers the window again (and no
+  `fail-on-miss`: a red report would hold the window open). The report goes
+  to the job summary and as a comment on the open issue with
+  `report-label` (created when missing); one issue per confirmed (commit,
+  test) with `miss-label`, listing the cells, deduplicated by a marker in
+  the body, titles cut to fit, one failed issue not stopping the others.
+  Inputs: `hours`, `workflow`, `artifact-prefix`, `report-label`,
+  `miss-label` (empty skips either), `github-token`. Needs `actions: read`
+  and `issues: write`.
 
 **Trade-off.** Artifacts expire (90 days by default) and the window is
 what was uploaded; a run that uploaded nothing (cancelled before the

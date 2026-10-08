@@ -101,8 +101,16 @@ runs:
         if [ -f .diffcone/check.json ] && \
           [ "$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['commit'])" .diffcone/check.json | tr -d '\r')" = "$head" ]; then
           cp .diffcone/check.json "$RESULTS/sticky.json"
-          echo "::notice::this commit was checked by an earlier run; keeping its verdict"
-          echo "an earlier run of this commit was checked" > "$RESULTS/check-note"
+          echo "::notice::an earlier run of this commit reached a verdict; keeping it"
+          "$py" - "$RESULTS/sticky.json" > "$RESULTS/check-note" <<'PY'
+        import json, sys
+        verdict = json.load(open(sys.argv[1]))
+        if verdict.get("checked", True):
+            print("an earlier run of this commit was checked")
+        else:
+            why = verdict.get("check_note") or "no reason given"
+            print(f"an earlier run of this commit was not checked: {why}")
+        PY
           exit 0
         fi
         # The previous full run's results: failures it had are not misses.
@@ -190,39 +198,34 @@ runs:
         flaky=0
         check_error=false
         record() {  # the verdict, kept with the recording for a re-run of this job
-          "$py" -c "import json,sys; json.dump({'commit': sys.argv[1], 'misses': int(sys.argv[2])}, open('.diffcone/check.json', 'w'))" "$head" "$1"
-          echo "misses=$1" >> "$GITHUB_OUTPUT"
-          # What the report (diffcone report) reads about this push.
           MISSES=$1 FLAKY=$flaky CHECK_ERROR=$check_error HEAD_SHA=$head "$py" - <<'PY'
         import json, os
         results = os.environ["RESULTS"]
-        def read(name):
-            try:
-                return open(os.path.join(results, name)).read().strip() or None
-            except OSError:
-                return None
+        try:
+            note = open(os.path.join(results, "check-note")).read().strip() or None
+        except OSError:
+            note = None
         json.dump(
             {
-                "action": "record",
-                "event": os.environ.get("GITHUB_EVENT_NAME", ""),
                 "commit": os.environ["HEAD_SHA"],
-                "checked": os.path.exists(os.path.join(results, "plan.json")),
-                "check_note": read("check-note"),
-                "recording": read("recording"),
                 "misses": int(os.environ["MISSES"]),
-                "flaky": int(os.environ["FLAKY"]),
+                "checked": os.path.exists(os.path.join(results, "plan.json")),
+                "check_note": note,
                 "check_error": os.environ["CHECK_ERROR"] == "true",
-                "sticky": os.path.exists(os.path.join(results, "sticky.json")),
             },
-            open(os.path.join(results, "context.json"), "w"),
-            indent=1,
+            open(".diffcone/check.json", "w"),
         )
         PY
+          { echo "misses=$1"; echo "flaky=$flaky"; echo "check-error=$check_error"; } >> "$GITHUB_OUTPUT"
         }
         if [ -f "$RESULTS/sticky.json" ]; then
-          misses=$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['misses'])" "$RESULTS/sticky.json" | tr -d '\r')
-          [ "$misses" -gt 0 ] && echo "::error::an earlier run of this commit found $misses miss(es) diffcone did not select"
-          record "$misses"
+          read -r misses check_error < <("$py" -c "import json,sys; v = json.load(open(sys.argv[1])); print(v['misses'], str(v.get('check_error', False)).lower())" "$RESULTS/sticky.json" | tr -d '\r')
+          [ "$check_error" = true ] && echo "::error::the check of an earlier run of this commit failed"
+          [ "$check_error" = true ] || [ "$misses" -eq 0 ] \
+            || echo "::error::an earlier run of this commit found $misses miss(es) diffcone did not select"
+          # The earlier verdict stands as it was written.
+          cp "$RESULTS/sticky.json" .diffcone/check.json
+          { echo "misses=$misses"; echo "flaky=0"; echo "check-error=$check_error"; } >> "$GITHUB_OUTPUT"
           exit 0
         fi
         if [ ! -f "$RESULTS/plan.json" ]; then
@@ -301,6 +304,51 @@ runs:
       with:
         path: .diffcone
         key: ${{ steps.record.outputs.key }}
+    - name: Describe the push for diffcone report
+      if: always() && inputs.check == 'true' && steps.plan.outputs.results != ''
+      shell: bash
+      env:
+        RESULTS: ${{ runner.temp }}/diffcone-results
+        RECORDED: ${{ steps.record.outcome }}
+        MISSES: ${{ steps.check.outputs.misses }}
+        FLAKY: ${{ steps.check.outputs.flaky }}
+        CHECK_ERROR: ${{ steps.check.outputs.check-error }}
+      run: |
+        # What diffcone report reads about this push, whatever happened:
+        # written last, so a recording that failed is described too.
+        "$(command -v python3 || command -v python)" - <<'PY'
+        import json, os, subprocess
+        results = os.environ["RESULTS"]
+        def read(name):
+            try:
+                return open(os.path.join(results, name)).read().strip() or None
+            except OSError:
+                return None
+        recorded = os.environ["RECORDED"] == "success"
+        sticky = os.path.exists(os.path.join(results, "sticky.json"))
+        checked = recorded and not sticky and os.path.exists(os.path.join(results, "plan.json"))
+        note = read("check-note") if recorded else "the recording failed"
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        json.dump(
+            {
+                "action": "record",
+                "event": os.environ.get("GITHUB_EVENT_NAME", ""),
+                "commit": commit,
+                "recorded": recorded,
+                "checked": checked,
+                "check_note": None if checked else note or "not checked",
+                "recording": read("recording"),
+                "misses": int(os.environ["MISSES"] or 0),
+                "flaky": int(os.environ["FLAKY"] or 0),
+                "check_error": os.environ["CHECK_ERROR"] == "true",
+                "sticky": sticky,
+            },
+            open(os.path.join(results, "context.json"), "w"),
+            indent=1,
+        )
+        PY
     - name: Fail on test failures or misses
       if: always() && steps.record.outcome == 'success' && (inputs.check == 'true' || inputs.fail-on-test-failure == 'true')
       shell: bash

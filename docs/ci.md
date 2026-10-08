@@ -222,12 +222,18 @@ a name that starts with `diffcone-` and differs per job, and per cell of a
 matrix: `diffcone-${{ matrix.os }}-py${{ matrix.python-version }}`, for
 example. The report has one row per name.
 
-`report` takes `hours` (the window: runs created in this many hours before
-now; default `24`), `workflow` (only that workflow's runs; default all),
-`artifact-prefix` (default `diffcone-`), `report-label` and `miss-label`
-(set either to an empty string to skip that issue), and `fail-on-miss`
-(default `false`). Runs still in progress are left for the next report,
-and so are artifacts that have expired.
+Each report covers the runs that completed since the last successful
+report started, so a run still going when one report starts is in the
+next. If an artifact can't be downloaded, the report says so and the job
+fails, and the next report covers the same runs again. Artifacts that have
+expired are not reported.
+
+`report` takes `hours` (the window for the first report: runs that
+completed in this many hours before it; default `24`), `workflow` (only
+that workflow's runs; default all), `artifact-prefix` (default
+`diffcone-`), and `report-label` and `miss-label` (set either to an empty
+string to skip that issue). It reads what `run` and `record` upload from
+the same release on, so give all the actions the same tag.
 
 To read the same report locally, download the artifacts of some runs into
 one directory per run and run `diffcone report`:

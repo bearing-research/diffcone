@@ -10,6 +10,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from diffcone import ci_report
 from diffcone.cli import main
 
@@ -86,6 +88,7 @@ def _push(sha: str, misses=0, flaky=0, checked=True, note=None, error=False) -> 
         "action": "record",
         "event": "push",
         "commit": sha,
+        "recorded": True,
         "checked": checked,
         "check_note": note,
         "recording": "p" * 40,
@@ -183,10 +186,10 @@ def test_a_confirmed_miss_and_a_flaky_one(tmp_path):
     report = ci_report.build(ci_report.load(tmp_path))
     assert not report.ok
     assert [(m.test, m.kind, m.reason) for m in report.misses] == [
-        ("tests/t.py::test_missed", "test", "no dependency on a changed symbol"),
         ("tests/broken.py", "collection", None),
+        ("tests/t.py::test_missed", "test", "no dependency on a changed symbol"),
     ]
-    assert report.misses[0].commit == sha and report.misses[0].run_url.endswith("/4")
+    assert report.misses[1].commit == sha and report.misses[1].run_url.endswith("/4")
     cell = report.cells[0]
     assert (cell.new_failures, cell.flaky, cell.misses) == (3, 1, 2)
     assert report.earlier_misses == 0
@@ -220,13 +223,57 @@ def test_misses_stand_when_the_rerun_did_not_run(tmp_path):
 def test_a_kept_verdict_and_a_failed_check_are_not_ok(tmp_path):
     sha = "6" * 40
     sticky = _push(sha, misses=2, checked=False, note="an earlier run of this commit was checked")
+    sticky["sticky"] = True
     _run(tmp_path, 6, "push", sha, {"diffcone-a": {"context.json": sticky}})
     _run(tmp_path, 7, "push", sha, {"diffcone-b": {"context.json": _push(sha, 1, error=True)}})
     report = ci_report.build(ci_report.load(tmp_path))
     assert not report.ok
-    assert (report.earlier_misses, report.check_errors, report.misses) == (2, 1, [])
+    assert (report.earlier_misses, report.unlisted_misses, report.check_errors) == (2, 0, 1)
+    assert report.misses == []
     text = ci_report.to_markdown(report)
     assert "2 kept from an earlier run" in text and "1 check(s) failed" in text
+
+
+def test_misses_the_job_counted_but_no_verdict_names(tmp_path):
+    """A verdict missing from the artifact: the job's count still stands."""
+    sha = "8" * 40
+    _run(tmp_path, 8, "push", sha, {"diffcone-a": {"context.json": _push(sha, misses=1)}})
+    report = ci_report.build(ci_report.load(tmp_path))
+    assert not report.ok and report.unlisted_misses == 1
+    assert "1 counted by a job whose uploaded verdicts" in ci_report.to_markdown(report)
+
+
+def test_the_rerun_misses_are_the_confirmed_ones(tmp_path):
+    """As the record action counts: the re-run's misses, whatever their key."""
+    sha = "9" * 40
+    verdict = _verdict([("tests/t.py::a", "test", False)], ["tests/t.py::a"])
+    # The re-run failed to collect the file: its miss is the file.
+    rerun = _verdict([("tests/t.py", "collection", False)], ["tests/t.py"])
+    _run(
+        tmp_path,
+        9,
+        "push",
+        sha,
+        {
+            "diffcone-a": {
+                "context.json": _push(sha, misses=1),
+                "verdict.json": verdict,
+                "rerun-verdict.json": rerun,
+            }
+        },
+    )
+    report = ci_report.build(ci_report.load(tmp_path))
+    assert [(m.test, m.kind) for m in report.misses] == [("tests/t.py", "collection")]
+    assert report.unlisted_misses == 0
+
+
+def test_an_artifact_downloaded_without_its_directory(tmp_path):
+    """gh run download -n NAME extracts into the directory itself: refused,
+    not read as a run without results."""
+    _write(tmp_path / "1", "context.json", _push("1" * 40))
+    with pytest.raises(ci_report.ReportError, match="--pattern"):
+        ci_report.load(tmp_path)
+    assert main(["report", "--dir", str(tmp_path)]) == 2
 
 
 def test_refusals_and_failed_plans(tmp_path):
@@ -319,17 +366,24 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
         **os.environ,
         "GITHUB_EVENT_NAME": "push",
         "RESULTS": str(results),
-        "HEAD_SHA": "d" * 40,
+        "RECORDED": "success",
         "MISSES": "0",
         "FLAKY": "0",
         "CHECK_ERROR": "false",
     }
-    subprocess.run(
-        [sys.executable, "-"], input=_context_snippet("record"), text=True, env=env, check=True
-    )
+    describe = _context_snippet("record")
+    subprocess.run([sys.executable, "-"], input=describe, text=True, env=env, check=True)
+
+    # A recording that failed: the check step never ran.
+    failed = tmp_path / "runs" / "3" / "diffcone-a"
+    failed.mkdir(parents=True)
+    env = {**env, "RESULTS": str(failed), "RECORDED": "failure", "MISSES": "", "FLAKY": ""}
+    env["CHECK_ERROR"] = ""
+    subprocess.run([sys.executable, "-"], input=describe, text=True, env=env, check=True)
+
     report = ci_report.build(ci_report.load(tmp_path / "runs"))
     cell = report.cells[0]
     assert report.ok
     assert (cell.pull_requests, cell.refused, cell.without_context) == (1, 1, 0)
-    assert (cell.pushes, cell.checked) == (1, 0)
-    assert dict(cell.not_checked) == {"the commit has no parent": 1}
+    assert (cell.pushes, cell.checked) == (2, 0)
+    assert dict(cell.not_checked) == {"the commit has no parent": 1, "the recording failed": 1}
