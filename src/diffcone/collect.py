@@ -553,12 +553,22 @@ def _flag_calls(module, name: str) -> None:
     setattr(module, name, flagged)
 
 
+def _is_source(path) -> bool:
+    try:
+        return os.fsdecode(os.fspath(path)).endswith(".py")
+    except TypeError:
+        return False
+
+
 def _wrap_stat(original):
     @functools.wraps(original)
     def stat(path, *args, **kwargs):
         if recording:
             try:
-                _touch(path)
+                # A stat of a source file sees that it exists, not what it
+                # holds (``Path(__file__).resolve()`` at import stats the
+                # module's own file): recorded as a name seen, like a listing.
+                _touch(path, listing=_is_source(path))
             except Exception as exc:
                 _error("stat", exc)
         return original(path, *args, **kwargs)

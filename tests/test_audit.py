@@ -2631,3 +2631,48 @@ def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
         {"lib/other.py": "def g():\n    return 2\n"},
     )
     assert ("tests/test_p.py::test_p" in chosen) is flagged
+
+
+# Stat of a source file (strata trial): its existence, not its content.
+
+
+@needs_monitoring
+def test_a_module_that_stats_its_own_file_is_not_escalated_on_every_edit(repo):
+    """``HERE = Path(__file__).resolve()`` stats the module's own file while
+    it is imported. Recorded as a read, every edit of the module escalated
+    it and selected all its importers (5 747 of strata's tests for one edit
+    of ``server.py``)."""
+    module = (
+        "from pathlib import Path\n\nHERE = Path(__file__).resolve().parent\n\n\n"
+        "def f():\n    return {}\n\n\ndef g():\n    return 1\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/m.py": module.format(1),
+            "tests/__init__.py": "",
+            "tests/test_f.py": "from lib.m import f\n\n\ndef test_f():\n    assert f()\n",
+            "tests/test_g.py": "from lib.m import g\n\n\ndef test_g():\n    assert g()\n",
+        },
+        {"lib/m.py": module.format(2)},
+    )
+    assert chosen == {"tests/test_f.py::test_f"}
+
+
+@needs_monitoring
+def test_a_source_file_a_test_checks_for_is_seen_when_it_appears(repo):
+    """The stat is still a name seen: adding the file selects the test."""
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "tests/__init__.py": "",
+            "tests/test_x.py": (
+                "import os\n\n\ndef test_x():\n    assert not os.path.exists('lib/plugin.py')\n"
+            ),
+            "tests/test_y.py": "def test_y():\n    pass\n",
+        },
+        {"lib/plugin.py": "X = 1\n"},
+    )
+    assert chosen == {"tests/test_x.py::test_x"}

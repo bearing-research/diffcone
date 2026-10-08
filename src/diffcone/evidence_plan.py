@@ -1175,7 +1175,9 @@ class _Observers:
             return
         observed = [(path, self.evidence.import_paths)]
         if names:
-            observed += [(d, self.evidence.import_dirs) for d in _ancestors(path)[1:]]
+            # A name seen: a directory above it listed, or the path itself
+            # stat'ed (a source file's stat is recorded as a name seen).
+            observed += [(d, self.evidence.import_dirs) for d in _ancestors(path)]
         for seen, where_seen in observed:
             for module in sorted(where_seen.get(seen, ())):
                 where = seen or "the checkout root"
@@ -1413,8 +1415,10 @@ def _evidence_decision(
                 if path in touched:
                     how = f"opened or stat'ed {path}"
                 elif names:
-                    dirs = [d for d in _ancestors(path)[1:] if d in listed]
-                    if dirs:
+                    dirs = [d for d in _ancestors(path) if d in listed]
+                    if dirs and dirs[0] == path:
+                        how = f"stat'ed {path}"
+                    elif dirs:
                         how = f"listed {dirs[0] or 'the checkout root'}"
                 if how is not None:
                     reasons.append(
