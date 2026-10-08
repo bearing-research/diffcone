@@ -44,6 +44,9 @@ selection rules.
 
 ### Discovery
 
+- Test files and directories named after `--` replace `testpaths`, as in
+  pytest; a node id, or a path after an option that may take it as its
+  value, is reported instead of guessed.
 - `--ignore` and `--ignore-glob` (in `addopts` or after `--`) are honoured:
   ignored tests are no longer targets, which `run` reported as selected
   but not collected.

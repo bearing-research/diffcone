@@ -1529,3 +1529,45 @@ def test_ignored_paths_are_not_targets(repo):
     options = DiscoveryOptions(runner_args=("--ignore=tests/test_s3.py", "--ignore", "tests/slow"))
     plan = repo.plan(rev, rev, [], discover_runners=["pytest"], discovery_options=options)
     assert {t.runner_id for t in plan.targets} == {"tests/test_a.py::test_a"}
+
+
+ARG_PATH_FILES = {
+    "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = ['tests']\n",
+    "src/pkg/__init__.py": "",
+    "tests/__init__.py": "",
+    "tests/test_a.py": "def test_a():\n    pass\n",
+    "tests/test_b.py": "def test_b():\n    pass\n",
+    "tests/e2e/__init__.py": "",
+    "tests/e2e/check_flow.py": "def test_flow():\n    pass\n",
+}
+
+
+def test_paths_given_to_pytest_replace_testpaths(repo):
+    """strata's e2e and R jobs name their test files: pytest collects only
+    those (a file named there whatever ``python_files`` says), so the other
+    tests are no targets the run would report as selected but not
+    collected."""
+    rev = repo.commit(ARG_PATH_FILES)
+    args = ("-n", "auto", "tests/test_a.py", "tests/e2e/check_flow.py", "-v", "--tb=short")
+    plan = repo.plan(
+        rev, rev, [], discover_runners=["pytest"],
+        discovery_options=DiscoveryOptions(runner_args=args),
+    )  # fmt: skip
+    assert {t.runner_id for t in plan.targets} == {
+        "tests/test_a.py::test_a",
+        "tests/e2e/check_flow.py::test_flow",
+    }
+    assert not plan.incomplete_discovery
+
+
+def test_a_path_after_an_option_that_may_take_it_is_reported(repo):
+    """``--cov src``: ``src`` is the option's value, not a path to collect;
+    a token that cannot be told apart narrows nothing and is reported."""
+    rev = repo.commit(ARG_PATH_FILES)
+    for args in (("--cov", "src", "tests/"), ("tests/test_a.py::test_a",)):
+        plan = repo.plan(
+            rev, rev, [], discover_runners=["pytest"],
+            discovery_options=DiscoveryOptions(runner_args=args),
+        )  # fmt: skip
+        assert "tests/test_b.py::test_b" in {t.runner_id for t in plan.targets}
+        assert [n.kind for n in plan.incomplete_discovery] == ["unmodelled_runner_option"]
