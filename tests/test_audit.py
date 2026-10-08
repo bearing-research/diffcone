@@ -2619,7 +2619,14 @@ def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, prob
         # strata caches this probe; the recorder clears project caches before
         # each test, so every test that reached it was flagged.
         ("['uv', 'python', 'list', '--only-installed']", False),
+        # strata's own call: on Windows the path ends in ``uv.EXE`` and the
+        # process raises a second (``_winapi.CreateProcess``) event.
+        (
+            "[shutil.which('uv'), 'python', 'list', '--only-installed', '--output-format', 'json']",
+            False,
+        ),
         ("['uv', 'run', '--no-project', 'python', '-c', 'pass']", True),
+        ("[shutil.which('uv'), 'run', '--no-project', 'python', '-c', 'pass']", True),
     ],
 )
 def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
@@ -2630,7 +2637,7 @@ def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
             "lib/other.py": "def g():\n    return 1\n",
             "tests/__init__.py": "",
             "tests/test_p.py": (
-                "import subprocess\n\n\ndef test_p():\n"
+                "import shutil\nimport subprocess\n\n\ndef test_p():\n"
                 f"    subprocess.run({command}, capture_output=True)\n"
             ),
         },
