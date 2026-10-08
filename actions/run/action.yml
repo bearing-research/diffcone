@@ -79,8 +79,11 @@ runs:
         roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
         eval "args=($PYTEST_ARGS)"
         mkdir -p diffcone-results
+        py=$(command -v python3 || command -v python)
         store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
         evidence=()
+        recording=""
+        note=""
         if [ -n "$store" ]; then
           commit=$(basename "$store" | cut -d- -f1)
           # A shallow checkout may lack the recorded commit; a force-pushed
@@ -88,12 +91,38 @@ runs:
           if git cat-file -e "$commit^{commit}" 2>/dev/null \
             || git fetch --quiet --depth=1 origin "$commit"; then
             evidence=(--evidence "$store")
+            recording=$commit
           else
             echo "::warning::the evidence recorded at $commit cannot be fetched; planning statically"
+            note="the recorded commit $commit cannot be fetched"
           fi
         else
           echo "::warning::no diffcone evidence restored; planning statically"
+          note="no recording restored"
         fi
+        # What the report (diffcone report) reads about this run; finished
+        # below, whatever the run's outcome.
+        context() {
+          "$py" - "$@" <<'PY'
+        import json, os, sys
+        plan_exit, run_exit = (int(a) if a != "" else None for a in sys.argv[1:3])
+        json.dump(
+            {
+                "action": "run",
+                "event": os.environ.get("GITHUB_EVENT_NAME", ""),
+                "commit": os.environ["HEAD_SHA"],
+                "base": os.environ["BASE_SHA"],
+                "recording": os.environ.get("RECORDING") or None,
+                "recording_note": os.environ.get("NOTE") or None,
+                "allow_incomplete_discovery": os.environ.get("ALLOW_INCOMPLETE") == "true",
+                "plan_exit": plan_exit,
+                "run_exit": run_exit,
+            },
+            open("diffcone-results/context.json", "w"),
+            indent=1,
+        )
+        PY
+        }
         # A shallow checkout (actions/checkout's default depth 1) lacks the
         # base: deepen it until the base resolves.
         if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
@@ -112,14 +141,29 @@ runs:
           # older store format): plan from the code instead.
           echo "::warning::the restored recording could not be used; planning statically"
           evidence=()
+          recording=""
+          note="the restored recording could not be used"
           rc=0
           diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
             -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
         fi
-        [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ] || exit "$rc"
+        export HEAD_SHA BASE_SHA RECORDING NOTE
+        HEAD_SHA=$(git rev-parse HEAD)
+        BASE_SHA=$(git rev-parse --verify --quiet "$BASE^{commit}" || echo "$BASE")
+        RECORDING=$recording
+        NOTE=$note
+        if ! { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ]; }; then
+          context "$rc" ""
+          exit "$rc"
+        fi
         "$(command -v python3 || command -v python)" -c "import json; p = json.load(open('diffcone-results/plan.json')); \
           print('selected=%d' % len(p['selected_targets']))" | tr -d '\r' >> "$GITHUB_OUTPUT"
         allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)
+        # ``-o``: the plan that ran (the static one when the environment
+        # differs from the recording's), for the report.
+        status=0
         diffcone run --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" "${allow[@]}" --command "$COMMAND" -- \
-          "${args[@]}" --junitxml=diffcone-results/diffcone.xml
+          "${evidence[@]}" "${allow[@]}" --command "$COMMAND" -o diffcone-results/ran.json -- \
+          "${args[@]}" --junitxml=diffcone-results/diffcone.xml || status=$?
+        context "$rc" "$status"
+        exit "$status"

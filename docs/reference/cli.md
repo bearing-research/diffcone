@@ -201,6 +201,22 @@ diffcone check [-h] --plan PLAN --full JUNIT [--baseline JUNIT] [--run NAME=JUNI
 | `--format` `FORMAT` | `text` | One of `text`, `markdown`, `json`. |
 | `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
 
+## `diffcone report`
+
+Report on many CI runs of the diffcone actions: selection, checks, misses.
+
+Read the results the run and record actions uploaded, downloaded into one directory per workflow run (DIR/<run id>/run.json and DIR/<run id>/<artifact>/), and report per job: the share pull requests selected and why some were planned from the code, and for pushes whether each was checked, its new failures, flaky re-runs and confirmed misses. The report action downloads the directory. Runs nothing.
+
+```text
+diffcone report [-h] --dir DIR [--format {markdown,json}] [--output OUTPUT]
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--dir` `DIR` |  | **Required.** The directory of downloaded runs. |
+| `--format` `FORMAT` | `markdown` | One of `markdown`, `json`. |
+| `--output`, `-o` `OUTPUT` |  | Write the report to this file instead of stdout. |
+
 ## `diffcone prune`
 
 Shrink the cache to what planning at given commits reads.

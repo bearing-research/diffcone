@@ -650,45 +650,55 @@ stopped counting as a read). Static planning selects 100 % on every one.
 
 ## 11. A report over CI runs (`diffcone report`, `actions/report`)
 
-**Status.** Sketched (2026-10-08). strata runs every pytest job through
-diffcone (PRs selective, main full and checked); nobody reads dozens of job
-summaries a day, and a confirmed miss is only a red job.
+**Status.** Implemented (2026-10-08): `diffcone report`
+(`src/diffcone/ci_report.py`), `actions/report`, and `context.json` in the
+results `run` and `record` upload; tested on fixture artifact trees and by
+running the actions' context snippets, and the action's download and
+report steps run against strata's artifacts. Open: strata's nightly
+workflow, once a release carries the action. Drop this item then.
 
 **Mechanism.**
 
-* *Context.* `run` and `record` write `context.json` beside the plan in the
-  results they upload: the job's event, commit, base, the recording used
-  (its commit) or why none was (none restored, not fetchable, unusable),
-  `run`'s exit code, selected and target counts, and for `record` with
-  `check` whether the push was checked and, if not, why. The report reads
-  facts the actions wrote, never logs.
+* *Context.* `run` writes `context.json` beside its plan: event, commit,
+  base, the recording used (its commit) or why none was (none restored, not
+  fetchable, unusable), whether incomplete discovery was allowed, and the
+  plan's and run's exit codes; `-o ran.json` is the plan that ran (the
+  static one when the environment differs from the recording's). `record`
+  writes event, commit, whether the push was checked and, if not, why,
+  the recording compared with, misses, flaky re-runs, whether the check
+  itself failed, and whether the verdict was kept from an earlier run of
+  the commit. The report reads facts the actions wrote, never logs.
 * *`diffcone report --dir DIR [--format markdown|json] [-o FILE]`.* Reads
-  files only and runs nothing, like `check`. `DIR` holds one directory per
-  downloaded artifact (named as uploaded, `diffcone-<job>-<cell>`, with a
-  `run.json` the action adds: run id, URL, event, PR number, created time);
-  each holds `context.json`, `plan.json`, `verdict.json`,
-  `rerun-verdict.json` when present. Output: per cell, the pull-request
-  runs (how many, selected share median and max, how many planned from the
-  code and why, refusals) and the checked pushes (checked or skipped and
-  why, new failures, flaky, confirmed misses); then each confirmed miss with
-  the commit, the test, its kind, and what the plan said about it (not
-  selected, and its unselected reason). Exit 1 when a confirmed miss is in
-  the window, so a caller can act on it.
-* *`actions/report`.* GitHub plumbing around the command: list the runs of
-  a workflow created since a cutoff (`gh run list`), download their
-  `diffcone-*` artifacts (`gh run download`) with each run's metadata, run
-  `diffcone report`, then add a comment with the Markdown to the report
-  issue (found by label, opened if missing) and, with `miss-issues`, open
-  one issue per confirmed miss not already filed (found by a marker naming
-  the commit and the test). Inputs: `workflow`, `since` (default `24
-  hours`), `artifact-prefix`, `report-label`, `miss-label`, `miss-issues`.
-  Needs `actions: read` and `issues: write`.
+  files only and runs nothing, like `check`. `DIR/<run id>/run.json` (id,
+  URL, event, created time, head commit; optional: without it the run is
+  its directory's name and the event the context's) and
+  `DIR/<run id>/<artifact>/` with `context.json`, `ran.json` or
+  `plan.json`, `verdict.json`, `rerun-verdict.json`. Per artifact name
+  (one job, or one matrix cell): pull-request runs (count, selected share
+  median and max, plans made from the code and why, refusals over
+  incomplete discovery, failed plans) and pushes (checked or not and why,
+  new failures, flaky, misses, failed checks). Then each confirmed miss:
+  commit, test, kind, the plan's unselected reason. A miss is confirmed
+  when it is not a test (nothing to re-run), when there is no re-run
+  verdict (the re-run ran nothing), or when it failed again. A verdict kept
+  from an earlier run carries a count but no details and is reported as
+  such. Exit 1 on any miss or failed check, so a caller can act on it.
+* *`actions/report`.* `gh run list --created >=<cutoff> --status
+  completed` (a running workflow has not uploaded everything; the report's
+  own run is one), the runs' unexpired artifacts with the prefix, each
+  downloaded by name with a `run.json`; `diffcone report` to the job summary;
+  a comment on the open issue with `report-label` (created when missing);
+  one issue per confirmed (commit, test) with `miss-label`, listing the
+  cells, deduplicated by a marker comment in the body. Inputs: `hours`,
+  `workflow`, `artifact-prefix`, `report-label`, `miss-label` (empty skips
+  either), `fail-on-miss`, `github-token`. Needs `actions: read` and
+  `issues: write`.
 
 **Trade-off.** Artifacts expire (90 days by default) and the window is
 what was uploaded; a run that uploaded nothing (cancelled before the
 upload step) is missing from the report, which counts runs per cell so the
-gap shows.
+gap shows. Artifacts from actions older than the context show as such
+rather than being guessed at.
 
-**Done when** the command is tested on fixture artifact trees (PR runs,
-checked and skipped pushes, a confirmed miss, a flaky one), the action runs
-on strata nightly, and docs/ci.md describes it for any project.
+**Done when** strata's nightly report runs on a release carrying the
+action.

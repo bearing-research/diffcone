@@ -25,6 +25,7 @@ uv run diffcone run --base main --head HEAD --discover pytest --command "uv run 
 uv run diffcone evidence                        # list evidence stores
 uv run diffcone prune --keep HEAD               # shrink the cache to what planning at HEAD reads
 uv run diffcone check --plan plan.json --full full.xml [--baseline base.xml] [--run testmon=t.xml]  # plan vs a full run's JUnit
+uv run diffcone report --dir runs [--format markdown|json]  # over downloaded CI artifacts (actions/report)
 uv run python scripts/census.py run --work /tmp/census -o census.json  # plan-only census
 uv run python scripts/census.py report census.json
 uv run python scripts/collection_check.py --repo DIR --command CMD  # discovery vs real collection
@@ -53,7 +54,7 @@ Module names come from the longest matching source root: with roots `src` and `.
 - `src/diffcone/declarations.py` reads `diffcone.toml` (dependencies the project states that the analysis cannot see) from both revisions; declarations only add edges, and anything wrong with the file is an analysis error rather than a declaration that silently does nothing.
 - `src/diffcone/report.py` renders JSON (`schema_version` 3) and text.
 - `src/diffcone/execution.py` is the only module that executes project code, and only from `run`/`validate`/`collect`; keep it that way.
-- `actions/` holds the GitHub composite actions (record, run, check) for the nightly-recording CI setup in `docs/ci.md`.
+- `actions/` holds the GitHub composite actions (record, run, check, report) for the CI setups in `docs/ci.md`. `run` and `record` write `context.json` into the results they upload; `src/diffcone/ci_report.py` (`diffcone report`, roadmap item 11) reads those files only, and `tests/test_ci_report.py` runs the actions' own context snippets so the two cannot drift.
 - `src/diffcone/check.py` compares a plan (JSON) with JUnit XML from a full run and from selective runs (roadmap item 9); it reads files only and runs nothing.
 - `src/diffcone/selection.py` is the pytest plugin `run` loads as `-p diffcone_select` to keep only the selected tests (pytest collects from its own starting points, since naming tests on the command line loads their conftests early). Like `collect.py`, it imports nothing of diffcone.
 - Execution evidence (opt-in, roadmap item 5, `internal/evidence_design.md`):

@@ -8,6 +8,19 @@ selection rules.
 
 ## [Unreleased]
 
+### CI
+
+- `diffcone report --dir DIR` reports on many CI runs of the actions: per
+  job, the share pull requests selected and why some were planned from the
+  code, and for pushes whether each was checked, its new failures, flaky
+  re-runs and misses. It exits 1 on a miss or a check that failed.
+- A new `report` action runs it on a schedule over the recent runs'
+  artifacts, comments the report on an issue, and opens an issue for each
+  miss.
+- `run` and `record` write `context.json` (what they did, and why a plan
+  was made from the code or a push was not checked) into the results they
+  upload; `run` also writes `ran.json`, the plan that ran.
+
 ### Execution evidence
 
 - On Windows, `uv python list` run through the path `shutil.which` gives

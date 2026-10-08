@@ -1,0 +1,221 @@
+name: diffcone report
+description: >-
+  Report on the recent CI runs of diffcone run and diffcone record: download
+  the results they uploaded (artifacts named with a common prefix), write
+  the report to the job summary, comment it on a report issue, and open an
+  issue for each confirmed miss. Run it on a schedule. Needs the gh CLI
+  (GitHub-hosted runners have it) and the permissions actions: read and
+  issues: write.
+inputs:
+  hours:
+    description: Report on the workflow runs created in this many hours before now.
+    default: "24"
+  workflow:
+    description: Only the runs of this workflow (its file name, e.g. ci.yml); default all.
+    default: ""
+  artifact-prefix:
+    description: The name prefix of the artifacts holding the actions' results.
+    default: "diffcone-"
+  report-label:
+    description: >-
+      Comment the report on the open issue with this label (created when
+      there is none); empty: the job summary only.
+    default: "diffcone-report"
+  miss-label:
+    description: >-
+      Open an issue with this label for each confirmed miss (a test and a
+      commit), once; empty: no miss issues.
+    default: "diffcone-miss"
+  fail-on-miss:
+    description: Fail the job when the report has a miss or a check that failed.
+    default: "false"
+  github-token:
+    description: The token gh uses.
+    default: ${{ github.token }}
+  diffcone-ref:
+    description: >-
+      Install diffcone from this git ref instead of from the action's own copy
+      (by default the version of diffcone is the version of the action).
+    default: ""
+outputs:
+  ok:
+    description: '"true" when the report has no miss and no failed check.'
+    value: ${{ steps.report.outputs.ok }}
+  report:
+    description: The directory holding report.md and report.json.
+    value: ${{ steps.report.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - name: Install diffcone
+      shell: bash
+      env:
+        REF: ${{ inputs.diffcone-ref }}
+      run: |
+        py=$(command -v python3 || command -v python)
+        "$py" -m venv "$RUNNER_TEMP/diffcone"
+        bin="$RUNNER_TEMP/diffcone/bin"
+        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
+        if [ -n "$REF" ]; then
+          source="git+https://github.com/bearing-research/diffcone@$REF"
+        else
+          source="$GITHUB_ACTION_PATH/../.."
+        fi
+        "$bin/python" -m pip install --quiet "$source"
+        echo "$bin" >> "$GITHUB_PATH"
+    - name: Download the runs' results
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        HOURS: ${{ inputs.hours }}
+        WORKFLOW: ${{ inputs.workflow }}
+        PREFIX: ${{ inputs.artifact-prefix }}
+        RUNS: ${{ runner.temp }}/diffcone-runs
+      run: |
+        py=$(command -v python3 || command -v python)
+        mkdir -p "$RUNS"
+        cutoff=$("$py" -c "import datetime as d, sys; print((d.datetime.now(d.timezone.utc) - d.timedelta(hours=float(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$HOURS")
+        only=(); [ -n "$WORKFLOW" ] && only=(--workflow "$WORKFLOW")
+        # Completed runs only: one still running has not uploaded everything
+        # (and the run of this report is one of them).
+        gh run list --repo "$GITHUB_REPOSITORY" "${only[@]}" --created ">=$cutoff" \
+          --status completed --limit 1000 \
+          --json databaseId,url,event,createdAt,headSha,headBranch,workflowName,conclusion \
+          > "$RUNS/runs.json"
+        "$py" - "$RUNS/runs.json" <<'PY' | tr -d '\r' > "$RUNS/ids"
+        import json, sys
+        for run in json.load(open(sys.argv[1])):
+            print(run["databaseId"])
+        PY
+        count=0
+        while read -r id; do
+          names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.expired | not) | select(.name | startswith(\"$PREFIX\")) | .name" \
+            | tr -d '\r')
+          [ -n "$names" ] || continue
+          count=$((count + 1))
+          mkdir -p "$RUNS/runs/$id"
+          "$py" - "$RUNS/runs.json" "$id" "$RUNS/runs/$id/run.json" <<'PY'
+        import json, sys
+        run = next(r for r in json.load(open(sys.argv[1])) if str(r["databaseId"]) == sys.argv[2])
+        json.dump(
+            {
+                "id": run["databaseId"],
+                "url": run["url"],
+                "event": run["event"],
+                "created_at": run["createdAt"],
+                "head_sha": run["headSha"],
+                "head_branch": run["headBranch"],
+                "workflow": run["workflowName"],
+                "conclusion": run["conclusion"],
+            },
+            open(sys.argv[3], "w"),
+        )
+        PY
+          while IFS= read -r name; do
+            gh run download "$id" --repo "$GITHUB_REPOSITORY" -n "$name" -D "$RUNS/runs/$id/$name" \
+              || echo "::warning::could not download $name of run $id"
+          done <<< "$names"
+        done < "$RUNS/ids"
+        echo "$count run(s) since $cutoff uploaded results"
+    - name: Report
+      id: report
+      shell: bash
+      env:
+        RUNS: ${{ runner.temp }}/diffcone-runs
+        OUT: ${{ runner.temp }}/diffcone-report
+      run: |
+        mkdir -p "$OUT" "$RUNS/runs"
+        echo "report=$OUT" >> "$GITHUB_OUTPUT"
+        status=0
+        diffcone report --dir "$RUNS/runs" --format json -o "$OUT/report.json" || status=$?
+        [ "$status" -ge 2 ] && exit "$status"
+        diffcone report --dir "$RUNS/runs" -o "$OUT/report.md" || true
+        cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+        if [ "$status" -eq 0 ]; then echo "ok=true"; else echo "ok=false"; fi >> "$GITHUB_OUTPUT"
+    - name: Comment the report and open miss issues
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OUT: ${{ runner.temp }}/diffcone-report
+        REPORT_LABEL: ${{ inputs.report-label }}
+        MISS_LABEL: ${{ inputs.miss-label }}
+      run: |
+        py=$(command -v python3 || command -v python)
+        "$py" - <<'PY'
+        import json, os, subprocess
+
+        repo = os.environ["GITHUB_REPOSITORY"]
+        out = os.environ["OUT"]
+
+
+        def gh(*args, capture=True):
+            result = subprocess.run(
+                ["gh", *args, "--repo", repo], check=True, capture_output=capture, text=True
+            )
+            return result.stdout.strip() if capture else ""
+
+
+        def label(name, description):
+            gh("label", "create", name, "--force", "--description", description)
+
+
+        def issue(title, body, name):
+            url = gh("issue", "create", "--title", title, "--label", name, "--body", body)
+            return url.rsplit("/", 1)[-1]
+
+
+        if os.environ["REPORT_LABEL"]:
+            name = os.environ["REPORT_LABEL"]
+            label(name, "diffcone's reports over CI runs")
+            numbers = gh(
+                "issue", "list", "--label", name, "--state", "open", "--json", "number",
+                "--jq", ".[].number",
+            ).split()
+            number = min(numbers, key=int) if numbers else issue(
+                "diffcone report",
+                "diffcone's report action comments its reports over CI runs here.",
+                name,
+            )
+            gh("issue", "comment", number, "--body-file", os.path.join(out, "report.md"))
+            print(f"commented the report on #{number}")
+
+        report = json.load(open(os.path.join(out, "report.json")))
+        if os.environ["MISS_LABEL"] and report["misses"]:
+            name = os.environ["MISS_LABEL"]
+            label(name, "a failing test diffcone did not select")
+            existing = gh(
+                "issue", "list", "--label", name, "--state", "all", "--limit", "1000",
+                "--json", "body", "--jq", ".[].body",
+            )
+            grouped = {}
+            for miss in report["misses"]:
+                grouped.setdefault((miss["commit"], miss["test"]), []).append(miss)
+            for (commit, test), found in grouped.items():
+                marker = f"<!-- diffcone-miss {commit} {test} -->"
+                if marker in existing:
+                    continue
+                lines = [
+                    f"`{test}` failed in the full run of {commit}, the plan of that commit's "
+                    "change (its first parent to it) did not select it, and it failed again "
+                    "when re-run (or could not be re-run).",
+                    "",
+                ]
+                for miss in found:
+                    reason = f"; the plan: {miss['plan_reason']}" if miss["plan_reason"] else ""
+                    lines.append(f"- {miss['cell']} ({miss['kind']}): {miss['run']}{reason}")
+                lines += [
+                    "",
+                    "The run's artifact holds the plan (plan.json) and the check's verdict.",
+                    "",
+                    marker,
+                ]
+                number = issue(f"diffcone missed {test} at {commit[:12]}", "\n".join(lines), name)
+                print(f"opened #{number} for {test} at {commit[:12]}")
+        PY
+    - name: Fail on misses
+      if: inputs.fail-on-miss == 'true' && steps.report.outputs.ok == 'false'
+      shell: bash
+      run: |
+        echo "::error::the report has a miss or a check that failed; see the job summary"
+        exit 1

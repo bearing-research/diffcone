@@ -22,6 +22,8 @@ the runner's exit code (0 when nothing was selected or with --dry-run; pytest's
 0 when every outcome change was selected, 1 when some were missed, 2 on
 errors. ``check`` exits 0 when every new failure of the full run was
 selected, 1 when the plan missed one, 2 when an input cannot be read.
+``report`` exits 0 when the CI runs it reads have no miss and no failed check,
+1 otherwise, 2 when the directory cannot be read.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ import traceback
 from pathlib import Path
 
 from diffcone import check as checking
+from diffcone import ci_report
 from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.evidence import (
@@ -377,6 +380,22 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--format", choices=("text", "markdown", "json"), default="text")
     k.add_argument("--output", "-o", help="write the result to this file instead of stdout")
 
+    rp = sub.add_parser(
+        "report",
+        help="report on many CI runs of the diffcone actions: selection, checks, misses",
+        description=(
+            "Read the results the run and record actions uploaded, downloaded into one "
+            "directory per workflow run (DIR/<run id>/run.json and DIR/<run id>/<artifact>/), "
+            "and report per job: the share pull requests selected and why some were planned "
+            "from the code, and for pushes whether each was checked, its new failures, flaky "
+            "re-runs and confirmed misses. The report action downloads the directory. Runs "
+            "nothing."
+        ),
+    )
+    rp.add_argument("--dir", required=True, help="the directory of downloaded runs")
+    rp.add_argument("--format", choices=("markdown", "json"), default="markdown")
+    rp.add_argument("--output", "-o", help="write the report to this file instead of stdout")
+
     pr = sub.add_parser(
         "prune",
         help="shrink the cache to what planning at given commits reads",
@@ -545,6 +564,20 @@ def _collect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _report(args: argparse.Namespace) -> int:
+    try:
+        report = ci_report.build(ci_report.load(args.dir))
+    except ci_report.ReportError as exc:
+        print(f"diffcone: error: {exc}", file=sys.stderr)
+        return 2
+    if args.format == "json":
+        text = json.dumps(ci_report.to_dict(report), indent=2) + "\n"
+    else:
+        text = ci_report.to_markdown(report)
+    code = _write(text, args.output)
+    return code if code else (0 if report.ok else 1)
+
+
 def _run_exit_code(returncode: int, missing: bool) -> int:
     """``run``'s exit code from the runner's. Selected targets that did not run
     make it 3 (the run may have skipped tests) unless the runner failed on its
@@ -595,6 +628,8 @@ def main(argv: list[str] | None = None) -> int:
         return _collect(args)
     if args.command == "check":
         return _check(args)
+    if args.command == "report":
+        return _report(args)
     if args.command == "prune":
         return _prune(args)
     options = DiscoveryOptions(

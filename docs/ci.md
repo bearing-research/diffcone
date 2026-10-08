@@ -1,6 +1,6 @@
 # CI with GitHub Actions
 
-diffcone provides three composite actions for a common setup: record the
+diffcone provides composite actions for a common setup: record the
 full test suite once a night on your default branch, then run only the
 affected tests on each pull request, using that recording.
 
@@ -9,9 +9,10 @@ affected tests on each pull request, using that recording.
 | `bearing-research/diffcone/actions/record` | A nightly job on the default branch | Records the full suite with [execution evidence](guides/evidence.md) and saves it with `actions/cache`. |
 | `bearing-research/diffcone/actions/run` | Each pull request | Restores the latest recording, plans the pull request, and runs the selected tests. |
 | `bearing-research/diffcone/actions/check` | Optional, after a full run | Checks that every test that failed in a full run was selected, and writes a summary. |
+| `bearing-research/diffcone/actions/report` | Optional, on a schedule | Reports on the recent runs of `run` and `record`, and opens an issue for each miss. |
 
 Each action installs the diffcone version that matches its own tag, so
-reference all three by the same release tag (or commit), never by a
+reference them all by the same release tag (or commit), never by a
 branch.
 
 ## Record nightly
@@ -139,6 +140,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
       - if: github.event_name == 'push'
+        id: record
         uses: bearing-research/diffcone/actions/record@v0.2.0
         with:
           key-prefix: diffcone-ubuntu
@@ -152,6 +154,11 @@ jobs:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
           pytest-args: -n auto
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: diffcone-ubuntu
+          path: ${{ steps.record.outputs.results || 'diffcone-results' }}
 ```
 
 On a push, `record` with `check: true`:
@@ -177,6 +184,58 @@ be collected stops the recording itself, which fails the job.
 
 As with the nightly setup, only runs on the default branch can save the
 recording; pull requests only restore it.
+
+## Report on recent runs
+
+Once every job runs through diffcone, a scheduled `report` job reads what
+the jobs uploaded and sums it up: for pull requests, the share of tests
+each job selected and how often it planned without a recording (and why);
+for pushes to the default branch, whether each was checked, its new
+failures, flaky tests and misses. It adds the report as a comment on an
+issue labelled `diffcone-report`, and opens one issue, labelled
+`diffcone-miss`, for each test diffcone missed.
+
+```yaml title=".github/workflows/diffcone-report.yml"
+name: diffcone report
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: bearing-research/diffcone/actions/report@v0.3.0
+        with:
+          workflow: tests.yml
+```
+
+The report reads the artifacts whose names start with `diffcone-`, so
+upload the results of `run` and `record` (as in the workflows above) under
+a name that starts with `diffcone-` and differs per job, and per cell of a
+matrix: `diffcone-${{ matrix.os }}-py${{ matrix.python-version }}`, for
+example. The report has one row per name.
+
+`report` takes `hours` (the window: runs created in this many hours before
+now; default `24`), `workflow` (only that workflow's runs; default all),
+`artifact-prefix` (default `diffcone-`), `report-label` and `miss-label`
+(set either to an empty string to skip that issue), and `fail-on-miss`
+(default `false`). Runs still in progress are left for the next report,
+and so are artifacts that have expired.
+
+To read the same report locally, download the artifacts of some runs into
+one directory per run and run `diffcone report`:
+
+```bash
+gh run download 123456 --pattern 'diffcone-*' --dir runs/123456
+diffcone report --dir runs
+```
 
 ## How the cache is shared
 

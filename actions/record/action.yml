@@ -102,12 +102,14 @@ runs:
           [ "$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['commit'])" .diffcone/check.json | tr -d '\r')" = "$head" ]; then
           cp .diffcone/check.json "$RESULTS/sticky.json"
           echo "::notice::this commit was checked by an earlier run; keeping its verdict"
+          echo "an earlier run of this commit was checked" > "$RESULTS/check-note"
           exit 0
         fi
         # The previous full run's results: failures it had are not misses.
         # Without them every failure already there would look like a miss.
         if [ ! -f .diffcone/baseline.xml ]; then
           echo "::notice::no previous full run to compare with; not checking this push"
+          echo "no previous full run to compare with" > "$RESULTS/check-note"
           exit 0
         fi
         cp .diffcone/baseline.xml "$RESULTS/previous.xml"
@@ -116,6 +118,7 @@ runs:
           || git fetch --quiet --deepen=1 origin "$head" 2>/dev/null || true
         if ! git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null; then
           echo "::notice::the commit has no parent to compare with; not checking this push"
+          echo "the commit has no parent" > "$RESULTS/check-note"
           exit 0
         fi
         # The verdict needs the recording the baseline came from: planned
@@ -126,12 +129,15 @@ runs:
         if [ -z "$store" ] || ! { git cat-file -e "$commit^{commit}" 2>/dev/null \
           || git fetch --quiet --depth=1 origin "$commit" 2>/dev/null; }; then
           echo "::notice::the previous recording cannot be used here; not checking this push"
+          echo "the previous recording cannot be fetched" > "$RESULTS/check-note"
           exit 0
         fi
+        echo "$commit" > "$RESULTS/recording"
         rc=0
         diffcone plan --base HEAD^1 --head HEAD --discover pytest "${roots[@]}" \
           --evidence "$store" -o "$RESULTS/plan.json" -- "${args[@]}" || rc=$?
         if [ "$rc" -eq 2 ]; then
+          echo "the previous recording could not be used" > "$RESULTS/check-note"
           # A recording diffcone cannot read (other source roots, an older
           # store format) must not stop the recording itself.
           echo "::warning::the previous recording could not be used ($store); not checking this push"
@@ -181,9 +187,37 @@ runs:
       run: |
         py=$(command -v python3 || command -v python)
         head=$(git rev-parse HEAD)
+        flaky=0
+        check_error=false
         record() {  # the verdict, kept with the recording for a re-run of this job
           "$py" -c "import json,sys; json.dump({'commit': sys.argv[1], 'misses': int(sys.argv[2])}, open('.diffcone/check.json', 'w'))" "$head" "$1"
           echo "misses=$1" >> "$GITHUB_OUTPUT"
+          # What the report (diffcone report) reads about this push.
+          MISSES=$1 FLAKY=$flaky CHECK_ERROR=$check_error HEAD_SHA=$head "$py" - <<'PY'
+        import json, os
+        results = os.environ["RESULTS"]
+        def read(name):
+            try:
+                return open(os.path.join(results, name)).read().strip() or None
+            except OSError:
+                return None
+        json.dump(
+            {
+                "action": "record",
+                "event": os.environ.get("GITHUB_EVENT_NAME", ""),
+                "commit": os.environ["HEAD_SHA"],
+                "checked": os.path.exists(os.path.join(results, "plan.json")),
+                "check_note": read("check-note"),
+                "recording": read("recording"),
+                "misses": int(os.environ["MISSES"]),
+                "flaky": int(os.environ["FLAKY"]),
+                "check_error": os.environ["CHECK_ERROR"] == "true",
+                "sticky": os.path.exists(os.path.join(results, "sticky.json")),
+            },
+            open(os.path.join(results, "context.json"), "w"),
+            indent=1,
+        )
+        PY
         }
         if [ -f "$RESULTS/sticky.json" ]; then
           misses=$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['misses'])" "$RESULTS/sticky.json" | tr -d '\r')
@@ -203,6 +237,7 @@ runs:
         cat "$RESULTS/verdict.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
         if [ "$status" -ge 2 ]; then
           echo "::error::diffcone check failed (exit $status); see the log"
+          check_error=true
           record 1
           exit 0
         fi
@@ -252,8 +287,9 @@ runs:
                 || again=$("$py" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json" | tr -d '\r')
             fi
             confirmed=$((confirmed + again))
-            [ "$again" -lt "${#ids[@]}" ] && \
-              echo "::warning::$(( ${#ids[@]} - again )) unselected failure(s) passed when re-run (flaky); not counted as misses"
+            flaky=$(( ${#ids[@]} - again ))
+            [ "$flaky" -gt 0 ] && \
+              echo "::warning::$flaky unselected failure(s) passed when re-run (flaky); not counted as misses"
           fi
           misses=$confirmed
           [ "$misses" -gt 0 ] && echo "::error::diffcone missed $misses failing test(s) that fail again when re-run; see the job summary"
