@@ -67,6 +67,10 @@ class Evidence:
     symbols: list[str]
     paths: list[str]
     tests: dict[str, TestRecord]
+    # The environment the recording's test run started in, when the run
+    # changed it (a test installed a distribution); the recording is keyed
+    # by the environment at the end.
+    environment_at_start: dict | None = None
     # Symbols executed outside every test window (imports, collection, hooks).
     import_phase: frozenset[str] = frozenset()
     # Symbol -> the modules whose import ran it (``path:<file>`` for a module
@@ -165,6 +169,8 @@ class _Raw:
     environment: dict
     environment_hash: str
     collected: set[str] | None = None
+    # The environment a process started in, when its run changed it.
+    environment_at_start: dict | None = None
     # A shared fixture (by key) -> what its setup ran in any process, and
     # the shared fixtures each test used.
     fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
@@ -205,6 +211,9 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             )
         environments.append(data["environment"])
         raw.environment_hash = data["environment_hash"]
+        start = data.get("environment_at_start")
+        if start is not None and start != data["environment"] and raw.environment_at_start is None:
+            raw.environment_at_start = start
         if data.get("collected") is not None:
             raw.collected = (raw.collected or set()) | set(data["collected"])
         symbol_of: list[str | None] = []
@@ -367,6 +376,7 @@ def fold(
         source_roots=list(source_roots),
         environment=raws[0].environment,
         environment_hash=raws[0].environment_hash,
+        environment_at_start=raws[0].environment_at_start,
         command=command,
         created=time.time(),
         symbols=symbol_table,
@@ -451,6 +461,7 @@ def advance(
         source_roots=list(previous.source_roots),
         environment=previous.environment,
         environment_hash=previous.environment_hash,
+        environment_at_start=previous.environment_at_start,
         command=previous.command,
         created=time.time(),
         symbols=symbol_table,
@@ -523,6 +534,7 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "source_roots": evidence.source_roots,
                 "environment": evidence.environment,
                 "environment_hash": evidence.environment_hash,
+                "environment_at_start": evidence.environment_at_start,
                 "command": evidence.command,
                 "created": evidence.created,
                 "import_phase": sorted(evidence.import_phase),
@@ -597,6 +609,7 @@ def load_store(path: Path) -> Evidence:
             source_roots=meta["source_roots"],
             environment=meta["environment"],
             environment_hash=meta["environment_hash"],
+            environment_at_start=meta.get("environment_at_start"),
             command=meta["command"],
             created=meta["created"],
             symbols=symbols,
@@ -736,3 +749,20 @@ def list_stores(repo: Path) -> list[StoreInfo]:
             continue  # a malformed store is skipped, not fatal to every plan
         found.append(info)
     return sorted(found, key=lambda s: -s.created)
+
+
+def environment_differences(recorded: dict, met: dict) -> list[str]:
+    """Human-readable differences between two recorder environments."""
+    out = []
+    for key in ("implementation", "python", "platform", "machine"):
+        if recorded.get(key) != met.get(key):
+            out.append(f"{key}: {recorded.get(key)!r} recorded, {met.get(key)!r} now")
+    before, after = set(recorded.get("distributions", ())), set(met.get("distributions", ()))
+    for dist in sorted(before - after)[:5]:
+        out.append(f"distribution {dist} recorded, not installed now")
+    for dist in sorted(after - before)[:5]:
+        out.append(f"distribution {dist} installed now, not recorded")
+    for name, value in sorted(recorded.get("variables", {}).items()):
+        if met.get("variables", {}).get(name) != value:
+            out.append(f"{name}: {value!r} recorded, {met['variables'].get(name)!r} now")
+    return out

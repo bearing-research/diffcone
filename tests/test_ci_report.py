@@ -276,6 +276,47 @@ def test_an_artifact_downloaded_without_its_directory(tmp_path):
     assert main(["report", "--dir", str(tmp_path)]) == 2
 
 
+def test_the_report_names_what_differed(tmp_path):
+    """Roadmap item 12: run -o says why the recording was not used."""
+    changed = _plan(100, 100, evidence=False)
+    changed["evidence_not_used"] = {
+        "reason": "environment",
+        "differences": [
+            "distribution orjson==3.13.0 recorded, not installed now",
+            "distribution orjson==3.12.0 installed now, not recorded",
+        ],
+        "recording_changed_its_environment": True,
+    }
+    other = _plan(100, 100, evidence=False)
+    other["evidence_not_used"] = {
+        "reason": "environment",
+        "differences": ["python: '3.12.1' recorded, '3.12.2' now", "a", "b"],
+        "recording_changed_its_environment": False,
+    }
+    _run(
+        tmp_path,
+        1,
+        "pull_request",
+        "1" * 40,
+        {"diffcone-a": {"context.json": _pr(), "ran.json": changed}},
+    )
+    _run(
+        tmp_path,
+        2,
+        "pull_request",
+        "2" * 40,
+        {"diffcone-a": {"context.json": _pr(), "ran.json": other}},
+    )
+    cell = ci_report.build(ci_report.load(tmp_path)).cells[0]
+    assert dict(cell.from_code) == {
+        "the recording's own test run changed its environment: distribution "
+        "orjson==3.13.0 recorded, not installed now; distribution orjson==3.12.0 "
+        "installed now, not recorded": 1,
+        "the environment differed from the recording's: python: '3.12.1' recorded, "
+        "'3.12.2' now; a; 1 more": 1,
+    }
+
+
 def test_refusals_and_failed_plans(tmp_path):
     _run(
         tmp_path,

@@ -7,6 +7,7 @@ touched.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import replace
 
@@ -332,6 +333,61 @@ def test_a_project_variable_is_part_of_the_environment(repo, monkeypatch):
     checked = run()
     assert checked.mismatch is not None
     assert checked.mismatch["variables"]["DIFFCONE_TEST_FLAG"] == "off"
+
+
+INSTALLS = (
+    "import os\n\n\ndef test_installs():\n"
+    "    info = os.path.join(os.environ['DIFFCONE_TEST_SITE'], 'fakepkg-1.0.dist-info')\n"
+    "    os.makedirs(info, exist_ok=True)\n"
+    "    with open(os.path.join(info, 'METADATA'), 'w') as f:\n"
+    "        f.write('Metadata-Version: 2.1\\nName: fakepkg\\nVersion: 1.0\\n')\n"
+)
+
+
+def test_a_test_run_that_changes_its_own_environment_is_named(repo, tmp_path, monkeypatch, capfd):
+    """Roadmap item 12: strata's tests upgraded orjson while recording, so
+    the recording never matched a fresh environment, and nothing said why."""
+    import shutil
+    from pathlib import Path
+
+    from diffcone.evidence import load_store
+
+    site = tmp_path / "site"
+    site.mkdir()
+    monkeypatch.setenv("DIFFCONE_TEST_SITE", str(site))
+    monkeypatch.setenv("PYTHONPATH", str(site))
+    base = repo.commit({**FILES, "tests/test_installs.py": INSTALLS})
+    command = f"{sys.executable} -m pytest"
+    assert main(["collect", "--repo", str(repo.path), "--command", command, "--no-cache"]) == 0
+    out, err = capfd.readouterr()
+    assert "changed its own environment" in err
+    assert "installed during the run: fakepkg==1.0" in err
+    store = load_store(Path(out.strip()))
+    assert store.environment_at_start is not None
+    assert "fakepkg==1.0" in store.environment["distributions"]
+    assert "fakepkg==1.0" not in store.environment_at_start["distributions"]
+
+    # A fresh environment: the one the recording started in.
+    shutil.rmtree(site / "fakepkg-1.0.dist-info")
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    ran = tmp_path / "ran.json"
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", head, "--no-cache"]
+    args += ["--discover", "pytest", "--command", command, "--evidence", "auto", "-o", str(ran)]
+    main(args + ["--", "-q"])
+    err = capfd.readouterr().err
+    assert "the recording's own test run" in err
+    unused = json.loads(ran.read_text())["evidence_not_used"]
+    assert unused["reason"] == "environment"
+    assert unused["recording_changed_its_environment"] is True
+    assert any("fakepkg==1.0" in line for line in unused["differences"])
+
+
+def test_a_recording_that_keeps_its_environment_says_nothing(repo, capfd):
+    repo.commit(FILES)
+    command = f"{sys.executable} -m pytest"
+    assert main(["collect", "--repo", str(repo.path), "--command", command, "--no-cache"]) == 0
+    assert "changed its own environment" not in capfd.readouterr().err
+    assert repo.collect().environment_at_start is None
 
 
 def test_evidence_at_a_commit_the_checkout_lacks_says_what_to_fetch(repo):

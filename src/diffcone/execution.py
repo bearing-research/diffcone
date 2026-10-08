@@ -37,7 +37,14 @@ from pathlib import Path
 
 from diffcone.cache import IndexCache
 from diffcone.discovery.asv_static import strip_json_comments
-from diffcone.evidence import EVIDENCE_DIR, Evidence, EvidenceError, advance, fold, write_store
+from diffcone.evidence import (
+    EVIDENCE_DIR,
+    Evidence,
+    EvidenceError,
+    advance,
+    fold,
+    write_store,
+)
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
@@ -1692,20 +1699,3 @@ def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: 
         run.advanced = write_store(advanced, repo / EVIDENCE_DIR)
     except EvidenceError as exc:
         run.not_advanced = str(exc)
-
-
-def environment_differences(recorded: dict, met: dict) -> list[str]:
-    """Human-readable differences between two recorder environments."""
-    out = []
-    for key in ("implementation", "python", "platform", "machine"):
-        if recorded.get(key) != met.get(key):
-            out.append(f"{key}: {recorded.get(key)!r} recorded, {met.get(key)!r} now")
-    before, after = set(recorded.get("distributions", ())), set(met.get("distributions", ()))
-    for dist in sorted(before - after)[:5]:
-        out.append(f"distribution {dist} recorded, not installed now")
-    for dist in sorted(after - before)[:5]:
-        out.append(f"distribution {dist} installed now, not recorded")
-    for name, value in sorted(recorded.get("variables", {}).items()):
-        if met.get("variables", {}).get(name) != value:
-            out.append(f"{name}: {value!r} recorded, {met['variables'].get(name)!r} now")
-    return out

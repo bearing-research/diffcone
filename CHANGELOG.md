@@ -8,6 +8,17 @@ selection rules.
 
 ## [Unreleased]
 
+### Execution evidence
+
+- A test run that changes its own environment (a test that installs or
+  upgrades a package with the test interpreter) is named: `collect` warns
+  with the packages, the recording keeps the environment it started in,
+  and `run` says when it meets that environment. The recording is still
+  keyed by the environment at the end, so such a run plans from the code.
+- `run -o` adds `evidence_not_used` (why the recording was not used, and
+  what differed) to the plan it writes, and `diffcone report` shows those
+  differences per job.
+
 ## [0.3.0] - 2026-10-08
 
 ### CI

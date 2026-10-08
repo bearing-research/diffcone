@@ -714,3 +714,47 @@ rather than being guessed at.
 
 **Done when** strata's nightly report runs on a release carrying the
 action.
+
+## 12. A test run that changes its own environment (strata trial)
+
+**Status.** Implemented (2026-10-08), unreleased; drop this item once a
+release carries it. Two of strata's test files ran
+`uv run` in a notebook whose interpreter was the test interpreter, and
+`uv` synced the notebook's `orjson>=3.10` into the test environment:
+orjson 3.12.0 (the lock) became 3.13.0 during every recording. The
+recorder fingerprints the environment at the end of the run, so no pull
+request (orjson 3.12.0, fresh from the lock) ever matched a recording, and
+every Linux and macOS PR planned from the code. Nothing said why beyond
+`run`'s stderr; strata found it by reading job logs (fixed there in #1082).
+
+**Mechanism.**
+
+* *Recorder.* Each recording process also computes `environment()` when
+  it starts (`_start`, before monitoring) and writes it as
+  `environment_at_start`. The fold keeps the first process's start
+  environment beside the end one when they differ (`Evidence.
+  environment_at_start`, in the store's metadata; `None` when equal), and
+  `collect` warns, naming the differences (`environment_differences`):
+  the test run changed its own environment, and a run in the environment
+  it started from will not use the recording.
+* *Keyed by the end, as now.* Tests after the change ran under it; keying
+  by the start would let a fresh environment use evidence partly recorded
+  under another one. The mismatch keeps falling back to the static plan,
+  which over-selects and never misses.
+* *`run`.* On a mismatch, `-o` adds `evidence_not_used` to the plan it
+  writes: `reason` (`environment`), `differences` (the lines `run` prints)
+  and `recording_changed_its_environment` (the environment now equals the
+  recording's start environment). `run` prints the same.
+* *Report.* A plan made from the code with `evidence_not_used` counts
+  under its differences ("the environment differed: orjson==3.13.0
+  recorded, not installed now, ...", or "the recording's own test run
+  changed its environment: ..."), so the nightly report names the
+  package.
+
+**Trade-off.** One more `importlib.metadata` scan per recording process
+(milliseconds). A run that changes the environment and changes it back is
+not seen, and does not need to be: the fingerprint matches.
+
+**Done when** a recording whose test installs a distribution warns and
+names it, `run -o` against that recording says the recording changed its
+environment, and the report shows it per cell.

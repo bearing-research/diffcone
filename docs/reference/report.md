@@ -22,6 +22,13 @@ summary of the same information). The report's format is versioned by
 | `declarations` | The dependencies declared in [`diffcone.toml`](declarations.md). |
 | `discovery` | For each runner: how many targets were found, the configuration read, and any notes. |
 
+The plan `diffcone run -o` writes is the plan that ran. When the run
+didn't use the recording because the environment differed, it also has
+`evidence_not_used`: `reason` (`environment`), `differences` (what
+differed, as `run` prints it) and `recording_changed_its_environment`
+(`true` when this environment is the one the recording's own test run
+started in, so the recorded tests changed it).
+
 ## Snapshots
 
 `analysis.base` and `analysis.head` describe the two snapshots:

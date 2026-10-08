@@ -150,6 +150,22 @@ def _confirmed(art: Artifact) -> list[tuple[str, str]]:
     ]
 
 
+def _unused_note(plan: dict[str, Any]) -> str | None:
+    """Why ``run`` did not use the recording, from what ``run -o`` wrote."""
+    unused = plan.get("evidence_not_used")
+    if not isinstance(unused, dict):
+        return None
+    differences = [str(d) for d in unused.get("differences") or []]
+    shown = "; ".join(differences[:2]) + (
+        f"; {len(differences) - 2} more" if len(differences) > 2 else ""
+    )
+    if unused.get("recording_changed_its_environment"):
+        note = "the recording's own test run changed its environment"
+    else:
+        note = "the environment differed from the recording's"
+    return f"{note}: {shown}" if shown else note
+
+
 def _unselected_reason(plan: dict[str, Any] | None, test: str) -> str | None:
     for target in (plan or {}).get("unselected_targets", []):
         if target.get("runner_id") == test:
@@ -178,10 +194,14 @@ def build(artifacts: list[Artifact]) -> Report:
                 cell.selected_shares.append(counts.get("selected", 0) / counts["targets"])
             evidence = ((art.plan or {}).get("analysis") or {}).get("evidence")
             if art.plan is not None and not evidence:
-                note = context.get("recording_note") or (
-                    "the environment differed from the recording's"
-                    if context.get("recording")
-                    else "no recording"
+                note = (
+                    _unused_note(art.plan)
+                    or context.get("recording_note")
+                    or (
+                        "the environment differed from the recording's"
+                        if context.get("recording")
+                        else "no recording"
+                    )
                 )
                 cell.from_code[note] += 1
             plan_exit = context.get("plan_exit")
@@ -298,6 +318,10 @@ def to_dict(report: Report) -> dict[str, Any]:
     }
 
 
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|")
+
+
 def _share(value: float | None) -> str:
     return "-" if value is None else f"{100 * value:.1f} %"
 
@@ -350,7 +374,9 @@ def to_markdown(report: Report) -> str:
         for c in prs:
             median = statistics.median(c.selected_shares) if c.selected_shares else None
             peak = max(c.selected_shares) if c.selected_shares else None
-            from_code = ", ".join(f"{n} ({why})" for why, n in c.from_code.most_common()) or "0"
+            from_code = (
+                ", ".join(f"{n} ({_cell(why)})" for why, n in c.from_code.most_common()) or "0"
+            )
             lines.append(
                 f"| {c.name} | {c.pull_requests} | {_share(median)} | {_share(peak)} | "
                 f"{from_code} | {c.refused} | {c.plan_failed} |"

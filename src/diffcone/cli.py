@@ -45,6 +45,7 @@ from diffcone.evidence import (
     FLAG_SUBPROCESS,
     FLAG_UNSTABLE,
     EvidenceError,
+    environment_differences,
     find_store,
     list_stores,
     load_store,
@@ -55,7 +56,6 @@ from diffcone.execution import (
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
-    environment_differences,
     run_selected,
     run_with_evidence,
     validate_pytest,
@@ -560,6 +560,24 @@ def _collect(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+    if ev.environment_at_start is not None:
+        print(
+            "diffcone: warning: the test run changed its own environment, and the "
+            "recording is keyed by the environment at the end; a run in the environment "
+            "it started from (a fresh install) will not use it:",
+            file=sys.stderr,
+        )
+        start, end = ev.environment_at_start, ev.environment
+        before, after = set(start.get("distributions", ())), set(end.get("distributions", ()))
+        lines = [f"removed during the run: {d}" for d in sorted(before - after)]
+        lines += [f"installed during the run: {d}" for d in sorted(after - before)]
+        lines += [
+            f"{key}: {start.get(key)!r} at the start, {end.get(key)!r} at the end"
+            for key in sorted(set(start) | set(end))
+            if key != "distributions" and start.get(key) != end.get(key)
+        ]
+        for line in lines[:8]:
+            print(f"  {line}", file=sys.stderr)
     print(str(result.store))
     return 0
 
@@ -685,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
             evidence = load_evidence()
             result = build_plan(evidence)
             ran_plan = result
+            # Why the recording was not used, for ``-o``.
+            unused: dict | None = None
             will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
             # Only worth refusing when something would actually execute.
             mismatch = worktree_mismatch(Path(args.repo), result) if will_run else None
@@ -744,7 +764,16 @@ def main(argv: list[str] | None = None) -> int:
                     reason = checked.not_advanced or "the environment differs from the recording's"
                     print(f"diffcone: evidence not advanced: {reason}", file=sys.stderr)
                 if checked.mismatch is not None:
-                    recorded = load_store(Path(result.evidence["store"])).environment
+                    stored = load_store(Path(result.evidence["store"]))
+                    differences = environment_differences(stored.environment, checked.mismatch)
+                    # The recording's own test run changed the environment,
+                    # and this one is where that run started.
+                    changed_itself = stored.environment_at_start == checked.mismatch
+                    unused = {
+                        "reason": "environment",
+                        "differences": differences,
+                        "recording_changed_its_environment": changed_itself,
+                    }
                     print(
                         "diffcone: the environment differs from the one the evidence was "
                         "recorded in, so it says nothing here; ran "
@@ -756,8 +785,15 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         file=sys.stderr,
                     )
-                    for line in environment_differences(recorded, checked.mismatch)[:8]:
+                    for line in differences[:8]:
                         print(f"  {line}", file=sys.stderr)
+                    if changed_itself:
+                        print(
+                            "diffcone: this is the environment the recording's own test run "
+                            "started in: the recorded tests changed it (installed or removed "
+                            "a distribution), so no run in a fresh environment can use it",
+                            file=sys.stderr,
+                        )
                 outcome = checked.ran
                 if checked.static is not None and static_plans:
                     ran_plan = static_plans[-1]
@@ -773,7 +809,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.output and not args.dry_run:
                 # The plan that ran (the static one when the evidence did not
                 # apply), as ``plan -o`` writes it.
-                code = _write(to_json(ran_plan), args.output)
+                text = to_json(ran_plan)
+                if unused is not None:
+                    data = json.loads(text)
+                    data["evidence_not_used"] = unused
+                    text = json.dumps(data, indent=2) + "\n"
+                code = _write(text, args.output)
                 if code:
                     return code
             if outcome.unknown:

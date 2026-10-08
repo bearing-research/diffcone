@@ -87,7 +87,7 @@ folds parameter cases:
 | `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.access`; paths with `/` on every platform. A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
 | `P(T)` | T started a subprocess or a subinterpreter | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork`, except an inert interpreter probe (an interpreter by name, nothing but `-c CODE` where the code imports only built-in modules and names nothing that loads code, no `PYTHONPATH`-like environment: roadmap item 10); wrappers of `multiprocessing.util.spawnv_passfds` and `_interpreters.create`, which raise no event |
 | threads | the project code other threads are in the middle of when T's window (or a shared fixture's) opens | `sys._current_frames()`: a long-lived thread looping in one frame raises no event in later windows, yet runs beside their tests |
-| environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside the test process at session start |
+| environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside each test process at the end of the run, which keys the store; also at its start, and a run that changed it is named (`collect` warns, the store keeps the start environment, `run` says when it meets it: roadmap item 12) |
 
 The tracer starts when the plugin module is imported, not in
 `pytest_configure`: `-p` plugins load before the initial conftests, and a
@@ -184,7 +184,7 @@ reported as a miss.
 ## Storage and lifecycle
 
 `.diffcone/evidence/<commit>-<environment hash>.sqlite`:
-`meta` (commit, environment, command, diffcone version, time), `symbols`
+`meta` (commit, environment, the environment at the start when the run changed it, command, diffcone version, time), `symbols`
 (index to symbol id), `sets` (deduplicated compressed bitmaps over the
 symbol table: parametrized tests share sets), `tests` (target id, set id,
 flags: subprocess, unstable), `files`, `import_phase`, `import_by`. Expected

@@ -207,6 +207,7 @@ def environment_hash(env: dict) -> str:
 # --------------------------------------------------------------------------- state
 
 OUT = os.environ.get("DIFFCONE_COLLECT_OUT")
+environment_at_start: dict | None = None
 _root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 # Both spellings: a code object's file name is the path it was imported by
 # (``/tmp/x`` on macOS is ``/private/tmp/x``).
@@ -797,7 +798,13 @@ def _start() -> None:
     """Start at import of this plugin: ``-p`` plugins load before the initial
     conftests, which usually import the project, so its import-time code is
     seen."""
-    global recording
+    global recording, environment_at_start
+    # Compared with the environment at the end: a test that installs a
+    # distribution changes what the recording is keyed by.
+    try:
+        environment_at_start = environment()
+    except Exception as exc:
+        _error("environment", exc)
     if mon is None:
         errors.append(f"Python {sys.version.split()[0]} has no sys.monitoring; 3.12+ is needed")
         return
@@ -1051,6 +1058,7 @@ def _finish():
         },
         "environment": env,
         "environment_hash": environment_hash(env),
+        "environment_at_start": environment_at_start,
         "wrote_tests": writer is not None,
         "collected": sorted(collected) if collection_ran else None,
         "errors": errors,

@@ -93,6 +93,14 @@ environment variables, record them with `--env-var`:
 diffcone collect --command "uv run pytest" --env-var MYAPP_MODE -- -n 8
 ```
 
+The environment is the one at the end of the recording. If your tests
+install or upgrade a package while they run (a test that runs `uv sync`
+or `pip install` with your test interpreter, for example), `collect` warns
+and names the packages: a fresh install from your lock file then never
+matches the recording, and every run falls back to a plan from the code.
+`run` says so too when it meets the environment the recording started in.
+Stop the tests from changing their own environment to use the recording.
+
 ## Keep the recording current
 
 Recording the whole suite for every commit would be slow. With `--collect`,
