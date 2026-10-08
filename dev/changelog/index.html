@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Platforms
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ci" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -993,6 +1004,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Platforms
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ci" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1142,6 +1164,14 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="platforms">Platforms<a class="headerlink" href="#platforms" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Windows is tested in CI (Python 3.11-3.14): commands are split without
+  POSIX escapes, the recorder plugin is copied where a symlink is not
+  allowed, the recorder reads Windows command lines and existence checks and
+  matches short (8.3) path names, and the actions find Python and the
+  venv's <code>Scripts</code> directory.</li>
+</ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>record</code> takes <code>check: true</code> for a default branch whose every push runs
