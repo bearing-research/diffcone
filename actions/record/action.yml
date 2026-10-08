@@ -2,8 +2,11 @@ name: diffcone record
 description: >-
   Record execution evidence for the checked-out commit (diffcone collect),
   warm and prune the cache to that commit, and save .diffcone/ with
-  actions/cache for pull requests to restore. Run it on the default branch,
-  on a schedule, in the environment the pull-request job uses.
+  actions/cache for pull requests to restore. Run it on the default branch
+  (on a schedule, or as the full test run of every push) in the environment
+  the pull-request job uses. With check, it also verifies the previous
+  recording: the commit's own change is planned from it, and every new
+  failure of this full run must have been selected.
 inputs:
   key-prefix:
     description: Cache key prefix naming the job this evidence stands for (one per environment).
@@ -23,11 +26,25 @@ inputs:
   junit:
     description: Also write the recording run's JUnit XML here (kept in .diffcone/ as the baseline).
     default: ".diffcone/baseline.xml"
+  check:
+    description: >-
+      Plan the commit's change (its first parent to it) from the previous
+      recording, and fail when this full run has a new failure the plan did
+      not select and that fails again when re-run. Use it when this job is
+      the full test run of each push to the default branch.
+    default: "false"
+  fail-on-test-failure:
+    description: Fail the job when a test fails (after saving the recording), as a plain test run would.
+    default: "false"
   diffcone-ref:
     description: >-
       Install diffcone from this git ref instead of from the action's own copy
       (by default the version of diffcone is the version of the action).
     default: ""
+outputs:
+  misses:
+    description: How many new failures the plan of the commit's change did not select (with check).
+    value: ${{ steps.check.outputs.misses }}
 runs:
   using: composite
   steps:
@@ -46,6 +63,45 @@ runs:
         fi
         "$RUNNER_TEMP/diffcone/bin/pip" install --quiet "$source"
         echo "$RUNNER_TEMP/diffcone/bin" >> "$GITHUB_PATH"
+    - name: Restore the previous recording
+      if: inputs.check == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: .diffcone
+        key: ${{ inputs.key-prefix }}--${{ github.sha }}
+        restore-keys: ${{ inputs.key-prefix }}--
+    - name: Plan the commit's change
+      if: inputs.check == 'true'
+      shell: bash
+      env:
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
+        ROOTS: ${{ inputs.source-roots }}
+      run: |
+        roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
+        eval "args=($PYTEST_ARGS)"
+        mkdir -p diffcone-results
+        # The previous full run's results: failures it had are not misses.
+        cp .diffcone/baseline.xml diffcone-results/previous.xml 2>/dev/null || true
+        # A shallow checkout lacks the first parent.
+        git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null \
+          || git fetch --quiet --deepen=1 origin "$(git rev-parse HEAD)" 2>/dev/null || true
+        if ! git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null; then
+          echo "::notice::the commit has no parent to compare with; nothing to check"
+          exit 0
+        fi
+        store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
+        evidence=()
+        if [ -n "$store" ]; then
+          commit=$(basename "$store" | cut -d- -f1)
+          if git cat-file -e "$commit^{commit}" 2>/dev/null \
+            || git fetch --quiet --depth=1 origin "$commit" 2>/dev/null; then
+            evidence=(--evidence "$store")
+          fi
+        fi
+        [ ${#evidence[@]} -eq 0 ] && echo "::notice::no previous recording; checking the static plan"
+        diffcone plan --base HEAD^1 --head HEAD --discover pytest "${roots[@]}" \
+          "${evidence[@]}" -o diffcone-results/plan.json -- "${args[@]}" \
+          || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
     - name: Record
       shell: bash
       env:
@@ -66,7 +122,7 @@ runs:
           "${args[@]}" "--junitxml=$JUNIT"
         # Index and discover this commit once, so pull requests start warm.
         diffcone plan --base HEAD --head HEAD --discover pytest "${roots[@]}" \
-          --evidence auto -o /dev/null || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
+          --evidence auto -o /dev/null -- "${args[@]}" || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
         diffcone prune --keep HEAD "${roots[@]}"
         commit=$(git rev-parse HEAD)
         find .diffcone/evidence -name '*.sqlite' ! -name "$commit-*" -delete
@@ -80,3 +136,68 @@ runs:
       with:
         path: .diffcone
         key: ${{ steps.record.outputs.key }}
+    - name: Check the plan against this full run
+      if: inputs.check == 'true'
+      id: check
+      shell: bash
+      env:
+        COMMAND: ${{ inputs.command }}
+        JUNIT: ${{ inputs.junit }}
+      run: |
+        if [ ! -f diffcone-results/plan.json ]; then
+          echo "misses=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        baseline=()
+        [ -f diffcone-results/previous.xml ] && baseline=(--baseline diffcone-results/previous.xml)
+        status=0
+        diffcone check --plan diffcone-results/plan.json --full "$JUNIT" "${baseline[@]}" \
+          --format json -o diffcone-results/verdict.json || status=$?
+        diffcone check --plan diffcone-results/plan.json --full "$JUNIT" "${baseline[@]}" \
+          --format markdown -o diffcone-results/verdict.md || true
+        cat diffcone-results/verdict.md >> "$GITHUB_STEP_SUMMARY"
+        [ "$status" -ge 2 ] && exit "$status"
+        misses=0
+        if [ "$status" -eq 1 ]; then
+          # A miss must fail again on its own: a flaky test is not one.
+          missed=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && missed+=("$line")
+          done < <(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['misses']))" diffcone-results/verdict.json)
+          $COMMAND -p no:cacheprovider "${missed[@]}" --junitxml=diffcone-results/rerun.xml \
+            > diffcone-results/rerun.log 2>&1 || true
+          confirmed=0
+          diffcone check --plan diffcone-results/plan.json --full diffcone-results/rerun.xml \
+            "${baseline[@]}" --format json -o diffcone-results/rerun-verdict.json || confirmed=$?
+          if [ "$confirmed" -eq 1 ]; then
+            misses=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" diffcone-results/rerun-verdict.json)
+            echo "::error::diffcone missed $misses failing test(s) that fail again when re-run; see the job summary"
+          else
+            echo "::warning::${#missed[@]} unselected failure(s) passed when re-run (flaky); not counted as misses"
+          fi
+        fi
+        echo "misses=$misses" >> "$GITHUB_OUTPUT"
+    - name: Fail on test failures or misses
+      if: inputs.check == 'true' || inputs.fail-on-test-failure == 'true'
+      shell: bash
+      env:
+        JUNIT: ${{ inputs.junit }}
+        FAIL_TESTS: ${{ inputs.fail-on-test-failure }}
+        MISSES: ${{ steps.check.outputs.misses }}
+      run: |
+        failed=$(python3 - "$JUNIT" <<'PY'
+        import sys, xml.etree.ElementTree as ET
+        root = ET.parse(sys.argv[1]).getroot()
+        suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+        print(sum(int(s.get("failures", 0)) + int(s.get("errors", 0)) for s in suites))
+        PY
+        )
+        status=0
+        if [ "$FAIL_TESTS" = "true" ] && [ "$failed" -gt 0 ]; then
+          echo "::error::$failed test(s) failed or errored"
+          status=1
+        fi
+        if [ "${MISSES:-0}" -gt 0 ]; then
+          status=1
+        fi
+        exit $status

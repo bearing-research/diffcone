@@ -8,6 +8,15 @@ selection rules.
 
 ## [Unreleased]
 
+### CI
+
+- `record` takes `check: true` for a default branch whose every push runs
+  the full suite: it plans the push's own change from the previous
+  recording, records, and fails the job on a new failure the plan did not
+  select that fails again when re-run (a flaky one is only reported).
+  `fail-on-test-failure: true` fails the job on failing tests, as a plain
+  test run would. Pull requests then run only the selection.
+
 ### Planning
 
 - A dynamic import through a literal table of tuples is bounded by the

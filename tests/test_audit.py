@@ -2676,3 +2676,19 @@ def test_a_source_file_a_test_checks_for_is_seen_when_it_appears(repo):
         {"lib/plugin.py": "X = 1\n"},
     )
     assert chosen == {"tests/test_x.py::test_x"}
+
+
+def test_record_checks_a_push_against_its_full_run_and_fails_on_a_confirmed_miss():
+    """The post-merge mode the strata setup uses: the plan of the commit's
+    own change comes from the previous recording, a miss is re-run before it
+    counts, and the recording is saved before the job fails."""
+    from pathlib import Path
+
+    record = (Path(__file__).resolve().parent.parent / "actions/record/action.yml").read_text()
+    steps = [line.strip() for line in record.splitlines() if line.strip().startswith("- name:")]
+    order = [s.split(": ", 1)[1] for s in steps]
+    assert order.index("Restore the previous recording") < order.index("Plan the commit's change")
+    assert order.index("Plan the commit's change") < order.index("Record") < order.index("Save")
+    assert order.index("Save") < order.index("Fail on test failures or misses")
+    assert "--base HEAD^1 --head HEAD" in record
+    assert "rerun.xml" in record and "--baseline diffcone-results/previous.xml" in record

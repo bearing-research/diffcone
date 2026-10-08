@@ -118,6 +118,58 @@ didn't execute. It doesn't fail the workflow unless you set
 `fail-on-miss: true`. Tests that already failed in
 the nightly run are reported as already failing, not as misses.
 
+## Or: record on every push to the default branch
+
+If your default branch already runs the full suite on every push, that run
+can be the recording, and pull requests run only the selected tests. Each
+push then checks the plan for its own change against the full run, so a
+test diffcone should have selected fails the default branch's workflow.
+
+```yaml title=".github/workflows/tests.yml"
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv sync --locked
+      - if: github.event_name == 'push'
+        uses: bearing-research/diffcone/actions/record@v0.2.0
+        with:
+          key-prefix: diffcone-ubuntu
+          command: uv run python -m pytest
+          pytest-args: -n auto
+          check: true
+          fail-on-test-failure: true
+      - if: github.event_name == 'pull_request'
+        uses: bearing-research/diffcone/actions/run@v0.2.0
+        with:
+          key-prefix: diffcone-ubuntu
+          command: uv run python -m pytest
+          pytest-args: -n auto
+```
+
+On a push, `record` with `check: true`:
+
+1. restores the newest recording and plans the commit's own change (its
+   first parent to it) from it;
+2. runs the full suite under the recorder and saves the new recording;
+3. compares the plan with the full run: a new failure the plan didn't
+   select is run again, and if it fails again it is a miss, which fails the
+   job. One that passes the second time is reported as flaky. Tests that
+   already failed in the previous push's run are not misses.
+
+With `fail-on-test-failure: true` a failing test fails the job too, as a
+plain test run would, after the recording is saved.
+
+As with the nightly setup, only runs on the default branch can save the
+recording; pull requests only restore it.
+
 ## How the cache is shared
 
 Each recording is saved with `actions/cache` under its own key,
@@ -147,9 +199,11 @@ unchanged files.
 | `diffcone-ref` | Install diffcone from this git ref instead of the action's own version. |
 
 `record` also takes `env-vars` (environment variables your tests depend
-on, see [execution evidence](guides/evidence.md#run-with-a-recording)) and
+on, see [execution evidence](guides/evidence.md#run-with-a-recording)),
 `junit` (where to keep the recording run's JUnit XML; default
-`.diffcone/baseline.xml`). `run` also takes `base` (default `HEAD^1`, the
+`.diffcone/baseline.xml`), `check` (default `false`: check each push's
+change against its full run, as above) and `fail-on-test-failure` (default
+`false`). `run` also takes `base` (default `HEAD^1`, the
 target branch of the pull request's merge commit) and
 `allow-incomplete-discovery` (default `false`; see
 [when the target list may be short](reference/discovery.md#when-the-target-list-may-be-short)).
