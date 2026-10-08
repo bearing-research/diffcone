@@ -1082,7 +1082,10 @@ each one understands.</p>
 or <code>[tool.pytest]</code>), <code>tox.ini</code> or <code>setup.cfg</code>, in pytest's order:
 <code>testpaths</code>,
 <code>python_files</code>, <code>python_classes</code>, <code>python_functions</code>, <code>norecursedirs</code>,
-<code>usefixtures</code>, and the doctest options in <code>addopts</code>.</p>
+<code>usefixtures</code>, and the doctest options in <code>addopts</code>. The arguments you pass
+after <code>--</code> count too: test files or directories named there replace
+<code>testpaths</code>, as they do for pytest, and <code>--ignore</code> / <code>--ignore-glob</code> leave
+paths out.</p>
 <p><strong>Tests</strong> found:</p>
 <ul>
 <li>test functions and methods, following your naming settings;</li>
@@ -1175,6 +1178,8 @@ it is always selected.</p>
   (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>);</li>
 <li>options in <code>addopts</code> that change what pytest collects (<code>-o</code>, <code>-c</code>,
   <code>--rootdir</code>, <code>--pyargs</code>, or a path to test);</li>
+<li>a test given by node id after <code>--</code> (<code>tests/test_x.py::test_one</code>), or a
+  path right after an option that may take it as its value (<code>--cov src</code>);</li>
 <li>a test bound to something discovery can't follow
   (<code>TestMachine = Machine.TestCase</code>);</li>
 <li>a plugin your configuration turns on that collects files of its own

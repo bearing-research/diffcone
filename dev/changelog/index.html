@@ -1178,6 +1178,9 @@ selection rules.</p>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
+<li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
+  pytest; a node id, or a path after an option that may take it as its
+  value, is reported instead of guessed.</li>
 <li><code>--ignore</code> and <code>--ignore-glob</code> (in <code>addopts</code> or after <code>--</code>) are honoured:
   ignored tests are no longer targets, which <code>run</code> reported as selected
   but not collected.</li>
