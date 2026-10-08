@@ -1333,6 +1333,12 @@ selection rules.</p>
 <li><code>record</code> describes every recording for <code>diffcone report</code>, also without
   <code>check</code> (a nightly recording) and when the recording failed: its
   <code>results</code> output always holds <code>context.json</code>.</li>
+<li><code>report</code> takes <code>repository</code> (report on another repository's runs; a
+  public one needs no extra access), <code>issues-repository</code> and
+  <code>issues-token</code> (post the report and miss issues elsewhere, each source
+  repository with its own report issue), and <code>comment: on-problem</code>
+  (comment only on a miss, a failed check or an incomplete report). Miss
+  issues outside diffcone's tracker link to a pre-filled diffcone issue.</li>
 <li><code>run -o</code> adds <code>evidence_not_used</code> (why the recording was not used, and
   what differed) to the plan it writes, and <code>diffcone report</code> shows those
   differences per job.</li>

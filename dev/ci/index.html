@@ -572,6 +572,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Report on recent runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#report-on-another-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report on another repository
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -990,6 +1007,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Report on recent runs">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#report-on-another-repository" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report on another repository
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1338,13 +1372,33 @@ expired are not reported.</p>
 <p><code>report</code> takes <code>hours</code> (the window for the first report: runs that
 completed in this many hours before it; default <code>24</code>), <code>workflow</code> (only
 that workflow's runs; default all), <code>artifact-prefix</code> (default
-<code>diffcone-</code>), and <code>report-label</code> and <code>miss-label</code> (set either to an empty
-string to skip that issue). It reads what <code>run</code> and <code>record</code> upload from
-the same release on, so give all the actions the same tag.</p>
+<code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code> (set either to an empty
+string to skip that issue), and <code>comment</code> (<code>always</code>, the default, or
+<code>on-problem</code>: comment only when there is a miss, a failed check or an
+incomplete report; the job summary always has the report). It reads what
+<code>run</code> and <code>record</code> upload from the same release on, so give all the
+actions the same tag.</p>
+<p>Each miss issue has a link that opens a new issue on diffcone's tracker
+with the test and the plan's reason filled in. Nothing is sent until you
+review it and submit it.</p>
+<h3 id="report-on-another-repository">Report on another repository<a class="headerlink" href="#report-on-another-repository" title="Permanent link">&para;</a></h3>
+<p><code>repository</code> reports on another repository's runs, and
+<code>issues-repository</code> posts somewhere else: a team can watch several
+projects from one place. A public repository's runs need no extra access;
+posting to another repository needs a token that can write its issues
+(<code>issues-token</code>, for example a fine-grained token saved as a secret).
+Issues posted elsewhere name the repository the runs came from, and each
+repository gets its own report issue.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">uses</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">bearing-research/diffcone/actions/report@v0.3.0</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">          </span><span class="nt">repository</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">my-org/my-project</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">          </span><span class="nt">workflow</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">tests.yml</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">          </span><span class="nt">comment</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">on-problem</span>
+</code></pre></div>
 <p>To read the same report locally, download the artifacts of some runs into
 one directory per run and run <code>diffcone report</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span><span class="m">123456</span><span class="w"> </span>--pattern<span class="w"> </span><span class="s1">'diffcone-*'</span><span class="w"> </span>--dir<span class="w"> </span>runs/123456
-<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>diffcone<span class="w"> </span>report<span class="w"> </span>--dir<span class="w"> </span>runs
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span><span class="m">123456</span><span class="w"> </span>--pattern<span class="w"> </span><span class="s1">'diffcone-*'</span><span class="w"> </span>--dir<span class="w"> </span>runs/123456
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>diffcone<span class="w"> </span>report<span class="w"> </span>--dir<span class="w"> </span>runs
 </code></pre></div>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>Each recording is saved with <code>actions/cache</code> under its own key,
