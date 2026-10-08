@@ -43,6 +43,18 @@ from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
 from diffcone.snapshot import GitError, _git, is_bytecode, resolve_commit, split_root
 
+
+def split_command(command: str) -> list[str]:
+    """A command line as a list of arguments. On Windows a backslash is a
+    path separator, not an escape (``C:\\venv\\Scripts\\python.exe``), so
+    the line is split without POSIX escapes and only the quotes around an
+    argument are removed."""
+    if os.name != "nt":
+        return shlex.split(command)
+    parts = shlex.split(command, posix=False)
+    return [p[1:-1] if len(p) > 1 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+
+
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run --python=same"}
 
 # Parameter ids may contain spaces, pipes and nested brackets
@@ -72,7 +84,7 @@ def build_command(
     runner: str, targets: list[Target], command: str | None, extra: list[str]
 ) -> list[str]:
     """The command line that runs exactly ``targets`` with ``runner``."""
-    base = shlex.split(command or DEFAULT_COMMANDS[runner])
+    base = split_command(command or DEFAULT_COMMANDS[runner])
     ids = [t.runner_id for t in sorted(targets)]
     if runner == "pytest":
         return [*base, *extra, *ids]
@@ -94,7 +106,7 @@ def resolve_command(command: str | None, repo: Path) -> str | None:
     would run outside the venv."""
     if command is None:
         return None
-    argv = shlex.split(command)
+    argv = split_command(command)
     if not argv or os.path.isabs(argv[0]) or os.sep not in argv[0]:
         return command
     for base in (Path.cwd(), repo):
@@ -198,7 +210,7 @@ def run_selected(
             "".join(f"{t.runner_id}\n" for t in every), encoding="utf-8"
         )
         result.command = [
-            *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+            *split_command(command or DEFAULT_COMMANDS["pytest"]),
             "-p",
             SELECT_PLUGIN,
             *(extra or []),
@@ -431,7 +443,7 @@ def _run_full_pytest(
     also records per-test coverage contexts into a temporary database that
     lives for the duration of the context."""
     argv = [
-        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+        *split_command(command or DEFAULT_COMMANDS["pytest"]),
         "-v",
         "-p",
         "no:cacheprovider",
@@ -878,7 +890,7 @@ def _validate_pytest(
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
         "pytest",
-        [*shlex.split(command or DEFAULT_COMMANDS["pytest"]), "-v"],
+        [*split_command(command or DEFAULT_COMMANDS["pytest"]), "-v"],
         base_log=base_log,
         head_log=head_log,
         coverage=cov,
@@ -1306,7 +1318,7 @@ def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str
 def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
     """The suite under the recorder, as a store's ``command`` records it."""
     return [
-        *shlex.split(command or DEFAULT_COMMANDS["pytest"]),
+        *split_command(command or DEFAULT_COMMANDS["pytest"]),
         "-p",
         PLUGIN,
         "-p",
@@ -1401,8 +1413,14 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     ``PYTHONPATH`` entry) when the run ends."""
     env = dict(base)
     link_dir = Path(tempfile.mkdtemp(prefix="diffcone-plugin-"))
-    (link_dir / f"{PLUGIN}.py").symlink_to(Path(__file__).parent / "collect.py")
-    (link_dir / f"{SELECT_PLUGIN}.py").symlink_to(Path(__file__).parent / "selection.py")
+    for name, source in ((PLUGIN, "collect.py"), (SELECT_PLUGIN, "selection.py")):
+        target, original = link_dir / f"{name}.py", Path(__file__).parent / source
+        try:
+            target.symlink_to(original)
+        except OSError:
+            # Windows creates symlinks only with Developer Mode or admin
+            # rights; a copy serves as well (neither imports diffcone).
+            shutil.copyfile(original, target)
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join([*([existing] if existing else []), str(link_dir)])
     # Absolute and with symlinks resolved, as pytest reports a test's path:

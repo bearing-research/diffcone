@@ -31,13 +31,19 @@ runs:
       run: |
         # The runner has this action's repository at the action's ref in
         # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
-        python3 -m venv "$RUNNER_TEMP/diffcone"
+        # ``python3`` is ``python`` on Windows runners, and a venv keeps its
+        # programs in Scripts there.
+        py=$(command -v python3 || command -v python)
+        "$py" -m venv "$RUNNER_TEMP/diffcone"
+        bin="$RUNNER_TEMP/diffcone/bin"
+        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
         if [ -n "$REF" ]; then
           source="git+https://github.com/bearing-research/diffcone@$REF"
         else
           source="$GITHUB_ACTION_PATH/../.."
         fi
-        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet "$source"
+        "$bin/python" -m pip install --quiet "$source"
+        echo "$bin" >> "$GITHUB_PATH"
     - name: Check
       shell: bash
       env:
@@ -52,10 +58,10 @@ runs:
         baseline=()
         [ -f "$RESULTS/baseline.xml" ] && baseline=(--baseline "$RESULTS/baseline.xml")
         status=0
-        "$RUNNER_TEMP/diffcone/bin/diffcone" check --plan "$RESULTS/plan.json" --full "$FULL" \
+        diffcone check --plan "$RESULTS/plan.json" --full "$FULL" \
           "${baseline[@]}" "${runs[@]}" --format markdown -o "$RUNNER_TEMP/verdict.md" || status=$?
         cat "$RUNNER_TEMP/verdict.md" >> "$GITHUB_STEP_SUMMARY"
-        "$RUNNER_TEMP/diffcone/bin/diffcone" check --plan "$RESULTS/plan.json" --full "$FULL" \
+        diffcone check --plan "$RESULTS/plan.json" --full "$FULL" \
           "${baseline[@]}" "${runs[@]}" --format json -o "$RESULTS/verdict.json" || true
         if [ "$status" -ge 2 ] || { [ "$status" -eq 1 ] && [ "$FAIL" = "true" ]; }; then
           exit "$status"

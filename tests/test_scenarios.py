@@ -8,6 +8,7 @@ sets and the rules/paths behind them.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -21,6 +22,9 @@ from diffcone.testing import (
     selected,
     unselected,
 )
+
+# Symlinks as directories: POSIX only.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
 
 OPS = """
 def add(a, b):
@@ -1891,6 +1895,7 @@ def test_methods_reached_through_unknown_or_opaque_values_are_name_bounded(repo)
         assert "unresolved_name_match" in rules(plan, rid), rid
 
 
+@posix_only
 def test_tests_in_a_symlinked_directory_are_discovered_and_selected(repo):
     """pydantic: ``tests/pydantic_core -> ../pydantic-core/tests``. pytest
     collects through the link; the snapshot readers used to skip the link

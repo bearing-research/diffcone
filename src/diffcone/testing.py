@@ -76,7 +76,8 @@ class FixtureRepo:
                 if isinstance(content, bytes):
                     target.write_bytes(content)
                 else:
-                    target.write_text(content, "utf-8")
+                    # As written, on every platform (no CRLF on Windows).
+                    target.write_text(content, "utf-8", newline="")
         self.git("add", "-A")
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")

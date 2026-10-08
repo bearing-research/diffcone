@@ -60,14 +60,19 @@ runs:
       run: |
         # The runner has this action's repository at the action's ref in
         # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
-        python3 -m venv "$RUNNER_TEMP/diffcone"
+        # ``python3`` is ``python`` on Windows runners, and a venv keeps its
+        # programs in Scripts there.
+        py=$(command -v python3 || command -v python)
+        "$py" -m venv "$RUNNER_TEMP/diffcone"
+        bin="$RUNNER_TEMP/diffcone/bin"
+        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
         if [ -n "$REF" ]; then
           source="git+https://github.com/bearing-research/diffcone@$REF"
         else
           source="$GITHUB_ACTION_PATH/../.."
         fi
-        "$RUNNER_TEMP/diffcone/bin/pip" install --quiet "$source"
-        echo "$RUNNER_TEMP/diffcone/bin" >> "$GITHUB_PATH"
+        "$bin/python" -m pip install --quiet "$source"
+        echo "$bin" >> "$GITHUB_PATH"
     - name: Restore the previous recording
       if: inputs.check == 'true'
       uses: actions/cache/restore@v6
@@ -173,14 +178,14 @@ runs:
           missed=()
           while IFS= read -r line; do
             [ -n "$line" ] && missed+=("$line")
-          done < <(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/verdict.json")
+          done < <($(command -v python3 || command -v python) -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/verdict.json")
           $COMMAND -p no:cacheprovider "${missed[@]}" --junitxml="$RESULTS/rerun.xml" \
             > "$RESULTS/rerun.log" 2>&1 || true
           confirmed=0
           diffcone check --plan "$RESULTS/plan.json" --full "$RESULTS/rerun.xml" \
             "${baseline[@]}" --format json -o "$RESULTS/rerun-verdict.json" || confirmed=$?
           if [ "$confirmed" -eq 1 ]; then
-            misses=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json")
+            misses=$($(command -v python3 || command -v python) -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json")
             echo "::error::diffcone missed $misses failing test(s) that fail again when re-run; see the job summary"
           else
             echo "::warning::${#missed[@]} unselected failure(s) passed when re-run (flaky); not counted as misses"
@@ -195,7 +200,7 @@ runs:
         FAIL_TESTS: ${{ inputs.fail-on-test-failure }}
         MISSES: ${{ steps.check.outputs.misses }}
       run: |
-        failed=$(python3 - "$JUNIT" <<'PY'
+        failed=$("$(command -v python3 || command -v python)" - "$JUNIT" <<'PY'
         import sys, xml.etree.ElementTree as ET
         root = ET.parse(sys.argv[1]).getroot()
         suites = [root] if root.tag == "testsuite" else root.findall("testsuite")

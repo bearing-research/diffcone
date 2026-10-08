@@ -15,6 +15,9 @@ from diffcone.execution import build_command, parse_pytest_verbose, run_selected
 from diffcone.snapshot import GitError
 from diffcone.testing import asv_target, changes, py_target
 
+# Symlinks, ``sh`` and shell scripts as commands: POSIX only.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
+
 PYTEST = f"{sys.executable} -m pytest"
 
 OPS = "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
@@ -951,6 +954,7 @@ def test_corpus_progress_reports_skipped_commits(repo):
     assert seen == [(c2, True), (c3, False)]
 
 
+@posix_only
 def test_validate_resolves_a_relative_command_against_the_repo(repo, monkeypatch):
     base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
     head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
@@ -967,6 +971,7 @@ def test_validate_resolves_a_relative_command_against_the_repo(repo, monkeypatch
         validate_pytest(plan, repo=repo.path, command="./missing.sh")
 
 
+@posix_only
 def test_relative_command_keeps_a_symlinked_interpreter(tmp_path, monkeypatch):
     """``.venv/bin/python`` is a symlink to the base interpreter; resolving
     it ran the suite outside the venv (no pytest-cov, no dependencies)."""

@@ -299,7 +299,7 @@ def test_module_cache_keeps_one_resolution_per_file_and_serves_read_only(repo, t
         per_file = conn.execute("SELECT COUNT(*) FROM records WHERE key = ?", [key]).fetchone()
     assert facts == 3 + 3  # unchanged modules once, ops.py per content
     assert resolved[0] <= facts and per_file[0] == 2  # facts + the latest resolution only
-    if os.geteuid() == 0:  # pragma: no cover - root ignores permission bits
+    if getattr(os, "geteuid", lambda: 1)() == 0:  # pragma: no cover - root ignores permission bits
         return
     wt = read_snapshot(repo.path, "WORKTREE", ["."])
     plain = index_to_dict(build_index(wt))

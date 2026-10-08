@@ -16,6 +16,9 @@ from diffcone.cli import main
 from diffcone.manifest import ManifestError, parse_manifest
 from diffcone.testing import asv_target, py_target, selected, unselected
 
+# Symlinks, ``sh`` and shell scripts as commands: POSIX only.
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
+
 ASV_CONF = '{"version": 1, "benchmark_dir": "benchmarks"}'
 
 
@@ -1004,6 +1007,7 @@ def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monke
     assert code == 1  # test_x ran under the static plan, and failed
 
 
+@posix_only
 def test_r2_a_symlinked_repo_path_selects_the_right_tests(repo, tmp_path, capfd):
     base = repo.commit({**CALC})
     head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "b + a")})
@@ -2381,6 +2385,7 @@ def test_e13_recorded_paths_use_forward_slashes(monkeypatch):
 
 
 @needs_monitoring
+@posix_only
 def test_e14_a_fixture_computed_in_another_process_is_credited(repo, tmp_path):
     cache = tmp_path / "cache.json"
     conftest = (
