@@ -208,7 +208,14 @@ OUT = os.environ.get("DIFFCONE_COLLECT_OUT")
 _root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 # Both spellings: a code object's file name is the path it was imported by
 # (``/tmp/x`` on macOS is ``/private/tmp/x``).
-ROOTS = tuple(sorted({os.path.abspath(_root) + os.sep, os.path.realpath(_root) + os.sep}))
+ROOTS = tuple(
+    sorted(
+        {
+            os.path.normcase(r) if os.name == "nt" else r
+            for r in (os.path.abspath(_root) + os.sep, os.path.realpath(_root) + os.sep)
+        }
+    )
+)
 PACKAGES = frozenset(p for p in os.environ.get("DIFFCONE_COLLECT_PACKAGES", "").split(",") if p)
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
 INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
@@ -257,10 +264,25 @@ def _relative(path: str) -> str | None:
     (a common conftest idiom) has ``..`` in its code objects' file names."""
     if os.path.isabs(path):
         path = os.path.normpath(path)
+    rel = _under_root(path)
+    if rel is None and os.name == "nt" and "~" in path and os.path.isabs(path):
+        # ``C:\\Users\\RUNNER~1`` (an 8.3 short name) and its long name are one
+        # directory.
+        try:
+            rel = _under_root(os.path.realpath(path))
+        except (OSError, ValueError):
+            rel = None
+    return rel
+
+
+def _under_root(path: str) -> str | None:
+    # Windows compares case-folded (``normcase`` keeps the length), and the
+    # path keeps its own case.
+    folded = os.path.normcase(path) if os.name == "nt" else path
     for root in ROOTS:
-        if path + os.sep == root:
+        if folded + os.sep == root:
             return ""
-        if path.startswith(root):
+        if folded.startswith(root):
             rel = path[len(root) :]
             if rel.startswith(IGNORED_DIRS) or any(p in rel for p in INSTALLED):
                 return None
@@ -431,6 +453,9 @@ def _touch(path, listing: bool = False) -> None:
         seen.setdefault(rel, set()).add(importing[-1] if importing else "")
 
 
+_inert_pending = False
+
+
 def _audit(event, args):
     try:
         if event == "open":
@@ -442,7 +467,15 @@ def _audit(event, args):
             if args and isinstance(args[0], (str, bytes, os.PathLike)):
                 _touch(args[0])
         elif event in SUBPROCESS_EVENTS:
-            if not _inert_probe(event, args):
+            global _inert_pending
+            if event == "_winapi.CreateProcess" and _inert_pending:
+                # The process an inert ``subprocess.Popen`` just judged
+                # (Windows raises both events for one process).
+                _inert_pending = False
+            elif _inert_probe(event, args):
+                _inert_pending = event == "subprocess.Popen"
+            else:
+                _inert_pending = False
                 for w in _windows():
                     w["flags"] |= FLAG_SUBPROCESS
     except Exception as exc:
@@ -694,6 +727,10 @@ def _start() -> None:
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
     os.access = _wrap_stat(os.access)
+    if os.name == "nt":
+        # Python 3.12+ on Windows answers these without os.stat.
+        for name in ("exists", "lexists", "isfile", "isdir", "islink"):
+            setattr(os.path, name, _wrap_stat(getattr(os.path, name)))
     # functools.cache goes through it too; a deliberate patch of the stdlib.
     functools.lru_cache = _tracking_lru_cache  # ty: ignore[invalid-assignment]
     _flag_multiprocessing_spawns()

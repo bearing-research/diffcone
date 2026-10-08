@@ -33,18 +33,18 @@ def dirty_repo(repo):
         }
     )
     # unstaged modification
-    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a"))
+    (repo.path / "pkg/ops.py").write_bytes((OPS.replace("a + b", "b + a")).encode())
     # staged modification (then a further unstaged edit on top)
-    (repo.path / "pkg/staged.py").write_text("def staged():\n    return 2\n")
+    (repo.path / "pkg/staged.py").write_bytes(b"def staged():\n    return 2\n")
     repo.git("add", "pkg/staged.py")
-    (repo.path / "pkg/staged.py").write_text("def staged():\n    return 3\n")
+    (repo.path / "pkg/staged.py").write_bytes(b"def staged():\n    return 3\n")
     # untracked test file, ignored file, deleted tracked file, changed config
     (repo.path / "tests/test_new.py").write_text(
         "from pkg.ops import mul\n\n\ndef test_new():\n    assert mul(1, 1) == 1\n"
     )
-    (repo.path / "pkg/ignored_scratch.py").write_text("def scratch():\n    pass\n")
+    (repo.path / "pkg/ignored_scratch.py").write_bytes(b"def scratch():\n    pass\n")
     (repo.path / "pkg/gone.py").unlink()
-    (repo.path / "pytest.ini").write_text("[pytest]\npython_files = test_*.py\n")
+    (repo.path / "pytest.ini").write_bytes(b"[pytest]\npython_files = test_*.py\n")
     return base
 
 
@@ -98,7 +98,7 @@ def test_plan_against_worktree_and_index(repo):
     assert selected(plan) == {"t::test_add", "t::test_mul", "t::test_gone", "t::test_new"}
     assert "pytest.ini" in reason(plan, "t::test_mul", "unanalysed_file_changed").detail
     # Put it back to see the Python changes alone.
-    (repo.path / "pytest.ini").write_text("[pytest]\n")
+    (repo.path / "pytest.ini").write_bytes(b"[pytest]\n")
     plan = repo.plan(base, "WORKTREE", targets)
     assert plan.uncommitted_analyzed
     assert {c.id: c.changes for c in plan.changes} == {
@@ -256,7 +256,7 @@ def test_skip_worktree_entries_are_read_from_the_index(repo):
     # Simulate a sparse checkout: the file is tracked but absent from disk.
     repo.git("update-index", "--skip-worktree", "pkg/sparse.py")
     (repo.path / "pkg/sparse.py").unlink()
-    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a"))
+    (repo.path / "pkg/ops.py").write_bytes((OPS.replace("a + b", "b + a")).encode())
 
     snap = read_snapshot(repo.path, "WORKTREE", ["."])
     assert snap.files["pkg/sparse.py"] == b"def sparse():\n    return 1\n"

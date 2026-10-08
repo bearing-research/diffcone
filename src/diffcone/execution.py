@@ -574,7 +574,7 @@ def read_coverage_contexts(
         if not p.is_absolute():
             p = root / p
         try:
-            return str(p.resolve().relative_to(root))
+            return p.resolve().relative_to(root).as_posix()
         except ValueError:
             if outside is not None:
                 outside.add(str(p))
