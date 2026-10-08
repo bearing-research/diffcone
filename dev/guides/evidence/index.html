@@ -1153,6 +1153,13 @@ other installed package. If your tests also depend on your own
 environment variables, record them with <code>--env-var</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>diffcone<span class="w"> </span>collect<span class="w"> </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--env-var<span class="w"> </span>MYAPP_MODE<span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
+<p>The environment is the one at the end of the recording. If your tests
+install or upgrade a package while they run (a test that runs <code>uv sync</code>
+or <code>pip install</code> with your test interpreter, for example), <code>collect</code> warns
+and names the packages: a fresh install from your lock file then never
+matches the recording, and every run falls back to a plan from the code.
+<code>run</code> says so too when it meets the environment the recording started in.
+Stop the tests from changing their own environment to use the recording.</p>
 <h2 id="keep-the-recording-current">Keep the recording current<a class="headerlink" href="#keep-the-recording-current" title="Permanent link">&para;</a></h2>
 <p>Recording the whole suite for every commit would be slow. With <code>--collect</code>,
 <code>run</code> records the tests it runs and writes a new recording for the head:

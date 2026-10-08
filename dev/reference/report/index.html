@@ -1127,6 +1127,12 @@ summary of the same information). The report's format is versioned by
 </tr>
 </tbody>
 </table>
+<p>The plan <code>diffcone run -o</code> writes is the plan that ran. When the run
+didn't use the recording because the environment differed, it also has
+<code>evidence_not_used</code>: <code>reason</code> (<code>environment</code>), <code>differences</code> (what
+differed, as <code>run</code> prints it) and <code>recording_changed_its_environment</code>
+(<code>true</code> when this environment is the one the recording's own test run
+started in, so the recorded tests changed it).</p>
 <h2 id="snapshots">Snapshots<a class="headerlink" href="#snapshots" title="Permanent link">&para;</a></h2>
 <p><code>analysis.base</code> and <code>analysis.head</code> describe the two snapshots:</p>
 <table>

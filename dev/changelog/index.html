@@ -793,6 +793,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="[Unreleased]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -819,7 +836,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -880,7 +897,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1050,6 +1067,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="[Unreleased]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1076,7 +1110,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1137,7 +1171,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1264,6 +1298,17 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A test run that changes its own environment (a test that installs or
+  upgrades a package with the test interpreter) is named: <code>collect</code> warns
+  with the packages, the recording keeps the environment it started in,
+  and <code>run</code> says when it meets that environment. The recording is still
+  keyed by the environment at the end, so such a run plans from the code.</li>
+<li><code>run -o</code> adds <code>evidence_not_used</code> (why the recording was not used, and
+  what differed) to the plan it writes, and <code>diffcone report</code> shows those
+  differences per job.</li>
+</ul>
 <h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1282,7 +1327,7 @@ selection rules.</p>
   whether the check itself failed, so a re-run reports a failed check as
   one rather than as a miss.</li>
 </ul>
-<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>On Windows, <code>uv python list</code> run through the path <code>shutil.which</code> gives
   (<code>...\uv.EXE</code>) is recognised as an inert query, as it is elsewhere; it
@@ -1317,7 +1362,7 @@ selection rules.</p>
   that reaches it whenever anything in its import closure changes, unless
   project code stores something on that module.</li>
 </ul>
-<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
   interpreter version check importing only built-in modules, with nothing
