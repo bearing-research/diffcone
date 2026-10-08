@@ -1322,12 +1322,17 @@ upload the results of <code>run</code> and <code>record</code> (as in the workfl
 a name that starts with <code>diffcone-</code> and differs per job, and per cell of a
 matrix: <code>diffcone-${{ matrix.os }}-py${{ matrix.python-version }}</code>, for
 example. The report has one row per name.</p>
-<p><code>report</code> takes <code>hours</code> (the window: runs created in this many hours before
-now; default <code>24</code>), <code>workflow</code> (only that workflow's runs; default all),
-<code>artifact-prefix</code> (default <code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code>
-(set either to an empty string to skip that issue), and <code>fail-on-miss</code>
-(default <code>false</code>). Runs still in progress are left for the next report,
-and so are artifacts that have expired.</p>
+<p>Each report covers the runs that completed since the last successful
+report started, so a run still going when one report starts is in the
+next. If an artifact can't be downloaded, the report says so and the job
+fails, and the next report covers the same runs again. Artifacts that have
+expired are not reported.</p>
+<p><code>report</code> takes <code>hours</code> (the window for the first report: runs that
+completed in this many hours before it; default <code>24</code>), <code>workflow</code> (only
+that workflow's runs; default all), <code>artifact-prefix</code> (default
+<code>diffcone-</code>), and <code>report-label</code> and <code>miss-label</code> (set either to an empty
+string to skip that issue). It reads what <code>run</code> and <code>record</code> upload from
+the same release on, so give all the actions the same tag.</p>
 <p>To read the same report locally, download the artifacts of some runs into
 one directory per run and run <code>diffcone report</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>gh<span class="w"> </span>run<span class="w"> </span>download<span class="w"> </span><span class="m">123456</span><span class="w"> </span>--pattern<span class="w"> </span><span class="s1">'diffcone-*'</span><span class="w"> </span>--dir<span class="w"> </span>runs/123456
