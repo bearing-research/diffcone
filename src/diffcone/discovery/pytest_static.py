@@ -765,14 +765,36 @@ DEFAULT_NORECURSEDIRS = (
 def _ignored(path: str, config: dict[str, Any]) -> bool:
     """Whether ``--ignore`` or ``--ignore-glob`` keeps pytest from collecting
     ``path``. pytest makes both absolute against the invocation directory
-    (the repository root here): an ``--ignore`` path is a file or a
-    directory, everything under which is skipped; an ``--ignore-glob``
-    pattern is matched with ``fnmatch`` against the whole path, so ``*``
-    crosses directories."""
-    for entry in config.get("ignore", ()):
-        if entry and (path == entry or path.startswith(entry + "/")):
-            return True
-    return any(fnmatch(path, glob) for glob in config.get("ignore_glob", ()) if glob)
+    (the repository root here) and checks each directory and file it walks
+    to from an initial path (``config["initial"]``: the run's paths or
+    ``testpaths``), never the initial path itself: an ``--ignore`` entry is
+    skipped where the walk reaches it, an ``--ignore-glob`` pattern is
+    matched with ``fnmatch`` (``*`` crosses directories). A path some
+    initial path reaches without passing an ignored one is collected."""
+    ignores = {e for e in config.get("ignore", ()) if e}
+    globs = [g for g in config.get("ignore_glob", ()) if g]
+    if not ignores and not globs:
+        return False
+    reached = False
+    for initial in config.get("initial") or ("",):
+        base = _normalise_testpath(initial)
+        if base in ("", "."):
+            base, rest = "", path
+        elif path == base:
+            return False  # named as an initial path: always collected
+        elif path.startswith(base + "/"):
+            rest = path[len(base) + 1 :]
+        else:
+            continue
+        reached = True
+        current = base
+        for part in rest.split("/"):
+            current = f"{current}/{part}" if current else part
+            if current in ignores or any(fnmatch(current, g) for g in globs):
+                break
+        else:
+            return False
+    return reached
 
 
 def _collected_dir(path: str, norecursedirs: tuple[str, ...]) -> bool:
@@ -843,38 +865,51 @@ FLAG_OPTIONS = frozenset(
 )
 
 
-def _argument_paths(args: tuple[str, ...], paths: set[str]) -> tuple[list[str], list[str]]:
+def _argument_paths(
+    args: tuple[str, ...], paths: set[str]
+) -> tuple[list[str], list[str], list[str]]:
     """Positional paths among a run's pytest arguments, which pytest collects
     from instead of ``testpaths`` (a file named there whatever
     ``python_files`` says), and tokens that name a path but follow an option
     that may take a value (``--cov src``), which cannot be told apart. A
     token counts as a path only when it names a file or directory of the
     tree and stands first, after a ``--opt=value`` token, after a known flag
-    (``FLAG_OPTIONS``) or after another positional."""
+    (``FLAG_OPTIONS``) or after another positional. Also returned: tokens in
+    a positional place that look like a path but name nothing in the tree
+    (an absolute path), which leave ``testpaths`` alone."""
     found: list[str] = []
     ambiguous: list[str] = []
+    unknown: list[str] = []
     previous: str | None = None
     for token in args:
         if token.startswith("-"):
             previous = token
             continue
-        path = _normalise_testpath(token.split("::", 1)[0])
+        path = _normalise_testpath(token.split("::", 1)[0].replace("\\", "/"))
+        positional = (
+            previous is None
+            or "=" in previous
+            or previous in FLAG_OPTIONS
+            or not previous.startswith("-")
+        )
         names_path = path not in ("", ".") and (
             path in paths or any(p.startswith(path + "/") for p in paths)
         )
         if names_path and "::" in token:
             ambiguous.append(token)  # a node id: narrower than its file
-        elif names_path and (
-            previous is None
-            or "=" in previous
-            or previous in FLAG_OPTIONS
-            or not previous.startswith("-")
-        ):
+        elif names_path and positional:
             found.append(path)
         elif names_path:
             ambiguous.append(token)
+        elif positional and (
+            "/" in token
+            or "\\" in token
+            or token.endswith(".py")
+            or PurePosixPath(token).is_absolute()
+        ):
+            unknown.append(token)
         previous = token
-    return found, ambiguous
+    return found, ambiguous, unknown
 
 
 def _unmodelled_addopts(addopts: tuple[str, ...], paths: set[str]) -> list[str]:
@@ -1793,14 +1828,19 @@ def discover_pytest(
                 )
             )
     every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
-    arg_paths, ambiguous = _argument_paths(tuple(options.runner_args), every_path)
-    for arg in ambiguous:
+    arg_paths, ambiguous, unknown = _argument_paths(tuple(options.runner_args), every_path)
+    if unknown:
+        # A path the tree does not hold as written (absolute, another
+        # spelling): what it collects is unknown, so ``testpaths`` stays.
+        arg_paths = []
+    for arg in [*ambiguous, *unknown]:
         result.notes.append(
             DiscoveryNote(
                 RUNNER,
                 "unmodelled_runner_option",
-                f"the run passes {arg!r} to pytest: a node id, or a path after an option "
-                "that may take it as its value; which tests that collects is not modelled",
+                f"the run passes {arg!r} to pytest: a node id, a path after an option that "
+                "may take it as its value, or a path discovery cannot match in the tree; which "
+                "tests that collects is not modelled",
             )
         )
     for arg in _unmodelled_addopts(tuple(config["ini_addopts"]), every_path):
@@ -1821,6 +1861,8 @@ def discover_pytest(
     if arg_paths:
         # Paths given to pytest replace ``testpaths``.
         testpaths = tuple(arg_paths)
+    # Where pytest starts collecting; ``--ignore`` never applies to these.
+    config["initial"] = testpaths
     named_files = {_normalise_testpath(tp) for tp in testpaths if tp.endswith(".py")}
 
     test_paths = [

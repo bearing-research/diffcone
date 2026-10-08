@@ -45,14 +45,26 @@ from diffcone.snapshot import GitError, _git, is_bytecode, resolve_commit, split
 
 
 def split_command(command: str) -> list[str]:
-    """A command line as a list of arguments. On Windows a backslash is a
-    path separator, not an escape (``C:\\venv\\Scripts\\python.exe``), so
-    the line is split without POSIX escapes and only the quotes around an
-    argument are removed."""
+    """A command line as a list of arguments: as a POSIX shell splits it,
+    and on Windows as Windows itself does (``CommandLineToArgvW``), where a
+    backslash separates path components (``C:\\venv\\Scripts\\python.exe``)
+    and ``--opt="a b"`` is one argument."""
     if os.name != "nt":
         return shlex.split(command)
-    parts = shlex.split(command, posix=False)
-    return [p[1:-1] if len(p) > 1 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    count = ctypes.c_int()
+    argv = shell32.CommandLineToArgvW(command, ctypes.byref(count))
+    if not argv:
+        raise ValueError(f"cannot split the command line {command!r}")
+    try:
+        return [argv[i] for i in range(count.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(argv)
 
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run --python=same"}

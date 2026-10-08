@@ -157,7 +157,7 @@ def _nested(
 ) -> tuple[str, ...] | None:
     """Every string indexing an element of ``expr`` may yield, or None when
     unbounded: a dict display whose values (or a sequence display whose
-    elements) are all sequence displays of string literals, flattened. Which
+    elements) are all tuple displays of string literals, flattened. Which
     position a string holds is not kept, so ``target[0]`` may be any of them:
     a superset."""
     if isinstance(expr, ast.Dict):
@@ -175,7 +175,9 @@ def _nested(
         return None
     out: list[str] = []
     for item in items:
-        if not isinstance(item, (ast.Tuple, ast.List, ast.Set)):
+        # Tuples only: a list or set entry can be changed in place through
+        # an alias no analysis follows (``_TABLE.get(k)[:] = [...]``).
+        if not isinstance(item, ast.Tuple):
             return None
         strings = _constant_strings(item.elts)
         if strings is None:

@@ -4127,3 +4127,83 @@ def test_a_lookup_on_an_external_module_in_scope_code_writes_to_stays_dynamic(re
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"t::test_configure", "bench_other.G.time_g"}
     assert [u for u in plan.head_index.unresolved if u.kind == "dynamic"]
+
+
+# 0.2.0 pre-release review: static rules.
+
+DYNAMIC_USE = (
+    "import logging\n\nimport pkg.handlers  # noqa: F401\n\n\n"
+    "def run(name):\n    name = ''.join(list(name))\n    return getattr(logging, name)()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        "import logging\n    logging.custom = handler",
+        "from logging import handlers\n    handlers.custom = handler",
+        "sys.modules['logging'].custom = handler",
+        "setattr(sys.modules['logging'], 'custom', handler)",
+        "importlib.import_module('logging').custom = handler",
+    ],
+)
+def test_a_write_onto_an_external_module_through_any_route_keeps_lookups_dynamic(repo, write):
+    handlers = (
+        "import importlib  # noqa: F401\nimport sys  # noqa: F401\n\n\n"
+        "def handler():\n    return {}\n\n\n"
+        f"def install():\n    {write}\n"
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/handlers.py": handlers.format(1),
+            "pkg/use.py": DYNAMIC_USE,
+            "tests/test_a.py": (
+                "from pkg.handlers import install\n\n\ndef test_install():\n    install()\n"
+            ),
+            "tests/test_b.py": (
+                "from pkg.use import run\n\n\ndef test_run():\n    assert run('custom') == 1\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/handlers.py": handlers.format(2)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_b.py::test_run" in selected(plan)
+
+
+LAZY_TABLE = (
+    "import importlib\n\n_LAZY = {{'Thing': {entry}}}\n\n\n"
+    "def __getattr__(name):\n    target = _LAZY.get(name)\n"
+    "    if target is None:\n        raise AttributeError(name)\n"
+    "    return getattr(importlib.import_module(target[0]), target[1])\n"
+)
+
+
+@pytest.mark.parametrize(
+    "entry, mutation",
+    [
+        # Another module writes through the package attribute.
+        ("('pkg.impl_a', 'Thing')", "import pkg\n\npkg._LAZY['Thing'] = ('pkg.impl_b', 'Alt')\n"),
+        # A list entry changed in place through an alias.
+        (
+            "['pkg.impl_a', 'Thing']",
+            "from pkg import _LAZY\n\n_LAZY.get('Thing')[:] = ['pkg.impl_b', 'Alt']\n",
+        ),
+    ],
+)
+def test_a_lazy_table_that_can_change_stays_unbounded(repo, entry, mutation):
+    base = repo.commit(
+        {
+            "pkg/__init__.py": LAZY_TABLE.format(entry=entry),
+            "pkg/impl_a.py": "class Thing:\n    v = 1\n",
+            "pkg/impl_b.py": "class Alt:\n    def __init__(self):\n        self.v = 1\n",
+            "pkg/m.py": mutation,
+            "tests/test_m.py": "import pkg.m  # noqa: F401\n\n\ndef test_m():\n    pass\n",
+            "tests/test_t.py": "import pkg\n\n\ndef test_thing():\n    assert pkg.Thing().v == 1\n",
+        }
+    )
+    head = repo.commit(
+        {"pkg/impl_b.py": "class Alt:\n    def __init__(self):\n        self.v = 3\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert "tests/test_t.py::test_thing" in selected(plan)

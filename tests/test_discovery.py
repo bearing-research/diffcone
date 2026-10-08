@@ -1571,3 +1571,38 @@ def test_a_path_after_an_option_that_may_take_it_is_reported(repo):
         )  # fmt: skip
         assert "tests/test_b.py::test_b" in {t.runner_id for t in plan.targets}
         assert [n.kind for n in plan.incomplete_discovery] == ["unmodelled_runner_option"]
+
+
+def test_ignore_never_applies_to_where_pytest_starts(repo):
+    """pytest never ignores an initial path (a run argument, or a
+    ``testpaths`` entry), only what it finds below one."""
+    rev = repo.commit(
+        {
+            "pyproject.toml": (
+                "[tool.pytest.ini_options]\naddopts = '--ignore=tests/integration'\n"
+                "testpaths = ['tests/unit', 'tests/integration']\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/unit/__init__.py": "",
+            "tests/unit/test_u.py": "def test_u():\n    pass\n",
+            "tests/integration/__init__.py": "",
+            "tests/integration/test_x.py": "def test_i():\n    pass\n",
+        }
+    )
+    for args in ((), ("tests/integration",), ("tests/integration/test_x.py",)):
+        plan = repo.plan(
+            rev, rev, [], discover_runners=["pytest"],
+            discovery_options=DiscoveryOptions(runner_args=args),
+        )  # fmt: skip
+        assert "tests/integration/test_x.py::test_i" in {t.runner_id for t in plan.targets}, args
+
+
+def test_a_path_argument_discovery_cannot_match_keeps_testpaths(repo):
+    rev = repo.commit(ARG_PATH_FILES)
+    args = ("tests/test_a.py", str(repo.path / "tests" / "test_b.py"))
+    plan = repo.plan(
+        rev, rev, [], discover_runners=["pytest"],
+        discovery_options=DiscoveryOptions(runner_args=args),
+    )  # fmt: skip
+    assert "tests/test_b.py::test_b" in {t.runner_id for t in plan.targets}
+    assert [n.kind for n in plan.incomplete_discovery] == ["unmodelled_runner_option"]

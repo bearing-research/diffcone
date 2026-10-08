@@ -343,8 +343,9 @@ directly, via `.keys()`, or as the first name of a `for key, value in
 D.items()` target), a dict literal's string values (`D[key]`,
 `D.get(key)`, `D.get(key, None)`, `D.values()`, or the second name of a `for
 key, value in D.items()` target) or a sequence literal's elements (`L[i]`,
-a slice excepted), the strings in the tuples a dict or sequence literal
-holds, indexed twice (`target = D.get(name)` then `target[0]`, a PEP 562
+a slice excepted), the strings in the tuples (tuples only: a list entry
+can change in place through an alias) a dict or sequence literal holds,
+indexed twice (`target = D.get(name)` then `target[0]`, a PEP 562
 lazy-export `__getattr__`: which position a string holds is not kept, so
 every string of every tuple is a candidate), a variable assigned
 only such values (in the function or at module level) and never mutated in
@@ -553,9 +554,14 @@ Unknown is never treated as unaffected:
   what that module defines, outside the analysis, so it is neither a
   dynamic reference nor a reflection site, unless in-scope code stores
   something on that module (or a module above or below it) through a name
-  it resolves: `logging.X = ...`, `setattr(logging, ...)`,
-  `monkeypatch.setattr(logging, ...)` or a dotted string naming it. Writes
-  through an alias are outside the model, as they are for in-scope modules.
+  it resolves (a function-local import included): `logging.X = ...`,
+  `setattr(logging, ...)`, `monkeypatch.setattr(logging, ...)` or a dotted
+  string naming it; a write onto a module found at run time
+  (`sys.modules[name].X = ...`, `import_module(name).X = ...`) counts for
+  every external module. Writes through an alias are outside the model, as
+  they are for in-scope modules. A module written to through an attribute
+  (`import pkg` then `pkg._TABLE[k] = v` or `pkg.X = v`) has none of its
+  literal tables bounded.
   A dynamic *import* (`__import__`,
   `importlib.import_module` or the builtin `__import__` with an unbounded
   name) can reach anything. Such an import is attributed to the *caller that
@@ -965,6 +971,11 @@ Further rules (pre-release audit, round 2):
   positional. A node id, or a path after an unknown option (`--cov src`),
   is reported (`unmodelled_runner_option`): read as a path it would narrow
   the targets, read as a value it leaves targets pytest does not collect.
+  A path-like argument that names nothing in the tree as written (an
+  absolute path) is reported too, and `testpaths` then stays.
+* `--ignore` / `--ignore-glob` apply only below the initial paths (the
+  run's paths, or `testpaths`): pytest never ignores an initial path, and
+  checks each directory and file it walks to from one.
 * An `addopts` entry that overrides the configuration (`-o`, `-c`,
   `--rootdir`, `--pyargs`) or names a path is reported
   (`unmodelled_runner_option`); so is a collection hook in a plugin module

@@ -104,11 +104,21 @@ runs:
         cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
         # The same pytest arguments as the run below (doctest options change
         # what discovery finds), so plan.json is the plan the run executes.
+        rc=0
         diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" -o diffcone-results/plan.json -- "${args[@]}" \
-          || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
-        $(command -v python3 || command -v python) -c "import json; p = json.load(open('diffcone-results/plan.json')); \
-          print('selected=%d' % len(p['selected_targets']))" >> "$GITHUB_OUTPUT"
+          "${evidence[@]}" -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
+        if [ "$rc" -eq 2 ] && [ ${#evidence[@]} -gt 0 ]; then
+          # A recording diffcone cannot use here (other source roots, an
+          # older store format): plan from the code instead.
+          echo "::warning::the restored recording could not be used; planning statically"
+          evidence=()
+          rc=0
+          diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
+            -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
+        fi
+        [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ] || exit "$rc"
+        "$(command -v python3 || command -v python)" -c "import json; p = json.load(open('diffcone-results/plan.json')); \
+          print('selected=%d' % len(p['selected_targets']))" | tr -d '\r' >> "$GITHUB_OUTPUT"
         allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)
         diffcone run --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
           "${evidence[@]}" "${allow[@]}" --command "$COMMAND" -- \

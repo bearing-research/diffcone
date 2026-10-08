@@ -67,6 +67,7 @@ zlib-compressed JSON records, one per run of consecutive items of a test).
 
 from __future__ import annotations
 
+import ast
 import functools
 import gc
 import hashlib
@@ -428,7 +429,13 @@ def _actor() -> str:
     return "other"
 
 
-def _touch(path, listing: bool = False) -> None:
+def _touch(path, listing: bool = False, own_source: bool = False) -> None:
+    """``own_source``: a stat of a source file. While a module is being
+    imported, its stat of its *own* file (``Path(__file__).resolve()``)
+    sees only that the file exists, recorded as a name seen like a listing;
+    every other stat of a source file (``os.path.getsize``, ``linecache``
+    checking ``inspect.getsource``'s cached copy) can depend on what the
+    file holds and counts as reading it."""
     if isinstance(path, int) or path is None:
         return
     try:
@@ -441,6 +448,8 @@ def _touch(path, listing: bool = False) -> None:
     actor = _actor()
     if actor == "import":
         return
+    if own_source and not active and importing and importing[-1] == rel:
+        listing = True
     if active:
         # Inside a test anything counts: a library or plugin reading a file
         # for the test (a data-directory fixture copying files) included.
@@ -495,26 +504,90 @@ _INERT_QUERIES = (
     ("uv", ("--version",)),
     ("uv", ("-V",)),
 )
-# Ways a ``-c`` snippet could load code that is not written in it.
-_CODE_LOADERS = re.compile(r"\b(exec|eval|open|runpy|import_module|__import__|compile)\b")
+# A ``-c`` snippet is inert only when everything it imports is built into
+# the interpreter (nothing on ``sys.path``, the working directory or
+# ``PYTHONPATH`` can stand in for it), and it names nothing that loads or
+# runs code by other means.
+_LOADING_NAMES = frozenset(
+    {
+        "exec",
+        "eval",
+        "compile",
+        "open",
+        "__import__",
+        "__builtins__",
+        "builtins",
+        "__loader__",
+        "__spec__",
+        "breakpoint",
+        "_imp",
+        "execfile",
+        "system",
+        "popen",
+        "spawnl",
+        "spawnv",
+        "execv",
+        "execl",
+        "fork",
+        "startfile",
+        "modules",
+        "path",
+        "meta_path",
+        "path_hooks",
+        "setprofile",
+        "settrace",
+        "addaudithook",
+    }
+)
+# Environment variables that make an interpreter run or find other code.
+_LOADING_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH")
+_INTERPRETER = re.compile(r"python[0-9.]*(\.exe)?", re.IGNORECASE)
+
+
+def _inert_snippet(code: str) -> bool:
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""] if not node.level else [""]
+        else:
+            modules = []
+        if any(m.split(".")[0] not in sys.builtin_module_names for m in modules):
+            return False
+        if isinstance(node, ast.Name) and node.id in _LOADING_NAMES:
+            return False
+        if isinstance(node, ast.Attribute) and node.attr in _LOADING_NAMES:
+            return False
+    return True
 
 
 def _inert_probe(event: str, args: tuple) -> bool:
     """Whether a subprocess cannot run project code: a Python interpreter
-    running a ``-c`` snippet that names no project package and loads no code
-    by name (``python -c "import sys; print(sys.version_info)"``, how tools
-    probe an interpreter's version), or one of ``_INERT_QUERIES`` (``uv
-    python list``). Anything else (``-m``, a script, another program,
-    ``os.system``) may run project code where this process cannot see it."""
+    (by name, ``python3.13``, ``python.exe``) running nothing but a ``-c``
+    snippet that imports only built-in modules and names nothing that loads
+    code, with no environment pointing it at other code (``python -c
+    "import sys; print(sys.version_info)"``, how tools probe an interpreter's
+    version); or one of ``_INERT_QUERIES`` (``uv python list``). Anything
+    else (``-m``, a script, another program, ``os.system``) may run project
+    code where this process cannot see it."""
+    executable = env = None
     if event == "subprocess.Popen":
-        argv = args[1] if len(args) > 1 else None
+        executable, argv = args[0], args[1] if len(args) > 1 else None
+        env = args[3] if len(args) > 3 else None
     elif event in ("os.posix_spawn", "os.exec"):
         argv = args[1] if len(args) > 1 else None
+        env = args[2] if len(args) > 2 else None
     else:
         return False
     if isinstance(argv, str) and os.name == "nt":
         # Windows raises the event with the command line ``list2cmdline``
-        # built: split it the same way, quotes around an argument removed.
+        # built. An escaped quote is beyond this simple split: not inert.
+        if '\\"' in argv:
+            return False
         argv = [
             a[1:-1] if len(a) > 1 and a[0] == a[-1] == '"' else a
             for a in shlex.split(argv, posix=False)
@@ -529,21 +602,32 @@ def _inert_probe(event: str, args: tuple) -> bool:
         return False
     program = argv[0]
     name = os.path.basename(program)
-    if any(
+    try:
+        runs = os.path.basename(os.fsdecode(executable)) if executable is not None else name
+    except TypeError:
+        return False
+    if runs == name and any(
         name == tool and tuple(argv[1 : 1 + len(start)]) == start for tool, start in _INERT_QUERIES
     ):
         return True
-    if not (name.startswith("python") or program == sys.executable):
+    if not (_INTERPRETER.fullmatch(name) or program == sys.executable):
         return False
+    if not _INTERPRETER.fullmatch(runs) and executable != sys.executable:
+        return False
+    if env is not None:
+        try:
+            if any(k in env for k in _LOADING_ENV):
+                return False
+        except TypeError:
+            return False
     i = 1
     while i < len(argv) and argv[i] in _PLAIN_OPTIONS:
         i += 1
-    if i + 1 >= len(argv) or argv[i] != "-c":
+    # ``-c CODE`` and nothing after it (an argument could be a path the
+    # snippet puts on ``sys.path``).
+    if len(argv) != i + 2 or argv[i] != "-c":
         return False
-    code = argv[i + 1]
-    if _CODE_LOADERS.search(code):
-        return False
-    return not any(re.search(rf"\b{re.escape(p)}\b", code) for p in PACKAGES)
+    return _inert_snippet(argv[i + 1])
 
 
 def _credit_running_threads(window: dict) -> None:
@@ -606,10 +690,7 @@ def _wrap_stat(original):
     def stat(path, *args, **kwargs):
         if recording:
             try:
-                # A stat of a source file sees that it exists, not what it
-                # holds (``Path(__file__).resolve()`` at import stats the
-                # module's own file): recorded as a name seen, like a listing.
-                _touch(path, listing=_is_source(path))
+                _touch(path, own_source=_is_source(path))
             except Exception as exc:
                 _error("stat", exc)
         return original(path, *args, **kwargs)

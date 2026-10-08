@@ -347,19 +347,40 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _external_module(self, expr: ast.expr | None) -> str | None:
         """The external module ``expr`` names (``logging``, ``os.path``), if
-        it names one through this scope's bindings."""
+        it names one through this scope's bindings (a function-local import
+        included)."""
         chain = _flatten_chain(expr) if expr is not None else None
-        if chain is None or chain[0] in self.scope.locals:
+        if chain is None or (
+            chain[0] in self.scope.locals and chain[0] not in self.scope.local_imports
+        ):
             return None
         node = self.indexer.resolve_chain(chain, self.scope)
         return node.module if isinstance(node, External) else None
+
+    def _written_module(self, expr: ast.expr | None) -> str | None:
+        """The external module a write's receiver may be: one it names, or
+        ``*`` (any) for a module found at run time (``sys.modules[name]``,
+        ``import_module(name)``, ``__import__(name)``)."""
+        if expr is None:
+            return None
+        module = self._external_module(expr)
+        if module is not None:
+            return module
+        for node in ast.walk(expr):
+            if isinstance(node, ast.Attribute) and node.attr == "modules":
+                return "*"
+            if isinstance(node, ast.Call):
+                parts = _flatten_chain(node.func) or []
+                if parts and parts[-1] in ("import_module", "__import__"):
+                    return "*"
+        return None
 
     def _attribute_write(self, node: ast.Attribute) -> None:
         """A store or delete of ``<receiver>.<attr>``: on ``self`` it is a
         write of that class's instance attribute (bound only when it is a
         plain ``__init__`` assignment); on any other receiver the type is
         unknown, so no class's ``attr`` can be bounded."""
-        if (module := self._external_module(node.value)) is not None:
+        if (module := self._written_module(node.value)) is not None:
             self.indexer.out.external_writes.add(module)
         if (cls := self._self_class(node.value)) is not None:
             binding = self._bindings.pop(id(node), None)
@@ -399,7 +420,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
         """``setattr(receiver, name, ...)`` and its relatives."""
-        if (module := self._external_module(receiver)) is not None:
+        if (module := self._written_module(receiver)) is not None:
             self.indexer.out.external_writes.add(module)
         names = self.scope.string_candidates(name) if name is not None else None
         owner = (self._self_class(receiver) if receiver is not None else None) or ""

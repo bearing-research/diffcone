@@ -170,6 +170,8 @@ class Indexer(DynamicBounds):
         written = self._global.external_writes
 
         def touched(module: str) -> bool:
+            if "*" in written:  # a module found at run time was written to
+                return True
             return any(
                 w == module or w.startswith(module + ".") or module.startswith(w + ".")
                 for w in written
@@ -290,6 +292,10 @@ class Indexer(DynamicBounds):
         the literal it was assigned: unbind it everywhere (its own module and
         the modules that import it), so names drawn from it stay dynamic."""
         mutated: set[tuple[str, str]] = set()
+        # Modules written to through an attribute (``import pkg`` then
+        # ``pkg._TABLE[k] = v`` or ``pkg.X = v``): which of their tables is
+        # not tracked, so none of them is the literal it was.
+        written: set[str] = set()
         for scope in self.scopes.values():
             for name in scope.mutations:
                 if name in scope.variables:
@@ -297,6 +303,13 @@ class Indexer(DynamicBounds):
                 binding = scope.imports.get(name)
                 if binding is not None and binding.attr is not None:
                     mutated.add((binding.module, binding.attr))
+                elif binding is not None:
+                    written.add(binding.module)
+        for module in written:
+            target = self.scopes.get(module)
+            if target is not None:
+                for key in list(target.literal_names):
+                    target.literal_names[key] = None
         for module, name in mutated:
             target = self.scopes.get(module)
             if target is not None and name in target.literal_names:

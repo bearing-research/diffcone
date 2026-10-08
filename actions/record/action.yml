@@ -92,30 +92,51 @@ runs:
       run: |
         roots=(); for r in $ROOTS; do roots+=(--source-root "$r"); done
         eval "args=($PYTEST_ARGS)"
+        py=$(command -v python3 || command -v python)
         mkdir -p "$RESULTS"
         echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
-        # The previous full run's results: failures it had are not misses.
-        cp .diffcone/baseline.xml "$RESULTS/previous.xml" 2>/dev/null || true
-        # A shallow checkout lacks the first parent.
-        git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null \
-          || git fetch --quiet --deepen=1 origin "$(git rev-parse HEAD)" 2>/dev/null || true
-        if ! git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null; then
-          echo "::notice::the commit has no parent to compare with; nothing to check"
+        head=$(git rev-parse HEAD)
+        # A re-run of this commit's job restores its own recording and the
+        # verdict it reached: that verdict stands (a miss stays a miss).
+        if [ -f .diffcone/check.json ] && \
+          [ "$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['commit'])" .diffcone/check.json | tr -d '\r')" = "$head" ]; then
+          cp .diffcone/check.json "$RESULTS/sticky.json"
+          echo "::notice::this commit was checked by an earlier run; keeping its verdict"
           exit 0
         fi
-        store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
-        evidence=()
-        if [ -n "$store" ]; then
-          commit=$(basename "$store" | cut -d- -f1)
-          if git cat-file -e "$commit^{commit}" 2>/dev/null \
-            || git fetch --quiet --depth=1 origin "$commit" 2>/dev/null; then
-            evidence=(--evidence "$store")
-          fi
+        # The previous full run's results: failures it had are not misses.
+        # Without them every failure already there would look like a miss.
+        if [ ! -f .diffcone/baseline.xml ]; then
+          echo "::notice::no previous full run to compare with; not checking this push"
+          exit 0
         fi
-        [ ${#evidence[@]} -eq 0 ] && echo "::notice::no previous recording; checking the static plan"
+        cp .diffcone/baseline.xml "$RESULTS/previous.xml"
+        # A shallow checkout lacks the first parent.
+        git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null \
+          || git fetch --quiet --deepen=1 origin "$head" 2>/dev/null || true
+        if ! git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null; then
+          echo "::notice::the commit has no parent to compare with; not checking this push"
+          exit 0
+        fi
+        # The verdict needs the recording the baseline came from: planned
+        # from it, the change since that commit is covered, whatever lies
+        # between it and the first parent.
+        store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
+        commit=$(basename "${store:-x}" | cut -d- -f1)
+        if [ -z "$store" ] || ! { git cat-file -e "$commit^{commit}" 2>/dev/null \
+          || git fetch --quiet --depth=1 origin "$commit" 2>/dev/null; }; then
+          echo "::notice::the previous recording cannot be used here; not checking this push"
+          exit 0
+        fi
+        rc=0
         diffcone plan --base HEAD^1 --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" -o "$RESULTS/plan.json" -- "${args[@]}" \
-          || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
+          --evidence "$store" -o "$RESULTS/plan.json" -- "${args[@]}" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+          # A recording diffcone cannot read (other source roots, an older
+          # store format) must not stop the recording itself.
+          echo "::warning::the previous recording could not be used ($store); not checking this push"
+          rm -f "$RESULTS/plan.json"
+        fi
     - name: Record
       shell: bash
       env:
@@ -134,6 +155,9 @@ runs:
         # recording exits non-zero and nothing is saved.
         diffcone collect --command "$COMMAND" "${roots[@]}" "${vars[@]}" -- \
           "${args[@]}" "--junitxml=$JUNIT"
+        # The next run's baseline is kept with the recording.
+        [ "$JUNIT" -ef .diffcone/baseline.xml ] || cp "$JUNIT" .diffcone/baseline.xml
+        rm -f .diffcone/check.json
         # Index and discover this commit once, so pull requests start warm.
         diffcone plan --base HEAD --head HEAD --discover pytest "${roots[@]}" \
           --evidence auto -o /dev/null -- "${args[@]}" || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
@@ -145,55 +169,104 @@ runs:
         # new entry, so a nightly on an unchanged branch still saves.
         echo "key=$PREFIX--$commit-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       id: record
-    - name: Save
-      uses: actions/cache/save@v6
-      with:
-        path: .diffcone
-        key: ${{ steps.record.outputs.key }}
     - name: Check the plan against this full run
       if: inputs.check == 'true'
       id: check
       shell: bash
       env:
         COMMAND: ${{ inputs.command }}
+        PYTEST_ARGS: ${{ inputs.pytest-args }}
         JUNIT: ${{ inputs.junit }}
         RESULTS: ${{ runner.temp }}/diffcone-results
       run: |
-        if [ ! -f "$RESULTS/plan.json" ]; then
-          echo "misses=0" >> "$GITHUB_OUTPUT"
+        py=$(command -v python3 || command -v python)
+        head=$(git rev-parse HEAD)
+        record() {  # the verdict, kept with the recording for a re-run of this job
+          "$py" -c "import json,sys; json.dump({'commit': sys.argv[1], 'misses': int(sys.argv[2])}, open('.diffcone/check.json', 'w'))" "$head" "$1"
+          echo "misses=$1" >> "$GITHUB_OUTPUT"
+        }
+        if [ -f "$RESULTS/sticky.json" ]; then
+          misses=$("$py" -c "import json,sys; print(json.load(open(sys.argv[1]))['misses'])" "$RESULTS/sticky.json" | tr -d '\r')
+          [ "$misses" -gt 0 ] && echo "::error::an earlier run of this commit found $misses miss(es) diffcone did not select"
+          record "$misses"
           exit 0
         fi
-        baseline=()
-        [ -f "$RESULTS/previous.xml" ] && baseline=(--baseline "$RESULTS/previous.xml")
+        if [ ! -f "$RESULTS/plan.json" ]; then
+          record 0
+          exit 0
+        fi
         status=0
-        diffcone check --plan "$RESULTS/plan.json" --full "$JUNIT" "${baseline[@]}" \
+        diffcone check --plan "$RESULTS/plan.json" --full "$JUNIT" --baseline "$RESULTS/previous.xml" \
           --format json -o "$RESULTS/verdict.json" || status=$?
-        diffcone check --plan "$RESULTS/plan.json" --full "$JUNIT" "${baseline[@]}" \
+        diffcone check --plan "$RESULTS/plan.json" --full "$JUNIT" --baseline "$RESULTS/previous.xml" \
           --format markdown -o "$RESULTS/verdict.md" || true
-        cat "$RESULTS/verdict.md" >> "$GITHUB_STEP_SUMMARY"
-        [ "$status" -ge 2 ] && exit "$status"
+        cat "$RESULTS/verdict.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+        if [ "$status" -ge 2 ]; then
+          echo "::error::diffcone check failed (exit $status); see the log"
+          record 1
+          exit 0
+        fi
         misses=0
         if [ "$status" -eq 1 ]; then
-          # A miss must fail again on its own: a flaky test is not one.
-          missed=()
+          # A miss must fail again on its own: a flaky test is not one. Only
+          # a test can be re-run; a file that failed to collect, or a failure
+          # no target names, stands as found.
+          ids=(); other=0
           while IFS= read -r line; do
-            [ -n "$line" ] && missed+=("$line")
-          done < <($(command -v python3 || command -v python) -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/verdict.json")
-          $COMMAND -p no:cacheprovider "${missed[@]}" --junitxml="$RESULTS/rerun.xml" \
-            > "$RESULTS/rerun.log" 2>&1 || true
-          confirmed=0
-          diffcone check --plan "$RESULTS/plan.json" --full "$RESULTS/rerun.xml" \
-            "${baseline[@]}" --format json -o "$RESULTS/rerun-verdict.json" || confirmed=$?
-          if [ "$confirmed" -eq 1 ]; then
-            misses=$($(command -v python3 || command -v python) -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json")
-            echo "::error::diffcone missed $misses failing test(s) that fail again when re-run; see the job summary"
-          else
-            echo "::warning::${#missed[@]} unselected failure(s) passed when re-run (flaky); not counted as misses"
+            line=${line%$'\r'}
+            case "$line" in
+              test\ *) ids+=("${line#test }") ;;
+              ?*) other=$((other + 1)) ;;
+            esac
+          done < <("$py" -c "
+        import json, sys
+        v = json.load(open(sys.argv[1]))
+        kinds = {f['test']: f['kind'] for f in v['failures']}
+        for test in v['misses']:
+            print(kinds.get(test, 'unknown'), test)" "$RESULTS/verdict.json")
+          confirmed=$other
+          if [ ${#ids[@]} -gt 0 ]; then
+            # The run's own options (markers, -W, plugins), but not its
+            # paths: the re-run names the tests.
+            eval "args=($PYTEST_ARGS)"
+            rerun=(); prev=""
+            for a in "${args[@]}"; do
+              if [[ "$a" != -* ]] && [ -e "${a%%::*}" ] && \
+                { [ -z "$prev" ] || [[ "$prev" == *=* ]] || [[ "$prev" != -* ]]; }; then
+                prev="$a"; continue
+              fi
+              rerun+=("$a"); prev="$a"
+            done
+            rc=0
+            $COMMAND "${rerun[@]}" -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${ids[@]}" \
+              > "$RESULTS/rerun.log" 2>&1 || rc=$?
+            again=0
+            if [ ! -f "$RESULTS/rerun.xml" ] || [ "$rc" -ge 2 ]; then
+              # Nothing ran (usage error, no tests): the misses cannot be
+              # told flaky, so they stand.
+              again=${#ids[@]}
+            else
+              diffcone check --plan "$RESULTS/plan.json" --full "$RESULTS/rerun.xml" \
+                --baseline "$RESULTS/previous.xml" --format json -o "$RESULTS/rerun-verdict.json" \
+                && again=0 \
+                || again=$("$py" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json" | tr -d '\r')
+            fi
+            confirmed=$((confirmed + again))
+            [ "$again" -lt "${#ids[@]}" ] && \
+              echo "::warning::$(( ${#ids[@]} - again )) unselected failure(s) passed when re-run (flaky); not counted as misses"
           fi
+          misses=$confirmed
+          [ "$misses" -gt 0 ] && echo "::error::diffcone missed $misses failing test(s) that fail again when re-run; see the job summary"
         fi
-        echo "misses=$misses" >> "$GITHUB_OUTPUT"
+        record "$misses"
+    - name: Save
+      if: always() && steps.record.outcome == 'success'
+      uses: actions/cache/save@v6
+      with:
+        path: .diffcone
+        key: ${{ steps.record.outputs.key }}
     - name: Fail on test failures or misses
-      if: inputs.check == 'true' || inputs.fail-on-test-failure == 'true'
+      if: always() && steps.record.outcome == 'success' && (inputs.check == 'true' || inputs.fail-on-test-failure == 'true')
       shell: bash
       env:
         JUNIT: ${{ inputs.junit }}
@@ -207,8 +280,9 @@ runs:
         print(sum(int(s.get("failures", 0)) + int(s.get("errors", 0)) for s in suites))
         PY
         )
+        failed=${failed%$'\r'}
         status=0
-        if [ "$FAIL_TESTS" = "true" ] && [ "$failed" -gt 0 ]; then
+        if [ "$FAIL_TESTS" = "true" ] && [ "${failed:-0}" -gt 0 ]; then
           echo "::error::$failed test(s) failed or errored"
           status=1
         fi

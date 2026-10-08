@@ -156,16 +156,24 @@ jobs:
 
 On a push, `record` with `check: true`:
 
-1. restores the newest recording and plans the commit's own change (its
-   first parent to it) from it;
-2. runs the full suite under the recorder and saves the new recording;
-3. compares the plan with the full run: a new failure the plan didn't
-   select is run again, and if it fails again it is a miss, which fails the
-   job. One that passes the second time is reported as flaky. Tests that
-   already failed in the previous push's run are not misses.
+1. restores the newest recording and plans the commit's change from it;
+2. runs the full suite under the recorder;
+3. compares the plan with the full run. A new failure the plan didn't
+   select is run again, with the same pytest options. If it fails again,
+   it is a miss, and the job fails. If it passes the second time, it is
+   reported as flaky. Failures the recorded run already had are not
+   misses;
+4. saves the new recording, together with the verdict. Re-running a job
+   that found a miss finds it again.
+
+The check is skipped, with a note, when there is nothing to compare with:
+no recording yet, a recording diffcone can't use (made with other source
+roots, for example), or a commit with no parent. The recording is still
+made and saved.
 
 With `fail-on-test-failure: true` a failing test fails the job too, as a
-plain test run would, after the recording is saved.
+plain test run would, after the recording is saved. A test file that can't
+be collected stops the recording itself, which fails the job.
 
 As with the nightly setup, only runs on the default branch can save the
 recording; pull requests only restore it.
@@ -173,7 +181,7 @@ recording; pull requests only restore it.
 ## How the cache is shared
 
 Each recording is saved with `actions/cache` under its own key,
-`<key-prefix>--<commit>-<run>`, and pull requests restore the newest one
+`<key-prefix>--<commit>-<run id>-<attempt>`, and pull requests restore the newest one
 with their prefix (`diffcone-ubuntu` never restores a recording of
 `diffcone-ubuntu-py312`). If a recording's commit is no longer on the
 branch (after a force push), the run plans without it and says so. A

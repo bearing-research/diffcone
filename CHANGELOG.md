@@ -39,12 +39,13 @@ selection rules.
 ### Execution evidence
 
 - A test that runs a `python -c` snippet that can't run project code (an
-  interpreter version check) or `uv python list` is no longer always
-  selected.
+  interpreter version check importing only built-in modules, with nothing
+  after the code and no `PYTHONPATH`-like environment) or `uv python list`
+  is no longer always selected.
 - Editing a module that looks at its own file at import
   (`Path(__file__).resolve()`) no longer replans all its importers from
-  the code: a stat of a source file records that it exists, not what it
-  holds.
+  the code: that stat records only that the file exists. Any other stat of
+  a source file during a test counts as reading it.
 - A test that leaves a thread running is no longer always selected;
   instead every test is credited with the code background threads are in
   the middle of while it runs, which also covers a later test running
@@ -55,7 +56,8 @@ selection rules.
 - Test files and directories named after `--` replace `testpaths`, as in
   pytest; a node id, or a path after an option that may take it as its
   value, is reported instead of guessed.
-- `--ignore` and `--ignore-glob` (in `addopts` or after `--`) are honoured:
+- `--ignore` and `--ignore-glob` (in `addopts` or after `--`) are honoured,
+  below the paths pytest starts from, as pytest applies them:
   ignored tests are no longer targets, which `run` reported as selected
   but not collected.
 - Importing a library's test helper whose name looks like a test class

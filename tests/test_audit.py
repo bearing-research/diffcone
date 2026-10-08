@@ -2694,7 +2694,131 @@ def test_record_checks_a_push_against_its_full_run_and_fails_on_a_confirmed_miss
     steps = [line.strip() for line in record.splitlines() if line.strip().startswith("- name:")]
     order = [s.split(": ", 1)[1] for s in steps]
     assert order.index("Restore the previous recording") < order.index("Plan the commit's change")
-    assert order.index("Plan the commit's change") < order.index("Record") < order.index("Save")
+    # The verdict is reached before the recording is saved, and saved with
+    # it, so a re-run of a job that found a miss finds it again.
+    assert order.index("Plan the commit's change") < order.index("Record")
+    assert order.index("Record") < order.index("Check the plan against this full run")
+    assert order.index("Check the plan against this full run") < order.index("Save")
     assert order.index("Save") < order.index("Fail on test failures or misses")
+    assert "sticky.json" in record and ".diffcone/check.json" in record
     assert "--base HEAD^1 --head HEAD" in record
     assert "rerun.xml" in record and '--baseline "$RESULTS/previous.xml"' in record
+
+
+# 0.2.0 pre-release review: recorder.
+
+
+@needs_monitoring
+def test_a_second_getsource_of_a_file_is_still_a_read(repo):
+    """``inspect.getsource`` only stats a file linecache already holds: the
+    second test reading it recorded no read, so an edit missed it."""
+    reader = (
+        "import inspect\n\nfrom lib.core import f\n\n\n"
+        "def test_{0}():\n    assert 'return 1' in inspect.getsource(f)\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/core.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": reader.format("a"),
+            "tests/test_b.py": reader.format("b"),
+        },
+        {"lib/core.py": "def f():\n    return 22\n"},
+    )
+    assert {"tests/test_a.py::test_a", "tests/test_b.py::test_b"} <= chosen
+
+
+@needs_monitoring
+def test_a_test_checking_a_source_files_size_is_selected_when_it_changes(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/core.py": "X = 1\n",
+            "tests/__init__.py": "",
+            "tests/test_size.py": (
+                "import os\n\n\ndef test_size():\n    assert os.path.getsize('lib/core.py') == 6\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+        {"lib/core.py": "X = 22\n"},
+    )
+    assert chosen == {"tests/test_size.py::test_size"}
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "call",
+    [
+        # Project code found through the child's working directory, or
+        # through PYTHONPATH: the snippet itself names no project package.
+        "subprocess.run([sys.executable, '-c', 'import helper; assert helper.VALUE == 1'], "
+        "cwd=HERE, check=True)",
+        "subprocess.run([sys.executable, '-c', 'import helper; assert helper.VALUE == 1'], "
+        "env={**os.environ, 'PYTHONPATH': HERE}, check=True)",
+        # A standard-library module that runs code it reads from a file.
+        "subprocess.run([sys.executable, '-c', 'import doctest, sys; "
+        'sys.exit(doctest.testfile("t.txt", module_relative=False).failed)\'], '
+        "cwd=HERE, check=True)",
+    ],
+)
+def test_a_snippet_that_can_run_project_code_still_flags(repo, call):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "tests/__init__.py": "",
+            "tests/helper.py": "VALUE = 1\n",
+            "tests/t.txt": ">>> import helper\n>>> helper.VALUE\n1\n",
+            "tests/test_p.py": (
+                "import os\nimport subprocess\nimport sys\n\nHERE = os.path.dirname(__file__)\n\n\n"
+                f"def test_p():\n    {call}\n"
+            ),
+            "tests/test_q.py": "def test_q():\n    pass\n",
+        },
+        {"tests/helper.py": "VALUE = 22\n"},
+    )
+    assert "tests/test_p.py::test_p" in chosen
+
+
+@needs_monitoring
+def test_a_program_named_like_python_is_not_an_interpreter(repo):
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/core.py": "def f():\n    return 1\n",
+            "bin/python-tool": "#!/bin/sh\nexit 0\n",
+            "tests/__init__.py": "",
+            "tests/test_tool.py": (
+                "import subprocess\n\n\ndef test_tool():\n"
+                "    subprocess.run(['bin/python-tool', '-c', 'x'], executable='sh')\n"
+            ),
+            "tests/test_other.py": "from lib.core import f\n\n\ndef test_other():\n    f()\n",
+        },
+        {"lib/core.py": "def f():\n    return 2\n"},
+    )
+    assert "tests/test_tool.py::test_tool" in chosen
+
+
+@needs_monitoring
+def test_a_version_probe_in_another_directory_stays_inert(repo):
+    """strata's probe: a working directory, ``import sys`` only."""
+    chosen = _evidence_selects(
+        repo,
+        {
+            "lib/__init__.py": "",
+            "lib/core.py": "def f():\n    return 1\n",
+            "tests/__init__.py": "",
+            "tests/test_v.py": (
+                "import os\nimport subprocess\nimport sys\n\n\ndef test_v():\n"
+                "    code = \"import sys; print(f'{sys.version_info.major}')\"\n"
+                "    subprocess.run([sys.executable, '-c', code],"
+                " cwd=os.path.dirname(__file__), check=True)\n"
+            ),
+            "tests/test_f.py": "from lib.core import f\n\n\ndef test_f():\n    f()\n",
+        },
+        {"lib/core.py": "def f():\n    return 2\n"},
+    )
+    assert chosen == {"tests/test_f.py::test_f"}
