@@ -8,6 +8,8 @@ selection rules.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-08
+
 ### CI
 
 - `diffcone report --dir DIR` reports on many CI runs of the actions: per
@@ -20,6 +22,10 @@ selection rules.
 - `run` and `record` write `context.json` (what they did, and why a plan
   was made from the code or a push was not checked) into the results they
   upload; `run` also writes `ran.json`, the plan that ran.
+- The verdict `record` keeps for a re-run of the same commit
+  (`.diffcone/check.json`) also says whether the push was checked and
+  whether the check itself failed, so a re-run reports a failed check as
+  one rather than as a miss.
 
 ### Execution evidence
 
@@ -159,5 +165,6 @@ The first release.
   `actions/check`) to record nightly on the default branch and plan, run
   and check each pull request against it; see `docs/ci.md`.
 
+[0.3.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.2.0
 [0.1.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 [project]
 name = "diffcone"
-version = "0.2.0"
+version = "0.3.0"
 description = "Static-first, function-level change-impact engine for Python: which tests and benchmarks a change can affect, and why"
 readme = "README.md"
 license = "MIT"
