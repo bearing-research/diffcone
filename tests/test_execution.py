@@ -534,11 +534,12 @@ def test_coverage_run_keeps_addopts_and_runs_head_once(repo, monkeypatch):
 
     monkeypatch.setattr(execution.subprocess, "run", counting_run)
     v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
-    # The excluded test never runs, so it is neither an outcome nor a coverage miss.
+    # The excluded test is no target (``--ignore`` is modelled) and never
+    # runs, so it is neither an outcome nor a coverage miss.
     assert v.ok and v.coverage is not None
+    assert not any("excluded" in t.runner_id for t in plan.targets)
     assert all("excluded" not in h.runner_id for h in v.coverage.hits)
-    excluded = next(o for o in v.outcomes if "excluded" in o.runner_id)
-    assert (excluded.base, excluded.head, excluded.changed) == (None, None, False)
+    assert not any("excluded" in o.runner_id for o in v.outcomes)
     # base run + head run (with coverage): exactly two pytest invocations.
     pytest_calls = [c for c in calls if "-m" in c and "pytest" in c]
     assert len(pytest_calls) == 2

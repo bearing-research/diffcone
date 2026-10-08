@@ -548,7 +548,15 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). A dynamic *import* (`__import__`,
+  `dynamic_reference`). A lookup by a name nothing bounds on an *external*
+  module (`getattr(logging, level)`, `dir(builtins)`, `vars(os)`) finds
+  what that module defines, outside the analysis, so it is neither a
+  dynamic reference nor a reflection site, unless in-scope code stores
+  something on that module (or a module above or below it) through a name
+  it resolves: `logging.X = ...`, `setattr(logging, ...)`,
+  `monkeypatch.setattr(logging, ...)` or a dotted string naming it. Writes
+  through an alias are outside the model, as they are for in-scope modules.
+  A dynamic *import* (`__import__`,
   `importlib.import_module` or the builtin `__import__` with an unbounded
   name) can reach anything. Such an import is attributed to the *caller that
   named the module*, not to the helper that runs it: resolving the parameter

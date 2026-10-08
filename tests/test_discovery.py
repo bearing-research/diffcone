@@ -1506,3 +1506,26 @@ def test_a_conftest_pytest_does_not_load_is_not_read(repo):
     root = repo.commit({"conftest.py": hook.format(", reverse=True")})
     plan = repo.plan(sibling, root, [bench], discover_runners=["pytest"])
     assert selected(plan) == {"tests/test_a.py::test_a"}
+
+
+def test_ignored_paths_are_not_targets(repo):
+    """``--ignore`` and ``--ignore-glob`` keep pytest from collecting a path;
+    its tests were targets with no recording (always selected), and ``run``
+    then reported them as selected but not collected (strata's CI ignores
+    twelve files that need external services)."""
+    rev = repo.commit(
+        {
+            "pyproject.toml": (
+                "[tool.pytest.ini_options]\naddopts = '--ignore-glob=tests/*_live.py'\n"
+            ),
+            "tests/__init__.py": "",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tests/test_s3.py": "def test_s3():\n    pass\n",
+            "tests/test_db_live.py": "def test_live():\n    pass\n",
+            "tests/slow/__init__.py": "",
+            "tests/slow/test_big.py": "def test_big():\n    pass\n",
+        }
+    )
+    options = DiscoveryOptions(runner_args=("--ignore=tests/test_s3.py", "--ignore", "tests/slow"))
+    plan = repo.plan(rev, rev, [], discover_runners=["pytest"], discovery_options=options)
+    assert {t.runner_id for t in plan.targets} == {"tests/test_a.py::test_a"}

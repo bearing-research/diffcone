@@ -4057,3 +4057,68 @@ def test_request_instance_turns_the_rule_off(repo):
         ),
     )
     assert "tests/test_core.py::test_run" in selected(plan)
+
+
+LOG_MODULE = (
+    "import builtins\nimport logging\nimport os\n\nfrom pkg import other\n\n\n"
+    "def configure():\n"
+    "    level = os.environ.get('LOG_LEVEL', 'INFO')\n"
+    "    logging.getLogger().setLevel(getattr(logging, level, logging.INFO))\n"
+    "    return sorted(dir(builtins))[:1]\n"
+)
+
+
+def _external_lookup_repo(repo, writer):
+    return repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/log.py": LOG_MODULE,
+            "pkg/other.py": "def g():\n    return 1\n",
+            "pkg/setup_logging.py": writer,
+            "tests/test_log.py": (
+                "from pkg.log import configure\n\n\ndef test_configure():\n    assert configure()\n"
+            ),
+            "benchmarks/bench_other.py": (
+                "from pkg.other import g\n\n\nclass G:\n    def time_g(self):\n        return g()\n"
+            ),
+        }
+    )
+
+
+def test_a_lookup_on_an_external_module_does_not_reach_the_import_closure(repo):
+    """``getattr(logging, level)`` and ``dir(builtins)`` find what those
+    modules define, outside the analysis: they no longer make a change to
+    any module ``pkg.log`` imports reach its tests (strata's logging
+    configuration and notebook analyzer selected 1 978 tests that way)."""
+    base = _external_lookup_repo(repo, "import logging\n\nLOG = logging.getLogger('pkg')\n")
+    targets = [
+        py_target("t::test_configure", "tests.test_log.test_configure"),
+        asv_target("bench_other.G.time_g", "benchmarks.bench_other.G.time_g"),
+    ]
+    head = repo.commit({"pkg/other.py": "def g():\n    return 2\n"})
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"bench_other.G.time_g"}
+    assert not [u for u in plan.head_index.unresolved if u.kind == "dynamic"]
+    assert not plan.head_index.reflection
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "import logging\n\nfrom pkg.other import g\n\nlogging.CUSTOM = g\n",
+        "import logging\n\nfrom pkg.other import g\n\nsetattr(logging, 'CUSTOM', g)\n",
+        "def patch(monkeypatch):\n    monkeypatch.setattr('logging.CUSTOM', 1)\n",
+    ],
+)
+def test_a_lookup_on_an_external_module_in_scope_code_writes_to_stays_dynamic(repo, writer):
+    """Once in-scope code stores something on the module, a lookup on it
+    may find in-scope code: the lookup is the dynamic reference it was."""
+    base = _external_lookup_repo(repo, writer)
+    targets = [
+        py_target("t::test_configure", "tests.test_log.test_configure"),
+        asv_target("bench_other.G.time_g", "benchmarks.bench_other.G.time_g"),
+    ]
+    head = repo.commit({"pkg/other.py": "def g():\n    return 2\n"})
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"t::test_configure", "bench_other.G.time_g"}
+    assert [u for u in plan.head_index.unresolved if u.kind == "dynamic"]

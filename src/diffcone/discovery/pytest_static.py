@@ -640,6 +640,9 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
         "norecursedirs": DEFAULT_NORECURSEDIRS,
         "usefixtures": (),  # the ini option: fixtures every test requests
         "ini_addopts": (),  # ``addopts`` as configured
+        # ``--ignore`` / ``--ignore-glob`` in addopts or the run's arguments.
+        "ignore": (),
+        "ignore_glob": (),
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
@@ -707,6 +710,12 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
         globs = _option_values(addopts, "--doctest-glob")
         if globs:
             config["doctest_globs"] = tuple(globs)
+        config["ignore"] = tuple(
+            _normalise_testpath(v) for v in _option_values(addopts, "--ignore")
+        )
+        config["ignore_glob"] = tuple(
+            _normalise_testpath(v) for v in _option_values(addopts, "--ignore-glob")
+        )
     config["entry_point_plugins"] = tuple(_entry_point_plugins(files))
     return config
 
@@ -751,6 +760,19 @@ DEFAULT_NORECURSEDIRS = (
     "venv",
     "{arch}",
 )
+
+
+def _ignored(path: str, config: dict[str, Any]) -> bool:
+    """Whether ``--ignore`` or ``--ignore-glob`` keeps pytest from collecting
+    ``path``. pytest makes both absolute against the invocation directory
+    (the repository root here): an ``--ignore`` path is a file or a
+    directory, everything under which is skipped; an ``--ignore-glob``
+    pattern is matched with ``fnmatch`` against the whole path, so ``*``
+    crosses directories."""
+    for entry in config.get("ignore", ()):
+        if entry and (path == entry or path.startswith(entry + "/")):
+            return True
+    return any(fnmatch(path, glob) for glob in config.get("ignore_glob", ()) if glob)
 
 
 def _collected_dir(path: str, norecursedirs: tuple[str, ...]) -> bool:
@@ -1709,6 +1731,7 @@ def discover_pytest(
         for p in snapshot.files
         if (any(_matches_python_file(p, pat) for pat in python_files) or p in named_files)
         and _under_testpaths(p, testpaths)
+        and not _ignored(p, config)
     ]
     for path in snapshot.python_paths:
         if (
@@ -1716,6 +1739,7 @@ def discover_pytest(
             and any(_matches_python_file(path, pat) for pat in python_files)
             and _under_testpaths(path, testpaths)
             and _collected_dir(path, tuple(config["norecursedirs"]))
+            and not _ignored(path, config)
         ):
             result.notes.append(
                 DiscoveryNote(
@@ -1734,7 +1758,9 @@ def discover_pytest(
     conftest_paths = [
         p
         for p in snapshot.files
-        if PurePosixPath(p).name == "conftest.py" and _conftest_loaded(p, testpaths, norecurse)
+        if PurePosixPath(p).name == "conftest.py"
+        and _conftest_loaded(p, testpaths, norecurse)
+        and not _ignored(str(PurePosixPath(p).parent), config)
     ]
     # A conftest outside the source roots is not read: its fixtures, hooks
     # and import-time code are invisible, so every test under it depends on
@@ -2014,6 +2040,7 @@ def _collect_doctests(
             and any(fnmatch(PurePosixPath(path).name, g) for g in globs)
             and _under_testpaths(path, testpaths)
             and _collected_dir(path, norecurse)
+            and not _ignored(path, config)
         ):
             result.notes.append(
                 DiscoveryNote(
@@ -2029,6 +2056,7 @@ def _collect_doctests(
         if not (
             _under_testpaths(path, testpaths)
             and _collected_dir(path, norecurse)
+            and not _ignored(path, config)
             and any(fnmatch(name, g) for g in config["doctest_globs"])
         ):
             continue
@@ -2046,6 +2074,7 @@ def _collect_doctests(
         for p in snapshot.files
         if _under_testpaths(p, testpaths)
         and _collected_dir(p, norecurse)
+        and not _ignored(p, config)
         and PurePosixPath(p).name not in ("setup.py", "__main__.py")
     ]
     for path in snapshot.python_paths:
@@ -2053,6 +2082,7 @@ def _collect_doctests(
             path not in snapshot.files
             and _under_testpaths(path, testpaths)
             and _collected_dir(path, norecurse)
+            and not _ignored(path, config)
             and PurePosixPath(path).name not in ("setup.py", "__main__.py", "conftest.py")
         ):
             result.notes.append(

@@ -345,11 +345,22 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return  # a module's own top-level mutations are part of the variable's hash
             self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
 
+    def _external_module(self, expr: ast.expr | None) -> str | None:
+        """The external module ``expr`` names (``logging``, ``os.path``), if
+        it names one through this scope's bindings."""
+        chain = _flatten_chain(expr) if expr is not None else None
+        if chain is None or chain[0] in self.scope.locals:
+            return None
+        node = self.indexer.resolve_chain(chain, self.scope)
+        return node.module if isinstance(node, External) else None
+
     def _attribute_write(self, node: ast.Attribute) -> None:
         """A store or delete of ``<receiver>.<attr>``: on ``self`` it is a
         write of that class's instance attribute (bound only when it is a
         plain ``__init__`` assignment); on any other receiver the type is
         unknown, so no class's ``attr`` can be bounded."""
+        if (module := self._external_module(node.value)) is not None:
+            self.indexer.out.external_writes.add(module)
         if (cls := self._self_class(node.value)) is not None:
             binding = self._bindings.pop(id(node), None)
             self.indexer.out.attr_writes.append(
@@ -388,6 +399,8 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
         """``setattr(receiver, name, ...)`` and its relatives."""
+        if (module := self._external_module(receiver)) is not None:
+            self.indexer.out.external_writes.add(module)
         names = self.scope.string_candidates(name) if name is not None else None
         owner = (self._self_class(receiver) if receiver is not None else None) or ""
         for attr in names if names is not None else ("*",):
@@ -469,7 +482,14 @@ class _ReferenceCollector(ast.NodeVisitor):
             if (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
                 not builtin and self._canonical_name(parts) in REFLECTIVE_CALLS
             ):
-                self.indexer.out.reflection.add((self.source, f"{name}()"))
+                module = self._external_module(node.args[0]) if node.args else None
+                if module is not None:
+                    # ``dir(builtins)``: what an external module holds.
+                    self.indexer.out.external_lookups.add(
+                        (self.source, module, "reflection", f"{name}()")
+                    )
+                else:
+                    self.indexer.out.reflection.add((self.source, f"{name}()"))
             if builtin and parts[0] in DYNAMIC_CALLS:
                 code = node.args[0] if node.args else None
                 literal = isinstance(code, ast.Constant) and isinstance(code.value, str)
@@ -565,6 +585,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                 node_ = self.indexer.resolve_dotted(chain)
                 if node_ is not None:
                     self.indexer._record(self.source, node_, chain=first.value)
+                else:
+                    # A third-party target: whichever prefix is the module,
+                    # something may now be stored on it.
+                    for i in range(1, len(chain)):
+                        self.indexer.out.external_writes.add(".".join(chain[:i]))
             return
         if len(args) > 1 and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
             receiver = _flatten_chain(first)
@@ -804,6 +829,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # ``getattr(obj, f"pytest_{name}")``: every in-scope attribute
                 # name with that prefix is a candidate, nothing else.
                 names = self.indexer.symbol_names_with_prefix(prefix)
+            elif (module := self._external_module(node.args[0])) is not None:
+                # On an external module: bounded unless in-scope code stores
+                # something there (decided over the whole tree).
+                self.indexer.out.external_lookups.add(
+                    (self.source, module, "dynamic", "getattr(<non-literal>)")
+                )
+                return
             elif not self._param_dynamic(
                 node.args[1], "getattr", base, self._getattr_detail(node.args[0], base)
             ):

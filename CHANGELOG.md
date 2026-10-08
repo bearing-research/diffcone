@@ -14,6 +14,10 @@ selection rules.
   table: a PEP 562 lazy-export `__getattr__` (`target =
   _LAZY.get(name)`, then `import_module(target[0])`) no longer reaches every
   module. `D.get(key)` reads a literal dict like `D[key]`.
+- A lookup by a run-time name on a third-party or standard-library module
+  (`getattr(logging, level)`, `dir(builtins)`) no longer selects every test
+  that reaches it whenever anything in its import closure changes, unless
+  project code stores something on that module.
 
 ### Execution evidence
 
@@ -27,6 +31,9 @@ selection rules.
 
 ### Discovery
 
+- `--ignore` and `--ignore-glob` (in `addopts` or after `--`) are honoured:
+  ignored tests are no longer targets, which `run` reported as selected
+  but not collected.
 - Importing a library's test helper whose name looks like a test class
   (`from fastapi.testclient import TestClient`, aiohttp's `TestServer`) no
   longer reports an incomplete target list.

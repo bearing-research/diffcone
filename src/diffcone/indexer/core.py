@@ -20,7 +20,14 @@ from diffcone.indexer.facts import (
 from diffcone.indexer.literals import literal_keys
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.syntax import _digest, decode_source
-from diffcone.model import REFERENCES, Edge, SourceIndex, Symbol
+from diffcone.model import (
+    REFERENCES,
+    UNRESOLVED_DYNAMIC,
+    Edge,
+    SourceIndex,
+    Symbol,
+    UnresolvedReference,
+)
 from diffcone.snapshot import Snapshot, child_modules, module_name_for
 
 
@@ -127,6 +134,7 @@ class Indexer(DynamicBounds):
                 if key is not None:
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
+        self._external_lookups()
         self._resolve_param_dynamics()
         self._registrations()
         # Classes whose instances (or the class itself) are handed to someone
@@ -150,6 +158,30 @@ class Indexer(DynamicBounds):
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
+
+    def _external_lookups(self) -> None:
+        """A lookup by a name nothing bounds on an external module
+        (``getattr(logging, level)``, ``dir(builtins)``) finds what that
+        module defines, which is outside the analysis, unless in-scope code
+        stored something there: then it counts as the dynamic reference or
+        reflection site it is. A write onto a module above or below the one
+        looked at counts too (``logging.handlers.x = ...`` and
+        ``getattr(logging, n)``)."""
+        written = self._global.external_writes
+
+        def touched(module: str) -> bool:
+            return any(
+                w == module or w.startswith(module + ".") or module.startswith(w + ".")
+                for w in written
+            )
+
+        for symbol, module, kind, detail in sorted(self._global.external_lookups):
+            if not touched(module):
+                continue
+            if kind == "reflection":
+                self.out.reflection.add((symbol, detail))
+            else:
+                self.out.unresolved.add(UnresolvedReference(symbol, UNRESOLVED_DYNAMIC, "", detail))
 
     def _registrations(self) -> None:
         """Edges to code a decorator or a base class may keep and call later:
