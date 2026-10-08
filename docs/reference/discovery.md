@@ -11,7 +11,10 @@ each one understands.
 or `[tool.pytest]`), `tox.ini` or `setup.cfg`, in pytest's order:
 `testpaths`,
 `python_files`, `python_classes`, `python_functions`, `norecursedirs`,
-`usefixtures`, and the doctest options in `addopts`.
+`usefixtures`, and the doctest options in `addopts`. The arguments you pass
+after `--` count too: test files or directories named there replace
+`testpaths`, as they do for pytest, and `--ignore` / `--ignore-glob` leave
+paths out.
 
 **Tests** found:
 
@@ -115,6 +118,8 @@ Some things can't be known by reading the source:
   (with `--source-root src`, add `--source-root .` for tests in `tests/`);
 - options in `addopts` that change what pytest collects (`-o`, `-c`,
   `--rootdir`, `--pyargs`, or a path to test);
+- a test given by node id after `--` (`tests/test_x.py::test_one`), or a
+  path right after an option that may take it as its value (`--cov src`);
 - a test bound to something discovery can't follow
   (`TestMachine = Machine.TestCase`);
 - a plugin your configuration turns on that collects files of its own

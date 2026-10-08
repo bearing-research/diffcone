@@ -958,6 +958,13 @@ Further rules (pre-release audit, round 2):
   the subclass.
 * `request.getfixturevalue` with a non-literal argument requests every
   fixture visible from the test (`*`).
+* Paths among the run's arguments (after `--`) are pytest's initial paths
+  and replace `testpaths`. A token counts as one only when it names a file
+  or directory and does not follow an option that may take a value: first,
+  after `--opt=value`, after a known flag (`FLAG_OPTIONS`) or after another
+  positional. A node id, or a path after an unknown option (`--cov src`),
+  is reported (`unmodelled_runner_option`): read as a path it would narrow
+  the targets, read as a value it leaves targets pytest does not collect.
 * An `addopts` entry that overrides the configuration (`-o`, `-c`,
   `--rootdir`, `--pyargs`) or names a path is reported
   (`unmodelled_runner_option`); so is a collection hook in a plugin module

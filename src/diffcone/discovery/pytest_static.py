@@ -793,6 +793,90 @@ def _option_values(addopts: tuple[str, ...], option: str) -> list[str]:
     return values
 
 
+# pytest options (and common plugins') that take no value, so a path right
+# after one is a positional argument, not the option's value.
+FLAG_OPTIONS = frozenset(
+    {
+        "-v",
+        "-vv",
+        "-vvv",
+        "-q",
+        "-qq",
+        "-x",
+        "-s",
+        "-l",
+        "-ra",
+        "-rA",
+        "-rf",
+        "-rs",
+        "-rx",
+        "--verbose",
+        "--quiet",
+        "--exitfirst",
+        "--showlocals",
+        "--lf",
+        "--last-failed",
+        "--ff",
+        "--failed-first",
+        "--nf",
+        "--new-first",
+        "--sw",
+        "--stepwise",
+        "--strict-markers",
+        "--strict-config",
+        "--strict",
+        "--no-header",
+        "--no-summary",
+        "--collect-only",
+        "--co",
+        "--doctest-modules",
+        "--runxfail",
+        "--disable-warnings",
+        "--disable-pytest-warnings",
+        "--setup-show",
+        "--full-trace",
+        "--cache-clear",
+        "--trace",
+        "--pdb",
+        "--no-cov",
+    }
+)
+
+
+def _argument_paths(args: tuple[str, ...], paths: set[str]) -> tuple[list[str], list[str]]:
+    """Positional paths among a run's pytest arguments, which pytest collects
+    from instead of ``testpaths`` (a file named there whatever
+    ``python_files`` says), and tokens that name a path but follow an option
+    that may take a value (``--cov src``), which cannot be told apart. A
+    token counts as a path only when it names a file or directory of the
+    tree and stands first, after a ``--opt=value`` token, after a known flag
+    (``FLAG_OPTIONS``) or after another positional."""
+    found: list[str] = []
+    ambiguous: list[str] = []
+    previous: str | None = None
+    for token in args:
+        if token.startswith("-"):
+            previous = token
+            continue
+        path = _normalise_testpath(token.split("::", 1)[0])
+        names_path = path not in ("", ".") and (
+            path in paths or any(p.startswith(path + "/") for p in paths)
+        )
+        if names_path and "::" in token:
+            ambiguous.append(token)  # a node id: narrower than its file
+        elif names_path and (
+            previous is None
+            or "=" in previous
+            or previous in FLAG_OPTIONS
+            or not previous.startswith("-")
+        ):
+            found.append(path)
+        elif names_path:
+            ambiguous.append(token)
+        previous = token
+    return found, ambiguous
+
+
 def _unmodelled_addopts(addopts: tuple[str, ...], paths: set[str]) -> list[str]:
     """Entries of the configured ``addopts`` that change collection in ways
     discovery does not model: an override of the configuration (``-o``,
@@ -1709,6 +1793,16 @@ def discover_pytest(
                 )
             )
     every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
+    arg_paths, ambiguous = _argument_paths(tuple(options.runner_args), every_path)
+    for arg in ambiguous:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unmodelled_runner_option",
+                f"the run passes {arg!r} to pytest: a node id, or a path after an option "
+                "that may take it as its value; which tests that collects is not modelled",
+            )
+        )
     for arg in _unmodelled_addopts(tuple(config["ini_addopts"]), every_path):
         result.notes.append(
             DiscoveryNote(
@@ -1724,6 +1818,9 @@ def discover_pytest(
     # pytest collects from the rootdir), and files named there are collected
     # whatever ``python_files`` says (they are initial paths).
     testpaths = tuple(tp for tp in config["testpaths"] if _testpath_exists(tp, every_path))
+    if arg_paths:
+        # Paths given to pytest replace ``testpaths``.
+        testpaths = tuple(arg_paths)
     named_files = {_normalise_testpath(tp) for tp in testpaths if tp.endswith(".py")}
 
     test_paths = [
