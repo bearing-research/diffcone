@@ -1238,21 +1238,28 @@ test diffcone should have selected fails the default branch's workflow.</p>
 </code></pre></div>
 <p>On a push, <code>record</code> with <code>check: true</code>:</p>
 <ol>
-<li>restores the newest recording and plans the commit's own change (its
-   first parent to it) from it;</li>
-<li>runs the full suite under the recorder and saves the new recording;</li>
-<li>compares the plan with the full run: a new failure the plan didn't
-   select is run again, and if it fails again it is a miss, which fails the
-   job. One that passes the second time is reported as flaky. Tests that
-   already failed in the previous push's run are not misses.</li>
+<li>restores the newest recording and plans the commit's change from it;</li>
+<li>runs the full suite under the recorder;</li>
+<li>compares the plan with the full run. A new failure the plan didn't
+   select is run again, with the same pytest options. If it fails again,
+   it is a miss, and the job fails. If it passes the second time, it is
+   reported as flaky. Failures the recorded run already had are not
+   misses;</li>
+<li>saves the new recording, together with the verdict. Re-running a job
+   that found a miss finds it again.</li>
 </ol>
+<p>The check is skipped, with a note, when there is nothing to compare with:
+no recording yet, a recording diffcone can't use (made with other source
+roots, for example), or a commit with no parent. The recording is still
+made and saved.</p>
 <p>With <code>fail-on-test-failure: true</code> a failing test fails the job too, as a
-plain test run would, after the recording is saved.</p>
+plain test run would, after the recording is saved. A test file that can't
+be collected stops the recording itself, which fails the job.</p>
 <p>As with the nightly setup, only runs on the default branch can save the
 recording; pull requests only restore it.</p>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>Each recording is saved with <code>actions/cache</code> under its own key,
-<code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run&gt;</code>, and pull requests restore the newest one
+<code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run id&gt;-&lt;attempt&gt;</code>, and pull requests restore the newest one
 with their prefix (<code>diffcone-ubuntu</code> never restores a recording of
 <code>diffcone-ubuntu-py312</code>). If a recording's commit is no longer on the
 branch (after a force push), the run plans without it and says so. A

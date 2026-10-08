@@ -1195,12 +1195,13 @@ selection rules.</p>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
-  interpreter version check) or <code>uv python list</code> is no longer always
-  selected.</li>
+  interpreter version check importing only built-in modules, with nothing
+  after the code and no <code>PYTHONPATH</code>-like environment) or <code>uv python list</code>
+  is no longer always selected.</li>
 <li>Editing a module that looks at its own file at import
   (<code>Path(__file__).resolve()</code>) no longer replans all its importers from
-  the code: a stat of a source file records that it exists, not what it
-  holds.</li>
+  the code: that stat records only that the file exists. Any other stat of
+  a source file during a test counts as reading it.</li>
 <li>A test that leaves a thread running is no longer always selected;
   instead every test is credited with the code background threads are in
   the middle of while it runs, which also covers a later test running
@@ -1211,7 +1212,8 @@ selection rules.</p>
 <li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
   pytest; a node id, or a path after an option that may take it as its
   value, is reported instead of guessed.</li>
-<li><code>--ignore</code> and <code>--ignore-glob</code> (in <code>addopts</code> or after <code>--</code>) are honoured:
+<li><code>--ignore</code> and <code>--ignore-glob</code> (in <code>addopts</code> or after <code>--</code>) are honoured,
+  below the paths pytest starts from, as pytest applies them:
   ignored tests are no longer targets, which <code>run</code> reported as selected
   but not collected.</li>
 <li>Importing a library's test helper whose name looks like a test class
