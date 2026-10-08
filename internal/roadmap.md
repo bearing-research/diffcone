@@ -647,3 +647,48 @@ stopped counting as a read). Static planning selects 100 % on every one.
   Bounded instead by what is stored there: an edge from the lookup to each
   stored value's references, dynamic only when a stored value cannot be
   resolved.
+
+## 11. A report over CI runs (`diffcone report`, `actions/report`)
+
+**Status.** Sketched (2026-10-08). strata runs every pytest job through
+diffcone (PRs selective, main full and checked); nobody reads dozens of job
+summaries a day, and a confirmed miss is only a red job.
+
+**Mechanism.**
+
+* *Context.* `run` and `record` write `context.json` beside the plan in the
+  results they upload: the job's event, commit, base, the recording used
+  (its commit) or why none was (none restored, not fetchable, unusable),
+  `run`'s exit code, selected and target counts, and for `record` with
+  `check` whether the push was checked and, if not, why. The report reads
+  facts the actions wrote, never logs.
+* *`diffcone report --dir DIR [--format markdown|json] [-o FILE]`.* Reads
+  files only and runs nothing, like `check`. `DIR` holds one directory per
+  downloaded artifact (named as uploaded, `diffcone-<job>-<cell>`, with a
+  `run.json` the action adds: run id, URL, event, PR number, created time);
+  each holds `context.json`, `plan.json`, `verdict.json`,
+  `rerun-verdict.json` when present. Output: per cell, the pull-request
+  runs (how many, selected share median and max, how many planned from the
+  code and why, refusals) and the checked pushes (checked or skipped and
+  why, new failures, flaky, confirmed misses); then each confirmed miss with
+  the commit, the test, its kind, and what the plan said about it (not
+  selected, and its unselected reason). Exit 1 when a confirmed miss is in
+  the window, so a caller can act on it.
+* *`actions/report`.* GitHub plumbing around the command: list the runs of
+  a workflow created since a cutoff (`gh run list`), download their
+  `diffcone-*` artifacts (`gh run download`) with each run's metadata, run
+  `diffcone report`, then add a comment with the Markdown to the report
+  issue (found by label, opened if missing) and, with `miss-issues`, open
+  one issue per confirmed miss not already filed (found by a marker naming
+  the commit and the test). Inputs: `workflow`, `since` (default `24
+  hours`), `artifact-prefix`, `report-label`, `miss-label`, `miss-issues`.
+  Needs `actions: read` and `issues: write`.
+
+**Trade-off.** Artifacts expire (90 days by default) and the window is
+what was uploaded; a run that uploaded nothing (cancelled before the
+upload step) is missing from the report, which counts runs per cell so the
+gap shows.
+
+**Done when** the command is tested on fixture artifact trees (PR runs,
+checked and skipped pushes, a confirmed miss, a flaky one), the action runs
+on strata nightly, and docs/ci.md describes it for any project.
