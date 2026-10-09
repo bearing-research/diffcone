@@ -1312,6 +1312,39 @@ def corpus_to_text(report: CorpusReport) -> str:
 # The recorder's module name inside the project's process (see plugin_environment).
 PLUGIN = "diffcone_collect"
 SELECT_PLUGIN = "diffcone_select"
+CHILD_MODULE = "diffcone_child"
+# Beside the plugin on PYTHONPATH: a Python process a recorded test starts
+# records itself (child.py, roadmap item 15), then runs the sitecustomize
+# this one shadows, if any.
+SITECUSTOMIZE = """\
+import os as _os
+import sys as _sys
+
+if _os.environ.get("DIFFCONE_COLLECT_PARENT"):
+    try:
+        import diffcone_child
+
+        diffcone_child.start()
+    except Exception:
+        pass
+
+
+def _chain():
+    import importlib.machinery
+    import importlib.util
+
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    path = [p for p in _sys.path if _os.path.abspath(p or ".") != here]
+    spec = importlib.machinery.PathFinder.find_spec("sitecustomize", path)
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    _sys.modules["sitecustomize"] = module
+    spec.loader.exec_module(module)
+
+
+_chain()
+"""
 
 
 def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str]:
@@ -1432,7 +1465,12 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     ``PYTHONPATH`` entry) when the run ends."""
     env = dict(base)
     link_dir = Path(tempfile.mkdtemp(prefix="diffcone-plugin-"))
-    for name, source in ((PLUGIN, "collect.py"), (SELECT_PLUGIN, "selection.py")):
+    (link_dir / "sitecustomize.py").write_text(SITECUSTOMIZE)
+    for name, source in (
+        (PLUGIN, "collect.py"),
+        (SELECT_PLUGIN, "selection.py"),
+        (CHILD_MODULE, "child.py"),
+    ):
         target, original = link_dir / f"{name}.py", Path(__file__).parent / source
         try:
             target.symlink_to(original)

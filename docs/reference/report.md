@@ -102,7 +102,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `lookup_site` | yes | The test looked a name up dynamically where a name was added or removed. |
 | `no_evidence` | yes | The test has no recording (a new test, for example). |
 | `unstable` | yes | The test's recordings differed between runs. |
-| `subprocess` | yes | The test started a subprocess, which the recording can't follow. |
+| `subprocess` | yes | The test started a process the recording can't follow: not a Python process started with `subprocess` on Linux or macOS, one that couldn't record itself, or one running your code from a `-c` snippet or a script outside your source roots. |
 | `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed. |
 | `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build. |
 | `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported. |

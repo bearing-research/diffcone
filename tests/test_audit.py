@@ -7,6 +7,7 @@ test or benchmark whose outcome changes was not selected.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 
@@ -2590,6 +2591,13 @@ def test_a_thread_left_running_does_not_make_its_test_always_selected(repo):
     assert chosen == {"tests/test_u.py::test_u"}
 
 
+WINDOWS = "windows"  # flagged only where children do not record themselves
+
+
+def _flags(flagged) -> bool:
+    return flagged is True or (flagged == WINDOWS and os.name == "nt")
+
+
 @needs_monitoring
 @pytest.mark.parametrize(
     "probe, flagged",
@@ -2597,8 +2605,12 @@ def test_a_thread_left_running_does_not_make_its_test_always_selected(repo):
         ("['-c', 'import sys; print(sys.version_info[:2])']", False),
         ("['-I', '-c', 'import sys; print(sys.version_info[:2])']", False),
         ("['-c', 'import lib.other']", True),
-        ("['-c', 'exec(open(\"x.py\").read())']", True),
-        ("['-m', 'json.tool', '--help']", True),
+        # A child records itself (roadmap item 15), except on Windows: these
+        # run no project code, and a file they open is recorded.
+        ("['-c', 'exec(open(\"x.py\").read())']", WINDOWS),
+        ("['-m', 'json.tool', '--help']", WINDOWS),
+        # Not recorded: an isolated interpreter skips sitecustomize.
+        ("['-I', '-c', 'import lib.other']", True),
     ],
 )
 def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, probe, flagged):
@@ -2617,7 +2629,7 @@ def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, prob
         },
         {"lib/other.py": "def g():\n    return 2\n"},
     )
-    assert ("tests/test_p.py::test_p" in chosen) is flagged
+    assert ("tests/test_p.py::test_p" in chosen) is _flags(flagged)
 
 
 @needs_monitoring
@@ -2634,8 +2646,10 @@ def test_an_interpreter_probe_that_runs_no_project_code_does_not_flag(repo, prob
             "[shutil.which('uv'), 'python', 'list', '--only-installed', '--output-format', 'json']",
             False,
         ),
-        ("['uv', 'run', '--no-project', 'python', '-c', 'pass']", True),
-        ("[shutil.which('uv'), 'run', '--no-project', 'python', '-c', 'pass']", True),
+        # A launcher: the Python it runs records itself, except on Windows.
+        ("['uv', 'run', '--no-project', 'python', '-c', 'pass']", WINDOWS),
+        ("[shutil.which('uv'), 'run', '--no-project', 'python', '-c', 'pass']", WINDOWS),
+        ("['uv', 'run', '--no-project', 'python', '-I', '-c', 'import lib.other']", True),
     ],
 )
 def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
@@ -2652,7 +2666,7 @@ def test_a_uv_interpreter_query_does_not_flag(repo, command, flagged):
         },
         {"lib/other.py": "def g():\n    return 2\n"},
     )
-    assert ("tests/test_p.py::test_p" in chosen) is flagged
+    assert ("tests/test_p.py::test_p" in chosen) is _flags(flagged)
 
 
 # Stat of a source file (strata trial): its existence, not its content.

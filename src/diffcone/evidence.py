@@ -29,12 +29,15 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone import child
 from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
 STORE_FORMAT = 1
-FLAG_SUBPROCESS = 1  # the test started a subprocess, whose execution is not seen
+# The test started a process whose execution is not seen: another way than
+# subprocess.Popen, or one that recorded nothing (child.py).
+FLAG_SUBPROCESS = 1
 FLAG_UNSTABLE = 2  # the test's record differed between two collections
 EVIDENCE_DIR = Path(".diffcone") / "evidence"
 # An import run by a module outside the source roots: nothing static can say
@@ -121,10 +124,12 @@ class _Owners:
     def __init__(self, index: SourceIndex) -> None:
         self.cython = index.cython
         self.module_of_path: dict[str, str] = {}
+        self.modules: set[str] = set()
         spans: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         for symbol in index.symbols.values():
             if symbol.kind == MODULE:
                 self.module_of_path[symbol.path] = symbol.id
+                self.modules.add(symbol.id)
             for start, end in symbol.line_ranges:
                 spans[symbol.path].append((start, end, symbol.id))
         self.spans = {path: sorted(s) for path, s in spans.items()}
@@ -177,6 +182,57 @@ class _Raw:
     test_fixtures: dict[str, set[str]] = field(default_factory=dict)
 
 
+class _Children:
+    """What the processes behind an accounted spawn ran (``child.resolve``),
+    as symbols, paths, directories and the subprocess flag."""
+
+    def __init__(self, directory: Path, owners: _Owners, packages: set[str]) -> None:
+        self.directory = directory
+        self.owners = owners
+        self.packages = packages  # the project's top-level packages
+        self.memo: dict[tuple, tuple[set[str], set[str], set[str], int]] = {}
+
+    def __call__(self, spawn: list) -> tuple[set[str], set[str], set[str], int]:
+        spawner, pid, start, argv = spawn
+        key = (spawner, pid, start, tuple(argv) if argv is not None else None)
+        if key in self.memo:
+            return self.memo[key]
+        tree = child.resolve(self.directory, spawner, pid, start, argv)
+        symbols: set[str] = set()
+        paths: set[str] = set()
+        dirs: set[str] = set()
+        flags = FLAG_SUBPROCESS if tree.problems else 0
+        for record in tree.records:
+            if record.codes and not self._indexed_entry(record.entry):
+                # Its ``-c`` code, standard input or a script the index does
+                # not hold ran project code and may read any name of it.
+                flags = FLAG_SUBPROCESS
+            for path, line, qualname in record.codes:
+                symbol = self.owners(path, line, qualname)
+                if symbol is not None:
+                    symbols.add(symbol)
+                else:
+                    paths.add(path)
+            paths |= record.paths
+            dirs |= record.dirs
+        self.memo[key] = (symbols, paths, dirs, flags)
+        return self.memo[key]
+
+    def _indexed_entry(self, entry: list) -> bool:
+        """A script or module of the index, or one that is not the project's
+        (a console script, ``-m pytest``): its code is planned like the
+        parent's, whose entry is pytest."""
+        modules = self.owners.modules
+        if entry[0] == "module":
+            name = entry[1] if len(entry) > 1 else ""
+            top = name.split(".")[0]
+            return name in modules or f"{name}.__main__" in modules or top not in self.packages
+        if entry[0] == "script":
+            path, installed = entry[1], entry[2]
+            return bool(installed) or (path is not None and path in self.owners.module_of_path)
+        return False
+
+
 def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _Raw:
     processes = sorted(glob.glob(str(directory / "process-*.json")))
     if not processes:
@@ -189,6 +245,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
     )
     environments: list[dict] = []
     seen_pids = set()
+    children = _Children(directory, owners, {m.split(".")[0] for m in project_modules})
     for process_file in processes:
         with open(process_file, encoding="utf-8") as f:
             data = json.load(f)
@@ -254,7 +311,14 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                     paths.add(file_of[c])
             paths.update(w["paths"])
             dirs.update(w["dirs"])
-            raw.fixtures[key] = (symbols, paths, dirs, flags | w["flags"])
+            flags |= w["flags"]
+            for spawn in w.get("spawns", ()):
+                c_symbols, c_paths, c_dirs, c_flags = children(spawn)
+                symbols |= c_symbols
+                paths |= c_paths
+                dirs |= c_dirs
+                flags |= c_flags
+            raw.fixtures[key] = (symbols, paths, dirs, flags)
         tests_file = directory / f"tests-{pid}.bin"
         if data["wrote_tests"]:
             if not tests_file.exists():
@@ -281,7 +345,14 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                         paths.add(file_of[c])
                 paths.update(record["paths"])
                 dirs.update(record["dirs"])
-                raw.tests[name] = (symbols, paths, dirs, flags | record["flags"])
+                flags |= record["flags"]
+                for spawn in record.get("spawns", ()):
+                    c_symbols, c_paths, c_dirs, c_flags = children(spawn)
+                    symbols |= c_symbols
+                    paths |= c_paths
+                    dirs |= c_dirs
+                    flags |= c_flags
+                raw.tests[name] = (symbols, paths, dirs, flags)
                 raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
     orphans = [
         p

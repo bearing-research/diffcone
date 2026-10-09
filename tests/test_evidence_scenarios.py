@@ -1163,3 +1163,225 @@ def test_a_lookup_on_a_module_written_outside_tests_sees_every_name(repo, where)
     head = repo.commit({"pkg/ops.py": ADDED_NAME})
     plan = _plan(repo, base, head, ev)
     assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
+
+
+# Child processes (roadmap item 15): a Python process a test starts through
+# subprocess.Popen records itself, and the test is credited with what it ran.
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="children record on POSIX")
+
+WORK = """\
+import sys
+
+
+def handle(x):
+    return x + 1
+
+
+def serve():
+    for line in sys.stdin:
+        print(handle(int(line)), flush=True)
+"""
+CHILD = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "pkg/__init__.py": "",
+    "pkg/work.py": WORK,
+    "pkg/tool.py": (
+        'from pkg.work import handle\n\nif __name__ == "__main__":\n    print(handle(1))\n'
+    ),
+    "pkg/serve.py": "from pkg.work import serve\n\nserve()\n",
+    "pkg/other.py": "def g():\n    return 1\n",
+    "tests/__init__.py": "",
+    "tests/test_other.py": "from pkg.other import g\n\n\ndef test_other():\n    assert g() == 1\n",
+}
+CHILD_TEST = """\
+import os
+import subprocess
+import sys
+
+
+def test_child(tmp_path):
+    {setup}
+    out = subprocess.run({argv}, capture_output=True, text=True{kwargs})
+    assert out.stdout.strip() == "2", out.stderr
+"""
+TOOL = "[sys.executable, '-m', 'pkg.tool']"
+FAKE_UV = (
+    "uv = tmp_path / 'uv'\n"
+    "    uv.write_text('#!/bin/sh\\nshift\\n\"$@\"\\nexit $?\\n')\n"
+    "    uv.chmod(0o755)"
+)
+HANDLED = WORK.replace("return x + 1", "return 1 + x")
+OTHER_CHANGE = {"pkg/other.py": "def g():\n    return 1 + 0\n"}
+CHILD_ID = "tests/test_child.py::test_child"
+OTHER_ID = "tests/test_other.py::test_other"
+
+
+def _child_files(argv: str, setup: str = "pass", kwargs: str = "") -> dict[str, str]:
+    test = CHILD_TEST.format(argv=argv, setup=setup, kwargs=kwargs)
+    return {**CHILD, "tests/test_child.py": test}
+
+
+def _child_plans(repo, files, command=None):
+    """Plans for a change only the child ran, and for an unrelated one."""
+    base = repo.commit(files)
+    ev = repo.collect(command=command)
+    handled = repo.commit({"pkg/work.py": HANDLED})
+    other = repo.commit({"pkg/work.py": WORK, **OTHER_CHANGE})
+    plan = lambda head: repo.plan(base, head, [], discover_runners=["pytest"], evidence=ev)  # noqa: E731
+    return plan(handled), plan(other)
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "argv, setup",
+    [
+        (TOOL, "pass"),
+        ("[sys.executable, 'pkg/tool.py']", "pass"),
+        # A launcher: the Python it starts records itself, and ran its command.
+        (f"[str(tmp_path / 'uv'), 'run', {TOOL[1:]}", FAKE_UV),
+    ],
+    ids=["module", "script", "launcher"],
+)
+def test_a_child_process_is_credited_to_its_test(repo, argv, setup):
+    handled, other = _child_plans(repo, _child_files(argv, setup))
+    assert selected(handled) == {CHILD_ID}
+    assert rules(handled, CHILD_ID) == {"executed_changed"}
+    # Flagged, so selected for every change, before.
+    assert selected(other) == {OTHER_ID}
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "argv, setup, kwargs",
+    [
+        # Another program: what it runs itself is not seen.
+        (f"['sh', '-c', ' '.join({TOOL})]", "pass", ""),
+        # The child's environment loses the recorder's settings.
+        (TOOL, "pass", ", env={'PATH': os.environ['PATH']}"),
+        # No sitecustomize: no site, or PYTHONPATH ignored.
+        ("[sys.executable, '-S', '-m', 'pkg.tool']", "pass", ""),
+        (
+            "[sys.executable, '-E', '-m', 'pkg.tool']",
+            "pass",
+            ", env={**os.environ, 'PYTHONPATH': os.getcwd()}",
+        ),
+        # A launcher whose command recorded nothing.
+        ("[str(tmp_path / 'uv'), 'run', sys.executable, '-S', '-m', 'pkg.tool']", FAKE_UV, ""),
+        # Project code under -c: the snippet may read any name of it.
+        ("[sys.executable, '-c', 'from pkg.work import handle; print(handle(1))']", "pass", ""),
+    ],
+    ids=["shell", "environment", "no-site", "ignore-environment", "launcher", "snippet"],
+)
+def test_a_child_that_does_not_record_itself_still_flags(repo, argv, setup, kwargs):
+    handled, other = _child_plans(repo, _child_files(argv, setup, kwargs))
+    assert CHILD_ID in selected(handled)
+    assert selected(other) == {CHILD_ID, OTHER_ID}
+    assert rules(other, CHILD_ID) == {"subprocess"}
+
+
+@posix_only
+def test_a_running_child_is_credited_to_every_later_test(repo):
+    """A warm worker started by one test serves the next: the second test
+    ran its handler, though it did not start it (a credit at the spawn only
+    missed it)."""
+    warm = """\
+import subprocess
+import sys
+
+WORKER = []
+
+
+def test_start():
+    WORKER.append(
+        subprocess.Popen(
+            [sys.executable, "-m", "pkg.serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+    )
+
+
+def test_use():
+    worker = WORKER[0]
+    worker.stdin.write("1\\n")
+    worker.stdin.flush()
+    assert worker.stdout.readline().strip() == "2"
+    worker.stdin.close()
+    worker.wait()
+
+
+def test_after():
+    assert not WORKER[0].poll()
+"""
+    handled, other = _child_plans(repo, {**CHILD, "tests/test_warm.py": warm})
+    start, use, after = (
+        "tests/test_warm.py::" + n for n in ("test_start", "test_use", "test_after")
+    )
+    assert selected(handled) == {start, use}
+    # It runs once the worker has ended.
+    assert after not in selected(handled)
+    assert selected(other) == {OTHER_ID}
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "module",
+    [
+        # A child of the child.
+        "import subprocess\nimport sys\n\n"
+        "out = subprocess.run([sys.executable, '-m', 'pkg.tool'], capture_output=True, text=True)\n"
+        "print(out.stdout.strip())\n",
+        # A fork of the child writes to its record.
+        "import os\n\nfrom pkg import work\n\nr, w = os.pipe()\npid = os.fork()\n"
+        "if pid == 0:\n    os.write(w, str(work.handle(1)).encode())\n    os._exit(0)\n"
+        "os.waitpid(pid, 0)\nprint(os.read(r, 10).decode())\n",
+    ],
+    ids=["grandchild", "fork"],
+)
+def test_what_a_child_starts_is_followed(repo, module):
+    files = {**_child_files("[sys.executable, '-m', 'pkg.outer']"), "pkg/outer.py": module}
+    handled, other = _child_plans(repo, files)
+    assert selected(handled) == {CHILD_ID}
+    assert selected(other) == {OTHER_ID}
+
+
+@posix_only
+def test_a_shared_fixtures_child_is_credited_to_every_test_using_it(repo, tmp_path):
+    """Two pytest processes, as two xdist workers: the first computes the
+    session fixture in a child, the second reads it from a file."""
+    cache = tmp_path / "cache.txt"
+    conftest = f"""\
+import os
+import subprocess
+import sys
+
+import pytest
+
+CACHE = {str(cache)!r}
+
+
+@pytest.fixture(scope="session")
+def value():
+    if not os.path.exists(CACHE):
+        out = subprocess.run([sys.executable, "-m", "pkg.tool"], capture_output=True, text=True)
+        with open(CACHE, "w") as f:
+            f.write(out.stdout.strip())
+    with open(CACHE) as f:
+        return f.read()
+"""
+    files = {
+        **CHILD,
+        "tests/conftest.py": conftest,
+        "tests/test_a.py": "def test_a(value):\n    assert value == '2'\n",
+        "tests/test_b.py": "def test_b(value):\n    assert value == '2'\n",
+    }
+    py = sys.executable
+    command = (
+        f'sh -c \'{py} -m pytest "$@" tests/test_a.py tests/test_other.py && '
+        f'{py} -m pytest "$@" tests/test_b.py\' sh'
+    )
+    handled, other = _child_plans(repo, files, command=command)
+    assert selected(handled) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+    assert selected(other) == {OTHER_ID}

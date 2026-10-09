@@ -21,6 +21,16 @@ selection rules.
 
 ### Execution evidence
 
+- A Python process a test starts with `subprocess` (directly, through
+  `asyncio`, or through `uv run`) records itself on Linux and macOS, and
+  the test is credited with what it ran instead of being selected for
+  every change. So is every test that runs while the process is still
+  running (a server or a warm worker another test started). A process
+  started another way (`os.system`, a shell, `multiprocessing`, anything
+  on Windows), one that cannot record itself (a replaced environment,
+  `python -S`, Python before 3.12), and one running project code from a
+  `-c` snippet or a script outside the source roots still select their
+  test for every change.
 - A test run that changes its own environment (a test that installs or
   upgrades a package with the test interpreter) is named: `collect` warns
   with the packages, the recording keeps the environment it started in,

@@ -25,10 +25,15 @@ What it records, per test (parameter cases folded into their function, as
   hooks, ``sqlite3.connect`` and ``ctypes.dlopen`` included, and wrappers
   of ``os.stat``/``os.lstat``/``os.access``, which never warn, so the extra
   frame cannot move a warning's ``stacklevel``), with ``/`` separators;
-* whether it started a subprocess (other than a ``python -c`` probe that
-  can run no project code) or a subinterpreter: code no record names runs
-  there. The project code other threads are in the middle of when a window
-  opens is credited to it, as those threads run beside its test.
+* the processes it started through ``subprocess.Popen`` (POSIX), which
+  record themselves (``child.py``, roadmap item 15), and every such
+  process still running when it opens; the fold credits it with what they
+  ran;
+* whether it started a process another way (``os.system``, Windows,
+  ``multiprocessing``; other than a ``python -c`` probe that can run no
+  project code) or a subinterpreter: code no record names runs there. The
+  project code other threads are in the middle of when a window opens is
+  credited to it, as those threads run beside its test.
 
 Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
@@ -81,10 +86,16 @@ import struct
 import sys
 import threading
 import zlib
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import pytest
+
+try:
+    import diffcone_child as child  # ty: ignore[unresolved-import]
+except ImportError:  # imported as diffcone.collect, not as the plugin
+    from diffcone import child
 
 TOOL = 3
 FLAG_SUBPROCESS = 1
@@ -238,6 +249,7 @@ fixture_windows: dict[tuple[str, str, str], dict] = {}
 collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
 used_fixtures: dict[str, list] = {}
+live: list[tuple] = []  # accounted spawns not yet known to have ended
 caches: list = []
 recording = False
 
@@ -245,7 +257,16 @@ recording = False
 def _window() -> dict:
     # ``fixtures``: the non-function-scoped fixtures a test used, by key, so
     # a fixture another process (an xdist worker) set up is credited too.
-    return {"codes": set(), "paths": set(), "dirs": set(), "flags": 0, "fixtures": set()}
+    # ``spawns``: (spawner, pid, start, argv) of the processes it started, or
+    # that were still running when it opened, through ``subprocess.Popen``.
+    return {
+        "codes": set(),
+        "paths": set(),
+        "dirs": set(),
+        "flags": 0,
+        "fixtures": set(),
+        "spawns": set(),
+    }
 
 
 import_window = _window()
@@ -479,7 +500,11 @@ def _audit(event, args):
                 _touch(args[0])
         elif event in SUBPROCESS_EVENTS:
             global _inert_pending
-            if event == "_winapi.CreateProcess" and _inert_pending:
+            if child.in_popen(event, args):
+                # Accounted when it has started (_spawned).
+                if event == "subprocess.Popen" and _inert_probe(event, args):
+                    child.popen.inert = True
+            elif event == "_winapi.CreateProcess" and _inert_pending:
                 # The process an inert ``subprocess.Popen`` just judged
                 # (Windows raises both events for one process).
                 _inert_pending = False
@@ -654,6 +679,36 @@ def _credit_running_threads(window: dict) -> None:
             frame = frame.f_back
 
 
+def _spawned(pid: int, start: int, argv: list[str] | None) -> None:
+    """A process ``subprocess.Popen`` started: the open windows hold it, and
+    so does every window opened while it runs. Outside every test it is
+    flagged, as before."""
+    try:
+        if not active:
+            import_window["flags"] |= FLAG_SUBPROCESS
+            return
+        spawn = (os.getpid(), pid, start, tuple(argv) if argv is not None else None)
+        for w in active:
+            w["spawns"].add(spawn)
+        live.append(spawn)
+    except Exception as exc:
+        _error("spawn", exc)
+
+
+def _credit_live_children(window: dict) -> None:
+    """Credit ``window`` with the accounted processes still running: a
+    server or a warm worker started earlier serves this test too."""
+    if not live or OUT is None:
+        return
+    still = []
+    for spawn in live:
+        spawner, pid, start, argv = spawn
+        if child.tree_alive(Path(OUT), spawner, pid, start, list(argv) if argv else None):
+            still.append(spawn)
+            window["spawns"].add(spawn)
+    live[:] = still
+
+
 def _flag_multiprocessing_spawns() -> None:
     """``multiprocessing``'s spawn and forkserver start methods launch their
     children through ``_posixsubprocess.fork_exec``, which raises no audit
@@ -765,6 +820,7 @@ class _Writer:
         self.acc["dirs"] |= w["dirs"]
         self.acc["flags"] |= w["flags"]
         self.acc["fixtures"] |= w["fixtures"]
+        self.acc["spawns"] |= w["spawns"]
 
     def flush(self) -> None:
         if self.current is None:
@@ -776,6 +832,7 @@ class _Writer:
                 "dirs": sorted(self.acc["dirs"]),
                 "flags": self.acc["flags"],
                 "fixtures": sorted(self.acc["fixtures"]),
+                "spawns": _spawn_list(self.acc["spawns"]),
             }
         ).encode()
         name = self.current.encode()
@@ -791,6 +848,10 @@ class _Writer:
 writer: _Writer | None = None
 
 
+def _spawn_list(spawns: set) -> list:
+    return sorted([s, p, t, list(a) if a is not None else None] for s, p, t, a in spawns)
+
+
 # --------------------------------------------------------------------------- start
 
 
@@ -799,6 +860,13 @@ def _start() -> None:
     conftests, which usually import the project, so its import-time code is
     seen."""
     global recording, environment_at_start
+    if os.name != "nt":
+        # An xdist worker is a process a recorded run started: it records
+        # itself here, as a test process.
+        child.stop(discard=True)
+        os.environ[child.ENV_PARENT] = str(os.getpid())
+        child.on_spawn = _spawned
+        child.install_popen()
     # Compared with the environment at the end: a test that installs a
     # distribution changes what the recording is keyed by.
     try:
@@ -911,6 +979,7 @@ def pytest_fixture_setup(fixturedef, request):
     active.append(w)
     try:
         _credit_running_threads(w)
+        _credit_live_children(w)
     except Exception as exc:
         _error("threads", exc)
     # Code this test already ran is disabled; re-arm so the fixture's own
@@ -961,6 +1030,7 @@ def pytest_runtest_protocol(item, nextitem):
     importing.clear()  # no import is running when a test starts
     try:
         _credit_running_threads(mine)
+        _credit_live_children(mine)
     except Exception as exc:
         _error("threads", exc)
     mon.restart_events()
@@ -985,6 +1055,7 @@ def pytest_runtest_protocol(item, nextitem):
                         mine["paths"] |= shared["paths"]
                         mine["dirs"] |= shared["dirs"]
                         mine["flags"] |= shared["flags"]
+                        mine["spawns"] |= shared["spawns"]
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
         except Exception as exc:
@@ -1053,6 +1124,7 @@ def _finish():
                 "paths": sorted(w["paths"]),
                 "dirs": sorted(w["dirs"]),
                 "flags": w["flags"],
+                "spawns": _spawn_list(w["spawns"]),
             }
             for key, w in sorted(fixture_windows.items())
         },

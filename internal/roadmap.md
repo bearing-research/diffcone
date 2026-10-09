@@ -945,7 +945,26 @@ detected, so the lookup was already bounded.
 
 ## 15. Recording inside child processes (strata trial)
 
-**Status.** Sketched (2026-10-08). After items 10, 13 and 14, strata's
+**Status.** Implemented (2026-10-09), unreleased. A recording of
+strata's unit suite at `a54a387` flags 28 of 5 817 tests for a subprocess,
+down from 608. A body-only edit of a library function a few dozen tests
+run now selects 61, 91 and 88 tests (three functions), down from 639, 669
+and 640: the flagged tests no longer join every plan. `0da0faf7` itself
+moves little (1 921 to 1 901): its change adds names, and the harness
+runs each cell with `exec` (`harness._exec_with_display`), a lookup site
+that sees every namespace, so the cell-running tests are selected through
+it instead. A function only the children run, broken
+(`_exec_with_display` raising on `print(` cells), fails 85 tests in a
+full run; the plan selects 505 (8.7 %) and `diffcone check` finds no
+miss. Two fixes came from the first strata recording: the installed-copy
+check matched the checkout's own directory name (strata lives in a
+directory called `strata`), and `uv sync`, which the harness tests run,
+flagged until package managers' commands were accepted (`child.TOOLS`).
+The recording took 1 072 s, against 486 s for an earlier one on a less
+loaded machine; children now record themselves, and CI will say what
+that costs.
+
+The sketch, as first written: after items 10, 13 and 14, strata's
 floor is the tests that start a Python subprocess: the notebook harness
 (`uv run --directory <notebook> python harness.py <manifest>`), warm pool
 workers (`python pool_worker.py`), and fixtures that start them (some
@@ -999,7 +1018,14 @@ strata's or a notebook's virtual environment.
   own table, as a process's are), paths and directories. A spawn that
   resolves to nothing, a launcher whose command is not among the records,
   a header that could not record, or a flag line anywhere in the subtree
-  sets `FLAG_SUBPROCESS` on the window, as today.
+  sets `FLAG_SUBPROCESS` on the window, as today. So does a record that
+  ran project code from an entry the index does not hold (`-c`, standard
+  input, a script outside it): that code may read any project name, as an
+  `exec` would, but no site of the index stands for it. A Python record
+  vouches for a spawn only when the spawn's own command line started it
+  (a shell's `exec python` ran other commands first), and a package
+  manager's command (`uv sync`, `uv pip`, ...) is followed without
+  needing a record.
 
 **Trade-off.** It narrows selection: a test that started a recorded child
 is selected through what the child ran instead of for every change. The

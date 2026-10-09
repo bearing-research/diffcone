@@ -61,11 +61,19 @@ report:
 
 - Code that runs on import is planned from the code instead, as without
   evidence.
-- Tests with no recording (new tests, for example), tests whose recording
-  was unstable, and tests that started a subprocess or a subinterpreter are
-  always selected. A `python -c` snippet that can't run your code (a
-  version check) or `uv python list` doesn't count. Code that background threads are running
-  while a test runs is credited to that test.
+- Tests with no recording (new tests, for example) and tests whose
+  recording was unstable are always selected.
+- A Python process a test starts with `subprocess` (directly, or through
+  `uv run`) records itself on Linux and macOS, and the test is credited
+  with what it ran, as is every test that runs while it is still running.
+  A test that starts a process any other way (`os.system`, a shell,
+  `multiprocessing`, or anything on Windows), or whose child can't record
+  itself, is always selected. So is a test whose child runs your code from
+  a `python -c` snippet or a script outside your source roots. A
+  `python -c` snippet that can't run your code (a version check) or
+  `uv python list` doesn't count.
+- Code that background threads are running while a test runs is credited
+  to that test.
 - Changes to compiled sources, build files and configuration select every
   test.
 
