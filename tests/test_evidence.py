@@ -98,8 +98,8 @@ def test_listing():
 
 
 def test_subprocess():
-    # Started another way than subprocess.Popen: not recorded.
-    assert os.system(f'"{sys.executable}" -c "import pkg.ops"') == 0
+    # Project code run from a -c snippet: flagged, the child's record or not.
+    subprocess.run([sys.executable, "-c", "import pkg.ops"], check=True)
 """
 
 FILES = {
