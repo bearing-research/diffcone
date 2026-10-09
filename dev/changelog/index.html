@@ -819,6 +819,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -941,7 +952,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery" class="md-nav__link">
+  <a href="#discovery_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1126,6 +1137,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1248,7 +1270,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery" class="md-nav__link">
+  <a href="#discovery_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1372,6 +1394,16 @@ selection rules.</p>
   how many targets each entry matched. A malformed entry is an analysis
   error, so the plan selects everything rather than quietly planning those
   tests. <code>diffcone report</code> computes a job's selected share without them.</li>
+<li>A test is selected when the fixtures, hooks or plugins around it change
+  though its own code did not (rule <code>lifecycle_changed</code>), for example when
+  another test module adds a plugin to <code>pytest_plugins</code>. pytest plugin
+  modules are dependencies of every test, since their import-time code
+  runs for the whole session; a plugin in the repository outside the
+  source roots keeps every test always selected.</li>
+<li>An <code>always_run</code> entry naming an unknown runner is an analysis error; one
+  whose pattern matches nothing in a plan is flagged in the text report.</li>
+<li><code>plan --evidence</code> says the environment was not checked
+  (<code>environment_checked: false</code>): only <code>run</code> can check it.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1419,11 +1451,112 @@ selection rules.</p>
   with backticks inside its code span. The <code>report</code> action starts its
   window at the last report that posted, so a run with only a job summary
   (a manual run with posting off) no longer hides the runs before it.</li>
-<li>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
-  was quoted for a POSIX shell.</li>
+<li>
+<p>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
+  was quoted for a POSIX shell.</p>
+</li>
+<li>
+<p>Holes in the narrowings of 0.2.0, each a miss: a name taken from a
+  dict, list or set written in the code (<code>getattr(handlers, NAMES[key])</code>,
+  a lazy-export table) is bounded by it only while every use of the table
+  is a read, so a table changed through an alias, a helper it is passed
+  to, its module (<code>core.TABLE[k] = v</code>), <code>globals()</code>, <code>vars()</code>,
+  <code>sys.modules</code>, <code>monkeypatch</code> or <code>mock.patch</code> (an object or a dotted
+  string) is no longer read as its literal; and a lookup on a
+  standard-library or third-party module (<code>getattr(logging, name)</code>) counts
+  writes that reach the module indirectly (an alias, a helper it is passed
+  to, a loop, <code>__setattr__</code>, <code>vars()</code>, a module found at run time). Once
+  code can reach a module whose name is known only at run time, no table
+  is bounded.</p>
+</li>
+<li>A class obtained by a name nothing resolves (<code>m.Alt()</code> on an object of
+  unknown type, a lazy <code>__getattr__</code> export) reaches its <code>__init__</code> and
+  <code>__new__</code>: a constructor change selected nothing.</li>
+<li>Reading a module's members wholesale (<code>mod.__dict__[name]</code>,
+  <code>inspect.getmembers(mod)</code>, e.g. parametrizing a test over a module's
+  functions) is a dependency.</li>
+<li>A change to a dependency, build or CI file outside the source roots
+  selected nothing: <code>dev-requirements.txt</code>, <code>Requirements.txt</code>,
+  <code>requirements.pip</code>, pandas' <code>ci/deps/*.yaml</code>, <code>hatch.toml</code>,
+  <code>poetry.toml</code>, <code>pdm.toml</code>, <code>.env</code> and <code>.pth</code> files, <code>sitecustomize.py</code>,
+  <code>noxfile.py</code>, <code>.github/workflows/</code>, and checker configurations pytest
+  plugins run as tests (<code>mypy.ini</code>, <code>ruff.toml</code>). These now select every
+  target, as does a build script anywhere under a root (a nested
+  <code>setup.py</code>) and a lock-file change between <code>INDEX</code> and <code>WORKTREE</code>.</li>
+<li>Changing the arguments of a call made at import time (<code>X =
+  set_mode("slow")</code>, a class attribute, a decorator's or default's
+  argument) did not select the tests that read the state the callee
+  changes.</li>
+<li>A change to PEP 695/696 type parameters (bounds, defaults, their number)
+  was no change at all; a bound or default naming project code is now a
+  dependency.</li>
+<li><code>WORKTREE</code> did not see edits to files flagged assume-unchanged or
+  skip-worktree, and neither did <code>run</code>'s check that the working tree
+  matches the plan; an edited <code>.py</code> file with a non-ASCII name also passed
+  that check.</li>
+<li>A submodule under the source roots made every <code>WORKTREE</code> plan select
+  everything; one checked out at another commit, or with uncommitted
+  edits, still counts as a change. A path containing a line break no
+  longer fails the plan.</li>
+</ul>
+<h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
+<ul>
+<li>An autouse fixture imported into a conftest, a test module or a plugin
+  (by name, through star imports at any depth, or as a module attribute)
+  was not a dependency of the tests it applies to; nor was a fixture with
+  <code>name=</code> imported under its function name.</li>
+<li>pytest options in <code>PYTEST_ADDOPTS</code>, plugins in <code>PYTEST_PLUGINS</code> and
+  pytest arguments written into <code>--command</code> were not read. <code>plan</code> and
+  <code>discover</code> take <code>--command</code>, the CI actions pass it, and the report lists
+  what was read; a command whose pytest arguments cannot be found is
+  reported.</li>
+<li>Conftests pytest loads at startup (in the <code>test*</code> directories of a path
+  it starts from) count even when ignored or under <code>norecursedirs</code>;
+  <code>--ignore</code>, <code>--ignore-glob</code> and <code>norecursedirs</code> apply only below the
+  paths pytest starts from, and not under a conftest whose
+  <code>pytest_ignore_collect</code> can return False.</li>
+<li>Understood now: <code>.</code> as an argument, a <code>.txt</code> or <code>.rst</code> file named as an
+  argument (always a doctest), <code>--doctest-glob</code> patterns with a directory,
+  option values written as separate arguments (<code>--ignore tests/slow</code>),
+  absolute paths inside the repository, <code>-o name=value</code> overrides and paths
+  in <code>addopts</code>.</li>
+<li>ASV: <code>setUp</code> and <code>TearDown</code> in any case, and the benchmark class's
+  <code>__init__</code>, are dependencies of its benchmarks.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
+<li>Recordings must be made again: the store format changed.</li>
+<li>A process started while a <code>conftest.py</code> is imported or in a hook was not
+  credited to anything; what it runs now counts as part of that import or
+  hook, and one the recording cannot follow makes every change plan from
+  the code. pytest-xdist workers are not affected.</li>
+<li>A test using a <code>multiprocessing</code> pool, forkserver or forked process that
+  an earlier test started is always selected while that process runs.</li>
+<li>Files a library reads while it is imported (matplotlib's <code>matplotlibrc</code>)
+  were not recorded.</li>
+<li>A virtual environment created inside a source directory hid that
+  directory's code, or gave a false "installed copy" error.</li>
+<li>Tests that run code compiled from text no file holds (doctests,
+  <code>--doctest-modules</code>, <code>timeit</code>, a notebook kernel) are always selected
+  (rule <code>text_code</code>).</li>
+<li>On macOS and Windows, a file opened under another capitalisation was not
+  matched.</li>
+<li>A <code>python -c</code> probe that runs project code is caught by its own
+  recording, and a project's own <code>sitecustomize.py</code> no longer stops
+  subprocesses from recording themselves. A child recording cut short (a
+  full disk) is treated as unreadable.</li>
+<li>A fake test class found without naming it (a base's <code>__subclasses__()</code>,
+  <code>gc</code>, a frame's globals) counts as held by the code that found it.</li>
+<li>A change to code that runs at import, or that ran during an import,
+  reaches the tests reading what it writes into another module, Cython
+  code included; library code importing a test module by a computed name
+  sees changes to it; <code>pytest_plugins</code> in a test module selects every test
+  when it changes.</li>
+<li><code>run --collect</code> on a recording made with <code>--reverse-check</code> runs the
+  selected tests again in reverse order, so the advanced records are
+  order-checked too.</li>
+<li>Cython: edits to blank lines or <code>#</code> lines inside a string in a function
+  body were ignored.</li>
 <li>A Python process a test starts with <code>subprocess</code> (directly, through
   <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and
   the test is credited with what it ran instead of being selected for
@@ -1540,7 +1673,7 @@ selection rules.</p>
   the middle of while it runs, which also covers a later test running
   beside a thread that loops in one function.</li>
 </ul>
-<h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
+<h3 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
   pytest; a node id, or a path after an option that may take it as its
