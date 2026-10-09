@@ -54,7 +54,10 @@ observed by"), and a test is selected when its record meets E:
 without dynamic-reference pseudo-seeds: a test that executed a dynamic
 site is in the record through the code it reached, so the lookup sites
 that can see an escalated module join E instead. Every symbol of an
-escalated module joins E too.
+escalated module joins E too. A lookup on an external module that only
+code running inside tests writes to joins E only on an escalation: what it
+finds of the project's, a test's record holds through the writer
+(``_Observers._written_in_tests``).
 
 Targets of other runners, which have no evidence, keep their static
 decision. A pytest target with no record (new, or never run) is selected.
@@ -96,6 +99,7 @@ from diffcone.model import (
     CLASS,
     CLASS_STATEMENT,
     DECLARED,
+    EXTERNAL_WRITTEN,
     FUNCTION,
     IMPORTS,
     IMPORTS_NAME,
@@ -220,6 +224,10 @@ SITE_ANY = "any"  # eval/exec/run_path
 
 
 def _site_kind(detail: str) -> str:
+    if detail.endswith(EXTERNAL_WRITTEN):
+        # On an external module: in-scope code anywhere may have stored there,
+        # not only the site's own import closure.
+        return SITE_ANY
     if "import" in detail or detail.startswith("runpy.run_module"):
         return SITE_IMPORT
     if detail.startswith(("getattr(<non-literal>) on a receiver from elsewhere", "vars(")):
@@ -391,6 +399,13 @@ class _Observers:
         self.importers_of: dict[str, set[str]] = defaultdict(set)
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, str]] = []  # (symbol, kind)
+        # Sites on an external module that only test-window code writes to
+        # (``_written_in_tests``): seen only on an escalation.
+        self.escalation_sites: list[tuple[str, str]] = []
+        external: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for index in (c_index, other):
+            for key, writers in index.external_sites.items():
+                external[key].update(writers)
         for index in (c_index, other):
             for edge in index.edges:
                 if edge.kind in (REFERENCES, DECLARED):
@@ -401,11 +416,18 @@ class _Observers:
                     self.importers_of[edge.target].add(edge.source)
             for ref in index.unresolved:
                 if ref.kind == UNRESOLVED_DYNAMIC:
-                    self.sites.append((ref.symbol, _site_kind(ref.detail)))
+                    site = (ref.symbol, _site_kind(ref.detail))
+                    if self._written_in_tests(external.get((ref.symbol, ref.detail))):
+                        self.escalation_sites.append(site)
+                    else:
+                        self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
-            for symbol, _detail in index.reflection:
-                self.sites.append((symbol, SITE_ANY))
+            for symbol, detail in index.reflection:
+                if self._written_in_tests(external.get((symbol, detail))):
+                    self.escalation_sites.append((symbol, SITE_ANY))
+                else:
+                    self.sites.append((symbol, SITE_ANY))
         for decl in declarations:
             self.readers_of[decl.target].add(decl.source)
         self.hands_on = {
@@ -431,6 +453,7 @@ class _Observers:
             if s in self.symbols and test_code.is_test_code(self.symbols[s].module)
         }
         self.sites = sorted(set(self.sites))
+        self.escalation_sites = sorted(set(self.escalation_sites) - set(self.sites))
         self.members = _members_by_container(set(self.symbols))
         self.reach = _ImportReach(c_index, other)
         self.bases, self.subclasses = _class_graph((c_index, other))
@@ -474,6 +497,23 @@ class _Observers:
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
 
     # -- recording --------------------------------------------------------------
+
+    def _written_in_tests(self, writers: set[str] | None) -> bool:
+        """Whether a lookup on an external module written by ``writers`` can
+        find the project's code only in a test that ran one of them (roadmap
+        item 14): each is a function or method, and none ran at C during an
+        import or outside every test. A write at import (module or class
+        top-level code, a decorator) stays for every later test."""
+        if not writers:
+            return False
+        ev = self.evidence
+        for writer in writers:
+            symbol = self.symbols.get(writer)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+                return False
+            if writer in ev.import_phase or writer in ev.import_by or writer in ev.hook_phase:
+                return False
+        return True
 
     def _observe(self, symbol: str, rule: str, detail: str, change: SymbolChange | None) -> None:
         if symbol not in self.E:
@@ -1158,7 +1198,7 @@ class _Observers:
         self.seed_changes.add(change.id)
         symbol = change.symbol
         self._module_symbols(symbol.module, why)
-        self._sites(symbol, change, why, imports=symbol.kind == MODULE)
+        self._sites(symbol, change, why, imports=symbol.kind == MODULE, escalation=True)
 
     def _escalate_module(self, module: str, why: str) -> None:
         """Plan the module's import statically, as if its top-level code
@@ -1168,7 +1208,7 @@ class _Observers:
         self._module_symbols(module, why)
         module_symbol = self.symbols.get(module)
         if module_symbol is not None:
-            self._sites(module_symbol, None, why, imports=True)
+            self._sites(module_symbol, None, why, imports=True, escalation=True)
 
     def _module_symbols(self, module: str, why: str) -> None:
         """Every symbol of a module whose import-time state may differ: code
@@ -1186,12 +1226,20 @@ class _Observers:
                 )
 
     def _sites(
-        self, symbol: Symbol, change: SymbolChange | None, label: str, *, imports: bool = False
+        self,
+        symbol: Symbol,
+        change: SymbolChange | None,
+        label: str,
+        *,
+        imports: bool = False,
+        escalation: bool = False,
     ) -> None:
-        for site, detail in self._seeing_sites(symbol, imports=imports):
+        for site, detail in self._seeing_sites(symbol, imports=imports, escalation=escalation):
             self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
 
-    def _seeing_sites(self, symbol: Symbol, *, imports: bool = False) -> list[tuple[str, str]]:
+    def _seeing_sites(
+        self, symbol: Symbol, *, imports: bool = False, escalation: bool = False
+    ) -> list[tuple[str, str]]:
         """Code that finds names by a name nothing bounds and can see the
         namespace of ``symbol``: a read off an object from anywhere, eval and
         reflection always; a read off a module global when the namespace's
@@ -1201,7 +1249,9 @@ class _Observers:
         class the runner instantiates. A member of a class only the runner
         ever instantiates (planner._runner_only_classes) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
-        hold one of its instances."""
+        hold one of its instances. On an escalation (import-time state that
+        may differ), lookups on an external module that only test code writes
+        to count too: changed import-time code may write there."""
         out: list[tuple[str, str]] = []
         namespace = symbol.module
         test = self.test_code.is_test_code(namespace)
@@ -1210,7 +1260,8 @@ class _Observers:
         # Only code that imports it, or is handed it (below), can look a
         # module-level name up on it.
         module_name = test and (symbol.kind == MODULE or symbol.container == namespace)
-        for site, kind in self.sites:
+        sites = sorted(self.sites + self.escalation_sites) if escalation else self.sites
+        for site, kind in sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
                 continue

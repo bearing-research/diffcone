@@ -31,6 +31,9 @@ UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
 UNRESOLVED_ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
 UNRESOLVED_DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
 OPAQUE_ATTRIBUTE = "*"  # SourceIndex.class_attributes: class-body code binding nothing by name
+# Ends the detail of a lookup on an external module that in-scope code writes
+# to (SourceIndex.external_sites). No "import" in it: details are read for that.
+EXTERNAL_WRITTEN = " on an external module in-scope code writes to"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
 
@@ -161,6 +164,11 @@ class SourceIndex:
     # ``__dict__`` read). Static planning does not use these; evidence mode
     # counts them as sites that notice an added, deleted or redefined name.
     reflection: set[tuple[str, str]] = field(default_factory=set)
+    # (symbol, detail) of a lookup or reflection site on an external module
+    # that in-scope code writes to (its detail ends with EXTERNAL_WRITTEN)
+    # -> the symbols writing there. Static planning does not use these;
+    # evidence mode bounds such a site by its writers (roadmap item 14).
+    external_sites: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
     # Class -> {attribute bound in the class body: hash of its statements}.
     # Class attributes are not symbols; evidence mode compares these to find
     # which attribute names a class-body change touched. ``OPAQUE_ATTRIBUTE``

@@ -350,6 +350,16 @@ selection or states something the tables left implicit; none narrows it.
   such code having run during an import or outside every test. An
   instance one test leaves for a later one falls under the isolation
   assumption above.
+* **A lookup on an external module sees what the project stored there**
+  (roadmap item 14). `dir(builtins)` or `getattr(os, name)` is bounded
+  until project code writes to that module (`monkeypatch.setattr(builtins,
+  ...)`). Then it is a site that sees every namespace, since a writer
+  anywhere may have stored there, not only one in the site's import
+  closure. When every writer is a function or method that ran only inside
+  test windows, a store is visible only in a test that ran its writer. A
+  change to the writer or to what it stores selects that test through the
+  writer, so the site joins E only on an escalation: changed import-time
+  code may now write there for every later test.
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures

@@ -155,11 +155,12 @@ class _Output:
     decorations: set[tuple[str, str, str]] = field(default_factory=set)
     # External modules in-scope code writes attributes onto (``logging.x =
     # ...``, ``setattr(logging, ...)``, ``monkeypatch.setattr("logging.x",
-    # ...)``), and lookups by a name nothing bounds on an external module:
-    # (symbol, module, "dynamic" or "reflection", detail). Such a lookup can
-    # reach in-scope code only through a write onto that module, which only
-    # the whole tree can tell (Indexer._external_lookups).
-    external_writes: set[str] = field(default_factory=set)
+    # ...)``), as (module, the symbol writing), and lookups by a name nothing
+    # bounds on an external module: (symbol, module, "dynamic" or
+    # "reflection", detail). Such a lookup can reach in-scope code only
+    # through a write onto that module, which only the whole tree can tell
+    # (Indexer._external_lookups).
+    external_writes: set[tuple[str, str]] = field(default_factory=set)
     external_lookups: set[tuple[str, str, str, str]] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
@@ -243,7 +244,7 @@ def _output_to_dict(out: _Output) -> dict:
         "open_classes": sorted(out.open_classes),
         "doc_decorated": sorted(out.doc_decorated),
         "decorations": sorted(list(d) for d in out.decorations),
-        "external_writes": sorted(out.external_writes),
+        "external_writes": sorted(list(w) for w in out.external_writes),
         "external_lookups": sorted(list(x) for x in out.external_lookups),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
@@ -312,7 +313,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.open_classes = set(data["open_classes"])
     out.doc_decorated = set(data["doc_decorated"])
     out.decorations = {(a, b, c) for a, b, c in data["decorations"]}
-    out.external_writes = set(data["external_writes"])
+    out.external_writes = {(m, w) for m, w in data["external_writes"]}
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {

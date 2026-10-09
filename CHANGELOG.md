@@ -22,6 +22,14 @@ selection rules.
   or a subclass. A fake built at import, in a decorator or during
   collection, or one whose class or bases sit outside test code, is
   treated as before.
+- A lookup on a standard or third-party module that tests patch
+  (`dir(builtins)` or `hasattr(os, name)` in library code, with
+  `monkeypatch.setattr(builtins, ...)` in a test) no longer makes every
+  change anywhere select every test that ran the lookup. The tests that
+  patch the module are selected through their own code. A module written
+  at import or in a hook is treated as before. A non-literal `getattr` on
+  such a module now sees changes anywhere in the project, not only in its
+  own imports.
 
 ### CI
 

@@ -637,12 +637,7 @@ stopped counting as a read). Static planning selects 100 % on every one.
 **Next, each needing its own sketch before code:**
 
 * *Readers of a test fake's member*: item 13.
-* *Lookups on an external module the project writes to.* strata's tests
-  patch `builtins.open` and `builtins.__import__`, so `dir(builtins)` and
-  `hasattr(os, ...)` stay fully dynamic (1 102 tests on one commit).
-  Bounded instead by what is stored there: an edge from the lookup to each
-  stored value's references, dynamic only when a stored value cannot be
-  resolved.
+* *Lookups on an external module the project writes to*: item 14.
 
 ## 11. A report over CI runs (`diffcone report`, `actions/report`)
 
@@ -856,3 +851,73 @@ check` against a full run at `0da0faf7` showing no miss.
   * a fake subclassing a library class;
   * a fake whose builder runs in `pytest_generate_tests`;
   * a decorated fake.
+
+## 14. Lookups on an external module the project writes to, under evidence (strata trial)
+
+**Status.** Implemented (2026-10-08), unreleased; strata measurement
+pending. A lookup by a name nothing bounds on an
+external module (`dir(builtins)`, `hasattr(os, name)`, `getattr(httpx,
+name)`) is bounded, unless project code writes to that module (or one
+above or below it). strata's tests do: `monkeypatch.setattr(builtins,
+"open", ...)`, `builtins.__import__`, `patch.dict(os.environ, ...)`. So
+`_external_lookups` makes five library sites full dynamic or reflection
+sites: `analyze_cell` and `_BUILTIN_NAMES` (`dir(builtins)`), `_cpus` and
+`_memory_mb` (`hasattr(os, ...)`), and `RemoteStore._post`
+(`getattr(httpx, ...)`). Under evidence, a reflection site sees every
+namespace. So any added or deleted name, or any changed variable, anywhere
+selects every test that ran `analyze_cell`. On `0da0faf7` after item 13,
+lookup sites select 1 524 tests: `analyze_cell` is among the sites for
+1 050 of them and the only reason for 595.
+
+**Mechanism (evidence only; static planning is unchanged).** What such a
+site can find of the project's is only what project code stored on the
+module. When every writer of that store is a function or method that ran
+only inside test windows at C, the writer is in the record of every test
+where the store was visible:
+
+* a write in a test or a fixture (`monkeypatch.setattr`, `mock.patch`)
+  ran in that test's window, or in a shared fixture credited to every
+  user. A change to the writer, or to a value it stores (whose readers
+  include the writer), selects those tests;
+* a value the site hands on is then used by code that reads it by name
+  (`getattr(builtins, n).attr`), which is a reader in its own right.
+
+So under evidence such a site does not join E through `_sites` for a
+change elsewhere. It still joins E on an escalation (`_escalate_change`,
+`_escalate_module`): import-time code that changed may now write to the
+module at import, for every later test. The rule is off, and the site
+stays as now, when any writer is module or class top-level code (a write
+at import, or a `mock.patch` decorator), or ran during an import or
+outside every test at C (`import_phase`, `import_by`, `hook_phase`).
+
+* *Index.* The module facts record each write's writer with the module
+  (`external_writes` becomes (module, writer) pairs). `_external_lookups`
+  marks the sites it turns dynamic with "on an external module in-scope
+  code writes to" in the detail. The marker has no "import" in it, which
+  static planning and `_site_kind` read. It also records each marked
+  site's writers in `SourceIndex.external_sites`. `INDEX_FORMAT` is
+  bumped.
+* *Evidence.* `_Observers` keeps the sites whose writers pass apart from
+  `self.sites`, and `_seeing_sites` adds them back only for escalations.
+
+**Trade-off.** This narrows selection. A store one test leaves for a later
+one (a write without `monkeypatch`, never undone) is outside the record of
+the later test. That is the isolation assumption again, with the
+reverse-order collection as its detector. An external library that stores
+a project value it was handed is not seen today either: no write is
+detected, so the lookup was already bounded.
+
+**Done when**
+* scenarios cover these cases:
+  * a library `dir(builtins)` reached by many tests is no longer
+    selected for an unrelated added name (selected before: the narrowing
+    scenario);
+  * a test whose own `monkeypatch.setattr(builtins, ...)` writer, or a
+    value it stores, changes is still selected;
+  * the rule is off for a write at import (module level, or a function
+    called at import) and for one in a hook;
+  * a write newly made at import in the head revision still reaches the
+    site through the escalation;
+* static plans are unchanged (scenarios assert the static selection);
+* `0da0faf7` on the recording at its parent drops the `lookup_site`
+  selections that came from these sites.

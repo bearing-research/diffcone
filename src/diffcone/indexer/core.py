@@ -21,6 +21,7 @@ from diffcone.indexer.literals import literal_keys
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.syntax import _digest, decode_source
 from diffcone.model import (
+    EXTERNAL_WRITTEN,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
     Edge,
@@ -166,24 +167,29 @@ class Indexer(DynamicBounds):
         stored something there: then it counts as the dynamic reference or
         reflection site it is. A write onto a module above or below the one
         looked at counts too (``logging.handlers.x = ...`` and
-        ``getattr(logging, n)``)."""
+        ``getattr(logging, n)``), and so does one onto a module found at run
+        time (``*``). Such a site's detail says so, and
+        ``SourceIndex.external_sites`` keeps the symbols writing there."""
         written = self._global.external_writes
 
-        def touched(module: str) -> bool:
-            if "*" in written:  # a module found at run time was written to
-                return True
-            return any(
-                w == module or w.startswith(module + ".") or module.startswith(w + ".")
-                for w in written
-            )
+        def writers(module: str) -> set[str]:
+            return {
+                writer
+                for w, writer in written
+                if w in ("*", module) or w.startswith(module + ".") or module.startswith(w + ".")
+            }
 
         for symbol, module, kind, detail in sorted(self._global.external_lookups):
-            if not touched(module):
+            by = writers(module)
+            if not by:
                 continue
+            detail += EXTERNAL_WRITTEN
             if kind == "reflection":
                 self.out.reflection.add((symbol, detail))
             else:
                 self.out.unresolved.add(UnresolvedReference(symbol, UNRESOLVED_DYNAMIC, "", detail))
+            known = self.index.external_sites.get((symbol, detail), ())
+            self.index.external_sites[(symbol, detail)] = tuple(sorted(by.union(known)))
 
     def _registrations(self) -> None:
         """Edges to code a decorator or a base class may keep and call later:

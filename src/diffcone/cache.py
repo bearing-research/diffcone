@@ -45,7 +45,9 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-INDEX_FORMAT = 24  # 24: docstring decorators; 23: open classes; 22: import layout
+INDEX_FORMAT = (
+    25  # 25: external sites; 24: docstring decorators; 23: open classes; 22: import layout
+)
 
 
 def _indexer_fingerprint() -> str:
@@ -106,6 +108,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "external": [asdict(x) for x in sorted(index.external)],
         "errors": [asdict(e) for e in sorted(index.errors)],
         "reflection": sorted(list(r) for r in index.reflection),
+        "external_sites": [[s, d, list(w)] for (s, d), w in sorted(index.external_sites.items())],
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(index.class_attributes.items())
         },
@@ -148,6 +151,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         escaped_classes=set(data["escaped_classes"]),
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},
+        external_sites={(s, d): tuple(w) for s, d, w in data["external_sites"]},
         class_attributes={c: dict(a) for c, a in data["class_attributes"].items()},
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
         open_classes=set(data["open_classes"]),

@@ -381,7 +381,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         plain ``__init__`` assignment); on any other receiver the type is
         unknown, so no class's ``attr`` can be bounded."""
         if (module := self._written_module(node.value)) is not None:
-            self.indexer.out.external_writes.add(module)
+            self.indexer.out.external_writes.add((module, self.source))
         if (cls := self._self_class(node.value)) is not None:
             binding = self._bindings.pop(id(node), None)
             self.indexer.out.attr_writes.append(
@@ -421,7 +421,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
         """``setattr(receiver, name, ...)`` and its relatives."""
         if (module := self._written_module(receiver)) is not None:
-            self.indexer.out.external_writes.add(module)
+            self.indexer.out.external_writes.add((module, self.source))
         names = self.scope.string_candidates(name) if name is not None else None
         owner = (self._self_class(receiver) if receiver is not None else None) or ""
         for attr in names if names is not None else ("*",):
@@ -610,7 +610,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     # A third-party target: whichever prefix is the module,
                     # something may now be stored on it.
                     for i in range(1, len(chain)):
-                        self.indexer.out.external_writes.add(".".join(chain[:i]))
+                        self.indexer.out.external_writes.add((".".join(chain[:i]), self.source))
             return
         if len(args) > 1 and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
             receiver = _flatten_chain(first)

@@ -945,3 +945,112 @@ def pytest_generate_tests(metafunc):
         held_file = HELD_FILE.format(**held)
     plan = _bare_change(repo, held_file, bare, **files)
     assert HELD in selected(plan)
+
+
+# Lookups on an external module the project writes to (roadmap item 14):
+# what they can find of the project's was stored by the code writing there,
+# which is in the record of the tests that saw it.
+EXTERNAL = {
+    **BASE,
+    "pkg/names.py": """\
+import builtins
+
+
+def is_builtin(name):
+    return name in dir(builtins)
+
+
+def lookup(name):
+    return getattr(builtins, name, None)
+""",
+    "pkg/extra.py": """\
+import builtins
+
+
+def marker():
+    return 1
+
+
+def install():
+    builtins.diffcone_installed = 1
+""",
+    "tests/test_names.py": """\
+from pkg.names import is_builtin, lookup
+
+
+def test_names():
+    assert is_builtin("len")
+
+
+def test_lookup():
+    assert lookup("len") is len
+""",
+    "tests/test_patched.py": """\
+import builtins
+
+from pkg.extra import install, marker
+from pkg.names import is_builtin
+
+
+def test_patched(monkeypatch):
+    monkeypatch.setattr(builtins, "diffcone_marker", marker, raising=False)
+    assert is_builtin("diffcone_marker")
+
+
+def test_installed():
+    install()
+    assert is_builtin("diffcone_installed")
+    del builtins.diffcone_installed
+""",
+}
+EXT_NAMES, EXT_LOOKUP = "tests/test_names.py::test_names", "tests/test_names.py::test_lookup"
+PATCHED = "tests/test_patched.py::test_patched"
+INSTALLED = "tests/test_patched.py::test_installed"
+ADDED_NAME = OPS + "\n\ndef added():\n    return 2\n"
+
+
+def test_a_lookup_on_a_module_only_tests_write_to_sees_no_unrelated_name(repo):
+    base, ev = _collected(repo, EXTERNAL)
+    head = repo.commit({"pkg/ops.py": ADDED_NAME})
+    plan = _plan(repo, base, head, ev)
+    assert not {EXT_NAMES, EXT_LOOKUP, PATCHED, INSTALLED} & selected(plan)
+
+
+def test_a_value_stored_on_an_external_module_reaches_its_writer(repo):
+    base, ev = _collected(repo, EXTERNAL)
+    extra = EXTERNAL["pkg/extra.py"].replace("def marker():", "def marker(x=None):")
+    head = repo.commit({"pkg/extra.py": extra})
+    plan = _plan(repo, base, head, ev)
+    assert PATCHED in selected(plan)
+    assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
+
+
+def test_a_writer_newly_run_at_import_reaches_the_lookups(repo):
+    base, ev = _collected(repo, EXTERNAL)
+    head = repo.commit({"pkg/extra.py": EXTERNAL["pkg/extra.py"] + "\n\ninstall()\n"})
+    plan = _plan(repo, base, head, ev)
+    # pkg.extra's import now leaves a name on builtins for every later test.
+    assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
+
+
+@pytest.mark.parametrize("where", ["module level", "called at import", "in a hook"])
+def test_a_lookup_on_a_module_written_outside_tests_sees_every_name(repo, where):
+    files = dict(EXTERNAL)
+    if where == "module level":
+        files["pkg/boot.py"] = "import builtins\n\nbuiltins.diffcone_boot = 1\n"
+        files["tests/test_boot.py"] = (
+            "import pkg.boot  # noqa: F401\n\n\ndef test_boot():\n    pass\n"
+        )
+    elif where == "called at import":
+        files["pkg/boot.py"] = "from pkg.extra import install\n\ninstall()\n"
+        files["tests/test_boot.py"] = (
+            "import pkg.boot  # noqa: F401\n\n\ndef test_boot():\n    pass\n"
+        )
+    else:
+        files["tests/conftest.py"] = (
+            "from pkg.extra import install\n\n\ndef pytest_configure(config):\n    install()\n"
+        )
+    base, ev = _collected(repo, files)
+    head = repo.commit({"pkg/ops.py": ADDED_NAME})
+    plan = _plan(repo, base, head, ev)
+    assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
