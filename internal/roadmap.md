@@ -1058,3 +1058,65 @@ comparing `os.environ` whole would see.
 * the recording of strata's unit suite loses the flag on the harness and
   pool tests, and a replay of `0da0faf7` on it shows the drop;
   `diffcone check` against full runs finds no miss.
+
+## 16. The environment's own code and its metadata scans are not the project's (strata trial)
+
+**Status.** Sketch (2026-10-09). Every strata pull request that edits a
+test file has selected the whole unit suite since strata's #1082, which
+added `pytest_sessionstart`/`pytest_sessionfinish` hooks calling
+`importlib.metadata.distributions()`. #1085 (one parametrize list and a
+two-token library fix) ran 6 231 of 6 231 under `unobserved_file_changed`:
+"project code touched tests/test_table_uri_errors.py outside every test".
+Two causes, both reproduced on a scratch clone at `edc32ce0`:
+
+* *The console script is in the checkout.* CI runs `uv run pytest`, so
+  the outermost frame of the pytest process is `.venv/bin/pytest`, a file
+  under the checkout root and not under `site-packages`. `_actor` walks to
+  it and calls every touch of the process "project": pytest stat'ing its
+  arguments and conftests during start-up, pluggy scanning entry points.
+  `python -m pytest` has no such frame, which is why recordings made that
+  way never showed it.
+* *Metadata scans list the checkout.* `distributions()` stats and, when a
+  directory's mtime has moved since its cached scan, lists every
+  `sys.path` entry (the checkout root, `tests`, the source roots). From a
+  conftest hook that is project code outside every test, so an added file
+  anywhere under a listed directory selects everything.
+
+**Mechanism.**
+
+* *The environment.* `_relative` (the plugin and the child recorder)
+  returns None for a path under `sys.prefix`, `sys.exec_prefix` or
+  `sys.base_prefix`, not only under `site-packages`: an environment kept
+  in the checkout (`.venv/bin/pytest`, `.venv/lib/...`) is installed code,
+  as `site-packages` already is. A child running another environment
+  (a notebook's `.venv`) excludes its own prefix.
+* *Metadata scans.* A stat or listing of a `sys.path` entry (normalised;
+  `""` is the current directory) made with `importlib.metadata` (or the
+  `importlib_metadata` backport) on the stack, inside it from the touch
+  up to the first project frame, is not recorded. Such a scan reads only
+  the names of `*.dist-info`, `*.egg-info` and `*.egg` entries and the
+  directory's mtime; reads of files inside a distribution are still
+  recorded.
+* *What the scan could have seen.* `build_input` also matches any path
+  with a component ending in `.dist-info` or `.egg-info`: a committed
+  distribution's metadata changed, appeared or disappeared decides what
+  `importlib.metadata` finds, so the plan selects everything, as for a
+  lock file.
+
+**Trade-off.** Both narrow. The first is exact: code under the
+environment's prefix is not the project's code, whoever runs it. The
+second drops what a scan could learn from a directory's other names,
+which only distribution metadata decides, and the planner rule keeps
+that sound. A project that commits a virtual environment's scripts to
+version control and edits them (no known case) would lose their reads.
+
+**Done when**
+* scenarios: a recording run through a console script inside the
+  checkout (a fake `.venv/bin/pytest`-style entry) does not select every
+  test for an edited test file; a session hook calling
+  `distributions()` does not select every test for an added test file;
+  a committed `*.dist-info`/`*.egg-info` change selects every test; each
+  fails on the old code where it narrows;
+* a recording of strata at `edc32ce0` with `uv run pytest` has no test
+  file under `import_paths` with no module, and #1085's edit replayed on
+  it plans without a fallback.
