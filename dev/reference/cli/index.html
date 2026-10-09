@@ -1231,7 +1231,7 @@ errors.</p>
 <h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>
 <p>Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).</p>
 <p>Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
 </code></pre></div>
 <table>
 <thead>
@@ -1256,6 +1256,11 @@ errors.</p>
 <td><code>--targets</code> <code>TARGETS</code></td>
 <td></td>
 <td>Path to a JSON target manifest.</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>The pytest command line the run will use: pytest options written in it (uv run pytest -p plugins.x) are read by discovery, as run reads them.</td>
 </tr>
 <tr>
 <td><code>--repo</code> <code>REPO</code></td>
@@ -1829,7 +1834,7 @@ errors.</p>
 <h2 id="diffcone-discover"><code>diffcone discover</code><a class="headerlink" href="#diffcone-discover" title="Permanent link">&para;</a></h2>
 <p>Statically discover targets in a snapshot and emit a manifest.</p>
 <p>Discover pytest tests and/or ASV benchmarks in a snapshot (a git revision, INDEX or WORKTREE) without importing them, and print a target manifest (JSON) for <code>diffcone plan --targets</code>. The output states which snapshot kind was read.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>diffcone discover [-h] [--rev REV] [--command COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
 </code></pre></div>
 <table>
 <thead>
@@ -1844,6 +1849,11 @@ errors.</p>
 <td><code>--rev</code> <code>REV</code></td>
 <td><code>HEAD</code></td>
 <td>Snapshot to discover in: revision, INDEX or WORKTREE.</td>
+</tr>
+<tr>
+<td><code>--command</code> <code>COMMAND</code></td>
+<td></td>
+<td>The pytest command line the run will use: pytest options written in it are read by discovery.</td>
 </tr>
 <tr>
 <td><code>--repo</code> <code>REPO</code></td>

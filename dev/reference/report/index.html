@@ -1127,7 +1127,7 @@ summary of the same information). The report's format is versioned by
 </tr>
 <tr>
 <td><code>discovery</code></td>
-<td>For each runner: how many targets were found, the configuration read, and any notes.</td>
+<td>For each runner: how many targets were found, the configuration read (for pytest, <code>run_arguments</code> lists what was read besides the configuration file: <code>PYTEST_ADDOPTS</code>, <code>PYTEST_PLUGINS</code>, the pytest arguments in <code>--command</code> and those after <code>--</code>), and any notes.</td>
 </tr>
 </tbody>
 </table>
@@ -1216,6 +1216,11 @@ selected the target to be safe.</p>
 <td>The target is new.</td>
 </tr>
 <tr>
+<td><code>lifecycle_changed</code></td>
+<td></td>
+<td>What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to <code>pytest_plugins</code>, for example).</td>
+</tr>
+<tr>
 <td><code>entry_docstring_changed</code></td>
 <td></td>
 <td>The target's docstring changed; for a doctest, the docstring is the test.</td>
@@ -1248,7 +1253,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>lifecycle_dependency_unresolved</code></td>
 <td>yes</td>
-<td>Something it depends on wasn't found: a fixture diffcone couldn't find, a <code>conftest.py</code> outside the source roots, a benchmark's code it couldn't read.</td>
+<td>Something it depends on wasn't found: a fixture diffcone couldn't find, a <code>conftest.py</code> or pytest plugin outside the source roots, a benchmark's code it couldn't read.</td>
 </tr>
 <tr>
 <td><code>analysis_error</code></td>

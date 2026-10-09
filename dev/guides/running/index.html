@@ -1028,6 +1028,14 @@ in <a href="../planning/#source-roots">planning</a>.</p>
 tests. Everything after <code>--</code> is passed to pytest. pytest collects your
 suite as usual and a small plugin keeps the selected tests, so conftests
 and plugins load exactly as in a full run.</p>
+<p>Discovery reads the same pytest options the run will use: those after
+<code>--</code>, those written into <code>--command</code> (<code>uv run pytest -p tests.plugin</code>),
+and the <code>PYTEST_ADDOPTS</code> and <code>PYTEST_PLUGINS</code> environment variables. When
+you plan separately with <code>diffcone plan</code>, pass it the same <code>--command</code>
+and arguments, in the same environment. If discovery can't find pytest's
+arguments in <code>--command</code> (it looks for <code>-m pytest</code> or a <code>pytest</code>
+program, so a wrapper script is not recognised), the plan says so and
+exits <code>3</code>.</p>
 <p>For ASV, <code>--runner asv</code> builds the matching <code>asv run --bench</code> pattern. Add
 <code>--dry-run</code> to print the command instead of running it:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>run<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>asv<span class="w"> </span>--runner<span class="w"> </span>asv<span class="w"> </span>--dry-run

@@ -1082,10 +1082,26 @@ each one understands.</p>
 or <code>[tool.pytest]</code>), <code>tox.ini</code> or <code>setup.cfg</code>, in pytest's order:
 <code>testpaths</code>,
 <code>python_files</code>, <code>python_classes</code>, <code>python_functions</code>, <code>norecursedirs</code>,
-<code>usefixtures</code>, and the doctest options in <code>addopts</code>. The arguments you pass
-after <code>--</code> count too: test files or directories named there replace
-<code>testpaths</code>, as they do for pytest, and <code>--ignore</code> / <code>--ignore-glob</code> leave
-paths out.</p>
+<code>usefixtures</code>, and the options in <code>addopts</code>. pytest reads options from
+three more places, and so does discovery, in pytest's order: the
+<code>PYTEST_ADDOPTS</code> environment variable, the pytest arguments written into
+<code>--command</code> (<code>uv run pytest -p tests.plugin</code>), and the arguments you pass
+after <code>--</code>. Plugins named in <code>PYTEST_PLUGINS</code> are loaded too. Planning reads
+the environment when it runs, so plan in the environment the tests run in;
+the report's <code>discovery</code> section lists what it read (<code>run_arguments</code>).</p>
+<p>Among those options:</p>
+<ul>
+<li>test files or directories (<code>.</code> included) replace <code>testpaths</code>, as they do
+  for pytest; a <code>.txt</code> or <code>.rst</code> file named there is a doctest;</li>
+<li><code>--ignore</code> and <code>--ignore-glob</code> leave paths out, and <code>norecursedirs</code> skips
+  directories, below the paths pytest starts from, never those paths
+  themselves; a <code>pytest_ignore_collect</code> hook in a <code>conftest.py</code> that can
+  return <code>False</code> overrides both under its directory, so they are not
+  applied there;</li>
+<li><code>-o name=value</code> overrides the configuration (<code>-o addopts=</code> drops the
+  configured <code>addopts</code>);</li>
+<li>an absolute path inside the repository counts as the relative one.</li>
+</ul>
 <p><strong>Tests</strong> found:</p>
 <ul>
 <li>test functions and methods, following your naming settings;</li>
@@ -1113,30 +1129,41 @@ paths out.</p>
   conftest or test module, and the plugins those list) and the pytest
   plugins of your project and of other packages in the repository. A
   fixture is found under every name a module
-  binds it to, as in pytest: an alias (<code>box2 = box</code>) or an import (<code>from
-  tests.helpers import engine</code>), unless the fixture sets its own <code>name=</code>.
+  binds it to, as in pytest: an alias (<code>box2 = box</code>), an import (<code>from
+  tests.helpers import engine</code>, <code>from tests.helpers import *</code>, through
+  any number of modules) or a module attribute (<code>engine =
+  tests.helpers.engine</code>), unless the fixture sets its own <code>name=</code>. When two
+  plugins define a fixture of the same name, both count.
   A name the test parametrizes is a parameter, not a fixture, for the test
   and for every fixture it uses;</li>
 <li>marks such as <code>usefixtures</code> and <code>parametrize</code> on its class and the
   class's base classes, including marks stored in a variable and applied
   by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>);</li>
 <li>autouse fixtures that apply to it, including ones whose <code>autouse=</code> is a
-  variable;</li>
+  variable and ones a <code>conftest.py</code>, test module or plugin imports;</li>
 <li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions, and unittest's
   <code>setUpModule</code>, <code>setUp</code>, <code>asyncSetUp</code>, <code>setUpClass</code> and their teardowns;</li>
 <li>its module, and every <code>conftest.py</code> on its path with their <code>pytest_*</code>
   hooks, including hooks they import;</li>
 <li>hooks that run for the whole session, such as
   <code>pytest_collection_modifyitems</code> and <code>pytest_configure</code>, in any
-  <code>conftest.py</code> and in your plugins.</li>
+  <code>conftest.py</code> pytest loads (including the one in a <code>test*</code> directory of a
+  path pytest starts from, which it loads even when that directory is
+  ignored) and in your plugins;</li>
+<li>your plugins' modules, which load for the whole session.</li>
 </ul>
+<p>A test is also selected when what runs around it changes although its own
+code did not: for example, a test module adds a plugin to
+<code>pytest_plugins</code>, whose autouse fixture then applies to every test.</p>
 <p>A doctest depends on everything its module can reach, and on the fixtures
 pytest gives it: autouse fixtures (such as one that fills
 <code>doctest_namespace</code>) and the <code>usefixtures</code> option. A doctest in a text
 file is always selected.</p>
 <p>A <code>conftest.py</code> outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
-contains it. A change outside your source roots to your runner
+contains it. The same goes for a plugin in your repository that your source
+roots don't hold (<code>pytest_plugins = ["support.plugin"]</code> with <code>support/</code>
+outside them): every test is always selected. A change outside your source roots to your runner
 configuration or build script (<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>,
 <code>setup.py</code>, <code>noxfile.py</code>, <code>hatch.toml</code>, a <code>conftest.py</code>, <code>asv.conf.json</code>),
 to your dependencies (a lock file such as <code>uv.lock</code>, any file or directory
@@ -1176,7 +1203,9 @@ followed by a capital), including inherited ones and ones imported into a
 benchmark module, in every module under <code>benchmark_dir</code> as ASV walks it,
 named as ASV names them (a <code>benchmark_name</code> you set is used). Each depends
 on its class's and module's <code>setup</code>, <code>setup_cache</code> and <code>teardown</code> (also
-when imported from another module), and on its module. Class attributes
+when imported from another module; <code>setup</code> and <code>teardown</code> in any case, such
+as <code>setUp</code>, as ASV finds them), on the <code>__init__</code> of its class, which ASV
+runs for every benchmark (also when inherited), and on its module. Class attributes
 such as <code>params</code> count as part of the class. A <code>timeraw_</code> benchmark also
 depends on the modules its code imports; if its code isn't a plain string,
 it is always selected.</p>
@@ -1188,8 +1217,11 @@ it is always selected.</p>
 <li>a test base class, or an imported test, from outside your source roots;</li>
 <li>a test file, benchmark file or doctest module outside your source roots
   (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>);</li>
-<li>options in <code>addopts</code> that change what pytest collects (<code>-o</code>, <code>-c</code>,
-  <code>--rootdir</code>, <code>--pyargs</code>, or a path to test);</li>
+<li>options that change what pytest collects in ways discovery doesn't
+  follow (<code>-c</code>, <code>--rootdir</code>, <code>--pyargs</code>);</li>
+<li>a <code>--command</code> discovery can't find pytest's arguments in (it looks for
+  <code>-m pytest</code> or a <code>pytest</code> program);</li>
+<li>a plugin with a <code>pytest_ignore_collect</code> hook that can return <code>False</code>;</li>
 <li>a test given by node id after <code>--</code> (<code>tests/test_x.py::test_one</code>), or a
   path right after an option that may take it as its value (<code>--cov src</code>);</li>
 <li>a test bound to something discovery can't follow
