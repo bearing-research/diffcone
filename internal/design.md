@@ -987,10 +987,16 @@ Further rules (pre-release audit, round 2):
 * A `conftest.py` outside the source roots is reported
   (`conftest_outside_roots`) and every test under it gets the unknown
   dependency `conftest:<path>`, so it is always selected. A changed runner
-  configuration or build file outside the source roots (a root
-  `pyproject.toml`, `tox.ini`, `setup.cfg`, pytest config, `setup.py`, any
-  `conftest.py` or `asv.conf.json`) selects every target, as a changed
-  unanalysed file under the roots does.
+  configuration, build or dependency file outside the source roots (a root
+  pytest config, any `conftest.py` or `asv.conf.json`, and anything
+  `planner.build_input` names, as evidence mode's `unobserved_file_changed`
+  does: `pyproject.toml`, `setup.cfg`, `tox.ini`, build scripts, lock files
+  such as `uv.lock` and `pylock.toml`, `requirements*`/`constraints*`/
+  `environment*` files or directories, compiled sources) selects every
+  target, as a changed unanalysed file under the roots does. A static plan
+  assumes both revisions run in one environment; a change to what is
+  installed breaks that, and evidence mode's environment check does not
+  help, since it falls back to the static plan.
 * A test framework's `*TestCase` imported into a test module (`from
   django.test import TestCase`) yields no tests and is not reported; nor
   does a library's test helper named like a test class whose `__init__`

@@ -8,6 +8,17 @@ selection rules.
 
 ## [Unreleased]
 
+### Fixed
+
+- A pull request that changes only dependencies selected no tests when the
+  source roots don't hold the repository root: a lock file (`uv.lock`,
+  `poetry.lock`, `pylock.toml`), a `requirements*` or `environment*` file,
+  or a workspace member's `pyproject.toml` outside the roots was ignored.
+  Such a change, and a compiled source outside the roots, now selects every
+  target, as it already did under a root and in evidence mode. Evidence
+  mode now also treats `pylock.toml`, `conda-lock.yml`, `uv.toml` and
+  `pytest.toml` this way.
+
 ### Execution evidence
 
 - A test run that changes its own environment (a test that installs or

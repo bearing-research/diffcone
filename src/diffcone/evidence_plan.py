@@ -148,71 +148,12 @@ from diffcone.planner import (
     _is_dunder,
     _members_by_container,
     _runner_dependency_fallbacks,
+    build_input,
     merge_targets,
     plan_from_indexes,
 )
 from diffcone.snapshot import changed_paths, split_root
 
-# Sources no Python-level event reports: compiled into extensions, or read
-# by pytest or the build before the recorder starts.
-COMPILED_SUFFIXES = (
-    ".pyx",
-    ".pxd",
-    ".pxi",
-    ".c",
-    ".h",
-    ".cc",
-    ".cpp",
-    ".cxx",
-    ".hh",
-    ".hpp",
-    ".f",
-    ".f77",
-    ".for",
-    ".f90",
-    ".f95",
-    ".pyf",
-    ".rs",
-    ".cu",
-    ".i",
-    ".swg",
-    ".m",
-    ".mm",
-    ".src",
-    ".in",
-    ".tpl",
-    ".so",
-    ".pyd",
-    ".dylib",
-    ".dll",
-)
-CONFIG_FILES = frozenset(
-    {
-        "pyproject.toml",
-        "setup.cfg",
-        "tox.ini",
-        "pytest.ini",
-        ".pytest.ini",
-        "MANIFEST.in",
-        "meson.build",
-        "meson.options",
-        "meson_options.txt",
-        "CMakeLists.txt",
-        "Makefile",
-        "Pipfile",
-        "pixi.toml",
-        ".python-version",
-        ".coveragerc",
-        "Cargo.toml",
-        "build.rs",
-        # Build scripts are Python, but nobody imports them.
-        "setup.py",
-        "hatch_build.py",
-        "build.py",
-        "pdm_build.py",
-    }
-)
-CONFIG_PREFIXES = ("requirements", "environment", "constraints")
 # Module-level names in a conftest that pytest reads to decide what to load
 # or collect at all.
 PYTEST_COLLECTION_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
@@ -236,16 +177,6 @@ def _site_kind(detail: str) -> str:
     if detail.startswith(("getattr(<non-literal>)", "globals(")):
         return SITE_CLOSURE
     return SITE_ANY  # eval, exec, runpy.run_path, anything not recognised
-
-
-def _unobserved_file(path: str) -> bool:
-    name = path.rsplit("/", 1)[-1]
-    return (
-        path.lower().endswith(COMPILED_SUFFIXES)
-        or name in CONFIG_FILES
-        or name.endswith(".lock")
-        or (name.startswith(CONFIG_PREFIXES) and name.endswith((".txt", ".yml", ".yaml")))
-    )
 
 
 def _ancestors(path: str) -> list[str]:
@@ -1385,11 +1316,11 @@ class _Observers:
         """A changed file the index does not read. Its content is observed by
         whoever opened or stat'ed it; that it exists (``names``: it was added
         or deleted) also by whoever listed a directory above it."""
-        if _unobserved_file(path):
+        if build_input(path):
             self._select_all(
                 RULE_UNOBSERVED_FILE,
-                f"{path} {what}: compiled source, build or pytest configuration, read where "
-                "no test's record sees it",
+                f"{path} {what}: compiled source, build, dependency or pytest configuration, "
+                "read where no test's record sees it",
             )
             return
         observed = [(path, self.evidence.import_paths)]

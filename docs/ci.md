@@ -94,8 +94,9 @@ the run's JUnit XML are written to `diffcone-results/`; upload them with
     `command` and `pytest-args` must be the same in both workflows, and the
     environment must match: the same Python version and installed packages.
     Installing from a lock file makes this automatic. When the environment
-    differs, or the pull request changes the lock file, diffcone runs a
-    plan from the code instead of from the recording.
+    differs, diffcone runs a plan from the code instead of from the
+    recording; when the pull request changes the lock file or another
+    dependency file, it runs every test.
 
 ## Check against a full run (optional)
 

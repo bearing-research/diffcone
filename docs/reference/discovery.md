@@ -67,9 +67,11 @@ file is always selected.
 
 A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
-contains it. A change to your runner configuration or build script
-(`pyproject.toml`, `tox.ini`, `setup.cfg`, `setup.py`, a `conftest.py`,
-`asv.conf.json`) outside your source roots selects every target.
+contains it. A change outside your source roots to your runner
+configuration or build script (`pyproject.toml`, `tox.ini`, `setup.cfg`,
+`setup.py`, a `conftest.py`, `asv.conf.json`), to your dependencies (a lock
+file such as `uv.lock`, a `requirements*.txt`) or to a compiled source
+selects every target.
 
 ### Fixtures from installed plugins
 

@@ -86,7 +86,7 @@ selected the target to be safe.
 | `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` outside the source roots, a benchmark's code it couldn't read. |
 | `analysis_error` | yes | A file couldn't be analysed, so every target is selected. |
 | `runner_dependency` | yes | Code the test runner itself imports changed. |
-| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration or build script changed outside them. |
+| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration, build script, dependencies or lock file changed outside them. |
 
 With execution evidence, the rules name what the recorded run observed:
 

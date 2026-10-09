@@ -2233,6 +2233,15 @@ def test_d23_a_sibling_packages_pytest11_plugin_is_loaded(repo):
             "[tool.pytest.ini_options]\naddopts = '-W error'\n",
         ),
         ("conftest.py", "X = 1\n", "X = 2\n"),
+        ("pytest.toml", "[pytest]\n", "[pytest]\naddopts = ['-W', 'error']\n"),
+        # What is installed: a lock file, a workspace member's dependencies,
+        # a requirements file, a compiled source.
+        ("uv.lock", "version = 1\n", "version = 2\n"),
+        ("pylock.toml", "lock-version = '1.0'\n", "lock-version = '1.1'\n"),
+        ("packages/client/pyproject.toml", "[project]\n", "[project]\ndependencies = ['x']\n"),
+        ("requirements/dev.txt", "x==1\n", "x==2\n"),
+        ("environment.yml", "name: a\n", "name: b\n"),
+        ("csrc/ext.c", "int f;\n", "int g;\n"),
     ],
 )
 def test_d24_runner_configuration_outside_the_roots_selects_everything(repo, path, before, after):

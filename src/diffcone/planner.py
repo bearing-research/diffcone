@@ -169,6 +169,93 @@ BUILD_SCRIPTS = frozenset({"setup.py", "hatch_build.py", "build.py", "pdm_build.
 OWN_DIRS = (".diffcone/",)
 UNANALYSED_PATHS_SHOWN = 5
 
+# Files no dependency edge or test record can see read (build_input):
+# sources compiled into extensions, and what pytest or the build reads
+# before any test runs.
+COMPILED_SUFFIXES = (
+    ".pyx",
+    ".pxd",
+    ".pxi",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hh",
+    ".hpp",
+    ".f",
+    ".f77",
+    ".for",
+    ".f90",
+    ".f95",
+    ".pyf",
+    ".rs",
+    ".cu",
+    ".i",
+    ".swg",
+    ".m",
+    ".mm",
+    ".src",
+    ".in",
+    ".tpl",
+    ".so",
+    ".pyd",
+    ".dylib",
+    ".dll",
+)
+BUILD_FILES = frozenset(
+    {
+        "pyproject.toml",
+        "setup.cfg",
+        "tox.ini",
+        "pytest.toml",
+        ".pytest.toml",
+        "pytest.ini",
+        ".pytest.ini",
+        "uv.toml",
+        "MANIFEST.in",
+        "meson.build",
+        "meson.options",
+        "meson_options.txt",
+        "CMakeLists.txt",
+        "Makefile",
+        "Pipfile",
+        "pixi.toml",
+        ".python-version",
+        ".coveragerc",
+        "Cargo.toml",
+        "build.rs",
+        # Build scripts are Python, but nobody imports them.
+        "setup.py",
+        "hatch_build.py",
+        "build.py",
+        "pdm_build.py",
+    }
+)
+# Dependency declarations, by a prefix of their name or of a directory
+# holding them (``requirements-dev.txt``, ``requirements/dev.txt``,
+# ``environment.yml``, ``conda-lock.yml``).
+DEPENDENCY_PREFIXES = ("requirements", "environment", "constraints", "conda-lock")
+
+
+def build_input(path: str) -> bool:
+    """Whether a file decides what is compiled, installed or collected: a
+    compiled source, build or pytest configuration, a dependency declaration
+    or lock file (``uv.lock``, ``pylock.toml``). Nothing the index or a
+    test's record sees reads it, so a change to one anywhere selects every
+    target."""
+    name = path.rsplit("/", 1)[-1]
+    return (
+        path.lower().endswith(COMPILED_SUFFIXES)
+        or name in BUILD_FILES
+        or name.endswith(".lock")
+        or (name.startswith("pylock.") and name.endswith(".toml"))
+        or (
+            name.endswith((".txt", ".yml", ".yaml"))
+            and any(part.startswith(DEPENDENCY_PREFIXES) for part in path.split("/"))
+        )
+    )
+
 
 def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]:
     """Non-Python files under the source roots whose content differs between
@@ -188,11 +275,13 @@ def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]
 def _runner_files_outside_roots(
     repo: Path, base: SourceIndex, head: SourceIndex, roots: list[str]
 ) -> list[str]:
-    """Changed files outside the source roots that decide how the tests run:
-    the runners' configuration at the repository root (``pyproject.toml``'s
-    pytest table, ``tox.ini``, ``asv.conf.json`` anywhere), conftests and
-    the build scripts. Inside a root such a file is an unanalysed file; out
-    of every root nothing else would see it change."""
+    """Changed files outside the source roots that decide what is installed
+    and how the tests run: the runners' configuration at the repository root
+    (``pyproject.toml``'s pytest table, ``asv.conf.json`` anywhere),
+    conftests, and anything ``build_input`` names (build scripts, dependency
+    declarations and lock files, compiled sources). Inside a root such a
+    file is an unanalysed file; out of every root nothing else would see it
+    change."""
     if "" in (split_root(r)[0] for r in roots):
         return []
     if base.snapshot.committed:
@@ -209,7 +298,7 @@ def _runner_files_outside_roots(
         if not any(path.startswith(d + "/") for d in dirs)
         and (
             path in CONFIG_FILES
-            or path in BUILD_SCRIPTS
+            or build_input(path)
             or PurePosixPath(path).name in ("conftest.py", "asv.conf.json")
         )
     )
@@ -720,9 +809,10 @@ def plan_from_indexes(
             Fallback(
                 RULE_UNANALYSED_FILE,
                 "all_targets",
-                f"{len(outside)} runner configuration or build file(s) outside the source roots "
-                f"changed ({shown}{f', and {more} more' if more > 0 else ''}); they decide how "
-                "the tests run, so every supplied target is selected",
+                f"{len(outside)} build, dependency or runner configuration file(s) outside the "
+                f"source roots changed ({shown}{f', and {more} more' if more > 0 else ''}); they "
+                "decide what is installed and how the tests run, so every supplied target is "
+                "selected",
             )
         )
 

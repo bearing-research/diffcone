@@ -272,6 +272,19 @@ def test_compiled_source_and_configuration_select_everything(repo):
     assert rules(plan2, ADD) == {"unobserved_file_changed"}
 
 
+@pytest.mark.parametrize(
+    "path", ["uv.lock", "pylock.toml", "conda-lock.yml", "pytest.toml", "uv.toml"]
+)
+def test_a_changed_lock_file_selects_everything(repo, path):
+    # What is installed or how pytest starts: read before any test runs, so
+    # no record shows who depends on it.
+    base, ev = _collected(repo, {**DATA, path: "a = 1\n"})
+    head = repo.commit({path: "a = 2\n"})
+    plan = _plan(repo, base, head, ev)
+    assert selected(plan) >= {LOAD, NAMES, EXTRA, ADD, MUL}
+    assert rules(plan, ADD) == {"unobserved_file_changed"}
+
+
 IMPORT_TIME = {
     **BASE,
     "pkg/registry.py": "def make():\n    return 1\n",
