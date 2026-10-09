@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Any
 
 import pytest
 
@@ -142,3 +143,27 @@ def test_a_package_managers_command_runs_no_project_code(tmp_path, argv, clean):
     assert (tree.problems == []) is clean
     if clean:
         assert [r.pid for r in tree.records] == [21]
+
+
+def test_an_environment_inside_the_checkout_is_not_the_project(monkeypatch):
+    root = "/checkout/".replace("/", child.os.sep)
+    monkeypatch.setattr(child, "_roots", (root,))
+    monkeypatch.setattr(child, "_environments", (".venv" + child.os.sep,))
+    assert child._relative(root + "tools/run.py".replace("/", child.os.sep)) == "tools/run.py"
+    assert child._relative(root + ".venv/bin/pytest".replace("/", child.os.sep)) is None
+
+
+def test_a_metadata_scan_of_a_search_path_entry_is_not_recorded(monkeypatch, tmp_path):
+    entry = str(tmp_path)
+    monkeypatch.setattr(child.sys, "path", [entry])
+    monkeypatch.setattr(child, "_roots", ())
+
+    def touch(path):
+        return child._metadata_scan(path)
+
+    namespace: dict[str, Any] = {"__name__": "importlib.metadata", "touch": touch}
+    exec("def scan(path):\n    return touch(path)\n", namespace)
+    scan = namespace["scan"]
+    assert scan(entry)
+    assert not scan(str(tmp_path / "data.txt"))  # not an entry
+    assert not touch(entry)  # no importlib.metadata frame

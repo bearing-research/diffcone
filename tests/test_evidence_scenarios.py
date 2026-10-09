@@ -10,6 +10,7 @@ selection. Assertions check exact target sets and the rules behind them.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -273,16 +274,98 @@ def test_compiled_source_and_configuration_select_everything(repo):
 
 
 @pytest.mark.parametrize(
-    "path", ["uv.lock", "pylock.toml", "conda-lock.yml", "pytest.toml", "uv.toml"]
+    "path",
+    [
+        "uv.lock",
+        "pylock.toml",
+        "conda-lock.yml",
+        "pytest.toml",
+        "uv.toml",
+        "vendor/tool-1.0.dist-info/entry_points.txt",
+        "pkg.egg-info/PKG-INFO",
+    ],
 )
 def test_a_changed_lock_file_selects_everything(repo, path):
     # What is installed or how pytest starts: read before any test runs, so
-    # no record shows who depends on it.
+    # no record shows who depends on it. A distribution's metadata is found
+    # by name on sys.path, which a recording does not keep (below).
     base, ev = _collected(repo, {**DATA, path: "a = 1\n"})
     head = repo.commit({path: "a = 2\n"})
     plan = _plan(repo, base, head, ev)
     assert selected(plan) >= {LOAD, NAMES, EXTRA, ADD, MUL}
     assert rules(plan, ADD) == {"unobserved_file_changed"}
+
+
+def _environment_in_checkout(repo):
+    """A virtual environment inside the checkout (``.venv``, ignored), whose
+    script runs pytest from this interpreter's packages, as ``uv run pytest``
+    runs ``.venv/bin/pytest``."""
+    import os
+    import subprocess
+    import sysconfig
+
+    venv = repo.path / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    scripts = venv / ("Scripts" if os.name == "nt" else "bin")
+    python = scripts / ("python.exe" if os.name == "nt" else "python")
+    purelib = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer = {sysconfig.get_paths()["purelib"], sysconfig.get_paths()["platlib"]}
+    (Path(purelib) / "outer.pth").write_text("".join(f"{p}\n" for p in sorted(outer)))
+    script = scripts / "runtests"
+    script.write_text("import sys\n\nimport pytest\n\nsys.exit(pytest.console_main())\n")
+    return f'"{python}" "{script}"'
+
+
+IGNORE_VENV = {".gitignore": "__pycache__/\n.diffcone/\n.venv/\n"}
+
+
+def test_pytest_run_from_an_environment_in_the_checkout_is_not_project_code(repo):
+    """The environment's own scripts (``.venv/bin/pytest``) are installed
+    code: pytest stat'ing every file it collects, with that script at the
+    bottom of the stack, is not the project reading them outside a test."""
+    base = repo.commit({**BASE, **IGNORE_VENV})
+    ev = repo.collect(command=_environment_in_checkout(repo))
+    head = repo.commit({"tests/test_ops.py": TEST_OPS.replace("== 3", "== 1 + 2")})
+    plan = _plan(repo, base, head, ev)
+    assert plan.fallbacks == []
+    # pytest stats a test's own file inside the test: the file's tests, and
+    # no benchmark (everything was selected).
+    assert selected(plan) == {ADD, MUL}
+
+
+SCANS = {
+    **BASE,
+    **IGNORE_VENV,
+    "conftest.py": """\
+import importlib.metadata
+import os
+
+
+def pytest_sessionfinish(session):
+    # The run wrote into the checkout (its mtime moved), so the scan lists
+    # it again rather than using its cached listing.
+    os.utime(session.config.rootpath)
+    {d.metadata["Name"] for d in importlib.metadata.distributions()}
+""",
+}
+
+
+def test_a_hook_scanning_installed_distributions_does_not_see_every_file(repo):
+    """``importlib.metadata`` stats and lists each ``sys.path`` entry, the
+    checkout included, looking for ``*.dist-info`` names: an added test file
+    is not among what it can find (a distribution's metadata selects
+    everything, above)."""
+    base, ev = _collected(repo, SCANS)
+    added = "tests/test_more.py"
+    head = repo.commit({added: "def test_more():\n    pass\n"})
+    plan = _plan(repo, base, head, ev)
+    assert plan.fallbacks == []
+    assert selected(plan) == {f"{added}::test_more"}
 
 
 IMPORT_TIME = {

@@ -18,6 +18,17 @@ selection rules.
   target, as it already did under a root and in evidence mode. Evidence
   mode now also treats `pylock.toml`, `conda-lock.yml`, `uv.toml` and
   `pytest.toml` this way.
+- Under execution evidence, editing a test file selected every test when
+  the suite was recorded with a virtual environment inside the checkout
+  (`uv run pytest` runs `.venv/bin/pytest`): the recorder took the
+  environment's own scripts for project code, so pytest reading files
+  during collection looked like the project reading them outside any
+  test. The environment is now treated as installed code.
+- Under execution evidence, a session hook that lists installed
+  distributions (`importlib.metadata.distributions()`) made adding any
+  file anywhere select every test. Those scans are no longer recorded,
+  and a change under a `*.dist-info`, `*.egg-info` or `*.egg` directory
+  now selects every target, in both modes.
 
 ### Execution evidence
 

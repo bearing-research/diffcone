@@ -234,6 +234,24 @@ PACKAGES = frozenset(p for p in os.environ.get("DIFFCONE_COLLECT_PACKAGES", "").
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
 INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
 
+
+def _environments() -> tuple[str, ...]:
+    """The interpreter's environments kept inside the checkout (``.venv``),
+    relative to a root and ending in a separator: installed code, like
+    ``site-packages``, scripts included (``uv run pytest`` runs
+    ``.venv/bin/pytest``). A prefix that is a root, or holds one, is not."""
+    found = set()
+    for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}:
+        for path in (os.path.abspath(prefix), os.path.realpath(prefix)):
+            path = (os.path.normcase(path) if os.name == "nt" else path) + os.sep
+            for root in ROOTS:
+                if path.startswith(root) and path != root:
+                    found.add(path[len(root) :])
+    return tuple(sorted(found))
+
+
+ENVIRONMENTS = _environments()
+
 errors: list[str] = []
 codes: dict[object, int] = {}
 table: list[list] = []
@@ -308,7 +326,11 @@ def _under_root(path: str) -> str | None:
             return ""
         if folded.startswith(root):
             rel = path[len(root) :]
-            if rel.startswith(IGNORED_DIRS) or any(p in rel for p in INSTALLED):
+            if (
+                rel.startswith(IGNORED_DIRS)
+                or folded[len(root) :].startswith(ENVIRONMENTS)
+                or any(p in rel for p in INSTALLED)
+            ):
                 return None
             # Records use ``/`` on every platform, as the index does.
             return rel.replace(os.sep, "/") if os.sep != "/" else rel
@@ -451,6 +473,33 @@ def _actor() -> str:
     return "other"
 
 
+METADATA_MODULES = ("importlib.metadata", "importlib_metadata")
+_search_path: tuple[list[str], frozenset[str]] = ([], frozenset())
+
+
+def _metadata_scan(path: str) -> bool:
+    """A stat or listing of a ``sys.path`` entry by ``importlib.metadata``
+    (``distributions()``, ``version()``, pluggy's entry points), below any
+    project frame. It learns only which ``*.dist-info``, ``*.egg-info`` and
+    ``*.egg`` names the directory holds, and a change to one of those
+    selects everything (``planner.build_input``); its other names are not
+    seen."""
+    global _search_path
+    if _search_path[0] != sys.path:
+        entries = list(sys.path)
+        _search_path = (entries, frozenset(os.path.abspath(e or ".") for e in entries))
+    if path not in _search_path[1]:
+        return False
+    frame = sys._getframe(2)
+    while frame is not None:
+        if frame.f_globals.get("__name__", "").startswith(METADATA_MODULES):
+            return True
+        if _relative(frame.f_code.co_filename) is not None:
+            return False
+        frame = frame.f_back
+    return False
+
+
 def _touch(path, listing: bool = False, own_source: bool = False) -> None:
     """``own_source``: a stat of a source file. While a module is being
     imported, its stat of its *own* file (``Path(__file__).resolve()``)
@@ -464,8 +513,9 @@ def _touch(path, listing: bool = False, own_source: bool = False) -> None:
         path = os.fsdecode(os.fspath(path))
     except TypeError:
         return
-    rel = _relative(os.path.abspath(path))
-    if rel is None:
+    absolute = os.path.abspath(path)
+    rel = _relative(absolute)
+    if rel is None or _metadata_scan(absolute):
         return
     actor = _actor()
     if actor == "import":

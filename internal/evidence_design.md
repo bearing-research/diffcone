@@ -292,7 +292,16 @@ selection or states something the tables left implicit; none narrows it.
   - outside every window, an event counts only when project code is on the
     stack. It is credited to the module being imported (a parametrize list
     globbed at import escalates that module), or to no module when it
-    happens in a hook, which selects everything.
+    happens in a hook, which selects everything;
+  - an environment kept inside the checkout (`sys.prefix` and its kin,
+    `.venv`) is not project code, as `site-packages` is not: `uv run
+    pytest` runs `.venv/bin/pytest`, which would otherwise sit at the
+    bottom of every stack and make pytest's own collection the project's;
+  - a stat or listing of a `sys.path` entry under `importlib.metadata`
+    (`distributions()` in a session hook, pluggy's entry points) is
+    dropped: the scan finds only `*.dist-info`, `*.egg-info` and `*.egg`
+    names, and a change to one of those selects everything
+    (`planner.build_input`).
 * **Readers are followed through values.** A reader of a changed thing is
   handled by its kind:
   - a function is added to E;

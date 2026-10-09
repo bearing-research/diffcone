@@ -357,6 +357,7 @@ _path = ""
 _seen_codes: set = set()
 _seen_paths: set[tuple[str, str]] = set()
 _roots: tuple[str, ...] = ()
+_environments: tuple[str, ...] = ()  # as collect.ENVIRONMENTS, for this interpreter
 _cwd = ""
 _packages: frozenset[str] = frozenset()
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
@@ -406,7 +407,11 @@ def _relative(path: str) -> str | None:
             return ""
         if path.startswith(root):
             rel = path[len(root) :]
-            if rel.startswith(IGNORED_DIRS) or any(p in rel for p in INSTALLED):
+            if (
+                rel.startswith(IGNORED_DIRS)
+                or rel.startswith(_environments)
+                or any(p in rel for p in INSTALLED)
+            ):
                 return None
             return rel.replace(os.sep, "/") if os.sep != "/" else rel
     return None
@@ -479,6 +484,24 @@ def _actor() -> str:
     return "other"
 
 
+METADATA_MODULES = ("importlib.metadata", "importlib_metadata")
+
+
+def _metadata_scan(path: str) -> bool:
+    """As ``collect._metadata_scan``: ``importlib.metadata`` stat'ing or
+    listing a ``sys.path`` entry, below any project frame."""
+    if path not in {os.path.abspath(e or ".") for e in sys.path}:
+        return False
+    frame = sys._getframe(2)
+    while frame is not None:
+        if frame.f_globals.get("__name__", "").startswith(METADATA_MODULES):
+            return True
+        if _relative(frame.f_code.co_filename) is not None:
+            return False
+        frame = frame.f_back
+    return False
+
+
 def _touch(path: Any, listing: bool = False) -> None:
     if isinstance(path, int) or path is None:
         return
@@ -486,8 +509,9 @@ def _touch(path: Any, listing: bool = False) -> None:
         path = os.fsdecode(os.fspath(path))
     except TypeError:
         return
-    rel = _relative(os.path.abspath(path))
-    if rel is None or _actor() == "import":
+    absolute = os.path.abspath(path)
+    rel = _relative(absolute)
+    if rel is None or _metadata_scan(absolute) or _actor() == "import":
         return
     key = ("d" if listing else "p", rel)
     if key not in _seen_paths:
@@ -601,7 +625,7 @@ def _flag_calls(module_name: str, name: str) -> None:
 
 def start() -> None:
     """Record this process, if a recorded test run started it."""
-    global recording, _fd, _path, _roots, _cwd, _packages, on_spawn
+    global recording, _fd, _path, _roots, _environments, _cwd, _packages, on_spawn
     if recording or os.name == "nt" or not os.environ.get(ENV_PARENT):
         return
     out = os.environ.get("DIFFCONE_COLLECT_OUT")
@@ -617,6 +641,17 @@ def start() -> None:
         return  # no record: the spawn resolves to nothing, and flags
     root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
     _roots = tuple(sorted({os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep}))
+    _environments = tuple(
+        sorted(
+            {
+                path[len(r) :]
+                for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}
+                for path in (os.path.abspath(prefix) + os.sep, os.path.realpath(prefix) + os.sep)
+                for r in _roots
+                if path.startswith(r) and path != r
+            }
+        )
+    )
     _cwd = os.getcwd()
     header = {
         "pid": os.getpid(),

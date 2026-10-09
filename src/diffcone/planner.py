@@ -236,23 +236,29 @@ BUILD_FILES = frozenset(
 # holding them (``requirements-dev.txt``, ``requirements/dev.txt``,
 # ``environment.yml``, ``conda-lock.yml``).
 DEPENDENCY_PREFIXES = ("requirements", "environment", "constraints", "conda-lock")
+# Directories of a distribution's metadata (``pkg-1.0.dist-info``).
+DISTRIBUTION_SUFFIXES = (".dist-info", ".egg-info", ".egg")
 
 
 def build_input(path: str) -> bool:
     """Whether a file decides what is compiled, installed or collected: a
     compiled source, build or pytest configuration, a dependency declaration
-    or lock file (``uv.lock``, ``pylock.toml``). Nothing the index or a
-    test's record sees reads it, so a change to one anywhere selects every
-    target."""
-    name = path.rsplit("/", 1)[-1]
+    or lock file (``uv.lock``, ``pylock.toml``), or a distribution's
+    metadata (under ``*.dist-info``, ``*.egg-info`` or ``*.egg``, which
+    ``importlib.metadata`` finds by name on ``sys.path``). Nothing the index
+    or a test's record sees reads it, so a change to one anywhere selects
+    every target."""
+    parts = path.split("/")
+    name = parts[-1]
     return (
         path.lower().endswith(COMPILED_SUFFIXES)
+        or any(part.lower().endswith(DISTRIBUTION_SUFFIXES) for part in parts)
         or name in BUILD_FILES
         or name.endswith(".lock")
         or (name.startswith("pylock.") and name.endswith(".toml"))
         or (
             name.endswith((".txt", ".yml", ".yaml"))
-            and any(part.startswith(DEPENDENCY_PREFIXES) for part in path.split("/"))
+            and any(part.startswith(DEPENDENCY_PREFIXES) for part in parts)
         )
     )
 
