@@ -20,7 +20,7 @@ summary of the same information). The report's format is versioned by
 | `fallback_decisions` | Where diffcone selected more because it couldn't tell what a change reaches. |
 | `analysis_errors` | Errors such as a file that doesn't parse. Any error selects every target. |
 | `declarations` | The dependencies declared in [`diffcone.toml`](declarations.md). |
-| `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); `analysis.counts.always_run` counts the targets they selected. |
+| `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); each says how many targets it `matched`, and `analysis.counts.always_run` counts the targets they selected. |
 | `discovery` | For each runner: how many targets were found, the configuration read, and any notes. |
 
 The plan `diffcone run -o` writes is the plan that ran. When the run

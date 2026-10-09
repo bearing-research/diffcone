@@ -1156,12 +1156,12 @@ end-to-end suite), by an `fnmatch` pattern on the runner id (`*` crosses
 `/` and `::`) and optionally a runner. After the planner (static or
 evidence) has decided, every matching target is selected under the
 `always_run` rule, with the entry and its `why`. Entries come from both
-revisions. One the head holds that matches no target of the plan is an
-analysis error, checked before planning so it still degrades the plan and
-selects everything (a typo, or a directory moved without its pattern);
-a base-only entry matching nothing is not, since deleting the tests and the
-entry together looks like that. The JSON report lists the entries
-(`always_run`) and counts the matched targets
+revisions. A malformed entry is an analysis error; one that matches no
+target is not, and the report gives each entry's count (`matched`): one
+file serves jobs that run different parts of a suite (strata's Windows job
+ignores `tests/notebook`), and a target no entry names is planned as any
+other, so an entry matching nothing cannot make a plan miss. The JSON
+report lists the entries (`always_run`) and counts the matched targets
 (`analysis.counts.always_run`), and `diffcone report` takes them out of a
 job's selected share. `collect` still runs them: in the CI setups its run
 is also the full test run of a push.

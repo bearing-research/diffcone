@@ -3645,8 +3645,8 @@ def test_always_run_targets_are_selected_whatever_changed(repo):
     assert [a.label for a in plan.always_run] == ["*e2e* (asv)", "tests/e2e/*"]
     report = to_dict(plan)
     assert report["always_run"] == [
-        {"targets": "*e2e*", "runner": "asv", "why": ""},
-        {"targets": "tests/e2e/*", "runner": None, "why": "end to end"},
+        {"targets": "*e2e*", "runner": "asv", "why": "", "matched": 1},
+        {"targets": "tests/e2e/*", "runner": None, "why": "end to end", "matched": 1},
     ]
     assert report["analysis"]["counts"]["always_run"] == 2
     assert "always run (2):" in to_text(plan)
@@ -3655,16 +3655,15 @@ def test_always_run_targets_are_selected_whatever_changed(repo):
 @pytest.mark.parametrize(
     "toml, message",
     [
-        ('[[always_run]]\ntargets = "tests/e2e2/*"\n', "always_run tests/e2e2/* matches no target"),
-        ('[[always_run]]\ntargets = "*e2e*"\nrunner = "pytset"\n', "matches no target"),
         ('[[always_run]]\ntarget = "tests/e2e/*"\n', "unknown key(s) target"),
         ('[[always_run]]\nwhy = "x"\n', "needs 'targets'"),
+        ('[[always_run]]\ntargets = "tests/e2e/*"\nrunner = 1\n', "non-string"),
         ('always_run = "tests/e2e/*"\n', "'always_run' must be a list of tables"),
     ],
 )
-def test_an_always_run_entry_that_runs_nothing_is_an_analysis_error(repo, toml, message):
-    """A typo or a moved directory would quietly plan tests meant to run on
-    every change: the plan fails and selects everything instead."""
+def test_a_malformed_always_run_entry_is_an_analysis_error(repo, toml, message):
+    """An entry diffcone cannot read would quietly plan tests meant to run
+    on every change: the plan fails and selects everything instead."""
     base = repo.commit(ALWAYS_RUN_TREE)
     head = repo.commit({"diffcone.toml": toml})
     plan = repo.plan(base, head, ALWAYS_RUN_TARGETS)
@@ -3672,6 +3671,24 @@ def test_an_always_run_entry_that_runs_nothing_is_an_analysis_error(repo, toml, 
     assert [e.path for e in plan.errors] == ["diffcone.toml"]
     assert message in plan.errors[0].message
     assert selected(plan) == {t.runner_id for t in ALWAYS_RUN_TARGETS}
+
+
+def test_an_always_run_entry_matching_nothing_is_counted_not_an_error(repo):
+    """One diffcone.toml serves every job, and a job may ignore the
+    directory an entry names (its targets are not in that job's plan): the
+    report says the entry matched nothing, and the plan stands."""
+    base = repo.commit(ALWAYS_RUN_TREE)
+    head = repo.commit(
+        {
+            "diffcone.toml": '[[always_run]]\ntargets = "tests/notebook/*"\n',
+            "pkg/ops.py": "def add(a, b):\n    return b + a\n",
+        }
+    )
+    plan = repo.plan(base, head, ALWAYS_RUN_TARGETS)
+    assert not plan.degraded and plan.errors == []
+    assert selected(plan) == {"tests/test_ops.py::test_add"}
+    assert to_dict(plan)["always_run"][0]["matched"] == 0
+    assert "tests/notebook/*: 0 target(s), none in this plan" in to_text(plan)
 
 
 def test_an_always_run_entry_removed_with_its_tests_is_not_an_error(repo):

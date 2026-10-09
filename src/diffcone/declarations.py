@@ -23,10 +23,11 @@ end-to-end suite), are named by a pattern on their runner ids:
 
 Declarations only *add* edges or selected targets, so they can only widen
 selection: a wrong one costs a test that runs anyway, and none of them can
-make the plan miss. A declaration whose endpoints resolve to nothing, an
-``always_run`` pattern the head matches no target with, or a file that
-does not parse, is an analysis error -- a typo that silently declares
-nothing is the outcome worth failing on.
+make the plan miss. A declaration whose endpoints resolve to nothing, a
+malformed entry, or a file that does not parse, is an analysis error -- a
+typo that silently declares nothing is the outcome worth failing on. An
+``always_run`` pattern matching no target is only reported (with its count):
+one file serves jobs that run different parts of a suite.
 """
 
 from __future__ import annotations

@@ -1154,17 +1154,17 @@ E2E job selected 0 of 59 tests for a dependency-only pull request.
   ```
 
   Read from both snapshots, like `[[edges]]`: one the change deletes still
-  counts for that plan. An unknown key, a missing or empty `targets`, a
-  non-string value, or a head-snapshot entry that matches no target (a
-  typo, a moved directory) is an analysis error, so the plan selects
-  everything rather than quietly planning tests meant to always run.
-  Base-only entries matching nothing are not errors (the change removed
-  those tests and the entry together).
+  counts for that plan. An unknown key, a missing or empty `targets` or a
+  non-string value is an analysis error, so the plan selects everything
+  rather than quietly planning tests meant to always run. An entry that
+  matches no target is reported with its count, not an error: one file
+  serves every job, and strata's Windows job ignores `tests/notebook`
+  while its unit jobs ignore the E2E files. (First implemented as an
+  error; that would have made those jobs select everything on every pull
+  request.)
 * *Planning.* After either planner (static or evidence) has decided, each
   target an entry matches is selected, with an `always_run` reason giving
-  the pattern and `why`. Matching runs on the targets the plan holds
-  (manifest and discovery), so the check for unmatched entries runs before
-  planning, where an analysis error can still force select-all.
+  the pattern and `why`.
 * *Report.* The JSON report lists the entries (`always_run`, beside
   `declarations`) and counts the matched targets
   (`analysis.counts.always_run`); the text report lists them. `diffcone
@@ -1181,8 +1181,8 @@ which is the project's choice and visible in the report.
 **Done when**
 * scenarios (pytest and ASV targets): an entry selects its matching
   targets on a change that reaches none of them, in static and evidence
-  mode; `runner` restricts it; a head entry matching nothing, an unknown
-  key and a missing `targets` are analysis errors that select everything;
-  a base-only entry matching nothing is not; the JSON report carries the
-  entries and the count, and `diffcone report`'s share leaves them out;
+  mode; `runner` restricts it; an unknown key and a missing `targets` are
+  analysis errors that select everything; an entry matching nothing is
+  counted, not an error; the JSON report carries the entries and the
+  counts, and `diffcone report`'s share leaves them out;
 * the reference page for `diffcone.toml` documents it.

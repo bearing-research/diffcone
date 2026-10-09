@@ -54,6 +54,11 @@ gives the entry as the reason.
 The tests still run when diffcone records a full run (`diffcone collect`),
 so the run that records evidence still tests them.
 
+The report shows how many targets each entry matched. An entry that
+matches nothing isn't an error, because one `diffcone.toml` serves every
+job and a job may skip the directory an entry names. Check the count when
+you add an entry or move tests.
+
 ## What can go wrong
 
 Declarations can only add dependencies or selected tests, so they can only
@@ -61,8 +66,8 @@ make diffcone select more tests, never fewer.
 
 diffcone reads the file from both snapshots, so it changes along with your
 code. A declaration that names something that doesn't exist, an
-`always_run` pattern that matches no target, an unknown key, or a file
-that doesn't parse is reported as an analysis error: the
+`always_run` entry without `targets`, an unknown key, or a file that
+doesn't parse is reported as an analysis error: the
 plan then selects every target, so a typo can't silently remove tests from
 a plan. A declaration between two very large modules (more than 5,000
 pairs of symbols) is also an error; declare the specific functions

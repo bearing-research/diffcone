@@ -81,7 +81,12 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         ],
         # Targets the project runs on every change, whatever the plan found.
         "always_run": [
-            {"targets": a.targets, "runner": a.runner or None, "why": a.why}
+            {
+                "targets": a.targets,
+                "runner": a.runner or None,
+                "why": a.why,
+                "matched": plan.always_run_matched.get(a, 0),
+            }
             for a in plan.always_run
         ],
         "analysis": {
@@ -203,7 +208,12 @@ def to_text(plan: Plan) -> str:
     if plan.always_run:
         lines.append(f"always run ({len(plan.always_run)}):")
         for a in plan.always_run:
-            lines.append(f"  {a.label}" + (f"  ({a.why})" if a.why else ""))
+            matched = plan.always_run_matched.get(a, 0)
+            lines.append(
+                f"  {a.label}: {matched} target(s)"
+                + ("" if matched else ", none in this plan")
+                + (f"  ({a.why})" if a.why else "")
+            )
     if plan.incomplete_discovery:
         lines.append(
             f"discovery INCOMPLETE: {len(plan.incomplete_discovery)} place(s) where a runner "
