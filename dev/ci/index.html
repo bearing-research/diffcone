@@ -1246,7 +1246,8 @@ environment must match: the same Python version and installed packages.
 Installing from a lock file makes this automatic. When the environment
 differs, diffcone runs a plan from the code instead of from the
 recording; when the pull request changes the lock file or another
-dependency file, it runs every test.</p>
+dependency, build or CI file diffcone recognises (see
+<a href="../reference/discovery/">discovery</a>), it runs every test.</p>
 </div>
 <h2 id="check-against-a-full-run-optional">Check against a full run (optional)<a class="headerlink" href="#check-against-a-full-run-optional" title="Permanent link">&para;</a></h2>
 <p>While you build trust in the selection, keep your existing full test job

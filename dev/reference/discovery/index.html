@@ -1138,9 +1138,19 @@ file is always selected.</p>
 it are always selected and the report says why; add a source root that
 contains it. A change outside your source roots to your runner
 configuration or build script (<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>,
-<code>setup.py</code>, a <code>conftest.py</code>, <code>asv.conf.json</code>), to your dependencies (a lock
-file such as <code>uv.lock</code>, a <code>requirements*.txt</code>) or to a compiled source
-selects every target.</p>
+<code>setup.py</code>, <code>noxfile.py</code>, <code>hatch.toml</code>, a <code>conftest.py</code>, <code>asv.conf.json</code>),
+to your dependencies (a lock file such as <code>uv.lock</code>, any file or directory
+named for requirements, constraints or deps, such as
+<code>dev-requirements.txt</code> or <code>ci/deps/py311.yaml</code>, a conda
+<code>environment*.yml</code>), to your CI configuration (<code>.github/workflows/</code>,
+<code>ci/</code>), to a <code>.env</code> or <code>.pth</code> file, <code>sitecustomize.py</code>, a type checker or
+linter configuration that a pytest plugin may run (<code>mypy.ini</code>,
+<code>ruff.toml</code>), or to a compiled source selects every target. Inside your
+source roots, a change to any file diffcone doesn't read as Python
+selects every target, and so does a change to a build script or
+<code>sitecustomize.py</code> there, wherever it sits. Other files outside the roots
+are assumed not to affect the tests: if your tests read one, put it under
+a source root.</p>
 <h3 id="fixtures-from-installed-plugins">Fixtures from installed plugins<a class="headerlink" href="#fixtures-from-installed-plugins" title="Permanent link">&para;</a></h3>
 <p>A fixture that isn't defined in your source roots usually comes from an
 installed plugin. diffcone recognises the fixtures of well-known plugins

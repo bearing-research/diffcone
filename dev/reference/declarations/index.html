@@ -1061,7 +1061,7 @@ gives the entry as the reason.</p>
 </tr>
 <tr>
 <td><code>runner</code></td>
-<td>Optional. Only this runner's targets (<code>pytest</code>, <code>asv</code>).</td>
+<td>Optional. Only this runner's targets: <code>pytest</code>, <code>asv</code>, or a runner your manifest's targets use. Any other name is an error.</td>
 </tr>
 <tr>
 <td><code>why</code></td>
@@ -1071,19 +1071,24 @@ gives the entry as the reason.</p>
 </table>
 <p>The tests still run when diffcone records a full run (<code>diffcone collect</code>),
 so the run that records evidence still tests them.</p>
-<p>The report shows how many targets each entry matched. An entry that
-matches nothing isn't an error, because one <code>diffcone.toml</code> serves every
-job and a job may skip the directory an entry names. Check the count when
-you add an entry or move tests.</p>
+<p>The report shows how many targets each entry matched. An entry whose
+pattern matches nothing isn't an error, because one <code>diffcone.toml</code> serves
+every job and a job may skip the directory an entry names; the text report
+flags it with <code>MATCHES NOTHING</code>, and the JSON report gives <code>"matched": 0</code>.
+diffcone can't tell a mistyped pattern (<code>test/e2e/*</code>) from one a job
+legitimately skips, so check the count when you add an entry or move
+tests.</p>
 <h2 id="what-can-go-wrong">What can go wrong<a class="headerlink" href="#what-can-go-wrong" title="Permanent link">&para;</a></h2>
 <p>Declarations can only add dependencies or selected tests, so they can only
 make diffcone select more tests, never fewer.</p>
 <p>diffcone reads the file from both snapshots, so it changes along with your
 code. A declaration that names something that doesn't exist, an
-<code>always_run</code> entry without <code>targets</code>, an unknown key, or a file that
-doesn't parse is reported as an analysis error: the
-plan then selects every target, so a typo can't silently remove tests from
-a plan. A declaration between two very large modules (more than 5,000
+<code>always_run</code> entry without <code>targets</code> or with an unknown <code>runner</code>, an
+unknown key, or a file that doesn't parse is reported as an analysis
+error: the plan then selects every target, so these typos can't silently
+remove tests from a plan. The one typo diffcone can't catch is an
+<code>always_run</code> pattern that matches nothing (see above): the plan stands, and
+only the count shows it. A declaration between two very large modules (more than 5,000
 pairs of symbols) is also an error; declare the specific functions
 instead.</p>
 
