@@ -49,7 +49,7 @@ from diffcone.classify import (
     classify,
 )
 from diffcone.declarations import FILENAME as DECLARATION_FILE
-from diffcone.declarations import Declaration
+from diffcone.declarations import AlwaysRun, Declaration
 from diffcone.declarations import load as load_declarations
 from diffcone.discovery import (
     INCOMPLETE_NOTE_KINDS,
@@ -112,6 +112,8 @@ RULE_ANALYSIS_ERROR = "analysis_error"
 RULE_RUNNER_DEPENDENCY = "runner_dependency"
 RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
 RULE_DECLARED_DEPENDENCY = "declared_dependency"
+# A target diffcone.toml says to run on every change ([[always_run]]).
+RULE_ALWAYS_RUN = "always_run"
 RULE_NEW_TARGET = "new_target"
 RULE_UNANALYSED_FILE = "unanalysed_file_changed"
 # Evidence mode (evidence_plan.py). ``escalated`` is a selection made by
@@ -386,6 +388,7 @@ class Plan:
     discovery: list[DiscoveryResult] = field(default_factory=list)
     targets: list[Target] = field(default_factory=list)
     declarations: list[Declaration] = field(default_factory=list)
+    always_run: list[AlwaysRun] = field(default_factory=list)
     # Evidence mode: which store planned the pytest targets, and from where
     # (evidence_plan._summary); None for a static plan.
     evidence: dict | None = None
@@ -1485,10 +1488,15 @@ def plan(
                 base_lifecycle[(target.runner, target.runner_id)] = target.lifecycle_dependencies
     _check_roots_match(roots, base, base_index, head, head_index)
     declared: list[Declaration] = []
+    always: dict[AlwaysRun, None] = {}
+    head_always: list[AlwaysRun] = []
     for revision, index in ((base, base_index), (head, head_index)):
-        found, problems = load_declarations(repo_path, revision)
-        declared += found
-        for problem in problems:
+        found = load_declarations(repo_path, revision)
+        declared += found.edges
+        always.update(dict.fromkeys(found.always_run))
+        if revision == head:
+            head_always = found.always_run
+        for problem in found.problems:
             index.errors.append(
                 AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
             )
@@ -1504,6 +1512,7 @@ def plan(
             for result in discovered:
                 discovery_cache.store(result, head_commit, roots, options)
     discovered = _with_base_lifecycle(discovered, base_lifecycle)
+    _check_always_run(head_always, merge_targets(manifest, discovered), head, head_index)
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 
@@ -1524,7 +1533,7 @@ def plan(
         discovered = _settle_discovery(
             repo_path, head, evidence, evidence_index, discovered, roots, options, cache
         )
-        return plan_with_evidence(
+        planned = plan_with_evidence(
             base_index,
             head_index,
             evidence,
@@ -1536,14 +1545,49 @@ def plan(
             declarations=declared,
             base_target_ids=base_target_ids,
         )
-    return plan_from_indexes(
-        base_index,
-        head_index,
-        manifest,
-        repo=str(repo_path),
-        source_roots=roots,
-        discovered=discovered,
-        declarations=declared,
-        base_target_ids=base_target_ids,
-        runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
-    )
+    else:
+        planned = plan_from_indexes(
+            base_index,
+            head_index,
+            manifest,
+            repo=str(repo_path),
+            source_roots=roots,
+            discovered=discovered,
+            declarations=declared,
+            base_target_ids=base_target_ids,
+            runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
+        )
+    return _with_always_run(planned, sorted(always))
+
+
+def _check_always_run(
+    entries: list[AlwaysRun], targets: list[Target], head: str, head_index: SourceIndex
+) -> None:
+    """A head entry that matches no target is an analysis error (a typo, a
+    directory moved without its pattern): checked before planning, so it
+    still selects everything. A base-only entry may match nothing: the
+    change removed its tests along with it."""
+    for entry in entries:
+        if not any(entry.matches(t.runner, t.runner_id) for t in targets):
+            head_index.errors.append(
+                AnalysisError(
+                    revision=head,
+                    path=DECLARATION_FILE,
+                    message=f"{DECLARATION_FILE}: always_run {entry.label} matches no target",
+                )
+            )
+
+
+def _with_always_run(plan: Plan, entries: list[AlwaysRun]) -> Plan:
+    """Select every target an ``[[always_run]]`` entry of either snapshot
+    matches, after the planner has decided the rest."""
+    plan.always_run = entries
+    for decision in plan.decisions:
+        target = decision.target
+        hits = [e for e in entries if e.matches(target.runner, target.runner_id)]
+        if not hits:
+            continue
+        decision.reasons += [Reason(RULE_ALWAYS_RUN, e.detail) for e in hits]
+        decision.selected = True
+        decision.unselected_reason = None
+    return plan

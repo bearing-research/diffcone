@@ -199,7 +199,9 @@ recording; pull requests only restore it.
 
 Once every job runs through diffcone, a scheduled `report` job reads what
 the jobs uploaded and sums it up: for pull requests, the share of tests
-each job selected and how often it planned without a recording (and what
+each job selected (leaving out the tests
+[`[[always_run]]`](reference/declarations.md#tests-to-run-on-every-change)
+names) and how often it planned without a recording (and what
 differed); for recordings, whether each pushed commit was checked, its new
 failures, flaky tests and misses. It adds the report as a comment on an
 issue labelled `diffcone-report`, and opens one issue, labelled

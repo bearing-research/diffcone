@@ -190,8 +190,12 @@ def build(artifacts: list[Artifact]) -> Report:
         if context.get("action") == "run":
             cell.pull_requests += 1
             counts = ((art.plan or {}).get("analysis") or {}).get("counts") or {}
-            if counts.get("targets"):
-                cell.selected_shares.append(counts.get("selected", 0) / counts["targets"])
+            # Over what diffcone decided: targets the project always runs
+            # (diffcone.toml) are neither saved nor spent by a plan.
+            always = counts.get("always_run", 0)
+            if counts.get("targets", 0) > always:
+                share = (counts.get("selected", 0) - always) / (counts["targets"] - always)
+                cell.selected_shares.append(share)
             evidence = ((art.plan or {}).get("analysis") or {}).get("evidence")
             if art.plan is not None and not evidence:
                 note = (

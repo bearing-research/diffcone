@@ -155,6 +155,32 @@ def test_pull_requests_and_clean_pushes(tmp_path):
     assert "1 (no recording restored)" in text and "1 (the commit has no parent)" in text
 
 
+def test_the_share_leaves_out_targets_always_run(tmp_path):
+    """Targets diffcone.toml says to run on every change are not a plan's
+    saving or cost: 30 of 100 selected, 20 of them always run, is 10 of 80."""
+    always = _plan(30, 100)
+    always["analysis"]["counts"]["always_run"] = 20
+    everything = _plan(20, 20)
+    everything["analysis"]["counts"]["always_run"] = 20
+    _run(
+        tmp_path,
+        1,
+        "pull_request",
+        "1" * 40,
+        {"diffcone-unit": {"context.json": _pr(), "plan.json": always}},
+    )
+    _run(
+        tmp_path,
+        2,
+        "pull_request",
+        "2" * 40,
+        {"diffcone-unit": {"context.json": _pr(), "plan.json": everything}},
+    )
+    report = ci_report.build(ci_report.load(tmp_path))
+    (unit,) = report.cells
+    assert unit.selected_shares == [0.125]  # every target always run: no share
+
+
 def test_a_confirmed_miss_and_a_flaky_one(tmp_path):
     sha = "4" * 40
     verdict = _verdict(

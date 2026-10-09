@@ -296,6 +296,22 @@ def test_a_changed_lock_file_selects_everything(repo, path):
     assert rules(plan, ADD) == {"unobserved_file_changed"}
 
 
+def test_always_run_targets_are_selected_under_evidence(repo):
+    """``[[always_run]]`` holds in evidence mode, for a test the evidence
+    would not select and for an ASV target planned from the code."""
+    toml = (
+        '[[always_run]]\ntargets = "tests/test_ops.py::test_mul"\n\n'
+        '[[always_run]]\ntargets = "*time_mul"\nrunner = "asv"\n'
+    )
+    base, ev = _collected(repo, {**BASE, "diffcone.toml": toml})
+    head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
+    plan = _plan(repo, base, head, ev)
+    assert plan.fallbacks == [] and not plan.degraded
+    assert selected(plan) == {ADD, MUL, *BENCHES}
+    assert rules(plan, MUL) == {"always_run"}
+    assert rules(plan, "bench_ops.TimeOps.time_mul") == {"always_run"}
+
+
 def _environment_in_checkout(repo):
     """A virtual environment inside the checkout (``.venv``, ignored), whose
     script runs pytest from this interpreter's packages, as ``uv run pytest``

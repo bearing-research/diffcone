@@ -12,6 +12,7 @@ import sys
 
 import pytest
 
+from diffcone.report import to_dict, to_text
 from diffcone.testing import (
     asv_target,
     changes,
@@ -3586,6 +3587,108 @@ def test_a_declaration_is_read_from_the_index_and_the_working_tree(repo):
         ("pkg.registry.dispatch", "pkg.handlers.json_handler")
     ]
     assert selected(plan) == {"t::dispatch", "bench_other.Other.time_other"}
+
+
+ALWAYS_RUN_TREE = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+    "pkg/other.py": "def helper():\n    return 1\n",
+    "tests/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    ),
+    "tests/test_e2e_util.py": (
+        "from pkg.other import helper\n\n\ndef test_util():\n    assert helper() == 1\n"
+    ),
+    "tests/e2e/test_flow.py": (
+        "from pkg.other import helper\n\n\ndef test_flow():\n    assert helper() == 1\n"
+    ),
+    "benchmarks/bench_e2e.py": (
+        "from pkg.other import helper\n\n\n"
+        "class Flow:\n    def time_flow(self):\n        return helper()\n"
+    ),
+}
+ALWAYS_RUN_TARGETS = [
+    py_target("tests/test_ops.py::test_add", "tests.test_ops.test_add"),
+    py_target("tests/test_e2e_util.py::test_util", "tests.test_e2e_util.test_util"),
+    py_target("tests/e2e/test_flow.py::test_flow", "tests.e2e.test_flow.test_flow"),
+    asv_target("bench_e2e.Flow.time_flow", "benchmarks.bench_e2e.Flow.time_flow"),
+]
+ALWAYS_RUN_TOML = (
+    "[[always_run]]\n"
+    'targets = "tests/e2e/*"\n'
+    'why = "end to end"\n\n'
+    "[[always_run]]\n"
+    'targets = "*e2e*"\n'
+    'runner = "asv"\n'
+)
+
+
+def test_always_run_targets_are_selected_whatever_changed(repo):
+    """A target ``diffcone.toml`` names in ``[[always_run]]`` is selected on
+    a change that reaches nothing of it; ``runner`` keeps a pattern to one
+    runner's targets."""
+    base = repo.commit({**ALWAYS_RUN_TREE, "diffcone.toml": ALWAYS_RUN_TOML})
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = repo.plan(base, head, ALWAYS_RUN_TARGETS)
+    assert not plan.degraded and plan.errors == []
+    # test_util's id matches *e2e*, but that entry is for ASV targets.
+    assert selected(plan) == {
+        "tests/test_ops.py::test_add",
+        "tests/e2e/test_flow.py::test_flow",
+        "bench_e2e.Flow.time_flow",
+    }
+    assert rules(plan, "tests/e2e/test_flow.py::test_flow") == {"always_run"}
+    assert reason(plan, "tests/e2e/test_flow.py::test_flow", "always_run").detail == (
+        "always_run tests/e2e/* in diffcone.toml: end to end"
+    )
+    assert rules(plan, "bench_e2e.Flow.time_flow") == {"always_run"}
+    assert [a.label for a in plan.always_run] == ["*e2e* (asv)", "tests/e2e/*"]
+    report = to_dict(plan)
+    assert report["always_run"] == [
+        {"targets": "*e2e*", "runner": "asv", "why": ""},
+        {"targets": "tests/e2e/*", "runner": None, "why": "end to end"},
+    ]
+    assert report["analysis"]["counts"]["always_run"] == 2
+    assert "always run (2):" in to_text(plan)
+
+
+@pytest.mark.parametrize(
+    "toml, message",
+    [
+        ('[[always_run]]\ntargets = "tests/e2e2/*"\n', "always_run tests/e2e2/* matches no target"),
+        ('[[always_run]]\ntargets = "*e2e*"\nrunner = "pytset"\n', "matches no target"),
+        ('[[always_run]]\ntarget = "tests/e2e/*"\n', "unknown key(s) target"),
+        ('[[always_run]]\nwhy = "x"\n', "needs 'targets'"),
+        ('always_run = "tests/e2e/*"\n', "'always_run' must be a list of tables"),
+    ],
+)
+def test_an_always_run_entry_that_runs_nothing_is_an_analysis_error(repo, toml, message):
+    """A typo or a moved directory would quietly plan tests meant to run on
+    every change: the plan fails and selects everything instead."""
+    base = repo.commit(ALWAYS_RUN_TREE)
+    head = repo.commit({"diffcone.toml": toml})
+    plan = repo.plan(base, head, ALWAYS_RUN_TARGETS)
+    assert plan.degraded
+    assert [e.path for e in plan.errors] == ["diffcone.toml"]
+    assert message in plan.errors[0].message
+    assert selected(plan) == {t.runner_id for t in ALWAYS_RUN_TARGETS}
+
+
+def test_an_always_run_entry_removed_with_its_tests_is_not_an_error(repo):
+    """The base's entry still counts for the plan, but matching nothing at
+    the head is what deleting its tests along with it looks like."""
+    base = repo.commit(
+        {
+            **ALWAYS_RUN_TREE,
+            "tests/old/test_gone.py": "def test_gone():\n    pass\n",
+            "diffcone.toml": '[[always_run]]\ntargets = "tests/old/*"\n',
+        }
+    )
+    head = repo.commit({"tests/old/test_gone.py": None, "diffcone.toml": None})
+    plan = repo.plan(base, head, ALWAYS_RUN_TARGETS)
+    assert not plan.degraded and plan.errors == []
+    assert [a.targets for a in plan.always_run] == ["tests/old/*"]
+    assert selected(plan) == set()
 
 
 def test_getattr_on_an_object_a_caller_supplied_reaches_anything(repo):

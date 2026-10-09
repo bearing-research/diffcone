@@ -8,6 +8,16 @@ selection rules.
 
 ## [Unreleased]
 
+### Planning
+
+- `diffcone.toml` takes `[[always_run]]` entries: tests (or benchmarks)
+  matching a pattern on their id are selected in every plan, with or
+  without a recording, and the report gives the entry as the reason. An
+  entry that matches nothing is an analysis error, so a typo selects
+  everything instead of quietly dropping those tests. The JSON report
+  lists the entries and counts what they selected, and `diffcone report`
+  computes a job's selected share without them.
+
 ### Fixed
 
 - A pull request that changes only dependencies selected no tests when the

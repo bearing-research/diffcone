@@ -20,6 +20,7 @@ summary of the same information). The report's format is versioned by
 | `fallback_decisions` | Where diffcone selected more because it couldn't tell what a change reaches. |
 | `analysis_errors` | Errors such as a file that doesn't parse. Any error selects every target. |
 | `declarations` | The dependencies declared in [`diffcone.toml`](declarations.md). |
+| `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); `analysis.counts.always_run` counts the targets they selected. |
 | `discovery` | For each runner: how many targets were found, the configuration read, and any notes. |
 
 The plan `diffcone run -o` writes is the plan that ran. When the run
@@ -80,6 +81,7 @@ selected the target to be safe.
 | `new_target` | | The target is new. |
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
+| `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
 | `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), and a change could be among them. |
 | `unresolved_name_match` | yes | It reaches a call diffcone couldn't resolve, whose name matches a changed function or method. |
 | `entry_symbol_unresolved` | yes | Its own code wasn't found in either snapshot. |

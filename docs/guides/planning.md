@@ -98,8 +98,17 @@ to = "pkg.handlers.json_handler"
 why = "handlers register themselves through entry points"
 ```
 
-Now a change to `json_handler` selects the tests that reach `dispatch`. See
-the [`diffcone.toml` reference](../reference/declarations.md).
+Now a change to `json_handler` selects the tests that reach `dispatch`.
+
+Tests you want on every pull request whatever it changes, such as an
+end-to-end suite, go in the same file:
+
+```toml
+[[always_run]]
+targets = "tests/e2e/*"
+```
+
+See the [`diffcone.toml` reference](../reference/declarations.md).
 
 ## Speed
 

@@ -13,17 +13,27 @@ counts.
     to = "pkg.handlers.json"
     why = "handlers register themselves through entry points"
 
-Declarations only *add* edges, so they can only widen selection: a wrong one
-costs a test that runs anyway, and none of them can make the plan miss. A
-declaration whose endpoints resolve to nothing, or a file that does not
-parse, is an analysis error -- a typo that silently declares nothing is the
-outcome worth failing on.
+Targets the project runs on every change, whatever it touches (an
+end-to-end suite), are named by a pattern on their runner ids:
+
+    [[always_run]]
+    targets = "tests/e2e/*"          # fnmatch; * crosses / and ::
+    runner = "pytest"                # optional
+    why = "end to end, run on every pull request"
+
+Declarations only *add* edges or selected targets, so they can only widen
+selection: a wrong one costs a test that runs anyway, and none of them can
+make the plan miss. A declaration whose endpoints resolve to nothing, an
+``always_run`` pattern the head matches no target with, or a file that
+does not parse, is an analysis error -- a typo that silently declares
+nothing is the outcome worth failing on.
 """
 
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from diffcone.snapshot import INDEX, WORKTREE, GitError, read_files, resolve_commit
@@ -40,6 +50,33 @@ class Declaration:
     @property
     def detail(self) -> str:
         return f"declared in {FILENAME}" + (f": {self.why}" if self.why else "")
+
+
+@dataclass(frozen=True, order=True)
+class AlwaysRun:
+    targets: str  # an fnmatch pattern on the runner id
+    runner: str = ""  # "" for every runner
+    why: str = ""
+
+    def matches(self, runner: str, runner_id: str) -> bool:
+        return (not self.runner or runner == self.runner) and fnmatchcase(runner_id, self.targets)
+
+    @property
+    def label(self) -> str:
+        return self.targets + (f" ({self.runner})" if self.runner else "")
+
+    @property
+    def detail(self) -> str:
+        return f"always_run {self.label} in {FILENAME}" + (f": {self.why}" if self.why else "")
+
+
+@dataclass
+class Declared:
+    """What one snapshot's ``diffcone.toml`` declares, and its problems."""
+
+    edges: list[Declaration] = field(default_factory=list)
+    always_run: list[AlwaysRun] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
 
 
 class Unreadable(Exception):
@@ -68,44 +105,68 @@ def read_file(repo: Path, revision: str) -> bytes | None:
         return None  # not in this snapshot: the ordinary case
 
 
-def parse(raw: bytes) -> tuple[list[Declaration], list[str]]:
+def parse(raw: bytes) -> Declared:
     """Declarations and the problems found; a problem is an analysis error."""
     try:
         data = tomllib.loads(raw.decode("utf-8"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
-        return [], [f"{FILENAME}: {exc}"]
-    problems: list[str] = []
-    edges: list[Declaration] = []
-    unknown_tables = sorted(set(data) - {"edges"})
+        return Declared(problems=[f"{FILENAME}: {exc}"])
+    out = Declared()
+    unknown_tables = sorted(set(data) - {"edges", "always_run"})
     if unknown_tables:
         # A singular ``[[edge]]`` or a capitalisation slip would otherwise
         # declare nothing at all, quietly.
-        problems.append(f"{FILENAME}: unknown top-level key(s) {', '.join(unknown_tables)}")
-    entries = data.get("edges", [])
-    if not isinstance(entries, list):
-        return [], [f"{FILENAME}: 'edges' must be a list of tables"]
-    for i, entry in enumerate(entries, start=1):
-        if not isinstance(entry, dict):
-            problems.append(f"{FILENAME}: edge {i} is not a table")
+        out.problems.append(f"{FILENAME}: unknown top-level key(s) {', '.join(unknown_tables)}")
+    for key, read in (("edges", _edge), ("always_run", _always_run)):
+        entries = data.get(key, [])
+        if not isinstance(entries, list):
+            out.problems.append(f"{FILENAME}: '{key}' must be a list of tables")
             continue
-        unknown = sorted(set(entry) - {"from", "to", "why"})
-        if unknown:
-            problems.append(f"{FILENAME}: edge {i} has unknown key(s) {', '.join(unknown)}")
-            continue
-        source, target, why = entry.get("from"), entry.get("to"), entry.get("why", "")
-        if not isinstance(source, str) or not isinstance(target, str) or not (source and target):
-            problems.append(f"{FILENAME}: edge {i} needs a 'from' and a 'to'")
-            continue
-        if not isinstance(why, str):
-            problems.append(f"{FILENAME}: edge {i} has a non-string 'why'")
-            continue
-        edges.append(Declaration(source, target, why))
-    return edges, problems
+        for i, entry in enumerate(entries, start=1):
+            read(out, i, entry)
+    return out
 
 
-def load(repo: Path, revision: str) -> tuple[list[Declaration], list[str]]:
+def _edge(out: Declared, i: int, entry: object) -> None:
+    if not isinstance(entry, dict):
+        out.problems.append(f"{FILENAME}: edge {i} is not a table")
+        return
+    unknown = sorted(set(entry) - {"from", "to", "why"})
+    if unknown:
+        out.problems.append(f"{FILENAME}: edge {i} has unknown key(s) {', '.join(unknown)}")
+        return
+    source, target, why = entry.get("from"), entry.get("to"), entry.get("why", "")
+    if not isinstance(source, str) or not isinstance(target, str) or not (source and target):
+        out.problems.append(f"{FILENAME}: edge {i} needs a 'from' and a 'to'")
+        return
+    if not isinstance(why, str):
+        out.problems.append(f"{FILENAME}: edge {i} has a non-string 'why'")
+        return
+    out.edges.append(Declaration(source, target, why))
+
+
+def _always_run(out: Declared, i: int, entry: object) -> None:
+    where = f"{FILENAME}: always_run {i}"
+    if not isinstance(entry, dict):
+        out.problems.append(f"{where} is not a table")
+        return
+    unknown = sorted(set(entry) - {"targets", "runner", "why"})
+    if unknown:
+        out.problems.append(f"{where} has unknown key(s) {', '.join(unknown)}")
+        return
+    targets, runner, why = entry.get("targets"), entry.get("runner", ""), entry.get("why", "")
+    if not isinstance(targets, str) or not targets:
+        out.problems.append(f"{where} needs 'targets', a pattern on runner ids")
+        return
+    if not isinstance(runner, str) or not isinstance(why, str):
+        out.problems.append(f"{where} has a non-string 'runner' or 'why'")
+        return
+    out.always_run.append(AlwaysRun(targets, runner, why))
+
+
+def load(repo: Path, revision: str) -> Declared:
     try:
         raw = read_file(repo, revision)
     except Unreadable as exc:
-        return [], [str(exc)]
-    return parse(raw) if raw is not None else ([], [])
+        return Declared(problems=[str(exc)])
+    return parse(raw) if raw is not None else Declared()

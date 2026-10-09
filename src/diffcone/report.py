@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from diffcone.model import SnapshotInfo
-from diffcone.planner import Decision, Plan, Reason
+from diffcone.planner import RULE_ALWAYS_RUN, Decision, Plan, Reason
 
 # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
 # 3: analysis.evidence (null for a static plan) and the evidence reason rules
@@ -79,6 +79,11 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         "declarations": [
             {"from": d.source, "to": d.target, "why": d.why} for d in plan.declarations
         ],
+        # Targets the project runs on every change, whatever the plan found.
+        "always_run": [
+            {"targets": a.targets, "runner": a.runner or None, "why": a.why}
+            for a in plan.always_run
+        ],
         "analysis": {
             "repo": plan.repo,
             "base": snapshot_to_dict(plan.base),
@@ -96,6 +101,9 @@ def to_dict(plan: Plan) -> dict[str, Any]:
                 "targets": len(plan.decisions),
                 "selected": len(selected),
                 "unselected": len(unselected),
+                "always_run": sum(
+                    any(r.rule == RULE_ALWAYS_RUN for r in d.reasons) for d in selected
+                ),
             },
         },
         "changed_symbols": [
@@ -192,6 +200,10 @@ def to_text(plan: Plan) -> str:
         lines.append(f"declared dependencies ({len(plan.declarations)}):")
         for d in plan.declarations:
             lines.append(f"  {d.source} -> {d.target}" + (f"  ({d.why})" if d.why else ""))
+    if plan.always_run:
+        lines.append(f"always run ({len(plan.always_run)}):")
+        for a in plan.always_run:
+            lines.append(f"  {a.label}" + (f"  ({a.why})" if a.why else ""))
     if plan.incomplete_discovery:
         lines.append(
             f"discovery INCOMPLETE: {len(plan.incomplete_discovery)} place(s) where a runner "

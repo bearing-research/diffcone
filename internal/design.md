@@ -1151,6 +1151,21 @@ singular `[[edge]]` declares nothing), a file that exists but cannot be
 read, an endpoint that is in neither revision, and a pair of containers
 whose members would join more than 5 000 pairs.
 
+`[[always_run]]` entries name targets the project runs on every change (an
+end-to-end suite), by an `fnmatch` pattern on the runner id (`*` crosses
+`/` and `::`) and optionally a runner. After the planner (static or
+evidence) has decided, every matching target is selected under the
+`always_run` rule, with the entry and its `why`. Entries come from both
+revisions. One the head holds that matches no target of the plan is an
+analysis error, checked before planning so it still degrades the plan and
+selects everything (a typo, or a directory moved without its pattern);
+a base-only entry matching nothing is not, since deleting the tests and the
+entry together looks like that. The JSON report lists the entries
+(`always_run`) and counts the matched targets
+(`analysis.counts.always_run`), and `diffcone report` takes them out of a
+job's selected share. `collect` still runs them: in the CI setups its run
+is also the full test run of a push.
+
 Telling diffcone that a dynamic reference reaches *only* certain modules is
 the opposite trade (it narrows on the project's authority) and is not
 implemented; see the roadmap.

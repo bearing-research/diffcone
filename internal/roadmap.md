@@ -1132,7 +1132,8 @@ version control and edits them (no known case) would lose their reads.
 
 ## 17. Targets the project always runs (`always_run` in `diffcone.toml`)
 
-**Status.** Sketch (2026-10-09). Some tests are not worth planning: an
+**Status.** Implemented (2026-10-09), unreleased; drop this item once a
+release carries it. As first sketched: some tests are not worth planning: an
 end-to-end suite that drives the whole product (strata's E2E job, its
 notebook-harness tests, which run cells through `exec` and so are
 selected by nearly any change anyway). Running them on every pull request
