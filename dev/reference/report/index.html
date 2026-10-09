@@ -1131,6 +1131,11 @@ summary of the same information). The report's format is versioned by
 </tr>
 </tbody>
 </table>
+<p>With a recording, <code>analysis.evidence</code> describes it: its commit,
+<code>environment_hash</code>, how many tests it holds, and <code>environment_checked</code>.
+<code>plan</code> can't check the environment, so it reports <code>false</code> there: the
+selection holds only in the recorded environment. <code>run</code> checks it before any
+test runs, and its <code>-o</code> report says <code>true</code> when it matched.</p>
 <p>The plan <code>diffcone run -o</code> writes is the plan that ran. When the run
 didn't use the recording because the environment differed, it also has
 <code>evidence_not_used</code>: <code>reason</code> (<code>environment</code>), <code>differences</code> (what
@@ -1325,7 +1330,12 @@ selected the target to be safe.</p>
 <tr>
 <td><code>subprocess</code></td>
 <td>yes</td>
-<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, or one running your code from a <code>-c</code> snippet or a script outside your source roots.</td>
+<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, one running your code from a <code>-c</code> snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a <code>multiprocessing</code> pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook).</td>
+</tr>
+<tr>
+<td><code>text_code</code></td>
+<td>yes</td>
+<td>The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a <code>timeit</code> statement: that code can use any name.</td>
 </tr>
 <tr>
 <td><code>pytest_hook_changed</code></td>

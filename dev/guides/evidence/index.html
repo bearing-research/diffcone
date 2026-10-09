@@ -1116,6 +1116,11 @@ whose recordings differ are marked unstable and always selected.</p>
 <p><code>--evidence auto</code> uses the recording from the closest earlier commit (or
 pass a recording's path). The recording doesn't need to be at your base:
 diffcone also accounts for the changes made since it was recorded.</p>
+<p><code>plan</code> doesn't run anything, so it can't check that your test environment
+is the one the recording was made in: the report says
+<code>environment NOT checked</code> (<code>environment_checked: false</code> in JSON). Its
+selection holds only in the recorded environment. <code>diffcone run</code> checks it
+before any test runs (see below).</p>
 <p>A test is selected when, in its recorded run, it:</p>
 <ul>
 <li>ran a function that changed;</li>
@@ -1135,14 +1140,27 @@ report:</p>
   with what it ran, as is every test that runs while it is still running.
   A test that starts a process any other way (<code>os.system</code>, a shell,
   <code>multiprocessing</code>, or anything on Windows), or whose child can't record
-  itself, is always selected. So is a test whose child runs your code from
-  a <code>python -c</code> snippet or a script outside your source roots. A
-  <code>python -c</code> snippet that can't run your code (a version check) or
-  <code>uv python list</code> doesn't count.</li>
+  itself, is always selected, and so is every test that runs while such a
+  process is still running (a <code>multiprocessing</code> pool reused by a later
+  test). So is a test whose child runs your code from a <code>python -c</code>
+  snippet or a script outside your source roots. A <code>python -c</code> snippet
+  that can't run your code (a version check) or <code>uv python list</code> doesn't
+  count. A project <code>sitecustomize.py</code> still runs in every child.</li>
+<li>A process started outside every test (by a <code>conftest.py</code> as it is
+  imported, or in a hook) counts as part of that import or hook: a change
+  to what it ran is planned as a change to code that ran there. One that
+  can't be followed makes every change do so, which can select every
+  test.</li>
+<li>A test that runs code from text rather than a file (doctests, including
+  pytest's <code>--doctest-modules</code>, <code>timeit</code> statements, a notebook kernel) is
+  always selected: that code can use any name of your code.</li>
 <li>Code that background threads are running while a test runs is credited
   to that test.</li>
 <li>Changes to compiled sources, build files and configuration select every
   test.</li>
+<li>On a file system that ignores case (macOS and Windows by default), a file
+  a test opened under another spelling (<code>Data/Expected.TXT</code>) still counts
+  as the file it is.</li>
 </ul>
 <p>ASV benchmarks are always planned from the code.</p>
 <h2 id="run-with-a-recording">Run with a recording<a class="headerlink" href="#run-with-a-recording" title="Permanent link">&para;</a></h2>
@@ -1177,7 +1195,9 @@ didn't select, which behave the same at the head.</p>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--evidence<span class="w"> </span>auto<span class="w"> </span>--collect<span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
 <p>This needs a clean checkout of the head and the same pytest arguments the
-recording was made with. If the environment differs or pytest stops early,
+recording was made with. If the recording was made with <code>--reverse-check</code>,
+<code>run --collect</code> runs the selected tests a second time in reverse order, so
+the new records are checked the same way. If the environment differs or pytest stops early,
 no recording is written.</p>
 <p>In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See <a href="../../ci/">CI</a>.</p>
