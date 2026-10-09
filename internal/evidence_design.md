@@ -84,9 +84,10 @@ folds parameter cases:
 | fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup` records each instance's setup window, re-arming the tracer as it opens (code the test already ran is otherwise disabled and would be missing from the fixture's window); teardown windows are still to be designed. A test is credited with every fixture it *activated*, read from its request during teardown (`request.getfixturevalue` included, which `item.fixturenames` misses). Each process writes its fixture windows and each test the fixtures it used, so the fold credits a test with what the same fixture ran in *any* process: a session fixture that xdist workers compute once (a file lock and a cache file) runs its work in one worker only |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
 | import attribution | for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running) | a stack of modules pushed at a `<module>` code object's `PY_START` and popped at its `PY_RETURN` (a local event) or `PY_UNWIND` (an import that raises, such as `pytest.importorskip` at module level); events re-armed at each push and pop |
-| `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.access`; paths with `/` on every platform. A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
-| children | what the Python processes T started through `subprocess.Popen` ran, and those still running when T's window opened (POSIX; roadmap item 15) | `Popen._execute_child` wrapped; the child records itself from a `sitecustomize` beside the plugin (`child.py`) into `children/<ppid>/<pid>-<start>.jsonl`, and the fold resolves each spawn to its records (the process itself, or a launcher's Python child that ran its command), recursively; liveness by `os.kill(pid, 0)` over the spawn's tree at each window open |
-| `P(T)` | T started a process no record follows, or a subinterpreter | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork`, except an inert interpreter probe (an interpreter by name, nothing but `-c CODE` where the code imports only built-in modules and names nothing that loads code, no `PYTHONPATH`-like environment: roadmap item 10); wrappers of `multiprocessing.util.spawnv_passfds` and `_interpreters.create`, which raise no event |
+| `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.access`; paths with `/` on every platform, respelled as the index spells them when the recording's file system folds case (`tests/Data/X.TXT` is `tests/data/x.txt`; a path the index does not know matches a changed one in any spelling). A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
+| children | what the Python processes T started through `subprocess.Popen` ran, and those still running when T's window opened (POSIX; roadmap item 15); a process started outside every window (at import, in a hook) is folded into that phase instead: what it ran is the import's, or a hook's | `Popen._execute_child` wrapped; the child records itself from a `sitecustomize` beside the plugin (`child.py`; the plugin's directory comes first on `PYTHONPATH`, and a project's own `sitecustomize` is chained) into `children/<ppid>/<pid>-<start>.jsonl`, and the fold resolves each spawn to its records (the process itself, or a launcher's Python child that ran its command), recursively; liveness by `os.kill(pid, 0)` over the spawn's tree at each window open. A spawn of a pytest process of the same recording (an xdist worker) resolves to its own process record |
+| `P(T)` | T started a process no record follows, or a subinterpreter, or ran while such a process (a pool's worker, a forkserver's child, a fork) was running | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork`; wrappers of `multiprocessing.util.spawnv_passfds` and `_interpreters.create`, which raise no event. An inert interpreter probe (an interpreter by name, nothing but `-c CODE` where the code imports only built-in modules and names nothing that loads code, no `PYTHONPATH`-like environment: roadmap item 10) is accounted like any `Popen` child and judged by its own record; the rule vouches only for one that cannot record (`python -I`), and on Windows. `multiprocessing`'s processes, forks and direct `posix_spawn` children (any flagged child on Windows) are followed by pid: every window opening while one runs is flagged (`waitid` with `WNOWAIT`: a zombie has ended) |
+| text code | T ran code compiled from text no file of the checkout holds (a doctest's examples, a `timeit` statement, a notebook cell, a `skipif` string), which may read any project name | the `exec` audit event: code whose file is not the checkout's, run for something other than project code (project code's own `exec` is a lookup site), naming anything, not run under an import (a library generating its own code) and not by `collections`, `dataclasses`, `annotationlib`, `typing` or attrs (methods generated from a definition); `FLAG_TEXT`, always selected (rule `text_code`). In a child, a flag line |
 | threads | the project code other threads are in the middle of when T's window (or a shared fixture's) opens | `sys._current_frames()`: a long-lived thread looping in one frame raises no event in later windows, yet runs beside their tests |
 | environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside each test process at the end of the run, which keys the store; also at its start, and a run that changed it is named (`collect` warns, the store keeps the start environment, `run` says when it meets it: roadmap item 12) |
 
@@ -170,7 +171,7 @@ static selection.
 | same environment | a different numpy, a missing optional dependency, another Python | the environment fingerprint must match the run; if it doesn't, fall back to static | — |
 | determinism | hash-seed-dependent ordering, time, randomness | `PYTHONHASHSEED` pinned to the recorded value in `run`; `TZ` in the fingerprint | optional second collection in reverse order: tests whose `X(T)` differs are **unstable** and always selected |
 | test isolation | a value one test computes and caches is served to a later test, which then never executes the computation | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures) | the reverse-order collection also catches order dependence between two tests |
-| complete observation | subprocesses, threads outliving their test, code run from strings | a child's record joins `X(T)` when its entry is indexed code (a script or `-m` module of the index, or not the project's), else (`-c`, standard input, a script outside the index that ran project code), or when it could not record, `P(T)` → always selected; strings run by `exec` belong to the function that ran them, which is in `X(T)` | — |
+| complete observation | subprocesses, threads outliving their test, code run from strings | a child's record joins `X(T)` when its entry is indexed code (a script or `-m` module of the index, or not the project's), else (`-c`, standard input, a script outside the index that ran project code), or when it could not record, `P(T)` → always selected; strings run by project code's `exec` belong to the function that ran them, which is in `X(T)` and is a lookup site; strings a library runs for the test (a doctest, `timeit`) → text code, always selected. Outside every test, a process no record follows, or text code, flags its phase: any change escalates the module being imported, or with none selects everything | — |
 | fresh evidence | evidence from an old C | changes are always C → head, so older evidence selects more, never less | age reported |
 
 What remains is stated in the report and in AGENTS.md: a lazily computed
@@ -236,7 +237,7 @@ an inferred path:
   is `nogil` or `cpdef` and changed" (a profiled build does not always
   report those itself; roadmap item 7).
 
-Plus fallbacks: `no_evidence`, `unstable`, `subprocess`,
+Plus fallbacks: `no_evidence`, `unstable`, `subprocess`, `text_code`,
 `environment_mismatch`.
 
 ## How it will be checked
@@ -286,21 +287,32 @@ selection or states something the tables left implicit; none narrows it.
   is the test's behaviour, and outside the test windows they would make
   every file look read at import. So the recorder looks at the stack:
   - events raised under the import system (`<frozen importlib…>`) are
-    dropped; modules are the index's business;
+    dropped; modules are the index's business. Not when a library's
+    top-level code lies between the touch and the import system
+    (matplotlib reading `./matplotlibrc` as it is imported): that is the
+    library reading a file, and it belongs to whoever imported it, the
+    test inside a window, outside every window the project module being
+    imported, or, with no project code on the stack, no module (a hook's
+    touch, which selects everything);
   - inside a test window everything else counts, because a library or a
     plugin fixture may read a file for the test;
   - outside every window, an event counts only when project code is on the
     stack. It is credited to the module being imported (a parametrize list
     globbed at import escalates that module), or to no module when it
     happens in a hook, which selects everything;
-  - an environment kept inside the checkout (`sys.prefix` and its kin,
-    `.venv`) is not project code, as `site-packages` is not: `uv run
-    pytest` runs `.venv/bin/pytest`, which would otherwise sit at the
-    bottom of every stack and make pytest's own collection the project's;
+  - what an environment kept inside the checkout owns (under
+    `sys.prefix` and its kin: its scripts, `lib/pythonX.Y/`, `pyvenv.cfg`)
+    is not project code, as `site-packages` is not: `uv run pytest` runs
+    `.venv/bin/pytest`, which would otherwise sit at the bottom of every
+    stack and make pytest's own collection the project's. Only that: an
+    environment made in a source directory (`cd svc && python -m venv .`)
+    leaves the source the project's, and the fold refuses a recording in
+    which what an environment owns holds a file the index reads;
   - a stat or listing of a `sys.path` entry under `importlib.metadata`
-    (`distributions()` in a session hook, pluggy's entry points) is
-    dropped: the scan finds only `*.dist-info`, `*.egg-info` and `*.egg`
-    names, and a change to one of those selects everything
+    (`distributions()` in a session hook, pluggy's entry points) or
+    `pkg_resources` (its working set, built as it is imported) is
+    dropped: the scan finds only `*.dist-info`, `*.egg-info`, `*.egg` and
+    `*.egg-link` names, and a change to one of those selects everything
     (`planner.build_input`).
 * **Readers are followed through values.** A reader of a changed thing is
   handled by its kind:

@@ -43,7 +43,9 @@ from diffcone.cache import IndexCache, default_cache_dir
 from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
 from diffcone.evidence import (
     FLAG_SUBPROCESS,
+    FLAG_TEXT,
     FLAG_UNSTABLE,
+    UNINDEXED_MODULE,
     EvidenceError,
     environment_differences,
     find_store,
@@ -555,11 +557,27 @@ def _collect(args: argparse.Namespace) -> int:
         f"diffcone: recorded {len(ev.tests)} tests at {ev.commit[:12]} "
         f"(environment {ev.environment_hash}): {len(ev.symbols)} symbols executed, "
         f"{sum(1 for f in flags if f & FLAG_SUBPROCESS)} started a subprocess"
+        + (f", {texts} ran text code" if (texts := sum(1 for f in flags if f & FLAG_TEXT)) else "")
         + (
             f", {sum(1 for f in flags if f & FLAG_UNSTABLE)} unstable" if ev.reverse_checked else ""
         ),
         file=sys.stderr,
     )
+    if ev.import_flagged:
+        where = sorted(
+            m[len(UNINDEXED_MODULE) :] if m.startswith(UNINDEXED_MODULE) else m or "a hook"
+            for m in ev.import_flagged
+        )
+        print(
+            "diffcone: warning: outside every test, a process the recording can't follow "
+            f"(or code run from text) ran during {', '.join(where[:5])}: every change "
+            + (
+                "selects every test"
+                if any(m == "" or m.startswith(UNINDEXED_MODULE) for m in ev.import_flagged)
+                else "is planned from the code for what those imports built"
+            ),
+            file=sys.stderr,
+        )
     if ev.environment_at_start is not None:
         print(
             "diffcone: warning: the test run changed its own environment, and the "

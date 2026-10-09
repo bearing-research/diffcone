@@ -26,8 +26,16 @@ recorded:
   what it ran);
 * ``["fork", pid]``: a fork, which goes on writing here;
 * ``["flag", why]``: something it ran that no record shows (another way of
-  starting a process, an installed copy of the project, no
-  ``sys.monitoring`` before Python 3.12, an error in the recorder).
+  starting a process, an installed copy of the project, code compiled
+  from text no file of the checkout holds, such as a doctest's examples
+  (``text_code``), no ``sys.monitoring`` before Python 3.12, an error in
+  the recorder).
+
+A write that fails renames the record to ``<name>.broken`` (``_broken``):
+the fold no longer finds it, so the spawn flags as one that recorded
+nothing does. A pytest process of the same recording (an xdist worker)
+drops its record and writes its own ``process-<pid>.json``; a spawn of one
+resolves to that, not to a problem.
 
 Windows keeps the subprocess flag: the plugin accounts no spawn there, and
 no child records itself.
@@ -43,12 +51,16 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from typing import Any
 
 ENV_PARENT = "DIFFCONE_COLLECT_PARENT"
 TOOL = 3  # the plugin's sys.monitoring tool id: one recorder per process
 CHILDREN = "children"
+# A record whose write failed is renamed to this suffix: the fold no longer
+# finds it, and the spawn resolves to nothing, which flags.
+BROKEN = ".broken"
 # Launchers: a program that is not Python but runs the command at the end of
 # its command line (``uv run --directory nb python harness.py``), reading
 # nothing of the checkout but build inputs, a change to which selects every
@@ -87,8 +99,9 @@ class _PopenState(threading.local):
 
 
 popen = _PopenState()
-# Called with (pid, start, argv) after ``subprocess.Popen`` started a process
-# that is not an inert probe; set by whichever recorder runs here.
+# Called with (pid, start, argv, inert) after ``subprocess.Popen`` started a
+# process (``inert``: the plugin judged its command line an interpreter probe
+# that can run no project code); set by whichever recorder runs here.
 on_spawn: Any = None
 
 
@@ -121,9 +134,9 @@ def install_popen() -> None:
             original(self, *args, **kwargs)
         finally:
             popen.depth -= 1
-        if not popen.inert and on_spawn is not None:
+        if on_spawn is not None:
             try:
-                on_spawn(self.pid, start, popen.argv)
+                on_spawn(self.pid, start, popen.argv, popen.inert)
             except Exception:  # never into the test; each recorder reports its own
                 pass
 
@@ -173,6 +186,7 @@ class Record:
         except OSError as exc:
             self.flags.append(f"unreadable record {path.name}: {exc}")
             return
+        header = False
         for n, line in enumerate(lines):
             if not line:
                 continue
@@ -181,6 +195,7 @@ class Record:
                 if n == 0:
                     self.pid, self.argv = int(value["pid"]), list(value["argv"])
                     self.entry = list(value.get("entry") or ["code"])
+                    header = True
                     continue
                 kind = value[0]
                 if kind == "c":
@@ -197,6 +212,9 @@ class Record:
                     self.flags.append(str(value[1]))
             except (ValueError, KeyError, IndexError, TypeError):
                 self.flags.append(f"corrupt line {n + 1} in {path.name}")
+        if not header:
+            # Killed before its first write, or emptied by a failed one.
+            self.flags.append(f"no header in {path.name}")
 
 
 class Tree:
@@ -275,13 +293,19 @@ def _started(argv: list[str] | None, record: Record) -> bool:
     )
 
 
-def resolve(out: Path, spawner: int, pid: int, start: int, argv: list[str] | None) -> Tree:
+def resolve(
+    out: Path, spawner: int, pid: int, start: int, argv: list[str] | None, inert: bool = False
+) -> Tree:
     """The records behind a spawn: the process itself when it was Python,
     else (a launcher) the Python processes it started, one of which ran the
     launcher's command; and, recursively, every process those started or
-    forked. A spawn nothing recorded, or that a record flags, is a problem."""
+    forked. A spawn nothing recorded, or that a record flags, is a problem,
+    except an ``inert`` probe (by its command line, an interpreter that can
+    run no project code) that could not record (``python -I``), and a pytest
+    process of the same recording (an xdist worker, whose own process record
+    is read as one)."""
     tree = Tree()
-    _resolve(out, spawner, pid, start, argv, tree, set())
+    _resolve(out, spawner, pid, start, argv, tree, set(), inert)
     return tree
 
 
@@ -293,6 +317,7 @@ def _resolve(
     argv: list[str] | None,
     tree: Tree,
     seen: set[Path],
+    inert: bool = False,
 ) -> None:
     tree.pids.add(pid)
     own = _records(out, spawner, start, pid)
@@ -306,8 +331,10 @@ def _resolve(
         for path in own:
             _follow(out, path, tree, seen)
         return
+    if (out / f"process-{pid}.json").exists():
+        return
     started = _records(out, pid, start)
-    if _matches(argv, TOOLS):
+    if inert or _matches(argv, TOOLS):
         for path in started:
             _follow(out, path, tree, seen)
         return
@@ -343,10 +370,12 @@ def _follow(out: Path, path: Path, tree: Tree, seen: set[Path]) -> None:
                 _follow(out, child, tree, seen)
 
 
-def tree_alive(out: Path, spawner: int, pid: int, start: int, argv: list[str] | None) -> bool:
+def tree_alive(
+    out: Path, spawner: int, pid: int, start: int, argv: list[str] | None, inert: bool = False
+) -> bool:
     if alive(pid):
         return True
-    return any(alive(p) for p in resolve(out, spawner, pid, start, argv).pids)
+    return any(alive(p) for p in resolve(out, spawner, pid, start, argv, inert).pids)
 
 
 # --------------------------------------------------------------------------- recording a child
@@ -381,12 +410,71 @@ LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
 DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
 
 
+def environments(roots: tuple[str, ...]) -> tuple[str, ...]:
+    """What the interpreter's environments kept inside the checkout own,
+    relative to a root (``svc/bin/``, ``.venv/lib/python3.13/``,
+    ``svc/pyvenv.cfg``): installed code, like ``site-packages``, scripts
+    included (``uv run pytest`` runs ``.venv/bin/pytest``). Only those: an
+    environment made in a directory that holds source (``cd svc && python -m
+    venv .``) leaves the source the project's. The fold refuses a recording
+    in which one of them holds an indexed file. ``roots`` end in a
+    separator, and are case-folded on Windows."""
+    if os.name == "nt":
+        owned = ["Scripts" + os.sep, "pyvenv.cfg"]
+    else:
+        version = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        abiflags = getattr(sys, "abiflags", "")
+        owned = ["bin" + os.sep, "pyvenv.cfg"]
+        for name in {version, version + abiflags}:
+            owned += [os.path.join("lib", name, ""), os.path.join("lib64", name, "")]
+    found = set()
+    for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}:
+        for path in (os.path.abspath(prefix), os.path.realpath(prefix)):
+            path = os.path.join(path, "")
+            for root in roots:
+                if not path.startswith(root):
+                    continue
+                for entry in owned:
+                    rel = path[len(root) :] + entry
+                    found.add(os.path.normcase(rel) if os.name == "nt" else rel)
+    return tuple(sorted(found))
+
+
 def _write(value: Any) -> None:
+    """One line, whole, or none: a write that fails (a full disk, a file too
+    large) leaves the record unreadable (``_broken``), which flags every
+    test this process is credited to, as a process that recorded nothing
+    does. A record silently cut short could not be told from a complete
+    one."""
     if _fd < 0:
         return
     try:
-        os.write(_fd, json.dumps(value).encode() + b"\n")
-    except (OSError, TypeError, ValueError):
+        data = json.dumps(value).encode() + b"\n"
+    except (TypeError, ValueError) as exc:
+        data = json.dumps(["flag", f"recorder: unserialisable record: {exc}"]).encode() + b"\n"
+    try:
+        if os.write(_fd, data) == len(data):
+            return
+    except OSError:
+        pass
+    _broken()
+
+
+def _broken() -> None:
+    """Make the record unreadable: renamed out of the names the fold reads,
+    or, failing that, emptied (a record without its header is a problem)."""
+    global _fd
+    fd, _fd = _fd, -1
+    try:
+        os.rename(_path, _path + BROKEN)
+    except OSError:
+        try:
+            os.ftruncate(fd, 0)
+        except OSError:
+            pass
+    try:
+        os.close(fd)
+    except OSError:
         pass
 
 
@@ -473,18 +561,25 @@ def _on_throw(code, offset, exc):
 
 
 def _actor() -> str:
+    """As ``collect._actor``: ``import`` only when the import system itself
+    touched the path, not a library's top level that an import ran."""
     frame = sys._getframe(2)
+    module = False
     while frame is not None:
-        name = frame.f_code.co_filename
-        if name.startswith("<frozen importlib") and frame.f_code.co_name not in DATA_READERS:
-            return "import"
-        if _relative(name) is not None:
+        code = frame.f_code
+        name = code.co_filename
+        if name.startswith("<frozen importlib") and code.co_name not in DATA_READERS:
+            if not module:
+                return "import"
+        elif _relative(name) is not None:
             return "project"
+        elif code.co_name == "<module>":
+            module = True
         frame = frame.f_back
     return "other"
 
 
-METADATA_MODULES = ("importlib.metadata", "importlib_metadata")
+METADATA_MODULES = ("importlib.metadata", "importlib_metadata", "pkg_resources")
 
 
 def _metadata_scan(path: str) -> bool:
@@ -535,8 +630,84 @@ def _audit(event: str, args: Any) -> None:
             # A fork goes on recording here (_forked); an exec after it flags.
             if event not in ("os.fork", "os.forkpty") and not in_popen(event, args):
                 _flag(f"started a process another way ({event})")
+        elif event == "exec":
+            if args and text_code(args[0], sys._getframe().f_back, _code_path):
+                name = args[0].co_filename
+                if name not in _text_seen:
+                    _text_seen.add(name)
+                    _flag(f"ran code compiled from text no file of the checkout holds: {name}")
     except Exception as exc:
         _flag(f"recorder: audit {event}: {type(exc).__name__}: {exc}")
+
+
+_text_seen: set[str] = set()
+# Modules that run text they generate themselves from a definition, reading
+# only names they put in its namespace (``collections.namedtuple``,
+# dataclasses, annotations, attrs' generated methods), or text from pytest's
+# command line (``-m``/``-k`` expressions, matched against marks and names).
+TEXT_GENERATORS = (
+    "collections",
+    "dataclasses",
+    "annotationlib",
+    "typing",
+    "attr",
+    "_pytest.mark",
+)
+# Modules that run modules, whose code comes from a file (or is frozen into
+# the interpreter): the import system, ``runpy``, pytest's assertion
+# rewriting of test modules and plugins.
+MODULE_RUNNERS = (
+    "importlib",
+    "_frozen_importlib",
+    "_frozen_importlib_external",
+    "zipimport",
+    "runpy",
+    "_pytest.assertion",
+)
+
+
+def _of(module: str, names: tuple[str, ...]) -> bool:
+    return any(module == n or module.startswith(n + ".") for n in names)
+
+
+def text_code(code: Any, caller: Any, code_path: Any) -> bool:
+    """Whether ``exec``/``eval`` of ``code``, called from the frame
+    ``caller``, runs text no file of the checkout holds (a doctest's
+    example, a ``timeit`` statement, a notebook cell, a ``skipif`` string)
+    for something other than project code, and the text names something it
+    could read of the project: no record shows what that reads.
+
+    Not counted: project code's own ``exec`` (a lookup site the planner
+    knows); text that names nothing (a library's ``eval`` of a literal);
+    the methods ``collections`` and ``dataclasses`` generate; and text run
+    while a module is imported, which is a library generating its own code
+    (numpy 1.x's dispatch wrappers), not a test running supplied text.
+    ``code_path`` maps a code object's file name to its checkout path, None
+    outside the checkout. Shared by both recorders."""
+    name = getattr(code, "co_filename", None)
+    if not isinstance(code, types.CodeType) or not isinstance(name, str):
+        return False
+    if not name.startswith("<") and code_path(name) is not None:
+        return False  # a file of the checkout: recorded as its code
+    if caller is None or code_path(caller.f_code.co_filename) is not None:
+        return False
+    module = str(caller.f_globals.get("__name__", ""))
+    if _of(module, MODULE_RUNNERS) or _of(module, TEXT_GENERATORS):
+        return False
+    if not _names_something(code):
+        return False
+    frame = caller
+    while frame is not None:
+        if frame.f_code.co_filename.startswith("<frozen importlib"):
+            return False
+        frame = frame.f_back
+    return True
+
+
+def _names_something(code: types.CodeType) -> bool:
+    return bool(code.co_names) or any(
+        _names_something(c) for c in code.co_consts if isinstance(c, types.CodeType)
+    )
 
 
 def _wrap_stat(original):
@@ -590,7 +761,7 @@ def entry() -> list:
     return ["code"]  # standard input or an interactive session
 
 
-def _spawned(pid: int, start: int, argv: list[str] | None) -> None:
+def _spawned(pid: int, start: int, argv: list[str] | None, inert: bool = False) -> None:
     if recording:
         _write(["spawn", os.getpid(), pid, start, argv])
 
@@ -641,17 +812,7 @@ def start() -> None:
         return  # no record: the spawn resolves to nothing, and flags
     root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
     _roots = tuple(sorted({os.path.abspath(root) + os.sep, os.path.realpath(root) + os.sep}))
-    _environments = tuple(
-        sorted(
-            {
-                path[len(r) :]
-                for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}
-                for path in (os.path.abspath(prefix) + os.sep, os.path.realpath(prefix) + os.sep)
-                for r in _roots
-                if path.startswith(r) and path != r
-            }
-        )
-    )
+    _environments = environments(_roots)
     _cwd = os.getcwd()
     header = {
         "pid": os.getpid(),

@@ -50,6 +50,12 @@ observed by"), and a test is selected when its record meets E:
   of the module, since pytest reads marks, fixtures and parameters without
   a static reader.
 
+Something that ran outside every test and that no record shows (a process
+nothing followed, text code: ``Evidence.import_flagged``) makes any change
+escalate the module whose import ran it, or, outside every import, select
+everything. A test that ran text code (a doctest) is always selected, as
+one that started a process no record follows is.
+
 "Escalated" means planned by the static planner from exactly those seeds,
 without dynamic-reference pseudo-seeds: a test that executed a dynamic
 site is in the record through the code it reached, so the lookup sites
@@ -94,7 +100,13 @@ from diffcone.cython import (
 )
 from diffcone.declarations import Declaration
 from diffcone.discovery import DiscoveryResult
-from diffcone.evidence import FLAG_SUBPROCESS, FLAG_UNSTABLE, UNINDEXED_MODULE, Evidence
+from diffcone.evidence import (
+    FLAG_SUBPROCESS,
+    FLAG_TEXT,
+    FLAG_UNSTABLE,
+    UNINDEXED_MODULE,
+    Evidence,
+)
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     CLASS,
@@ -132,6 +144,7 @@ from diffcone.planner import (
     RULE_PYTEST_HOOK,
     RULE_SUBPROCESS,
     RULE_TEST_SCOPE,
+    RULE_TEXT_CODE,
     RULE_TOUCHED_FILE,
     RULE_UNINDEXED_IMPORT,
     RULE_UNOBSERVED_FILE,
@@ -539,6 +552,8 @@ class _Observers:
     # -- rules -------------------------------------------------------------------
 
     def run(self) -> None:
+        if self.changes or _changed_unanalysed_files(self.c, self.other) or self.outside:
+            self._unrecorded_phases()
         decorated = self.c.doc_decorated | self.other.doc_decorated
         for change in self.changes:
             if change.symbol.path in BUILD_SCRIPTS:
@@ -581,6 +596,26 @@ class _Observers:
                 )
             else:
                 self._file(path, what, names=what != "edited")
+
+    def _unrecorded_phases(self) -> None:
+        """Outside every test, something ran that no record shows (a process
+        nothing recorded, text code): any change may reach what that import
+        built, or, outside every import (a hook, collection), any test."""
+        for module in sorted(self.evidence.import_flagged):
+            why = "a process no record follows, or code compiled from text,"
+            if module == "" or module.startswith(UNINDEXED_MODULE):
+                where = module[len(UNINDEXED_MODULE) :] if module else ""
+                self._select_all(
+                    RULE_SUBPROCESS,
+                    f"{why} ran outside every test "
+                    + (
+                        f"while {where}, a file outside the source roots, was imported"
+                        if where
+                        else "and outside any import (a hook or collection)"
+                    ),
+                )
+            else:
+                self._escalate_module(module, f"{why} ran while {module} was imported")
 
     def _cython(self) -> set[str]:
         """Cython sources (roadmap item 7): the paths this rule handled.
@@ -1329,7 +1364,7 @@ class _Observers:
             # stat'ed (a source file's stat is recorded as a name seen).
             observed += [(d, self.evidence.import_dirs) for d in _ancestors(path)]
         for seen, where_seen in observed:
-            for module in sorted(where_seen.get(seen, ())):
+            for module in sorted(self.evidence.seen_by(where_seen, seen)):
                 where = seen or "the checkout root"
                 if module == "" or module.startswith(UNINDEXED_MODULE):
                     self._select_all(
@@ -1543,6 +1578,14 @@ def _evidence_decision(
             reasons.append(
                 Reason(RULE_SUBPROCESS, "it started a subprocess, whose execution is not recorded")
             )
+        if record.flags & FLAG_TEXT:
+            reasons.append(
+                Reason(
+                    RULE_TEXT_CODE,
+                    "it ran code compiled from text no file holds (a doctest, timeit), "
+                    "which may use any name",
+                )
+            )
         executed = evidence.executed(record)
         touched = evidence.touched(record)
         listed = evidence.listed(record)
@@ -1577,10 +1620,10 @@ def _evidence_decision(
                     break
             for path, (what, names) in sorted(obs.files.items()):
                 how = None
-                if path in touched:
+                if evidence.has(touched, path):
                     how = f"opened or stat'ed {path}"
                 elif names:
-                    dirs = [d for d in _ancestors(path) if d in listed]
+                    dirs = [d for d in _ancestors(path) if evidence.has(listed, d)]
                     if dirs and dirs[0] == path:
                         how = f"stat'ed {path}"
                     elif dirs:

@@ -269,7 +269,7 @@ def run_selected(
             result.returncode = subprocess.run(result.command, cwd=cwd, env=run_env).returncode
         finally:
             if own:
-                shutil.rmtree(run_env["PYTHONPATH"].split(os.pathsep)[-1], ignore_errors=True)
+                remove_plugin_dir(run_env)
         reports = [
             set(f.read_text("utf-8").split("\n")) - {""} for f in Path(tmp).glob("missing-*")
         ]
@@ -550,7 +550,7 @@ def _run_full_pytest(
                 "against the current directory and the repository"
             ) from exc
         finally:
-            shutil.rmtree(env["PYTHONPATH"].split(os.pathsep)[-1], ignore_errors=True)
+            remove_plugin_dir(env)
         log = proc.stdout + proc.stderr
         if coverage and not (db and db.exists()):
             raise GitError(
@@ -1344,6 +1344,8 @@ def corpus_to_text(report: CorpusReport) -> str:
 PLUGIN = "diffcone_collect"
 SELECT_PLUGIN = "diffcone_select"
 CHILD_MODULE = "diffcone_child"
+# The recorder's own directory on PYTHONPATH (collect.environment leaves it out).
+PLUGIN_DIR_PREFIX = "diffcone-plugin-"
 # Beside the plugin on PYTHONPATH: a Python process a recorded test starts
 # records itself (child.py, roadmap item 15), then runs the sitecustomize
 # this one shadows, if any.
@@ -1492,10 +1494,14 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     importable as a module of its own (a link to ``collect.py`` in a
     directory of its own, so neither diffcone's package nor anything else of
     its environment is imported into the project's process), and the
-    recorder's settings. The caller removes the directory (the last
-    ``PYTHONPATH`` entry) when the run ends."""
+    recorder's settings. The caller removes the directory
+    (``remove_plugin_dir``) when the run ends.
+
+    The directory comes first on ``PYTHONPATH``: its ``sitecustomize`` must
+    shadow any other (a project's own on a source root), and runs the one
+    it shadows itself."""
     env = dict(base)
-    link_dir = Path(tempfile.mkdtemp(prefix="diffcone-plugin-"))
+    link_dir = Path(tempfile.mkdtemp(prefix=PLUGIN_DIR_PREFIX))
     (link_dir / "sitecustomize.py").write_text(SITECUSTOMIZE)
     for name, source in (
         (PLUGIN, "collect.py"),
@@ -1510,13 +1516,21 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
             # rights; a copy serves as well (neither imports diffcone).
             shutil.copyfile(original, target)
     existing = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = os.pathsep.join([*([existing] if existing else []), str(link_dir)])
+    env["PYTHONPATH"] = os.pathsep.join([str(link_dir), *([existing] if existing else [])])
     # Absolute and with symlinks resolved, as pytest reports a test's path:
     # a relative or linked ``--repo`` would otherwise match nothing.
     env["DIFFCONE_COLLECT_ROOT"] = str(Path(root).resolve())
     if out is not None:
         env["DIFFCONE_COLLECT_OUT"] = str(out)
     return env
+
+
+def remove_plugin_dir(env: dict[str, str]) -> None:
+    """Remove the directory ``plugin_environment`` made: the first
+    ``PYTHONPATH`` entry (a later one may be an enclosing recorded run's)."""
+    entry = env.get("PYTHONPATH", "").split(os.pathsep)[0]
+    if entry and os.path.basename(entry.rstrip(os.sep)).startswith(PLUGIN_DIR_PREFIX):
+        shutil.rmtree(entry, ignore_errors=True)
 
 
 @dataclass
@@ -1587,7 +1601,7 @@ def collect_evidence(
             except OSError as exc:
                 raise GitError(f"cannot run {argv[0]!r}: {exc}") from exc
             finally:
-                shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+                remove_plugin_dir(env)
             log = proc.stdout + proc.stderr
             logs.append(log)
             if proc.returncode not in (0, 1):
@@ -1700,7 +1714,7 @@ def run_with_evidence(
                 argv = build_command("pytest", [], command, ["-p", PLUGIN, *(extra or [])])
                 subprocess.run(argv, cwd=cwd, env={**env, "DIFFCONE_CHECK_ONLY": "1"})
         finally:
-            shutil.rmtree(Path(env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+            remove_plugin_dir(env)
         checked = json.loads(report.read_text("utf-8")) if report.exists() else None
         if dry_run or (checked is not None and checked.get("match")):
             run = EvidenceRun(result)

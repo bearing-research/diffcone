@@ -136,6 +136,8 @@ RULE_CHANGED_TARGET = "changed_target"
 RULE_NO_EVIDENCE = "no_evidence"
 RULE_UNSTABLE = "unstable"
 RULE_SUBPROCESS = "subprocess"
+# Evidence: the test ran code compiled from text no file holds (a doctest).
+RULE_TEXT_CODE = "text_code"
 RULE_PYTEST_HOOK = "pytest_hook_changed"
 RULE_UNOBSERVED_FILE = "unobserved_file_changed"
 RULE_UNINDEXED_IMPORT = "unindexed_import"
@@ -164,6 +166,7 @@ CONSERVATIVE_RULES = frozenset(
         RULE_NO_EVIDENCE,
         RULE_UNSTABLE,
         RULE_SUBPROCESS,
+        RULE_TEXT_CODE,
         RULE_PYTEST_HOOK,
         RULE_UNOBSERVED_FILE,
         RULE_UNINDEXED_IMPORT,
@@ -277,7 +280,7 @@ DEPENDENCY_NAME = re.compile(
     r"requirement|constraint|^environment|conda-lock|(?:^|[-_.])(?:deps|dependencies)(?:[-_.]|$)"
 )
 # Directories of a distribution's metadata (``pkg-1.0.dist-info``).
-DISTRIBUTION_SUFFIXES = (".dist-info", ".egg-info", ".egg")
+DISTRIBUTION_SUFFIXES = (".dist-info", ".egg-info", ".egg", ".egg-link")
 
 
 def build_input(path: str) -> bool:
@@ -287,11 +290,11 @@ def build_input(path: str) -> bool:
     ``pylock.toml``); a continuous-integration file; a ``.env`` file; a
     ``.pth`` file (once installed, the interpreter runs its import lines at
     start); or a distribution's metadata (under ``*.dist-info``,
-    ``*.egg-info`` or ``*.egg``, which ``importlib.metadata`` finds by name
-    on ``sys.path``). Nothing the index or a test's record sees reads it, so
-    a change to one anywhere selects every target. Names are compared
-    without case: a case-insensitive filesystem finds ``Requirements.txt``
-    under any spelling."""
+    ``*.egg-info``, ``*.egg`` or ``*.egg-link``, which ``importlib.metadata``
+    and ``pkg_resources`` find by name on ``sys.path``). Nothing the index or
+    a test's record sees reads it, so a change to one anywhere selects every
+    target. Names are compared without case: a case-insensitive filesystem
+    finds ``Requirements.txt`` under any spelling."""
     lowered = path.lower()
     parts = lowered.split("/")
     name = parts[-1]

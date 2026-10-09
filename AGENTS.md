@@ -65,7 +65,8 @@ the default and the reference.
 * Reports are deterministic.
 * Evidence narrows only pytest targets that have a record. Anything a record
   cannot vouch for falls back to static planning or selects the target:
-  - a test with no record, an unstable record, or a subprocess;
+  - a test with no record, an unstable record, a subprocess no record
+    follows, or text a library compiled and ran for it (a doctest);
   - a change that ran at import, or a module-level change;
   - a file no test's record sees.
   The recorder must never change a test's outcome: it prints nothing, and

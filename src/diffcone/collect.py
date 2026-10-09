@@ -24,14 +24,22 @@ What it records, per test (parameter cases folded into their function, as
 * the repository paths it opened, ``stat``ed, ``access``ed or listed (audit
   hooks, ``sqlite3.connect`` and ``ctypes.dlopen`` included, and wrappers
   of ``os.stat``/``os.lstat``/``os.access``, which never warn, so the extra
-  frame cannot move a warning's ``stacklevel``), with ``/`` separators;
+  frame cannot move a warning's ``stacklevel``), with ``/`` separators; on
+  a file system that folds case (``case_insensitive``) the fold respells
+  them as the index does. A touch by the import system finding modules is
+  not the test's; one by a library's top-level code that an import ran
+  (matplotlib reading ``./matplotlibrc``) is;
 * the processes it started through ``subprocess.Popen`` (POSIX), which
-  record themselves (``child.py``, roadmap item 15), and every such
-  process still running when it opens; the fold credits it with what they
-  ran;
+  record themselves (``child.py``, roadmap item 15), inert interpreter
+  probes included, and every such process still running when it opens;
+  the fold credits it with what they ran;
 * whether it started a process another way (``os.system``, Windows,
   ``multiprocessing``; other than a ``python -c`` probe that can run no
-  project code) or a subinterpreter: code no record names runs there. The
+  project code and could not record) or a subinterpreter, or opened while
+  such a process (a pool's worker, a forkserver's child) was still
+  running (``unfollowed``): code no record names runs there;
+* whether it ran code compiled from text no file of the checkout holds (a
+  doctest's examples, a ``timeit`` statement; ``child.text_code``). The
   project code other threads are in the middle of when a window opens is
   credited to it, as those threads run beside its test.
 
@@ -39,6 +47,9 @@ Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
 module whose top-level code was running (``import_by``); and the code that
 ran outside every window while no import was running (hooks, collection).
+A process started there is part of that phase (``import_spawns``, folded
+into it), and what no record shows there flags the phase
+(``import_flagged``: the module being imported, "" for none).
 ``functools`` caches of project code are cleared before each test so a
 value one test computed is recomputed, and recorded, by the next.
 
@@ -82,7 +93,9 @@ import os
 import platform
 import re
 import shlex
+import stat
 import struct
+import subprocess
 import sys
 import threading
 import zlib
@@ -99,6 +112,9 @@ except ImportError:  # imported as diffcone.collect, not as the plugin
 
 TOOL = 3
 FLAG_SUBPROCESS = 1
+# The test ran code compiled from text no file of the checkout holds (a
+# doctest, ``timeit``), which can read any name of the project.
+FLAG_TEXT = 4
 ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL", "PYTHONWARNINGS")
 
 
@@ -231,26 +247,27 @@ ROOTS = tuple(
     )
 )
 PACKAGES = frozenset(p for p in os.environ.get("DIFFCONE_COLLECT_PACKAGES", "").split(",") if p)
+
+
+def _case_folds(root: str) -> bool:
+    """Whether the checkout's file system folds case (macOS and Windows by
+    default): a path opened as ``Data/X.TXT`` is then ``data/x.txt``, which
+    the fold matches against the index's spelling."""
+    swapped = root.swapcase()
+    if swapped == root:
+        return False
+    try:
+        return os.path.samefile(root, swapped)
+    except (OSError, ValueError):
+        return False
+
+
+CASE_FOLDS = _case_folds(os.path.realpath(_root))
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
 INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
 
 
-def _environments() -> tuple[str, ...]:
-    """The interpreter's environments kept inside the checkout (``.venv``),
-    relative to a root and ending in a separator: installed code, like
-    ``site-packages``, scripts included (``uv run pytest`` runs
-    ``.venv/bin/pytest``). A prefix that is a root, or holds one, is not."""
-    found = set()
-    for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}:
-        for path in (os.path.abspath(prefix), os.path.realpath(prefix)):
-            path = (os.path.normcase(path) if os.name == "nt" else path) + os.sep
-            for root in ROOTS:
-                if path.startswith(root) and path != root:
-                    found.add(path[len(root) :])
-    return tuple(sorted(found))
-
-
-ENVIRONMENTS = _environments()
+ENVIRONMENTS = child.environments(ROOTS)
 
 errors: list[str] = []
 codes: dict[object, int] = {}
@@ -268,6 +285,20 @@ collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
 used_fixtures: dict[str, list] = {}
 live: list[tuple] = []  # accounted spawns not yet known to have ended
+# Processes no record follows that may outlive the window that started them
+# (a ``multiprocessing`` pool or forkserver, a fork, Windows): every window
+# opening while one runs is flagged, since work submitted to it then runs
+# where nothing records it.
+unfollowed: list[int] = []
+known: set[int] = set()  # pids followed, or started where they were flagged
+accounted: dict[int, int] = {}  # pid -> when an accounted spawn started it
+records_seen: set[str] = set()  # this process's children's records, looked at
+# Accounted spawns outside every test window, with the module being imported
+# then ("" for none: a hook, collection): they ran as part of that phase.
+import_spawns: list[tuple[tuple, str]] = []
+# The modules whose import ran what no record shows ("" for none).
+import_flagged: set[str] = set()
+flags_raised = 0  # how many times _flag ran: did a call flag its window?
 caches: list = []
 recording = False
 
@@ -292,6 +323,18 @@ import_window = _window()
 
 def _windows():
     return active if active else (import_window,)
+
+
+def _flag(flag: int = FLAG_SUBPROCESS) -> None:
+    """Something ran that no record shows: in the open windows, or outside
+    every window in the phase it belongs to (the module being imported, or
+    none: a hook or collection)."""
+    global flags_raised
+    flags_raised += 1
+    for w in _windows():
+        w["flags"] |= flag
+    if not active:
+        import_flagged.add(importing[-1] if importing else "")
 
 
 def _error(where: str, exc: BaseException) -> None:
@@ -341,6 +384,14 @@ CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
 
 
 _code_paths: dict[str, str | None] = {}
+_os_stat = os.stat  # unwrapped: the recorder's own checks touch nothing
+
+
+def _is_file(path: str) -> bool:
+    try:
+        return stat.S_ISREG(_os_stat(path).st_mode)
+    except (OSError, ValueError):
+        return False
 
 
 def _code_path(name: str) -> str | None:
@@ -355,7 +406,13 @@ def _code_path(name: str) -> str | None:
     path: str | None = name
     if not os.path.isabs(name) and name.endswith(CYTHON_SUFFIXES):
         path = os.path.normpath(os.path.join(ROOTS[0], name))
-        if not os.path.isfile(path):
+        if not _is_file(path):
+            path = None
+    elif not os.path.isabs(name) and not name.startswith("<"):
+        # Compiled under a relative name (``compile(text, "pkg/x.py",
+        # "exec")``): the file of that name in the working directory.
+        path = os.path.abspath(name)
+        if not _is_file(path):
             path = None
     rel = _code_paths[name] = _relative(path) if path is not None else None
     return rel
@@ -461,29 +518,42 @@ def _actor() -> str:
     """Who touched a path: ``import`` when the import system did (it finds
     modules, which the index covers), ``project`` when project code is on
     the stack above it, ``other`` for pytest or a library acting alone
-    (collection walks and stats every directory and file)."""
+    (collection walks and stats every directory and file).
+
+    A library's top-level code run by an import (matplotlib reading
+    ``./matplotlibrc``) is not the import system: the touch belongs to
+    whoever imported the library, ``project`` when project code is above,
+    else ``library``, which outside every test counts as a hook's touch."""
     frame = sys._getframe(2)
+    module = imported = False
     while frame is not None:
-        name = frame.f_code.co_filename
-        if name.startswith("<frozen importlib") and frame.f_code.co_name not in DATA_READERS:
-            return "import"
-        if _relative(name) is not None:
+        code = frame.f_code
+        name = code.co_filename
+        if name.startswith("<frozen importlib") and code.co_name not in DATA_READERS:
+            if not module:
+                return "import"
+            # The import of the library whose top level touched it.
+            imported = True
+        elif _relative(name) is not None:
             return "project"
+        elif code.co_name == "<module>":
+            module = True
         frame = frame.f_back
-    return "other"
+    return "library" if imported else "other"
 
 
-METADATA_MODULES = ("importlib.metadata", "importlib_metadata")
+METADATA_MODULES = ("importlib.metadata", "importlib_metadata", "pkg_resources")
 _search_path: tuple[list[str], frozenset[str]] = ([], frozenset())
 
 
 def _metadata_scan(path: str) -> bool:
     """A stat or listing of a ``sys.path`` entry by ``importlib.metadata``
-    (``distributions()``, ``version()``, pluggy's entry points), below any
-    project frame. It learns only which ``*.dist-info``, ``*.egg-info`` and
-    ``*.egg`` names the directory holds, and a change to one of those
-    selects everything (``planner.build_input``); its other names are not
-    seen."""
+    (``distributions()``, ``version()``, pluggy's entry points) or
+    ``pkg_resources`` (its working set, built as it is imported), below any
+    project frame. It learns only which ``*.dist-info``, ``*.egg-info``,
+    ``*.egg`` and ``*.egg-link`` names the directory holds, and a change to
+    one of those selects everything (``planner.build_input``); its other
+    names are not seen."""
     global _search_path
     if _search_path[0] != sys.path:
         entries = list(sys.path)
@@ -527,10 +597,11 @@ def _touch(path, listing: bool = False, own_source: bool = False) -> None:
         # for the test (a data-directory fixture copying files) included.
         for w in active:
             w["dirs" if listing else "paths"].add(rel)
-    elif actor == "project":
+    elif actor in ("project", "library"):
         # Outside every test: project code at import (a parametrize list
-        # globbed from a directory) or in a hook, credited to the module
-        # being imported ("" for none).
+        # globbed from a directory) or in a hook, or a library's top level
+        # run by such an import (or by a plugin's: a hook's), credited to the
+        # module being imported ("" for none).
         seen = import_dirs if listing else import_paths
         seen.setdefault(rel, set()).add(importing[-1] if importing else "")
 
@@ -562,8 +633,11 @@ def _audit(event, args):
                 _inert_pending = event == "subprocess.Popen"
             else:
                 _inert_pending = False
-                for w in _windows():
-                    w["flags"] |= FLAG_SUBPROCESS
+                _flag()
+        elif event == "exec":
+            # Text a doctest or ``timeit`` runs (child.text_code).
+            if args and child.text_code(args[0], sys._getframe().f_back, _code_path):
+                _flag(FLAG_TEXT)
     except Exception as exc:
         _error(f"audit {event}", exc)
 
@@ -583,7 +657,9 @@ _INERT_QUERIES = (
 # A ``-c`` snippet is inert only when everything it imports is built into
 # the interpreter (nothing on ``sys.path``, the working directory or
 # ``PYTHONPATH`` can stand in for it), and it names nothing that loads or
-# runs code by other means.
+# runs code by other means. On POSIX an inert probe is accounted anyway and
+# judged by its own record: this list vouches only for one that cannot
+# record (``python -I``), and on Windows, where no child records.
 _LOADING_NAMES = frozenset(
     {
         "exec",
@@ -613,6 +689,32 @@ _LOADING_NAMES = frozenset(
         "setprofile",
         "settrace",
         "addaudithook",
+        # Other ways to start a process (``posix`` is built in).
+        "posix_spawn",
+        "posix_spawnp",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execve",
+        "execvp",
+        "execvpe",
+        "forkpty",
+        "fork_exec",
+        # Reaching any of the above by a computed name.
+        "getattr",
+        "globals",
+        "locals",
+        "vars",
+        "__dict__",
+        "__getattribute__",
+        "__globals__",
+        "__subclasses__",
     }
 )
 # Environment variables that make an interpreter run or find other code.
@@ -729,34 +831,70 @@ def _credit_running_threads(window: dict) -> None:
             frame = frame.f_back
 
 
-def _spawned(pid: int, start: int, argv: list[str] | None) -> None:
+def _spawned(pid: int, start: int, argv: list[str] | None, inert: bool = False) -> None:
     """A process ``subprocess.Popen`` started: the open windows hold it, and
     so does every window opened while it runs. Outside every test it is
-    flagged, as before."""
+    part of the phase that started it (an import, a hook), whose record it
+    joins. ``inert``: an interpreter probe that can run no project code by
+    its command line; its record decides, and one that could not record
+    (``python -I``) is taken at its word."""
     try:
-        if not active:
-            import_window["flags"] |= FLAG_SUBPROCESS
-            return
-        spawn = (os.getpid(), pid, start, tuple(argv) if argv is not None else None)
-        for w in active:
-            w["spawns"].add(spawn)
+        spawn = (os.getpid(), pid, start, tuple(argv) if argv is not None else None, inert)
+        if active:
+            for w in active:
+                w["spawns"].add(spawn)
+        else:
+            import_spawns.append((spawn, importing[-1] if importing else ""))
         live.append(spawn)
+        accounted[pid] = start
     except Exception as exc:
         _error("spawn", exc)
 
 
 def _credit_live_children(window: dict) -> None:
     """Credit ``window`` with the accounted processes still running: a
-    server or a warm worker started earlier serves this test too."""
+    server or a warm worker started earlier serves this test too. One no
+    record follows (``unfollowed``) flags it instead."""
+    if unfollowed:
+        running = [pid for pid in unfollowed if _running(pid)]
+        if running:
+            window["flags"] |= FLAG_SUBPROCESS
+        unfollowed[:] = running
     if not live or OUT is None:
         return
     still = []
     for spawn in live:
-        spawner, pid, start, argv = spawn
-        if child.tree_alive(Path(OUT), spawner, pid, start, list(argv) if argv else None):
+        spawner, pid, start, argv, inert = spawn
+        argv_list = list(argv) if argv else None
+        if child.tree_alive(Path(OUT), spawner, pid, start, argv_list, inert=inert):
             still.append(spawn)
             window["spawns"].add(spawn)
     live[:] = still
+
+
+def _running(pid: int) -> bool:
+    """Whether a process this one started has not ended. A zombie has ended
+    (``waitid`` with ``WNOWAIT`` leaves it for its owner to reap); one this
+    process cannot wait for counts as running while its pid answers (as
+    does a zombie before Python 3.13 on macOS, which has no ``waitid``)."""
+    if os.name == "nt":
+        import _winapi
+
+        try:
+            handle = _winapi.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        except OSError:
+            return False
+        try:
+            return _winapi.GetExitCodeProcess(handle) == 259  # STILL_ACTIVE
+        finally:
+            _winapi.CloseHandle(handle)
+    waitid = getattr(os, "waitid", None)
+    if waitid is not None:
+        try:
+            return waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None
+        except OSError:
+            pass
+    return child.alive(pid)
 
 
 def _flag_multiprocessing_spawns() -> None:
@@ -770,6 +908,50 @@ def _flag_multiprocessing_spawns() -> None:
             _flag_calls(importlib.import_module(module), name)
         except ImportError:  # not on this platform or version
             pass
+    # A process started another way than an accounted ``subprocess.Popen``
+    # may outlive its test and serve a later one: a pool's workers, or a
+    # forkserver's children, which start with no event at all once the
+    # server runs. Followed by pid (``unfollowed``).
+    try:
+        process = importlib.import_module("multiprocessing.process")
+        _follow_pid(process.BaseProcess, "start", lambda result, self, *a: self.pid)
+    except ImportError:
+        pass
+    _follow_pid(os, "fork", lambda result, *a: result)
+    _follow_pid(os, "forkpty", lambda result, *a: result[0])
+    for name in ("posix_spawn", "posix_spawnp"):
+        # Inside ``subprocess.Popen`` it is accounted.
+        _follow_pid(os, name, lambda result, *a: None if child.popen.depth > 0 else result)
+    if os.name == "nt":
+        # Windows accounts no spawn: a flagged child may outlive its test.
+        _follow_pid(
+            subprocess.Popen, "_execute_child", lambda result, self, *a: self.pid, flagged=True
+        )
+
+
+def _follow_pid(owner, name: str, pid_of, flagged: bool = False) -> None:
+    """Wrap ``owner.name`` to follow the process it started, ``pid_of(result,
+    *args)``; with ``flagged``, only when the call flagged its window."""
+    original = getattr(owner, name, None)
+    if original is None or getattr(original, "__diffcone__", False):
+        return
+
+    @functools.wraps(original)
+    def following(*args, **kwargs):
+        before = flags_raised
+        result = original(*args, **kwargs)
+        if recording and (not flagged or flags_raised != before):
+            try:
+                pid = pid_of(result, *args)
+                if isinstance(pid, int) and pid > 0:
+                    known.add(pid)
+                    unfollowed.append(pid)
+            except Exception as exc:
+                _error(f"follow {name}", exc)
+        return result
+
+    setattr(following, "__diffcone__", True)  # noqa: B010
+    setattr(owner, name, following)
 
 
 def _flag_calls(module, name: str) -> None:
@@ -779,12 +961,46 @@ def _flag_calls(module, name: str) -> None:
 
     @functools.wraps(original)
     def flagged(*args, **kwargs):
-        for w in _windows():
-            w["flags"] |= FLAG_SUBPROCESS
-        return original(*args, **kwargs)
+        _flag()
+        result = original(*args, **kwargs)
+        if isinstance(result, int):
+            # A forkserver or resource tracker: flagged here, and the
+            # processes the forkserver forks are followed by pid.
+            known.add(result)
+        return result
 
     setattr(flagged, "__diffcone__", True)  # noqa: B010
     setattr(module, name, flagged)
+
+
+def _unaccounted_children() -> None:
+    """A Python process this one started some way no wrapper sees (loky's
+    workers start through ``_posixsubprocess`` directly) records itself all
+    the same (``child.py``). A record no accounted spawn, followed or known
+    pid explains is one: found as a window opens or closes, it started in
+    the windows open since the last look, or outside every window, so it
+    flags them (``_flag``), and it is followed by pid from then on."""
+    if OUT is None or os.name == "nt":
+        return
+    try:
+        names = os.listdir(os.path.join(OUT, child.CHILDREN, str(os.getpid())))
+    except OSError:
+        return
+    for name in names:
+        if name in records_seen:
+            continue
+        records_seen.add(name)
+        stem = name.removesuffix(child.BROKEN).removesuffix(".jsonl")
+        pid_text, _, began = stem.partition("-")
+        if not (pid_text.isdigit() and began.isdigit()):
+            continue
+        pid = int(pid_text)
+        spawned = accounted.get(pid)
+        if pid in known or (spawned is not None and int(began) >= spawned):
+            continue
+        known.add(pid)
+        unfollowed.append(pid)
+        _flag()
 
 
 def _is_source(path) -> bool:
@@ -898,8 +1114,8 @@ class _Writer:
 writer: _Writer | None = None
 
 
-def _spawn_list(spawns: set) -> list:
-    return sorted([s, p, t, list(a) if a is not None else None] for s, p, t, a in spawns)
+def _spawn_list(spawns) -> list:
+    return sorted([s, p, t, list(a) if a is not None else None, i] for s, p, t, a, i in spawns)
 
 
 # --------------------------------------------------------------------------- start
@@ -1026,6 +1242,10 @@ def pytest_fixture_setup(fixturedef, request):
         return (yield)
     key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
     w = fixture_windows.setdefault(key, _window())
+    try:
+        _unaccounted_children()
+    except Exception as exc:
+        _error("children", exc)
     active.append(w)
     try:
         _credit_running_threads(w)
@@ -1038,6 +1258,10 @@ def pytest_fixture_setup(fixturedef, request):
     try:
         return (yield)
     finally:
+        try:
+            _unaccounted_children()
+        except Exception as exc:
+            _error("children", exc)
         _drop(w)
 
 
@@ -1076,6 +1300,10 @@ def pytest_runtest_protocol(item, nextitem):
         except Exception:
             pass
     mine = _window()
+    try:
+        _unaccounted_children()  # started outside every window
+    except Exception as exc:
+        _error("children", exc)
     active.append(mine)
     importing.clear()  # no import is running when a test starts
     try:
@@ -1087,6 +1315,10 @@ def pytest_runtest_protocol(item, nextitem):
     try:
         return (yield)
     finally:
+        try:
+            _unaccounted_children()  # started during the test
+        except Exception as exc:
+            _error("children", exc)
         _drop(mine)
         mon.restart_events()
         try:
@@ -1163,6 +1395,12 @@ def _finish():
         "import_paths": {p: sorted(m) for p, m in sorted(import_paths.items())},
         "import_dirs": {p: sorted(m) for p, m in sorted(import_dirs.items())},
         "import_flags": import_window["flags"],
+        "import_flagged": sorted(import_flagged),
+        # Spawns outside every window, with the module being imported then.
+        "import_spawns": [[*_spawn_list([spawn])[0], module] for spawn, module in import_spawns],
+        "case_insensitive": CASE_FOLDS,
+        # What the environments inside the checkout own, which nothing records.
+        "environments": list(ENVIRONMENTS),
         "import_by": {str(k): sorted(v) for k, v in import_by.items()},
         "hook_phase": sorted(hook_codes),
         "outside_modules": sorted(outside),

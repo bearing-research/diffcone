@@ -782,7 +782,9 @@ def test_validation_runs_with_checkout_source_roots_on_pythonpath(repo, monkeypa
     assert v.ok and v.coverage is not None and v.coverage.recall == 1.0
     assert len(seen_env) == 2
     for env in seen_env:
-        first, second = env["PYTHONPATH"].split(os.pathsep)[:2]
+        # After the recorder's own directory, whose sitecustomize comes first.
+        plugin, first, second = env["PYTHONPATH"].split(os.pathsep)[:3]
+        assert Path(plugin).name.startswith("diffcone-plugin-")
         assert Path(first).name == "src" and Path(second).name == "tests"
 
 

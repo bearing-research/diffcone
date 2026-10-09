@@ -68,14 +68,27 @@ report:
   with what it ran, as is every test that runs while it is still running.
   A test that starts a process any other way (`os.system`, a shell,
   `multiprocessing`, or anything on Windows), or whose child can't record
-  itself, is always selected. So is a test whose child runs your code from
-  a `python -c` snippet or a script outside your source roots. A
-  `python -c` snippet that can't run your code (a version check) or
-  `uv python list` doesn't count.
+  itself, is always selected, and so is every test that runs while such a
+  process is still running (a `multiprocessing` pool reused by a later
+  test). So is a test whose child runs your code from a `python -c`
+  snippet or a script outside your source roots. A `python -c` snippet
+  that can't run your code (a version check) or `uv python list` doesn't
+  count. A project `sitecustomize.py` still runs in every child.
+- A process started outside every test (by a `conftest.py` as it is
+  imported, or in a hook) counts as part of that import or hook: a change
+  to what it ran is planned as a change to code that ran there. One that
+  can't be followed makes every change do so, which can select every
+  test.
+- A test that runs code from text rather than a file (doctests, including
+  pytest's `--doctest-modules`, `timeit` statements, a notebook kernel) is
+  always selected: that code can use any name of your code.
 - Code that background threads are running while a test runs is credited
   to that test.
 - Changes to compiled sources, build files and configuration select every
   test.
+- On a file system that ignores case (macOS and Windows by default), a file
+  a test opened under another spelling (`Data/Expected.TXT`) still counts
+  as the file it is.
 
 ASV benchmarks are always planned from the code.
 

@@ -34,11 +34,17 @@ from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
-STORE_FORMAT = 1
+# 2: spawns outside every test window are folded into the phase that made
+# them, and what no record shows there is kept (``import_flagged``); inert
+# probes are accounted; text code is flagged.
+STORE_FORMAT = 2
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
 FLAG_UNSTABLE = 2  # the test's record differed between two collections
+# The test ran code compiled from text no file of the checkout holds (a
+# doctest's examples, a ``timeit`` statement), which may read any name.
+FLAG_TEXT = 4
 EVIDENCE_DIR = Path(".diffcone") / "evidence"
 # An import run by a module outside the source roots: nothing static can say
 # who observes what it built.
@@ -89,6 +95,14 @@ class Evidence:
     import_dirs: dict[str, frozenset[str]] = field(default_factory=dict)  # listed, likewise
     # Something outside every test window started a subprocess.
     import_subprocess: bool = False
+    # The modules whose import ran what no record shows (a process no record
+    # follows, text code), ``path:<file>`` for one outside the index, and ""
+    # for code outside every import (a hook, collection): any change may
+    # reach what that phase built.
+    import_flagged: frozenset[str] = frozenset()
+    # The recording's file system folds case (macOS, Windows): a recorded
+    # path matches a changed one in any spelling.
+    case_insensitive: bool = False
     reverse_checked: bool = False
     # The store this one was advanced from (``run --collect``), and the commit
     # of the last full collection in its line (its own commit when it is one).
@@ -99,6 +113,9 @@ class Evidence:
     # by a run that ran nothing).
     collected: frozenset[str] | None = None
     location: Path | None = None
+    _folded: list[tuple[set[str], set[str]]] = field(
+        default_factory=list, repr=False, compare=False
+    )
 
     def executed(self, record: TestRecord) -> set[str]:
         return {self.symbols[i] for i in record.symbols}
@@ -110,6 +127,33 @@ class Evidence:
     def listed(self, record: TestRecord) -> set[str]:
         """Directories the test listed."""
         return {self.paths[i] for i in record.dirs}
+
+    def has(self, paths: set[str], path: str) -> bool:
+        """``path`` is among the recorded ``paths``: in any spelling when the
+        recording's file system folds case (a file added since, probed for
+        as ``Data/New.TXT``; the fold already spells every path the index
+        held at the recording's commit as the index does)."""
+        if path in paths:
+            return True
+        if not self.case_insensitive:
+            return False
+        # A test's paths and directories, checked against each change.
+        folded = next((f for kept, f in self._folded if kept is paths), None)
+        if folded is None:
+            folded = {p.casefold() for p in paths}
+            self._folded[:] = [*self._folded[-1:], (paths, folded)]
+        return path.casefold() in folded
+
+    def seen_by(self, where: dict[str, frozenset[str]], path: str) -> frozenset[str]:
+        """``where[path]`` (``import_paths``, ``import_dirs``), in any
+        spelling when the file system folds case."""
+        found = where.get(path, frozenset())
+        if self.case_insensitive:
+            folded = path.casefold()
+            for key, modules in where.items():
+                if key != path and key.casefold() == folded:
+                    found = found | modules
+        return found
 
 
 # --------------------------------------------------------------------------- folding
@@ -125,6 +169,9 @@ class _Owners:
         self.cython = index.cython
         self.module_of_path: dict[str, str] = {}
         self.modules: set[str] = set()
+        self.other_files = set(index.other_files)
+        self._spellings: dict[str, str] | None = None
+        self._canonical: dict[str, str] = {}
         spans: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         for symbol in index.symbols.values():
             if symbol.kind == MODULE:
@@ -161,6 +208,38 @@ class _Owners:
         self.memo[key] = found
         return found
 
+    def indexed_paths(self) -> set[str]:
+        return set(self.module_of_path) | self.other_files | set(self.cython)
+
+    def canonical(self, path: str) -> str:
+        """``path`` as the index spells it, recorded on a file system that
+        folds case (``tests/Data/Expected.TXT`` opened for
+        ``tests/data/expected.txt``): the file, or the longest directory
+        above it, the index knows in another case. A path the index does
+        not know keeps its spelling below that directory."""
+        if path in self._canonical:
+            return self._canonical[path]
+        if self._spellings is None:
+            self._spellings = {}
+            for known in sorted(self.indexed_paths()):
+                parts = known.split("/")
+                for i in range(1, len(parts) + 1):
+                    prefix = "/".join(parts[:i])
+                    self._spellings.setdefault(prefix.casefold(), prefix)
+        parts = path.split("/")
+        found = path
+        for i in range(len(parts), 0, -1):
+            hit = self._spellings.get("/".join(parts[:i]).casefold())
+            if hit is not None:
+                found = "/".join([hit, *parts[i:]])
+                break
+        self._canonical[path] = found
+        return found
+
+
+def _same(path: str) -> str:
+    return path
+
 
 @dataclass
 class _Raw:
@@ -174,6 +253,8 @@ class _Raw:
     environment: dict
     environment_hash: str
     collected: set[str] | None = None
+    import_flagged: set[str] = field(default_factory=set)
+    case_insensitive: bool = False
     # The environment a process started in, when its run changed it.
     environment_at_start: dict | None = None
     # A shared fixture (by key) -> what its setup ran in any process, and
@@ -191,16 +272,37 @@ class _Children:
         self.owners = owners
         self.packages = packages  # the project's top-level packages
         self.memo: dict[tuple, tuple[set[str], set[str], set[str], int]] = {}
+        # The files whose code the processes ran, by spawn (``code_files``).
+        self.files: dict[tuple, set[str]] = {}
 
-    def __call__(self, spawn: list) -> tuple[set[str], set[str], set[str], int]:
-        spawner, pid, start, argv = spawn
-        key = (spawner, pid, start, tuple(argv) if argv is not None else None)
+    def code_files(self, spawn: list) -> set[str]:
+        """The checkout files whose code the processes behind ``spawn`` (a
+        spawn already resolved) ran."""
+        return self.files.get(self._key(spawn), set())
+
+    @staticmethod
+    def _key(spawn: list) -> tuple:
+        spawner, pid, start, argv, *rest = spawn
+        return (
+            spawner,
+            pid,
+            start,
+            tuple(argv) if argv is not None else None,
+            bool(rest and rest[0]),
+        )
+
+    def __call__(self, spawn: list, canonical=_same) -> tuple[set[str], set[str], set[str], int]:
+        key = self._key(spawn)
         if key in self.memo:
             return self.memo[key]
-        tree = child.resolve(self.directory, spawner, pid, start, argv)
+        spawner, pid, start, argv, inert = key
+        tree = child.resolve(
+            self.directory, spawner, pid, start, list(argv) if argv else None, inert
+        )
         symbols: set[str] = set()
         paths: set[str] = set()
         dirs: set[str] = set()
+        files = self.files[key] = set()
         flags = FLAG_SUBPROCESS if tree.problems else 0
         for record in tree.records:
             if record.codes and not self._indexed_entry(record.entry):
@@ -208,20 +310,24 @@ class _Children:
                 # not hold ran project code and may read any name of it.
                 flags = FLAG_SUBPROCESS
             for path, line, qualname in record.codes:
+                path = canonical(path)
+                files.add(path)
                 symbol = self.owners(path, line, qualname)
                 if symbol is not None:
                     symbols.add(symbol)
                 else:
                     paths.add(path)
-            paths |= record.paths
-            dirs |= record.dirs
+            paths |= {canonical(p) for p in record.paths}
+            dirs |= {canonical(d) for d in record.dirs}
         self.memo[key] = (symbols, paths, dirs, flags)
         return self.memo[key]
 
     def _indexed_entry(self, entry: list) -> bool:
         """A script or module of the index, or one that is not the project's
-        (a console script, ``-m pytest``): its code is planned like the
-        parent's, whose entry is pytest."""
+        (a console script, ``-m pytest``, ``-m doctest``): its code is
+        planned like the parent's, whose entry is pytest. Text such a
+        module runs (a doctest's examples, a notebook cell) is flagged in
+        its record (``child.text_code``)."""
         modules = self.owners.modules
         if entry[0] == "module":
             name = entry[1] if len(entry) > 1 else ""
@@ -266,8 +372,20 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 f"installed copy of the project, not the code at this commit "
                 f"({len(shadowed)} module(s))"
             )
+        _check_environments(data.get("environments", ()), owners)
         environments.append(data["environment"])
         raw.environment_hash = data["environment_hash"]
+        folds = bool(data.get("case_insensitive"))
+        raw.case_insensitive |= folds
+        canonical = owners.canonical if folds else _same
+
+        def module_of(module_path: str, canonical=canonical) -> str:
+            """The module a recorded module path names; "" for none."""
+            if not module_path:
+                return ""
+            module = owners.module_of_path.get(canonical(module_path))
+            return module if module is not None else UNINDEXED_MODULE + module_path
+
         start = data.get("environment_at_start")
         if start is not None and start != data["environment"] and raw.environment_at_start is None:
             raw.environment_at_start = start
@@ -276,6 +394,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         symbol_of: list[str | None] = []
         file_of: list[str | None] = []
         for path, line, qualname in data["table"]:
+            path = canonical(path)
             symbol = owners(path, line, qualname)
             symbol_of.append(symbol)
             # Code from a repository file the index does not read (outside the
@@ -292,16 +411,40 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         for key, seen in (("import_paths", raw.import_paths), ("import_dirs", raw.import_dirs)):
             for path, modules in data[key].items():
                 for module_path in modules:
-                    module = owners.module_of_path.get(module_path) if module_path else ""
-                    seen[path].add(module if module is not None else UNINDEXED_MODULE + module_path)
+                    seen[canonical(path)].add(module_of(module_path))
         raw.import_subprocess |= bool(data["import_flags"] & FLAG_SUBPROCESS)
+        raw.import_flagged.update(module_of(m) for m in data.get("import_flagged", ()))
         for key, modules in data["import_by"].items():
             symbol = symbol_of[int(key)]
             if symbol is None:
                 continue
             for module_path in modules:
-                module = owners.module_of_path.get(module_path)
-                raw.import_by[symbol].add(module or UNINDEXED_MODULE + module_path)
+                raw.import_by[symbol].add(module_of(module_path))
+        # A process started outside every test window ran as part of the
+        # phase that started it: what it ran is that import's (or, with no
+        # import running, a hook's), and what no record shows flags it.
+        for *spawn, module_path in data.get("import_spawns", ()):
+            module = module_of(module_path)
+            c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
+            raw.import_phase |= c_symbols
+            for symbol in c_symbols:
+                if module:
+                    raw.import_by[symbol].add(module)
+                else:
+                    raw.hook_phase.add(symbol)
+            if not module:
+                # Run by a hook or during collection: nothing static says who
+                # observes what it made (a file a test reads), so a change to
+                # any file it ran code from selects every test, as a file a
+                # hook read does.
+                for path in children.code_files(spawn):
+                    raw.import_paths[path].add("")
+            for path in c_paths:
+                raw.import_paths[path].add(module)
+            for path in c_dirs:
+                raw.import_dirs[path].add(module)
+            if c_flags:
+                raw.import_flagged.add(module)
         for key, w in data.get("fixtures", {}).items():
             symbols, paths, dirs, flags = raw.fixtures.setdefault(key, (set(), set(), set(), 0))
             for c in w["codes"]:
@@ -309,11 +452,11 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                     symbols.add(symbol_of[c])
                 elif file_of[c] is not None:
                     paths.add(file_of[c])
-            paths.update(w["paths"])
-            dirs.update(w["dirs"])
+            paths.update(canonical(p) for p in w["paths"])
+            dirs.update(canonical(d) for d in w["dirs"])
             flags |= w["flags"]
             for spawn in w.get("spawns", ()):
-                c_symbols, c_paths, c_dirs, c_flags = children(spawn)
+                c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
                 symbols |= c_symbols
                 paths |= c_paths
                 dirs |= c_dirs
@@ -343,11 +486,11 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                         symbols.add(symbol_of[c])
                     elif file_of[c] is not None:
                         paths.add(file_of[c])
-                paths.update(record["paths"])
-                dirs.update(record["dirs"])
+                paths.update(canonical(p) for p in record["paths"])
+                dirs.update(canonical(d) for d in record["dirs"])
                 flags |= record["flags"]
                 for spawn in record.get("spawns", ()):
-                    c_symbols, c_paths, c_dirs, c_flags = children(spawn)
+                    c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
                     symbols |= c_symbols
                     paths |= c_paths
                     dirs |= c_dirs
@@ -380,6 +523,26 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             flags |= f_flags
         raw.tests[name] = (symbols, paths, dirs, flags)
     return raw
+
+
+def _check_environments(owned: Iterable[str], owners: _Owners) -> None:
+    """The recorder records nothing under what an environment inside the
+    checkout owns (``svc/bin/``, ``.venv/lib/python3.13/``,
+    ``child.environments``): refuse a recording in which that holds a file
+    the index reads, rather than miss what ran from it."""
+    prefixes = tuple(e.replace("\\", "/") for e in owned)
+    if not prefixes:
+        return
+    fold_case = os.name == "nt"
+    held = sorted(
+        p for p in owners.indexed_paths() if (p.lower() if fold_case else p).startswith(prefixes)
+    )
+    if held:
+        raise EvidenceError(
+            f"{held[0]} ({len(held)} file(s) of the project) lies in what a Python "
+            "environment inside the checkout owns, which the recorder treats as installed "
+            "code: keep the environment in a directory of its own"
+        )
 
 
 def fold(
@@ -459,6 +622,8 @@ def fold(
         import_paths=_merged(r.import_paths for r in raws),
         import_dirs=_merged(r.import_dirs for r in raws),
         import_subprocess=any(r.import_subprocess for r in raws),
+        import_flagged=frozenset().union(*(r.import_flagged for r in raws)),
+        case_insensitive=any(r.case_insensitive for r in raws),
         reverse_checked=len(raws) > 1,
         collected=(
             frozenset().union(*(r.collected for r in raws if r.collected is not None))
@@ -544,6 +709,8 @@ def advance(
         import_paths=_merged(e.import_paths for e in sources),
         import_dirs=_merged(e.import_dirs for e in sources),
         import_subprocess=any(e.import_subprocess for e in sources),
+        import_flagged=frozenset().union(*(e.import_flagged for e in sources)),
+        case_insensitive=any(e.case_insensitive for e in sources),
         reverse_checked=previous.reverse_checked,
         advanced_from=previous.commit,
         full_commit=previous.full_commit or previous.commit,
@@ -613,6 +780,8 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
                 "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
                 "import_subprocess": evidence.import_subprocess,
+                "import_flagged": sorted(evidence.import_flagged),
+                "case_insensitive": evidence.case_insensitive,
                 "reverse_checked": evidence.reverse_checked,
                 "advanced_from": evidence.advanced_from,
                 "full_commit": evidence.full_commit or evidence.commit,
@@ -692,6 +861,8 @@ def load_store(path: Path) -> Evidence:
             import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
             import_subprocess=meta["import_subprocess"],
+            import_flagged=frozenset(meta["import_flagged"]),
+            case_insensitive=bool(meta["case_insensitive"]),
             reverse_checked=meta["reverse_checked"],
             advanced_from=meta.get("advanced_from"),
             full_commit=meta.get("full_commit") or meta["commit"],

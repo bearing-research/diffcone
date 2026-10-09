@@ -612,12 +612,21 @@ print(sys.version_info...)`); 866 only leave a thread running (strata's
 **Mechanism.**
 
 * *Inert interpreter probes.* A subprocess whose command line is a Python
-  interpreter (its name starts with `python`, or it is `sys.executable`),
-  optional single-letter flags (`-I`, `-E`, `-S`, `-s`, `-B`, `-u`, `-O`),
-  then `-c CODE`, where CODE names none of the project's top-level packages
-  (`DIFFCONE_COLLECT_PACKAGES`, as a word) and none of `exec`, `eval`,
-  `open`, `runpy`, `import_module`, `__import__`, `compile`, runs no project
-  code: it does not flag the test. Nor does a short list of other programs'
+  interpreter (its name matches `python[0-9.]*`, or it is `sys.executable`),
+  optional single-letter flags (`-I`, `-E`, `-S`, `-s`, `-B`, `-u`, `-O`,
+  `-q`, `-P`), then `-c CODE` and nothing after it, with no environment
+  variable that points it at other code (`PYTHONPATH`, `PYTHONHOME`,
+  `PYTHONSTARTUP`, ...), where CODE imports only modules built into the
+  interpreter (`sys.builtin_module_names`: nothing on `sys.path` can stand
+  in for them) and names nothing that loads or runs code
+  (`collect._LOADING_NAMES`: `exec`, `eval`, `compile`, `open`,
+  `__import__`, `__builtins__`, `system`, `posix_spawn`, `getattr`,
+  `globals`, ...), runs no project code: it does not flag the test. (The
+  first version matched a word list against the snippet's text.) Since
+  item 15 such a probe is accounted like any other spawn and its own
+  record decides; the rule only vouches for a probe that cannot record
+  (`python -I`), so a snippet that gets past it (`posix.posix_spawn`, an
+  assembled `__import__`) still flags when it records. Nor does a short list of other programs'
   queries that run no Python of the project (`uv python list|find|dir`,
   `uv --version`): strata caches `uv python list` with `lru_cache`, the
   recorder clears project caches before each test so that cached work is
@@ -1003,31 +1012,53 @@ strata's or a notebook's virtual environment.
   never sees it at its own start-up) records itself: `sys.monitoring`
   `PY_START` with DISABLE, never re-armed, over the checkout root, and
   the same audit hooks for paths. It then imports any other
-  `sitecustomize` on `sys.path`, which ours shadowed. An xdist worker is
-  a pytest process: the plugin stops the child recorder there and drops
-  its file. A child on Python before 3.12 writes only a header saying it
-  cannot record.
+  `sitecustomize` on `sys.path`, which ours shadowed (the plugin's
+  directory comes first on `PYTHONPATH`, so a project's own
+  `sitecustomize` on a source root is chained, not in the way). An xdist
+  worker is a pytest process: the plugin stops the child recorder there
+  and drops its file, and the fold reads its process record instead. A
+  child on Python before 3.12 writes only a header saying it cannot
+  record.
 * *Records.* Each child streams `children/<ppid>/<pid>-<start>.jsonl` in
   `DIFFCONE_COLLECT_OUT` with unbuffered appends: a header (pid, ppid,
   `sys.orig_argv`, start time), one line per new code object or path,
   each accounted spawn (below) with the child's pid, each fork's pid
   (`os.register_at_fork`), each unaccounted spawn as a flag, an installed
-  copy of a project package as a flag, and an exit line at `atexit`. A
-  child killed by a signal leaves everything but the exit line, since
-  nothing is buffered.
+  copy of a project package as a flag, and text code it ran (below) as a
+  flag. There is no exit line: a child killed by a signal leaves
+  everything it recorded, since nothing is buffered, and is credited with
+  it. A write that fails (a full disk) renames the record out of the
+  names the fold reads (or, failing that, empties it, and a record
+  without its header is a problem), so the spawn flags as one that
+  recorded nothing would.
 * *Accounted spawns.* `subprocess.Popen._execute_child` is wrapped. A
   spawn inside a test or shared fixture window is accounted when it goes
   through it: its own audit events (`subprocess.Popen`, the
   `os.posix_spawn` it may use) do not flag, and the window records the
-  child's pid and spawn time. Everything else (`os.system`, `os.spawn*`,
-  `os.posix_spawn` called directly, `multiprocessing`, a spawn at import
-  or in a hook) flags as today, and so does an inert probe not flag.
+  child's pid and spawn time. An inert probe (item 10) is accounted too,
+  marked inert: its own record decides, and only a probe that could not
+  record (`python -I`) is taken at its command line's word. A spawn at
+  import or in a hook is accounted the same way and folded into that
+  phase: what it ran joins what the import of the module being imported
+  ran (escalated on a change), or, with no import running, what a hook
+  ran (a change to a file it ran code from selects everything), and a
+  problem in its tree flags the phase (`import_flagged`: any change
+  escalates that module, or selects everything). A pytest process of the
+  same recording (an xdist worker, which writes its own
+  `process-<pid>.json`) is neither. Everything else (`os.system`,
+  `os.spawn*`, `os.posix_spawn` called directly, `multiprocessing`)
+  flags, in the window or in the phase.
 * *Lifetime.* At each window open, the window is credited with every
   accounted spawn of this process still alive: its pid, or a pid in its
   records' subtree, answers `os.kill(pid, 0)` (a zombie or a reused pid
   counts as alive, which only over-credits). A record with a fork line,
   or a child record its parent did not list, makes the spawn alive until
-  the process ends.
+  the process ends. A process no record follows that may outlive its
+  window (a `multiprocessing` process, whose pool a later test reuses, or
+  a forkserver's child, which starts with no event once the server runs;
+  an `os.fork` or direct `posix_spawn` child; any flagged `Popen` child on
+  Windows) is followed by pid, and every window that opens while one runs
+  is flagged: the work a later test submits runs there.
 * *Fold.* A window's spawn resolves to the child records whose pid is
   the spawned pid (it was a Python process), or whose ppid is the spawned
   pid when the spawn's command line is a launcher (`uv run [options]
@@ -1040,7 +1071,13 @@ strata's or a notebook's virtual environment.
   sets `FLAG_SUBPROCESS` on the window, as today. So does a record that
   ran project code from an entry the index does not hold (`-c`, standard
   input, a script outside it): that code may read any project name, as an
-  `exec` would, but no site of the index stands for it. A Python record
+  `exec` would, but no site of the index stands for it. An entry that is
+  not the project's (`-m doctest`, `-m timeit`, a kernel, a console
+  script) runs library code, which is followed like the parent's; the
+  text such a module runs (a doctest's examples, a `timeit` statement, a
+  notebook cell) is flagged in its record when it is compiled from no file
+  of the checkout and names anything (`child.text_code`; the test process
+  flags its window the same way, `FLAG_TEXT`, rule `text_code`). A Python record
   vouches for a spawn only when the spawn's own command line started it
   (a shell's `exec python` ran other commands first), and a package
   manager's command (`uv sync`, `uv pip`, ...) is followed without
@@ -1113,11 +1150,17 @@ Two causes, both reproduced on a scratch clone at `edc32ce0`:
 **Mechanism.**
 
 * *The environment.* `_relative` (the plugin and the child recorder)
-  returns None for a path under `sys.prefix`, `sys.exec_prefix` or
-  `sys.base_prefix`, not only under `site-packages`: an environment kept
-  in the checkout (`.venv/bin/pytest`, `.venv/lib/...`) is installed code,
-  as `site-packages` already is. A child running another environment
-  (a notebook's `.venv`) excludes its own prefix.
+  returns None for what an environment kept in the checkout owns, not
+  only for `site-packages`: under `sys.prefix`, `sys.exec_prefix` or
+  `sys.base_prefix`, its scripts (`bin/`, `Scripts\`), its
+  `lib/pythonX.Y/` and its `pyvenv.cfg` (`child.environments`).
+  `.venv/bin/pytest` is installed code, as `site-packages` already is. The
+  first version excluded the whole prefix, which hid the source of a
+  directory the environment was made in (`cd svc && python -m venv .`):
+  unrecorded, or refused as an installed copy (audit round 3, REC-4). The
+  fold refuses a recording in which what an environment owns holds a
+  file the index reads. A child running another environment (a notebook's
+  `.venv`) excludes what its own prefix owns.
 * *Metadata scans.* A stat or listing of a `sys.path` entry (normalised;
   `""` is the current directory) made with `importlib.metadata` (or the
   `importlib_metadata` backport) on the stack, inside it from the touch
