@@ -16,6 +16,16 @@ selection rules.
   how many targets each entry matched. A malformed entry is an analysis
   error, so the plan selects everything rather than quietly planning those
   tests. `diffcone report` computes a job's selected share without them.
+- A test is selected when the fixtures, hooks or plugins around it change
+  though its own code did not (rule `lifecycle_changed`), for example when
+  another test module adds a plugin to `pytest_plugins`. pytest plugin
+  modules are dependencies of every test, since their import-time code
+  runs for the whole session; a plugin in the repository outside the
+  source roots keeps every test always selected.
+- An `always_run` entry naming an unknown runner is an analysis error; one
+  whose pattern matches nothing in a plan is flagged in the text report.
+- `plan --evidence` says the environment was not checked
+  (`environment_checked: false`): only `run` can check it.
 
 ### Fixed
 
@@ -63,8 +73,106 @@ selection rules.
 - On Windows, a relative `--command` resolved for `validate` and `corpus`
   was quoted for a POSIX shell.
 
+- Holes in the narrowings of 0.2.0, each a miss: a name taken from a
+  dict, list or set written in the code (`getattr(handlers, NAMES[key])`,
+  a lazy-export table) is bounded by it only while every use of the table
+  is a read, so a table changed through an alias, a helper it is passed
+  to, its module (`core.TABLE[k] = v`), `globals()`, `vars()`,
+  `sys.modules`, `monkeypatch` or `mock.patch` (an object or a dotted
+  string) is no longer read as its literal; and a lookup on a
+  standard-library or third-party module (`getattr(logging, name)`) counts
+  writes that reach the module indirectly (an alias, a helper it is passed
+  to, a loop, `__setattr__`, `vars()`, a module found at run time). Once
+  code can reach a module whose name is known only at run time, no table
+  is bounded.
+- A class obtained by a name nothing resolves (`m.Alt()` on an object of
+  unknown type, a lazy `__getattr__` export) reaches its `__init__` and
+  `__new__`: a constructor change selected nothing.
+- Reading a module's members wholesale (`mod.__dict__[name]`,
+  `inspect.getmembers(mod)`, e.g. parametrizing a test over a module's
+  functions) is a dependency.
+- A change to a dependency, build or CI file outside the source roots
+  selected nothing: `dev-requirements.txt`, `Requirements.txt`,
+  `requirements.pip`, pandas' `ci/deps/*.yaml`, `hatch.toml`,
+  `poetry.toml`, `pdm.toml`, `.env` and `.pth` files, `sitecustomize.py`,
+  `noxfile.py`, `.github/workflows/`, and checker configurations pytest
+  plugins run as tests (`mypy.ini`, `ruff.toml`). These now select every
+  target, as does a build script anywhere under a root (a nested
+  `setup.py`) and a lock-file change between `INDEX` and `WORKTREE`.
+- Changing the arguments of a call made at import time (`X =
+  set_mode("slow")`, a class attribute, a decorator's or default's
+  argument) did not select the tests that read the state the callee
+  changes.
+- A change to PEP 695/696 type parameters (bounds, defaults, their number)
+  was no change at all; a bound or default naming project code is now a
+  dependency.
+- `WORKTREE` did not see edits to files flagged assume-unchanged or
+  skip-worktree, and neither did `run`'s check that the working tree
+  matches the plan; an edited `.py` file with a non-ASCII name also passed
+  that check.
+- A submodule under the source roots made every `WORKTREE` plan select
+  everything; one checked out at another commit, or with uncommitted
+  edits, still counts as a change. A path containing a line break no
+  longer fails the plan.
+
+### Discovery
+
+- An autouse fixture imported into a conftest, a test module or a plugin
+  (by name, through star imports at any depth, or as a module attribute)
+  was not a dependency of the tests it applies to; nor was a fixture with
+  `name=` imported under its function name.
+- pytest options in `PYTEST_ADDOPTS`, plugins in `PYTEST_PLUGINS` and
+  pytest arguments written into `--command` were not read. `plan` and
+  `discover` take `--command`, the CI actions pass it, and the report lists
+  what was read; a command whose pytest arguments cannot be found is
+  reported.
+- Conftests pytest loads at startup (in the `test*` directories of a path
+  it starts from) count even when ignored or under `norecursedirs`;
+  `--ignore`, `--ignore-glob` and `norecursedirs` apply only below the
+  paths pytest starts from, and not under a conftest whose
+  `pytest_ignore_collect` can return False.
+- Understood now: `.` as an argument, a `.txt` or `.rst` file named as an
+  argument (always a doctest), `--doctest-glob` patterns with a directory,
+  option values written as separate arguments (`--ignore tests/slow`),
+  absolute paths inside the repository, `-o name=value` overrides and paths
+  in `addopts`.
+- ASV: `setUp` and `TearDown` in any case, and the benchmark class's
+  `__init__`, are dependencies of its benchmarks.
+
 ### Execution evidence
 
+- Recordings must be made again: the store format changed.
+- A process started while a `conftest.py` is imported or in a hook was not
+  credited to anything; what it runs now counts as part of that import or
+  hook, and one the recording cannot follow makes every change plan from
+  the code. pytest-xdist workers are not affected.
+- A test using a `multiprocessing` pool, forkserver or forked process that
+  an earlier test started is always selected while that process runs.
+- Files a library reads while it is imported (matplotlib's `matplotlibrc`)
+  were not recorded.
+- A virtual environment created inside a source directory hid that
+  directory's code, or gave a false "installed copy" error.
+- Tests that run code compiled from text no file holds (doctests,
+  `--doctest-modules`, `timeit`, a notebook kernel) are always selected
+  (rule `text_code`).
+- On macOS and Windows, a file opened under another capitalisation was not
+  matched.
+- A `python -c` probe that runs project code is caught by its own
+  recording, and a project's own `sitecustomize.py` no longer stops
+  subprocesses from recording themselves. A child recording cut short (a
+  full disk) is treated as unreadable.
+- A fake test class found without naming it (a base's `__subclasses__()`,
+  `gc`, a frame's globals) counts as held by the code that found it.
+- A change to code that runs at import, or that ran during an import,
+  reaches the tests reading what it writes into another module, Cython
+  code included; library code importing a test module by a computed name
+  sees changes to it; `pytest_plugins` in a test module selects every test
+  when it changes.
+- `run --collect` on a recording made with `--reverse-check` runs the
+  selected tests again in reverse order, so the advanced records are
+  order-checked too.
+- Cython: edits to blank lines or `#` lines inside a string in a function
+  body were ignored.
 - A Python process a test starts with `subprocess` (directly, through
   `asyncio`, or through `uv run`) records itself on Linux and macOS, and
   the test is credited with what it ran instead of being selected for

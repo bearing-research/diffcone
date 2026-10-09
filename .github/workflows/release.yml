@@ -87,7 +87,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '
-            $0 ~ "^## \\[?" v "\\]?" {on = 1; next}
+            index($0, "## [" v "]") == 1 {on = 1; next}
             on && /^## / {exit}
             on {print}
           ' CHANGELOG.md > notes.md
