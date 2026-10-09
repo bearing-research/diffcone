@@ -1033,22 +1033,100 @@ def test_a_writer_newly_run_at_import_reaches_the_lookups(repo):
     assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
 
 
-def test_a_library_import_reaches_no_lookup_only_tests_write_for(repo):
-    files = {
-        **EXTERNAL,
-        "pkg/extra.py": "def marker():\n    return 1\n",
-        "tests/test_patched.py": EXTERNAL["tests/test_patched.py"]
-        .replace("from pkg.extra import install, marker", "from pkg.extra import marker")
-        .split("\n\n\ndef test_installed")[0]
-        + "\n",
-    }
+# Only tests write to builtins (test_patched and test_writer's own function).
+TESTS_ONLY = {
+    **EXTERNAL,
+    "pkg/extra.py": "def marker():\n    return 1\n",
+    "tests/test_patched.py": EXTERNAL["tests/test_patched.py"]
+    .replace("from pkg.extra import install, marker", "from pkg.extra import marker")
+    .split("\n\n\ndef test_installed")[0]
+    + "\n",
+    "tests/test_writer.py": """\
+import builtins
+
+
+def install_names():
+    builtins.diffcone_named = 1
+
+
+def test_writer():
+    install_names()
+    del builtins.diffcone_named
+""",
+}
+PLUGIN = "import sys\n\n\ndef run(mod):\n    if mod is not None:\n        mod.install_names()\n"
+REGISTRY = (
+    "CALLBACKS = []\n\n\ndef run_all():\n    for callback in CALLBACKS:\n        callback()\n"
+)
+USES_PLUGIN = "import pkg.plugin  # noqa: F401\n\n\ndef test_plugin():\n    pass\n"
+OPS_AT_IMPORT = OPS + "\n\nif OPS_READY := True:\n    pass\n"
+
+
+@pytest.mark.parametrize("writer", ["tests only", "library"])
+def test_a_library_import_reaches_a_lookup_only_through_a_library_writer(repo, writer):
+    files = dict(TESTS_ONLY)
+    if writer == "library":
+        files["pkg/extra.py"] = EXTERNAL["pkg/extra.py"]
     base, ev = _collected(repo, files)
-    # Module-level code of pkg.ops changed: its import-time state may differ,
-    # but the only writer to builtins is a test.
-    head = repo.commit({"pkg/ops.py": OPS + "\n\nif OPS_READY := True:\n    pass\n"})
+    # Module-level code of pkg.ops changed: its import-time state may differ.
+    head = repo.commit({"pkg/ops.py": OPS_AT_IMPORT})
     plan = _plan(repo, base, head, ev)
     assert "pkg.ops" in plan.evidence["escalated_modules"]
-    assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
+    if writer == "library":
+        # pkg.extra.install could now run at import, for every later test.
+        assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
+        assert "lookup_site" in rules(plan, EXT_NAMES)
+    else:
+        # Library code cannot run a test's writer.
+        assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        "a helper module imports it",
+        "library code calls it by name",
+        "a registry holds it",
+        "a test module's variable calls it",
+    ],
+)
+def test_a_test_writer_newly_run_at_import_reaches_the_lookups(repo, how):
+    files = dict(TESTS_ONLY)
+    changed: dict[str, str] = {}
+    if how == "a helper module imports it":
+        files["tests/helpers.py"] = "from tests.test_writer import install_names  # noqa: F401\n"
+        files["tests/test_helped.py"] = (
+            "import tests.helpers  # noqa: F401\n\n\ndef test_helped():\n    pass\n"
+        )
+        changed["tests/helpers.py"] = files["tests/helpers.py"] + "\ninstall_names()\n"
+    elif how == "library code calls it by name":
+        files["pkg/plugin.py"] = PLUGIN
+        files["tests/test_plugin.py"] = USES_PLUGIN
+        changed["pkg/plugin.py"] = PLUGIN + '\n\nrun(sys.modules.get("tests.test_writer"))\n'
+    elif how == "a registry holds it":
+        files["pkg/registry.py"] = REGISTRY
+        files["pkg/plugin.py"] = ""
+        files["tests/test_plugin.py"] = USES_PLUGIN
+        files["tests/test_writer.py"] += (
+            "\n\nfrom pkg.registry import CALLBACKS  # noqa: E402\n\n"
+            "CALLBACKS.append(install_names)\n"
+        )
+        changed["pkg/plugin.py"] = "from pkg.registry import run_all\n\nrun_all()\n"
+    else:
+        changed["tests/test_writer.py"] = (
+            files["tests/test_writer.py"] + "\n\nINSTALLED = install_names()\n"
+        )
+    base, ev = _collected(repo, files)
+    head = repo.commit(changed)
+    plan = _plan(repo, base, head, ev)
+    assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
+
+
+def test_a_library_variable_newly_running_a_writer_reaches_the_lookups(repo):
+    base, ev = _collected(repo, EXTERNAL)
+    head = repo.commit({"pkg/extra.py": EXTERNAL["pkg/extra.py"] + "\n\nINSTALLED = install()\n"})
+    plan = _plan(repo, base, head, ev)
+    assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
 
 
 @pytest.mark.parametrize("where", ["module level", "called at import", "in a hook"])

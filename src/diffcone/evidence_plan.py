@@ -55,9 +55,10 @@ without dynamic-reference pseudo-seeds: a test that executed a dynamic
 site is in the record through the code it reached, so the lookup sites
 that can see an escalated module join E instead. Every symbol of an
 escalated module joins E too. A lookup on an external module that only
-code running inside tests writes to joins E only on an escalation: what it
-finds of the project's, a test's record holds through the writer
-(``_Observers._written_in_tests``).
+code running inside tests writes to joins E only for a change to code that
+runs at import (which may now write there): what it finds of the
+project's, a test's record holds through the writer
+(``_Observers._written_in_tests``, ``import_sites``).
 
 Targets of other runners, which have no evidence, keep their static
 decision. A pytest target with no record (new, or never run) is selected.
@@ -400,11 +401,10 @@ class _Observers:
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, str]] = []  # (symbol, kind)
         # Sites on an external module that only test-window code writes to
-        # (``_written_in_tests``): seen only on an escalation, and on a
-        # library module's only when a writer is not test code. Site -> its
-        # writers.
-        self.escalation_sites: list[tuple[str, str]] = []
-        self.escalation_writers: dict[str, set[str]] = defaultdict(set)
+        # (``_written_in_tests``) -> the writers: seen only by a change to
+        # code that runs at import (``import_sites``).
+        bounded: dict[tuple[str, str], set[str]] = defaultdict(set)
+        unbounded: set[tuple[str, str]] = set()  # the other external sites
         external: dict[tuple[str, str], set[str]] = defaultdict(set)
         for index in (c_index, other):
             for key, writers in index.external_sites.items():
@@ -421,19 +421,21 @@ class _Observers:
                 if ref.kind == UNRESOLVED_DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
                     writers = external.get((ref.symbol, ref.detail))
-                    if self._written_in_tests(writers):
-                        self.escalation_sites.append(site)
-                        self.escalation_writers[ref.symbol].update(writers or ())
+                    if writers and self._written_in_tests(writers):
+                        bounded[site].update(writers)
                     else:
+                        if writers:
+                            unbounded.add(site)
                         self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
             for symbol, detail in index.reflection:
                 writers = external.get((symbol, detail))
-                if self._written_in_tests(writers):
-                    self.escalation_sites.append((symbol, SITE_ANY))
-                    self.escalation_writers[symbol].update(writers or ())
+                if writers and self._written_in_tests(writers):
+                    bounded[(symbol, SITE_ANY)].update(writers)
                 else:
+                    if writers:
+                        unbounded.add((symbol, SITE_ANY))
                     self.sites.append((symbol, SITE_ANY))
         for decl in declarations:
             self.readers_of[decl.target].add(decl.source)
@@ -454,13 +456,8 @@ class _Observers:
             for symbol, detail in index.reflection
             if detail == ".modules"
         }
-        self.module_hands_on = {
-            s
-            for s in self.module_hands_on
-            if s in self.symbols and test_code.is_test_code(self.symbols[s].module)
-        }
+        self.module_hands_on = {s for s in self.module_hands_on if self._in_test_code(s)}
         self.sites = sorted(set(self.sites))
-        self.escalation_sites = sorted(set(self.escalation_sites) - set(self.sites))
         self.members = _members_by_container(set(self.symbols))
         self.reach = _ImportReach(c_index, other)
         self.bases, self.subclasses = _class_graph((c_index, other))
@@ -502,17 +499,28 @@ class _Observers:
         self._followed: set[str] = set()
         # Cython name -> the Cython functions at C that mention it (lazily).
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
+        # The lookups on an external module that a change to code running at
+        # import may make write there, for every later test (``_seeing_sites``):
+        # site -> None when any such change may (code outside the tests can
+        # run a writer), else the test code that can run one (``_callers``).
+        self.import_sites: dict[tuple[str, str], frozenset[str] | None] = {
+            site: None for site in unbounded
+        }
+        for site, writers in sorted(bounded.items()):
+            self.import_sites[site] = self._callers(writers)
 
     # -- recording --------------------------------------------------------------
 
-    def _written_in_tests(self, writers: set[str] | None) -> bool:
+    def _in_test_code(self, symbol_id: str) -> bool:
+        symbol = self.symbols.get(symbol_id)
+        return symbol is not None and self.test_code.is_test_code(symbol.module)
+
+    def _written_in_tests(self, writers: set[str]) -> bool:
         """Whether a lookup on an external module written by ``writers`` can
         find the project's code only in a test that ran one of them (roadmap
         item 14): each is a function or method, and none ran at C during an
         import or outside every test. A write at import (module or class
         top-level code, a decorator) stays for every later test."""
-        if not writers:
-            return False
         ev = self.evidence
         for writer in writers:
             symbol = self.symbols.get(writer)
@@ -521,6 +529,34 @@ class _Observers:
             if writer in ev.import_phase or writer in ev.import_by or writer in ev.hook_phase:
                 return False
         return True
+
+    def _callers(self, writers: set[str]) -> frozenset[str] | None:
+        """The code that can run one of ``writers``: each writer and every
+        function that can call one (a reference, a name match, a lookup site
+        that can see it), transitively, with the top-level code (of a module,
+        a class, a variable) that does; top-level code ends a chain, since it
+        runs at its module's import. None unless all of it is test code and
+        none is used as a value (a callback, a registry entry): then library
+        code running at import cannot run a writer, and test code can only
+        through a symbol of the set."""
+        escaped = self.c.escaped_values | self.other.escaped_values
+        seen = set(writers)
+        stack = list(writers)
+        while stack:
+            current = stack.pop()
+            if not self._in_test_code(current) or current in escaped:
+                return None
+            symbol = self.symbols[current]
+            if symbol.kind not in (FUNCTION, METHOD):
+                continue
+            callers = set(self.readers_of.get(current, ()))
+            if not _is_dunder(symbol.name):
+                callers |= self.by_name.get(symbol.name, set())
+            callers.update(site for site, _ in self._seeing_sites(symbol))
+            for caller in callers - seen:
+                seen.add(caller)
+                stack.append(caller)
+        return frozenset(seen)
 
     def _observe(self, symbol: str, rule: str, detail: str, change: SymbolChange | None) -> None:
         if symbol not in self.E:
@@ -717,7 +753,8 @@ class _Observers:
                 self._reader(reader, None, label)
             # A lookup by a name nothing bounds may find it, and read its
             # value as well as notice it come or go.
-            for site, kind in self.sites:
+            library = {site for site, callers in self.import_sites.items() if callers is None}
+            for site, kind in sorted(set(self.sites) | library):
                 if kind != SITE_IMPORT and site in self.symbols:
                     self._observe(
                         site,
@@ -885,7 +922,7 @@ class _Observers:
                 self._readers(change.id, change, label)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
-                self._sites(symbol, change, label, imports=True)
+                self._sites(symbol, change, label, imports=True, at_import=True)
             else:
                 self._escalate_change(change, f"{label}: module-level code runs at import")
             return
@@ -932,8 +969,8 @@ class _Observers:
             self._readers(change.id, change, label)
             # A lookup by a name nothing bounds reads the value as well as
             # noticing the name come or go: a variable runs no code of its
-            # own for the record to show.
-            self._sites(symbol, change, label)
+            # own for the record to show. Its initialiser runs at import.
+            self._sites(symbol, change, label, at_import=True)
             if DELETED in kinds:
                 self._importers(change.id, change, label)
             return
@@ -941,7 +978,7 @@ class _Observers:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
             if kinds & {ADDED, DELETED}:
                 self._readers(change.id, change, label)
-                self._sites(symbol, change, label)
+                self._sites(symbol, change, label, at_import=True)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
                 if self._runs_on_creation(symbol.id):
@@ -1016,7 +1053,7 @@ class _Observers:
             )
             for reader in sorted(readers):
                 self._reader(reader, change, attribute)
-        self._sites(symbol, change, label)
+        self._sites(symbol, change, label, at_import=True)
 
     def _hierarchy(self, cls: str, change: SymbolChange, label: str) -> None:
         """Members of the class, its bases and its subclasses: code running on
@@ -1117,10 +1154,8 @@ class _Observers:
                 if base not in ancestors:
                     ancestors.add(base)
                     stack.append(base)
-        for c in ancestors:
-            symbol = self.symbols.get(c)
-            if symbol is None or not self.test_code.is_test_code(symbol.module):
-                return None
+        if not all(self._in_test_code(c) for c in ancestors):
+            return None
         if any(self._runs_on_creation(c) for c in family):
             return None
         builders: set[str] = set()
@@ -1159,7 +1194,7 @@ class _Observers:
                 self._followed.add(reader)
                 self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
                 self._readers(reader, change, label)
-                self._sites(symbol, change, f"{label}, captured by {reader}")
+                self._sites(symbol, change, f"{label}, captured by {reader}", at_import=True)
         else:
             # Module or class top-level code: import-time state.
             self._escalate_module(symbol.module, f"top-level code of {reader} reads {label}")
@@ -1205,7 +1240,7 @@ class _Observers:
         self.seed_changes.add(change.id)
         symbol = change.symbol
         self._module_symbols(symbol.module, why)
-        self._sites(symbol, change, why, imports=symbol.kind == MODULE, escalation=True)
+        self._sites(symbol, change, why, imports=symbol.kind == MODULE, at_import=True)
 
     def _escalate_module(self, module: str, why: str) -> None:
         """Plan the module's import statically, as if its top-level code
@@ -1215,7 +1250,7 @@ class _Observers:
         self._module_symbols(module, why)
         module_symbol = self.symbols.get(module)
         if module_symbol is not None:
-            self._sites(module_symbol, None, why, imports=True, escalation=True)
+            self._sites(module_symbol, None, why, imports=True, at_import=True)
 
     def _module_symbols(self, module: str, why: str) -> None:
         """Every symbol of a module whose import-time state may differ: code
@@ -1239,13 +1274,13 @@ class _Observers:
         label: str,
         *,
         imports: bool = False,
-        escalation: bool = False,
+        at_import: bool = False,
     ) -> None:
-        for site, detail in self._seeing_sites(symbol, imports=imports, escalation=escalation):
+        for site, detail in self._seeing_sites(symbol, imports=imports, at_import=at_import):
             self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
 
     def _seeing_sites(
-        self, symbol: Symbol, *, imports: bool = False, escalation: bool = False
+        self, symbol: Symbol, *, imports: bool = False, at_import: bool = False
     ) -> list[tuple[str, str]]:
         """Code that finds names by a name nothing bounds and can see the
         namespace of ``symbol``: a read off an object from anywhere, eval and
@@ -1256,13 +1291,12 @@ class _Observers:
         class the runner instantiates. A member of a class only the runner
         ever instantiates (planner._runner_only_classes) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
-        hold one of its instances. On an escalation (import-time state that
-        may differ), lookups on an external module that only test-window code
-        writes to count too: changed import-time code may write there. A
-        library module's import reaches no writer in test code (the library
-        does not import tests, and a writer that ran in an import at C turns
-        the bound off), so for one of those only sites with a writer outside
-        test code count."""
+        hold one of its instances. For a change to code that runs at import
+        (``at_import``: an escalation, a variable, a class body), the lookups
+        on an external module the project writes to count too, wherever they
+        are: that code may now write there at import, for every later test.
+        When only test code can run the writers, only a change to that code
+        does (``import_sites``)."""
         out: list[tuple[str, str]] = []
         namespace = symbol.module
         test = self.test_code.is_test_code(namespace)
@@ -1271,21 +1305,7 @@ class _Observers:
         # Only code that imports it, or is handed it (below), can look a
         # module-level name up on it.
         module_name = test and (symbol.kind == MODULE or symbol.container == namespace)
-        sites = self.sites
-        if escalation:
-            sites = sorted(
-                sites
-                + [
-                    (site, kind)
-                    for site, kind in self.escalation_sites
-                    if test
-                    or not all(
-                        w in self.symbols and self.test_code.is_test_code(self.symbols[w].module)
-                        for w in self.escalation_writers[site]
-                    )
-                ]
-            )
-        for site, kind in sites:
+        for site, kind in self.sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
                 continue
@@ -1326,6 +1346,20 @@ class _Observers:
                         f"lookup that can see {namespace}",
                     )
                 )
+        if at_import:
+            listed = {site for site, _ in out}
+            for (site, _kind), callers in self.import_sites.items():
+                if callers is not None and symbol.id not in callers:
+                    continue
+                if site not in listed and site in self.symbols:
+                    listed.add(site)
+                    out.append(
+                        (
+                            site,
+                            f"{site} looks names up on an external module that code running "
+                            f"at import in {namespace} may write to",
+                        )
+                    )
         return out
 
     def _runner_family(self, symbol_id: str) -> set[str] | None:

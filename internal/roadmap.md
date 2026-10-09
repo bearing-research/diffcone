@@ -887,27 +887,34 @@ where the store was visible:
 * a value the site hands on is then used by code that reads it by name
   (`getattr(builtins, n).attr`), which is a reader in its own right.
 
-So under evidence such a site does not join E through `_sites` for a
-change elsewhere. It still joins E on an escalation (`_escalate_change`,
-`_escalate_module`): import-time code that changed may now write to the
-module at import, for every later test. On the escalation of a library
-module it joins only if a writer is outside test code. The library does
-not import tests, and a test-code writer that ran during an import at C
-already turns the rule off. On `0da0faf7`, a dataclass change escalates
-`strata.notebook.tui.viewmodel`, and every writer to `builtins` is a test. The rule is off, and the site
-stays as now, when any writer is module or class top-level code (a write
-at import, or a `mock.patch` decorator), or ran during an import or
-outside every test at C (`import_phase`, `import_by`, `hook_phase`).
+So under evidence such a site does not join E for a change elsewhere,
+except a change to code that runs at import. Escalations, variables,
+class bodies and added or deleted modules may now run a writer at import,
+leaving the store for every later test. Such a change reaches the site
+wherever it is: the filter that keeps library sites away from test-module
+namespaces is about seeing names, not about stores. That is narrowed only
+when test code alone can run the writers (`_callers`). Every writer, and
+everything that can call one, transitively, must be test code. Callers
+are references, name matches and lookup sites that can see it, and
+top-level code ends a chain. None of it may be used as a value: a
+callback, a registry entry. Then only a change to a symbol of that set
+reaches the site. A dataclass change in a library module, or a new class
+of methods in a test module, does not. A helper module (not test code)
+importing a test's writer, library code calling it by name, or a
+registry holding it turns this off. So do a writer at module or class
+top level, or one that ran during an import or outside every test at C.
 
 * *Index.* The module facts record each write's writer with the module
-  (`external_writes` becomes (module, writer) pairs). `_external_lookups`
+  (`external_writes` becomes (module, writer) pairs), and the index keeps
+  the values used as values (`escaped_values`). `_external_lookups`
   marks the sites it turns dynamic with "on an external module in-scope
   code writes to" in the detail. The marker has no "import" in it, which
   static planning and `_site_kind` read. It also records each marked
   site's writers in `SourceIndex.external_sites`. `INDEX_FORMAT` is
-  bumped.
+  bumped (26).
 * *Evidence.* `_Observers` keeps the sites whose writers pass apart from
-  `self.sites`, and `_seeing_sites` adds them back only for escalations.
+  `self.sites` (`import_sites`, with their callers), and `_seeing_sites`
+  adds them back for changes to code that runs at import.
 
 **Trade-off.** This narrows selection. A store one test leaves for a later
 one (a write without `monkeypatch`, never undone) is outside the record of
@@ -925,8 +932,12 @@ detected, so the lookup was already bounded.
     value it stores, changes is still selected;
   * the rule is off for a write at import (module level, or a function
     called at import) and for one in a hook;
-  * a write newly made at import in the head revision still reaches the
-    site through the escalation;
+  * a writer newly run at import in the head revision still reaches the
+    site, from a library variable, a test module's variable, a helper
+    module importing a test's writer, library code calling it by name, and
+    a registry holding it (each missed by an earlier version of this rule);
+  * a library module's import-time change reaches the site when a library
+    writer exists and not when only tests write;
 * static plans are unchanged (scenarios assert the static selection);
 * `0da0faf7` on the recording at its parent drops the `lookup_site`
   selections that came from these sites.

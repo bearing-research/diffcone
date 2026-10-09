@@ -27,9 +27,11 @@ selection rules.
   `monkeypatch.setattr(builtins, ...)` in a test) no longer makes every
   change anywhere select every test that ran the lookup. The tests that
   patch the module are selected through their own code. A module written
-  at import or in a hook is treated as before. A non-literal `getattr` on
-  such a module now sees changes anywhere in the project, not only in its
-  own imports.
+  at import or in a hook is treated as before, and a change to code that
+  runs at import still reaches the lookup when it can run a writer. A
+  non-literal `getattr` on such a module now sees changes anywhere in the
+  project, not only in its own imports, and a test module's import-time
+  change now reaches lookups in library code.
 
 ### CI
 

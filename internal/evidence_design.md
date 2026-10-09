@@ -358,9 +358,11 @@ selection or states something the tables left implicit; none narrows it.
   closure. When every writer is a function or method that ran only inside
   test windows, a store is visible only in a test that ran its writer. A
   change to the writer or to what it stores selects that test through the
-  writer, so the site joins E only on an escalation: changed import-time
-  code may now write there for every later test. For a library module's
-  escalation, that holds only if a writer is outside test code.
+  writer. So the site joins E only for a change to code that runs at
+  import (an escalation, a variable, a class body), which may now write
+  there for every later test. If only test code can run the writers, so
+  that no library code, value or helper module reaches them, only a change
+  to that code counts.
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures

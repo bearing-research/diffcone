@@ -152,6 +152,11 @@ class SourceIndex:
     # Classes whose instances are passed to someone else, who may then read
     # any attribute off them by a name nothing resolves.
     escaped_classes: set[str] = field(default_factory=set)
+    # Functions, methods and classes used as a value somewhere (passed,
+    # stored, returned): code the analysis cannot see may call them. Static
+    # planning uses this through the indexer; evidence mode asks whether only
+    # test code can run an external module's writers (roadmap item 14).
+    escaped_values: set[str] = field(default_factory=set)
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)

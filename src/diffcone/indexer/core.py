@@ -142,6 +142,7 @@ class Indexer(DynamicBounds):
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
         returns = self._global.returns
+        self.index.escaped_values = set(self._global.escapes)
         self.index.escaped_classes = {
             cls
             for sites in self._global.call_sites.values()
