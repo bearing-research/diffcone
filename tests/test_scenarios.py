@@ -2684,8 +2684,10 @@ def test_dict_literal_values_bound_in_an_items_loop(repo):
     serve = repo.commit({"pkg/serve.py": "STAMP = len('serve!')\n"})
     plan = repo.plan(other, serve, targets)
     assert selected(plan) == {"t::test_cli"}
-    r = reason(plan, "t::test_cli", "dynamic_reference")
-    assert path_ids(r)[-2:] == ["pkg.cli.load_all", "pkg.serve"]
+    # The bounded import is an edge to the module, whose import runs the
+    # changed variable.
+    r = reason(plan, "t::test_cli")
+    assert path_ids(r)[-3:] == ["pkg.cli.load_all", "pkg.serve", "pkg.serve.STAMP"]
 
 
 def test_a_mutated_table_keeps_its_items_loop_dynamic(repo):
@@ -3688,7 +3690,7 @@ def test_an_always_run_entry_matching_nothing_is_counted_not_an_error(repo):
     assert not plan.degraded and plan.errors == []
     assert selected(plan) == {"tests/test_ops.py::test_add"}
     assert to_dict(plan)["always_run"][0]["matched"] == 0
-    assert "tests/notebook/*: 0 target(s), none in this plan" in to_text(plan)
+    assert "tests/notebook/*: 0 target(s): MATCHES NOTHING in this plan" in to_text(plan)
 
 
 def test_an_always_run_entry_removed_with_its_tests_is_not_an_error(repo):

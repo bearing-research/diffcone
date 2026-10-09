@@ -110,6 +110,26 @@ def hash_nodes(nodes: list[ast.AST]) -> str:
     return _digest("\n".join(_dump(n) for n in nodes))
 
 
+def type_params(node: ast.AST) -> list[ast.AST]:
+    """The PEP 695 type parameters of a ``def``, ``class`` or ``type``
+    statement (none before Python 3.12)."""
+    return list(getattr(node, "type_params", None) or ())
+
+
+def type_param_exprs(node: ast.AST) -> list[ast.expr]:
+    """The expressions inside a statement's type parameters: bounds,
+    constraints and (PEP 696) defaults. Python evaluates them lazily, when
+    ``__bound__``/``__default__`` is read, but what they name is a
+    dependency of the statement all the same."""
+    exprs: list[ast.expr] = []
+    for param in type_params(node):
+        for field in ("bound", "default_value"):
+            value = getattr(param, field, None)
+            if isinstance(value, ast.expr):
+                exprs.append(value)
+    return exprs
+
+
 def _contains_definition_or_import(stmt: ast.stmt, strip_imports: bool) -> bool:
     for node in ast.walk(stmt):
         if isinstance(node, DEF_NODES):

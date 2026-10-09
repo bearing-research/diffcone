@@ -48,16 +48,19 @@ gives the entry as the reason.
 | Key | Description |
 |---|---|
 | `targets` | Required. A pattern on the target's id, as the report shows it (`tests/e2e/test_flow.py::test_login`, `bench_io.TimeRead.time_csv`). `*` matches any characters, `/` and `::` included; `?` and `[...]` work as in shell patterns. |
-| `runner` | Optional. Only this runner's targets (`pytest`, `asv`). |
+| `runner` | Optional. Only this runner's targets: `pytest`, `asv`, or a runner your manifest's targets use. Any other name is an error. |
 | `why` | Optional. A short explanation, shown in the report. |
 
 The tests still run when diffcone records a full run (`diffcone collect`),
 so the run that records evidence still tests them.
 
-The report shows how many targets each entry matched. An entry that
-matches nothing isn't an error, because one `diffcone.toml` serves every
-job and a job may skip the directory an entry names. Check the count when
-you add an entry or move tests.
+The report shows how many targets each entry matched. An entry whose
+pattern matches nothing isn't an error, because one `diffcone.toml` serves
+every job and a job may skip the directory an entry names; the text report
+flags it with `MATCHES NOTHING`, and the JSON report gives `"matched": 0`.
+diffcone can't tell a mistyped pattern (`test/e2e/*`) from one a job
+legitimately skips, so check the count when you add an entry or move
+tests.
 
 ## What can go wrong
 
@@ -66,9 +69,11 @@ make diffcone select more tests, never fewer.
 
 diffcone reads the file from both snapshots, so it changes along with your
 code. A declaration that names something that doesn't exist, an
-`always_run` entry without `targets`, an unknown key, or a file that
-doesn't parse is reported as an analysis error: the
-plan then selects every target, so a typo can't silently remove tests from
-a plan. A declaration between two very large modules (more than 5,000
+`always_run` entry without `targets` or with an unknown `runner`, an
+unknown key, or a file that doesn't parse is reported as an analysis
+error: the plan then selects every target, so these typos can't silently
+remove tests from a plan. The one typo diffcone can't catch is an
+`always_run` pattern that matches nothing (see above): the plan stands, and
+only the count shows it. A declaration between two very large modules (more than 5,000
 pairs of symbols) is also an error; declare the specific functions
 instead.

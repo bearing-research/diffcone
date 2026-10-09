@@ -96,7 +96,8 @@ the run's JUnit XML are written to `diffcone-results/`; upload them with
     Installing from a lock file makes this automatic. When the environment
     differs, diffcone runs a plan from the code instead of from the
     recording; when the pull request changes the lock file or another
-    dependency file, it runs every test.
+    dependency, build or CI file diffcone recognises (see
+    [discovery](reference/discovery.md)), it runs every test.
 
 ## Check against a full run (optional)
 

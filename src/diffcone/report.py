@@ -212,9 +212,16 @@ def to_text(plan: Plan) -> str:
         lines.append(f"always run ({len(plan.always_run)}):")
         for a in plan.always_run:
             matched = plan.always_run_matched.get(a, 0)
+            # Matching nothing is not an error (a job may skip what an entry
+            # names), so the count is the only sign of a mistyped pattern.
             lines.append(
                 f"  {a.label}: {matched} target(s)"
-                + ("" if matched else ", none in this plan")
+                + (
+                    ""
+                    if matched
+                    else ": MATCHES NOTHING in this plan; if this job runs those tests, "
+                    "the pattern is wrong and they are not selected"
+                )
                 + (f"  ({a.why})" if a.why else "")
             )
     if plan.incomplete_discovery:

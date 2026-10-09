@@ -25,9 +25,13 @@ Declarations only *add* edges or selected targets, so they can only widen
 selection: a wrong one costs a test that runs anyway, and none of them can
 make the plan miss. A declaration whose endpoints resolve to nothing, a
 malformed entry, or a file that does not parse, is an analysis error -- a
-typo that silently declares nothing is the outcome worth failing on. An
-``always_run`` pattern matching no target is only reported (with its count):
-one file serves jobs that run different parts of a suite.
+typo that silently declares nothing is the outcome worth failing on; so is
+an ``always_run`` ``runner`` that is neither a runner diffcone discovers nor
+one of the plan's targets' (the planner checks it, as only it knows the
+targets). An ``always_run`` pattern matching no target is only reported
+(with its count, flagged in the text report): one file serves jobs that run
+different parts of a suite, so a mistyped pattern cannot be told from one a
+job skips.
 """
 
 from __future__ import annotations

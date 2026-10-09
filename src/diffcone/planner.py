@@ -23,7 +23,11 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
 
 A change that runs at import (a module body change, a variable, a class, a
 function's decorators or defaults, an added or deleted definition) also
-seeds its module, so every module that transitively imports it is reached.
+seeds its module, so every module that transitively imports it is reached,
+and every variable a function it calls mutates in place (``mutated_by``),
+directly or through what that calls: changing the arguments of an
+import-time call changes what the callee leaves behind as a change to its
+body would (_import_call_effects).
 
 Every selection is backed by a concrete edge path or an explicit fallback
 rule. See internal/design.md.
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import re
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
@@ -54,6 +59,7 @@ from diffcone.declarations import load as load_declarations
 from diffcone.discovery import (
     INCOMPLETE_NOTE_KINDS,
     RUNNER_MODULES,
+    RUNNERS,
     DiscoveryNote,
     DiscoveryOptions,
     DiscoveryResult,
@@ -83,8 +89,10 @@ from diffcone.model import (
     UnresolvedReference,
 )
 from diffcone.snapshot import (
+    BUILD_SCRIPTS,
     CONFIG_FILES,
     INDEX,
+    PROJECT_BUILD_SCRIPTS,
     WORKTREE,
     GitError,
     Snapshot,
@@ -166,8 +174,9 @@ CONSERVATIVE_RULES = frozenset(
 # the cache, and the declarations the planner already reads from both
 # revisions.
 OWN_FILES = ("diffcone.toml",)
-# Build scripts at the repository root (see plan_from_indexes).
-BUILD_SCRIPTS = frozenset({"setup.py", "hatch_build.py", "build.py", "pdm_build.py"})
+# A directory holding one of these is a project's: a ``build.py`` there is
+# its build script (snapshot.PROJECT_BUILD_SCRIPTS, is_build_script).
+PROJECT_FILES = ("pyproject.toml", "setup.cfg")
 OWN_DIRS = (".diffcone/",)
 UNANALYSED_PATHS_SHOWN = 5
 
@@ -206,7 +215,8 @@ COMPILED_SUFFIXES = (
     ".dll",
 )
 BUILD_FILES = frozenset(
-    {
+    name.lower()
+    for name in (
         "pyproject.toml",
         "setup.cfg",
         "tox.ini",
@@ -215,54 +225,113 @@ BUILD_FILES = frozenset(
         "pytest.ini",
         ".pytest.ini",
         "uv.toml",
+        "hatch.toml",
+        "poetry.toml",
+        "pdm.toml",
+        ".pdm.toml",
         "MANIFEST.in",
         "meson.build",
         "meson.options",
         "meson_options.txt",
         "CMakeLists.txt",
         "Makefile",
+        "GNUmakefile",
         "Pipfile",
         "pixi.toml",
         ".python-version",
         ".coveragerc",
         "Cargo.toml",
         "build.rs",
+        # Checkers that pytest plugins run as tests (pytest-mypy,
+        # pytest-ruff, pytest-flake8, pytest-pylint).
+        "mypy.ini",
+        ".mypy.ini",
+        "pyrightconfig.json",
+        "ruff.toml",
+        ".ruff.toml",
+        ".flake8",
+        ".pylintrc",
+        "pylintrc",
+        # Environment variables a test session may load (pytest-dotenv,
+        # pipenv, python-dotenv in the project's own code).
+        ".env",
+        # Continuous integration: which Python, which packages, which command.
+        ".gitlab-ci.yml",
+        "azure-pipelines.yml",
+        ".travis.yml",
+        "appveyor.yml",
         # Build scripts are Python, but nobody imports them.
-        "setup.py",
-        "hatch_build.py",
-        "build.py",
-        "pdm_build.py",
-    }
+        *BUILD_SCRIPTS,
+        *PROJECT_BUILD_SCRIPTS,
+    )
 )
-# Dependency declarations, by a prefix of their name or of a directory
-# holding them (``requirements-dev.txt``, ``requirements/dev.txt``,
-# ``environment.yml``, ``conda-lock.yml``).
-DEPENDENCY_PREFIXES = ("requirements", "environment", "constraints", "conda-lock")
+# Directories whose files configure continuous integration.
+CI_DIRS = (".github/workflows/", ".github/actions/", ".circleci/", "ci/", ".ci/")
+# Dependency declarations, by a word in their name or in the name of a
+# directory holding them, in any case: ``requirements-dev.txt``,
+# ``dev-requirements.txt``, ``Requirements.txt``, ``requirements.pip``,
+# ``requirements/dev.txt``, ``constraints.txt``, ``environment.yml``,
+# ``conda-lock.yml``, pandas' ``ci/deps/actions-311.yaml``.
+DEPENDENCY_SUFFIXES = (".txt", ".in", ".pip", ".yml", ".yaml")
+DEPENDENCY_NAME = re.compile(
+    r"requirement|constraint|^environment|conda-lock|(?:^|[-_.])(?:deps|dependencies)(?:[-_.]|$)"
+)
 # Directories of a distribution's metadata (``pkg-1.0.dist-info``).
 DISTRIBUTION_SUFFIXES = (".dist-info", ".egg-info", ".egg")
 
 
 def build_input(path: str) -> bool:
-    """Whether a file decides what is compiled, installed or collected: a
-    compiled source, build or pytest configuration, a dependency declaration
-    or lock file (``uv.lock``, ``pylock.toml``), or a distribution's
-    metadata (under ``*.dist-info``, ``*.egg-info`` or ``*.egg``, which
-    ``importlib.metadata`` finds by name on ``sys.path``). Nothing the index
-    or a test's record sees reads it, so a change to one anywhere selects
-    every target."""
-    parts = path.split("/")
+    """Whether a file decides what is compiled, installed or collected, or
+    how the tests run: a compiled source; build, pytest or task-runner
+    configuration; a dependency declaration or lock file (``uv.lock``,
+    ``pylock.toml``); a continuous-integration file; a ``.env`` file; a
+    ``.pth`` file (once installed, the interpreter runs its import lines at
+    start); or a distribution's metadata (under ``*.dist-info``,
+    ``*.egg-info`` or ``*.egg``, which ``importlib.metadata`` finds by name
+    on ``sys.path``). Nothing the index or a test's record sees reads it, so
+    a change to one anywhere selects every target. Names are compared
+    without case: a case-insensitive filesystem finds ``Requirements.txt``
+    under any spelling."""
+    lowered = path.lower()
+    parts = lowered.split("/")
     name = parts[-1]
     return (
-        path.lower().endswith(COMPILED_SUFFIXES)
-        or any(part.lower().endswith(DISTRIBUTION_SUFFIXES) for part in parts)
+        lowered.endswith(COMPILED_SUFFIXES)
+        or any(part.endswith(DISTRIBUTION_SUFFIXES) for part in parts)
         or name in BUILD_FILES
-        or name.endswith(".lock")
+        or name.startswith(".env.")
+        or name.endswith((".lock", ".pth"))
         or (name.startswith("pylock.") and name.endswith(".toml"))
+        or lowered.startswith(CI_DIRS)
         or (
-            name.endswith((".txt", ".yml", ".yaml"))
-            and any(part.startswith(DEPENDENCY_PREFIXES) for part in parts)
+            name.endswith(DEPENDENCY_SUFFIXES)
+            and any(DEPENDENCY_NAME.search(part) for part in parts)
         )
     )
+
+
+def _project_dirs(base: SourceIndex, head: SourceIndex) -> set[str]:
+    """Directories under the roots holding a project's metadata
+    (``pyproject.toml``, ``setup.cfg``) in either revision."""
+    return {
+        path.rpartition("/")[0]
+        for index in (base, head)
+        for path in index.other_files
+        if path.rpartition("/")[2] in PROJECT_FILES
+    }
+
+
+def is_build_script(path: str, project_dirs: set[str] | frozenset[str] = frozenset()) -> bool:
+    """Whether a Python file under the roots is a build script, a task
+    runner's file or an interpreter start-up module (BUILD_SCRIPTS): nobody
+    imports it, but it decides what is installed or how the tests run, so a
+    change to one is as unbounded as a changed compiled source. A
+    ``build.py`` counts at the repository root or in one of
+    ``project_dirs`` (_project_dirs)."""
+    directory, _, name = path.rpartition("/")
+    if name in BUILD_SCRIPTS:
+        return True
+    return name in PROJECT_BUILD_SCRIPTS and (directory == "" or directory in project_dirs)
 
 
 def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]:
@@ -293,12 +362,15 @@ def _runner_files_outside_roots(
     if "" in (split_root(r)[0] for r in roots):
         return []
     if base.snapshot.committed:
-        fixed, other = base.snapshot, head.snapshot
+        fixed, other = base.snapshot.commit, head.snapshot
     elif head.snapshot.committed:
-        fixed, other = head.snapshot, base.snapshot
-    else:
-        return []
-    changed = changed_paths(repo, fixed.commit, other.commit, other.kind)
+        fixed, other = head.snapshot.commit, base.snapshot
+    elif base.snapshot.kind == head.snapshot.kind:
+        return []  # the same uncommitted state on both sides
+    else:  # the index and the working tree
+        fixed = INDEX
+        other = head.snapshot if head.snapshot.is_worktree else base.snapshot
+    changed = changed_paths(repo, fixed, other.commit, other.kind)
     dirs = [split_root(r)[0] for r in roots]
     return sorted(
         path
@@ -522,6 +594,92 @@ def _runs_at_import(change: SymbolChange) -> bool:
     if not {ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes):
         return False
     return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
+
+
+def _sides(change: SymbolChange) -> tuple[str, ...]:
+    """The revisions a changed symbol exists in."""
+    return tuple(r for r, s in (("base", change.base), ("head", change.head)) if s is not None)
+
+
+# Explanation steps that are not index edges: a module runs a changed
+# symbol when it is imported (_runs_at_import), and import-time code calls a
+# function (_import_call_effects).
+RUNS_AT_IMPORT = "runs_at_import"
+CALLED_AT_IMPORT = "called_at_import"
+MUTATED_BY = "mutated_by"
+# What a call made at import can run: what the caller references (a
+# function, a class's constructor and special methods, a variable holding a
+# function), what an unresolved call may be, what the project declares.
+_CALL_KINDS = frozenset({REFERENCES, UNRESOLVED_NAME_MATCH, DECLARED})
+
+
+def _import_call_effects(
+    graph: _Graph, changes: list[SymbolChange], module_nodes: set[str]
+) -> dict[str, tuple[tuple[Step, ...], str]]:
+    """The state a changed piece of import-time code can now leave
+    different: every variable mutated in place (a ``mutated_by`` edge) by a
+    function the changed code calls, directly or through what that calls.
+    ``X = set_mode("faster")`` leaves ``MODE`` holding something else
+    although ``set_mode`` did not change. Each variable comes with the steps
+    from it to the change and the rule they amount to (a name match on the
+    way makes it ``unresolved_name_match``, a declared edge
+    ``declared_dependency``).
+
+    The changed code's references stand for what it calls: nothing tells a
+    call from a read, and a function's decorators, defaults and body share
+    one symbol, so this over-approximates. A module the code refers to is
+    not entered: referring to it runs none of its code."""
+    parent: dict[str, tuple[str, Edge, tuple[str, ...]] | None] = {}
+    queue: deque[str] = deque()
+    for change in sorted(changes, key=lambda c: c.id):
+        if change.id not in parent:
+            parent[change.id] = None
+            queue.append(change.id)
+    effects: dict[str, tuple[tuple[Step, ...], str]] = {}
+    while queue:
+        node = queue.popleft()
+        if not _is_name_node(node):
+            for source, edge, revs in graph.reverse.get(node, ()):
+                if edge.detail == MUTATED_BY and source not in effects:
+                    first = Step(source, node, edge.kind, edge.detail, revs)
+                    effects[source] = _effect_path(first, parent)
+        if node in module_nodes and parent[node] is not None:
+            continue
+        for target, edge, revs in graph.forward.get(node, ()):
+            if edge.kind in _CALL_KINDS and edge.detail != MUTATED_BY and target not in parent:
+                parent[target] = (node, edge, revs)
+                queue.append(target)
+    return effects
+
+
+def _effect_path(
+    first: Step, parent: dict[str, tuple[str, Edge, tuple[str, ...]] | None]
+) -> tuple[tuple[Step, ...], str]:
+    """The steps from a mutated variable back to the changed code whose call
+    reached its mutator (_import_call_effects), name-match pseudo-nodes
+    collapsed, and the rule they amount to."""
+    steps = [first]
+    rule = RULE_DEPENDENCY
+    node = first.target
+    pending: str | None = None  # the name a pseudo-node matched on
+    while (link := parent.get(node)) is not None:
+        caller, edge, revs = link
+        if edge.kind == UNRESOLVED_NAME_MATCH:
+            rule = RULE_UNRESOLVED_NAME_MATCH
+        elif edge.kind == DECLARED and rule == RULE_DEPENDENCY:
+            rule = RULE_DECLARED_DEPENDENCY
+        if _is_name_node(caller):
+            pending = caller[len(_name_node("")) :]
+            node = caller
+            continue
+        if pending is not None:
+            detail = f"by name match on {pending!r}"
+        else:
+            detail = "declared" if edge.kind == DECLARED else ""
+        steps.append(Step(steps[-1].target, caller, CALLED_AT_IMPORT, detail, revs))
+        pending = None
+        node = caller
+    return tuple(steps), rule
 
 
 # --------------------------------------------------------------------------- planning
@@ -798,7 +956,10 @@ def plan_from_indexes(
         # A build script is Python nobody imports, but it decides what is
         # compiled and installed: a change to it is as unbounded as a changed
         # compiled source.
-        unanalysed += sorted({c.symbol.path for c in changes if c.symbol.path in BUILD_SCRIPTS})
+        project_dirs = _project_dirs(base, head)
+        unanalysed += sorted(
+            {c.symbol.path for c in changes if is_build_script(c.symbol.path, project_dirs)}
+        )
     if unanalysed:
         shown = ", ".join(unanalysed[:UNANALYSED_PATHS_SHOWN])
         more = len(unanalysed) - UNANALYSED_PATHS_SHOWN
@@ -835,14 +996,35 @@ def plan_from_indexes(
         mode[change.id] = STRUCTURAL if change.structural else BEHAVIOR
         via[change.id] = None
         queue.append(change.id)
+    module_nodes = {
+        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
+    }
+    # Nodes seeded for a change they are not themselves: the steps from the
+    # node to the change, and the rule they make the explanation.
+    seed_paths: dict[str, tuple[tuple[Step, ...], str]] = {}
     # A change that runs when its module is imported affects the module's
     # import, hence (through ``imports`` edges) every importer.
-    for change in impacting:
+    at_import = [c for c in impacting if _runs_at_import(c)]
+    for change in at_import:
         symbol = change.symbol
-        if symbol.module not in mode and _runs_at_import(change):
+        if symbol.module not in mode:
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
+            step = Step(symbol.module, change.id, RUNS_AT_IMPORT, "", _sides(change))
+            seed_paths[symbol.module] = ((step,), RULE_DEPENDENCY)
             queue.append(symbol.module)
+    # What import-time code calls runs with the arguments written there
+    # (``X = set_mode("slow")``, a class attribute, a decorator's argument):
+    # changing them changes what the callee does at import as a change to
+    # its body would. State the callee -- or anything it calls -- mutates in
+    # place (``mutated_by`` edges) holds something else, and every reader of
+    # it is affected, however it reaches that state.
+    for node, (steps, rule) in sorted(_import_call_effects(graph, at_import, module_nodes).items()):
+        if node not in mode:
+            mode[node] = BEHAVIOR
+            via[node] = None
+            seed_paths[node] = (steps, rule)
+            queue.append(node)
     # A symbol reading docstrings (``f.__doc__``, ``getdoc(cls)``, its
     # module's ``__doc__``) sees a docstring-only change of what it references.
     documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
@@ -897,9 +1079,6 @@ def plan_from_indexes(
                 mode[symbol] = BEHAVIOR
                 via[symbol] = None
                 queue.append(symbol)
-    module_nodes = {
-        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
-    }
     while queue:
         node = queue.popleft()
         node_mode = mode[node]
@@ -969,6 +1148,7 @@ def plan_from_indexes(
                     dynamic_symbols,
                     unbounded_dynamic,
                     seed_reasons,
+                    seed_paths,
                 )
             )
         for fb in target_fallbacks.get(target.node_id, ()):
@@ -1153,6 +1333,7 @@ def _explain(
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: set[str],
     seed_reasons: dict[str, str] | None = None,
+    seed_paths: dict[str, tuple[tuple[Step, ...], str]] | None = None,
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -1185,6 +1366,14 @@ def _explain(
                 continue
         steps.append(Step(edge.source, edge.target, edge.kind, edge.detail, revs))
         current = nxt
+    if seed_paths and current in seed_paths and current not in change_by_id:
+        # Seeded for a change it is not (its module's import, a callee's
+        # effect): the seed's own steps lead on to the change.
+        seed_steps, seed_rule = seed_paths[current]
+        steps += seed_steps
+        current = seed_steps[-1].target
+        if rule != RULE_UNRESOLVED_NAME_MATCH and seed_rule != RULE_DEPENDENCY:
+            rule = seed_rule
     change = change_by_id.get(current)
     if change is not None:
         detail = f"{current} {'/'.join(change.changes)}"
@@ -1492,10 +1681,13 @@ def plan(
     _check_roots_match(roots, base, base_index, head, head_index)
     declared: list[Declaration] = []
     always: dict[AlwaysRun, None] = {}
+    always_from: dict[AlwaysRun, tuple[str, SourceIndex]] = {}
     for revision, index in ((base, base_index), (head, head_index)):
         found = load_declarations(repo_path, revision)
         declared += found.edges
         always.update(dict.fromkeys(found.always_run))
+        for entry in found.always_run:
+            always_from.setdefault(entry, (revision, index))
         for problem in found.problems:
             index.errors.append(
                 AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
@@ -1512,6 +1704,7 @@ def plan(
             for result in discovered:
                 discovery_cache.store(result, head_commit, roots, options)
     discovered = _with_base_lifecycle(discovered, base_lifecycle)
+    _check_always_run_runners(always_from, manifest, discovered)
     if evidence is not None:
         from diffcone.evidence_plan import plan_with_evidence
 
@@ -1557,6 +1750,33 @@ def plan(
             runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
         )
     return _with_always_run(planned, sorted(always))
+
+
+def _check_always_run_runners(
+    entries: dict[AlwaysRun, tuple[str, SourceIndex]],
+    manifest: Manifest | None,
+    discovered: list[DiscoveryResult],
+) -> None:
+    """An ``[[always_run]]`` entry's ``runner`` must name a runner diffcone
+    discovers (``pytest``, ``asv``) or one of this plan's targets (a
+    manifest may use any label): anything else is a typo (``pyest``) that
+    would match nothing in every job, and is an analysis error. A known
+    runner with no targets in this plan, like a pattern matching nothing, is
+    only counted: one file serves jobs that plan different runners."""
+    known = set(RUNNERS) | {t.runner for t in merge_targets(manifest, discovered)}
+    for entry, (revision, index) in sorted(entries.items()):
+        if entry.runner and entry.runner not in known:
+            index.errors.append(
+                AnalysisError(
+                    revision=revision,
+                    path=DECLARATION_FILE,
+                    message=(
+                        f"always_run {entry.targets!r} names the runner {entry.runner!r}, which "
+                        f"is neither one diffcone discovers ({', '.join(RUNNERS)}) nor a runner "
+                        "of this plan's targets"
+                    ),
+                )
+            )
 
 
 def _with_always_run(plan: Plan, entries: list[AlwaysRun]) -> Plan:

@@ -43,6 +43,7 @@ from diffcone.indexer.syntax import (
     hash_nodes,
     hash_scope_body,
     iter_scope_statements,
+    type_params,
 )
 from diffcone.model import (
     CLASS,
@@ -297,7 +298,13 @@ class FirstPass(IndexerState):
                     definition_parts: list[ast.AST] = []
                     for n in nodes:
                         definition_parts += (
-                            list(n.bases) + list(n.keywords) + list(n.decorator_list)
+                            list(n.bases)
+                            + list(n.keywords)
+                            + list(n.decorator_list)
+                            # PEP 695/696 type parameters: their names, count,
+                            # bounds, constraints and defaults (``__type_params__``,
+                            # read by runtime checkers and generic models).
+                            + type_params(n)
                         )
                     return (
                         _digest(
@@ -369,6 +376,7 @@ class FirstPass(IndexerState):
                     for n in nodes:
                         definition_parts.append(n.args)
                         definition_parts += list(n.decorator_list)
+                        definition_parts += type_params(n)
                         if n.returns is not None:
                             annotation_parts.append(n.returns)
                     # The definition hash excludes annotations: detach them

@@ -122,7 +122,7 @@ def file_id(repo: Path, revision: str, path: str) -> str | None:
                 return None
             out = _git(repo, ["hash-object", "--", path])
         else:
-            spec = f":{path}" if revision == INDEX else f"{revision}:{path}"
+            spec = f":0:{path}" if revision == INDEX else f"{revision}:{path}"
             out = _git(repo, ["rev-parse", "--verify", "--quiet", spec])
     except GitError:
         return None
@@ -132,8 +132,12 @@ def file_id(repo: Path, revision: str, path: str) -> str | None:
 def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str, str]:
     """Every path whose content differs between ``commit`` and a snapshot
     (``kind``: a commit, the index or the working tree, untracked files
-    included), as path -> "added", "deleted" or "edited"."""
-    if kind == KIND_WORKTREE:
+    included), as path -> "added", "deleted" or "edited". ``commit`` may be
+    ``INDEX`` when the snapshot is the working tree: the staged content is
+    then what it is compared with."""
+    if commit == INDEX and kind == KIND_WORKTREE:
+        args = ["diff", "--name-status", "-z", "--no-renames"]
+    elif kind == KIND_WORKTREE:
         args = ["diff", "--name-status", "-z", "--no-renames", commit]
     elif kind == KIND_INDEX:
         args = ["diff", "--cached", "--name-status", "-z", "--no-renames", commit]
@@ -150,6 +154,21 @@ def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str
             path = raw.decode("utf-8", "surrogateescape")
             if path and not is_bytecode(path):
                 out.setdefault(path, "added")
+        # ``git diff`` does not look at a file flagged assume-unchanged or
+        # skip-worktree: compare what is on disk with the commit.
+        for path, skip_worktree in sorted(_flagged_paths(repo, []).items()):
+            full = repo / path
+            present = full.is_file() or full.is_symlink()
+            if path in out or (skip_worktree and not present):
+                continue  # a skip-worktree entry is not checked out by design
+            then = file_id(repo, commit, path)
+            if not present:
+                if then is not None:  # assume-unchanged, deleted on disk
+                    out[path] = "deleted"
+            elif then is None:
+                out[path] = "added"
+            elif file_id(repo, WORKTREE, path) != then:
+                out[path] = "edited"
     return out
 
 
@@ -215,6 +234,41 @@ def _normalise_root(root: str) -> str:
 
 
 SYMLINK_MODE = "120000"
+# A submodule's entry (a gitlink): its id is the submodule's commit.
+GITLINK_MODE = "160000"
+
+# Python files nobody imports that decide what is installed or how the tests
+# run (planner.is_build_script): build scripts and build backends' hooks,
+# the task runners' files that run the tests (nox, tox's plugin file), and
+# the modules the interpreter runs at start when they are on ``sys.path``.
+BUILD_SCRIPTS = frozenset(
+    {
+        "setup.py",
+        "hatch_build.py",
+        "pdm_build.py",
+        "noxfile.py",
+        "toxfile.py",
+        "sitecustomize.py",
+        "usercustomize.py",
+    }
+)
+# ``build.py`` is also an ordinary module name. It is a build script
+# (poetry's ``build`` setting) at the repository root or beside a
+# ``pyproject.toml``/``setup.cfg``.
+PROJECT_BUILD_SCRIPTS = frozenset({"build.py"})
+
+
+def _other_file(path: str, source_roots: list[str]) -> bool:
+    """Whether a file under the roots belongs among ``other_files`` (those
+    the index does not read): anything but Python, and a build script no
+    module name maps to (``packages/my-api/setup.py``), which would
+    otherwise not be seen at all."""
+    if not path.endswith(".py"):
+        return True
+    name = path.rpartition("/")[2]
+    return (name in BUILD_SCRIPTS or name in PROJECT_BUILD_SCRIPTS) and module_name_for(
+        path, source_roots
+    ) is None
 
 
 def _ls_tree_ids(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, str, str]]:
@@ -290,11 +344,26 @@ def expand_symlinks(
 def read_files(
     repo: Path, commit: str, paths: list[str], *, label: str | None = None
 ) -> dict[str, bytes]:
-    """Read blobs ``<commit>:<path>``; ``commit=""`` reads the index (``:path``)."""
+    """Read blobs ``<commit>:<path>``; ``commit=""`` reads the index
+    (``:0:<path>``, so a path such as ``1:x`` is not read as a stage).
+
+    ``cat-file --batch`` reads one object name per line, so a path holding a
+    line break (or a carriage return, which git strips from a line's end) is
+    resolved to its blob id first and asked for by id."""
     if not paths:
         return {}
     label = label or commit
-    request = "".join(f"{commit}:{p}\n" for p in paths).encode("utf-8", "surrogateescape")
+    lines: list[str] = []
+    for p in paths:
+        spec = f":0:{p}" if commit == "" else f"{commit}:{p}"
+        if "\n" in p or "\r" in p:
+            try:
+                oid = _git(repo, ["rev-parse", "--verify", "--quiet", spec]).decode().strip()
+            except GitError:
+                oid = ""
+            spec = oid or "0" * 40  # an unknown id: cat-file says "missing"
+        lines.append(spec)
+    request = "".join(f"{line}\n" for line in lines).encode("utf-8", "surrogateescape")
     out = _git(repo, ["cat-file", "--batch"], stdin=request)
     files: dict[str, bytes] = {}
     pos = 0
@@ -358,23 +427,62 @@ def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
     return {path: mode for path, (mode, _) in _ls_files_staged_ids(repo, source_roots).items()}
 
 
+def _flagged_paths(repo: Path, pathspec: list[str]) -> dict[str, bool]:
+    """Tracked paths flagged assume-unchanged or skip-worktree, each with
+    whether it is skip-worktree. git trusts the flag instead of looking at
+    the file, so ``ls-files -m`` and ``git diff`` say nothing about an edit
+    to one; the file on disk is what runs, and only hashing it tells.
+    (``ls-files -v`` tags an assume-unchanged entry in lower case, a
+    skip-worktree one ``S``.)"""
+    out = _git(repo, ["ls-files", "-z", "-v", "--cached", *pathspec])
+    flagged: dict[str, bool] = {}
+    for record in out.split(b"\0"):
+        tag, _, path = record.decode("utf-8", "surrogateescape").partition(" ")
+        if path and (tag.islower() or tag.upper() == TAG_SKIP_WORKTREE):
+            flagged[path] = flagged.get(path, False) or tag.upper() == TAG_SKIP_WORKTREE
+    return flagged
+
+
+def _submodule_id(repo: Path, path: str, recorded: str) -> str:
+    """What a submodule's gitlink would record if added now: the commit
+    checked out in it, as a commit or the index records it (``recorded``
+    when it is not checked out, as git itself treats it). Uncommitted edits
+    inside it change what runs without changing that commit, so they make
+    the id differ from every commit's (``<commit>-dirty``)."""
+    full = repo / path
+    if not (full / ".git").exists():
+        return recorded
+    try:
+        head = _git(full, ["rev-parse", "--verify", "--quiet", "HEAD"]).decode().strip()
+        dirty = _git(full, ["status", "--porcelain", "--untracked-files=normal"]).strip()
+    except GitError:
+        return recorded + "-unreadable"
+    if not head:
+        return recorded + "-unreadable"
+    return head + ("-dirty" if dirty else "")
+
+
 def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) -> dict[str, str]:
     """The git blob id each of ``paths`` would have if added now. A file git
-    reports unmodified has its staged id; a modified or untracked one is
-    hashed by ``git hash-object``, which applies the same filters (line
-    endings, clean filters) and object format as ``git add`` would, so equal
-    content gives the id a commit has. A symbolic link is the id of its
-    target path, as git stores it."""
+    reports unmodified has its staged id; a modified or untracked one, or
+    one flagged assume-unchanged or skip-worktree that is on disk (git does
+    not look at those), is hashed by ``git hash-object``, which applies the
+    same filters (line endings, clean filters) and object format as ``git
+    add`` would, so equal content gives the id a commit has. A symbolic link
+    is the id of its target path, as git stores it."""
     staged = _ls_files_staged_ids(repo, source_roots)
     listed = _git(
         repo, ["ls-files", "-z", "-m", "--others", "--exclude-standard", *_pathspec(source_roots)]
     )
     dirty = {p.decode("utf-8", "surrogateescape") for p in listed.split(b"\0") if p}
+    dirty.update(p for p in _flagged_paths(repo, _pathspec(source_roots)) if (repo / p).is_file())
     ids: dict[str, str] = {}
     to_hash: list[str] = []
     for path in paths:
         full = repo / path
-        if full.is_symlink():
+        if staged.get(path, ("", ""))[0] == GITLINK_MODE:
+            ids[path] = _submodule_id(repo, path, staged[path][1])
+        elif full.is_symlink():
             target = os.readlink(full).encode("utf-8", "surrogateescape")
             ids[path] = _git(repo, ["hash-object", "--stdin"], stdin=target).decode().strip()
         elif path in staged and path not in dirty:
@@ -391,14 +499,19 @@ def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) ->
     return ids
 
 
+def _listed(listing: bytes) -> list[str]:
+    """The paths of a NUL-separated git listing (``-z``: names are neither
+    quoted nor split at a line break in them)."""
+    return [raw.decode("utf-8", "surrogateescape") for raw in listing.split(b"\0") if raw]
+
+
 def _nested_configs(listing: bytes) -> list[str]:
     """Paths of ``asv.conf.json``, and of the package metadata a sibling
     package declares its pytest plugins in (``pyproject.toml``,
-    ``setup.cfg``), below the root in a newline-separated file listing,
+    ``setup.cfg``), below the root in a NUL-separated file listing,
     shallowest first and no deeper than ASV_CONFIG_DEPTH."""
     found = []
-    for raw in listing.split(b"\n"):
-        path = raw.decode("utf-8", "surrogateescape").strip()
+    for path in _listed(listing):
         parts = path.split("/")
         if len(parts) > 1 and parts[-1] in NESTED_CONFIGS and len(parts) <= ASV_CONFIG_DEPTH:
             found.append(path)
@@ -406,9 +519,8 @@ def _nested_configs(listing: bytes) -> list[str]:
 
 
 def _python_paths(listing: bytes) -> tuple[str, ...]:
-    """The ``.py`` paths in a newline-separated file listing, sorted."""
-    paths = (raw.decode("utf-8", "surrogateescape").strip() for raw in listing.split(b"\n"))
-    return tuple(sorted(p for p in paths if p.endswith(".py")))
+    """The ``.py`` paths in a NUL-separated file listing, sorted."""
+    return tuple(sorted(p for p in _listed(listing) if p.endswith(".py")))
 
 
 def _staged_config_files(repo: Path) -> dict[str, bytes]:
@@ -453,7 +565,7 @@ def read_commit_snapshot(
     if with_config:
         root = list_root_files(repo, commit)
         names = [n for n in CONFIG_FILES if n in root]
-        whole_tree = _git(repo, ["ls-tree", "-r", "--name-only", commit])
+        whole_tree = _git(repo, ["ls-tree", "-r", "-z", "--name-only", commit])
         nested = _nested_configs(whole_tree)
         config_files = read_files(repo, commit, names + nested)
         python_paths = _python_paths(whole_tree)
@@ -469,7 +581,9 @@ def read_commit_snapshot(
         config_files=config_files,
         python_paths=python_paths,
         other_files={
-            p: oid for _, oid, p in sorted(entries_ids, key=lambda e: e[2]) if not p.endswith(".py")
+            p: oid
+            for _, oid, p in sorted(entries_ids, key=lambda e: e[2])
+            if _other_file(p, source_roots)
         },
         cython_files=read_files(
             repo, commit, sorted(p for m, p in entries if is_cython(p) and m != SYMLINK_MODE)
@@ -530,7 +644,7 @@ def read_index_snapshot(
     config_files = _staged_config_files(repo) if with_config else {}
     python_paths: tuple[str, ...] = ()
     if with_config:
-        listing = _git(repo, ["ls-files", "-z", "--cached"]).replace(b"\0", b"\n")
+        listing = _git(repo, ["ls-files", "-z", "--cached"])
         nested = _nested_configs(listing)
         config_files.update(read_files(repo, "", nested, label=INDEX))
         python_paths = _python_paths(listing)
@@ -549,7 +663,7 @@ def read_index_snapshot(
         other_files={
             p: oid
             for p, (_, oid) in sorted(_ls_files_staged_ids(repo, source_roots).items())
-            if not p.endswith(".py")
+            if _other_file(p, source_roots)
         },
         cython_files=read_files(
             repo,
@@ -571,7 +685,10 @@ def read_worktree_snapshot(
     """Files on disk: tracked and untracked, minus ignored ones.
 
     Skip-worktree entries (sparse checkouts) are not on disk by design and
-    are read from the index instead of being treated as deletions.
+    are read from the index instead of being treated as deletions; when one
+    is on disk, as an assume-unchanged entry is, the file on disk is read
+    (git does not look at either). A submodule is listed with the commit
+    checked out in it, as a commit or the index lists its gitlink.
     """
     head = resolve_commit(repo, "HEAD")
     listed = _ls_files_tagged(repo, ["--cached", "--others", "--exclude-standard"], source_roots)
@@ -610,13 +727,11 @@ def read_worktree_snapshot(
             if full.is_file():
                 config_files[name] = full.read_bytes()
         listing = _git(repo, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
-        for name in _nested_configs(listing.replace(b"\0", b"\n")):
+        for name in _nested_configs(listing):
             full = repo / name
             if full.is_file():
                 config_files[name] = full.read_bytes()
-        python_paths = tuple(
-            p for p in _python_paths(listing.replace(b"\0", b"\n")) if (repo / p).is_file()
-        )
+        python_paths = tuple(p for p in _python_paths(listing) if (repo / p).is_file())
     return Snapshot(
         info=SnapshotInfo(
             revision=WORKTREE,
@@ -637,12 +752,15 @@ def read_worktree_snapshot(
                 {
                     p
                     for tag, p in listed
-                    if not p.endswith(".py")
+                    if _other_file(p, source_roots)
                     and not (tag == TAG_OTHER and is_bytecode(p))
                     and (
                         (repo / p).is_file()
                         or (repo / p).is_symlink()
                         or tag == TAG_SKIP_WORKTREE  # not on disk by design: the staged id
+                        # A tracked directory is a submodule (a gitlink), which
+                        # commits and the index list too.
+                        or (tag != TAG_OTHER and (repo / p).is_dir())
                     )
                 }
             ),

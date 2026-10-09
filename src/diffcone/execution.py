@@ -48,7 +48,17 @@ from diffcone.evidence import (
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
-from diffcone.snapshot import GitError, _git, is_bytecode, resolve_commit, split_root
+from diffcone.snapshot import (
+    INDEX,
+    WORKTREE,
+    GitError,
+    _flagged_paths,
+    _git,
+    file_id,
+    is_bytecode,
+    resolve_commit,
+    split_root,
+)
 
 
 def split_command(command: str) -> list[str]:
@@ -172,22 +182,34 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     # What matters is the code, not the commit: a checkout carrying an extra
     # commit that only adds a manifest runs the analysed code, while one
     # uncommitted edit to a source file does not.
-    against = ["diff", "--name-only"] + (
+    # ``-z``: without it git quotes a name with non-ASCII characters
+    # (``"pkg/\303\251.py"``), which then does not end in ``.py``.
+    against = ["diff", "--name-only", "-z"] + (
         [plan.head.commit] if plan.head.kind == KIND_COMMIT else []
     )
     try:
-        differing = _git(repo, against).decode("utf-8", "surrogateescape").split("\n")
+        differing = _git(repo, against).decode("utf-8", "surrogateescape").split("\0")
         untracked = (
-            _git(repo, ["ls-files", "--others", "--exclude-standard"])
+            _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
             .decode("utf-8", "surrogateescape")
-            .split("\n")
+            .split("\0")
         )
+        # git diff does not look at files flagged assume-unchanged or
+        # skip-worktree; what is on disk is what runs.
+        analysed_rev = plan.head.commit if plan.head.kind == KIND_COMMIT else INDEX
+        differing += [
+            path
+            for path in _flagged_paths(repo, [])
+            if path.endswith(".py")
+            and (repo / path).is_file()
+            and file_id(repo, WORKTREE, path) != file_id(repo, analysed_rev, path)
+        ]
     except GitError as exc:
         return f"cannot tell what the working tree holds: {exc}"
     roots = [split_root(r)[0] for r in plan.source_roots]
     in_scope = sorted(
         path
-        for path in {p.strip() for p in differing + untracked if p.strip()}
+        for path in {p for p in differing + untracked if p}
         if path.endswith(".py")
         and any(root in ("", ".") or path.startswith(root + "/") for root in roots)
     )
@@ -1127,8 +1149,8 @@ def _commits_in_range(repo: Path, revision_range: str) -> list[tuple[str, str, s
 
 
 def _touches_python(repo: Path, parent: str, commit: str) -> bool:
-    out = _git(repo, ["diff", "--name-only", parent, commit])
-    return any(line.endswith(".py") for line in out.decode("utf-8", "replace").splitlines())
+    out = _git(repo, ["diff", "--name-only", "-z", parent, commit])
+    return any(name.endswith(b".py") for name in out.split(b"\0"))
 
 
 def corpus_validation(

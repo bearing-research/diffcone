@@ -42,6 +42,7 @@ from diffcone.indexer.syntax import (
     FUNC_NODES,
     _digest,
     iter_scope_statements,
+    type_param_exprs,
 )
 from diffcone.model import (
     CLASS,
@@ -90,6 +91,18 @@ def _with_alternatives(bindings: list[Node]) -> Node:
         primary.overrides,
         primary.also,
         others,
+    )
+
+
+def _definition_scope(scope: ModuleScope, class_scope: ClassScope | None) -> Scope:
+    """Where a ``def`` or ``class`` statement's header (decorators, defaults,
+    annotations, type parameters) is evaluated: the module, or the body of
+    the class it stands in."""
+    return Scope(
+        module=scope,
+        locals=set(class_scope.bindings) if class_scope is not None else set(),
+        class_members=dict(class_scope.members) if class_scope is not None else {},
+        class_level=class_scope is not None,
     )
 
 
@@ -435,6 +448,14 @@ class Resolver(FirstPass):
                     for inner in stmt.body:
                         if not isinstance(inner, DEF_NODES):
                             collector.visit(inner)
+                # Type parameters' bounds and defaults are evaluated lazily,
+                # where the class statement stands: the class's, not import-time.
+                if bounds := type_param_exprs(stmt):
+                    params = _ReferenceCollector(
+                        self, symbol_id, _definition_scope(scope, class_scope), skip_defs=True
+                    )
+                    for expr in bounds:
+                        params.visit(expr)
                 # An import in the class body runs when the class is created,
                 # at import: the class and the module depend on the imported
                 # module's import-time code, as for a module-level import.
@@ -571,13 +592,12 @@ class Resolver(FirstPass):
         # Decorators, defaults and annotations evaluate where the ``def``
         # statement runs, so the function's own parameters must not shadow
         # them (``def f(info=info)`` refers to the module-level ``info``).
-        outer_scope = Scope(
-            module=scope,
-            locals=set(class_scope.bindings) if class_scope is not None else set(),
-            class_members=dict(class_scope.members) if class_scope is not None else {},
-            class_level=class_scope is not None,
-        )
+        outer_scope = _definition_scope(scope, class_scope)
         outer = _ReferenceCollector(self, symbol_id, outer_scope, skip_defs=True)
+        # Type parameters' bounds and defaults are evaluated lazily (when
+        # ``__bound__`` is read): the function's references, not import-time.
+        for expr in type_param_exprs(node):
+            outer.visit(expr)
         # Decorators, defaults and eagerly evaluated annotations run when the
         # ``def`` does, i.e. when the module is imported (a decorator such as
         # ``@app.get("/")`` calls into a framework then): the module depends on

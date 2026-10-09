@@ -69,9 +69,19 @@ A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
 contains it. A change outside your source roots to your runner
 configuration or build script (`pyproject.toml`, `tox.ini`, `setup.cfg`,
-`setup.py`, a `conftest.py`, `asv.conf.json`), to your dependencies (a lock
-file such as `uv.lock`, a `requirements*.txt`) or to a compiled source
-selects every target.
+`setup.py`, `noxfile.py`, `hatch.toml`, a `conftest.py`, `asv.conf.json`),
+to your dependencies (a lock file such as `uv.lock`, any file or directory
+named for requirements, constraints or deps, such as
+`dev-requirements.txt` or `ci/deps/py311.yaml`, a conda
+`environment*.yml`), to your CI configuration (`.github/workflows/`,
+`ci/`), to a `.env` or `.pth` file, `sitecustomize.py`, a type checker or
+linter configuration that a pytest plugin may run (`mypy.ini`,
+`ruff.toml`), or to a compiled source selects every target. Inside your
+source roots, a change to any file diffcone doesn't read as Python
+selects every target, and so does a change to a build script or
+`sitecustomize.py` there, wherever it sits. Other files outside the roots
+are assumed not to affect the tests: if your tests read one, put it under
+a source root.
 
 ### Fixtures from installed plugins
 

@@ -125,8 +125,8 @@ whitespace, comments and positions never matter.
 
 | Kind | `body_hash` | `definition_hash` |
 |---|---|---|
-| function/method | body statements | arguments (names, defaults, annotations), decorators, return annotation, sync/async |
-| class | class-level statements excluding member definitions | bases, keywords, decorators, **sorted member names** |
+| function/method | body statements | arguments (names, defaults, annotations), decorators, PEP 695/696 type parameters (names, bounds, constraints, defaults), return annotation, sync/async |
+| class | class-level statements excluding member definitions | bases, keywords, decorators, type parameters, **sorted member names** |
 | variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | the annotation, hashed apart: a change to it is `definition_changed` and runs at import unless the module defers annotations |
 | module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping, plus their layout: each binding with the blocks it sits in, in order. Only a pure insertion is `imports_added`; moving an import (under `if TYPE_CHECKING:`, into an `except`) or reordering imports is a definition change |
 
@@ -482,7 +482,24 @@ module and function that imports it, transitively, is affected, and
 through each test's dependency on its own module, every test that
 imports it. A function body change does not run at import; when
 import-time code calls the function, the module's edge to it carries the
-change. Import-time code includes more than top-level statements:
+change. The reverse holds too: a change to the import-time code that
+calls a function (`X = set_mode("slow")` -> `"faster"`, a class
+attribute, a decorator's or a default's argument) changes what that call
+does as a change to the callee's body would. So every variable that a
+function in the changed code's forward closure mutates in place (a
+`mutated_by` edge; the closure follows `references`, name-match and
+declared edges, not into modules) is seeded too, and reaches its readers
+however they get to it; the explanation runs `MODE -[references:mutated_by]->
+_store -[called_at_import]-> set_mode -[called_at_import]-> X`. A module
+seeded because it runs a changed symbol is explained by a
+`runs_at_import` step to that symbol. The changed symbol's references
+stand for its calls (a function's decorators, defaults and body share one
+symbol, and nothing tells a call from a read), which over-approximates.
+Type parameters (PEP 695 bounds, constraints and PEP 696 defaults) are
+evaluated lazily, so what they name is a reference of the function or
+class, not of its module's import. A `type X[T] = ...` statement is not a
+symbol: it is part of its module's body, which runs at import.
+Import-time code includes more than top-level statements:
 decorators (`@app.get("/")` builds a route handler), default values,
 annotations when evaluated eagerly, and class statements (bases, class
 decorators, class bodies, nested classes) all run when the module is
@@ -990,10 +1007,32 @@ Further rules (pre-release audit, round 2):
   configuration, build or dependency file outside the source roots (a root
   pytest config, any `conftest.py` or `asv.conf.json`, and anything
   `planner.build_input` names, as evidence mode's `unobserved_file_changed`
-  does: `pyproject.toml`, `setup.cfg`, `tox.ini`, build scripts, lock files
-  such as `uv.lock` and `pylock.toml`, `requirements*`/`constraints*`/
-  `environment*` files or directories, compiled sources) selects every
-  target, as a changed unanalysed file under the roots does. A static plan
+  does: `pyproject.toml`, `setup.cfg`, `tox.ini`, `hatch.toml`,
+  `poetry.toml`, `pdm.toml`, build scripts and `noxfile.py`/`toxfile.py`,
+  `sitecustomize.py`/`usercustomize.py`, `.pth` and `.env` files, lock
+  files such as `uv.lock` and `pylock.toml`, dependency files by a word in
+  their name or a directory's, in any case (`requirement`, `constraint`,
+  `deps`/`dependencies`, a leading `environment`, `conda-lock`: so
+  `dev-requirements.txt`, `Requirements.txt`, `requirements.pip`, pandas'
+  `ci/deps/*.yaml`), CI configuration (`.github/workflows/`,
+  `.github/actions/`, `.circleci/`, top-level `ci/` and `.ci/`,
+  `.gitlab-ci.yml`, `azure-pipelines.yml`, ...), the configuration of
+  checkers pytest plugins run as tests (`mypy.ini`, `pyrightconfig.json`,
+  `ruff.toml`, `.flake8`, `pylintrc`), compiled sources) selects every
+  target, as a changed unanalysed file under the roots does. Between
+  `INDEX` and `WORKTREE` the comparison is the working tree against the
+  index. Under the roots a build script (`setup.py`, `hatch_build.py`,
+  `pdm_build.py`, `noxfile.py`, `toxfile.py`, `sitecustomize.py`,
+  `usercustomize.py` anywhere; `build.py` at the repository root or beside
+  a `pyproject.toml`/`setup.cfg`) is indexed but nobody imports it, so a
+  change to one selects every target (`planner.is_build_script`); one no
+  module name maps to (`packages/my-api/setup.py`) is listed among the
+  unanalysed files instead (`snapshot._other_file`). Other `.py` files no
+  module name maps to are not read at all, like a module nobody imports: a
+  test running one as a script is a subprocess static planning does not
+  follow. Other files outside the roots (`README`, a `Dockerfile`) are
+  assumed not to affect the tests: a test that reads one needs a root over
+  it. A static plan
   assumes both revisions run in one environment; a change to what is
   installed breaks that, and evidence mode's environment check does not
   help, since it falls back to the static plan.
