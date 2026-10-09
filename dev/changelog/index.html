@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1082,6 +1093,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1320,6 +1342,17 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A pull request that changes only dependencies selected no tests when the
+  source roots don't hold the repository root: a lock file (<code>uv.lock</code>,
+  <code>poetry.lock</code>, <code>pylock.toml</code>), a <code>requirements*</code> or <code>environment*</code> file,
+  or a workspace member's <code>pyproject.toml</code> outside the roots was ignored.
+  Such a change, and a compiled source outside the roots, now selects every
+  target, as it already did under a root and in evidence mode. Evidence
+  mode now also treats <code>pylock.toml</code>, <code>conda-lock.yml</code>, <code>uv.toml</code> and
+  <code>pytest.toml</code> this way.</li>
+</ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test run that changes its own environment (a test that installs or

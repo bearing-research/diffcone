@@ -1136,9 +1136,11 @@ pytest gives it: autouse fixtures (such as one that fills
 file is always selected.</p>
 <p>A <code>conftest.py</code> outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
-contains it. A change to your runner configuration or build script
-(<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>, <code>setup.py</code>, a <code>conftest.py</code>,
-<code>asv.conf.json</code>) outside your source roots selects every target.</p>
+contains it. A change outside your source roots to your runner
+configuration or build script (<code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>,
+<code>setup.py</code>, a <code>conftest.py</code>, <code>asv.conf.json</code>), to your dependencies (a lock
+file such as <code>uv.lock</code>, a <code>requirements*.txt</code>) or to a compiled source
+selects every target.</p>
 <h3 id="fixtures-from-installed-plugins">Fixtures from installed plugins<a class="headerlink" href="#fixtures-from-installed-plugins" title="Permanent link">&para;</a></h3>
 <p>A fixture that isn't defined in your source roots usually comes from an
 installed plugin. diffcone recognises the fixtures of well-known plugins

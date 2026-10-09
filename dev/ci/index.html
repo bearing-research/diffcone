@@ -1244,8 +1244,9 @@ the run's JUnit XML are written to <code>diffcone-results/</code>; upload them w
 <p><code>command</code> and <code>pytest-args</code> must be the same in both workflows, and the
 environment must match: the same Python version and installed packages.
 Installing from a lock file makes this automatic. When the environment
-differs, or the pull request changes the lock file, diffcone runs a
-plan from the code instead of from the recording.</p>
+differs, diffcone runs a plan from the code instead of from the
+recording; when the pull request changes the lock file or another
+dependency file, it runs every test.</p>
 </div>
 <h2 id="check-against-a-full-run-optional">Check against a full run (optional)<a class="headerlink" href="#check-against-a-full-run-optional" title="Permanent link">&para;</a></h2>
 <p>While you build trust in the selection, keep your existing full test job
