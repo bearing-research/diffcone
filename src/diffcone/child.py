@@ -412,15 +412,16 @@ DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text
 
 def environments(roots: tuple[str, ...]) -> tuple[str, ...]:
     """What the interpreter's environments kept inside the checkout own,
-    relative to a root (``svc/bin/``, ``.venv/lib/python3.13/``,
-    ``svc/pyvenv.cfg``): installed code, like ``site-packages``, scripts
-    included (``uv run pytest`` runs ``.venv/bin/pytest``). Only those: an
-    environment made in a directory that holds source (``cd svc && python -m
-    venv .``) leaves the source the project's. The fold refuses a recording
+    relative to a root (``svc/bin/``, ``.venv/lib/python3.13/``, on Windows
+    ``.venv/Scripts/`` and ``.venv/Lib/site-packages/``, ``svc/pyvenv.cfg``):
+    installed code, like ``site-packages``, scripts included (``uv run
+    pytest`` runs ``.venv/bin/pytest``). Only those: an environment made in a
+    directory that holds source (``cd svc && python -m venv .``) leaves the
+    source the project's. The fold refuses a recording
     in which one of them holds an indexed file. ``roots`` end in a
     separator, and are case-folded on Windows."""
     if os.name == "nt":
-        owned = ["Scripts" + os.sep, "pyvenv.cfg"]
+        owned = ["Scripts" + os.sep, os.path.join("Lib", "site-packages", ""), "pyvenv.cfg"]
     else:
         version = f"python{sys.version_info[0]}.{sys.version_info[1]}"
         abiflags = getattr(sys, "abiflags", "")
@@ -466,16 +467,16 @@ def _broken() -> None:
     global _fd
     fd, _fd = _fd, -1
     try:
+        os.close(fd)  # first: Windows renames no open file
+    except OSError:
+        pass
+    try:
         os.rename(_path, _path + BROKEN)
     except OSError:
         try:
-            os.ftruncate(fd, 0)
+            os.close(os.open(_path, os.O_WRONLY | os.O_TRUNC))
         except OSError:
             pass
-    try:
-        os.close(fd)
-    except OSError:
-        pass
 
 
 def _flag(why: str) -> None:

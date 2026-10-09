@@ -581,3 +581,15 @@ def test_evp3_a_test_class_instance_handed_to_a_library_lookup(repo):
     plan = _plan(repo, base, head, ev)
     # test_other runs the same lookup, but never holds a Helper.
     assert selected(plan) == {"tests/test_h.py::test_h", "tests/test_helpers.py::test_helpers"}
+
+
+def test_evp7_line_endings_are_no_change_inside_a_cython_string():
+    """Strings keep their whitespace now, so a CRLF checkout (Windows) must
+    read as the LF one: Cython, like Python, reads universal newlines."""
+    from diffcone.cython import cython_changes, read
+
+    text = 'def total(a):\n    """Sum.\n\n    More.\n    """\n    return a\n'
+    lf = {"pkg/_ext.pyx": read("pkg/_ext.pyx", text)}
+    crlf = {"pkg/_ext.pyx": read("pkg/_ext.pyx", text.replace("\n", "\r\n"))}
+    changes = cython_changes(lf, crlf)
+    assert not changes.functions and not changes.names

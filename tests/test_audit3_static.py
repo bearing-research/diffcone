@@ -7,6 +7,7 @@ Each test names the finding it guards and failed before its fix.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -201,14 +202,20 @@ def test_pln6_always_run_runner_of_a_manifest_target_or_absent_from_the_plan(rep
 
 # IDX-4: PEP 695/696 type parameters.
 
+# PEP 696 defaults parse from Python 3.13.
+needs_defaults = pytest.mark.skipif(
+    sys.version_info < (3, 13), reason="type parameter defaults need Python 3.13"
+)
+
 TYPE_PARAM_CASES = [
     (
         "def entry[T: int]():\n    return entry.__type_params__[0].__bound__\n",
         "def entry[T: str]():\n    return entry.__type_params__[0].__bound__\n",
     ),
-    (
+    pytest.param(
         "def entry[T = int]():\n    return entry.__type_params__[0].__default__\n",
         "def entry[T = str]():\n    return entry.__type_params__[0].__default__\n",
+        marks=needs_defaults,
     ),
     (
         "def entry[T: (int, str)]():\n    return entry.__type_params__[0].__constraints__\n",
@@ -262,8 +269,11 @@ def test_idx4_type_parameter_change_is_a_change(repo, before, after):
     [
         "from pkg.make import make\n\n\ndef entry[T: make]():\n"
         "    return entry.__type_params__[0].__bound__()\n",
-        "from pkg.make import make\n\n\ndef entry[T = make]():\n"
-        "    return entry.__type_params__[0].__default__()\n",
+        pytest.param(
+            "from pkg.make import make\n\n\ndef entry[T = make]():\n"
+            "    return entry.__type_params__[0].__default__()\n",
+            marks=needs_defaults,
+        ),
         "from pkg.make import make\n\n\nclass C[T: make]:\n    pass\n\n\n"
         # (``C.__type_params__`` alone is no reference to C: an attribute
         # nothing defines, read off a class, is only a name match.)
@@ -378,6 +388,7 @@ def test_idx7_submodule_at_another_commit_is_a_change(tmp_path):
 # IDX-8: odd paths.
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no line break in a name")
 def test_idx8_python_path_with_a_line_break(repo):
     """``cat-file --batch`` reads one name per line: the plan failed with
     "cannot read". The text file (read for doctests) is a file the index

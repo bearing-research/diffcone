@@ -240,6 +240,9 @@ def _function_name(header: str) -> str | None:
 
 
 def read(path: str, text: str) -> CythonModule:
+    # Cython reads source with universal newlines, as Python does: a
+    # checkout with CRLF line endings holds the same strings as one with LF.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = text.split("\n")
     n = len(lines)
     in_string, code = _in_strings(lines)

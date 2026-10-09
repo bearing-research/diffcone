@@ -292,7 +292,8 @@ def test_rec3_a_library_reading_a_file_as_a_conftest_imports_it(repo, fakeplot):
 # REC-4: an environment made in a directory that holds source.
 
 SVC_IGNORE = {
-    ".gitignore": "__pycache__/\n.diffcone/\nsvc/bin/\nsvc/lib/\nsvc/include/\nsvc/pyvenv.cfg\n"
+    ".gitignore": "__pycache__/\n.diffcone/\nsvc/bin/\nsvc/lib/\nsvc/lib64\nsvc/include/\n"
+    "svc/Scripts/\nsvc/Lib/\nsvc/Include/\nsvc/pyvenv.cfg\n"
 }
 
 
@@ -356,7 +357,7 @@ def test_rec4_a_project_file_in_what_an_environment_owns_is_refused(repo):
     holding a file of the project would hide what ran from it."""
     files = {
         ".gitignore": "__pycache__/\n.diffcone/\nsvc/bin/python*\nsvc/bin/pip*\nsvc/bin/activate*\n"
-        "svc/bin/Activate*\nsvc/lib/\nsvc/include/\nsvc/pyvenv.cfg\n",
+        "svc/bin/Activate*\nsvc/lib/\nsvc/lib64\nsvc/include/\nsvc/pyvenv.cfg\n",
         "pytest.ini": "[pytest]\npythonpath = svc/bin\n",
         "svc/bin/tool.py": CORE,
         "tests/test_tool.py": "from tool import f\n\n\ndef test_f():\n    assert f() == 1\n",
