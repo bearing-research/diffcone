@@ -1033,6 +1033,24 @@ def test_a_writer_newly_run_at_import_reaches_the_lookups(repo):
     assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
 
 
+def test_a_library_import_reaches_no_lookup_only_tests_write_for(repo):
+    files = {
+        **EXTERNAL,
+        "pkg/extra.py": "def marker():\n    return 1\n",
+        "tests/test_patched.py": EXTERNAL["tests/test_patched.py"]
+        .replace("from pkg.extra import install, marker", "from pkg.extra import marker")
+        .split("\n\n\ndef test_installed")[0]
+        + "\n",
+    }
+    base, ev = _collected(repo, files)
+    # Module-level code of pkg.ops changed: its import-time state may differ,
+    # but the only writer to builtins is a test.
+    head = repo.commit({"pkg/ops.py": OPS + "\n\nif OPS_READY := True:\n    pass\n"})
+    plan = _plan(repo, base, head, ev)
+    assert "pkg.ops" in plan.evidence["escalated_modules"]
+    assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
+
+
 @pytest.mark.parametrize("where", ["module level", "called at import", "in a hook"])
 def test_a_lookup_on_a_module_written_outside_tests_sees_every_name(repo, where):
     files = dict(EXTERNAL)

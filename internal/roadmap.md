@@ -762,8 +762,11 @@ environment, and the report shows it per cell.
 
 ## 13. Readers of a test fake's member (strata trial)
 
-**Status.** Implemented (2026-10-08), unreleased; strata measurement
-pending. strata #1055 (`0da0faf7`) added
+**Status.** Implemented (2026-10-08), unreleased. On `0da0faf7`, with
+the recording at its parent, evidence selects 2 384 of 5 827 tests (40.9
+%, from 3 135, 53.8 %). The name-match readers fell from 1 849 to 612: 588
+of those come from a library change in `server.py` and 4 from test-code
+lookup sites that can see the fake. strata #1055 (`0da0faf7`) added
 `_FakePipe.read` to a fake in `tests/notebook/test_remote_console_stream.py`.
 Under evidence, an added method's readers join E, and its readers include
 every name match: every `x.read()` on a receiver the index cannot type. So
@@ -854,8 +857,10 @@ check` against a full run at `0da0faf7` showing no miss.
 
 ## 14. Lookups on an external module the project writes to, under evidence (strata trial)
 
-**Status.** Implemented (2026-10-08), unreleased; strata measurement
-pending. A lookup by a name nothing bounds on an
+**Status.** Implemented (2026-10-08), unreleased. With item 13, `0da0faf7`
+selects 1 921 of 5 827 tests (33.0 %). `diffcone check` against full runs
+at `0da0faf7` and its parent finds no miss, but that commit has no new
+failure, so it could not have shown one. A lookup by a name nothing bounds on an
 external module (`dir(builtins)`, `hasattr(os, name)`, `getattr(httpx,
 name)`) is bounded, unless project code writes to that module (or one
 above or below it). strata's tests do: `monkeypatch.setattr(builtins,
@@ -885,7 +890,11 @@ where the store was visible:
 So under evidence such a site does not join E through `_sites` for a
 change elsewhere. It still joins E on an escalation (`_escalate_change`,
 `_escalate_module`): import-time code that changed may now write to the
-module at import, for every later test. The rule is off, and the site
+module at import, for every later test. On the escalation of a library
+module it joins only if a writer is outside test code. The library does
+not import tests, and a test-code writer that ran during an import at C
+already turns the rule off. On `0da0faf7`, a dataclass change escalates
+`strata.notebook.tui.viewmodel`, and every writer to `builtins` is a test. The rule is off, and the site
 stays as now, when any writer is module or class top-level code (a write
 at import, or a `mock.patch` decorator), or ran during an import or
 outside every test at C (`import_phase`, `import_by`, `hook_phase`).

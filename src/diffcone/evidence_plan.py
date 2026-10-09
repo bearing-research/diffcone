@@ -400,8 +400,11 @@ class _Observers:
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, str]] = []  # (symbol, kind)
         # Sites on an external module that only test-window code writes to
-        # (``_written_in_tests``): seen only on an escalation.
+        # (``_written_in_tests``): seen only on an escalation, and on a
+        # library module's only when a writer is not test code. Site -> its
+        # writers.
         self.escalation_sites: list[tuple[str, str]] = []
+        self.escalation_writers: dict[str, set[str]] = defaultdict(set)
         external: dict[tuple[str, str], set[str]] = defaultdict(set)
         for index in (c_index, other):
             for key, writers in index.external_sites.items():
@@ -417,15 +420,19 @@ class _Observers:
             for ref in index.unresolved:
                 if ref.kind == UNRESOLVED_DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
-                    if self._written_in_tests(external.get((ref.symbol, ref.detail))):
+                    writers = external.get((ref.symbol, ref.detail))
+                    if self._written_in_tests(writers):
                         self.escalation_sites.append(site)
+                        self.escalation_writers[ref.symbol].update(writers or ())
                     else:
                         self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
             for symbol, detail in index.reflection:
-                if self._written_in_tests(external.get((symbol, detail))):
+                writers = external.get((symbol, detail))
+                if self._written_in_tests(writers):
                     self.escalation_sites.append((symbol, SITE_ANY))
+                    self.escalation_writers[symbol].update(writers or ())
                 else:
                     self.sites.append((symbol, SITE_ANY))
         for decl in declarations:
@@ -1250,8 +1257,12 @@ class _Observers:
         ever instantiates (planner._runner_only_classes) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
         hold one of its instances. On an escalation (import-time state that
-        may differ), lookups on an external module that only test code writes
-        to count too: changed import-time code may write there."""
+        may differ), lookups on an external module that only test-window code
+        writes to count too: changed import-time code may write there. A
+        library module's import reaches no writer in test code (the library
+        does not import tests, and a writer that ran in an import at C turns
+        the bound off), so for one of those only sites with a writer outside
+        test code count."""
         out: list[tuple[str, str]] = []
         namespace = symbol.module
         test = self.test_code.is_test_code(namespace)
@@ -1260,7 +1271,20 @@ class _Observers:
         # Only code that imports it, or is handed it (below), can look a
         # module-level name up on it.
         module_name = test and (symbol.kind == MODULE or symbol.container == namespace)
-        sites = sorted(self.sites + self.escalation_sites) if escalation else self.sites
+        sites = self.sites
+        if escalation:
+            sites = sorted(
+                sites
+                + [
+                    (site, kind)
+                    for site, kind in self.escalation_sites
+                    if test
+                    or not all(
+                        w in self.symbols and self.test_code.is_test_code(self.symbols[w].module)
+                        for w in self.escalation_writers[site]
+                    )
+                ]
+            )
         for site, kind in sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
