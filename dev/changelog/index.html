@@ -1355,6 +1355,16 @@ selection rules.</p>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
+<li>A Python process a test starts with <code>subprocess</code> (directly, through
+  <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and
+  the test is credited with what it ran instead of being selected for
+  every change. So is every test that runs while the process is still
+  running (a server or a warm worker another test started). A process
+  started another way (<code>os.system</code>, a shell, <code>multiprocessing</code>, anything
+  on Windows), one that cannot record itself (a replaced environment,
+  <code>python -S</code>, Python before 3.12), and one running project code from a
+  <code>-c</code> snippet or a script outside the source roots still select their
+  test for every change.</li>
 <li>A test run that changes its own environment (a test that installs or
   upgrades a package with the test interpreter) is named: <code>collect</code> warns
   with the packages, the recording keeps the environment it started in,

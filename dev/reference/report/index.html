@@ -1316,7 +1316,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>subprocess</code></td>
 <td>yes</td>
-<td>The test started a subprocess, which the recording can't follow.</td>
+<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, or one running your code from a <code>-c</code> snippet or a script outside your source roots.</td>
 </tr>
 <tr>
 <td><code>pytest_hook_changed</code></td>
