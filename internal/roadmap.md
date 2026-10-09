@@ -1129,3 +1129,59 @@ version control and edits them (no known case) would lose their reads.
 * a recording of strata at `edc32ce0` with `uv run pytest` has no test
   file under `import_paths` with no module, and #1085's edit replayed on
   it plans without a fallback.
+
+## 17. Targets the project always runs (`always_run` in `diffcone.toml`)
+
+**Status.** Sketch (2026-10-09). Some tests are not worth planning: an
+end-to-end suite that drives the whole product (strata's E2E job, its
+notebook-harness tests, which run cells through `exec` and so are
+selected by nearly any change anyway). Running them on every pull request
+is the project's decision, and today it can only make it outside
+diffcone: a separate CI step running them in full, which the diffcone run
+then duplicates or must be told to skip by hand. Without either, strata's
+E2E job selected 0 of 59 tests for a dependency-only pull request.
+
+**Mechanism.**
+
+* *Declaration.* `diffcone.toml` takes `[[always_run]]` tables:
+
+  ```toml
+  [[always_run]]
+  targets = "tests/notebook/*"   # fnmatch on the runner id; * crosses / and ::
+  runner = "pytest"              # optional: only this runner's targets
+  why = "notebook runs are end to end"
+  ```
+
+  Read from both snapshots, like `[[edges]]`: one the change deletes still
+  counts for that plan. An unknown key, a missing or empty `targets`, a
+  non-string value, or a head-snapshot entry that matches no target (a
+  typo, a moved directory) is an analysis error, so the plan selects
+  everything rather than quietly planning tests meant to always run.
+  Base-only entries matching nothing are not errors (the change removed
+  those tests and the entry together).
+* *Planning.* After either planner (static or evidence) has decided, each
+  target an entry matches is selected, with an `always_run` reason giving
+  the pattern and `why`. Matching runs on the targets the plan holds
+  (manifest and discovery), so the check for unmatched entries runs before
+  planning, where an analysis error can still force select-all.
+* *Report.* The JSON report lists the entries (`always_run`, beside
+  `declarations`) and counts the matched targets
+  (`analysis.counts.always_run`); the text report lists them. `diffcone
+  report` computes a job's selected share over the targets not always run,
+  so the share measures what diffcone decided.
+* *Recording.* `collect` still runs them. Its run is also the full test
+  run of a push to the main branch in the CI setups, so dropping them
+  there would leave them unrun; a recording of a test always selected is
+  simply never read.
+
+**Trade-off.** It only widens selection. A broad pattern costs CI time,
+which is the project's choice and visible in the report.
+
+**Done when**
+* scenarios (pytest and ASV targets): an entry selects its matching
+  targets on a change that reaches none of them, in static and evidence
+  mode; `runner` restricts it; a head entry matching nothing, an unknown
+  key and a missing `targets` are analysis errors that select everything;
+  a base-only entry matching nothing is not; the JSON report carries the
+  entries and the count, and `diffcone report`'s share leaves them out;
+* the reference page for `diffcone.toml` documents it.
