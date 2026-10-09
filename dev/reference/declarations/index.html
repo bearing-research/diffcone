@@ -676,6 +676,23 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="././" class="md-nav__link md-nav__link--active">
         
   
@@ -691,6 +708,48 @@
   
 
       </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#tests-to-run-on-every-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Tests to run on every change
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-can-go-wrong" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What can go wrong
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -800,6 +859,11 @@
                       
                     
                     
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
                   
                   <div class="md-sidebar__inner">
                     
@@ -811,6 +875,36 @@
   
     
   
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#tests-to-run-on-every-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Tests to run on every change
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-can-go-wrong" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What can go wrong
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -939,11 +1033,51 @@ selection with your <code>why</code>.</p>
 </tr>
 </tbody>
 </table>
-<p>Declarations can only add dependencies, so they can only make diffcone
-select more tests, never fewer.</p>
+<h2 id="tests-to-run-on-every-change">Tests to run on every change<a class="headerlink" href="#tests-to-run-on-every-change" title="Permanent link">&para;</a></h2>
+<p>Some tests are worth running on every pull request whatever it changes: an
+end-to-end suite, tests that drive the whole product. Name them with
+<code>[[always_run]]</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[[always_run]]</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"tests/e2e/*"</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">why</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"end to end"</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">[[always_run]]</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"*.TimeSuite.*"</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">runner</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"asv"</span>
+</code></pre></div>
+<p>Every target an entry matches is selected in every plan, and the report
+gives the entry as the reason.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>targets</code></td>
+<td>Required. A pattern on the target's id, as the report shows it (<code>tests/e2e/test_flow.py::test_login</code>, <code>bench_io.TimeRead.time_csv</code>). <code>*</code> matches any characters, <code>/</code> and <code>::</code> included; <code>?</code> and <code>[...]</code> work as in shell patterns.</td>
+</tr>
+<tr>
+<td><code>runner</code></td>
+<td>Optional. Only this runner's targets (<code>pytest</code>, <code>asv</code>).</td>
+</tr>
+<tr>
+<td><code>why</code></td>
+<td>Optional. A short explanation, shown in the report.</td>
+</tr>
+</tbody>
+</table>
+<p>The tests still run when diffcone records a full run (<code>diffcone collect</code>),
+so the run that records evidence still tests them.</p>
+<h2 id="what-can-go-wrong">What can go wrong<a class="headerlink" href="#what-can-go-wrong" title="Permanent link">&para;</a></h2>
+<p>Declarations can only add dependencies or selected tests, so they can only
+make diffcone select more tests, never fewer.</p>
 <p>diffcone reads the file from both snapshots, so it changes along with your
-code. A declaration that names something that doesn't exist, an unknown
-key, or a file that doesn't parse is reported as an analysis error: the
+code. A declaration that names something that doesn't exist, an
+<code>always_run</code> pattern that matches no target, an unknown key, or a file
+that doesn't parse is reported as an analysis error: the
 plan then selects every target, so a typo can't silently remove tests from
 a plan. A declaration between two very large modules (more than 5,000
 pairs of symbols) is also an error; declare the specific functions

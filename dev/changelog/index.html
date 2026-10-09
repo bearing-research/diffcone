@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fixed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -908,7 +919,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#planning" class="md-nav__link">
+  <a href="#planning_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -958,7 +969,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_1" class="md-nav__link">
+  <a href="#planning_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1093,6 +1104,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fixed" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1204,7 +1226,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#planning" class="md-nav__link">
+  <a href="#planning_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1254,7 +1276,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_1" class="md-nav__link">
+  <a href="#planning_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1342,6 +1364,16 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: tests (or benchmarks)
+  matching a pattern on their id are selected in every plan, with or
+  without a recording, and the report gives the entry as the reason. An
+  entry that matches nothing is an analysis error, so a typo selects
+  everything instead of quietly dropping those tests. The JSON report
+  lists the entries and counts what they selected, and <code>diffcone report</code>
+  computes a job's selected share without them.</li>
+</ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A pull request that changes only dependencies selected no tests when the
@@ -1456,7 +1488,7 @@ selection rules.</p>
   <code>fail-on-test-failure: true</code> fails the job on failing tests, as a plain
   test run would. Pull requests then run only the selection.</li>
 </ul>
-<h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
+<h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A dynamic import through a literal table of tuples is bounded by the
   table: a PEP 562 lazy-export <code>__getattr__</code> (<code>target =
@@ -1499,7 +1531,7 @@ selection rules.</p>
 </ul>
 <h2 id="010-2026-10-07"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.1.0">0.1.0</a> - 2026-10-07<a class="headerlink" href="#010-2026-10-07" title="Permanent link">&para;</a></h2>
 <p>The first release.</p>
-<h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
+<h3 id="planning_2">Planning<a class="headerlink" href="#planning_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone plan</code> compares two snapshots (git revisions, the staged
   <code>INDEX</code>, or the <code>WORKTREE</code>) and reports which tests and benchmarks a

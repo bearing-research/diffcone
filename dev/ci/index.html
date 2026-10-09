@@ -1336,7 +1336,9 @@ recording; pull requests only restore it.</p>
 <h2 id="report-on-recent-runs">Report on recent runs<a class="headerlink" href="#report-on-recent-runs" title="Permanent link">&para;</a></h2>
 <p>Once every job runs through diffcone, a scheduled <code>report</code> job reads what
 the jobs uploaded and sums it up: for pull requests, the share of tests
-each job selected and how often it planned without a recording (and what
+each job selected (leaving out the tests
+<a href="../reference/declarations/#tests-to-run-on-every-change"><code>[[always_run]]</code></a>
+names) and how often it planned without a recording (and what
 differed); for recordings, whether each pushed commit was checked, its new
 failures, flaky tests and misses. It adds the report as a comment on an
 issue labelled <code>diffcone-report</code>, and opens one issue, labelled

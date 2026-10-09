@@ -1122,6 +1122,10 @@ summary of the same information). The report's format is versioned by
 <td>The dependencies declared in <a href="../declarations/"><code>diffcone.toml</code></a>.</td>
 </tr>
 <tr>
+<td><code>always_run</code></td>
+<td>The <code>[[always_run]]</code> entries of <a href="../declarations/"><code>diffcone.toml</code></a>; <code>analysis.counts.always_run</code> counts the targets they selected.</td>
+</tr>
+<tr>
 <td><code>discovery</code></td>
 <td>For each runner: how many targets were found, the configuration read, and any notes.</td>
 </tr>
@@ -1215,6 +1219,11 @@ selected the target to be safe.</p>
 <td><code>declared_dependency</code></td>
 <td></td>
 <td>A dependency declared in <code>diffcone.toml</code> connects it to a change.</td>
+</tr>
+<tr>
+<td><code>always_run</code></td>
+<td></td>
+<td>An <code>[[always_run]]</code> entry in <code>diffcone.toml</code> names it: it runs on every change.</td>
 </tr>
 <tr>
 <td><code>dynamic_reference</code></td>

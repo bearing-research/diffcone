@@ -1229,8 +1229,13 @@ entry points, a handler named in a configuration file. Declare them in a
 <a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">to</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"pkg.handlers.json_handler"</span>
 <a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">why</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"handlers register themselves through entry points"</span>
 </code></pre></div>
-<p>Now a change to <code>json_handler</code> selects the tests that reach <code>dispatch</code>. See
-the <a href="../../reference/declarations/"><code>diffcone.toml</code> reference</a>.</p>
+<p>Now a change to <code>json_handler</code> selects the tests that reach <code>dispatch</code>.</p>
+<p>Tests you want on every pull request whatever it changes, such as an
+end-to-end suite, go in the same file:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[[always_run]]</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"tests/e2e/*"</span>
+</code></pre></div>
+<p>See the <a href="../../reference/declarations/"><code>diffcone.toml</code> reference</a>.</p>
 <h2 id="speed">Speed<a class="headerlink" href="#speed" title="Permanent link">&para;</a></h2>
 <p>diffcone caches its analysis in <code>.diffcone/cache/</code> (add <code>.diffcone/</code> to
 your <code>.gitignore</code>). Committed snapshots are analysed once, and every file
