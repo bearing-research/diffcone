@@ -24,7 +24,8 @@ from diffcone.indexer.definitions import (
 from diffcone.indexer.literals import (
     _collect_literal_bindings,
     _collect_store_names,
-    _module_mutations,
+    _module_containers,
+    make_evaluator,
 )
 from diffcone.indexer.scopes import (
     ClassScope,
@@ -45,6 +46,7 @@ from diffcone.indexer.syntax import (
     iter_scope_statements,
     type_params,
 )
+from diffcone.indexer.uses import UseRecord, scan_module
 from diffcone.model import (
     CLASS,
     DEFINED_IN,
@@ -137,8 +139,14 @@ class FirstPass(IndexerState):
         for stmt in stmts:
             if not isinstance(stmt, DEF_NODES + (ast.Import, ast.ImportFrom)):
                 scope.bindings |= _collect_store_names(stmt)
-        scope.literal_names = _collect_literal_bindings(scope.tree, {})
-        scope.mutations = frozenset(_module_mutations(scope.tree))
+        sources: dict[str, set[str]] = {}
+        scope.literal_names = _collect_literal_bindings(scope.tree, {}, sources=sources)
+        scope.literal_sources = {k: tuple(sorted(v)) for k, v in sorted(sources.items())}
+        scope.containers = _module_containers(scope.tree)
+        found = scan_module(
+            scope.tree, scope.name, scope.is_package, make_evaluator(scope.literal_names)
+        )
+        scope.uses = tuple(sorted(found.records, key=UseRecord.to_list))
         imports = tuple(sorted(_canonical_imports(scope)))
         layout = _import_layout(scope)
         # A variable statement is its own symbol, so it leaves the module's

@@ -5,9 +5,10 @@ mutates in place."""
 from __future__ import annotations
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES
+from diffcone.indexer.uses import scan_names
 
 # Synthetic key in a literal table: what *indexing* the literal bound to NAME
 # yields -- a dict display's values, a sequence display's elements -- kept
@@ -57,6 +58,9 @@ def _literal_strings(expr: ast.expr) -> tuple[str, ...] | None:
     if isinstance(expr, (ast.Tuple, ast.List, ast.Set)):
         out: list[str] = []
         for elt in expr.elts:
+            if isinstance(elt, (ast.List, ast.Set, ast.Dict)):
+                # Iterating yields a container, which can change in place.
+                return None
             values = _literal_strings(elt)
             if values is None:
                 return None
@@ -199,15 +203,47 @@ def _dict_method_receiver(expr: ast.expr, method: str) -> ast.expr | None:
     return None
 
 
+def _live(value: ast.expr) -> bool:
+    """Whether binding ``value`` binds a container, or a live view of one,
+    rather than a string or a tuple of them taken out of it."""
+    if isinstance(value, (ast.Dict, ast.List, ast.Set, ast.Name)):
+        return True
+    return any(_dict_method_receiver(value, m) is not None for m in ("keys", "values", "items"))
+
+
 def _collect_literal_bindings(
-    node: ast.AST, module_literals: dict[str, tuple[str, ...] | None]
+    node: ast.AST,
+    module_literals: dict[str, tuple[str, ...] | None],
+    *,
+    sources: dict[str, set[str]] | None = None,
 ) -> dict[str, tuple[str, ...] | None]:
     """Names bound in ``node``'s scope to string literals, tuples of them, or
     loop variables over such tuples. A name with any other binding maps to
     None (unbounded); nested scopes are not entered. A name bound to a dict
     or sequence display also gets what indexing it yields under
-    ``name + INDEXED``."""
+    ``name + INDEXED``.
+
+    A container stays bounded only while every use of it, here or in a
+    nested scope, is a read (diffcone.indexer.uses): one that is mutated,
+    handed on or aliased anywhere in the scope is unbounded throughout it,
+    and so is everything when the scope reaches its namespace
+    (``globals()``, ``exec`` of code built at run time). With ``sources``,
+    each name also collects the names its values were taken from, so a
+    container another module turns out to change can unbound what was read
+    out of it (Indexer._apply_uses)."""
+    uses = scan_names(node)
+    leaks = uses.names
     found: dict[str, tuple[str, ...] | None] = {}
+    origins: dict[str, set[str]] = sources if sources is not None else {}
+
+    def taken_from(name: str, expr: ast.expr) -> None:
+        if sources is None:
+            return
+        deps = {n.id for n in ast.walk(expr) if isinstance(n, ast.Name) and n.id in found} - {name}
+        for dep in list(deps):
+            deps |= origins.get(dep, set())
+        if deps:
+            origins.setdefault(name, set()).update(deps)
 
     def merge(name: str, values: tuple[str, ...] | None) -> None:
         known = found.get(name)
@@ -257,18 +293,27 @@ def _collect_literal_bindings(
             for target in n.targets:
                 if isinstance(target, ast.Name):
                     handled.add(id(target))
-                    bind(target.id, values, items, nested)
+                    taken_from(target.id, n.value)
+                    if target.id in leaks and _live(n.value):
+                        unbind(target.id)
+                    else:
+                        bind(target.id, values, items, nested)
         elif isinstance(n, ast.AnnAssign) and n.value is not None:
             if isinstance(n.target, ast.Name):
                 handled.add(id(n.target))
-                bind(
-                    n.target.id,
-                    _string_candidates(n.value, found, module_literals),
-                    _indexed(n.value, found, module_literals),
-                    _nested(n.value, found, module_literals),
-                )
+                taken_from(n.target.id, n.value)
+                if n.target.id in leaks and _live(n.value):
+                    unbind(n.target.id)
+                else:
+                    bind(
+                        n.target.id,
+                        _string_candidates(n.value, found, module_literals),
+                        _indexed(n.value, found, module_literals),
+                        _nested(n.value, found, module_literals),
+                    )
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name):
             handled.add(id(n.target))
+            taken_from(n.target.id, n.iter)
             bind(n.target.id, _string_candidates(n.iter, found, module_literals))
         elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Tuple):
             # ``for key, value in D.items()``: over a dict display both the
@@ -282,6 +327,7 @@ def _collect_literal_bindings(
             for i, elt in enumerate(elts):
                 if isinstance(elt, ast.Name):
                     handled.add(id(elt))
+                    taken_from(elt.id, n.iter)
                     bind(elt.id, keys if i == 0 else items)
         elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
             if id(n) not in handled:
@@ -302,10 +348,10 @@ def _collect_literal_bindings(
         elif isinstance(n, (ast.Global, ast.Nonlocal)):
             for name in n.names:
                 unbind(name)
-        elif (mutated := _mutated_name(n)) is not None:
-            # ``d[k] = v`` / ``d.append(x)``: the literal is not what it was.
-            unbind(mutated)
         stack.extend(reversed(list(ast.iter_child_nodes(n))))
+    if uses.namespace:
+        for key in found:
+            found[key] = None
     return found
 
 
@@ -315,66 +361,26 @@ COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 NESTED_SCOPES = DEF_NODES + COMPREHENSIONS + (ast.Lambda,)
 
 
-# Methods that change a container in place (see also
-# _ReferenceCollector.MUTATING_METHODS, which records writer edges).
-_MUTATING_METHODS = frozenset(
-    {
-        "append",
-        "extend",
-        "insert",
-        "pop",
-        "popitem",
-        "remove",
-        "clear",
-        "update",
-        "setdefault",
-        "add",
-        "discard",
-        "sort",
-        "reverse",
-        "__setitem__",
-        "__delitem__",
-    }
-)
-
-
-def _mutated_name(node: ast.AST) -> str | None:
-    """The name a statement or call mutates in place (``d[k] = v``,
-    ``d.append(x)``, ``del d[k]``), if it is a plain name."""
-    targets: list[ast.expr] = []
-    if isinstance(node, ast.Assign):
-        targets = list(node.targets)
-    elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
-        targets = [node.target]
-    elif isinstance(node, ast.Delete):
-        targets = list(node.targets)
-    elif (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _MUTATING_METHODS
-    ):
-        targets = [node.func.value]
-    for target in targets:
-        base = target
-        while isinstance(base, (ast.Subscript, ast.Attribute)):
-            base = base.value
-        if isinstance(base, ast.Name) and base is not target:
-            return base.id
-        if isinstance(base, ast.Name) and isinstance(node, ast.Call):
-            return base.id
-    return None
-
-
-def _module_mutations(tree: ast.Module) -> set[str]:
-    """Every name the module mutates in place, anywhere in it (nested scopes
-    included): such a container's contents are not the literal it was
-    assigned."""
+def _module_containers(tree: ast.Module) -> frozenset[str]:
+    """Module-level names bound (outside any nested scope) to a dict, list
+    or set display, or to something that may be one (a name, a view)."""
     names: set[str] = set()
-    for node in ast.walk(tree):
-        mutated = _mutated_name(node)
-        if mutated is not None:
-            names.add(mutated)
-    return names
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, NESTED_SCOPES):
+            continue
+        if isinstance(node, ast.Assign) and _live(node.value):
+            names |= {t.id for t in node.targets if isinstance(t, ast.Name)}
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and isinstance(node.target, ast.Name)
+            and _live(node.value)
+        ):
+            names.add(node.target.id)
+        stack.extend(ast.iter_child_nodes(node))
+    return frozenset(names)
 
 
 def _collect_store_names(stmt: ast.AST) -> set[str]:
@@ -468,3 +474,49 @@ class _LocalBindings(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.names.add(node.name)
+
+
+def make_evaluator(
+    module_literals: dict[str, tuple[str, ...] | None],
+) -> Callable[[ast.expr, ast.AST, frozenset[str]], tuple[tuple[str, ...] | None, tuple[str, ...]]]:
+    """What pass 1 knows of a string expression (see uses.Evaluate): its
+    candidates from its scope's literal bindings and the module's, and the
+    module-level literal names the scope reads, any of which may still turn
+    out to be changed by another module."""
+    tables: dict[int, tuple[dict[str, tuple[str, ...] | None], tuple[str, ...]]] = {}
+
+    def evaluate(
+        expr: ast.expr, scope: ast.AST, shadowed: frozenset[str]
+    ) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+        if id(scope) not in tables:
+            local: dict[str, tuple[str, ...] | None] = {}
+            if not isinstance(scope, ast.Module):
+                for name in _LocalBindings().collect(scope):
+                    for key in literal_keys(name):
+                        local[key] = None
+                local.update(_collect_literal_bindings(scope, module_literals))
+            # A function's locals may be taken from any module-level literal
+            # it reads; at module level only the expression's own names count.
+            tables[id(scope)] = (local, () if isinstance(scope, ast.Module) else _reads(scope))
+        local, read = tables[id(scope)]
+        if isinstance(scope, ast.Module):
+            read = _reads(expr)
+        if shadowed:
+            local = dict(local)
+            for name in shadowed:
+                for key in literal_keys(name):
+                    local[key] = None
+        return _string_candidates(expr, local, module_literals), read
+
+    def _reads(node: ast.AST) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    n.id
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and module_literals.get(n.id) is not None
+                }
+            )
+        )
+
+    return evaluate

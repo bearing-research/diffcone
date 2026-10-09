@@ -14,6 +14,7 @@ from diffcone.indexer.literals import (
     _string_candidates,
     literal_base,
 )
+from diffcone.indexer.uses import UseRecord
 
 
 @dataclass(frozen=True)
@@ -79,9 +80,15 @@ class ModuleScope:
     variable_stmts: dict[str, VariableStatement] = field(default_factory=dict)
     # NAME = "lit" / ("a", "b") at module level: string sets a name may hold.
     literal_names: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
-    # Names this module mutates in place anywhere (``d[k] = v``,
-    # ``d.append(x)``): such a container is not the literal it was assigned.
-    mutations: frozenset[str] = frozenset()
+    # How this module uses what it can name in other modules (and through
+    # star imports): what may change their literal tables, or write onto an
+    # external module (diffcone.indexer.uses).
+    uses: tuple[UseRecord, ...] = ()
+    # Module-level names bound to a dict, list or set display (or a live view
+    # of one): a use elsewhere that is not a read may change them in place.
+    containers: frozenset[str] = frozenset()
+    # Module-level literal name -> the names its values were taken from.
+    literal_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Module cache bookkeeping: the content key of the file and the digest
     # of everything other modules' resolution may read from this one.
     cache_key: str | None = None

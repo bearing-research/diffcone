@@ -25,6 +25,7 @@ from diffcone.indexer.syntax import (
     REFLECTIVE_BUILTINS,
     REFLECTIVE_CALLS,
 )
+from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
     CLASS,
     FUNCTION,
@@ -42,6 +43,10 @@ from diffcone.snapshot import module_name_for, split_root
 
 if TYPE_CHECKING:
     from diffcone.indexer.resolver import Resolver
+
+
+# Calls that hand out every member of their argument, values included.
+MEMBER_LISTINGS = frozenset({"inspect.getmembers", "inspect.getmembers_static"})
 
 
 # Calls that read a file's text or bytes: code built from them is not the
@@ -84,6 +89,21 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._type_nodes: set[int] = set()
         # ``self.<attr> = value`` targets in ``__init__`` -> what they bind.
         self._bindings: dict[int, list | None] = {}
+        # The nodes being visited, outermost first (see visit).
+        self._stack: list[ast.AST] = []
+
+    def visit(self, node: ast.AST) -> None:
+        self._stack.append(node)
+        try:
+            super().visit(node)
+        finally:
+            self._stack.pop()
+
+    def _parent(self, node: ast.AST, up: int = 1) -> ast.AST | None:
+        """The node ``up`` levels above ``node`` while it is being visited."""
+        if len(self._stack) > up and self._stack[-1] is node:
+            return self._stack[-1 - up]
+        return None
 
     def _push(
         self,
@@ -232,6 +252,19 @@ class _ReferenceCollector(ast.NodeVisitor):
             # receiver (aliased, reassigned, ``|=``) the class is unknown.
             owner = self.scope.self_class if self._is_self(node.value) else ""
             self.indexer.out.attr_unbound.add((owner or "", "*"))
+            if isinstance(node.ctx, ast.Load):
+                self._namespace_read(node)
+        elif isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+            # ``m.__dict__.get(k)``, ``m.__dict__.items()``: the chain is
+            # resolved whole below, so the namespace read is seen here.
+            inner = node.value
+            call = self._parent(node)
+            key = None
+            if node.attr == "get" and isinstance(call, ast.Call) and call.func is node:
+                key = call.args[0] if call.args else None
+            if node.attr not in ("keys", "__contains__", "__len__"):
+                if self._is_module(inner.value):
+                    self._member_read(inner.value, key)
         parts = _flatten_chain(node)
         if parts is not None:
             self._resolve(parts)
@@ -265,6 +298,61 @@ class _ReferenceCollector(ast.NodeVisitor):
         )
         self.generic_visit(node)
 
+    def _namespace_read(self, node: ast.Attribute) -> None:
+        """``m.__dict__[k]``, ``m.__dict__.get(k)`` or any other read of a
+        module's namespace: the attribute ``k`` names, read as
+        ``getattr(m, k)`` is; anything else reads any attribute."""
+        if not self._is_module(node.value):
+            return
+        parent = self._parent(node)
+        key: ast.expr | None = None
+        if isinstance(parent, ast.Subscript) and parent.value is node:
+            key = parent.slice
+        elif isinstance(parent, ast.Attribute) and parent.attr == "get":
+            call = self._parent(node, 2)
+            if isinstance(call, ast.Call) and call.func is parent and call.args:
+                key = call.args[0]
+        self._member_read(node.value, key)
+
+    def _member_read(self, receiver: ast.expr, key: ast.expr | None) -> None:
+        """A read of ``receiver``'s attribute by the name ``key`` (any name
+        when None), handled as ``getattr(receiver, key)``."""
+        name = key if key is not None else ast.Name(id="<any attribute>", ctx=ast.Load())
+        func = ast.Name(id="getattr", ctx=ast.Load())
+        self._getattr(ast.Call(func=func, args=[receiver, name], keywords=[]))
+
+    def _is_module(self, expr: ast.expr) -> bool:
+        """Whether ``expr`` names a module (in scope or not), through this
+        scope's bindings or as ``sys.modules["m"]``/``import_module("m")``."""
+        if self._literal_module(expr) is not None:
+            return True
+        chain = _flatten_chain(expr)
+        if chain is None:
+            return False
+        if chain[0] in self.scope.locals and chain[0] not in self.scope.local_imports:
+            return False
+        return isinstance(self.indexer.resolve_chain(chain, self.scope), (ModuleNode, External))
+
+    def _literal_module(self, expr: ast.expr) -> str | None:
+        """The module ``sys.modules["m"]``, ``sys.modules.get("m")`` or
+        ``import_module("m")`` names by a literal."""
+        key: ast.expr | None = None
+        if isinstance(expr, ast.Subscript):
+            chain = _flatten_chain(expr.value)
+            if chain is not None and self._canonical_name(chain) == "sys.modules":
+                key = expr.slice
+        elif isinstance(expr, ast.Call) and expr.args:
+            chain = _flatten_chain(expr.func)
+            if chain is not None:
+                canonical = self._canonical_name(chain)
+                if canonical in ("importlib.import_module", "sys.modules.get"):
+                    key = expr.args[0]
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            parts = key.value.split(".")
+            if all(p.isidentifier() for p in parts):
+                return key.value
+        return None
+
     def _is_zero_arg_super(self, node: ast.expr) -> bool:
         return (
             isinstance(node, ast.Call)
@@ -282,25 +370,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     # Methods that mutate a container in place: a call of one on a variable
     # makes the caller a writer of that variable.
-    MUTATING_METHODS = frozenset(
-        {
-            "append",
-            "extend",
-            "insert",
-            "pop",
-            "popitem",
-            "remove",
-            "clear",
-            "update",
-            "setdefault",
-            "add",
-            "discard",
-            "sort",
-            "reverse",
-            "__setitem__",
-            "__delitem__",
-        }
-    )
+    MUTATING_METHODS = CONTAINER_MUTATORS
 
     def _mutation_target(self, expr: ast.expr) -> None:
         """Record ``source`` as a writer when ``expr`` (an assignment target or
@@ -511,6 +581,14 @@ class _ReferenceCollector(ast.NodeVisitor):
                     )
                 else:
                     self.indexer.out.reflection.add((self.source, f"{name}()"))
+                if (
+                    node.args
+                    and self._canonical_name(parts) in MEMBER_LISTINGS
+                    and (self._is_module(node.args[0]) or self._is_class(node.args[0]))
+                ):
+                    # ``inspect.getmembers(mod)`` hands out every member's
+                    # value, as ``vars(mod)`` does: any attribute is read.
+                    self._member_read(node.args[0], None)
             if builtin and parts[0] in DYNAMIC_CALLS:
                 code = node.args[0] if node.args else None
                 literal = isinstance(code, ast.Constant) and isinstance(code.value, str)
@@ -844,6 +922,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         names = self.scope.string_candidates(node.args[1])
         base = _flatten_chain(node.args[0])
+        literal_module = self._literal_module(node.args[0]) if base is None else None
+        if literal_module is not None and names is None and self._module_getattr(literal_module):
+            return
         if names is None:
             prefix = _string_prefix(node.args[1])
             if prefix is not None:
@@ -878,6 +959,30 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # found this way may be called from here with anything.
                 self._resolve(base + [name])
                 self._escape(self.indexer.resolve_chain(base + [name], self.scope))
+
+    def _is_class(self, expr: ast.expr) -> bool:
+        chain = _flatten_chain(expr)
+        if chain is None or chain[0] == self.scope.self_name:
+            return False
+        node = self.indexer.resolve_chain(chain, self.scope)
+        return (
+            isinstance(node, Resolved)
+            and not node.detail
+            and node.symbol in self.indexer.class_scopes
+        )
+
+    def _module_getattr(self, module: str) -> bool:
+        """``getattr(sys.modules["m"], <non-literal>)`` (or
+        ``import_module("m")``, ``sys.modules["m"].__dict__[n]``) on an
+        in-scope module: any attribute of it, as on a module global, and
+        the reader depends on it as on an import of it. False for a module
+        outside the source roots, left to the general rule."""
+        node = self.indexer.resolve_dotted(module.split("."))
+        if not isinstance(node, ModuleNode):
+            return False
+        self.indexer._module_import_edge(self.source, node.module)
+        self._dynamic("getattr(<non-literal>)")
+        return True
 
     def _canonical_name(self, parts: list[str]) -> str | None:
         """The dotted name a callee chain refers to through the scope's import

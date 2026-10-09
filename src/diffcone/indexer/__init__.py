@@ -13,7 +13,8 @@ Supported subset (see internal/design.md):
 * ``import``/``from ... import`` (absolute and relative) within source roots;
 * ``importlib.import_module`` / ``getattr`` with literal arguments (a
   literal table's keys, values or elements included: ``D[k]``, ``D.values()``,
-  ``for k, v in D.items()``), with parameters whose call sites pass literals,
+  ``for k, v in D.items()``) while every use of the table is a read (see
+  ``uses.py``), with parameters whose call sites pass literals,
   and with instance attributes that ``__init__`` binds to such values
   (``getattr(x, self.name)``);
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an

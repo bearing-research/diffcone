@@ -402,8 +402,10 @@ selection or states something the tables left implicit; none narrows it.
   assumption above.
 * **A lookup on an external module sees what the project stored there**
   (roadmap item 14). `dir(builtins)` or `getattr(os, name)` is bounded
-  until project code writes to that module (`monkeypatch.setattr(builtins,
-  ...)`). Then it is a site that sees every namespace, since a writer
+  until project code may write to that module (`monkeypatch.setattr(builtins,
+  ...)`; what counts is the static rule in design.md, under which handing
+  the module on counts too, attributed to the code that hands it on).
+  Then it is a site that sees every namespace, since a writer
   anywhere may have stored there, not only one in the site's import
   closure. When every writer is a function or method that ran only inside
   test windows, a store is visible only in a test that ran its writer. A

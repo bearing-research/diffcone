@@ -61,6 +61,9 @@ class IndexerState:
         # Top-level import name -> the analysed package it most likely means
         # under another root (see Resolver._misrooted); built on first use.
         self._misrooted_names: dict[str, str] | None = None
+        # What module uses say about modules outside the source roots (see
+        # Indexer._apply_uses): (mode, module, writer symbol).
+        self._use_external: set[tuple[str, str, str]] = set()
         # Classes with an unresolved ``super().<name>``, per name (final pass).
         self._super_misses: dict[str, set[str]] = defaultdict(set)
 

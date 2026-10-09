@@ -356,7 +356,9 @@ def _facts_to_dict(
         "literal_names": {
             k: (list(v) if v is not None else None) for k, v in scope.literal_names.items()
         },
-        "mutations": sorted(scope.mutations),
+        "uses": [r.to_list() for r in scope.uses],
+        "containers": sorted(scope.containers),
+        "literal_sources": {k: list(v) for k, v in scope.literal_sources.items()},
         "symbols": [dict(vars(s)) for s in symbols],  # flat and frozen: no deep copy needed
         "classes": [
             {
@@ -380,7 +382,8 @@ def _facts_to_dict(
         record["bindings"],
         record["members"],
         record["variables"],
-        record["mutations"],
+        record["uses"],
+        record["containers"],
         [[s.id, s.kind, s.module, s.reads_docstrings] for s in symbols],
         [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
     ]

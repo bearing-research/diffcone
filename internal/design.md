@@ -348,13 +348,56 @@ can change in place through an alias) a dict or sequence literal holds,
 indexed twice (`target = D.get(name)` then `target[0]`, a PEP 562
 lazy-export `__getattr__`: which position a string holds is not kept, so
 every string of every tuple is a candidate), a variable assigned
-only such values (in the function or at module level) and never mutated in
-place (a `REGISTRY = {}` that any module fills with `REGISTRY[k] = v`, an
-`append`, an `update` or a `del` is not the literal it was assigned, in
-the scope that mutates it and everywhere the variable is visible), or a
+only such values (in the function or at module level), or a
 `for` variable iterating over one
-(`for attr in ("body", "orelse"): getattr(stmt, attr)`). Any other store of
-such a name makes it unbounded: `+=`, a walrus (also one inside a
+(`for attr in ("body", "orelse"): getattr(stmt, attr)`; a sequence whose
+elements are lists, sets or dicts is not iterated for strings).
+
+A dict, list or set literal stays bounded only while every use of it is a
+read the analysis recognises (`indexer/uses.py`): an item read (`T[k]`,
+`T.get(k)`), a method that does not change it (`keys`, `values`, `items`,
+`copy`, ...), iteration, a comparison or `in`, a test, an f-string, a
+copy (`[*T]`, `{**T}`, `T + [...]`), or a positional argument of a builtin
+that only reads (`len`, `sorted`, `list`, `dict`, `isinstance`, ...). Any
+other use, anywhere in the program, makes it unbounded everywhere it is
+read, and so is every name whose values were read out of it: an item
+assigned or deleted (a tuple target included), any of the builtin
+containers' mutating methods (`append`, `update`, `setdefault`,
+`symmetric_difference_update`, `__setitem__`, ...) or `+=`, the name bound
+to another name, passed to any other function (`fill(T)`,
+`dict.update(T, ...)`, `monkeypatch.setitem(T, ...)`,
+`mock.patch.dict(T, ...)`), returned, stored in a container or an
+attribute, or used as a default. The same holds for the uses other modules
+make of it, by its imported name (`from pkg.core import TABLE`), through
+its module (`core.TABLE[k] = v`, `pkg.core.TABLE`, `import pkg.core as c`,
+a re-export, a star import), through `sys.modules["pkg.core"]`,
+`import_module("pkg.core")` or `getattr(core, "TABLE")`. Any name of a
+module is rebound, literal or not, by a store through the module
+(`core.TABLE = {...}`, `setattr(core, "TABLE", ...)`,
+`monkeypatch.setattr(core, "TABLE", ...)`, or a `mock.patch`,
+`mock.patch.dict` or `monkeypatch.setattr` naming it in a dotted string),
+and none of a module's names is bounded once the module itself may be
+written to: handed on (bound to a name, passed, returned, `vars(core)`,
+`core.__dict__` used other than to read an item, `setattr(core, name,
+...)` with a name that is not a literal) or its namespace reached
+(`globals()`, a bare `vars()` at module level, `exec`/`eval` of code that
+is not a literal: such code can also reach every module its globals
+name). A literal code string is read as the code it is. A module named at
+run time by a name nothing bounds (`sys.modules[name]`,
+`import_module(name)`, `__import__(name)`) may be any module: a store
+through it (`sys.modules[name].TABLE[k] = v`) unbounds that name in every
+module, and handing it on unbounds every table in the program. A
+function-local name bound only to modules and used in no nested scope is
+followed rather than counted as handing the module on (`mod =
+import_module(name)` then `getattr(mod, attr)`). Where a module name was
+itself read out of a literal table (the lazy-export `__getattr__`), the
+table changing makes it any module. Of a module handed on, its
+submodules are handed on too, and an attribute read off it by a name
+nothing bounds (`x = getattr(core, name)`, `vars(core).items()`) may be any
+of its tables.
+
+Any other store of a name holding such strings makes it unbounded:
+`+=`, a walrus (also one inside a
 comprehension), `with ... as`, tuple unpacking, `except ... as`, an import,
 a match capture, and a `global` or `nonlocal` declaration in the scope or in
 a function nested in it. Each candidate is
@@ -557,8 +600,12 @@ Unknown is never treated as unaffected:
   Impact then flows through those edges like any other: `obj.save()` is
   affected when *any* `save` changes, and also when any `save` calls
   something that changed. Dunder names are excluded from matching: they
-  exist on nearly every class and would bound nothing (constructors are
-  reached through class references instead). The report lists each
+  exist on nearly every class and would bound nothing. A name that matches
+  a class also reaches the `__init__` and `__new__` of the class and its
+  in-scope ancestors, as a resolved class reference does: whatever obtains
+  the class by that name (`m.Alt()` on a receiver of unknown type, a
+  lazy-export `__getattr__`, `getattr(import_module(...), "Alt")`) can
+  call it. The report lists each
   unresolved reference with the matches that actually carry impact
   (`matched_affected_symbols`).
 * **Dynamic references.** A symbol containing a dynamic attribute access,
@@ -566,19 +613,37 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). A lookup by a name nothing bounds on an *external*
+  `dynamic_reference`). Reading a module's (or class's) members wholesale
+  is a lookup by such a name too: `mod.__dict__[n]`,
+  `mod.__dict__.get(n)`, `mod.__dict__.items()`,
+  `sys.modules["pkg.mod"].__dict__[n]` and `inspect.getmembers(mod)`
+  (`inspect.getmembers_static`) are handled as `getattr(mod, n)` is, so a
+  test parametrized over a module's functions depends on them; a literal
+  key is that attribute. A lookup by a name nothing bounds on an *external*
   module (`getattr(logging, level)`, `dir(builtins)`, `vars(os)`) finds
   what that module defines, outside the analysis, so it is neither a
-  dynamic reference nor a reflection site, unless in-scope code stores
-  something on that module (or a module above or below it) through a name
-  it resolves (a function-local import included): `logging.X = ...`,
-  `setattr(logging, ...)`, `monkeypatch.setattr(logging, ...)` or a dotted
-  string naming it; a write onto a module found at run time
-  (`sys.modules[name].X = ...`, `import_module(name).X = ...`) counts for
-  every external module. Writes through an alias are outside the model, as
-  they are for in-scope modules. A module written to through an attribute
-  (`import pkg` then `pkg._TABLE[k] = v` or `pkg.X = v`) has none of its
-  literal tables bounded.
+  dynamic reference nor a reflection site, unless in-scope code may store
+  something on that module (or a module above or below it). The uses that
+  count are those that may write a module wherever it is used
+  (`indexer/uses.py`, the same rules as for in-scope tables above): a
+  store through a name it resolves (a function-local import included:
+  `logging.X = ...`, `setattr(logging, ...)`, `monkeypatch.setattr(logging,
+  ...)`, a dotted string naming it, a literal `exec` string doing so); the
+  module handed on, since whoever gets it may write it (bound to another
+  name, module-level or not, passed to a helper, iterated over in a tuple,
+  returned, `object.__setattr__(logging, ...)`, `logging.__setattr__`,
+  `vars(logging)` or `logging.__dict__` used other than to read an item,
+  `mock.patch.dict(logging.__dict__, ...)`, `globals()["logging"]`); or
+  its importer's namespace reached by `exec` of code that is not a
+  literal. Handing on a module counts for lookups on it and below it. A
+  store through, or the handing on of, a module found at run time
+  (`sys.modules[name]`, `import_module(name)`, also through a local name
+  bound to one, or returned by a helper) counts for every external module;
+  an attribute of one handed on counts for modules of that name. A lookup
+  such writes may change is a dynamic reference that sees *any* change, not
+  only one in its import closure: a writer anywhere may run, at import or
+  in a test, and change what it finds (a test's decorator or default that
+  newly runs a writer at collection selects every reader).
   A dynamic *import* (`__import__`,
   `importlib.import_module` or the builtin `__import__` with an unbounded
   name) can reach anything. Such an import is attributed to the *caller that

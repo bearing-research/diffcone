@@ -17,9 +17,10 @@ from diffcone.indexer.facts import (
     _output_to_dict,
     _tuples,
 )
-from diffcone.indexer.literals import literal_keys
+from diffcone.indexer.literals import literal_base, literal_keys
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.syntax import _digest, decode_source
+from diffcone.indexer.uses import ANY, DYN, MUT, STORE, USE, UseRecord
 from diffcone.model import (
     EXTERNAL_WRITTEN,
     REFERENCES,
@@ -107,7 +108,7 @@ class Indexer(DynamicBounds):
                 scope.env_digest = record["env"]
                 if not self._collided and scope.cache_key is not None:
                     new_facts[scope.cache_key] = record
-        self._unbind_mutated_variables()
+        self._apply_uses()
         for class_id in sorted(self.class_scopes):
             self._ensure_bases(class_id)
         self._bases_final = True  # MROs may be memoised from here on
@@ -171,14 +172,35 @@ class Indexer(DynamicBounds):
         ``getattr(logging, n)``), and so does one onto a module found at run
         time (``*``). Such a site's detail says so, and
         ``SourceIndex.external_sites`` keeps the symbols writing there."""
-        written = self._global.external_writes
+        written = set(self._global.external_writes)
+        escaped: set[tuple[str, str]] = set()  # seen by lookups on it or below it
+        below: set[tuple[str, str]] = set()  # seen by lookups strictly below it
+        suffixes: set[tuple[str, str]] = set()  # ``.a.b``: any module ``*.a.b`` and below
+        for mode, module, writer in self._use_external:
+            if mode == "write":
+                written.add((module, writer))
+            elif mode == "escape":
+                escaped.add((module, writer))
+            elif mode == "below":
+                below.add((module, writer))
+            else:
+                suffixes.add((module, writer))
 
         def writers(module: str) -> set[str]:
-            return {
-                writer
-                for w, writer in written
-                if w in ("*", module) or w.startswith(module + ".") or module.startswith(w + ".")
-            }
+            return (
+                {
+                    writer
+                    for w, writer in written
+                    if w in ("*", module)
+                    or w.startswith(module + ".")
+                    or module.startswith(w + ".")
+                }
+                # A module handed on may be written by whoever gets it, and so
+                # may every module reachable from it as an attribute.
+                | {w for e, w in escaped if e in ("*", module) or module.startswith(e + ".")}
+                | {w for e, w in below if module.startswith(e + ".")}
+                | {w for e, w in suffixes if e + "." in "." + module + "."}
+            )
 
         for symbol, module, kind, detail in sorted(self._global.external_lookups):
             by = writers(module)
@@ -253,7 +275,9 @@ class Indexer(DynamicBounds):
         members = dict(record["members"])
         variables = dict(record["variables"])
         literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
-        mutations = frozenset(record["mutations"])
+        uses = tuple(UseRecord.from_list(r) for r in record["uses"])
+        containers = frozenset(record["containers"])
+        literal_sources = {k: tuple(v) for k, v in record["literal_sources"].items()}
         env_digest = str(record["env"])
         symbols: list[Symbol] = []
         for data in record["symbols"]:
@@ -286,7 +310,8 @@ class Indexer(DynamicBounds):
         scope.imports, scope.star_imports, scope.bindings = imports, star_imports, bindings
         scope.alt_imports = alt_imports
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
-        scope.mutations = mutations
+        scope.uses, scope.containers = uses, containers
+        scope.literal_sources = literal_sources
         scope.env_digest = env_digest
         for symbol in symbols:
             self._add_symbol(symbol)
@@ -294,34 +319,184 @@ class Indexer(DynamicBounds):
         self.out.edges |= edges
         return True
 
-    def _unbind_mutated_variables(self) -> None:
-        """A module-level container that any module mutates in place is not
-        the literal it was assigned: unbind it everywhere (its own module and
-        the modules that import it), so names drawn from it stay dynamic."""
-        mutated: set[tuple[str, str]] = set()
-        # Modules written to through an attribute (``import pkg`` then
-        # ``pkg._TABLE[k] = v`` or ``pkg.X = v``): which of their tables is
-        # not tracked, so none of them is the literal it was.
-        written: set[str] = set()
-        for scope in self.scopes.values():
-            for name in scope.mutations:
-                if name in scope.variables:
-                    mutated.add((scope.name, name))
-                binding = scope.imports.get(name)
-                if binding is not None and binding.attr is not None:
-                    mutated.add((binding.module, binding.attr))
-                elif binding is not None:
-                    written.add(binding.module)
-        for module in written:
-            target = self.scopes.get(module)
-            if target is not None:
-                for key in list(target.literal_names):
-                    target.literal_names[key] = None
-        for module, name in mutated:
-            target = self.scopes.get(module)
-            if target is not None and name in target.literal_names:
+    def _apply_uses(self) -> None:
+        """Every module's uses of what other modules hold (pass 1's
+        UseRecords), resolved over the whole tree: a literal table some use
+        may change is unbounded everywhere it is read, and so is every name
+        whose values were taken from it; a module that may be written to
+        has none of its tables bounded. A record whose target was computed
+        from a literal table that turns out to change is about any module.
+        Records about modules outside the source roots are kept for
+        ``_external_lookups``."""
+        poison: dict[str, set[str]] = defaultdict(set)  # module -> literal names
+        whole: set[str] = set()  # modules none of whose literal names hold
+        tables: set[str] = set()  # modules none of whose containers hold
+        named: set[str] = set()  # names no module's literal of that name holds
+        named_tables: set[str] = set()  # names no module's container of that name holds
+        anything = False
+        external: set[tuple[str, str, str]] = set()  # (mode, module, writer)
+
+        def changed(module: str, name: str) -> bool:
+            return (
+                anything
+                or module in whole
+                or name in poison[module]
+                or name in named
+                or (
+                    (module in tables or name in named_tables)
+                    and name in self.scopes[module].containers
+                )
+            )
+
+        def under(module: str) -> list[str]:
+            return [m for m in self.scopes if m == module or m.startswith(module + ".")]
+
+        def size() -> tuple[int, ...]:
+            sizes = (len(whole), len(tables), len(named), len(named_tables))
+            return (anything, *sizes, sum(map(len, poison.values())))
+
+        records = [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
+        while True:
+            before = size()
+            for module, record in records:
+                kind, target = record.kind, record.target
+                if record.sources and any(changed(module, n) for n in record.sources):
+                    kind, target = USE, ANY
+                writer = self._writer_symbol(module, record.writer)
+                if target == ANY:
+                    if kind in (USE, DYN):
+                        anything = True
+                        external.add(("escape", ANY, writer))
+                    continue
+                if target.startswith(ANY + "."):
+                    # An attribute of a module found at run time: whichever
+                    # module's literal of that name (rebound or changed in
+                    # place), or a submodule of that name handed on.
+                    chain = target.split(".")[1:]
+                    if kind == STORE:
+                        named.add(chain[-1])
+                        external.add(("write", ANY, writer))
+                    elif kind == MUT:
+                        named_tables.add(chain[-1])
+                    else:
+                        suffix = "." + ".".join(chain)
+                        named_tables.add(chain[-1])
+                        for m in self.scopes:
+                            if ("." + m).endswith(suffix):
+                                if kind == USE:
+                                    whole.update(under(m))
+                                else:
+                                    tables.add(m)
+                                    whole.update(u for u in under(m) if u != m)
+                        external.add(("suffix", suffix, writer))
+                    continue
+                parts = target.split(".")
+                if kind == STORE:
+                    parent, name = parts[:-1], parts[-1]
+                    places = self._locate_target(module, parent)
+                    if places is None:
+                        external.add(("write", ".".join(parent), writer))
+                    for place, rest in places or ():
+                        if not rest:
+                            poison[place].add(name)
+                    continue
+                places = self._locate_target(module, parts)
+                if places is None:
+                    if kind == USE:
+                        external.add(("escape", target, writer))
+                    elif kind == DYN:
+                        external.add(("below", target, writer))
+                    continue
+                for place, rest in places:
+                    if not rest:
+                        if kind == USE:
+                            whole.update(under(place))
+                        elif kind == DYN:
+                            tables.add(place)
+                            whole.update(m for m in under(place) if m != place)
+                    elif len(rest) == 1 and rest[0] in self.scopes[place].containers:
+                        poison[place].add(rest[0])
+            if size() == before:
+                break
+        self._use_external = external
+        for module, scope in self.scopes.items():
+            present = {literal_base(k) for k in scope.literal_names}
+            lost = {n for n in present if changed(module, n)}
+            # What was read out of a table that changes is not what it was.
+            while True:
+                more = {
+                    n for n, taken in scope.literal_sources.items() if lost.intersection(taken)
+                } - lost
+                if not more:
+                    break
+                lost |= more
+            for name in lost:
                 for key in literal_keys(name):
-                    target.literal_names[key] = None
+                    if key in scope.literal_names:
+                        scope.literal_names[key] = None
+
+    def _locate_target(
+        self, module: str, parts: list[str]
+    ) -> list[tuple[str, tuple[str, ...]]] | None:
+        """Where a dotted name a record of ``module`` gives lands: (module,
+        the rest of the name inside it) for each in-scope module it may
+        reach, following submodules and re-exports; None when it is outside
+        the source roots. ``@NAME`` is a name ``module`` may have from a star
+        import."""
+        if parts and parts[0].startswith("@"):
+            scope = self.scopes.get(module)
+            found: list[tuple[str, tuple[str, ...]]] = []
+            rest = (parts[0][1:], *parts[1:])
+            for star in scope.star_imports if scope is not None else ():
+                if star in self.scopes:
+                    found += self._locate(star, rest, set())
+            return found
+        for i in range(len(parts), 0, -1):
+            prefix = ".".join(parts[:i])
+            if prefix in self.scopes:
+                return self._locate(prefix, tuple(parts[i:]), set())
+        return None
+
+    def _locate(
+        self, module: str, rest: tuple[str, ...], seen: set[tuple[str, tuple[str, ...]]]
+    ) -> list[tuple[str, tuple[str, ...]]]:
+        if (module, rest) in seen:
+            return []
+        seen.add((module, rest))
+        if not rest:
+            return [(module, rest)]
+        scope = self.scopes[module]
+        name = rest[0]
+        found: list[tuple[str, tuple[str, ...]]] = []
+        if f"{module}.{name}" in self.scopes:
+            found += self._locate(f"{module}.{name}", rest[1:], seen)
+        if name in scope.imports:
+            for binding in [scope.imports[name], *scope.alt_imports.get(name, ())]:
+                origin = binding.module
+                if binding.attr is not None:
+                    origin = f"{binding.module}.{binding.attr}"
+                parts = [*origin.split("."), *rest[1:]]
+                for i in range(len(parts), 0, -1):
+                    prefix = ".".join(parts[:i])
+                    if prefix in self.scopes:
+                        found += self._locate(prefix, tuple(parts[i:]), seen)
+                        break
+        if not found and name not in scope.bindings and name not in scope.members:
+            for star in scope.star_imports:
+                if star in self.scopes:
+                    found += self._locate(star, rest, seen)
+        return found or [(module, rest)]
+
+    def _writer_symbol(self, module: str, path: tuple[str, ...]) -> str:
+        """The symbol code at ``path`` (enclosing def and class names) in
+        ``module`` belongs to: the innermost one that is a symbol."""
+        if path:
+            head = self._member_id(module, path[0])
+            for i in range(len(path), 0, -1):
+                candidate = ".".join([head, *path[1:i]])
+                if candidate in self.index.symbols:
+                    return candidate
+        return module
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other

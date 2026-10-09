@@ -73,6 +73,7 @@ from diffcone.model import (
     DECLARED,
     DEFINED_IN,
     ENTRY,
+    EXTERNAL_WRITTEN,
     IMPORTS,
     IMPORTS_NAME,
     LIFECYCLE,
@@ -911,14 +912,26 @@ def plan_from_indexes(
     for name, symbols in symbols_by_name.items():
         for symbol_id in symbols:
             graph.add(Edge(_name_node(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
+            # Whatever obtains a class this way can call it, which runs the
+            # constructor its MRO resolves to (a resolved class reference gets
+            # the same edges from the indexer). The hooks are dunders, so no
+            # name matches them directly.
+            for hook, revs in _constructor_hooks(symbol_id, base, head):
+                graph.add(Edge(_name_node(name), hook, UNRESOLVED_NAME_MATCH, "constructor"), revs)
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
-    unbounded_dynamic: set[str] = set()  # dynamic *imports*: reach anything
+    # Dynamic references that see any change, not only their import closure:
+    # a dynamic *import* (any module may be behind it), and a lookup on an
+    # external module in-scope code writes to (any code may run a writer, at
+    # import or in a test, and change what it finds). Symbol -> which.
+    unbounded_dynamic: dict[str, str] = {}
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
             if "import" in ref.detail:
-                unbounded_dynamic.add(ref.symbol)
+                unbounded_dynamic[ref.symbol] = "import"
+            elif ref.detail.endswith(EXTERNAL_WRITTEN):
+                unbounded_dynamic.setdefault(ref.symbol, "written")
         elif ref.name in symbols_by_name and not _is_dunder(ref.name):
             graph.add(
                 Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
@@ -1339,6 +1352,30 @@ def _is_name_node(node_id: str) -> bool:
     return node_id.startswith("name:")
 
 
+def _constructor_hooks(
+    class_id: str, base: SourceIndex, head: SourceIndex
+) -> list[tuple[str, tuple[str, ...]]]:
+    """``__init__``/``__new__`` of a class and of its in-scope ancestors, per
+    revision: calling the class runs the first of each its MRO finds, and
+    every ancestor's is a superset of that. Empty for anything not a class."""
+    found: dict[str, list[str]] = defaultdict(list)
+    for label, index in (("base", base), ("head", head)):
+        symbol = index.symbols.get(class_id)
+        if symbol is None or symbol.kind != CLASS:
+            continue
+        stack, seen = [class_id], {class_id}
+        while stack:
+            cls = stack.pop()
+            for hook in ("__init__", "__new__"):
+                if f"{cls}.{hook}" in index.symbols:
+                    found[f"{cls}.{hook}"].append(label)
+            for up in index.class_bases.get(cls, ()):
+                if up not in seen:
+                    seen.add(up)
+                    stack.append(up)
+    return [(hook, tuple(labels)) for hook, labels in sorted(found.items())]
+
+
 def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
@@ -1363,7 +1400,7 @@ def _explain(
     via: dict[str, tuple[Edge, tuple[str, ...], str] | None],
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
-    unbounded_dynamic: set[str],
+    unbounded_dynamic: dict[str, str],
     seed_reasons: dict[str, str] | None = None,
     seed_paths: dict[str, tuple[tuple[Step, ...], str]] | None = None,
 ) -> Reason:
@@ -1414,6 +1451,14 @@ def _explain(
         return Reason(RULE_ESCALATED, seed_reasons[current], tuple(steps))
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
+    if unbounded_dynamic.get(current) == "written":
+        return Reason(
+            RULE_DYNAMIC_REFERENCE,
+            f"{current} looks up a name on an external module that in-scope code writes to "
+            f"({', '.join(revs)}); code anywhere may run a writer, so any change can change "
+            "what it finds",
+            tuple(steps),
+        )
     if current in unbounded_dynamic:
         return Reason(
             RULE_DYNAMIC_REFERENCE,

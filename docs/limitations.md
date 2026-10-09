@@ -39,6 +39,15 @@ everything.
     with a computed name is treated as affected by any change in the
     modules its module imports. A module imported by a computed name
     (`importlib.import_module(name)`) can be affected by any change at all.
+    A name taken from a dict, list or set written in the code
+    (`getattr(handlers, NAMES[key])`, the export table of a lazy
+    `__getattr__`) is bounded by it only while nothing can change it: once
+    the table, or the module holding it, is modified, passed to other code,
+    or reached through `globals()`, `vars()`, `sys.modules` or `exec`, the
+    lookup counts as dynamic. A lookup on a standard-library or third-party
+    module (`getattr(logging, name)`) is bounded unless your code may store
+    something on that module, directly or by handing the module to other
+    code; then any change can affect it.
 
 **A file that doesn't parse selects everything.**
 :   Any file under your source roots that isn't valid Python 3 or isn't
