@@ -1389,11 +1389,38 @@ selection rules.</p>
   environment's own scripts for project code, so pytest reading files
   during collection looked like the project reading them outside any
   test. The environment is now treated as installed code.</li>
-<li>Under execution evidence, a session hook that lists installed
+<li>
+<p>Under execution evidence, a session hook that lists installed
   distributions (<code>importlib.metadata.distributions()</code>) made adding any
   file anywhere select every test. Those scans are no longer recorded,
   and a change under a <code>*.dist-info</code>, <code>*.egg-info</code> or <code>*.egg</code> directory
-  now selects every target, in both modes.</li>
+  now selects every target, in both modes.</p>
+</li>
+<li>
+<p><code>diffcone check</code> decided "already failing at the baseline" per test
+  function, so a parametrized case that failed at the baseline excused a
+  new failure of another case of the same test: a miss reported as clean.
+  Cases are now compared one by one.</p>
+</li>
+<li>The <code>record</code> action with <code>check: true</code> could pass a push that had a
+  miss: a re-run of the job restored the newest recording instead of its
+  own commit's (so the kept verdict was lost and the push was re-checked
+  against a later baseline), and a check that crashed, or a re-run whose
+  JUnit could not be read, was recorded as checked with no miss. A
+  re-run's other failures (when the job's pytest arguments name a path
+  after an option) no longer count as misses. A recording that is not
+  from before the pushed commit is no longer checked against.</li>
+<li>An unexpected error in any command exits 2; <code>check</code>, <code>report</code>,
+  <code>collect</code> and <code>prune</code> exited 1, which <code>check</code> uses for a miss.</li>
+<li><code>diffcone report</code> ignores recording artifacts uploaded by pull-request
+  runs (a pull request from a fork runs its own code), counts an artifact
+  it cannot read as a problem instead of failing, reports pull-request
+  runs whose selected tests pytest did not collect, and keeps a test id
+  with backticks inside its code span. The <code>report</code> action starts its
+  window at the last report that posted, so a run with only a job summary
+  (a manual run with posting off) no longer hides the runs before it.</li>
+<li>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
+  was quoted for a POSIX shell.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>

@@ -1368,17 +1368,22 @@ a name that starts with <code>diffcone-</code> and differs per job, and per cell
 matrix: <code>diffcone-${{ matrix.os }}-py${{ matrix.python-version }}</code>, for
 example. The report has one row per name.</p>
 <p>Each report covers the runs that completed since the last successful
-report started, so a run still going when one report starts is in the
-next. If an artifact can't be downloaded, the report says so and the job
-fails, and the next report covers the same runs again. Artifacts that have
-expired are not reported.</p>
+report that posted started, so a run still going when one report starts is
+in the next. A report with both <code>report-label</code> and <code>miss-label</code> empty
+writes only the job summary and leaves its runs to the next report. If an
+artifact can't be downloaded, the report says so and the job fails, and
+the next report covers the same runs again. Artifacts that have expired
+are not reported. The report leaves out recording artifacts uploaded by
+pull-request runs (a pull request from a fork runs its own code), and
+artifacts whose files it cannot read, which it counts as a problem.</p>
 <p><code>report</code> takes <code>hours</code> (the window for the first report: runs that
 completed in this many hours before it; default <code>24</code>), <code>workflow</code> (only
 that workflow's runs; default all), <code>artifact-prefix</code> (default
 <code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code> (set either to an empty
 string to skip that issue), and <code>comment</code> (<code>always</code>, the default, or
-<code>on-problem</code>: comment only when there is a miss, a failed check or an
-incomplete report; the job summary always has the report). It reads what
+<code>on-problem</code>: comment only when there is a miss, a failed check, a
+pull request whose selected tests pytest did not collect, or an incomplete
+report; the job summary always has the report). It reads what
 <code>run</code> and <code>record</code> upload from the same release on, so give all the
 actions the same tag.</p>
 <p>Each miss issue has a link that opens a new issue on diffcone's tracker
