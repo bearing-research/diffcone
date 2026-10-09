@@ -636,11 +636,7 @@ stopped counting as a read). Static planning selects 100 % on every one.
 
 **Next, each needing its own sketch before code:**
 
-* *Readers of a test fake's member.* A method added to a test-only class
-  (`_FakePipe.read`) makes every library call `x.read()` on an unknown
-  receiver a reader, so every test that ran such library code is selected
-  (1 849 tests on one commit). Only tests that can hold an instance can
-  reach it: those that ran test code with a static reference to the class.
+* *Readers of a test fake's member*: item 13.
 * *Lookups on an external module the project writes to.* strata's tests
   patch `builtins.open` and `builtins.__import__`, so `dir(builtins)` and
   `hasattr(os, ...)` stay fully dynamic (1 102 tests on one commit).
@@ -768,3 +764,94 @@ not seen, and does not need to be: the fingerprint matches.
 **Done when** a recording whose test installs a distribution warns and
 names it, `run -o` against that recording says the recording changed its
 environment, and the report shows it per cell.
+
+## 13. Readers of a test fake's member (strata trial)
+
+**Status.** Sketched (2026-10-08). strata #1055 (`0da0faf7`) added
+`_FakePipe.read` to a fake in `tests/notebook/test_remote_console_stream.py`.
+Under evidence, an added method's readers join E, and its readers include
+every name match: every `x.read()` on a receiver the index cannot type. So
+every test that ran any library code calling `.read()` was selected (1 849
+tests), while the only code that can land on the new method is code
+holding a `_FakePipe`, and one test builds one (through
+`_FakeProcess.__init__`; `_FakeProcess.wait`, added with it, is the same
+case).
+
+**Mechanism.** In `_Observers._readers` (and `_class_body`, which reads
+attribute names the same way), when the changed symbol M is a non-dunder
+member of a class C, the name-matched readers of M that are functions or
+methods become *guarded*: a test is selected through one only when its
+record also holds a symbol of G(C), the code that can have handed it an
+instance. Static readers (`C.read`, `self.read` resolved through the MRO)
+stay unguarded, and so does everything else the change reaches.
+
+* *F*, the classes whose instances carry M: C and its subclasses.
+* *G(C)*: every function or method that refers to a class of F (an edge,
+  or an unresolved name equal to the class's name), the members of F's
+  classes (a running method holds `self`: this covers pytest's own test
+  classes), and the lookup and reflection sites that can see the classes'
+  namespace (the ones `_sites` would observe for them).
+* The guard is applied per test in `_evidence_decision`: `executed`
+  meets the guarded readers and meets G. The reason names both
+  ("executed drain, which reads _FakePipe.read by name, and
+  _FakeProcess.__init__, which can hand it a _FakePipe").
+
+The rule applies only when holding an instance needs one of those
+symbols to run in the test. Otherwise M's name matches stay unguarded, as
+now. It needs all of these:
+
+1. Every class of F is test code (`_TestCode.is_test_code`: a module
+   holding targets, or a conftest), and every ancestor of each is too. A
+   fake of a library base can be found through the base
+   (`__subclasses__()`, a registry), and a base the index cannot see may
+   register it.
+2. No class of F runs code when it is created (`_runs_on_creation`:
+   decorators, keywords, an ancestor's `__init_subclass__`).
+3. Every member of G is a function or method. A reference from module or
+   class top-level code (`PIPE = _FakePipe()`, a decorator, a default:
+   the indexer attributes those to the module or class as well) means an
+   instance built at import that any test may reach.
+4. No member of G ran during an import or outside every test window
+   (`Evidence.import_phase`, `import_by`, `hook_phase`): an instance built
+   in `pytest_generate_tests` or at import reaches a test that never runs
+   the code that built it.
+
+An instance only exists after code that names the class (or one of the
+sites) runs, and test code is not imported by the library. A test that
+reaches M through a library reader therefore also ran the code that built
+or received the instance: the test itself, a helper it called, or a
+fixture, whose setup is credited to every test that uses it.
+
+**Trade-off.** This narrows selection. What it does not see is an
+instance one test leaves behind for a later one: stored in a library
+global, or held by a thread that outlives its test. That is the evidence
+argument's isolation assumption (evidence_design.md, "test isolation"),
+and the reverse-order collection (`--reverse-check`) is its detector: the
+later test's record then depends on order, so it is flagged unstable and
+always selected. Unpickling a fake from a file is the same case. The rule
+is not applied to fakes in helper modules that hold no tests
+(`tests/helpers.py` is not test code by `_TestCode`'s definition); that is
+a later widening once this one is measured.
+
+**Done when** scenarios cover the cases below, and strata's `0da0faf7`,
+planned on a recording at its parent, selects the tests that build a
+`_FakePipe` rather than the 1 849 name-match readers, with `diffcone
+check` against a full run at `0da0faf7` showing no miss.
+
+* *Narrowed (selected before):* a test that runs the library reader but
+  never builds the fake is not selected. Its fail-first scenario is the
+  narrowing itself.
+* *Still selected:*
+  * a test building the fake directly;
+  * a test building it through a helper's `__init__`, or through a
+    fixture;
+  * a test building a subclass defined in another test file;
+  * a pytest test class whose method passes `self` to the reader;
+  * a deleted method, for the tests that built the fake at the recorded
+    commit.
+* *Rule off (as now):*
+  * a module-level instance;
+  * a fake used in a `parametrize` decorator;
+  * a fake subclassing a library class;
+  * a fake whose builder runs in `pytest_generate_tests`;
+  * a decorated fake.
