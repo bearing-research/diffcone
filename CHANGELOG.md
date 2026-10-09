@@ -15,6 +15,13 @@ selection rules.
   with the packages, the recording keeps the environment it started in,
   and `run` says when it meets that environment. The recording is still
   keyed by the environment at the end, so such a run plans from the code.
+- A method or attribute added to (or changed or deleted on) a fake class
+  in a test module no longer selects every test that ran library code
+  calling a method of that name (`x.read()`). It selects only the tests
+  that also ran code able to hand that code a fake: code naming the class
+  or a subclass. A fake built at import, in a decorator or during
+  collection, or one whose class or bases sit outside test code, is
+  treated as before.
 
 ### CI
 

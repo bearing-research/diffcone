@@ -767,7 +767,8 @@ environment, and the report shows it per cell.
 
 ## 13. Readers of a test fake's member (strata trial)
 
-**Status.** Sketched (2026-10-08). strata #1055 (`0da0faf7`) added
+**Status.** Implemented (2026-10-08), unreleased; strata measurement
+pending. strata #1055 (`0da0faf7`) added
 `_FakePipe.read` to a fake in `tests/notebook/test_remote_console_stream.py`.
 Under evidence, an added method's readers join E, and its readers include
 every name match: every `x.read()` on a receiver the index cannot type. So

@@ -335,6 +335,21 @@ selection or states something the tables left implicit; none narrows it.
   new or missing attribute only by looking it up. A special method (`__eq__`)
   is used without being named, so a change to one reaches every member of
   the class's hierarchy.
+* **A name match on a test fake's member needs the fake** (roadmap item
+  13). A member added to a class in test code (`_FakePipe.read`) matches
+  every `x.read()` on a receiver the index cannot type. Library code lands
+  on it only when it is handed an instance of the class or a subclass,
+  and only test code can build one. So a name-matched reader of such a
+  member (a function or method) selects a test only when the test's record
+  also holds code that can hand it one. That is code naming one of the
+  classes, a lookup site that can see them, or one of their methods.
+  Static readers are not guarded. The guard is off when holding one does
+  not need that code to run in the same test: a class or ancestor outside
+  test code, a class that runs code when created, a reference from module
+  or class top-level code (an instance built at import, a decorator), or
+  such code having run during an import or outside every test. An
+  instance one test leaves for a later one falls under the isolation
+  assumption above.
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures

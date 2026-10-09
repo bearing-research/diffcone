@@ -644,3 +644,304 @@ def test_a_class_that_only_combines_base_tests_does_not_hold_them(repo):
         "tests/test_all.py::TestAll::test_one",
         "tests/test_all.py::TestAll::test_two",
     }
+
+
+# A fake in test code (roadmap item 13): a name-matched call such as
+# ``proc.stdout.read()`` in library code lands on its member only in a test
+# that built one, so only those tests are selected through the name match.
+FAKES = {
+    **BASE,
+    "pkg/stream.py": """\
+def drain(proc):
+    out = []
+    if proc.stdout.closed:
+        return b""
+    while True:
+        chunk = proc.stdout.read(2)
+        if not chunk:
+            return b"".join(out)
+        out.append(chunk)
+""",
+    "tests/test_stream.py": """\
+import pytest
+
+from pkg.stream import drain
+
+
+class _FakePipe:
+    closed = False
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read(self, n):
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _FakeProcess:
+    def __init__(self, chunks):
+        self.stdout = _FakePipe(chunks)
+
+
+@pytest.fixture
+def proc():
+    return _FakeProcess([b"x"])
+
+
+def test_fake():
+    assert drain(_FakeProcess([b"ab", b"c"])) == b"abc"
+
+
+def test_fixture(proc):
+    assert drain(proc) == b"x"
+
+""",
+    "tests/test_real.py": """\
+import io
+from types import SimpleNamespace
+
+from pkg.stream import drain
+
+
+def test_real():
+    assert drain(SimpleNamespace(stdout=io.BytesIO(b"abc"))) == b"abc"
+""",
+    "tests/test_slow.py": """\
+from types import SimpleNamespace
+
+from pkg.stream import drain
+from tests.test_stream import _FakePipe
+
+
+class _Slow(_FakePipe):
+    pass
+
+
+def test_slow():
+    assert drain(SimpleNamespace(stdout=_Slow([b"y"]))) == b"y"
+""",
+}
+STREAM = "tests/test_stream.py::"
+FAKE, FIXTURE = STREAM + "test_fake", STREAM + "test_fixture"
+REAL = "tests/test_real.py::test_real"
+SLOW = "tests/test_slow.py::test_slow"
+READ = "    def read(self, n):"
+
+
+def _fake_change(repo, files, old=READ, new="    def read(self, n=2):"):
+    base, ev = _collected(repo, files)
+    stream = files["tests/test_stream.py"]
+    assert old in stream
+    head = repo.commit({"tests/test_stream.py": stream.replace(old, new)})
+    return _plan(repo, base, head, ev)
+
+
+def test_a_fake_member_reaches_name_matched_readers_only_where_a_fake_was_built(repo):
+    plan = _fake_change(repo, FAKES)
+    # test_real ran drain, which calls .read() by name, but never built a pipe.
+    assert selected(plan) == {FAKE, FIXTURE, SLOW}
+    detail = reason(plan, FAKE, "executed_reader").detail
+    assert "pkg.stream.drain" in detail and "tests.test_stream._FakeProcess.__init__" in detail
+    assert "tests.test_slow.test_slow" in reason(plan, SLOW, "executed_reader").detail
+
+
+def test_a_fake_attribute_reaches_name_matched_readers_only_where_a_fake_was_built(repo):
+    plan = _fake_change(repo, FAKES, "    closed = False", "    closed = 0")
+    assert selected(plan) == {FAKE, FIXTURE, SLOW}
+
+
+def test_a_deleted_fake_member_reaches_the_tests_that_built_one(repo):
+    plan = _fake_change(
+        repo, FAKES, READ + '\n        return self._chunks.pop(0) if self._chunks else b""\n', ""
+    )
+    assert selected(plan) == {FAKE, FIXTURE, SLOW}
+
+
+def test_a_test_class_handing_itself_on_reaches_the_reader(repo):
+    files = {
+        **FAKES,
+        "tests/test_self.py": """\
+from pkg.stream import drain
+
+
+class TestSelf:
+    def read(self, n):
+        return b""
+
+    def test_self(self):
+        self.stdout = self
+        assert drain(self) == b""
+""",
+    }
+    base, ev = _collected(repo, files)
+    old = files["tests/test_self.py"]
+    head = repo.commit(
+        {"tests/test_self.py": old.replace("def read(self, n):", "def read(self, n=2):")}
+    )
+    plan = _plan(repo, base, head, ev)
+    assert selected(plan) == {"tests/test_self.py::TestSelf::test_self"}
+
+
+# The rule's conditions matter where the test holding a fake runs none of
+# its code: here a method added to it, which a library function looks up.
+BARE = {
+    **FAKES,
+    "pkg/stream.py": FAKES["pkg/stream.py"]
+    + """
+
+def flushed(x):
+    flush = getattr(x, "flush", None)
+    return flush is None or flush() is None
+""",
+    "tests/test_bare.py": """\
+class _Bare:
+    closed = False
+
+
+def test_bare():
+    assert not _Bare.closed
+""",
+    "tests/test_open.py": """\
+from types import SimpleNamespace
+
+from pkg.stream import flushed
+
+
+def test_open():
+    assert flushed(SimpleNamespace())
+""",
+}
+HELD, OPEN = "tests/test_held.py::test_held", "tests/test_open.py::test_open"
+HELD_FILE = """\
+import pytest
+
+from pkg.stream import flushed
+{imports}
+
+{decorator}
+def test_held({param}):
+    assert flushed({value})
+"""
+LIBRARY = """
+
+class Base:
+    pass
+
+
+REGISTRY = []
+
+
+def register(cls):
+    REGISTRY.append(cls)
+    return cls
+
+
+def all_flushed(classes):
+    return all(flushed(c()) for c in classes)
+
+
+def subclasses_flushed():
+    return all_flushed(Base.__subclasses__())
+
+
+def registered_flushed():
+    return all_flushed(REGISTRY)
+"""
+
+
+def _bare_change(repo, held, bare=BARE["tests/test_bare.py"], **files):
+    files = {**BARE, "tests/test_bare.py": bare, "tests/test_held.py": held, **files}
+    files["pkg/stream.py"] += LIBRARY
+    base, ev = _collected(repo, files)
+    flush = "    closed = False\n\n    def flush(self):\n        return None\n"
+    head = repo.commit({"tests/test_bare.py": bare.replace("    closed = False\n", flush)})
+    return _plan(repo, base, head, ev)
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["in the test", "a lookup in test code", "parametrize"],
+)
+def test_a_bare_fake_reaches_the_tests_that_built_one(repo, where):
+    held = {
+        "in the test": dict(imports="from tests.test_bare import _Bare", value="_Bare()"),
+        "a lookup in test code": dict(
+            imports="import tests.test_bare as bare", value='getattr(bare, "_" + "Bare")()'
+        ),
+        "parametrize": dict(
+            imports="from tests.test_bare import _Bare",
+            decorator='@pytest.mark.parametrize("bare", [_Bare()])',
+            param="bare",
+            value="bare",
+        ),
+    }[where]
+    plan = _bare_change(repo, HELD_FILE.format(**{"decorator": "", "param": "", **held}))
+    assert HELD in selected(plan)
+    if where != "parametrize":  # a module-level reference: the rule is off
+        assert OPEN not in selected(plan)
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "module-level instance",
+        "pytest_generate_tests",
+        "library base",
+        "decorated",
+        "registered on creation",
+    ],
+)
+def test_a_fake_that_can_be_held_without_building_it_keeps_every_reader(repo, where):
+    bare, files = BARE["tests/test_bare.py"], {}
+    held = {"imports": "", "decorator": "", "param": "", "value": ""}
+    if where == "module-level instance":
+        bare += "\n\nBARE = _Bare()\n"
+        held.update(imports="from tests.test_bare import BARE", value="BARE")
+    elif where == "pytest_generate_tests":
+        # make() builds the fake during collection, outside every test.
+        files["tests/conftest.py"] = """\
+from tests.test_bare import _Bare
+
+
+def make():
+    return _Bare()
+
+
+def pytest_generate_tests(metafunc):
+    if "made" in metafunc.fixturenames:
+        metafunc.parametrize("made", [make()])
+"""
+        held.update(param="made", value="made")
+    elif where == "library base":
+        # Only Base.__subclasses__() finds the fake.
+        bare = "from pkg.stream import Base\n\n\n" + bare.replace("_Bare:", "_Bare(Base):")
+        held.update(
+            imports="import tests.test_bare\nfrom pkg.stream import subclasses_flushed",
+            value="subclasses_flushed",
+        )
+    elif where == "decorated":
+        # Only the registry finds the fake.
+        bare = "from pkg.stream import register\n\n\n@register\n" + bare
+        held.update(
+            imports="import tests.test_bare\nfrom pkg.stream import registered_flushed",
+            value="registered_flushed",
+        )
+    elif where == "registered on creation":
+        # A base in test code registers every subclass when it is created.
+        bare = (
+            "from pkg.stream import REGISTRY\n\n\nclass _Registered:\n"
+            "    def __init_subclass__(cls):\n        REGISTRY.append(cls)\n\n\n"
+            + bare.replace("_Bare:", "_Bare(_Registered):")
+        )
+        held.update(
+            imports="import tests.test_bare\nfrom pkg.stream import registered_flushed",
+            value="registered_flushed",
+        )
+    if where in ("library base", "decorated", "registered on creation"):
+        held_file = HELD_FILE.format(**{**held, "value": "x"}).replace(
+            "assert flushed(x)", f"assert {held['value']}()"
+        )
+    else:
+        held_file = HELD_FILE.format(**held)
+    plan = _bare_change(repo, held_file, bare, **files)
+    assert HELD in selected(plan)

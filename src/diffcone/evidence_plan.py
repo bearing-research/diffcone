@@ -15,7 +15,9 @@ observed by"), and a test is selected when its record meets E:
 * a function's signature, defaults, decorators or annotations: also its
   readers (resolved references and name matches, one hop), the lookup and
   reflection sites that can see its namespace, and escalation when the
-  ``def`` runs code at import;
+  ``def`` runs code at import. A name match on a member of a class in test
+  code is guarded: it selects a test only if the test also ran code that
+  can hand it an instance (``_Observers._holders``);
 * a variable: its readers and the lookup and reflection sites that can see
   its namespace (a lookup by a name nothing bounds reads the value too); a
   reader that is itself a variable captured the value and is followed in
@@ -450,6 +452,13 @@ class _Observers:
             for c in self.changes
         )
         self.E: dict[str, Reason] = {}
+        # Reader -> (builders, members, why): name-matched readers of a test
+        # fake's member, which meet the change only in a test that also ran
+        # code able to hand them an instance (``_holders``).
+        self.guarded: dict[str, list[tuple[frozenset[str], frozenset[str], Reason]]] = defaultdict(
+            list
+        )
+        self._holders_of: dict[str, tuple[frozenset[str], frozenset[str]] | None] = {}
         self.direct: dict[str, Reason] = {}
         self.fallbacks: list[Fallback] = []
         self.files: dict[str, tuple[str, bool]] = {}  # changed path -> (what, names too)
@@ -953,9 +962,13 @@ class _Observers:
             )
             return
         for name in sorted(names):
-            readers = self.attribute_readers.get(name, set()) | self.by_name.get(name, set())
+            attribute = f"{label} (attribute {name})"
+            matched = self.by_name.get(name, set())
+            readers = self.attribute_readers.get(name, set()) | self._guard(
+                matched, symbol.id, change, attribute
+            )
             for reader in sorted(readers):
-                self._reader(reader, change, f"{label} (attribute {name})")
+                self._reader(reader, change, attribute)
         self._sites(symbol, change, label)
 
     def _hierarchy(self, cls: str, change: SymbolChange, label: str) -> None:
@@ -986,11 +999,105 @@ class _Observers:
         readers = set(self.readers_of.get(target, ()))
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
-            readers |= self.by_name.get(name, set())
+            matched = self.by_name.get(name, set()) - readers - {target}
+            symbol = self.symbols.get(target)
+            container = self.symbols.get(symbol.container) if symbol and symbol.container else None
+            if container is not None and container.kind == CLASS:
+                own = change is not None and target == change.id
+                matched = self._guard(
+                    matched, container.id, change, label if own else f"{label} via {target}"
+                )
+            readers |= matched
         readers.discard(target)
         for reader in sorted(readers):
             own = change is not None and target == change.id
             self._reader(reader, change, label if own else f"{label} via {target}")
+
+    def _guard(
+        self, matched: set[str], cls: str, change: SymbolChange | None, label: str
+    ) -> set[str]:
+        """Name-matched readers of a member of ``cls``: those that are
+        functions or methods are guarded when only the code ``_holders``
+        finds can hand them an instance; the rest are returned, to be read
+        as now."""
+        if not matched:
+            return matched
+        holders = self._holders(cls)
+        if holders is None:
+            return matched
+        builders, members = holders
+        rest: set[str] = set()
+        for reader in sorted(matched):
+            symbol = self.symbols.get(reader)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+                rest.add(reader)
+                continue
+            why = Reason(
+                RULE_EXECUTED_READER,
+                f"{reader} reads {label} by name, on an object only code naming {cls} or a "
+                "subclass can hand it",
+                (),
+                change.id if change is not None else None,
+                change.changes if change is not None else (),
+            )
+            self.guarded[reader].append((builders, members, why))
+        return rest
+
+    def _holders(self, cls: str) -> tuple[frozenset[str], frozenset[str]] | None:
+        """The code that can hand another function an instance of ``cls`` or
+        of a subclass (or the class itself): the functions and methods that
+        name one of those classes, the lookup and reflection sites that can
+        see their namespaces (the builders), and their members (a running
+        method holds ``self``). None unless holding one needs one of those
+        to run in the same test (roadmap item 13): every class of the family
+        and every ancestor is test code, none runs code when created, each
+        builder is a function or method, and none of them ran during an
+        import or outside every test."""
+        if cls in self._holders_of:
+            return self._holders_of[cls]
+        self._holders_of[cls] = None
+        family = {cls}
+        stack = [cls]
+        while stack:
+            for sub_ in self.subclasses.get(stack.pop(), ()):
+                if sub_ not in family:
+                    family.add(sub_)
+                    stack.append(sub_)
+        ancestors = set(family)
+        stack = list(family)
+        while stack:
+            for base in self.bases.get(stack.pop(), ()):
+                if base not in ancestors:
+                    ancestors.add(base)
+                    stack.append(base)
+        for c in ancestors:
+            symbol = self.symbols.get(c)
+            if symbol is None or not self.test_code.is_test_code(symbol.module):
+                return None
+        if any(self._runs_on_creation(c) for c in family):
+            return None
+        builders: set[str] = set()
+        members: set[str] = set()
+        for c in family:
+            for source in self.readers_of.get(c, set()) | self.by_name.get(
+                c.rsplit(".", 1)[-1], set()
+            ):
+                if source not in family:  # a subclass naming its base
+                    builders.add(source)
+            builders.update(site for site, _ in self._seeing_sites(self.symbols[c]))
+            for member in self.members.get(c, ()):
+                if self.symbols[member].kind in (FUNCTION, METHOD):
+                    members.add(member)
+        ev = self.evidence
+        for builder in builders:
+            symbol = self.symbols.get(builder)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+                return None
+        for holder in builders | members:
+            if holder in ev.import_phase or holder in ev.import_by or holder in ev.hook_phase:
+                return None
+        self._holders_of[cls] = (frozenset(builders), frozenset(members))
+        return self._holders_of[cls]
 
     def _reader(self, reader: str, change: SymbolChange | None, label: str) -> None:
         symbol = self.symbols.get(reader)
@@ -1081,6 +1188,10 @@ class _Observers:
     def _sites(
         self, symbol: Symbol, change: SymbolChange | None, label: str, *, imports: bool = False
     ) -> None:
+        for site, detail in self._seeing_sites(symbol, imports=imports):
+            self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
+
+    def _seeing_sites(self, symbol: Symbol, *, imports: bool = False) -> list[tuple[str, str]]:
         """Code that finds names by a name nothing bounds and can see the
         namespace of ``symbol``: a read off an object from anywhere, eval and
         reflection always; a read off a module global when the namespace's
@@ -1091,6 +1202,7 @@ class _Observers:
         ever instantiates (planner._runner_only_classes) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
         hold one of its instances."""
+        out: list[tuple[str, str]] = []
         namespace = symbol.module
         test = self.test_code.is_test_code(namespace)
         family = self._runner_family(symbol.id)
@@ -1112,22 +1224,19 @@ class _Observers:
             elif kind == SITE_IMPORT:
                 if not imports or test:
                     continue
-            self._observe(
-                site,
-                RULE_LOOKUP_SITE,
-                f"{site} looks names up by a name nothing bounds and can see {namespace}; {label}",
-                change,
+            out.append(
+                (site, f"{site} looks names up by a name nothing bounds and can see {namespace}")
             )
         if module_name:
             # ``request.module`` hands a test module on, and ``sys.modules``
             # finds one by name: the reader stands in for what follows.
             for site in sorted(self.module_hands_on):
-                self._observe(
-                    site,
-                    RULE_LOOKUP_SITE,
-                    f"{site} reads .module or sys.modules and may hand a test module on to "
-                    f"a lookup that can see {namespace}; {label}",
-                    change,
+                out.append(
+                    (
+                        site,
+                        f"{site} reads .module or sys.modules and may hand a test module on to "
+                        f"a lookup that can see {namespace}",
+                    )
                 )
         if family is not None:
             # ``request.instance``, ``item.instance`` and ``request.cls`` hand
@@ -1135,13 +1244,14 @@ class _Observers:
             # it. That happens within the test that read it, so its record
             # holds the read: the reader stands in for every lookup after it.
             for site in sorted(self.hands_on):
-                self._observe(
-                    site,
-                    RULE_LOOKUP_SITE,
-                    f"{site} reads .instance or .cls and may hand a test object on to a lookup "
-                    f"that can see {namespace}; {label}",
-                    change,
+                out.append(
+                    (
+                        site,
+                        f"{site} reads .instance or .cls and may hand a test object on to a "
+                        f"lookup that can see {namespace}",
+                    )
                 )
+        return out
 
     def _runner_family(self, symbol_id: str) -> set[str] | None:
         """The runner-only class holding ``symbol_id`` with its bases and
@@ -1410,6 +1520,21 @@ def _evidence_decision(
                         why.changes,
                     )
                 )
+            for reader in sorted(executed & obs.guarded.keys()):
+                guard = _guarded_hit(executed, obs.guarded[reader])
+                if guard is not None:
+                    holder, why = guard
+                    reasons.append(
+                        Reason(
+                            why.rule,
+                            f"executed {reader} and {holder} in the evidence run at {short}: "
+                            f"{why.detail}",
+                            (),
+                            why.changed_symbol,
+                            why.changes,
+                        )
+                    )
+                    break
             for path, (what, names) in sorted(obs.files.items()):
                 how = None
                 if path in touched:
@@ -1460,6 +1585,18 @@ def _evidence_decision(
         )
     reasons += escalated.get(target.node_id, [])
     return _decision(target, list(dict.fromkeys(reasons)), {})
+
+
+def _guarded_hit(
+    executed: set[str], guards: list[tuple[frozenset[str], frozenset[str], Reason]]
+) -> tuple[str, Reason] | None:
+    """The first code able to hand a guarded reader its object that the test
+    ran, preferring code that names the class to the class's own members."""
+    for builders, members, why in guards:
+        hit = sorted(executed & builders) or sorted(executed & members)
+        if hit:
+            return hit[0], why
+    return None
 
 
 def _entry_chain(entry: str) -> list[str]:
