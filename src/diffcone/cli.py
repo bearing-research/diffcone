@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import subprocess
 import sys
 import time
@@ -55,7 +56,6 @@ from diffcone.execution import (
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
-    join_command,
     run_selected,
     run_with_evidence,
     validate_pytest,
@@ -855,7 +855,7 @@ def _main(argv: list[str] | None) -> int:
                 if not outcome.selected:
                     print("diffcone: nothing selected; not running", file=sys.stderr)
                     return 0
-                return _write(join_command(outcome.command) + "\n", args.output)
+                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
             if outcome.returncode is None:
                 # Nothing ran: an empty selection (a whole-suite fallback ran
                 # something even when no static target was selected).
