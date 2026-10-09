@@ -47,7 +47,7 @@ Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).
 Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.
 
 ```text
-diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
+diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}] [runner_args ...]
 ```
 
 | Option | Default | Description |
@@ -55,6 +55,7 @@ diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--repo REPO] [--
 | `--base` `BASE` |  | **Required.** Base snapshot: a git revision, INDEX or WORKTREE. |
 | `--head` `HEAD` |  | **Required.** Head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on disk, ignored files excluded). |
 | `--targets` `TARGETS` |  | Path to a JSON target manifest. |
+| `--command` `COMMAND` |  | The pytest command line the run will use: pytest options written in it (uv run pytest -p plugins.x) are read by discovery, as run reads them. |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--source-root` `DIR[=PREFIX]` |  | Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names. |
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |
@@ -253,12 +254,13 @@ Statically discover targets in a snapshot and emit a manifest.
 Discover pytest tests and/or ASV benchmarks in a snapshot (a git revision, INDEX or WORKTREE) without importing them, and print a target manifest (JSON) for `diffcone plan --targets`. The output states which snapshot kind was read.
 
 ```text
-diffcone discover [-h] [--rev REV] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
+diffcone discover [-h] [--rev REV] [--command COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR]
 ```
 
 | Option | Default | Description |
 |---|---|---|
 | `--rev` `REV` | `HEAD` | Snapshot to discover in: revision, INDEX or WORKTREE. |
+| `--command` `COMMAND` |  | The pytest command line the run will use: pytest options written in it are read by discovery. |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--source-root` `DIR[=PREFIX]` |  | Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names. |
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |

@@ -21,9 +21,14 @@ Reproduces ASV's collection rules without importing benchmark code:
 
 Lifecycle dependencies: the class's ``setup``, ``setup_cache`` and
 ``teardown`` methods, the module's ``setup``, ``setup_cache`` and
-``teardown`` functions, and the module itself (module-level attributes such
-as ``timeout`` or ``params``). Class attributes reach the benchmarks through
-the class body, which the planner treats as structural.
+``teardown`` functions (``setup`` and ``teardown`` in any case, ``setUp`` or
+``TearDown``, as asv_runner matches them ignoring case; ``setup_cache`` as
+written), the methods building the instance asv_runner makes of the class
+for every benchmark (``__init__``, ``__new__``, ``__getattribute__``,
+``__getattr__``, inherited ones included), and the module itself
+(module-level attributes such as ``timeout`` or ``params``). Class
+attributes reach the benchmarks through the class body, which the planner
+treats as structural.
 
 Benchmarks inherited from base classes count: ASV reads a class's
 attributes including inherited ones. A base defined in the same module, or
@@ -74,6 +79,17 @@ BENCHMARK_NAME = re.compile(
     r"^(?:(?:Time|Timeraw|Mem|PeakMem|Track)[A-Z_].+|(?:time|timeraw|mem|peakmem|track)_.+)$"
 )
 LIFECYCLE_NAMES = ("setup", "setup_cache", "teardown")
+# What building the benchmark's instance runs: asv_runner calls ``klass()``
+# for every class benchmark and reads the method off the instance.
+CONSTRUCTION_NAMES = ("__init__", "__new__", "__getattribute__", "__getattr__")
+
+
+def _lifecycle(name: str) -> bool:
+    """Whether asv_runner runs the attribute ``name`` around a benchmark: it
+    looks ``setup`` and ``teardown`` up ignoring case (``setUp``,
+    ``TearDown``; ``key.lower() == name.lower()`` over ``dir(source)``), and
+    ``setup_cache`` by its exact name."""
+    return name == "setup_cache" or name.lower() in ("setup", "teardown")
 
 
 def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
@@ -446,7 +462,7 @@ def discover_asv(
         module_deps = [pm.module] + [
             owner.member_id(func.name)
             for name, (func, owner) in sorted(functions.items())
-            if name in LIFECYCLE_NAMES
+            if _lifecycle(name)
         ]
         custom = _benchmark_names(body)
         for bound, (func, owner) in sorted(functions.items()):
@@ -479,7 +495,9 @@ def discover_asv(
                 _class_methods(base_cls, base_id, methods)
                 nodes.update({f"{base_id}.{f.name}": f for f in scope_functions(base_cls.body)})
             deps = module_deps + [
-                symbol for name, symbol in methods.items() if name in LIFECYCLE_NAMES
+                symbol
+                for name, symbol in methods.items()
+                if _lifecycle(name) or name in CONSTRUCTION_NAMES
             ]
             if owner is not pm:
                 deps.append(owner.module)

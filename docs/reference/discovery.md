@@ -11,10 +11,26 @@ each one understands.
 or `[tool.pytest]`), `tox.ini` or `setup.cfg`, in pytest's order:
 `testpaths`,
 `python_files`, `python_classes`, `python_functions`, `norecursedirs`,
-`usefixtures`, and the doctest options in `addopts`. The arguments you pass
-after `--` count too: test files or directories named there replace
-`testpaths`, as they do for pytest, and `--ignore` / `--ignore-glob` leave
-paths out.
+`usefixtures`, and the options in `addopts`. pytest reads options from
+three more places, and so does discovery, in pytest's order: the
+`PYTEST_ADDOPTS` environment variable, the pytest arguments written into
+`--command` (`uv run pytest -p tests.plugin`), and the arguments you pass
+after `--`. Plugins named in `PYTEST_PLUGINS` are loaded too. Planning reads
+the environment when it runs, so plan in the environment the tests run in;
+the report's `discovery` section lists what it read (`run_arguments`).
+
+Among those options:
+
+- test files or directories (`.` included) replace `testpaths`, as they do
+  for pytest; a `.txt` or `.rst` file named there is a doctest;
+- `--ignore` and `--ignore-glob` leave paths out, and `norecursedirs` skips
+  directories, below the paths pytest starts from, never those paths
+  themselves; a `pytest_ignore_collect` hook in a `conftest.py` that can
+  return `False` overrides both under its directory, so they are not
+  applied there;
+- `-o name=value` overrides the configuration (`-o addopts=` drops the
+  configured `addopts`);
+- an absolute path inside the repository counts as the relative one.
 
 **Tests** found:
 
@@ -43,22 +59,32 @@ paths out.
   conftest or test module, and the plugins those list) and the pytest
   plugins of your project and of other packages in the repository. A
   fixture is found under every name a module
-  binds it to, as in pytest: an alias (`box2 = box`) or an import (`from
-  tests.helpers import engine`), unless the fixture sets its own `name=`.
+  binds it to, as in pytest: an alias (`box2 = box`), an import (`from
+  tests.helpers import engine`, `from tests.helpers import *`, through
+  any number of modules) or a module attribute (`engine =
+  tests.helpers.engine`), unless the fixture sets its own `name=`. When two
+  plugins define a fixture of the same name, both count.
   A name the test parametrizes is a parameter, not a fixture, for the test
   and for every fixture it uses;
 - marks such as `usefixtures` and `parametrize` on its class and the
   class's base classes, including marks stored in a variable and applied
   by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`);
 - autouse fixtures that apply to it, including ones whose `autouse=` is a
-  variable;
+  variable and ones a `conftest.py`, test module or plugin imports;
 - xunit-style `setup_*` and `teardown_*` functions, and unittest's
   `setUpModule`, `setUp`, `asyncSetUp`, `setUpClass` and their teardowns;
 - its module, and every `conftest.py` on its path with their `pytest_*`
   hooks, including hooks they import;
 - hooks that run for the whole session, such as
   `pytest_collection_modifyitems` and `pytest_configure`, in any
-  `conftest.py` and in your plugins.
+  `conftest.py` pytest loads (including the one in a `test*` directory of a
+  path pytest starts from, which it loads even when that directory is
+  ignored) and in your plugins;
+- your plugins' modules, which load for the whole session.
+
+A test is also selected when what runs around it changes although its own
+code did not: for example, a test module adds a plugin to
+`pytest_plugins`, whose autouse fixture then applies to every test.
 
 A doctest depends on everything its module can reach, and on the fixtures
 pytest gives it: autouse fixtures (such as one that fills
@@ -67,7 +93,9 @@ file is always selected.
 
 A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
-contains it. A change outside your source roots to your runner
+contains it. The same goes for a plugin in your repository that your source
+roots don't hold (`pytest_plugins = ["support.plugin"]` with `support/`
+outside them): every test is always selected. A change outside your source roots to your runner
 configuration or build script (`pyproject.toml`, `tox.ini`, `setup.cfg`,
 `setup.py`, `noxfile.py`, `hatch.toml`, a `conftest.py`, `asv.conf.json`),
 to your dependencies (a lock file such as `uv.lock`, any file or directory
@@ -114,7 +142,9 @@ followed by a capital), including inherited ones and ones imported into a
 benchmark module, in every module under `benchmark_dir` as ASV walks it,
 named as ASV names them (a `benchmark_name` you set is used). Each depends
 on its class's and module's `setup`, `setup_cache` and `teardown` (also
-when imported from another module), and on its module. Class attributes
+when imported from another module; `setup` and `teardown` in any case, such
+as `setUp`, as ASV finds them), on the `__init__` of its class, which ASV
+runs for every benchmark (also when inherited), and on its module. Class attributes
 such as `params` count as part of the class. A `timeraw_` benchmark also
 depends on the modules its code imports; if its code isn't a plain string,
 it is always selected.
@@ -128,8 +158,11 @@ Some things can't be known by reading the source:
 - a test base class, or an imported test, from outside your source roots;
 - a test file, benchmark file or doctest module outside your source roots
   (with `--source-root src`, add `--source-root .` for tests in `tests/`);
-- options in `addopts` that change what pytest collects (`-o`, `-c`,
-  `--rootdir`, `--pyargs`, or a path to test);
+- options that change what pytest collects in ways discovery doesn't
+  follow (`-c`, `--rootdir`, `--pyargs`);
+- a `--command` discovery can't find pytest's arguments in (it looks for
+  `-m pytest` or a `pytest` program);
+- a plugin with a `pytest_ignore_collect` hook that can return `False`;
 - a test given by node id after `--` (`tests/test_x.py::test_one`), or a
   path right after an option that may take it as its value (`--cov src`);
 - a test bound to something discovery can't follow

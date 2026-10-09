@@ -9,7 +9,11 @@ planner treats conservatively.
 
 from __future__ import annotations
 
+import os
+import shlex
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from diffcone.manifest import Target
@@ -61,6 +65,97 @@ class DiscoveryOptions:
     # ``addopts`` (``--doctest-modules`` collects doctests; options discovery
     # cannot model make it incomplete).
     runner_args: tuple[str, ...] = ()
+    # The rest of what pytest reads besides its configuration file, in the
+    # order it reads it (ini ``addopts``, ``PYTEST_ADDOPTS``, the command's
+    # own arguments, then ``runner_args``): the ``PYTEST_ADDOPTS`` and
+    # ``PYTEST_PLUGINS`` environment variables at plan time, and the pytest
+    # arguments written into ``--command`` (``uv run pytest -p plugins.x``).
+    env_addopts: tuple[str, ...] = ()
+    env_plugins: tuple[str, ...] = ()
+    command_args: tuple[str, ...] = ()
+    # Why the command's pytest arguments could not be told apart (a command
+    # whose shape is not recognised), reported as a note; empty otherwise.
+    command_problem: str = ""
+
+    @property
+    def pytest_args(self) -> tuple[str, ...]:
+        """Every pytest argument besides the configuration's ``addopts``, in
+        pytest's order."""
+        return self.env_addopts + self.command_args + self.runner_args
+
+
+# Program names that are pytest itself, as a command's executable or the
+# module after ``-m``.
+PYTEST_PROGRAMS = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
+
+
+def pytest_command_arguments(argv: list[str]) -> tuple[tuple[str, ...], str]:
+    """The arguments a command line passes to pytest, and why they could not
+    be found (empty when they could): what follows ``-m pytest`` (``python
+    -m pytest``, ``coverage run -m pytest``), or else what follows the one
+    token naming the pytest program (``pytest``, ``uv run pytest``,
+    ``.venv/bin/pytest``). A command where neither is found, or where the
+    program is named more than once, is not recognised."""
+    for i, token in enumerate(argv[:-1]):
+        if token == "-m" and argv[i + 1] in ("pytest", "py.test"):
+            return tuple(argv[i + 2 :]), ""
+    programs = [
+        i
+        for i, token in enumerate(argv)
+        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() in PYTEST_PROGRAMS
+    ]
+    if len(programs) == 1:
+        return tuple(argv[programs[0] + 1 :]), ""
+    shown = " ".join(argv)
+    if not programs:
+        return (), f"the command {shown!r} names no pytest program (pytest, -m pytest)"
+    return (), f"the command {shown!r} names pytest more than once"
+
+
+def plugin_specs(value: str) -> tuple[str, ...]:
+    """The modules ``PYTEST_PLUGINS`` names: a comma-separated list, as
+    pytest's ``_get_plugin_specs_as_list`` reads it."""
+    return tuple(p.strip() for p in value.split(",") if p.strip())
+
+
+def relative_arguments(tokens: Iterable[str], repo: Path) -> tuple[str, ...]:
+    """``tokens`` with every absolute path inside ``repo`` (a positional
+    path, or the value of ``--opt=/abs/path``) made relative to it, as
+    pytest, run there, resolves both: discovery matches repository paths."""
+    top = repo.resolve()
+
+    def relative(value: str) -> str:
+        if not os.path.isabs(value):
+            return value
+        try:
+            inner = Path(value).resolve().relative_to(top).as_posix()
+        except (ValueError, OSError):
+            return value
+        return inner or "."
+
+    out: list[str] = []
+    for token in tokens:
+        if token.startswith("-") and "=" in token:
+            option, value = token.split("=", 1)
+            out.append(f"{option}={relative(value)}")
+        else:
+            out.append(relative(token))
+    return tuple(out)
+
+
+def environment_options(environ: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    """``env_addopts`` and ``env_plugins`` for DiscoveryOptions from an
+    environment: ``PYTEST_ADDOPTS`` split as pytest splits it (``shlex``),
+    ``PYTEST_PLUGINS`` as plugin_specs reads it."""
+    raw = environ.get("PYTEST_ADDOPTS", "")
+    try:
+        addopts = tuple(shlex.split(raw))
+    except ValueError:  # an unbalanced quote: pytest fails; be lenient
+        addopts = tuple(raw.split())
+    return {
+        "env_addopts": addopts,
+        "env_plugins": plugin_specs(environ.get("PYTEST_PLUGINS", "")),
+    }
 
 
 # Note kinds that mean the target list may be short of what the runner

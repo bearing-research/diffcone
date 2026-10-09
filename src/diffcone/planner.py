@@ -123,6 +123,11 @@ RULE_DECLARED_DEPENDENCY = "declared_dependency"
 # A target diffcone.toml says to run on every change ([[always_run]]).
 RULE_ALWAYS_RUN = "always_run"
 RULE_NEW_TARGET = "new_target"
+# A discovered target whose lifecycle dependencies differ between the
+# snapshots: a fixture, hook or plugin now applies to it, or no longer does,
+# although nothing it depends on changed (``pytest_plugins`` added in another
+# test module registers a plugin for the whole session).
+RULE_LIFECYCLE_CHANGED = "lifecycle_changed"
 RULE_UNANALYSED_FILE = "unanalysed_file_changed"
 # Evidence mode (evidence_plan.py). ``escalated`` is a selection made by
 # static planning of a change that evidence cannot bound.
@@ -808,9 +813,13 @@ def plan_from_indexes(
     base_target_ids: set[str] | None = None,
     seeds: Seeds | None = None,
     runner_files: Iterable[str] = (),
+    lifecycle_changes: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
 ) -> Plan:
     """``runner_files``: changed runner configuration outside the source
-    roots (_runner_files_outside_roots), which selects every target."""
+    roots (_runner_files_outside_roots), which selects every target.
+    ``lifecycle_changes``: (runner, runner_id) -> (added, removed) lifecycle
+    dependencies of a discovered target between the snapshots
+    (_lifecycle_changes), which selects it."""
     discovered = list(discovered or []) + _manifest_notes(manifest, discovered or [])
     discovered_ids = {t.runner_id for result in discovered for t in result.targets}
     declared = list(declarations or [])
@@ -1185,6 +1194,26 @@ def plan_from_indexes(
                     RULE_NEW_TARGET,
                     f"{target.runner_id} is not in the base snapshot: a new target is selected "
                     "whatever its entry symbol did",
+                )
+            )
+        moved = (lifecycle_changes or {}).get((target.runner, target.runner_id))
+        if moved is not None and target.runner_id in discovered_ids:
+            added, removed = moved
+            parts = [
+                f"{label} {', '.join(deps[:LIFECYCLE_SHOWN])}"
+                + (
+                    f" and {len(deps) - LIFECYCLE_SHOWN} more"
+                    if len(deps) > LIFECYCLE_SHOWN
+                    else ""
+                )
+                for label, deps in (("now runs", added), ("no longer runs", removed))
+                if deps
+            ]
+            reasons.append(
+                Reason(
+                    RULE_LIFECYCLE_CHANGED,
+                    f"what the runner sets up around {target.runner_id} changed between the "
+                    f"snapshots: it {'; it '.join(parts)}",
                 )
             )
         entry_change = change_by_id.get(target.entry_symbol)
@@ -1593,6 +1622,31 @@ def _manifest_notes(
     ]
 
 
+# Lifecycle dependencies named in a ``lifecycle_changed`` reason.
+LIFECYCLE_SHOWN = 5
+
+
+def _lifecycle_changes(
+    discovered: list[DiscoveryResult], base_lifecycle: dict[tuple[str, str], tuple[str, ...]]
+) -> dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]]:
+    """(runner, runner_id) -> (added, removed) for each head target the base
+    also had, with other lifecycle dependencies: a fixture, hook or plugin
+    that now applies to it (an autouse fixture of a plugin another test
+    module now registers), or no longer does, decides what it runs although
+    neither the target nor that dependency changed."""
+    changes: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    for result in discovered:
+        for target in result.targets:
+            key = (target.runner, target.runner_id)
+            if key not in base_lifecycle:
+                continue
+            before = set(base_lifecycle[key])
+            after = set(target.lifecycle_dependencies)
+            if before != after:
+                changes[key] = (tuple(sorted(after - before)), tuple(sorted(before - after)))
+    return changes
+
+
 def _with_base_lifecycle(
     discovered: list[DiscoveryResult], base_lifecycle: dict[tuple[str, str], tuple[str, ...]]
 ) -> list[DiscoveryResult]:
@@ -1706,6 +1760,7 @@ def plan(
         if head_commit is not None and discovery_cache is not None:
             for result in discovered:
                 discovery_cache.store(result, head_commit, roots, options)
+    lifecycle_changes = _lifecycle_changes(discovered, base_lifecycle)
     discovered = _with_base_lifecycle(discovered, base_lifecycle)
     _check_always_run_runners(always_from, manifest, discovered)
     if evidence is not None:
@@ -1751,6 +1806,7 @@ def plan(
             declarations=declared,
             base_target_ids=base_target_ids,
             runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
+            lifecycle_changes=lifecycle_changes,
         )
     return _with_always_run(planned, sorted(always))
 

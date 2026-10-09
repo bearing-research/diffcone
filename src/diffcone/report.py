@@ -291,6 +291,9 @@ def to_text(plan: Plan) -> str:
     for d in plan.discovery:
         lines.append("")
         lines.append(f"discovery ({d.runner}): {len(d.targets)} target(s), {len(d.notes)} note(s)")
+        for source, values in (d.config.get("run_arguments") or {}).items():
+            # What discovery read besides the configuration file.
+            lines.append(f"  read ({source}): {' '.join(values)}")
         for n in d.notes:
             lines.append(f"  {n.kind}: {n.detail}")
     return "\n".join(lines) + "\n"

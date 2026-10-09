@@ -90,6 +90,7 @@ runs:
       id: plan
       shell: bash
       env:
+        COMMAND: ${{ inputs.command }}
         PYTEST_ARGS: ${{ inputs.pytest-args }}
         ROOTS: ${{ inputs.source-roots }}
         # Outside the checkout: collect records only a clean working tree.
@@ -160,8 +161,11 @@ runs:
         fi
         echo "$commit" > "$RESULTS/recording"
         rc=0
+        # The command too: pytest options written in it change what
+        # discovery finds, as they do for the run.
         diffcone plan --base HEAD^1 --head HEAD --discover pytest "${roots[@]}" \
-          --evidence "$store" -o "$RESULTS/plan.json" -- "${args[@]}" || rc=$?
+          --command "$COMMAND" --evidence "$store" -o "$RESULTS/plan.json" -- "${args[@]}" \
+          || rc=$?
         if [ "$rc" -eq 2 ]; then
           echo "the previous recording could not be used" > "$RESULTS/check-note"
           # A recording diffcone cannot read (other source roots, an older
@@ -192,7 +196,8 @@ runs:
         rm -f .diffcone/check.json
         # Index and discover this commit once, so pull requests start warm.
         diffcone plan --base HEAD --head HEAD --discover pytest "${roots[@]}" \
-          --evidence auto -o /dev/null -- "${args[@]}" || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
+          --command "$COMMAND" --evidence auto -o /dev/null -- "${args[@]}" \
+          || { rc=$?; [ $rc -eq 1 ] || [ $rc -eq 3 ]; }
         diffcone prune --keep HEAD "${roots[@]}"
         commit=$(git rev-parse HEAD)
         find .diffcone/evidence -name '*.sqlite' ! -name "$commit-*" -delete

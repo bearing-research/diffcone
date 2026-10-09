@@ -21,7 +21,7 @@ summary of the same information). The report's format is versioned by
 | `analysis_errors` | Errors such as a file that doesn't parse. Any error selects every target. |
 | `declarations` | The dependencies declared in [`diffcone.toml`](declarations.md). |
 | `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); each says how many targets it `matched`, and `analysis.counts.always_run` counts the targets they selected. |
-| `discovery` | For each runner: how many targets were found, the configuration read, and any notes. |
+| `discovery` | For each runner: how many targets were found, the configuration read (for pytest, `run_arguments` lists what was read besides the configuration file: `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, the pytest arguments in `--command` and those after `--`), and any notes. |
 
 With a recording, `analysis.evidence` describes it: its commit,
 `environment_hash`, how many tests it holds, and `environment_checked`.
@@ -85,13 +85,14 @@ selected the target to be safe.
 |---|---|---|
 | `dependency` | | A chain of calls, references or imports connects the target to a change (the target's own code included), shown in `dependency_explanations`. |
 | `new_target` | | The target is new. |
+| `lifecycle_changed` | | What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to `pytest_plugins`, for example). |
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
 | `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
 | `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), and a change could be among them. |
 | `unresolved_name_match` | yes | It reaches a call diffcone couldn't resolve, whose name matches a changed function or method. |
 | `entry_symbol_unresolved` | yes | Its own code wasn't found in either snapshot. |
-| `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` outside the source roots, a benchmark's code it couldn't read. |
+| `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots, a benchmark's code it couldn't read. |
 | `analysis_error` | yes | A file couldn't be analysed, so every target is selected. |
 | `runner_dependency` | yes | Code the test runner itself imports changed. |
 | `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration, build script, dependencies or lock file changed outside them. |

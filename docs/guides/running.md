@@ -19,6 +19,15 @@ tests. Everything after `--` is passed to pytest. pytest collects your
 suite as usual and a small plugin keeps the selected tests, so conftests
 and plugins load exactly as in a full run.
 
+Discovery reads the same pytest options the run will use: those after
+`--`, those written into `--command` (`uv run pytest -p tests.plugin`),
+and the `PYTEST_ADDOPTS` and `PYTEST_PLUGINS` environment variables. When
+you plan separately with `diffcone plan`, pass it the same `--command`
+and arguments, in the same environment. If discovery can't find pytest's
+arguments in `--command` (it looks for `-m pytest` or a `pytest`
+program, so a wrapper script is not recognised), the plan says so and
+exits `3`.
+
 For ASV, `--runner asv` builds the matching `asv run --bench` pattern. Add
 `--dry-run` to print the command instead of running it:
 

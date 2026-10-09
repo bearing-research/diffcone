@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -41,9 +42,14 @@ import warnings
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
-from diffcone.discovery import DiscoveryOptions, discover
+from diffcone.discovery import (
+    DiscoveryOptions,
+    discover,
+    environment_options,
+    pytest_command_arguments,
+)
 from diffcone.discovery.asv_static import read_asv_config
-from diffcone.execution import build_command
+from diffcone.execution import build_command, split_command
 from diffcone.indexer import Indexer
 from diffcone.manifest import Target
 from diffcone.snapshot import read_snapshot
@@ -154,12 +160,31 @@ def collected(repo: Path, command: str, clean_addopts: bool = False) -> tuple[se
     return set(), log
 
 
-def targets(repo: Path, source_roots: list[str], rev: str, runner: str):
+def discovery_options(runner: str, command: str, clean_addopts: bool) -> DiscoveryOptions:
+    """What pytest will read besides its configuration, as ``diffcone run``
+    hands it to discovery: the arguments written into the command, the
+    environment's PYTEST_ADDOPTS and PYTEST_PLUGINS, and, with
+    ``--clean-addopts``, the ``-o addopts=`` this script collects with
+    (which drops the configured addopts, their --ignore included)."""
+    if runner != "pytest":
+        return DiscoveryOptions()
+    args, problem = pytest_command_arguments(split_command(command))
+    environment = environment_options(os.environ)
+    return DiscoveryOptions(
+        runner_args=("-o", "addopts=") if clean_addopts else (),
+        env_addopts=environment["env_addopts"],
+        env_plugins=environment["env_plugins"],
+        command_args=args,
+        command_problem=problem,
+    )
+
+
+def targets(repo: Path, source_roots: list[str], rev: str, runner: str, options: DiscoveryOptions):
     # with_config: discovery needs the project's runner configuration, which
     # the planner also reads only for the snapshot it discovers in.
     snapshot = read_snapshot(repo, rev, source_roots=source_roots, with_config=True)
     index = Indexer(snapshot).build()
-    result = discover(runner, snapshot, index, DiscoveryOptions())
+    result = discover(runner, snapshot, index, options)
     return {PARAM.sub("", t.runner_id) for t in result.targets}, result.notes, snapshot
 
 
@@ -189,7 +214,8 @@ def main() -> int:
 
     repo = Path(args.repo).resolve()
     roots = args.source_roots or (["src", "."] if (repo / "src").is_dir() else ["."])
-    planned, notes, snapshot = targets(repo, roots, args.rev, args.runner)
+    options = discovery_options(args.runner, args.command, args.clean_addopts)
+    planned, notes, snapshot = targets(repo, roots, args.rev, args.runner, options)
     records: list[dict] = []
     if args.runner == "pytest":
         real, log = collected(repo, args.command, args.clean_addopts)

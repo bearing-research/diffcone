@@ -600,6 +600,15 @@ Unknown is never treated as unaffected:
   well as the head; only the snapshot is read again, so the base index
   still comes from the cache. A manifest names targets without saying when
   they appeared, so the rule applies to discovered targets only.
+* **A discovered target whose lifecycle dependencies differ between the
+  snapshots** is selected (`lifecycle_changed`; the reason lists what was
+  added and removed): a fixture, hook or plugin now applies to it, or no
+  longer does, although neither the test nor that dependency changed. A
+  test module adding `pytest_plugins = ["tests.plugin"]` registers the
+  plugin for the session, and its autouse fixture then runs around every
+  other module's tests (audit round 3, EVP-5); removing the line takes it
+  away. Where the difference comes from a changed symbol the search already
+  selects the target; the rule adds only the cases no symbol carries.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).
@@ -840,12 +849,22 @@ Fixtures are functions decorated with a dotted name ending in `fixture` or
 arguments are honoured. pytest registers a fixture under every name a
 module binds it to (its `parsefactories` walks the module's namespace), so
 a module also offers the fixtures it binds by alias (`box2 = box`), by
-`from` import (`from pkg.conftest import engine as motor`) or by star
-import, followed across modules and re-exports; a fixture with an explicit
-`name=` is offered under that name only, whatever it is bound to. Only names
-something could request (a parameter or an identifier-like string in the
-test modules and conftests) are followed, so discovery does not parse every
-module a test imports from.
+`from` import (`from pkg.conftest import engine as motor`), by module
+attribute (`engine = pkg.conftest.engine` after `import pkg.conftest`) or by
+star import (a module's own star imports included, at any depth), followed
+across modules and re-exports; a fixture with an explicit `name=` is
+offered under that name only, whatever it is bound to. A binding is
+followed when its name is something a test could request (a parameter or
+an identifier-like string in the test modules and conftests), or when it
+comes from a module that can bind an autouse fixture, which nobody
+requests by name, or a fixture with an explicit `name=`, requested by a
+name the binding does not have (pydantic's `from .test_types_typeddict
+import fixture_typed_dict`, registered as `TypedDict`): `_fixture_reach`, a
+module whose source says `fixture` and `autouse` or `name`, and every module
+importing one, directly or not, by the index's `imports` edges (a binding
+chain passes only through modules that import the next).
+Any other binding is not followed, so discovery does not parse every module
+a test imports from.
 Requests follow pytest's `getfuncargnames`: parameter names minus `self`,
 `request`, parameters with defaults, arguments injected by `mock.patch` /
 `patch.object` decorators (unless `new` is given) on the function or, for
@@ -884,11 +903,17 @@ in `addopts` (a pytest-internal name such as `pytester` resolves to
 repository), and recursively the modules those plugin modules list in
 their own `pytest_plugins` (pytest registers them as it registers the
 module: poetry's conftest loads a package whose `__init__` lists the
-modules with its autouse fixtures), following one level of
-`from ... import` re-exports so a plugin package's `__init__` exposes the
-fixtures and hooks it imports (matched on the original name; a fixture keeps
-its own name under an alias). Hooks defined in or imported into those
-plugin modules are lifecycle dependencies of every test. Nearest scope wins; a fixture that requests its
+modules with its autouse fixtures), following `from ... import`
+re-exports so a plugin package's `__init__` exposes the fixtures and hooks
+it imports (matched on the original name; a fixture keeps its own name under
+an alias; star imports at any depth, by the binding rules above). Hooks
+defined in or imported into those plugin modules, and the plugin modules
+themselves (their import-time code runs once per session, before any
+test), are lifecycle dependencies of every test. When several plugins
+define a fixture of one name, every definition counts: pytest uses the one
+registered last, and the order it registers plugins in (`-p`, entry
+points, `PYTEST_PLUGINS`, then each `pytest_plugins` as its file loads) is
+not tracked. Nearest scope wins; a fixture that requests its
 own name (`def db(db)`) resolves to the next definition outward; requests
 are resolved transitively along the same chain; autouse fixtures anywhere
 on the chain apply (`autouse=` anything but a literal false value:
@@ -981,7 +1006,8 @@ Further rules (pre-release audit, round 2):
   the subclass.
 * `request.getfixturevalue` with a non-literal argument requests every
   fixture visible from the test (`*`).
-* Paths among the run's arguments (after `--`) are pytest's initial paths
+* Paths among the run's arguments (after `--`; since round 3 among all of
+  pytest's arguments, below) are pytest's initial paths
   and replace `testpaths`. A token counts as one only when it names a file
   or directory and does not follow an option that may take a value: first,
   after `--opt=value`, after a known flag (`FLAG_OPTIONS`) or after another
@@ -993,9 +1019,9 @@ Further rules (pre-release audit, round 2):
 * `--ignore` / `--ignore-glob` apply only below the initial paths (the
   run's paths, or `testpaths`): pytest never ignores an initial path, and
   checks each directory and file it walks to from one.
-* An `addopts` entry that overrides the configuration (`-o`, `-c`,
-  `--rootdir`, `--pyargs`) or names a path is reported
-  (`unmodelled_runner_option`); so is a collection hook in a plugin module
+* An `addopts` entry that overrides the configuration (`-c`,
+  `--rootdir`, `--pyargs`; `-o` and paths are modelled since round 3) is
+  reported (`unmodelled_runner_option`); so is a collection hook in a plugin module
   (`plugin_collects_files`) and, with `--doctest-modules`, a module outside
   the source roots (`test_file_outside_roots`).
 * `pytest11` entry points of sibling packages in the repository (their
@@ -1046,6 +1072,58 @@ Further rules (pre-release audit, round 2):
   entry. A sibling package's own `packages/x/tests/conftest.py` is never
   imported by a session collecting `tests/`.
 
+Further rules (pre-release audit, round 3):
+
+* pytest reads options from four places, in order: the configured
+  `addopts`, `PYTEST_ADDOPTS`, the command line (`diffcone run --command`'s
+  own pytest arguments: what follows `-m pytest`, or the one token naming
+  the `pytest` program; anything else is an `unmodelled_runner_option`),
+  then the arguments after `--`. Discovery reads all four
+  (`DiscoveryOptions`, filled by the CLI from the environment at plan time
+  and from `--command`, which `plan` and `discover` take too), and the
+  plugins `PYTEST_PLUGINS` names load like `-p` ones. The report's
+  discovery `config.run_arguments` says which it used. Absolute paths
+  inside the repository are made relative first.
+* Initial paths: every positional path among those arguments, `addopts`
+  included (pytest prepends `addopts` to the command line); `.` is the
+  rootdir. Otherwise `testpaths` as `glob.iglob(entry, recursive=True)`
+  expands it. pytest keeps them prefix-free (`normalize_collection_arguments`:
+  `tests/legacy/test_l.py` beside `tests` is dropped, and with it its
+  exemption from `--ignore`) unless `--keep-duplicates`.
+* An option that always takes a value (`VALUE_OPTIONS`: `--ignore`,
+  `--ignore-glob`, `--deselect`, `--doctest-glob`, `-p`, `-k`, `-m`, ...)
+  written apart from it takes the next token, which is then no path and no
+  ambiguity.
+* `-o key=value` / `--override-ini` is modelled as pytest applies it: an
+  `addopts` override on the command line replaces the configured one, then
+  the overrides in the resulting `addopts` and on the command line set
+  every other key (one level deep). `-c`, `--config-file`, `--rootdir` and
+  `--pyargs` stay reported.
+* What pytest's own `pytest_ignore_collect` skips (`--ignore`,
+  `--ignore-glob`, `norecursedirs`, `__pycache__`) applies to what it walks
+  to below an initial path, never to an initial path or a directory above
+  one: `norecursedirs = ["integration"]` with `-- integration` collects
+  `integration/`. The hook is firstresult and a conftest's implementation
+  runs first, so one that may return False (any `return` other than `True`
+  or `None`, or one bound by import) overrides all of them below its
+  directory, where they are then not applied; one in a plugin module is
+  reported (`plugin_collects_files`). A conftest outside the roots counts as
+  one that may.
+* Conftests pytest imports at startup (`_set_initial_conftests`): for every
+  initial path (before deduplication), the conftests of its directory and
+  every directory above it, and of each `test*` directory directly in it,
+  whatever `--ignore` or `norecursedirs` say: `--ignore=tests_legacy` still
+  loads `tests_legacy/conftest.py`, whose session hooks then apply. During
+  collection, the conftest of every directory the walk reaches.
+* A `.txt`/`.rst` initial path is a doctest whatever `--doctest-glob` says
+  (pytest's `_is_doctest` uses `isinitpath`); a glob with a `/` matches the
+  path (`fnmatch_ex`).
+* A plugin (`pytest_plugins`, `-p`, `PYTEST_PLUGINS`) whose module is a
+  file in the repository the source roots do not name is reported
+  (`plugin_outside_roots`) and is the unknown dependency `plugin:<module>`
+  of every test and doctest, as a conftest outside the roots is of the
+  tests under it.
+
 Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),
 fixtures of plugins outside the well-known table, doctests of objects
@@ -1078,7 +1156,12 @@ method that defines it. A base that resolves to neither is an
 
 Lifecycle dependencies: the module, module-level `setup`/`setup_cache`/
 `teardown`, and the class's `setup`/`setup_cache`/`teardown`, inherited ones
-included. Class attributes (`params`, `timeout`, ...) reach every method
+included. asv_runner finds `setup` and `teardown` ignoring case (`setUp`,
+`TearDown`: `key.lower() == name.lower()` over `dir(source)`) and
+`setup_cache` by its exact name. It builds the class (`klass()`) for every
+benchmark and reads the method off the instance, so the nearest
+`__init__`, `__new__`, `__getattribute__` and `__getattr__`, inherited ones
+included, are dependencies too. Class attributes (`params`, `timeout`, ...) reach every method
 through the structural class-body rule; module attributes through the module
 dependency.
 

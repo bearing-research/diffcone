@@ -102,6 +102,7 @@ def test_pytest_discovery_rules(repo):
         "tests.conftest._renamed_impl",  # module pytestmark usefixtures('renamed')
         "tests.test_basic.pytestmark",  # module-level pytest names are variable symbols
         "conftest.pytest_plugins",
+        "plugins.shared",  # a plugin module's import-time code runs for every test
     }
     plain = targets["tests/test_basic.py::test_plain"]
     assert plain.entry_symbol == "tests.test_basic.test_plain"

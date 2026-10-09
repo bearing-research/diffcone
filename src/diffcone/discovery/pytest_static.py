@@ -6,7 +6,7 @@ outside them is reported, never guessed.
 Collected:
 
 * files matching ``python_files`` (default ``test_*.py``, ``*_test.py``) under
-  the source roots, restricted to ``testpaths`` when configured;
+  the source roots that pytest's walk from an initial path reaches (_reaches);
 * module-level functions matching ``python_functions`` (default prefix
   ``test``), methods of classes matching ``python_classes`` (default prefix
   ``Test``) that have no ``__init__`` (a TestCase is collected with one),
@@ -42,22 +42,43 @@ Collected:
   reported (``unmodelled_test_binding``); a function marked
   ``f.__test__ = True``; a unittest ``runTest`` when a TestCase has no
   ``test*`` method; an imported TestCase whatever its bound name;
-* ``testpaths`` as pytest applies it: entries that exist (none existing
-  falls back to the rootdir), a file named there collected whatever
-  ``python_files`` says; a test file pytest would collect outside the source
-  roots is reported (``test_file_outside_roots``);
-* configuration from ``pytest.toml``, ``.pytest.toml``, ``pytest.ini``,
-  ``.pytest.ini``, ``pyproject.toml`` (``[tool.pytest.ini_options]`` or
-  ``[tool.pytest]``), ``tox.ini`` or ``setup.cfg`` at the repository root,
-  in pytest 9's order; INI values split as a shell would; an ``addopts``
-  override of the configuration (``-o``, ``-c``, ``--rootdir``,
-  ``--pyargs``) or path is reported (``unmodelled_runner_option``);
-* only the conftests pytest loads: in a collected directory, or in one
-  above a ``testpaths`` entry;
+* initial paths as pytest decides them: the paths among its arguments
+  (``.`` is the rootdir), else ``testpaths`` expanded as ``glob`` expands
+  it (entries that exist; none falls back to the rootdir), made prefix-free
+  as pytest makes them unless ``--keep-duplicates``; a file named there is
+  collected whatever ``python_files`` says; a test file pytest would collect
+  outside the source roots is reported (``test_file_outside_roots``);
+* below an initial path, never at or above one, what pytest's own
+  ``pytest_ignore_collect`` skips: ``--ignore``, ``--ignore-glob``,
+  ``norecursedirs`` (each directory below the initial path) and
+  ``__pycache__``; a conftest's ``pytest_ignore_collect`` that may return
+  False (any ``return`` other than True or None, or one bound by import)
+  overrides them below its directory, so they are not applied there, and
+  one in a plugin module is reported (``plugin_collects_files``);
+* pytest's arguments, in its order: configuration from ``pytest.toml``,
+  ``.pytest.toml``, ``pytest.ini``, ``.pytest.ini``, ``pyproject.toml``
+  (``[tool.pytest.ini_options]`` or ``[tool.pytest]``), ``tox.ini`` or
+  ``setup.cfg`` at the repository root, in pytest 9's order (INI values
+  split as a shell would), its ``addopts``, then ``PYTEST_ADDOPTS``, the
+  arguments written into the run's command and those after ``--``
+  (DiscoveryOptions; the plugins ``PYTEST_PLUGINS`` names load like ``-p``
+  ones); ``-o key=value`` overrides the configuration as pytest applies it
+  (an ``addopts`` override on the command line replaces the configured
+  one); an option's value written apart (``--ignore tests/slow``) is no
+  path; ``-c``, ``--rootdir`` and ``--pyargs``, a node id, a path after an
+  option that may take it as its value, a path that names nothing in the
+  tree and a command whose pytest arguments cannot be found are reported
+  (``unmodelled_runner_option``);
+* only the conftests pytest loads: at startup, those of the initial paths,
+  of every directory above one and of the ``test*`` directories directly in
+  one, whatever ignores say; while collecting, those of the directories its
+  walk reaches;
 * a ``conftest.py`` outside the source roots is reported
   (``conftest_outside_roots``) and is an unknown dependency
   (``conftest:<path>``) of every test under it, so those tests are always
-  selected.
+  selected; a plugin module in the repository the source roots do not name
+  is reported (``plugin_outside_roots``) and is an unknown dependency
+  (``plugin:<module>``) of every test.
 
 Lifecycle dependencies attached to each test:
 
@@ -77,10 +98,13 @@ Lifecycle dependencies attached to each test:
   ``dir(cls)`` sees them), enclosing classes, module, nearest
   ``conftest.py`` outward, then
   ``pytest_plugins`` modules within the source roots (and the plugins those
-  declare, as pytest registers them); a fixture requesting
+  declare, as pytest registers them; when several plugins define a name,
+  each definition counts, since which registered last is not tracked); a
+  fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
-  pkg.conftest import engine as motor``, a star import), as pytest registers
+  pkg.conftest import engine as motor``, ``engine = pkg.conftest.engine``,
+  a star import at any depth), as pytest registers
   it, except that a fixture with an explicit ``name=`` is offered under that
   name only; a name the test's marks parametrize directly is a parameter at
   every depth of the closure, not only among the test's own arguments
@@ -91,7 +115,9 @@ Lifecycle dependencies attached to each test:
 * the ini option ``usefixtures``, requested by every test;
 * ``autouse`` fixtures visible from the test (``autouse=`` anything but a
   literal false value, since ``autouse=FLAG`` applies whenever the flag is
-  set);
+  set), those a conftest, test module or plugin binds by import included
+  (a binding is followed when its module, or one it imports, may define
+  one: _fixture_reach);
 * what pytest's own fixtures request (``BUILTIN_REQUESTS``: ``tmp_path``
   requests ``tmp_path_factory``), so an in-scope override of the requested
   name is a dependency of the tests using the builtin;
@@ -105,9 +131,10 @@ Lifecycle dependencies attached to each test:
   ``pytest_collection_modifyitems``, ``pytest_configure``, ...) of every
   conftest, wherever it is; the hooks of the plugin modules the session
   loads (``pytest_plugins`` in a conftest or a test module, ``-p`` in
-  addopts, ``pytest11`` entry points of the project or of a sibling package
-  in the repository); a hook or setup function bound by import or
-  assignment counts as one defined there;
+  addopts, ``PYTEST_PLUGINS``, ``pytest11`` entry points of the project or
+  of a sibling package in the repository), and those plugin modules
+  themselves, whose import-time code runs for every test; a hook or setup
+  function bound by import or assignment counts as one defined there;
 * xunit-style setup/teardown functions and methods when present
   (``setUpModule``, ``asyncSetUp``, Django's ``setUpTestData`` and a
   class-level ``pytest_generate_tests`` included); a ``@staticmethod``
@@ -126,8 +153,10 @@ hooks, and the fixtures pytest gives a doctest: the module's and its
 conftests' autouse fixtures, the ini ``usefixtures`` and
 ``doctest_namespace`` (which an autouse fixture usually fills); a module
 outside the source roots is reported (``test_file_outside_roots``); text files
-matching ``--doctest-glob`` (default ``test*.txt``) become targets whose
-entry is not a symbol, so they are always selected.
+matching ``--doctest-glob`` (default ``test*.txt``; a glob with a ``/``
+matches the path, as ``fnmatch_ex`` does), and a ``.txt``/``.rst`` file
+named as an initial path whatever the globs say, become targets whose entry
+is not a symbol, so they are always selected.
 
 Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
 (``@pytest.fixture``, ``@pytest.fixture(name=...)``, ``@fixture``,
@@ -172,7 +201,7 @@ from diffcone.discovery.common import (
 )
 from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
 from diffcone.manifest import Target
-from diffcone.model import SourceIndex
+from diffcone.model import IMPORTS, IMPORTS_NAME, SourceIndex
 from diffcone.snapshot import Snapshot, module_name_for
 
 RUNNER = "pytest"
@@ -612,19 +641,44 @@ COLLECTING_PLUGIN_OPTIONS = {
 }
 
 # pytest options that change what is collected in ways discovery does not
-# model: given after ``--``, they make the target list possibly short.
+# model: given anywhere pytest reads options, they make the target list
+# possibly short. (``-o``/``--override-ini`` is modelled: _ini_overrides.)
 UNMODELLED_COLLECTION_OPTIONS = (
     "-c",
     "--config-file",
-    "-o",
-    "--override-ini",
     "--rootdir",
     "--pyargs",
 )
 
 
+def _ini_overrides(tokens: tuple[str, ...]) -> dict[str, str]:
+    """``-o key=value`` / ``-okey=value`` / ``--override-ini[=]key=value``
+    entries, in order, the last of a key winning (pytest's
+    ``parse_override_ini``)."""
+    found: dict[str, str] = {}
+    for i, token in enumerate(tokens):
+        value = None
+        if token in ("-o", "--override-ini") and i + 1 < len(tokens):
+            value = tokens[i + 1]
+        elif token.startswith("--override-ini="):
+            value = token.split("=", 1)[1]
+        elif token.startswith("-o") and not token.startswith("--") and len(token) > 2:
+            value = token[2:]
+        if value is not None and "=" in value:
+            key, setting = value.split("=", 1)
+            found[key.strip()] = setting
+    return found
+
+
 def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) -> dict[str, Any]:
-    """Return python_files/classes/functions/testpaths and where they came from."""
+    """Return python_files/classes/functions/testpaths and where they came
+    from. ``runner_args`` are the pytest arguments besides the configured
+    ``addopts`` (``PYTEST_ADDOPTS``, the command's, those after ``--``):
+    pytest reads ``addopts`` first, then those. ``-o key=value`` among them
+    overrides the configuration as pytest applies it: an override of
+    ``addopts`` on the command line replaces the configured value, and the
+    overrides in the resulting ``addopts`` and on the command line then
+    apply to every other key (pytest goes one level deep)."""
     config: dict[str, Any] = {
         "source": None,
         "python_files": DEFAULT_PYTHON_FILES,
@@ -678,6 +732,14 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
     if section is None and runner_args:
         section = {}
     if section is not None and (section or runner_args):
+        section = dict(section)
+        cli = tuple(runner_args)
+        overrides = _ini_overrides(cli)
+        if "addopts" in overrides:
+            section["addopts"] = overrides["addopts"]
+        for key, value in _ini_overrides(_split(section.get("addopts", "")) + cli).items():
+            if key != "addopts":
+                section[key] = value
         for key in (
             "python_files",
             "python_classes",
@@ -762,45 +824,156 @@ DEFAULT_NORECURSEDIRS = (
 )
 
 
-def _ignored(path: str, config: dict[str, Any]) -> bool:
-    """Whether ``--ignore`` or ``--ignore-glob`` keeps pytest from collecting
-    ``path``. pytest makes both absolute against the invocation directory
-    (the repository root here) and checks each directory and file it walks
-    to from an initial path (``config["initial"]``: the run's paths or
-    ``testpaths``), never the initial path itself: an ``--ignore`` entry is
-    skipped where the walk reaches it, an ``--ignore-glob`` pattern is
-    matched with ``fnmatch`` (``*`` crosses directories). A path some
-    initial path reaches without passing an ignored one is collected."""
+def _reaches(path: str, config: dict[str, Any], is_dir: bool = False) -> bool:
+    """Whether pytest's walk from an initial path (``config["initial"]``:
+    the paths among its arguments, else ``testpaths``, else the rootdir)
+    reaches ``path``. An initial path itself is always collected; below one,
+    pytest asks ``pytest_ignore_collect`` about every directory and file it
+    walks to, and its own implementation skips ``__pycache__``, an
+    ``--ignore`` entry, an ``--ignore-glob`` match (``fnmatch``, ``*``
+    crossing directories; both made absolute against the invocation
+    directory, the repository root here) and a directory matching
+    ``norecursedirs``. Neither ignores nor ``norecursedirs`` apply to an
+    initial path or the directories above it. A conftest's own
+    ``pytest_ignore_collect`` that may return False overrides all of them
+    for what lies below its directory (``config["unignore_dirs"]``: the hook
+    is firstresult, and conftests come first)."""
     ignores = {e for e in config.get("ignore", ()) if e}
     globs = [g for g in config.get("ignore_glob", ()) if g]
-    if not ignores and not globs:
-        return False
-    reached = False
-    for initial in config.get("initial") or ("",):
+    norecurse = tuple(config.get("norecursedirs", ()))
+    unignore = config.get("unignore_dirs") or ()
+    initial_paths = [_normalise_testpath(i) for i in config.get("initial") or (".",)]
+
+    def skipped(current: str, name: str, directory: bool) -> bool:
+        if name == "__pycache__":
+            return True
+        if any(d == "" or current.startswith(d + "/") for d in unignore):
+            return False
+        # pytest asks about a directory only when it is neither an initial
+        # path nor above one (``isinitpath(path, with_parents=True)``).
+        if directory and any(i == current or i.startswith(current + "/") for i in initial_paths):
+            return False
+        if current in ignores or any(fnmatch(current, g) for g in globs):
+            return True
+        return directory and any(_matches_python_file(current, p) for p in norecurse)
+
+    for initial in config.get("initial") or (".",):
         base = _normalise_testpath(initial)
-        if base in ("", "."):
-            base, rest = "", path
-        elif path == base:
-            return False  # named as an initial path: always collected
-        elif path.startswith(base + "/"):
-            rest = path[len(base) + 1 :]
-        else:
+        if base == ".":
+            base = ""
+        if path == base:
+            return True  # named as an initial path: always collected
+        if base and not path.startswith(base + "/"):
             continue
-        reached = True
+        parts = (path[len(base) + 1 :] if base else path).split("/")
         current = base
-        for part in rest.split("/"):
+        for i, part in enumerate(parts):
             current = f"{current}/{part}" if current else part
-            if current in ignores or any(fnmatch(current, g) for g in globs):
+            if skipped(current, part, is_dir or i < len(parts) - 1):
                 break
         else:
-            return False
-    return reached
+            return True
+    return False
 
 
-def _collected_dir(path: str, norecursedirs: tuple[str, ...]) -> bool:
-    """Whether pytest recurses into every directory on ``path``."""
-    directories = PurePosixPath(path).parts[:-1]
-    return not any(fnmatch(part, pattern) for part in directories for pattern in norecursedirs)
+def _prefix_free(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Initial paths as pytest keeps them (``normalize_collection_arguments``):
+    one inside another, or repeated, is dropped; order is kept."""
+    normal = ["" if p in (".", "") else p for p in (_normalise_testpath(p) for p in paths)]
+
+    def inside(path: str, other: str) -> bool:
+        return other == "" or path.startswith(other + "/")
+
+    kept: list[str] = []
+    for i, path in enumerate(normal):
+        if path in normal[:i]:
+            continue
+        if any(inside(path, other) for other in normal if other != path):
+            continue
+        kept.append(paths[i])
+    return tuple(kept)
+
+
+def _parent_dir(path: str) -> str:
+    """The repository-relative directory holding ``path``; "" at the root."""
+    parent = str(PurePosixPath(path).parent)
+    return "" if parent == "." else parent
+
+
+def _startup_conftest_dirs(initial: Iterable[str], directories: set[str]) -> set[str]:
+    """Directories whose ``conftest.py`` pytest imports at startup, before
+    collecting anything (``_set_initial_conftests``): for each initial path,
+    its directory (a file's parent) and every directory above it, and for a
+    directory also each ``test*`` directory directly in it. These load
+    whatever ``--ignore`` or ``norecursedirs`` say, so their session hooks
+    and import-time code apply to the run."""
+    found: set[str] = {""}
+    for entry in initial:
+        anchor = _normalise_testpath(entry)
+        anchor = "" if anchor == "." else anchor
+        is_dir = anchor == "" or anchor in directories
+        here = anchor if is_dir else _parent_dir(anchor)
+        while here:
+            found.add(here)
+            here = _parent_dir(here)
+        if is_dir:
+            found.update(
+                d
+                for d in directories
+                if _parent_dir(d) == anchor and PurePosixPath(d).name.startswith("test")
+            )
+    return found
+
+
+def _directories(paths: Iterable[str]) -> set[str]:
+    """Every directory holding one of ``paths``, at any depth (not "")."""
+    found: set[str] = set()
+    for path in paths:
+        here = _parent_dir(path)
+        while here and here not in found:
+            found.add(here)
+            here = _parent_dir(here)
+    return found
+
+
+def _glob_match(pattern: list[str], parts: list[str]) -> bool:
+    """``glob``'s matching of a path's components (``recursive=True``):
+    ``**`` alone is any number of directories, other wildcards stay within a
+    component, and a hidden name needs a pattern that starts with a dot."""
+    if not pattern:
+        return not parts
+    head = pattern[0]
+    if head == "**":
+        return any(
+            _glob_match(pattern[1:], parts[i:])
+            for i in range(len(parts) + 1)
+            if not any(p.startswith(".") for p in parts[:i])
+        )
+    if not parts:
+        return False
+    if parts[0].startswith(".") and not head.startswith("."):
+        return False
+    return fnmatch(parts[0], head) and _glob_match(pattern[1:], parts[1:])
+
+
+def _expand_testpaths(entries: Iterable[str], paths: set[str], directories: set[str]) -> list[str]:
+    """``testpaths`` as pytest expands it (``glob.iglob(entry,
+    recursive=True)`` against the rootdir): each entry that names a file or
+    directory, and what a wildcard entry matches, in order."""
+    found: list[str] = []
+    for raw in entries:
+        tp = _normalise_testpath(raw)
+        if tp in ("", "."):
+            found.append(".")
+        elif not any(ch in tp for ch in "*?["):
+            if tp in paths or tp in directories:
+                found.append(tp)
+        else:
+            pattern = tp.split("/")
+            found.extend(
+                sorted(p for p in paths | directories if _glob_match(pattern, p.split("/")))
+            )
+    return list(dict.fromkeys(found))
 
 
 def _option_values(addopts: tuple[str, ...], option: str) -> list[str]:
@@ -861,6 +1034,74 @@ FLAG_OPTIONS = frozenset(
         "--trace",
         "--pdb",
         "--no-cov",
+        "--keep-duplicates",
+        "--collect-in-virtualenv",
+        "--noconftest",
+        "--disable-plugin-autoload",
+        "--doctest-continue-on-failure",
+        "--doctest-ignore-import-errors",
+        "--pyargs",
+    }
+)
+
+
+# pytest options (and common plugins') that always take a value, so the
+# token after one written apart (``--ignore tests/slow``) is that value, not
+# a path to collect.
+VALUE_OPTIONS = frozenset(
+    {
+        "--ignore",
+        "--ignore-glob",
+        "--deselect",
+        "--doctest-glob",
+        "--doctest-report",
+        "--import-mode",
+        "-p",
+        "-k",
+        "-m",
+        "-c",
+        "--config-file",
+        "-o",
+        "--override-ini",
+        "--rootdir",
+        "--confcutdir",
+        "--basetemp",
+        "--junitxml",
+        "--junit-xml",
+        "--junit-prefix",
+        "--durations",
+        "--durations-min",
+        "--maxfail",
+        "--tb",
+        "--capture",
+        "--assert",
+        "--color",
+        "--code-highlight",
+        "-W",
+        "--pythonwarnings",
+        "-r",
+        "--log-level",
+        "--log-format",
+        "--log-date-format",
+        "--log-file",
+        "--log-file-level",
+        "--log-file-format",
+        "--log-cli-level",
+        "--log-cli-format",
+        "--report-log",
+        "-n",
+        "--numprocesses",
+        "--dist",
+        "--maxprocesses",
+        "--max-worker-restart",
+        "--timeout",
+        "--reruns",
+        "--reruns-delay",
+        "--randomly-seed",
+        "--cov-report",
+        "--cov-config",
+        "--cov-fail-under",
+        "--cov-context",
     }
 )
 
@@ -868,22 +1109,28 @@ FLAG_OPTIONS = frozenset(
 def _argument_paths(
     args: tuple[str, ...], paths: set[str]
 ) -> tuple[list[str], list[str], list[str]]:
-    """Positional paths among a run's pytest arguments, which pytest collects
-    from instead of ``testpaths`` (a file named there whatever
-    ``python_files`` says), and tokens that name a path but follow an option
-    that may take a value (``--cov src``), which cannot be told apart. A
-    token counts as a path only when it names a file or directory of the
-    tree and stands first, after a ``--opt=value`` token, after a known flag
-    (``FLAG_OPTIONS``) or after another positional. Also returned: tokens in
-    a positional place that look like a path but name nothing in the tree
-    (an absolute path), which leave ``testpaths`` alone."""
+    """Positional paths among pytest's arguments (``addopts`` included:
+    pytest prepends it to the command line), which pytest collects from
+    instead of ``testpaths`` (a file named there whatever ``python_files``
+    says), and tokens that name a path but follow an option that may take a
+    value (``--cov src``), which cannot be told apart. A token counts as a
+    path only when it names a file or directory of the tree (``.`` is the
+    rootdir) and stands first, after a ``--opt=value`` token, after a known
+    flag (``FLAG_OPTIONS``), after the value of an option that always takes
+    one (``VALUE_OPTIONS``: ``--ignore tests/slow``) or after another
+    positional. Also returned: tokens in a positional place that look like a
+    path but name nothing in the tree (an absolute path), which leave
+    ``testpaths`` alone."""
     found: list[str] = []
     ambiguous: list[str] = []
     unknown: list[str] = []
     previous: str | None = None
     for token in args:
-        if token.startswith("-"):
+        if token.startswith("-") and token != "-":
             previous = token
+            continue
+        if previous in VALUE_OPTIONS:
+            previous = token  # the option's value
             continue
         path = _normalise_testpath(token.split("::", 1)[0].replace("\\", "/"))
         positional = (
@@ -892,6 +1139,13 @@ def _argument_paths(
             or previous in FLAG_OPTIONS
             or not previous.startswith("-")
         )
+        if path in ("", ".") and "::" not in token:
+            if positional:
+                found.append(".")  # the rootdir: everything
+            else:
+                ambiguous.append(token)
+            previous = token
+            continue
         names_path = path not in ("", ".") and (
             path in paths or any(p.startswith(path + "/") for p in paths)
         )
@@ -910,26 +1164,6 @@ def _argument_paths(
             unknown.append(token)
         previous = token
     return found, ambiguous, unknown
-
-
-def _unmodelled_addopts(addopts: tuple[str, ...], paths: set[str]) -> list[str]:
-    """Entries of the configured ``addopts`` that change collection in ways
-    discovery does not model: an override of the configuration (``-o``,
-    ``-c``, ``--rootdir``, ``--pyargs``) or a path, which pytest collects
-    from instead of ``testpaths`` (a file named there is collected whatever
-    ``python_files`` says)."""
-    found: list[str] = []
-    for token in addopts:
-        option = token.split("=", 1)[0]
-        if option in UNMODELLED_COLLECTION_OPTIONS or (
-            option.startswith("-o") and option != "-o" and not option.startswith("--")
-        ):
-            found.append(token)
-        elif not token.startswith("-"):
-            tp = _normalise_testpath(token.split("::", 1)[0])
-            if tp not in ("", ".") and (tp in paths or any(p.startswith(tp + "/") for p in paths)):
-                found.append(token)
-    return found
 
 
 def _addopts_plugins(addopts: tuple[str, ...]) -> list[str]:
@@ -974,7 +1208,39 @@ def _star_names(tree: ast.Module) -> list[str]:
     binds at top level (definitions, imports and assignments alike) that does
     not start with an underscore; with an ``__all__`` built otherwise
     (``base.__all__ + [...]``, ``__all__ += [...]``, ``__all__.extend``),
-    both and every string it names: a superset."""
+    both and every string it names: a superset. The names the module itself
+    star-imports are not here (_star_exports adds them)."""
+    return _star_names_exact(tree)[0]
+
+
+def _star_exports(facts: ModuleFacts, module_facts, seen: set[str] | None = None) -> list[str]:
+    """What ``from <facts' module> import *`` binds, a module's own star
+    imports included: without a literal ``__all__``, the public names it
+    gets from ``from x import *`` count too, at any depth (a conftest
+    star-importing ``helpers.a``, which star-imports ``helpers.b``)."""
+    top = seen is None
+    if top and facts.star_exports is not None:
+        return facts.star_exports
+    names, exact = _star_names_exact(facts.parsed.tree)
+    if not exact:
+        seen = set() if seen is None else seen
+        seen.add(facts.parsed.module)
+        for kind, _, source, _ in facts.bindings:
+            if kind != "star" or source in seen:
+                continue
+            origin = module_facts(source)
+            if origin is not None:
+                names = names + [
+                    n for n in _star_exports(origin, module_facts, seen) if not n.startswith("_")
+                ]
+        names = list(dict.fromkeys(names))
+    if top:
+        facts.star_exports = names
+    return names
+
+
+def _star_names_exact(tree: ast.Module) -> tuple[list[str], bool]:
+    """_star_names, and whether it is exactly a literal ``__all__``."""
     literal: list[str] | None = None
     dynamic = False
     strings: list[str] = []
@@ -1006,7 +1272,7 @@ def _star_names(tree: ast.Module) -> list[str]:
             if isinstance(n, ast.Constant) and isinstance(n.value, str)
         ]
     if literal is not None and not dynamic:
-        return literal
+        return literal, True
     bound: list[str] = []
     for stmt in iter_scope_statements(tree.body):
         if isinstance(stmt, DEF_NODES):
@@ -1016,7 +1282,7 @@ def _star_names(tree: ast.Module) -> list[str]:
         elif (assigned := _assigned(stmt)) is not None:
             bound.append(assigned[0])
     public = [n for n in bound if not n.startswith("_")]
-    return list(dict.fromkeys([*(literal or []), *strings, *public]))
+    return list(dict.fromkeys([*(literal or []), *strings, *public])), False
 
 
 def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
@@ -1109,8 +1375,14 @@ class ModuleFacts:
     fixture_attrs: dict[str, tuple[Fixture, bool]] = field(default_factory=dict)
     # Module-level bindings that may bind a fixture, in order: ("alias",
     # name, "", other_name), ("import", name, module, imported_name) and
-    # ("star", "", module, "").
+    # ("star", "", module, ""). ``name = pkg.mod.attr`` through an imported
+    # module is an "import" of ``attr`` from ``pkg.mod``.
     bindings: list[tuple[str, str, str, str]] = field(default_factory=list)
+    # What ``from <module> import *`` binds (_star_exports), once computed.
+    star_exports: list[str] | None = None
+    # Whether the module binds a ``pytest_ignore_collect`` that may return
+    # False, which collects what ``--ignore``/``norecursedirs`` would skip.
+    unignores: bool = False
 
 
 def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str | None, bool]:
@@ -1367,10 +1639,18 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
         facts.fixtures[fixture_name] = fixture
         facts.fixture_attrs[name] = (fixture, names_itself)
     # Names bound to a fixture defined elsewhere (``box2 = box``, ``from
-    # pkg.conftest import engine``): pytest registers a fixture under every
-    # name the module binds it to (_link_fixtures resolves them).
+    # pkg.conftest import engine``, ``auto = pkg.fx.auto``): pytest registers
+    # a fixture under every name the module binds it to (_link_fixtures
+    # resolves them).
+    modules: dict[str, str] = {}  # name -> the module it binds
     for stmt in iter_scope_statements(body):
-        if isinstance(stmt, ast.ImportFrom):
+        if isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                if alias.asname:
+                    modules[alias.asname] = alias.name
+                else:
+                    modules[alias.name.split(".")[0]] = alias.name.split(".")[0]
+        elif isinstance(stmt, ast.ImportFrom):
             source = _absolute_module(parsed, stmt)
             for alias in stmt.names:
                 if alias.name == "*":
@@ -1379,6 +1659,7 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
                     facts.bindings.append(
                         ("import", alias.asname or alias.name, source, alias.name)
                     )
+                    modules[alias.asname or alias.name] = f"{source}.{alias.name}"
         elif (
             isinstance(stmt, ast.Assign)
             and len(stmt.targets) == 1
@@ -1386,9 +1667,47 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             and isinstance(stmt.value, ast.Name)
         ):
             facts.bindings.append(("alias", stmt.targets[0].id, "", stmt.value.id))
+        elif (assigned := _assigned(stmt)) is not None and isinstance(assigned[1], ast.Attribute):
+            parts, call = decorator_chain(assigned[1])
+            if call is None and len(parts) >= 2 and parts[0] in modules:
+                source = ".".join([modules[parts[0]], *parts[1:-1]])
+                facts.bindings.append(("import", assigned[0], source, parts[-1]))
     facts.plugins = _plugins_from_body(body)
     facts.usefixtures = _usefixtures_from_pytestmark(body)
+    facts.unignores = _may_unignore(body)
     return facts
+
+
+def _may_unignore(body: list[ast.stmt]) -> bool:
+    """Whether a module binds a ``pytest_ignore_collect`` that may return
+    False (a non-None result other than True stops pytest's own hook, which
+    applies ``--ignore``, ``--ignore-glob`` and ``norecursedirs``): one whose
+    every ``return`` is ``True``, ``None`` or bare does not; one bound by
+    import or assignment, whose code is not here, may."""
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if stmt.name != "pytest_ignore_collect":
+                continue
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Return) and not (
+                    node.value is None
+                    or (
+                        isinstance(node.value, ast.Constant)
+                        and (node.value.value is True or node.value.value is None)
+                    )
+                ):
+                    return True
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            if any((a.asname or a.name) == "pytest_ignore_collect" for a in stmt.names):
+                return True
+            if isinstance(stmt, ast.ImportFrom) and any(a.name == "*" for a in stmt.names):
+                continue  # a star import: what it binds is checked where it is followed
+        elif any(
+            isinstance(t, ast.Name) and t.id == "pytest_ignore_collect"
+            for t in getattr(stmt, "targets", [getattr(stmt, "target", None)])
+        ):
+            return True
+    return False
 
 
 def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> dict[str, Fixture]:
@@ -1462,6 +1781,7 @@ class _Resolver:
         parametrized on the test) is a parameter at every depth, as pytest
         replaces the fixture of that name and prunes what it requests."""
         levels = self.chain(class_levels)
+        first_plugin = len(levels) - len(self.plugins)
         deps: list[str] = []
         seen: set[tuple[str, int]] = set()
         # (name, first level to search): a fixture that requests its own name
@@ -1485,9 +1805,21 @@ class _Resolver:
             )
             if found is not None:
                 level_index, fixture = found
-                deps.append(fixture.symbol)
-                for req in fixture.requests:
-                    queue.append((req, level_index + 1 if req == name else 0))
+                matches = [found]
+                if level_index >= first_plugin:
+                    # Among plugins the one registered last wins, and the
+                    # order pytest registers them in (``-p``, entry points,
+                    # PYTEST_PLUGINS, then as files declaring them load) is
+                    # not tracked: every plugin's definition counts.
+                    matches = [
+                        (i, lvl[name])
+                        for i, lvl in enumerate(levels)
+                        if i >= level_index and name in lvl
+                    ]
+                for level_index, fixture in matches:
+                    deps.append(fixture.symbol)
+                    for req in fixture.requests:
+                        queue.append((req, level_index + 1 if req == name else 0))
             elif name in BUILTIN_FIXTURES:
                 queue.extend((req, 0) for req in BUILTIN_REQUESTS.get(name, ()))
             elif name in self.options.external_fixtures or (
@@ -1533,59 +1865,12 @@ def _normalise_testpath(entry: str) -> str:
     return tp.strip("/")
 
 
-def _testpath_exists(entry: str, paths: set[str]) -> bool:
-    """Whether a ``testpaths`` entry names a file or directory in the tree."""
-    tp = _normalise_testpath(entry)
-    if tp in ("", "."):
-        return True
-    if any(ch in tp for ch in "*?["):
-        return any(
-            fnmatch(p, tp) or any(fnmatch(str(parent), tp) for parent in PurePosixPath(p).parents)
-            for p in paths
-        )
-    return any(p == tp or p.startswith(tp + "/") for p in paths)
-
-
-def _conftest_loaded(path: str, testpaths: tuple[str, ...], norecursedirs: tuple[str, ...]) -> bool:
-    """Whether pytest loads the conftest at ``path``: it is in a directory
-    pytest collects (under a ``testpaths`` entry, or anywhere without one),
-    or in a directory above an entry (pytest loads those first)."""
-    if not _collected_dir(path, norecursedirs):
-        return False
-    if _under_testpaths(path, testpaths):
-        return True
-    directory = str(PurePosixPath(path).parent)
-    for raw in testpaths:
-        tp = _normalise_testpath(raw)
-        if any(ch in tp for ch in "*?["):
-            return True  # a glob: where it matches is not worth guessing
-        if directory == "." or tp.startswith(directory + "/"):
-            return True
-    return False
-
-
-def _under_testpaths(path: str, testpaths: tuple[str, ...]) -> bool:
-    """Whether ``path`` lies under one of pytest's ``testpaths`` entries.
-
-    Entries may be files, directories or globs (``tests/integ*``); a leading
-    ``./`` is ignored.
-    """
-    if not testpaths:
-        return True
-    parents = [str(p) for p in PurePosixPath(path).parents if str(p) != "."]
-    for raw in testpaths:
-        tp = raw.strip()
-        while tp.startswith("./"):
-            tp = tp[2:]
-        tp = tp.strip("/")
-        if tp in ("", "."):
-            return True
-        if any(ch in tp for ch in "*?["):
-            if fnmatch(path, tp) or any(fnmatch(parent, tp) for parent in parents):
-                return True
-        elif path == tp or path.startswith(tp + "/"):
-            return True
-    return False
+def _conftest_loaded(path: str, config: dict[str, Any], startup: set[str]) -> bool:
+    """Whether pytest imports the conftest at ``path``: at startup, in a
+    directory _startup_conftest_dirs names (whatever ignores say), or while
+    collecting, in a directory its walk reaches."""
+    directory = _parent_dir(path)
+    return directory in startup or _reaches(directory, config, is_dir=True)
 
 
 def _requested_names(trees: Iterable[ast.Module]) -> set[str]:
@@ -1622,7 +1907,7 @@ def _fixture_bound_to(
     for kind, bound, source, name in reversed(facts.bindings):
         if kind == "star":
             origin = module_facts(source)
-            if origin is not None and attr in _star_names(origin.parsed.tree):
+            if origin is not None and attr in _star_exports(origin, module_facts):
                 return _fixture_bound_to(source, attr, module_facts, seen)
         elif bound == attr:
             return _fixture_bound_to(
@@ -1648,7 +1933,7 @@ def _function_bound_to(
     for kind, bound, source, name in reversed(facts.bindings):
         if kind == "star":
             origin = module_facts(source)
-            if origin is not None and attr in _star_names(origin.parsed.tree):
+            if origin is not None and attr in _star_exports(origin, module_facts):
                 return _function_bound_to(source, attr, module_facts, seen)
         elif bound == attr:
             return _function_bound_to(
@@ -1679,7 +1964,7 @@ def _definition_bound_to(
     for kind, bound, source, name in reversed(facts.bindings):
         if kind == "star":
             origin = module_facts(source)
-            if origin is None or attr in _star_names(origin.parsed.tree):
+            if origin is None or attr in _star_exports(origin, module_facts):
                 found = _definition_bound_to(source, attr, module_facts, seen)
                 if found is not None:
                     return found
@@ -1716,7 +2001,7 @@ def _link_bound_hooks(facts: ModuleFacts, module_facts) -> None:
         if kind != "star":
             continue
         origin = module_facts(source)
-        for attr in _star_names(origin.parsed.tree) if origin is not None else ():
+        for attr in _star_exports(origin, module_facts) if origin is not None else ():
             if attr in defined or not (
                 attr.startswith("pytest_") or attr in MODULE_SETUP_FUNCTIONS
             ):
@@ -1730,21 +2015,48 @@ def _link_bound_hooks(facts: ModuleFacts, module_facts) -> None:
                 facts.hooks.append(symbol)
                 if attr not in PATH_SCOPED_HOOKS:
                     facts.session_hooks.append(symbol)
+                if attr == "pytest_ignore_collect":
+                    facts.unignores = True  # its code is elsewhere: it may
 
 
-def _link_fixtures(facts: ModuleFacts, module_facts, requested: set[str]) -> None:
+def _link_fixtures(
+    facts: ModuleFacts, module_facts, requested: set[str], fixture_reach: set[str]
+) -> None:
     """Register the fixtures this module binds to names of its own: pytest
     finds a fixture under every name bound to it in the module's namespace
-    (``box2 = box``, ``from pkg.conftest import engine as motor``), except
-    that a fixture with an explicit ``name=`` is found under that name only.
-    Only names in ``requested`` are followed: any other cannot be asked for,
-    and following it would parse every module a test imports from."""
-    for kind, bound, source, _ in facts.bindings:
+    (``box2 = box``, ``from pkg.conftest import engine as motor``, ``auto =
+    helpers.fx.auto``, a star import at any depth), except that a fixture with
+    an explicit ``name=`` is found under that name only. A binding is
+    followed when its name is in ``requested``, or when it comes from a
+    module in ``fixture_reach`` (one that may define an autouse fixture or
+    one with an explicit ``name=``, or imports one that does,
+    _fixture_reach): an autouse fixture applies though nobody asks for it by
+    name, and one named explicitly is asked for under a name the binding
+    does not have. Any other cannot be asked for, and following it would
+    parse every module a test imports from."""
+    local = {bound: (kind, source, name) for kind, bound, source, name in facts.bindings}
+
+    def may_bind_fixture(kind: str, source: str, name: str, depth: int = 0) -> bool:
+        if kind in ("import", "star"):
+            return source in fixture_reach
+        if name in facts.fixture_attrs:  # an alias of a fixture defined here
+            return True
+        if any(k == "star" and s in fixture_reach for k, _, s, _ in facts.bindings):
+            return True
+        previous = local.get(name)
+        return previous is not None and depth < 8 and may_bind_fixture(*previous, depth + 1)
+
+    for kind, bound, source, name in facts.bindings:
+        follow = may_bind_fixture(kind, source, name)
         if kind == "star":
-            origin = module_facts(source)
-            attrs = [n for n in _star_names(origin.parsed.tree) if n in requested] if origin else []
+            origin = module_facts(source) if follow or requested else None
+            attrs = (
+                [n for n in _star_exports(origin, module_facts) if follow or n in requested]
+                if origin is not None
+                else []
+            )
         else:
-            attrs = [bound] if bound in requested else []
+            attrs = [bound] if follow or bound in requested else []
         for attr in attrs:
             if attr in facts.fixture_attrs:
                 continue
@@ -1755,6 +2067,50 @@ def _link_fixtures(facts: ModuleFacts, module_facts, requested: set[str]) -> Non
             facts.fixture_attrs[attr] = found
             registered = fixture.name if names_itself else attr
             facts.fixtures.setdefault(registered, replace(fixture, name=registered))
+
+
+def _fixture_reach(snapshot: Snapshot, index: SourceIndex) -> set[str]:
+    """Modules through which a name can be bound to a fixture pytest finds
+    under a name no test writes: an autouse fixture, which nobody requests,
+    or one with an explicit ``name=``, requested by that name but bound
+    under another (pydantic's ``from .test_types_typeddict import
+    fixture_typed_dict``, registered as ``TypedDict``). Those whose source
+    says ``fixture`` and ``autouse`` or ``name`` (every such fixture is
+    declared with those words), and every module importing one of them,
+    directly or not (a binding chain ``from a import x`` -> ``from b import
+    x`` passes only through modules that import the next one).
+    _link_fixtures follows a binding whose name no test requests only from
+    these, so a test suite whose modules import half the package does not
+    parse it all."""
+
+    def marks(source: bytes) -> bool:
+        return b"fixture" in source and (b"autouse" in source or b"name" in source)
+
+    marked = {
+        module
+        for module in index.modules
+        if (symbol := index.symbols.get(module)) is not None
+        and marks(snapshot.files.get(symbol.path, b""))
+    }
+    if not marked:
+        return set()
+
+    def module_of(symbol_id: str) -> str:
+        symbol = index.symbols.get(symbol_id)
+        return symbol.module if symbol is not None else symbol_id
+
+    importers: dict[str, set[str]] = {}
+    for edge in index.edges:
+        if edge.kind in (IMPORTS, IMPORTS_NAME):
+            importers.setdefault(module_of(edge.target), set()).add(module_of(edge.source))
+    reach = set(marked)
+    queue = list(marked)
+    while queue:
+        for importer in importers.get(queue.pop(), ()):
+            if importer not in reach:
+                reach.add(importer)
+                queue.append(importer)
+    return reach
 
 
 def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
@@ -1805,7 +2161,7 @@ def discover_pytest(
     snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
 ) -> DiscoveryResult:
     result = DiscoveryResult(runner=RUNNER)
-    config = read_pytest_config(snapshot, options.runner_args)
+    config = read_pytest_config(snapshot, options.pytest_args)
     for plugin in config["collecting_plugins"]:
         result.notes.append(
             DiscoveryNote(
@@ -1814,21 +2170,41 @@ def discover_pytest(
                 f"the configuration turns on {plugin}: what it collects is not a target",
             )
         )
-    for arg in options.runner_args:
-        option = arg.split("=", 1)[0]
-        if option in UNMODELLED_COLLECTION_OPTIONS or (
-            option.startswith("-o") and option != "-o" and not option.startswith("--")
-        ):
+    if options.command_problem:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unmodelled_runner_option",
+                f"{options.command_problem}, so which arguments it passes to pytest is not "
+                "known; what they collect is not modelled",
+            )
+        )
+    # Every argument pytest reads, in its order (the configured addopts,
+    # PYTEST_ADDOPTS, the command's own, then those after ``--``), with
+    # where it was written for the notes.
+    sourced = [
+        *((t, f"{config['source']}: addopts") for t in config["ini_addopts"]),
+        *((t, "PYTEST_ADDOPTS") for t in options.env_addopts),
+        *((t, "the command") for t in options.command_args),
+        *((t, "the run") for t in options.runner_args),
+    ]
+    where: dict[str, str] = {}
+    for token, origin in sourced:
+        where.setdefault(token, origin)
+    tokens = tuple(token for token, _ in sourced)
+    for token in tokens:
+        if token.split("=", 1)[0] in UNMODELLED_COLLECTION_OPTIONS:
             result.notes.append(
                 DiscoveryNote(
                     RUNNER,
                     "unmodelled_runner_option",
-                    f"the run passes {arg!r} to pytest, which changes what it collects in a way "
-                    "discovery does not model",
+                    f"{where[token]} passes {token!r} to pytest, which changes what it collects "
+                    "in a way discovery does not model",
                 )
             )
     every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
-    arg_paths, ambiguous, unknown = _argument_paths(tuple(options.runner_args), every_path)
+    directories = _directories(every_path)
+    arg_paths, ambiguous, unknown = _argument_paths(tokens, every_path)
     if unknown:
         # A path the tree does not hold as written (absolute, another
         # spelling): what it collects is unknown, so ``testpaths`` stays.
@@ -1838,47 +2214,90 @@ def discover_pytest(
             DiscoveryNote(
                 RUNNER,
                 "unmodelled_runner_option",
-                f"the run passes {arg!r} to pytest: a node id, a path after an option that "
+                f"{where[arg]} passes {arg!r} to pytest: a node id, a path after an option that "
                 "may take it as its value, or a path discovery cannot match in the tree; which "
                 "tests that collects is not modelled",
             )
         )
-    for arg in _unmodelled_addopts(tuple(config["ini_addopts"]), every_path):
-        result.notes.append(
-            DiscoveryNote(
-                RUNNER,
-                "unmodelled_runner_option",
-                f"{config['source']}: addopts passes {arg!r} to pytest, which changes what it "
-                "collects in a way discovery does not model",
-            )
+    # What planning read besides the configuration file, for the report.
+    config["run_arguments"] = {
+        name: list(values)
+        for name, values in (
+            ("PYTEST_ADDOPTS", options.env_addopts),
+            ("PYTEST_PLUGINS", options.env_plugins),
+            ("command", options.command_args),
+            ("after --", options.runner_args),
         )
+        if values
+    }
     result.config = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()}
     python_files = tuple(config["python_files"])
-    # ``testpaths`` as pytest uses it: entries that exist (when none does,
-    # pytest collects from the rootdir), and files named there are collected
-    # whatever ``python_files`` says (they are initial paths).
-    testpaths = tuple(tp for tp in config["testpaths"] if _testpath_exists(tp, every_path))
-    if arg_paths:
-        # Paths given to pytest replace ``testpaths``.
-        testpaths = tuple(arg_paths)
-    # Where pytest starts collecting; ``--ignore`` never applies to these.
-    config["initial"] = testpaths
-    named_files = {_normalise_testpath(tp) for tp in testpaths if tp.endswith(".py")}
+    # Where pytest starts collecting: the paths among its arguments, else
+    # ``testpaths`` as it expands them (entries that exist, wildcards
+    # matched), else the rootdir. A file named there is collected whatever
+    # ``python_files`` says, and no ignore applies to one.
+    testpaths = _expand_testpaths(config["testpaths"], every_path, directories)
+    initial = tuple(arg_paths) or tuple(testpaths) or (".",)
+    # Startup conftests come from every one; collection only from those no
+    # other contains (pytest drops a path inside another, which then gets no
+    # initial path's exemptions, unless --keep-duplicates).
+    anchors = initial
+    if "--keep-duplicates" not in tokens:
+        initial = _prefix_free(initial)
+    config["initial"] = initial
+    named_files = {p for p in initial if p.endswith(".py")}
+
+    # Conftests come first in pytest's ``pytest_ignore_collect``, so one that
+    # may return False collects what ignores and ``norecursedirs`` skip below
+    # its directory; one outside the roots cannot be read, so it may too.
+    facts_by_module: dict[str, ModuleFacts] = {}
+
+    def module_facts(name: str) -> ModuleFacts | None:
+        if name in facts_by_module:
+            return facts_by_module[name]
+        if name in index.modules:
+            pm, _ = parse_modules(snapshot, [index.symbols[name].path])
+            if pm:
+                facts_by_module[name] = _collect_facts(pm[0])
+                return facts_by_module[name]
+        return None
+
+    every_conftest = sorted(p for p in snapshot.files if PurePosixPath(p).name == "conftest.py")
+    conftest_parsed, _ = parse_modules(snapshot, every_conftest)
+    conftest_facts = {pm.path: _collect_facts(pm) for pm in conftest_parsed}
+    for facts in conftest_facts.values():
+        facts_by_module.setdefault(facts.parsed.module, facts)
+
+    def unignores(facts: ModuleFacts) -> bool:
+        return facts.unignores or any(
+            kind == "star"
+            and (origin := module_facts(source)) is not None
+            and "pytest_ignore_collect" in _star_exports(origin, module_facts)
+            for kind, _, source, _ in facts.bindings
+        )
+
+    config["unignore_dirs"] = tuple(
+        sorted(
+            {_parent_dir(p) for p, f in conftest_facts.items() if unignores(f)}
+            | {
+                _parent_dir(p)
+                for p in snapshot.python_paths
+                if PurePosixPath(p).name == "conftest.py" and p not in snapshot.files
+            }
+        )
+    )
 
     test_paths = [
         p
         for p in snapshot.files
         if (any(_matches_python_file(p, pat) for pat in python_files) or p in named_files)
-        and _under_testpaths(p, testpaths)
-        and not _ignored(p, config)
+        and _reaches(p, config)
     ]
     for path in snapshot.python_paths:
         if (
             path not in snapshot.files
             and any(_matches_python_file(path, pat) for pat in python_files)
-            and _under_testpaths(path, testpaths)
-            and _collected_dir(path, tuple(config["norecursedirs"]))
-            and not _ignored(path, config)
+            and _reaches(path, config)
         ):
             result.notes.append(
                 DiscoveryNote(
@@ -1890,17 +2309,18 @@ def discover_pytest(
                     path,
                 )
             )
-    norecurse = tuple(config["norecursedirs"])
-    # Only the conftests pytest loads: those on the way to a testpaths entry
-    # and those in directories it collects. One elsewhere (a sibling
-    # package's own test suite) is never imported.
-    conftest_paths = [
+    # Only the conftests pytest loads: at startup, those of the initial
+    # paths, the directories above them and their ``test*`` directories
+    # (whatever ignores say; a path an option may take as its value counts
+    # too), and while collecting, those of the directories its walk reaches.
+    # One elsewhere (a sibling package's own test suite) is never imported.
+    maybe_initial = [
         p
-        for p in snapshot.files
-        if PurePosixPath(p).name == "conftest.py"
-        and _conftest_loaded(p, testpaths, norecurse)
-        and not _ignored(str(PurePosixPath(p).parent), config)
+        for p in (_normalise_testpath(a.split("::", 1)[0].replace("\\", "/")) for a in ambiguous)
+        if p in every_path or p in directories
     ]
+    startup = _startup_conftest_dirs([*anchors, *maybe_initial], directories)
+    conftest_paths = [p for p in every_conftest if _conftest_loaded(p, config, startup)]
     # A conftest outside the source roots is not read: its fixtures, hooks
     # and import-time code are invisible, so every test under it depends on
     # it as an unknown (selected, with this note saying why).
@@ -1909,7 +2329,7 @@ def discover_pytest(
         for p in snapshot.python_paths
         if PurePosixPath(p).name == "conftest.py"
         and p not in snapshot.files
-        and _conftest_loaded(p, testpaths, norecurse)
+        and _conftest_loaded(p, config, startup)
     )
 
     def outside_conftests_of(path: str) -> list[str]:
@@ -1951,34 +2371,47 @@ def discover_pytest(
             )
         )
         result.notes.append(DiscoveryNote(RUNNER, "unparsed_file", detail, path))
-    facts_by_path = {pm.path: _collect_facts(pm) for pm in parsed}
-    facts_by_module = {f.parsed.module: f for f in facts_by_path.values()}
-
-    def module_facts(name: str) -> ModuleFacts | None:
-        if name in facts_by_module:
-            return facts_by_module[name]
-        if name in index.modules:
-            pm, _ = parse_modules(snapshot, [index.symbols[name].path])
-            if pm:
-                facts_by_module[name] = _collect_facts(pm[0])
-                return facts_by_module[name]
-        return None
+    facts_by_path: dict[str, ModuleFacts] = {}
+    for pm in parsed:
+        known = facts_by_module.get(pm.module)
+        facts = known if known is not None and known.parsed.path == pm.path else None
+        facts = facts or conftest_facts.get(pm.path) or _collect_facts(pm)
+        facts_by_path[pm.path] = facts
+        facts_by_module[pm.module] = facts
 
     # Names bound to fixtures defined elsewhere. Plugin modules are linked
     # where plugin_facts finds them, with their own requests added.
     requested = _requested_names(f.parsed.tree for f in facts_by_path.values())
+    fixture_reach = _fixture_reach(snapshot, index)
     linked: set[str] = set()
 
     def link(facts: ModuleFacts) -> ModuleFacts:
         if facts.parsed.module not in linked:
             linked.add(facts.parsed.module)
             requested.update(_requested_names([facts.parsed.tree]))
-            _link_fixtures(facts, module_facts, requested)
+            _link_fixtures(facts, module_facts, requested, fixture_reach)
             _link_bound_hooks(facts, module_facts)
         return facts
 
     for facts in list(facts_by_path.values()):
         link(facts)
+
+    # Plugins in the repository but outside the source roots: what they
+    # define is unknown and they load for the whole session, so every test
+    # depends on each as an unknown (``plugin:<module>``), as on a conftest
+    # outside the roots.
+    outside_plugins: list[str] = []
+    # The plugin modules the session loads by name (not the submodules they
+    # re-export from, whose import-time code reaches them through imports).
+    declared_plugins: list[str] = []
+
+    def plugin_file(name: str) -> str | None:
+        stem = name.replace(".", "/")
+        for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
+            for path in sorted(snapshot.python_paths):
+                if path == candidate or path.endswith("/" + candidate):
+                    return path
+        return None
 
     def plugin_facts(
         declared: list[str],
@@ -2001,6 +2434,21 @@ def discover_pytest(
                 continue
             facts = module_facts(name)
             if facts is None:
+                path = plugin_file(name)
+                if path is not None:
+                    if f"plugin:{name}" not in outside_plugins:
+                        outside_plugins.append(f"plugin:{name}")
+                    result.notes.append(
+                        DiscoveryNote(
+                            RUNNER,
+                            "plugin_outside_roots",
+                            f"{where}: {kind} entry {name!r} is {path}, which the source roots "
+                            "do not hold under that name, so what it defines is unknown and "
+                            "every test is always selected; add a source root that names it",
+                            path,
+                        )
+                    )
+                    continue
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
@@ -2012,6 +2460,7 @@ def discover_pytest(
             if facts.parsed.module in seen:
                 continue
             seen.add(facts.parsed.module)
+            declared_plugins.append(facts.parsed.module)
             found.append(link(facts))
             found.extend(link(sub) for sub in _reexported_facts(facts, module_facts))
             if facts.plugins:
@@ -2025,6 +2474,10 @@ def discover_pytest(
         )
     if config["addopts_plugins"]:
         global_plugins.extend(plugin_facts(list(config["addopts_plugins"]), "addopts", "-p"))
+    if options.env_plugins:
+        global_plugins.extend(
+            plugin_facts(list(options.env_plugins), "the environment", "PYTEST_PLUGINS")
+        )
     # ``pytest_plugins`` in a conftest or a test module registers the plugin
     # for the session once pytest imports the file, so its fixtures and
     # hooks reach every test, not only those beside the declaration.
@@ -2033,6 +2486,21 @@ def discover_pytest(
         facts = facts_by_path.get(path)
         if facts is not None and facts.plugins:
             global_plugins.extend(plugin_facts(facts.plugins, path, seen=plugins_seen))
+    for plugin in global_plugins:
+        if plugin.unignores and plugin.parsed.path not in conftest_facts:
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "plugin_collects_files",
+                    f"{plugin.parsed.path}: binds pytest_ignore_collect, which may return False "
+                    "and so collect what --ignore, --ignore-glob or norecursedirs would skip; "
+                    "those tests are not targets",
+                    plugin.parsed.path,
+                )
+            )
+    # Plugin modules load for the whole session: their import-time code, as
+    # well as their hooks, reaches every test.
+    plugin_modules = sorted(set(declared_plugins)) + outside_plugins
     plugin_hooks = [h for p in global_plugins for h in p.hooks]
     ini_usefixtures = tuple(config["usefixtures"])
     # Hooks of conftests off a test's path that pytest calls for the whole
@@ -2066,6 +2534,7 @@ def discover_pytest(
             module_deps += c.hooks
         module_deps += facts.hooks  # e.g. pytest_generate_tests in the test module
         module_deps += plugin_hooks  # hooks of the project's own pytest plugins
+        module_deps += plugin_modules
         module_deps += facts.setup_functions
         for owner in (facts, *conftests):
             for name in MODULE_LEVEL_PYTEST_NAMES:
@@ -2117,19 +2586,22 @@ def discover_pytest(
         ``doctest_namespace`` (which an autouse fixture usually fills, as
         pandas's root conftest does), applies the ini ``usefixtures``, and
         calls the session-wide hooks."""
-        facts = facts_by_path.get(pm.path) or link(_collect_facts(pm))
+        facts = facts_by_path.get(pm.path)
+        if facts is None:
+            known = facts_by_module.get(pm.module)
+            same = known is not None and known.parsed.path == pm.path
+            facts = link(known if known is not None and same else _collect_facts(pm))
         resolver = _Resolver(
             facts, conftests, global_plugins, options, unresolved, assumed, ini_usefixtures
         )
         return (
             plugin_hooks
+            + plugin_modules
             + outside_conftests_of(pm.path)
             + resolver.lifecycle([], ["doctest_namespace"])
         )
 
-    _collect_doctests(
-        result, snapshot, index, {**config, "testpaths": testpaths}, facts_by_path, doctest_deps
-    )
+    _collect_doctests(result, snapshot, index, config, facts_by_path, doctest_deps)
 
     for name, count in sorted(unresolved.items()):
         result.notes.append(
@@ -2167,20 +2639,22 @@ def _collect_doctests(
     fixture_deps: Callable[[ParsedModule, list[ModuleFacts]], list[str]] | None = None,
 ) -> None:
     """Doctest targets (see the module docstring)."""
-    testpaths = tuple(config["testpaths"])
-    norecurse = tuple(config["norecursedirs"])
     parser = doctest.DocTestParser()
     globs = tuple(config["doctest_globs"])
+    # pytest's ``_is_doctest``: a ``.txt``/``.rst`` file named as an initial
+    # path is a doctest whatever the globs say; otherwise a glob matches as
+    # ``fnmatch_ex`` does (the name, or the path for a glob with a ``/``).
+    named = {_normalise_testpath(p) for p in config.get("initial") or ()}
+
+    def is_doctest_file(path: str) -> bool:
+        if path in named and PurePosixPath(path).suffix in (".txt", ".rst"):
+            return True
+        return any(_matches_python_file(path, g) for g in globs)
+
     for path in sorted(snapshot.other_files):
         # A file a glob matches but the snapshot does not read (only .txt,
         # .rst and .md are read) holds doctests that are not targets.
-        if (
-            path not in snapshot.text_files
-            and any(fnmatch(PurePosixPath(path).name, g) for g in globs)
-            and _under_testpaths(path, testpaths)
-            and _collected_dir(path, norecurse)
-            and not _ignored(path, config)
-        ):
+        if path not in snapshot.text_files and is_doctest_file(path) and _reaches(path, config):
             result.notes.append(
                 DiscoveryNote(
                     RUNNER,
@@ -2192,12 +2666,7 @@ def _collect_doctests(
             )
     for path, content in sorted(snapshot.text_files.items()):
         name = PurePosixPath(path).name
-        if not (
-            _under_testpaths(path, testpaths)
-            and _collected_dir(path, norecurse)
-            and not _ignored(path, config)
-            and any(fnmatch(name, g) for g in config["doctest_globs"])
-        ):
+        if not (is_doctest_file(path) and _reaches(path, config)):
             continue
         try:
             has_examples = bool(parser.get_examples(content.decode("utf-8", "replace")))
@@ -2211,17 +2680,12 @@ def _collect_doctests(
     paths = [
         p
         for p in snapshot.files
-        if _under_testpaths(p, testpaths)
-        and _collected_dir(p, norecurse)
-        and not _ignored(p, config)
-        and PurePosixPath(p).name not in ("setup.py", "__main__.py")
+        if _reaches(p, config) and PurePosixPath(p).name not in ("setup.py", "__main__.py")
     ]
     for path in snapshot.python_paths:
         if (
             path not in snapshot.files
-            and _under_testpaths(path, testpaths)
-            and _collected_dir(path, norecurse)
-            and not _ignored(path, config)
+            and _reaches(path, config)
             and PurePosixPath(path).name not in ("setup.py", "__main__.py", "conftest.py")
         ):
             result.notes.append(
@@ -2815,7 +3279,7 @@ def _collect_module_tests(
                     )
                 )
                 continue
-            aliases = [ast.alias(name=n, asname=None) for n in _star_names(origin.parsed.tree)]
+            aliases = [ast.alias(name=n, asname=None) for n in _star_exports(origin, module_facts)]
         for alias in aliases:
             bound = alias.asname or alias.name
             if bound in defined:

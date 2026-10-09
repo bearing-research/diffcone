@@ -131,11 +131,13 @@ runs:
             || git fetch --quiet --depth=1 origin "$BASE" 2>/dev/null || true
         fi
         cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
-        # The same pytest arguments as the run below (doctest options change
-        # what discovery finds), so plan.json is the plan the run executes.
+        # The same pytest arguments and command as the run below (doctest
+        # options change what discovery finds), so plan.json is the plan the
+        # run executes.
         rc=0
         diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-          "${evidence[@]}" -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
+          "${evidence[@]}" --command "$COMMAND" -o diffcone-results/plan.json -- "${args[@]}" \
+          || rc=$?
         if [ "$rc" -eq 2 ] && [ ${#evidence[@]} -gt 0 ]; then
           # A recording diffcone cannot use here (other source roots, an
           # older store format): plan from the code instead.
@@ -145,7 +147,7 @@ runs:
           note="the restored recording could not be used"
           rc=0
           diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
-            -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
+            --command "$COMMAND" -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
         fi
         export HEAD_SHA BASE_SHA RECORDING NOTE
         HEAD_SHA=$(git rev-parse HEAD)

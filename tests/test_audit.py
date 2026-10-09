@@ -284,6 +284,9 @@ def test_x1_a_missing_runner_command_exits_2(repo, capsys):
             "--discover",
             "pytest",
             "--allow-mismatched-worktree",
+            # A command naming no pytest program makes discovery incomplete
+            # (its pytest arguments cannot be found): allowed, to reach it.
+            "--allow-incomplete-discovery",
             "--command",
             "no-such-pytest-command",
         ]
@@ -2160,19 +2163,14 @@ def test_d22_a_dynamic_getfixturevalue_depends_on_every_visible_fixture(repo):
 @pytest.mark.parametrize(
     "files, note",
     [
+        # (``-o`` overrides and paths in addopts are modelled since round 3:
+        # tests/test_audit3_discovery.py.)
         (
-            {
-                "pyproject.toml": (
-                    "[tool.pytest.ini_options]\naddopts = '-o python_files=check_*.py'\n"
-                )
-            },
+            {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-c other.ini'\n"},
             "unmodelled_runner_option",
         ),
         (
-            {
-                "pyproject.toml": "[tool.pytest.ini_options]\naddopts = 'tests/special.py'\n",
-                "tests/special.py": "def test_s():\n    pass\n",
-            },
+            {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '--rootdir=tests'\n"},
             "unmodelled_runner_option",
         ),
         (

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -40,7 +41,14 @@ from pathlib import Path
 from diffcone import check as checking
 from diffcone import ci_report
 from diffcone.cache import IndexCache, default_cache_dir
-from diffcone.discovery import RUNNERS, DiscoveryOptions, discover
+from diffcone.discovery import (
+    RUNNERS,
+    DiscoveryOptions,
+    discover,
+    environment_options,
+    pytest_command_arguments,
+    relative_arguments,
+)
 from diffcone.evidence import (
     FLAG_SUBPROCESS,
     FLAG_TEXT,
@@ -60,6 +68,7 @@ from diffcone.execution import (
     corpus_validation,
     run_selected,
     run_with_evidence,
+    split_command,
     validate_pytest,
     validation_to_dict,
     validation_to_text,
@@ -158,6 +167,13 @@ def build_parser() -> argparse.ArgumentParser:
         "disk, ignored files excluded)",
     )
     p.add_argument("--targets", help="path to a JSON target manifest")
+    p.add_argument(
+        "--command",
+        dest="runner_command",
+        metavar="COMMAND",
+        help="the pytest command line the run will use: pytest options written in it "
+        "(uv run pytest -p plugins.x) are read by discovery, as run reads them",
+    )
     _add_common(p)
     _add_evidence(p)
     p.add_argument("--format", choices=("json", "text"), default="json")
@@ -436,6 +452,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument(
         "--rev", default="HEAD", help="snapshot to discover in: revision, INDEX or WORKTREE"
     )
+    d.add_argument(
+        "--command",
+        dest="runner_command",
+        metavar="COMMAND",
+        help="the pytest command line the run will use: pytest options written in it are "
+        "read by discovery",
+    )
     _add_common(d)
     return parser
 
@@ -650,6 +673,32 @@ def _repo_problem(repo: str) -> str | None:
     return None
 
 
+def _discovery_options(args: argparse.Namespace) -> DiscoveryOptions:
+    """What discovery reads besides the snapshot: the pytest arguments the run
+    will use (after ``--``, in ``--command``, in ``PYTEST_ADDOPTS``) and the
+    plugins ``PYTEST_PLUGINS`` names, read from the environment now, with
+    absolute paths inside the repository made relative to it."""
+    repo = Path(getattr(args, "repo", ".") or ".")
+    command = getattr(args, "runner_command", None)
+    command_args: tuple[str, ...] = ()
+    problem = ""
+    if command and getattr(args, "runner", "pytest") == "pytest":
+        try:
+            command_args, problem = pytest_command_arguments(split_command(command))
+        except ValueError as exc:
+            problem = f"the command {command!r} cannot be split ({exc})"
+    environment = environment_options(os.environ)
+    return DiscoveryOptions(
+        external_fixtures=frozenset(getattr(args, "external_fixtures", None) or ()),
+        well_known_fixtures=not getattr(args, "no_well_known_fixtures", False),
+        runner_args=relative_arguments(getattr(args, "runner_args", None) or (), repo),
+        env_addopts=relative_arguments(environment["env_addopts"], repo),
+        env_plugins=environment["env_plugins"],
+        command_args=relative_arguments(command_args, repo),
+        command_problem=problem,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
@@ -682,11 +731,7 @@ def _main(argv: list[str] | None) -> int:
         return _report(args)
     if args.command == "prune":
         return _prune(args)
-    options = DiscoveryOptions(
-        external_fixtures=frozenset(args.external_fixtures),
-        well_known_fixtures=not args.no_well_known_fixtures,
-        runner_args=tuple(getattr(args, "runner_args", None) or ()),
-    )
+    options = _discovery_options(args)
 
     cache = None
     if not args.no_cache:
