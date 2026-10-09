@@ -241,8 +241,13 @@ store for head:
 * *Selected tests get the fresh record*, folded against head's index. A
   selected test that produced none (not collected, an error before its
   protocol) is dropped from the store, so the next plan selects it as
-  `no_evidence`. Its `unstable` flag is carried over: a partial run cannot
-  re-check order dependence.
+  `no_evidence`. Its `unstable` flag is carried over. When the store
+  was order-checked (`collect --reverse-check`), the run also runs the
+  selection a second time in reverse order, and a fresh record that differs
+  between the two is unstable, as in `collect` (audit round 3, EVP-4: the
+  advanced store kept claiming a check its fresh records never had).
+  `advance` itself marks fresh records from a run in one order unstable
+  when the store was order-checked.
 * *Process-wide data is the union* of C's and the run's (import phase,
   hook phase, importing modules, paths read at import, subprocesses at
   import): the run imported only the modules its tests needed, and a
@@ -817,8 +822,12 @@ stay unguarded, and so does everything else the change reaches.
 * *G(C)*: every function or method that refers to a class of F (an edge,
   or an unresolved name equal to the class's name), the members of F's
   classes (a running method holds `self`: this covers pytest's own test
-  classes), and the lookup and reflection sites that can see the classes'
-  namespace (the ones `_sites` would observe for them).
+  classes), the lookup and reflection sites that can see the classes'
+  namespace (the ones `_sites` would observe for them, including code that
+  imports a module named at run time), and code that finds a class without
+  naming it: a `__subclasses__` read on any class, the `gc` module, a
+  frame's or function's globals, a closure cell (audit round 3, EVP-1 and
+  EVP-3).
 * The guard is applied per test in `_evidence_decision`: `executed`
   meets the guarded readers and meets G. The reason names both
   ("executed drain, which reads _FakePipe.read by name, and

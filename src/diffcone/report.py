@@ -199,6 +199,14 @@ def to_text(plan: Plan) -> str:
             f"(environment {ev['environment_hash']}, PYTHONHASHSEED={ev['hash_seed']}); "
             f"planned {', '.join(ev['planned'])}"
         )
+        if ev.get("environment_checked"):
+            lines.append("  environment checked: the run's matched the recording's")
+        else:
+            lines.append(
+                "  environment NOT checked: this plan holds only if the tests run in the "
+                "recorded environment (`diffcone run --evidence` checks it before any test "
+                "runs, and plans from the code when it differs)"
+            )
         if ev["changes_outside_range"]:
             lines.append(
                 f"  {len(ev['changes_outside_range'])} change(s) since the evidence lie outside "

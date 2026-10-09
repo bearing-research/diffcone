@@ -206,9 +206,14 @@ did not produce, process-wide data and refusals are in roadmap item 6.
 
 * `diffcone collect --command CMD [--reverse-order]`: runs the whole suite
   under the plugin at a clean checkout of HEAD and writes a store.
-* `diffcone plan ... --evidence auto|PATH`: uses the newest store whose
-  environment matches. Evidence is off by default: static mode stays the
-  default and the reference.
+* `diffcone plan ... --evidence auto|PATH`: uses the store at the nearest
+  ancestor of head (the newest on a tie), whatever its environment. `plan`
+  runs nothing, and the environment is read inside the project's own test
+  process, so it cannot check it: the report says
+  `environment_checked: false` and the text report "environment NOT
+  checked". `run` checks it in the test process before any test runs, and
+  sets it when it matches. Evidence is off by default: static mode stays
+  the default and the reference.
 * `diffcone run ... --evidence auto [--collect]`: as today; with
   `--collect`, advances the store to head.
 * `diffcone evidence`: lists stores, their commits, environments and ages.
@@ -339,6 +344,24 @@ selection or states something the tables left implicit; none narrows it.
   pytest-xdist kills a worker that has not exited ten seconds after it
   reported done, which would cut a later record short. An importing module outside the source roots selects
   everything.
+* **What import-time code writes elsewhere** (audit round 3, EVP-2 and
+  EVP-6). Code that runs at import can write into another module's state,
+  which every later test reads without running the writer: `X =
+  set_mode("fast")` in `pkg.config` writes `pkg.state.MODE`, which a test
+  reads through `mode()` without ever importing `pkg.config`. Escalating
+  `pkg.config` does not reach that test. So, for code that runs at import
+  (a changed variable initialiser, class body or `def` header that runs
+  code, an escalated module's top-level code, and changed code or a reader
+  that ran during an import or a hook at C), every variable written in
+  place (`mutated_by`) by the code it can call, transitively, is treated as
+  a changed value: its readers, the variables that captured it and the
+  lookup sites that can see it join E. Calling a class runs its
+  constructors. A test's own decorators are included (`@parametrize("x",
+  [set_mode("fast")])`). For a Cython function that ran during an import,
+  which the index does not follow, every name it mentions that is bound
+  outside every function (in a Cython file, or as a Python variable) is
+  treated as changed. A write through an argument or a receiver is not
+  modelled, as in static planning.
 * **Definition changes reach dynamic callers.** A call through `getattr`
   with an unbounded name fails to bind at C before the callee starts, so
   the callee is not in the caller's record. A changed signature, default,
@@ -364,7 +387,12 @@ selection or states something the tables left implicit; none narrows it.
   and only test code can build one. So a name-matched reader of such a
   member (a function or method) selects a test only when the test's record
   also holds code that can hand it one. That is code naming one of the
-  classes, a lookup site that can see them, or one of their methods.
+  classes, a lookup site that can see them, one of their methods, or code
+  that finds a class without naming it: a `__subclasses__` read on any
+  class (`object.__subclasses__()` walks them all), the `gc` module, a
+  frame's or function's globals, a closure cell (audit round 3, EVP-1).
+  A library lookup by a name nothing bounds (`getattr(obj, name)`) on such a
+  class's member is guarded the same way (EVP-3).
   Static readers are not guarded. The guard is off when holding one does
   not need that code to run in the same test: a class or ancestor outside
   test code, a class that runs code when created, a reference from module
@@ -401,9 +429,10 @@ selection or states something the tables left implicit; none narrows it.
   - the tests collected from its class or a subclass;
   - for a test module's variable (`pytestmark`), the module's tests.
 
-  A fixture's old users ran it, so their records hold it. `pytest_plugins`, `collect_ignore` and
-  `collect_ignore_glob` in a conftest, and any function named `pytest_*`,
-  select everything.
+  A fixture's old users ran it, so their records hold it. `collect_ignore`
+  and `collect_ignore_glob` in a conftest, `pytest_plugins` in any module
+  (in a test module it registers the plugins for the whole session, round
+  2's D17), and any function named `pytest_*`, select everything.
 * **Test classes only pytest holds.** Names on a test class, and on a test
   module, are looked up by very few sites. On pandas, a one-line test edit
   otherwise selected 6 588 tests through every unbounded lookup in the test
@@ -420,8 +449,14 @@ selection or states something the tables left implicit; none narrows it.
       read `ip.instance`, which turns the static rule off for all of
       pandas.)
   - *A test module or conftest.* A module-level name there is seen only
-    by lookup sites that import the module, plus the tests that executed a
-    `.module` or `sys.modules` read.
+    by lookup sites that import the module, plus the tests that executed
+    code able to obtain the module otherwise: a `.module` or `sys.modules`
+    read, a reference to the module as a value, an import of a module
+    named at run time anywhere, library code included
+    (`importlib.import_module("tests." + name)` with a name a test passes;
+    audit round 3, EVP-3), and code walking the object graph. When such
+    code ran outside every test, every lookup on an object from elsewhere
+    counts.
   - *A test's own change* reaches the targets it is the entry of, not its
     class's scope.
 * **Unresolved fixtures.** Static mode selects every test with a fixture

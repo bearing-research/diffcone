@@ -11,13 +11,19 @@ observed by"), and a test is selected when its record meets E:
 * a function body: the function itself; if it ran during an import, the
   importing module's import-time state may differ, so that module is
   escalated (below). Code that ran outside every test and every import
-  (hooks, collection) is escalated itself;
+  (hooks, collection) is escalated itself. Either may also have written
+  into another module's state, which tests read without running it: the
+  variables written in place by what it can call are changed values
+  (``_import_writes``), and so are those of a changed variable
+  initialiser, class body or ``def`` header that runs code;
 * a function's signature, defaults, decorators or annotations: also its
   readers (resolved references and name matches, one hop), the lookup and
   reflection sites that can see its namespace, and escalation when the
   ``def`` runs code at import. A name match on a member of a class in test
-  code is guarded: it selects a test only if the test also ran code that
-  can hand it an instance (``_Observers._holders``);
+  code, and a library lookup by a name nothing bounds, is guarded: it
+  selects a test only if the test also ran code that can hand it an
+  instance (``_Observers._holders``), which includes code finding classes
+  without naming them (``__subclasses__``, ``gc``);
 * a variable: its readers and the lookup and reflection sites that can see
   its namespace (a lookup by a name nothing bounds reads the value too); a
   reader that is itself a variable captured the value and is followed in
@@ -48,7 +54,8 @@ observed by"), and a test is selected when its record meets E:
   a lifecycle dependency (a fixture) or are collected from its class or a
   subclass, and for a test module's variable (``pytestmark``) every test
   of the module, since pytest reads marks, fixtures and parameters without
-  a static reader.
+  a static reader. ``pytest_plugins`` in any module selects everything:
+  the plugins it names serve the whole session.
 
 Something that ran outside every test and that no record shows (a process
 nothing followed, text code: ``Evidence.import_flagged``) makes any change
@@ -87,7 +94,9 @@ from diffcone.classify import (
     SymbolChange,
     classify,
 )
+from diffcone.cython import ASSIGNMENT as CYTHON_ASSIGNMENT
 from diffcone.cython import CLASS as CYTHON_CLASS
+from diffcone.cython import DECLARATION as CYTHON_DECLARATION
 from diffcone.cython import IMPORT as CYTHON_IMPORT
 from diffcone.cython import (
     CythonFunction,
@@ -170,6 +179,19 @@ from diffcone.snapshot import changed_paths, split_root
 # Module-level names in a conftest that pytest reads to decide what to load
 # or collect at all.
 PYTEST_COLLECTION_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
+# Attributes and modules that hand out objects without naming them: a
+# class's subclasses, a function's or frame's globals, a closure cell, every
+# object the collector tracks.
+GRAPH_ATTRIBUTES = frozenset(
+    {"__subclasses__", "__globals__", "f_globals", "f_locals", "cell_contents"}
+)
+GRAPH_MODULES = frozenset({"gc"})
+
+# What calling or creating a class runs.
+_CONSTRUCTORS = frozenset(
+    {"__new__", "__init__", "__post_init__", "__call__", "__init_subclass__", "__set_name__"}
+)
 
 # UNRESOLVED_DYNAMIC details, by what the site can see.
 SITE_CLOSURE = "closure"  # a name looked up on a module global: its import closure
@@ -353,17 +375,37 @@ class _Observers:
         for index in (c_index, other):
             for key, writers in index.external_sites.items():
                 external[key].update(writers)
+        # Code that can obtain a module without importing it by name in its
+        # source (``import_module(name)``), and code that walks the
+        # object graph (``__subclasses__``, ``gc``, frames' globals): both
+        # can hand on what nothing names.
+        self.module_getters: set[str] = set()
+        self.graph_readers: set[str] = set()
+        # Code a symbol's code can run (references, forward), and the
+        # variables each function writes into in place (``mutated_by``).
+        self.calls: dict[str, set[str]] = defaultdict(set)
+        self.writes: dict[str, set[str]] = defaultdict(set)
         for index in (c_index, other):
             for edge in index.edges:
                 if edge.kind in (REFERENCES, DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     if edge.detail.startswith("attribute:"):
                         self.attribute_readers[edge.detail[len("attribute:") :]].add(edge.source)
+                    if edge.detail == "mutated_by":
+                        self.writes[edge.target].add(edge.source)
+                    elif edge.detail != "registers":
+                        self.calls[edge.source].add(edge.target)
                 elif edge.kind in (IMPORTS, IMPORTS_NAME):
                     self.importers_of[edge.target].add(edge.source)
             for ref in index.unresolved:
                 if ref.kind == UNRESOLVED_DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
+                    if site[1] == SITE_IMPORT:
+                        # Imports a module named at run time (or runs code
+                        # read at run time): it can hold any module. Code
+                        # generated in the program reaches what its module
+                        # can, as static planning bounds it.
+                        self.module_getters.add(ref.symbol)
                     writers = external.get((ref.symbol, ref.detail))
                     if writers and self._written_in_tests(writers):
                         bounded[site].update(writers)
@@ -373,7 +415,20 @@ class _Observers:
                         self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
+                    if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name in GRAPH_ATTRIBUTES:
+                        self.graph_readers.add(ref.symbol)
+            for x in index.external:
+                symbol_ = index.symbols.get(x.symbol)
+                if x.module.split(".")[0] in GRAPH_MODULES and (
+                    symbol_ is None or symbol_.kind != MODULE  # the import statement
+                ):
+                    self.graph_readers.add(x.symbol)
             for symbol, detail in index.reflection:
+                if detail[1:] in GRAPH_ATTRIBUTES:
+                    # Hands objects out (``type.__subclasses__(c)``); looks no
+                    # name up.
+                    self.graph_readers.add(symbol)
+                    continue
                 writers = external.get((symbol, detail))
                 if writers and self._written_in_tests(writers):
                     bounded[(symbol, SITE_ANY)].update(writers)
@@ -441,6 +496,9 @@ class _Observers:
         self.seed_nodes: dict[str, str] = {}
         self.escalated_modules: set[str] = set()
         self._followed: set[str] = set()
+        self._ran_at_import: set[str] = set()  # what ``_import_writes`` followed
+        self._variables_by_name: dict[str, set[str]] | None = None
+        self._import_code_followed: set[str] = set()
         # Cython name -> the Cython functions at C that mention it (lazily).
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
         # The lookups on an external module that a change to code running at
@@ -677,7 +735,7 @@ class _Observers:
             )
             return
         self._observe(sid, rule, detail, None)
-        self._cython_import_effect(sid, label)
+        self._cython_import_effect(sid, label, recorded)
         if function.nogil or function.cpdef or function.unprofiled:
             kind = "nogil" if function.nogil else ("cpdef" if function.cpdef else "profile(False)")
             for caller in self._cython_callers(path, function.name):
@@ -688,9 +746,9 @@ class _Observers:
                     f"always report; {label}",
                     None,
                 )
-                self._cython_import_effect(caller, label)
+                self._cython_import_effect(caller, label, recorded)
 
-    def _cython_name(self, changed: CythonName, recorded: set[str]) -> None:
+    def _cython_name(self, changed: CythonName, recorded: set[str], cause: str = "") -> None:
         """A name bound outside every function body changed (roadmap item
         8): the Cython functions that can see it and mention it, and for a
         name Python can see, the Python code reading it by that name and the
@@ -698,6 +756,8 @@ class _Observers:
         everything holding an instance."""
         qualified = f"{changed.scope}.{changed.name}" if changed.scope else changed.name
         label = f"{changed.path}::{qualified} {changed.change} (Cython, outside functions)"
+        if cause:
+            label = f"{label}: {cause}"
         seers = self._cython_seers(changed.path, changed.name, changed.visible)
         for path, function in self._cython_mentioning(changed.name):
             if seers is None or path in seers:
@@ -839,10 +899,13 @@ class _Observers:
                     stack.append((caller_path, caller.name))
         return sorted(found)
 
-    def _cython_import_effect(self, symbol_id_: str, label: str) -> None:
+    def _cython_import_effect(self, symbol_id_: str, label: str, recorded: set[str]) -> None:
         """Cython code that ran while a module was imported built its state;
         code that ran in a hook or during collection cannot be planned
-        statically, so it selects all."""
+        statically, so it selects all. Either may have written into state
+        elsewhere that later tests read (``_cython_writes``)."""
+        if self.evidence.import_by.get(symbol_id_):
+            self._cython_writes(symbol_id_, label, recorded)
         for module in sorted(self.evidence.import_by.get(symbol_id_, ())):
             if module.startswith(UNINDEXED_MODULE):
                 self._select_all(
@@ -857,6 +920,54 @@ class _Observers:
                 f"{label}: {symbol_id_} ran outside every test (a hook or collection)",
             )
 
+    def _cython_writes(self, symbol_id_: str, label: str, recorded: set[str]) -> None:
+        """A changed Cython function that ran while a module was imported
+        may have written into state another module holds, which tests read
+        without running it (the Cython side of ``_import_writes``). There is
+        no index of what Cython code writes, so every name it mentions that
+        is bound outside every function, in a Cython file or as a Python
+        variable, is treated as a changed value; a Cython file whose
+        statements could not be read selects all."""
+        if symbol_id_ in self._ran_at_import:
+            return
+        self._ran_at_import.add(symbol_id_)
+        path, name = symbol_id_.split("::", 1)
+        module = self.c.cython.get(path)
+        function = module.by_name().get(name) if module is not None else None
+        modules = {**self.c.cython, **self.other.cython}
+        if function is None or any(m.statements is None for m in modules.values()):
+            self._select_all(
+                RULE_UNOBSERVED_FILE,
+                f"{label}: {symbol_id_} ran while a module was imported, and what it can "
+                "write is not known",
+            )
+            return
+        cause = f"{symbol_id_} names it and ran while a module was imported at C; {label}"
+        bound: set[tuple[str, str, str, bool]] = set()
+        for p, m in modules.items():
+            for statement in m.statements or ():
+                if statement.kind in (CYTHON_DECLARATION, CYTHON_ASSIGNMENT):
+                    for n in statement.names:
+                        if n in function.names:
+                            bound.add((p, statement.scope, n, statement.visible))
+        for p, scope, n, visible in sorted(bound):
+            written = CythonName(p, scope, n, "changed", visible, bool(scope))
+            self._cython_name(written, recorded, cause)
+        if self._variables_by_name is None:
+            self._variables_by_name = defaultdict(set)
+            for symbol in self.symbols.values():
+                if symbol.kind == VARIABLE:
+                    self._variables_by_name[symbol.name].add(symbol.id)
+        for n in sorted(function.names):
+            for variable in sorted(self._variables_by_name.get(n, ())):
+                if variable in self._followed:
+                    continue
+                self._followed.add(variable)
+                why = f"{variable} may be written by {cause}"
+                self._observe(variable, RULE_EXECUTED_READER, why, None)
+                self._readers(variable, None, why)
+                self._sites(self.symbols[variable], None, why, at_import=True)
+
     def _change(self, change: SymbolChange) -> None:
         symbol = change.symbol
         kinds = set(change.changes)
@@ -867,9 +978,17 @@ class _Observers:
             return
         if (
             symbol.kind == VARIABLE
-            and symbol.module in self.test_code.conftests
             and symbol.container == symbol.module
-            and symbol.name in PYTEST_COLLECTION_NAMES
+            and (
+                (
+                    symbol.module in self.test_code.conftests
+                    and symbol.name in PYTEST_COLLECTION_NAMES
+                )
+                # In a test module too (or any module pytest imports, holding
+                # targets or not): the plugins it names are registered for the
+                # whole session once the module is imported.
+                or symbol.name == "pytest_plugins"
+            )
         ):
             self._select_all(RULE_PYTEST_HOOK, f"{label}: it decides what pytest loads")
             return
@@ -903,18 +1022,26 @@ class _Observers:
                 # Decorators and defaults are what can register a function;
                 # its annotations cannot.
                 inert = all(s.inert_header for s in (change.base, change.head) if s is not None)
-                if not inert and change.id not in self.test_code.entries:
+                if not inert:
                     # ``@register def two()``: the decorator runs at import and
-                    # may change shared state no test's record names.
-                    self._escalate_change(change, f"{label}: its definition runs code at import")
+                    # may change shared state no test's record names. A
+                    # test's own decorators reach other tests only through
+                    # what they write (``@parametrize("x", [set_mode(1)])``).
+                    why = f"{label}: its definition runs code at import"
+                    self._import_writes([change.id], change, why)
+                    if change.id not in self.test_code.entries:
+                        self._escalate_change(change, why)
             elif kinds & {DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
                 self._readers(change.id, change, label)
                 self._sites(symbol, change, label)
                 runs_code = not all(
                     s.inert_definition for s in (change.base, change.head) if s is not None
                 )
-                if runs_code and change.id not in self.test_code.entries:
-                    self._escalate_change(change, f"{label}: its definition runs code at import")
+                if runs_code:
+                    why = f"{label}: its definition runs code at import"
+                    self._import_writes([change.id], change, why)
+                    if change.id not in self.test_code.entries:
+                        self._escalate_change(change, why)
             if _is_dunder(symbol.name) and not body_only and symbol.container:
                 container = self.symbols.get(symbol.container)
                 if container is not None and container.kind == CLASS:
@@ -939,9 +1066,17 @@ class _Observers:
             self._sites(symbol, change, label, at_import=True)
             if DELETED in kinds:
                 self._importers(change.id, change, label)
+            if not all(s.inert_definition for s in (change.base, change.head) if s is not None):
+                # ``X = set_mode("fast")``: what the initialiser's calls write
+                # is read elsewhere, by tests that never run it.
+                self._import_writes([change.id], change, f"{label}: its initialiser runs code")
             return
         if symbol.kind == CLASS:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
+            if kinds & {ADDED, DELETED, BODY_CHANGED}:
+                # Its body runs at import, and what its calls write is read
+                # elsewhere (``x = set_mode("fast")`` as a class attribute).
+                self._import_writes([change.id], change, f"{label}: its body runs at import")
             if kinds & {ADDED, DELETED}:
                 self._readers(change.id, change, label)
                 self._sites(symbol, change, label, at_import=True)
@@ -1136,6 +1271,10 @@ class _Observers:
             for member in self.members.get(c, ()):
                 if self.symbols[member].kind in (FUNCTION, METHOD):
                     members.add(member)
+        # Code that finds the class without naming it: through an ancestor's
+        # ``__subclasses__()`` (or any class's: ``object.__subclasses__()``
+        # walks every class), the collector, a frame's or function's globals.
+        builders |= self.graph_readers
         ev = self.evidence
         for builder in builders:
             symbol = self.symbols.get(builder)
@@ -1179,7 +1318,14 @@ class _Observers:
     def _import_effect(self, symbol_id: str, change: SymbolChange | None, label: str) -> None:
         """Code that ran at C while a module was imported built that module's
         import-time state; code that ran outside every test and import ran in
-        a hook or during collection."""
+        a hook or during collection. Either may also have written into
+        another module's state, which every later test reads
+        (``_import_writes``)."""
+        ev = self.evidence
+        if ev.import_by.get(symbol_id) or symbol_id in ev.hook_phase:
+            self._import_writes(
+                [symbol_id], change, f"{symbol_id} ran outside every test at C; {label}"
+            )
         for module in sorted(self.evidence.import_by.get(symbol_id, ())):
             if module.startswith(UNINDEXED_MODULE):
                 self._select_all(
@@ -1207,6 +1353,8 @@ class _Observers:
         symbol = change.symbol
         self._module_symbols(symbol.module, why)
         self._sites(symbol, change, why, imports=symbol.kind == MODULE, at_import=True)
+        sources = self._import_code(symbol.module) if symbol.kind == MODULE else [change.id]
+        self._import_writes(sources, change, why)
 
     def _escalate_module(self, module: str, why: str) -> None:
         """Plan the module's import statically, as if its top-level code
@@ -1217,6 +1365,86 @@ class _Observers:
         module_symbol = self.symbols.get(module)
         if module_symbol is not None:
             self._sites(module_symbol, None, why, imports=True, at_import=True)
+        self._import_writes(self._import_code(module), None, why)
+
+    def _import_code(self, module: str) -> list[str]:
+        """The symbols of ``module`` whose code runs when it is imported: the
+        module's own code, variable initialisers, class bodies and the
+        headers of ``def`` statements that run code (a function's body is
+        followed with it: references do not tell the two apart). Empty once
+        it has been followed."""
+        if module in self._import_code_followed:
+            return []
+        self._import_code_followed.add(module)
+        out = []
+        for symbol in self.symbols.values():
+            if symbol.module != module:
+                continue
+            if symbol.kind in (MODULE, VARIABLE, CLASS) or (
+                symbol.kind in (FUNCTION, METHOD) and not symbol.inert_definition
+            ):
+                out.append(symbol.id)
+        return sorted(out)
+
+    def _import_writes(
+        self, sources: Iterable[str], change: SymbolChange | None, label: str
+    ) -> None:
+        """Code that runs at import (``sources``: a changed variable
+        initialiser, class body or decorator, or code that ran during an
+        import or a hook at C) can call code that writes into a variable
+        elsewhere: ``X = set_mode("fast")`` writes ``MODE``, which every
+        later test reads without running the writer. So each variable
+        written in place (``mutated_by``) by the code the sources can call,
+        transitively, is treated as a changed value. Calling a class runs
+        its constructors. A write through an argument or a receiver is not
+        modelled (static planning does not model it either)."""
+        stack = sorted((s for s in sources if s not in self._ran_at_import), reverse=True)
+        start = set(stack)
+        seen: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            symbol = self.symbols.get(current)
+            if symbol is None:
+                continue
+            if symbol.kind == CLASS and current not in start:
+                stack.extend(sorted(self._constructors(current), reverse=True))
+                continue
+            if symbol.kind not in (FUNCTION, METHOD) and current not in start:
+                continue  # read, not run
+            if current in self._ran_at_import:
+                continue
+            self._ran_at_import.add(current)
+            for variable in sorted(self.writes.get(current, ())):
+                written = self.symbols.get(variable)
+                if written is None or variable in self._followed:
+                    continue
+                self._followed.add(variable)
+                why = f"{label}; it can run {current}, which writes into {variable}"
+                self._observe(variable, RULE_EXECUTED_READER, f"{variable}: {why}", change)
+                self._readers(variable, change, why)
+                self._sites(written, change, why, at_import=True)
+            stack.extend(sorted(self.calls.get(current, ()), reverse=True))
+
+    def _constructors(self, cls: str) -> list[str]:
+        """What calling or creating ``cls`` can run: the constructors,
+        ``__call__``, ``__init_subclass__`` and ``__set_name__`` of it and
+        its ancestors."""
+        out: list[str] = []
+        seen = {cls}
+        stack = [cls]
+        while stack:
+            current = stack.pop()
+            for member in self.members.get(current, ()):
+                if member.rsplit(".", 1)[-1] in _CONSTRUCTORS:
+                    out.append(member)
+            for base in self.bases.get(current, ()):
+                if base not in seen:
+                    seen.add(base)
+                    stack.append(base)
+        return out
 
     def _module_symbols(self, module: str, why: str) -> None:
         """Every symbol of a module whose import-time state may differ: code
@@ -1242,22 +1470,55 @@ class _Observers:
         imports: bool = False,
         at_import: bool = False,
     ) -> None:
-        for site, detail in self._seeing_sites(symbol, imports=imports, at_import=at_import):
+        handed: list[str] = []
+        for site, detail in self._seeing_sites(
+            symbol, imports=imports, at_import=at_import, handed=handed
+        ):
             self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
+        if handed and symbol.container:
+            # Library code finds a test class's member only on an instance
+            # (or the class) a test handed it: guarded like a name match.
+            what = f"{label} (a lookup by a name nothing bounds)"
+            for site in sorted(self._guard(set(handed), symbol.container, change, what)):
+                self._observe(
+                    site,
+                    RULE_LOOKUP_SITE,
+                    f"{site} looks names up by a name nothing bounds and may be handed an "
+                    f"instance of {symbol.container}; {label}",
+                    change,
+                )
 
     def _seeing_sites(
-        self, symbol: Symbol, *, imports: bool = False, at_import: bool = False
+        self,
+        symbol: Symbol,
+        *,
+        imports: bool = False,
+        at_import: bool = False,
+        handed: list[str] | None = None,
     ) -> list[tuple[str, str]]:
         """Code that finds names by a name nothing bounds and can see the
         namespace of ``symbol``: a read off an object from anywhere, eval and
         reflection always; a read off a module global when the namespace's
         module is in the site's import closure; a module named at run time
-        for a module-level namespace, when ``imports``. For test code only
-        sites in test code count: nothing else holds a test module or a test
-        class the runner instantiates. A member of a class only the runner
+        for a module-level namespace, when ``imports``.
+
+        Test code is held by pytest, and by other code only in a few ways.
+        A module-level name of a test module or conftest is seen by the sites
+        whose import closure holds the module, and through the code that can
+        obtain the module otherwise, which stands in for the lookup after it:
+        a ``.module`` or ``sys.modules`` read, a reference to the module as a
+        value, an import of a module named at run time (library code can
+        import ``"tests.test_a"`` when a test names it), and
+        code walking the object graph. When one of those ran outside every
+        test, what it obtained may serve any later test, and every lookup on
+        an object from elsewhere counts. A member of a class only the runner
         ever instantiates (planner._runner_only_classes) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
-        hold one of its instances. For a change to code that runs at import
+        hold one of its instances. A member of another test-code class is
+        also seen by library lookups on an object from elsewhere, once a test
+        hands it an instance: with ``handed``, those are put there for the
+        caller to guard (``_guard``); without, they are returned. For a change
+        to code that runs at import
         (``at_import``: an escalation, a variable, a class body), the lookups
         on an external module the project writes to count too, wherever they
         are: that code may now write there at import, for every later test.
@@ -1275,8 +1536,7 @@ class _Observers:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
                 continue
-            if test and not self.test_code.is_test_code(site_symbol.module):
-                continue
+            library = test and not self.test_code.is_test_code(site_symbol.module)
             if family is not None and not _inside(site, family, self.c, self.other):
                 continue  # but see the handing-on sites below
             if kind == SITE_CLOSURE or module_name:
@@ -1285,20 +1545,56 @@ class _Observers:
             elif kind == SITE_IMPORT:
                 if not imports or test:
                     continue
+            elif library:
+                # A lookup on an object from elsewhere, in library code, for
+                # a member of a test-code class.
+                if handed is not None:
+                    handed.append(site)
+                    continue
             out.append(
                 (site, f"{site} looks names up by a name nothing bounds and can see {namespace}")
             )
         if module_name:
-            # ``request.module`` hands a test module on, and ``sys.modules``
-            # finds one by name: the reader stands in for what follows.
-            for site in sorted(self.module_hands_on):
-                out.append(
-                    (
-                        site,
-                        f"{site} reads .module or sys.modules and may hand a test module on to "
-                        f"a lookup that can see {namespace}",
+            listed = {site for site, _ in out}
+            getters = (
+                {site: "reads .module or sys.modules" for site in self.module_hands_on}
+                | {site: "imports a module named at run time" for site in self.module_getters}
+                | {site: "walks the object graph" for site in self.graph_readers}
+            )
+            for reader in self.readers_of.get(namespace, ()):
+                kind_ = self.symbols[reader].kind if reader in self.symbols else None
+                if kind_ in (FUNCTION, METHOD):
+                    getters.setdefault(reader, "uses the module as a value")
+            for site, how in sorted(getters.items()):
+                if site not in listed and site in self.symbols:
+                    listed.add(site)
+                    out.append(
+                        (
+                            site,
+                            f"{site} {how} and may hand a test module on to a lookup that "
+                            f"can see {namespace}",
+                        )
                     )
-                )
+            ev = self.evidence
+            outside = sorted(
+                g
+                for g in getters
+                if g in ev.import_phase or g in ev.import_by or g in ev.hook_phase
+            )
+            if outside:
+                # What it obtained outside every test may serve any later one.
+                for site, kind in self.sites:
+                    if kind in (SITE_ELSEWHERE, SITE_ANY) and site not in listed:
+                        if site in self.symbols:
+                            listed.add(site)
+                            out.append(
+                                (
+                                    site,
+                                    f"{site} looks names up on an object from elsewhere, and "
+                                    f"{outside[0]} may have obtained {namespace} outside every "
+                                    "test",
+                                )
+                            )
         if family is not None:
             # ``request.instance``, ``item.instance`` and ``request.cls`` hand
             # a test object to other code, which may then look anything up on
@@ -1699,6 +1995,11 @@ def _summary(
         "store": str(evidence.location) if evidence.location else None,
         "commit": evidence.commit,
         "environment_hash": evidence.environment_hash,
+        # ``plan`` reads files only: it cannot ask the project's interpreter
+        # what is installed, so whether this environment is the recorded one
+        # is unknown here. ``run`` checks it in the test process before any
+        # test runs, and sets this when it matched.
+        "environment_checked": False,
         "python": evidence.environment.get("python", "").split()[0],
         "hash_seed": evidence.environment.get("variables", {}).get("PYTHONHASHSEED"),
         "variables": sorted(evidence.environment.get("variables", {})),

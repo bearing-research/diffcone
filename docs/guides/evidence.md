@@ -49,6 +49,12 @@ diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
 pass a recording's path). The recording doesn't need to be at your base:
 diffcone also accounts for the changes made since it was recorded.
 
+`plan` doesn't run anything, so it can't check that your test environment
+is the one the recording was made in: the report says
+`environment NOT checked` (`environment_checked: false` in JSON). Its
+selection holds only in the recorded environment. `diffcone run` checks it
+before any test runs (see below).
+
 A test is selected when, in its recorded run, it:
 
 - ran a function that changed;
@@ -135,7 +141,9 @@ diffcone run --base main --head HEAD --discover pytest \
 ```
 
 This needs a clean checkout of the head and the same pytest arguments the
-recording was made with. If the environment differs or pytest stops early,
+recording was made with. If the recording was made with `--reverse-check`,
+`run --collect` runs the selected tests a second time in reverse order, so
+the new records are checked the same way. If the environment differs or pytest stops early,
 no recording is written.
 
 In CI, a common setup records the full suite once a night on your default

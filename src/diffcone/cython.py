@@ -24,7 +24,8 @@ is which functions changed and what each function's body mentions.
   that name them, which also covers a function taken as a pointer.
 * Blank lines and comment-only lines are ignored by both hashes, except
   compiler directives (``# cython: boundscheck=False``, ``# distutils:``),
-  which change how every function in the file is compiled. Everything
+  which change how every function in the file is compiled, and lines inside
+  a triple-quoted string, which are part of its value. Everything
   outside the functions (directives, ``cimport``, ``ctypedef``, structs,
   class headers and attribute declarations, constants, ``include``) is
   hashed together.
@@ -161,25 +162,22 @@ def symbol_id(path: str, function: str) -> str:
     return f"{path}::{function}"
 
 
-def _code(line: str) -> str:
-    """The line without its comment (a ``#`` inside a string is rare enough
-    in a header or a mention to be read as a comment)."""
-    return line.split("#", 1)[0]
-
-
 def _significant(line: str) -> bool:
     stripped = line.strip()
     return bool(stripped) and not stripped.startswith("#")
 
 
-def _in_strings(lines: list[str]) -> list[bool]:
-    """For each line, whether it starts inside a triple-quoted string: such
-    a line (a docstring's continuation, often at column 0) says nothing about
-    where a block ends."""
-    out = []
+def _in_strings(lines: list[str]) -> tuple[list[bool], list[str]]:
+    """For each line, whether it starts inside a triple-quoted string (such
+    a line, a docstring's continuation often at column 0, says nothing about
+    where a block ends), and the line without its comment: a ``#`` inside a
+    string, one-line or triple-quoted, is not one."""
+    out: list[bool] = []
+    code: list[str] = []
     quote: str | None = None  # the open triple quote
     for line in lines:
         out.append(quote is not None)
+        cut = len(line)
         k = 0
         while k < len(line):
             if quote is not None:
@@ -190,6 +188,7 @@ def _in_strings(lines: list[str]) -> list[bool]:
                 continue
             ch = line[k]
             if ch == "#":
+                cut = k
                 break
             if line.startswith(('"""', "'''"), k):
                 quote, k = line[k : k + 3], k + 3
@@ -201,17 +200,23 @@ def _in_strings(lines: list[str]) -> list[bool]:
                 k = close + 1
                 continue
             k += 1
-    return out
+        code.append(line[:cut])
+    return out, code
 
 
 def _indent(line: str) -> int:
     return len(line) - len(line.lstrip(" \t"))
 
 
-def _hash(lines: Iterable[str], *, directives: bool = False) -> str:
+def _hash(lines: Iterable[tuple[str, bool]], *, directives: bool = False) -> str:
+    """Hash (line, inside a string) pairs. Blank and comment-only lines say
+    nothing, except inside a triple-quoted string, where every line, blank or
+    starting with ``#``, is part of the value, trailing whitespace included."""
     digest = hashlib.sha256()
-    for line in lines:
-        if _significant(line) or (directives and _DIRECTIVE.match(line)):
+    for line, inside in lines:
+        if inside:
+            digest.update(b"\x00" + line.encode("utf-8", "surrogateescape") + b"\n")
+        elif _significant(line) or (directives and _DIRECTIVE.match(line)):
             digest.update(line.rstrip().encode("utf-8", "surrogateescape") + b"\n")
     return digest.hexdigest()[:24]
 
@@ -237,7 +242,9 @@ def _function_name(header: str) -> str | None:
 def read(path: str, text: str) -> CythonModule:
     lines = text.split("\n")
     n = len(lines)
-    in_string = _in_strings(lines)
+    in_string, code = _in_strings(lines)
+    # A line that ends inside a string keeps its trailing whitespace there.
+    raw = [in_string[k] or (k + 1 < n and in_string[k + 1]) for k in range(n)]
 
     def structural(k: int) -> bool:
         return _significant(lines[k]) and not in_string[k]
@@ -256,17 +263,17 @@ def read(path: str, text: str) -> CythonModule:
         while scopes and indent <= scopes[-1][0]:
             scopes.pop()
         m = _CLASS.match(line)
-        if m and _code(line).rstrip().endswith(":"):
+        if m and code[i].rstrip().endswith(":"):
             scopes.append((indent, m.group(2)))
             i += 1
             continue
-        if not _HEAD.match(line) or _NOT_FUNC.match(line) or "(" not in _code(line):
+        if not _HEAD.match(line) or _NOT_FUNC.match(line) or "(" not in code[i]:
             i += 1
             continue
         # The header, up to ':' at bracket depth 0.
         header, j, depth, is_function = "", i, 0, False
         while j < n:
-            part = _code(lines[j])
+            part = code[j]
             header += " " + part.strip()
             depth += part.count("(") + part.count("[") - part.count(")") - part.count("]")
             stripped = part.rstrip()
@@ -301,27 +308,30 @@ def read(path: str, text: str) -> CythonModule:
         # name the header defines is not a mention of itself.
         names: set[str] = set()
         for b in range(first, j + 1):
-            names.update(_WORD.findall(_code(lines[b])))
+            names.update(_WORD.findall(code[b]))
         names.discard(name)
         for b in range(j + 1, last + 1):
-            names.update(_WORD.findall(_code(lines[b])))
+            names.update(_WORD.findall(code[b]))
         tail = header.rsplit(")", 1)[-1]
         functions.append(
             CythonFunction(
                 name=qualified,
                 start=first + 1,
                 end=last + 1,
-                body_hash=_hash(lines[first : last + 1]),
+                body_hash=_hash(zip(lines[first : last + 1], raw[first : last + 1], strict=True)),
                 nogil=bool(re.search(r"\bnogil\b", tail)),
                 cpdef=header.lstrip().startswith("cpdef"),
                 names=frozenset(names),
                 python=header.lstrip().startswith(("def", "cpdef")),
-                unprofiled=any(_UNPROFILED.search(_code(lines[b])) for b in range(first, j + 1)),
+                unprofiled=any(_UNPROFILED.search(code[b]) for b in range(first, j + 1)),
             )
         )
         covered.update(range(first, last + 1))
         i = last + 1  # what is nested in the function is part of it
-    outside = _hash((line for k, line in enumerate(lines) if k not in covered), directives=True)
+    outside = _hash(
+        ((line, raw[k]) for k, line in enumerate(lines) if k not in covered),
+        directives=True,
+    )
     return CythonModule(path, tuple(functions), outside, _statements(text, covered))
 
 

@@ -26,6 +26,7 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 from collections import defaultdict
@@ -1649,6 +1650,9 @@ class EvidenceRun:
     # With ``advance``: the store written for head, or why none was.
     advanced: Path | None = None
     not_advanced: str | None = None
+    # The recorder compared the environment with the recording's, and it
+    # matched (not on a dry run, which starts no test process).
+    environment_checked: bool = False
 
 
 def evidence_env(plan: Plan) -> dict[str, str]:
@@ -1717,9 +1721,30 @@ def run_with_evidence(
             remove_plugin_dir(env)
         checked = json.loads(report.read_text("utf-8")) if report.exists() else None
         if dry_run or (checked is not None and checked.get("match")):
-            run = EvidenceRun(result)
+            run = EvidenceRun(result, environment_checked=not dry_run)
             if advance_from is not None and out is not None and not dry_run:
-                _advance(run, plan, advance_from, out, cwd)
+                outs = [out]
+                if advance_from.reverse_checked and result.selected and result.returncode in (0, 1):
+                    # The recording was order-checked (``collect
+                    # --reverse-check``): check the fresh records the same
+                    # way, or the advanced store would claim a check they
+                    # never had (a test reading a value an earlier test
+                    # cached records less than it can run).
+                    reverse = Path(tmp) / "reverse"
+                    print(
+                        "diffcone: the recording was reverse-checked; running the selected "
+                        "tests again in reverse order to check their records",
+                        file=sys.stderr,
+                    )
+                    again = _reverse_run(plan, cwd, command, extra, reverse, env)
+                    if again not in (0, 1):
+                        run.not_advanced = (
+                            f"the reverse-order run exited {again} "
+                            f"({PYTEST_EXIT.get(again, 'unknown')}), so its records may be partial"
+                        )
+                        return run
+                    outs.append(reverse)
+                _advance(run, plan, advance_from, outs, cwd)
             return run
         # A mismatch, or no report at all (the plugin did not load, a wrapper
         # dropped the variables): the evidence does not vouch for this run.
@@ -1749,9 +1774,45 @@ def run_whole(
     return RunResult("pytest", argv, targets, len(targets), returncode)
 
 
-def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: Path) -> None:
-    """Write the store for head after ``run`` (roadmap item 6), or say why not."""
+def _reverse_run(
+    plan: Plan,
+    cwd: Path,
+    command: str | None,
+    extra: list[str] | None,
+    out: Path,
+    env: dict[str, str],
+) -> int | None:
+    """Run the plan's selection again under the recorder, in reverse order,
+    writing to ``out``; its exit code."""
+    reverse_env = plugin_environment(evidence_env(plan), out, cwd)
+    if "DIFFCONE_COLLECT_PACKAGES" in env:
+        reverse_env["DIFFCONE_COLLECT_PACKAGES"] = env["DIFFCONE_COLLECT_PACKAGES"]
+    # The environment was checked by the first run; fold refuses two runs
+    # that met different ones.
+    reverse_env["DIFFCONE_COLLECT_REVERSE"] = "1"
+    try:
+        again = run_selected(
+            plan,
+            "pytest",
+            cwd=cwd,
+            command=command,
+            extra=["-p", PLUGIN, "-p", "no:cacheprovider", *(extra or [])],
+            env=reverse_env,
+        )
+    finally:
+        shutil.rmtree(Path(reverse_env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+    return again.returncode
+
+
+def _advance(
+    run: EvidenceRun, plan: Plan, previous: Evidence, outs: list[Path], repo: Path
+) -> None:
+    """Write the store for head after ``run`` (roadmap item 6), or say why not.
+    ``outs`` holds the run's records, and with a second directory those of a
+    run in reverse order: a fresh record that differs between them is
+    unstable."""
     result = run.result
+    out = outs[0]
     if result.selected and result.returncode not in (0, 1):
         run.not_advanced = (
             f"pytest exited {result.returncode} "
@@ -1770,7 +1831,7 @@ def _advance(run: EvidenceRun, plan: Plan, previous: Evidence, out: Path, repo: 
     try:
         if result.selected:
             fresh = fold(
-                [out],
+                outs,
                 plan.head_index,
                 commit=head,
                 source_roots=previous.source_roots,

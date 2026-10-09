@@ -49,6 +49,9 @@ REFLECTIVE_ATTRIBUTES = frozenset(
         "__defaults__",
         "__kwdefaults__",
         "modules",  # sys.modules: any module, found by name
+        # Hands out classes without naming them (``Base.__subclasses__()``,
+        # ``type.__subclasses__(c)``): evidence mode's holders of a test fake.
+        "__subclasses__",
     }
 )
 

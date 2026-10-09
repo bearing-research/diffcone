@@ -647,7 +647,9 @@ def advance(
     A test the plan did not select runs identically at C and at ``commit``,
     so its record carries over. A rerun test takes its fresh record, keeping
     an ``unstable`` flag a partial run cannot re-check; one that recorded
-    nothing is dropped and has no evidence from here on. Process-wide data
+    nothing is dropped and has no evidence from here on. When ``previous``
+    was order-checked and ``fresh`` was not, the fresh records are unstable.
+    Process-wide data
     is the union of both: the run imported only what its tests needed, and a
     stale entry only escalates more (roadmap item 6).
 
@@ -665,10 +667,19 @@ def advance(
         for name, record in previous.tests.items()
         if name not in rerun and (alive is None or name in alive)
     }
+    # A recording that was order-checked (``collect --reverse-check``) says
+    # each record held in both orders. Fresh records from a run in one order
+    # were never checked: they are unstable, so the store's claim stays true
+    # (``run --collect`` runs the selection in reverse too, to check them).
+    unchecked = (
+        FLAG_UNSTABLE
+        if previous.reverse_checked and fresh is not None and not fresh.reverse_checked
+        else 0
+    )
     if fresh is not None:
         for name, record in fresh.tests.items():
             old = previous.tests.get(name)
-            tests[name] = (fresh, record, old.flags & FLAG_UNSTABLE if old else 0)
+            tests[name] = (fresh, record, (old.flags & FLAG_UNSTABLE if old else 0) | unchecked)
     symbol_table = sorted({ev.symbols[i] for ev, r, _ in tests.values() for i in r.symbols})
     path_table = sorted({ev.paths[i] for ev, r, _ in tests.values() for i in r.paths | r.dirs})
     sid = {s: i for i, s in enumerate(symbol_table)}

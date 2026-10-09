@@ -23,6 +23,12 @@ summary of the same information). The report's format is versioned by
 | `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); each says how many targets it `matched`, and `analysis.counts.always_run` counts the targets they selected. |
 | `discovery` | For each runner: how many targets were found, the configuration read, and any notes. |
 
+With a recording, `analysis.evidence` describes it: its commit,
+`environment_hash`, how many tests it holds, and `environment_checked`.
+`plan` can't check the environment, so it reports `false` there: the
+selection holds only in the recorded environment. `run` checks it before any
+test runs, and its `-o` report says `true` when it matched.
+
 The plan `diffcone run -o` writes is the plan that ran. When the run
 didn't use the recording because the environment differed, it also has
 `evidence_not_used`: `reason` (`environment`), `differences` (what

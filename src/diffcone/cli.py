@@ -827,6 +827,8 @@ def _main(argv: list[str] | None) -> int:
                             file=sys.stderr,
                         )
                 outcome = checked.ran
+                if checked.environment_checked and result.evidence is not None:
+                    result.evidence["environment_checked"] = True
                 if checked.static is not None and static_plans:
                     ran_plan = static_plans[-1]
             else:
