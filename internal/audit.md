@@ -188,3 +188,100 @@ precision blow-ups introduced by round 1's fixes come first.
 | R17 | Overlapping key prefixes (`diffcone-ubuntu`, `diffcone-ubuntu-py312`) restore another environment's recording and baseline. | fixed (round 2, R batch) |
 | R18 | The nightly re-records but cannot save when main has not moved. | fixed (round 2, R batch) |
 | R19 | Docs: src-layout roots missing from several journeys; cli.md snapshot claim and exit codes for collect/prune/evidence; report.md rule list. | fixed (round 2, R batch) |
+
+# Round 3 (2026-10-09, before 0.4.0)
+
+Six reviews of the whole code base, weighted to what changed since v0.1.0
+(about 3 500 lines: child-process recording, the CI report, the narrowings
+of 0.2.0, items 12-17): the evidence recorder (REC), planning from
+evidence (EVP), static planning (PLN), indexer, cache and snapshots (IDX),
+discovery (DSC), and the CLI, execution and actions (CI). Each finding was
+reproduced against real pytest, asv_runner or the action's own shell steps
+unless marked plausible; the repro scripts lived in the session's scratch
+directory, and each fix carries its own regression scenario. Same rule as
+before: every confirmed miss is fixed, with a scenario that fails on the
+old code, before the release. "Regression" means it passed at v0.1.0.
+
+The cache identity check found nothing: 42 ordered commit pairs and 7
+working-tree states planned through one shared cache, byte-identical to
+uncached plans.
+
+## CI: a miss reported as a clean push (CI)
+
+| id | finding | status |
+|---|---|---|
+| CI-1 | `check` folds baseline failures by target: `test_x[a]` failing at the baseline hides a new failure of `test_x[b]`, reported as already failing (record's push check and the check action). | open |
+| CI-5 | Re-running a push job that found a miss restores the newest recording (`restore-keys: <prefix>--`), not the push's own, so its kept verdict is ignored and the re-check against the later baseline passes green. | open |
+| CI-4 | An uncaught exception in `check`/`report` exits 1 (outside `main`'s try); the record step's verdict parsing then fails silently and records the push as checked with 0 misses. | open |
+| CI-3 | A re-run whose JUnit cannot be read leaves `again` empty and `$((confirmed + again))` aborts the step before `check.json`; the context says checked, 0 misses. | open |
+| CI-6 | A `workflow_dispatch` report with `post: false` succeeds and so starts the next report's window: misses before it never get an issue. | open |
+| CI-2 | `diffcone report` accepts `record` contexts from fork pull-request runs, and does not validate field types: a forged artifact files an issue with attacker text, and a malformed one (`"misses": "lots"`) crashes every report until it expires. | open |
+| CI-9 | A pull-request run whose pytest did not collect selected tests (`run` exit 3) is neither refused nor failed in the report. | open |
+| CI-7 | The record re-run's argument filter keeps a path after a flag (`-ra tests`): the whole directory re-runs, an unrelated flaky test becomes a confirmed miss, and the flaky count can go negative. | open |
+| CI-8 | `resolve_command` re-joins with POSIX `shlex.join`, which Windows' argv parsing reads literally (plausible: no Windows run). | open |
+
+## Static planning: holes in the narrowings since 0.1.0 (PLN, IDX)
+
+| id | finding | status |
+|---|---|---|
+| PLN-1 | A class served by a bounded lazy-export table (or `getattr(import_module(...), 'Alt')`, or `m.Alt()` on an unknown receiver) is reached by name match only, which does not reach `__init__`/`__new__`/`__call__`: a constructor body change selects nothing. Regression for the lazy table. | open |
+| PLN-2, IDX-2, IDX-3 | A literal table or dict stays bounded although it is changed through an alias, a helper it is passed to (`fill(T)`), `dict.update(T, ...)`, `globals()[...]`, `setattr(pkg, '_LAZY', ...)`, `sys.modules[...]`, `vars(mod)`, through its module (`core.TABLE[k] = ...`, `pkg.core.TABLE`, `monkeypatch.setitem`, `mock.patch.dict` with an object or a string), `+=` on an imported list, a tuple target, or `symmetric_difference_update`. The `.get` and lazy-table forms are regressions. | open |
+| PLN-3, IDX-1 | A write onto an external module that does not name it directly (an alias, a helper taking the module, `for m in (logging,)`, `MOD = logging`, `object.__setattr__`, `logging.__setattr__`, `exec`, `MonkeyPatch().setattr`, `operator.setitem(vars(...))`, `mock.patch.dict(logging.__dict__)`) is not seen, so `getattr(logging, name)` stays bounded. Regression; `design.md` calls aliases outside the model, which the never-miss rule does not allow. | open |
+| EVP-8 | A test's decorator or default newly running a test-code writer at import is missed statically (evidence handles it). | open |
+
+## Static planning: other misses (PLN, IDX, EVP)
+
+| id | finding | status |
+|---|---|---|
+| PLN-4 | Dependency files missed: `dev-requirements.txt`, `test-requirements.txt` (the prefix must start the name), case (`Requirements.txt`), `requirements.pip`, pandas' `ci/deps/*.yaml`, `hatch.toml`, `sitecustomize.py` outside the roots; a nested `setup.py` under a root; any lock-file change between `INDEX` and `WORKTREE` (neither side committed returns `[]`). | open |
+| PLN-5 | A pytest plugin in the repository outside the roots (`pytest_plugins = ["support.plugin"]`, `-p support.plugin`) only gets a `plugin_out_of_scope` note: its autouse fixture changes, complete plan, nothing selected. | open |
+| EVP-5 | `pytest_plugins` in a test module registers the plugin for the session (D17), but a change to or addition of it reaches only that module's tests, in both modes. | open |
+| EVP-6 | Changing the argument of an import-time call into a mutator (`X = set_mode("slow")` -> `"faster"`, a class attribute, a `parametrize` argument, a test-module variable) reaches no reader of the mutated state, in both modes. | open |
+| IDX-4 | PEP 695/696 type parameters (bounds, defaults, count) are not hashed: no changed symbol. | open |
+| IDX-5 | Reflection over a module (`mod.__dict__['f']`, `.get`, `sys.modules[...].__dict__`, `inspect.getmembers(mod)`, e.g. parametrizing over every function of a module) is not a dependency; only `vars(mod)` is. | open |
+| IDX-6 | WORKTREE trusts `ls-files -m`, which skips assume-unchanged and skip-worktree entries: edits to such files are invisible. | open |
+
+## Discovery (DSC)
+
+| id | finding | status |
+|---|---|---|
+| DSC-1 | An autouse fixture imported into a conftest or test module (`from x import auto`, `from x import *`, `auto = x.auto`, a two-level star chain, a `pytest_plugins` package re-exporting two levels deep) is never a dependency: nobody requests it by name. | open |
+| DSC-2 | ASV: `setUp`/`SetUp`/`TearDown` (asv_runner matches case-insensitively) and the benchmark class's `__init__` (built for every benchmark, inherited too) are not dependencies. | open |
+| DSC-3 | pytest loads `<initial path>/test*/conftest.py` at startup even when the directory is `--ignore`d or in `norecursedirs`; discovery drops it (the `--ignore` half is a regression). | open |
+| DSC-4 | `norecursedirs` is applied to an initial path's own components (`-- integration` with `norecursedirs = ["integration"]`): its conftests and doctests are dropped. | open |
+| DSC-5 | `PYTEST_ADDOPTS`, `PYTEST_PLUGINS` and pytest options inside `--command` never reach discovery: `run` says "0 of 1 selected (plan complete)". | open |
+| DSC-6 | A conftest `pytest_ignore_collect` returning `False` overrides `--ignore`; discovery still drops those tests with no note. | open |
+| DSC-7 | `.` as a run argument is not an initial path, so `testpaths` stays in force with no note. | open |
+| DSC-8 | A `.rst`/`.txt` file named as a run argument is a doctest whatever `--doctest-glob` says; not listed, no note. | open |
+| DSC-9 | `--ignore DIR` (and `--ignore-glob`, `--deselect`, `--doctest-glob`) as two tokens is reported as unmodelled: exit 3, `run` refuses (conservative). | open |
+| DSC-10 | An absolute `--ignore` path is not matched: ignored tests stay targets and `run` errors "did not collect" when they are selected. | open |
+
+## Evidence recorder (REC)
+
+| id | finding | status |
+|---|---|---|
+| REC-1 | A subprocess started outside every test window (conftest import, `pytest_sessionstart`, a session server) sets only `import_subprocess`, which nothing reads, and its record is never folded: a test reading what it produced is not selected. Predates 0.1.0; an xdist controller spawning workers must not trip the fix. | open |
+| REC-2 | A process pool reused by a later test (`ProcessPoolExecutor`, the forkserver after first use) flags only the test that started the workers. | open |
+| REC-3 | `_actor` returns "import" at the first importlib frame even when a third-party module's top level did the read (matplotlib's `matplotlibrc`): the touch is dropped. | open |
+| REC-4 | `ENVIRONMENTS` (item 16) excludes everything under a `sys.prefix` that is also a source directory (`cd svc && python -m venv .`): source goes unrecorded, or `collect` fails with a false installed-copy error. Regression. | open |
+| REC-5 | A child whose entry is a module outside the project (`-m doctest`, `-m timeit`, a kernel) or a console script runs text the index does not hold but is not flagged like `-c`; in-process `doctest.testfile` misses the same way. | open |
+| REC-6 | A file opened with other casing on a case-insensitive filesystem (`tests/Data/Expected.TXT`) never matches the indexed path. | open |
+| REC-7 | The inert-probe rule is bypassed by `posix.posix_spawn` or an assembled `__import__` in a `-c` snippet (contrived; item 10 accepted a deny-list). | open |
+| REC-9 | `child._write` swallows `OSError`, so a record can be cut short silently (plausible). | open |
+
+## Planning from evidence (EVP)
+
+| id | finding | status |
+|---|---|---|
+| EVP-1 | Item 13: a fake reached through a test-code base's `__subclasses__()` is guarded away (holders only include code naming the fake). | open |
+| EVP-2 | A function body run only during another module's import that mutates a third module's state escalates only the importing module (`_import_effect`, `_cython_import_effect`). | open |
+| EVP-3 | Library lookup sites are dropped for every test-code namespace, but library code can `import_module("tests.test_a")` and `getattr` into it. | open |
+| EVP-4 | `run --collect` writes records that were never order-checked yet keeps `reverse_checked=True`: new tests reading a module-level cache miss a change to the cached function. | open |
+| EVP-7 | The Cython body hash drops blank and `#`-leading lines inside multi-line strings. | open |
+
+## Not misses (fix while there)
+
+- Over-selection: a project `sitecustomize.py` on a source root shadows the child recorder (every child-spawning test always selected; REC-8); a submodule under the roots makes every WORKTREE plan select everything (IDX-7).
+- Crash: a `.py` path containing a newline breaks `cat-file --batch` (IDX-8).
+- Silent: an `always_run` entry with a misspelt runner or pattern only shows `matched: 0`, though declarations.md says a typo can't silently remove tests (PLN-6).
+- Stale text: item 15 promises an exit line at `atexit` and says outside-window spawns "flag as today"; item 10's mechanism describes the old word-list rule (REC-10); the `pytest_static.py` docstring omits `--ignore`/`--ignore-glob` and run-argument paths, and `collection_check.py` discovers without the command's pytest arguments (DSC-11); evidence_design.md says `plan --evidence auto` picks a store whose environment matches, but `find_store` ignores the environment and `plan` never checks it (EVP-9); `release.yml`'s version regex leaves `.` unescaped.
