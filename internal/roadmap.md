@@ -1061,7 +1061,16 @@ comparing `os.environ` whole would see.
 
 ## 16. The environment's own code and its metadata scans are not the project's (strata trial)
 
-**Status.** Sketch (2026-10-09). Every strata pull request that edits a
+**Status.** Implemented (2026-10-09), unreleased. A recording of strata at
+`edc32ce0` through `uv run pytest` (CI's command) holds no path touched
+outside every test without a module to credit it to; recorded the old way
+it held the checkout root, `tests`, every collected test file and the
+conftests. #1085's edit replayed on it selects 582 of 6 231 tests with no
+fallback (CI ran all 6 231), the edited file's tests among them; an added
+test file selects 175 (the `exec` lookup sites of item 15 and the
+subprocess-flagged tests), not 6 232.
+
+The sketch, as first written: every strata pull request that edits a
 test file has selected the whole unit suite since strata's #1082, which
 added `pytest_sessionstart`/`pytest_sessionfinish` hooks calling
 `importlib.metadata.distributions()`. #1085 (one parametrize list and a
