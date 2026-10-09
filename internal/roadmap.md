@@ -638,6 +638,7 @@ stopped counting as a read). Static planning selects 100 % on every one.
 
 * *Readers of a test fake's member*: item 13.
 * *Lookups on an external module the project writes to*: item 14.
+* *Recording inside child processes* (the subprocess floor): item 15.
 
 ## 11. A report over CI runs (`diffcone report`, `actions/report`)
 
@@ -941,3 +942,93 @@ detected, so the lookup was already bounded.
 * static plans are unchanged (scenarios assert the static selection);
 * `0da0faf7` on the recording at its parent drops the `lookup_site`
   selections that came from these sites.
+
+## 15. Recording inside child processes (strata trial)
+
+**Status.** Sketched (2026-10-08). After items 10, 13 and 14, strata's
+floor is the tests that start a Python subprocess: the notebook harness
+(`uv run --directory <notebook> python harness.py <manifest>`), warm pool
+workers (`python pool_worker.py`), and fixtures that start them (some
+1 270 tests). Each is flagged (`FLAG_SUBPROCESS`) and selected for every
+change. A probe (a logging `sitecustomize` on `PYTHONPATH`, 133 notebook
+tests) saw 263 child interpreters, all Python 3.13, every one of them
+loading the `sitecustomize` through the inherited `PYTHONPATH`, 262 of
+them during a test, and running checkout code (`harness.py`) with
+strata's or a notebook's virtual environment.
+
+**Mechanism (POSIX; Windows keeps the flag).**
+
+* *Starting.* The directory `diffcone` puts on `PYTHONPATH` for the
+  plugin also holds a `sitecustomize.py` and a stdlib-only child recorder.
+  A Python process that starts with `DIFFCONE_COLLECT_PARENT` in its
+  environment (set by the plugin at start, so the pytest process itself
+  never sees it at its own start-up) records itself: `sys.monitoring`
+  `PY_START` with DISABLE, never re-armed, over the checkout root, and
+  the same audit hooks for paths. It then imports any other
+  `sitecustomize` on `sys.path`, which ours shadowed. An xdist worker is
+  a pytest process: the plugin stops the child recorder there and drops
+  its file. A child on Python before 3.12 writes only a header saying it
+  cannot record.
+* *Records.* Each child streams `children/<ppid>/<pid>-<start>.jsonl` in
+  `DIFFCONE_COLLECT_OUT` with unbuffered appends: a header (pid, ppid,
+  `sys.orig_argv`, start time), one line per new code object or path,
+  each accounted spawn (below) with the child's pid, each fork's pid
+  (`os.register_at_fork`), each unaccounted spawn as a flag, an installed
+  copy of a project package as a flag, and an exit line at `atexit`. A
+  child killed by a signal leaves everything but the exit line, since
+  nothing is buffered.
+* *Accounted spawns.* `subprocess.Popen._execute_child` is wrapped. A
+  spawn inside a test or shared fixture window is accounted when it goes
+  through it: its own audit events (`subprocess.Popen`, the
+  `os.posix_spawn` it may use) do not flag, and the window records the
+  child's pid and spawn time. Everything else (`os.system`, `os.spawn*`,
+  `os.posix_spawn` called directly, `multiprocessing`, a spawn at import
+  or in a hook) flags as today, and so does an inert probe not flag.
+* *Lifetime.* At each window open, the window is credited with every
+  accounted spawn of this process still alive: its pid, or a pid in its
+  records' subtree, answers `os.kill(pid, 0)` (a zombie or a reused pid
+  counts as alive, which only over-credits). A record with a fork line,
+  or a child record its parent did not list, makes the spawn alive until
+  the process ends.
+* *Fold.* A window's spawn resolves to the child records whose pid is
+  the spawned pid (it was a Python process), or whose ppid is the spawned
+  pid when the spawn's command line is a launcher (`uv run [options]
+  <command>`) and one of them has that command as its `orig_argv`. Each
+  record brings its own accounted spawns, recursively. The window gets
+  the union of their code objects (mapped to symbols with each record's
+  own table, as a process's are), paths and directories. A spawn that
+  resolves to nothing, a launcher whose command is not among the records,
+  a header that could not record, or a flag line anywhere in the subtree
+  sets `FLAG_SUBPROCESS` on the window, as today.
+
+**Trade-off.** It narrows selection: a test that started a recorded child
+is selected through what the child ran instead of for every change. The
+child's whole life is credited to every window it was alive in, so a
+long-lived server or a warm worker reused by later tests is credited to
+each of them (over-crediting, never under). A non-Python program is
+accounted only as a named launcher whose own work is reading build inputs
+(any change to which selects everything already). A child's environment
+(a notebook's virtual environment) is not checked at planning time: a
+drift there with no change in the pull request is outside any plan, as it
+is for the parent's dependencies. The recorder adds an environment
+variable to the test process (`DIFFCONE_COLLECT_PARENT`), which a test
+comparing `os.environ` whole would see.
+
+**Done when**
+* scenarios cover these cases:
+  * a test running `sys.executable -c`/a script under the checkout is
+    selected by a change to code only the child ran, and not by an
+    unrelated change (selected before);
+  * a launcher (`uv run python ...`, faked by a script named `uv`) is
+    accounted; another program (`sh -c "python ..."`) still flags;
+  * a child that strips the environment (`env={}`), runs `python -I`, or
+    is killed before writing still flags;
+  * a warm child started by one test and used by a later one credits the
+    later test (missed by a spawn-time-only attribution);
+  * a child of a child is followed; a forked grandchild keeps the spawn
+    alive;
+  * a shared fixture's child credits every test using the fixture,
+    across xdist workers;
+* the recording of strata's unit suite loses the flag on the harness and
+  pool tests, and a replay of `0da0faf7` on it shows the drop;
+  `diffcone check` against full runs finds no miss.
