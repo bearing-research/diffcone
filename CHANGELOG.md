@@ -39,6 +39,30 @@ selection rules.
   and a change under a `*.dist-info`, `*.egg-info` or `*.egg` directory
   now selects every target, in both modes.
 
+- `diffcone check` decided "already failing at the baseline" per test
+  function, so a parametrized case that failed at the baseline excused a
+  new failure of another case of the same test: a miss reported as clean.
+  Cases are now compared one by one.
+- The `record` action with `check: true` could pass a push that had a
+  miss: a re-run of the job restored the newest recording instead of its
+  own commit's (so the kept verdict was lost and the push was re-checked
+  against a later baseline), and a check that crashed, or a re-run whose
+  JUnit could not be read, was recorded as checked with no miss. A
+  re-run's other failures (when the job's pytest arguments name a path
+  after an option) no longer count as misses. A recording that is not
+  from before the pushed commit is no longer checked against.
+- An unexpected error in any command exits 2; `check`, `report`,
+  `collect` and `prune` exited 1, which `check` uses for a miss.
+- `diffcone report` ignores recording artifacts uploaded by pull-request
+  runs (a pull request from a fork runs its own code), counts an artifact
+  it cannot read as a problem instead of failing, reports pull-request
+  runs whose selected tests pytest did not collect, and keeps a test id
+  with backticks inside its code span. The `report` action starts its
+  window at the last report that posted, so a run with only a job summary
+  (a manual run with posting off) no longer hides the runs before it.
+- On Windows, a relative `--command` resolved for `validate` and `corpus`
+  was quoted for a POSIX shell.
+
 ### Execution evidence
 
 - A Python process a test starts with `subprocess` (directly, through

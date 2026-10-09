@@ -3,7 +3,9 @@
 JUnit XML from a full pytest run says which tests failed; every one must be
 among the plan's selected targets, or it is a *miss*. A failure that a
 baseline run (the nightly run at the evidence commit) also had is reported
-as already failing instead: the change did not cause it.
+as already failing instead: the change did not cause it. Failures are
+compared case by case, so a parametrized case that broke at the baseline
+does not excuse a new failure of another case of the same test.
 
 Other selective runs are read the same way, the tests in their JUnit being
 the tests they ran: diffcone's own run of the plan (its outcomes should agree
@@ -172,10 +174,12 @@ class CheckReport:
         return not self.misses and not self.not_run
 
 
-def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str]]:
-    """Test -> (outcome, kind) for every broken case, by target where one
-    matches."""
-    out: dict[str, tuple[str, str]] = {}
+def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, set[str]]]:
+    """Test -> (outcome, kind, broken case keys) for every broken case, by
+    target where one matches. The keys keep a parametrized case's
+    parameters: a baseline failure of ``test_x[a]`` says nothing about
+    ``test_x[b]``."""
+    out: dict[str, tuple[str, str, set[str]]] = {}
     for case in cases:
         if case.outcome not in BROKEN:
             continue
@@ -183,12 +187,13 @@ def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str]]:
         if not case.classname and matched:
             # A file that failed to collect: one failure for the file, caught
             # when any of its targets is selected.
-            out.setdefault(case.name, (case.outcome, "collection"))
+            tests, kind = [case.name], "collection"
         elif matched:
-            for target in matched:
-                out.setdefault(target, (case.outcome, "test"))
+            tests, kind = matched, "test"
         else:
-            out.setdefault(case.key, (case.outcome, "unknown"))
+            tests, kind = [case.key], "unknown"
+        for test in tests:
+            out.setdefault(test, (case.outcome, kind, set()))[2].add(case.key)
     return out
 
 
@@ -213,7 +218,11 @@ def check(
 ) -> CheckReport:
     targets = _Targets.from_plan(plan)
     broken = _broken(full, targets)
-    already = set(_broken(baseline, targets)) if baseline is not None else set()
+    before = _broken(baseline, targets) if baseline is not None else {}
+    # Already failing: every case that broke also broke at the baseline.
+    already = {
+        test for test, (_, _, keys) in broken.items() if test in before and keys <= before[test][2]
+    }
 
     def selected(test: str, kind: str) -> bool:
         if kind == "collection":
@@ -222,7 +231,7 @@ def check(
 
     failures = [
         Failure(test, outcome, kind, selected(test, kind), test in already)
-        for test, (outcome, kind) in sorted(broken.items())
+        for test, (outcome, kind, _) in sorted(broken.items())
     ]
     new = {f.test for f in failures if not f.already}
     run_reports = []
@@ -238,7 +247,7 @@ def check(
         # A test both runs ran that broke in only one: flaky, or dependent on
         # what ran before it.
         disagreements = sorted(
-            t for t in ran & targets.all if (t in run_broken) != (t in broken) and t not in already
+            t for t in ran & targets.all if (t in run_broken) != (t in broken) and t not in before
         )
         run_reports.append(
             RunReport(

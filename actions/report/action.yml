@@ -10,10 +10,10 @@ description: >-
 inputs:
   hours:
     description: >-
-      The window when this workflow has no earlier successful run: runs that
+      The window when this workflow has no earlier report that posted (a
+      successful run with report-label or miss-label set): runs that
       completed in this many hours before now. Otherwise the window starts
-      where the last successful report started, so no run falls between two
-      reports.
+      where that report started, so no run falls between two reports.
     default: "24"
   workflow:
     description: Only the runs of this workflow (its file name, e.g. ci.yml); default all.
@@ -96,16 +96,27 @@ runs:
         PREFIX: ${{ inputs.artifact-prefix }}
         RUNS: ${{ runner.temp }}/diffcone-runs
         RUNS_REPO: ${{ inputs.repository }}
+        MARKER: posted-diffcone-report
       run: |
         py=$(command -v python3 || command -v python)
         mkdir -p "$RUNS/runs"
-        # The window starts where this workflow's last successful run
-        # started: a run that was still going then, or that a delayed
-        # schedule skipped, is in this report. A report that fails (a
-        # download that failed) leaves its window to the next one.
+        # The window starts where this workflow's last successful report
+        # that posted started (it uploaded the $MARKER artifact): a run that
+        # was still going then, or that a delayed schedule skipped, is in
+        # this report. A report that fails (a download that failed), or one
+        # that only wrote its job summary, leaves its window to the next one.
         workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
-        since=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?status=success&per_page=1" \
-          --jq '.workflow_runs[0].run_started_at // empty')
+        since=""
+        while read -r id started; do
+          [ -n "$id" ] || continue
+          if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | .name' < /dev/null \
+            | tr -d '\r' | grep -qx "$MARKER"; then
+            since=$started
+            break
+          fi
+        done < <(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?status=success&per_page=30" \
+          --jq '.workflow_runs[] | "\(.id) \(.run_started_at)"' | tr -d '\r')
         window=$("$py" - "$HOURS" "$since" <<'PY'
         import datetime as d, sys
         now = d.datetime.now(d.timezone.utc)
@@ -222,7 +233,7 @@ runs:
       run: |
         py=$(command -v python3 || command -v python)
         VERSION=$(diffcone --version | tr -d '\r') "$py" - <<'PY'
-        import json, os, subprocess, sys
+        import json, os, re, subprocess, sys
         from urllib.parse import urlencode
 
         UPSTREAM = "bearing-research/diffcone"
@@ -244,6 +255,13 @@ runs:
 
         def label(name, description):
             gh("label", "create", name, "--force", "--description", description)
+
+
+        def code(text):
+            """A Markdown code span, whatever backticks the test id holds."""
+            fence = "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
+            pad = " " if "`" in text else ""
+            return f"{fence}{pad}{text}{pad}{fence}"
 
 
         def issue(title, body, name):
@@ -283,12 +301,12 @@ runs:
             for miss in report["misses"]:
                 grouped.setdefault((miss["commit"], miss["test"]), []).append(miss)
             for (commit, test), found in grouped.items():
-                marker = f"<!-- diffcone-miss {source} {commit} {test} -->"
+                marker = f"<!-- diffcone-miss {source} {commit} {test.replace('--', '- -')} -->"
                 if marker in existing:
                     continue
                 where = f"{source}@{commit}" if elsewhere else commit
                 lines = [
-                    f"`{test}` failed in the full run of {where}, the plan of that commit's "
+                    f"{code(test)} failed in the full run of {where}, the plan of that commit's "
                     "change (its first parent to it) did not select it, and it failed again "
                     "when re-run (or could not be re-run).",
                     "",
@@ -305,7 +323,7 @@ runs:
                     upstream = [
                         f"{os.environ['VERSION']} missed a test it should have selected.",
                         "",
-                        f"- test: `{test}` ({found[0]['kind']})",
+                        f"- test: {code(test)} ({found[0]['kind']})",
                         f"- the plan: {found[0]['plan_reason'] or 'no reason recorded'}",
                         "",
                         "(Reported from a diffcone report; add what you can share: the "
@@ -334,6 +352,14 @@ runs:
                 print(f"opened {repo}#{number} for {test} at {commit[:12]}")
         sys.exit(1 if failed else 0)
         PY
+    - name: Mark this report as posted
+      # The next report's window starts where this one started.
+      if: success() && (inputs.report-label != '' || inputs.miss-label != '')
+      uses: actions/upload-artifact@v7
+      with:
+        name: posted-diffcone-report
+        path: ${{ runner.temp }}/diffcone-report/report.json
+        retention-days: 90
     - name: Fail on an incomplete report
       if: steps.report.outputs.errors != '0'
       shell: bash

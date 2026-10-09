@@ -210,15 +210,15 @@ uncached plans.
 
 | id | finding | status |
 |---|---|---|
-| CI-1 | `check` folds baseline failures by target: `test_x[a]` failing at the baseline hides a new failure of `test_x[b]`, reported as already failing (record's push check and the check action). | open |
-| CI-5 | Re-running a push job that found a miss restores the newest recording (`restore-keys: <prefix>--`), not the push's own, so its kept verdict is ignored and the re-check against the later baseline passes green. | open |
-| CI-4 | An uncaught exception in `check`/`report` exits 1 (outside `main`'s try); the record step's verdict parsing then fails silently and records the push as checked with 0 misses. | open |
-| CI-3 | A re-run whose JUnit cannot be read leaves `again` empty and `$((confirmed + again))` aborts the step before `check.json`; the context says checked, 0 misses. | open |
-| CI-6 | A `workflow_dispatch` report with `post: false` succeeds and so starts the next report's window: misses before it never get an issue. | open |
-| CI-2 | `diffcone report` accepts `record` contexts from fork pull-request runs, and does not validate field types: a forged artifact files an issue with attacker text, and a malformed one (`"misses": "lots"`) crashes every report until it expires. | open |
-| CI-9 | A pull-request run whose pytest did not collect selected tests (`run` exit 3) is neither refused nor failed in the report. | open |
-| CI-7 | The record re-run's argument filter keeps a path after a flag (`-ra tests`): the whole directory re-runs, an unrelated flaky test becomes a confirmed miss, and the flaky count can go negative. | open |
-| CI-8 | `resolve_command` re-joins with POSIX `shlex.join`, which Windows' argv parsing reads literally (plausible: no Windows run). | open |
+| CI-1 | `check` folds baseline failures by target: `test_x[a]` failing at the baseline hides a new failure of `test_x[b]`, reported as already failing (record's push check and the check action). | fixed (CI batch) |
+| CI-5 | Re-running a push job that found a miss restores the newest recording (`restore-keys: <prefix>--`), not the push's own, so its kept verdict is ignored and the re-check against the later baseline passes green. | fixed (CI batch) |
+| CI-4 | An uncaught exception in `check`/`report` exits 1 (outside `main`'s try); the record step's verdict parsing then fails silently and records the push as checked with 0 misses. | fixed (CI batch) |
+| CI-3 | A re-run whose JUnit cannot be read leaves `again` empty and `$((confirmed + again))` aborts the step before `check.json`; the context says checked, 0 misses. | fixed (CI batch) |
+| CI-6 | A `workflow_dispatch` report with `post: false` succeeds and so starts the next report's window: misses before it never get an issue. | fixed (CI batch) |
+| CI-2 | `diffcone report` accepts `record` contexts from fork pull-request runs, and does not validate field types: a forged artifact files an issue with attacker text, and a malformed one (`"misses": "lots"`) crashes every report until it expires. | fixed (CI batch) |
+| CI-9 | A pull-request run whose pytest did not collect selected tests (`run` exit 3) is neither refused nor failed in the report. | fixed (CI batch) |
+| CI-7 | The record re-run's argument filter keeps a path after a flag (`-ra tests`): the whole directory re-runs, an unrelated flaky test becomes a confirmed miss, and the flaky count can go negative. | fixed (CI batch) |
+| CI-8 | `resolve_command` re-joins with POSIX `shlex.join`, which Windows' argv parsing reads literally (plausible: no Windows run). | fixed (CI batch) |
 
 ## Static planning: holes in the narrowings since 0.1.0 (PLN, IDX)
 

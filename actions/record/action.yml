@@ -80,7 +80,11 @@ runs:
       with:
         path: .diffcone
         key: ${{ inputs.key-prefix }}--${{ github.sha }}
-        restore-keys: ${{ inputs.key-prefix }}--
+        # This commit's own recording first: a re-run of the job then keeps
+        # the verdict its earlier run reached, even after later pushes saved.
+        restore-keys: |
+          ${{ inputs.key-prefix }}--${{ github.sha }}-
+          ${{ inputs.key-prefix }}--
     - name: Plan the commit's change
       if: inputs.check == 'true'
       id: plan
@@ -139,6 +143,19 @@ runs:
           || git fetch --quiet --depth=1 origin "$commit" 2>/dev/null; }; then
           echo "::notice::the previous recording cannot be used here; not checking this push"
           echo "the previous recording cannot be fetched" > "$RESULTS/check-note"
+          exit 0
+        fi
+        # It must come from before this commit: a later push's recording
+        # (restored when this commit's own was never saved) has a baseline in
+        # which this commit's new failures already fail. A shallow checkout
+        # is deepened to the recording's date to tell.
+        if ! git merge-base --is-ancestor "$commit" HEAD^1 2>/dev/null; then
+          since=$(git log -1 --format=%ct "$commit" | tr -d '\r')
+          git fetch --quiet --shallow-since="$(( since - 86400 ))" origin "$head" 2>/dev/null || true
+        fi
+        if ! git merge-base --is-ancestor "$commit" HEAD^1 2>/dev/null; then
+          echo "::notice::the previous recording ($commit) is not from before this commit; not checking this push"
+          echo "the previous recording is not from before this commit" > "$RESULTS/check-note"
           exit 0
         fi
         echo "$commit" > "$RESULTS/recording"
@@ -250,6 +267,17 @@ runs:
           # A miss must fail again on its own: a flaky test is not one. Only
           # a test can be re-run; a file that failed to collect, or a failure
           # no target names, stands as found.
+          if ! "$py" -c "
+        import json, sys
+        v = json.load(open(sys.argv[1]))
+        kinds = {f['test']: f['kind'] for f in v['failures']}
+        for test in v['misses']:
+            print(kinds.get(test, 'unknown'), test)" "$RESULTS/verdict.json" > "$RESULTS/misses.txt"; then
+            echo "::error::diffcone check found a miss but its verdict cannot be read"
+            check_error=true
+            record 1
+            exit 0
+          fi
           ids=(); other=0
           while IFS= read -r line; do
             line=${line%$'\r'}
@@ -257,38 +285,53 @@ runs:
               test\ *) ids+=("${line#test }") ;;
               ?*) other=$((other + 1)) ;;
             esac
-          done < <("$py" -c "
-        import json, sys
-        v = json.load(open(sys.argv[1]))
-        kinds = {f['test']: f['kind'] for f in v['failures']}
-        for test in v['misses']:
-            print(kinds.get(test, 'unknown'), test)" "$RESULTS/verdict.json")
+          done < "$RESULTS/misses.txt"
+          if [ ${#ids[@]} -eq 0 ] && [ "$other" -eq 0 ]; then
+            echo "::error::diffcone check exited 1 but its verdict names no miss"
+            check_error=true
+            record 1
+            exit 0
+          fi
           confirmed=$other
           if [ ${#ids[@]} -gt 0 ]; then
             # The run's own options (markers, -W, plugins), but not its
-            # paths: the re-run names the tests.
+            # paths: the re-run names the tests. A path after an option that
+            # takes no value is a path (-ra, -v); after one that may take a
+            # value it is kept, which only costs time.
             eval "args=($PYTEST_ARGS)"
             rerun=(); prev=""
             for a in "${args[@]}"; do
               if [[ "$a" != -* ]] && [ -e "${a%%::*}" ] && \
-                { [ -z "$prev" ] || [[ "$prev" == *=* ]] || [[ "$prev" != -* ]]; }; then
+                { [ -z "$prev" ] || [[ "$prev" == *=* ]] || [[ "$prev" != -* ]] \
+                  || [[ "$prev" =~ ^-[^-].+$ ]] || [[ "$prev" =~ ^-[vqxslh]$ ]]; }; then
                 prev="$a"; continue
               fi
               rerun+=("$a"); prev="$a"
             done
+            printf '%s\n' "${ids[@]}" > "$RESULTS/rerun-ids.txt"
             rc=0
             $COMMAND "${rerun[@]}" -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${ids[@]}" \
               > "$RESULTS/rerun.log" 2>&1 || rc=$?
-            again=0
-            if [ ! -f "$RESULTS/rerun.xml" ] || [ "$rc" -ge 2 ]; then
-              # Nothing ran (usage error, no tests): the misses cannot be
-              # told flaky, so they stand.
-              again=${#ids[@]}
-            else
+            # Only the re-run tests count: anything else the re-run ran is
+            # not a miss of this check. A re-run that cannot be read leaves
+            # the misses standing.
+            again=${#ids[@]}
+            if [ -f "$RESULTS/rerun.xml" ] && [ "$rc" -lt 2 ]; then
+              rs=0
               diffcone check --plan "$RESULTS/plan.json" --full "$RESULTS/rerun.xml" \
                 --baseline "$RESULTS/previous.xml" --format json -o "$RESULTS/rerun-verdict.json" \
-                && again=0 \
-                || again=$("$py" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['misses']))" "$RESULTS/rerun-verdict.json" | tr -d '\r')
+                || rs=$?
+              if [ "$rs" -eq 0 ]; then
+                again=0
+              elif [ "$rs" -eq 1 ]; then
+                again=$("$py" -c "
+        import json, sys
+        misses = set(json.load(open(sys.argv[1]))['misses'])
+        ids = set(open(sys.argv[2]).read().splitlines())
+        print(len(misses & ids))" "$RESULTS/rerun-verdict.json" "$RESULTS/rerun-ids.txt" | tr -d '\r') \
+                  || again=${#ids[@]}
+                [ -n "$again" ] || again=${#ids[@]}
+              fi
             fi
             confirmed=$((confirmed + again))
             flaky=$(( ${#ids[@]} - again ))

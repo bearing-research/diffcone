@@ -235,18 +235,23 @@ matrix: `diffcone-${{ matrix.os }}-py${{ matrix.python-version }}`, for
 example. The report has one row per name.
 
 Each report covers the runs that completed since the last successful
-report started, so a run still going when one report starts is in the
-next. If an artifact can't be downloaded, the report says so and the job
-fails, and the next report covers the same runs again. Artifacts that have
-expired are not reported.
+report that posted started, so a run still going when one report starts is
+in the next. A report with both `report-label` and `miss-label` empty
+writes only the job summary and leaves its runs to the next report. If an
+artifact can't be downloaded, the report says so and the job fails, and
+the next report covers the same runs again. Artifacts that have expired
+are not reported. The report leaves out recording artifacts uploaded by
+pull-request runs (a pull request from a fork runs its own code), and
+artifacts whose files it cannot read, which it counts as a problem.
 
 `report` takes `hours` (the window for the first report: runs that
 completed in this many hours before it; default `24`), `workflow` (only
 that workflow's runs; default all), `artifact-prefix` (default
 `diffcone-`), `report-label` and `miss-label` (set either to an empty
 string to skip that issue), and `comment` (`always`, the default, or
-`on-problem`: comment only when there is a miss, a failed check or an
-incomplete report; the job summary always has the report). It reads what
+`on-problem`: comment only when there is a miss, a failed check, a
+pull request whose selected tests pytest did not collect, or an incomplete
+report; the job summary always has the report). It reads what
 `run` and `record` upload from the same release on, so give all the
 actions the same tag.
 

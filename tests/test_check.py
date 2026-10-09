@@ -141,6 +141,30 @@ def test_a_failure_the_plan_did_not_select_is_a_miss(runs):
     assert report.unmatched == 1
 
 
+def test_a_baseline_failure_of_one_parameter_does_not_excuse_another(runs):
+    """Head breaks ``test_neg[2]``; a baseline where only ``test_neg[1]``
+    failed must not make that an already-failing test (audit CI-1)."""
+    plan, full, _baseline = runs
+
+    def other_case_failed(case):
+        if case.name.startswith("test_neg["):
+            failed = case.name == "test_neg[1]"
+            return checking.Case(case.classname, case.name, "failed" if failed else "passed")
+        return checking.Case(case.classname, case.name, "passed")
+
+    baseline = [other_case_failed(c) for c in full]
+    assert {c.name for c in full if c.outcome == "failed" and "neg" in c.name} == {"test_neg[2]"}
+    report = checking.check(_drop(plan, NEG), full, baseline=baseline)
+    assert [f.test for f in report.misses] == [NEG]
+    # The same case failing at the baseline is already failing.
+    same = [
+        checking.Case(c.classname, c.name, c.outcome if c.name == "test_neg[2]" else "passed")
+        for c in full
+    ]
+    report = checking.check(_drop(plan, NEG), full, baseline=same)
+    assert NEG not in {f.test for f in report.misses}
+
+
 def test_selective_runs_are_compared_on_the_same_failures(repo, runs):
     plan, full, baseline = runs
     # A selector that ran only TestNeg (as another tool might have chosen).
@@ -169,3 +193,25 @@ def test_the_cli_exits_1_on_a_miss_and_2_on_unreadable_input(repo, runs, tmp_pat
     assert main(["check", "--plan", str(ok), "--full", str(tmp_path / "none.xml")]) == 2
     assert main(["check", "--plan", head, "--full", head]) == 2
     assert main(["check", "--plan", str(ok), "--full", head, "--run", "nameless"]) == 2
+
+
+@pytest.mark.parametrize("command", ["check", "report"])
+def test_a_crash_exits_2_not_the_miss_code(command, tmp_path, monkeypatch, capsys):
+    """An unexpected exception in check or report must not exit 1, which
+    CI reads as a miss or a failed check and parses a verdict for (audit
+    CI-4)."""
+    from diffcone import ci_report
+
+    def crash(*_args, **_kwargs):
+        raise LookupError("unknown encoding: bogus")
+
+    monkeypatch.setattr(checking, "read_junit", crash)
+    monkeypatch.setattr(ci_report, "load", crash)
+    plan = tmp_path / "plan.json"
+    plan.write_text('{"selected_targets": []}')
+    argv = {
+        "check": ["check", "--plan", str(plan), "--full", str(plan)],
+        "report": ["report", "--dir", str(tmp_path)],
+    }[command]
+    assert main(argv) == 2
+    assert "internal error" in capsys.readouterr().err

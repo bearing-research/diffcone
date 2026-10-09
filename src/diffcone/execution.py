@@ -99,6 +99,15 @@ _XDIST_LINE = re.compile(
 # --------------------------------------------------------------------------- run
 
 
+def join_command(argv: list[str]) -> str:
+    """The inverse of ``split_command``: quoted for a POSIX shell, and on
+    Windows as ``CommandLineToArgvW`` reads it (a single quote is a literal
+    character there)."""
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 def build_command(
     runner: str, targets: list[Target], command: str | None, extra: list[str]
 ) -> list[str]:
@@ -131,7 +140,7 @@ def resolve_command(command: str | None, repo: Path) -> str | None:
     for base in (Path.cwd(), repo):
         candidate = base / argv[0]
         if candidate.exists():
-            return shlex.join([os.path.abspath(candidate), *argv[1:]])
+            return join_command([os.path.abspath(candidate), *argv[1:]])
     return command
 
 

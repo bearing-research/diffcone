@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import subprocess
 import sys
 import time
@@ -56,6 +55,7 @@ from diffcone.execution import (
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
+    join_command,
     run_selected,
     run_with_evidence,
     validate_pytest,
@@ -633,6 +633,20 @@ def _repo_problem(repo: str) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except Exception:
+        # Exit 1 means a degraded plan, a miss (check) or a failed check
+        # (report): a crash in any command must never look like one.
+        traceback.print_exc()
+        print(
+            "diffcone: internal error (a bug; please report it with the traceback above)",
+            file=sys.stderr,
+        )
+        return 2
+
+
+def _main(argv: list[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "repo", None) is not None:
@@ -841,7 +855,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not outcome.selected:
                     print("diffcone: nothing selected; not running", file=sys.stderr)
                     return 0
-                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
+                return _write(join_command(outcome.command) + "\n", args.output)
             if outcome.returncode is None:
                 # Nothing ran: an empty selection (a whole-suite fallback ran
                 # something even when no static target was selected).
@@ -945,14 +959,6 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if index.errors else 0
     except (ManifestError, GitError, EvidenceError, ValueError, OSError) as exc:
         print(f"diffcone: error: {exc}", file=sys.stderr)
-        return 2
-    except Exception:
-        # Exit 1 means "a plan, degraded": a crash must never look like one.
-        traceback.print_exc()
-        print(
-            "diffcone: internal error (a bug; please report it with the traceback above)",
-            file=sys.stderr,
-        )
         return 2
     parser.error("unknown command")  # pragma: no cover
     return 2  # pragma: no cover
