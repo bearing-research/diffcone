@@ -1266,7 +1266,9 @@ def without_cyclic_gc(func):
     millions of objects) while it allocates syntax trees and sets, so each
     collection walks the whole heap: on pandas the collector took two thirds
     of a warm plan (46-56 s with it, 18 s without). Planning makes almost
-    no reference cycles; they are collected once the collector resumes."""
+    no reference cycles; they are collected once the collector resumes.
+    Rendering a plan's report is the same: the indexes are still alive
+    (on pandas 4.7 s CPU with the collector, 0.9 s without)."""
 
     @functools.wraps(func)
     def inner(*args, **kwargs):

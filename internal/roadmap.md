@@ -104,7 +104,26 @@ real collection".)
 
 ## 4. Planner cost on large trees
 
-**Status.** On pandas (2026-10-06) a warm evidence plan took 46-56 s, and
+**Status (2026-10-09).** Measured again on pandas `f8a8d12` (1 544
+modules, 37 726 symbols, 26 396 targets; a fresh recording of 22 487 tests
+in about 5 minutes with `-n 6`), CPU seconds on a loaded machine. A warm
+static plan of `HEAD~1..HEAD` took 12.95 s, 4.7 s of it rendering the JSON
+report with the collector running over the still-live indexes; the report
+renderers now run with it suspended too (0.9 s), for 9.2-10.3 s and the
+same report byte for byte. What is left of it is flat: loading the two
+cached indexes 1.9 s; in `plan_from_indexes` (about 4.2 s) classification
+1.1 s, the union graph 0.7 s, freezing it and the file fallbacks 0.65 s,
+unresolved references 0.45 s, the search 0.35 s, nothing else above
+0.3 s. A warm evidence plan of a one-line body edit in the working tree
+takes 22-24 s: head discovery 7.5 s (a working tree or a new pull-request
+commit is never in the discovery cache) and two static plans (escalation,
+and ASV planned from the code) of about 6 s each. Against suites that run
+for tens of minutes this no longer gates a CI trial; the next step, if a
+trial shows it matters, is discovery of the head reusing the base's for
+unchanged files, then sharing the graph between the evidence plan's static
+passes. A cold plan (no cache) took 111 s wall.
+
+Earlier: on pandas (2026-10-06) a warm evidence plan took 46-56 s, and
 two thirds of it was Python's cyclic garbage collector walking the two
 indexes' heap while planning allocated (`cProfile` overstated discovery
 instead: its overhead grows with Python calls). `plan()` now runs with the

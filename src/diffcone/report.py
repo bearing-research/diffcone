@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from diffcone.model import SnapshotInfo
-from diffcone.planner import RULE_ALWAYS_RUN, Decision, Plan, Reason
+from diffcone.planner import RULE_ALWAYS_RUN, Decision, Plan, Reason, without_cyclic_gc
 
 # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
 # 3: analysis.evidence (null for a static plan) and the evidence reason rules
@@ -66,6 +66,7 @@ def snapshot_to_dict(info: SnapshotInfo) -> dict[str, Any]:
     }
 
 
+@without_cyclic_gc
 def to_dict(plan: Plan) -> dict[str, Any]:
     selected = [d for d in plan.decisions if d.selected]
     unselected = [d for d in plan.decisions if not d.selected]
@@ -168,6 +169,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
     }
 
 
+@without_cyclic_gc
 def to_json(plan: Plan, indent: int | None = 2) -> str:
     return json.dumps(to_dict(plan), indent=indent, sort_keys=False) + "\n"
 
@@ -181,6 +183,7 @@ def _format_path(reason: Reason) -> str:
     return " ".join(parts)
 
 
+@without_cyclic_gc
 def to_text(plan: Plan) -> str:
     lines: list[str] = []
     lines.append(f"diffcone plan: {plan.base.revision} -> {plan.head.revision}")
