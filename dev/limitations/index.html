@@ -895,6 +895,25 @@ A lookup on a standard-library or third-party
 module (<code>getattr(logging, name)</code>) is bounded unless your code may store
 something on that module, directly or by handing the module to other
 code; then any change can affect it.</dd>
+<dt><strong>Python programs a test starts.</strong></dt>
+<dd>A test that runs a script or module of your project in a new process
+(<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
+<code>python -c "import mypkg"</code>) depends on that script or module, and on
+what it imports, when the code names it in a string. When the program
+is built at run time (a path from a variable or the environment, <code>-c</code>
+code assembled from pieces, <code>*args</code>), the test is affected by any
+change. So is a test that runs a <code>.py</code> file no module name maps to
+(<code>scripts/gen-data.py</code>), which isn't analysed. Console scripts your
+project installs and files outside your source roots aren't seen;
+<a href="../guides/evidence/">execution evidence</a> follows the processes a test
+starts.</dd>
+<dt><strong>State changed in place reaches every reader.</strong></dt>
+<dd>Code that changes a module-level object, directly or by handing it to a
+function that changes it (<code>register(REGISTRY)</code>, <code>registry.add(x)</code>), is
+a dependency of every reader of that object. A change to a function
+also reaches the readers of whatever the functions it calls change in
+place. An object stored away and changed later under another name
+(<code>self.store = store</code>, then <code>self.store[k] = v</code>) isn't followed.</dd>
 <dt><strong>A file that doesn't parse selects everything.</strong></dt>
 <dd>Any file under your source roots that isn't valid Python 3 or isn't
 UTF-8 is an analysis error, even a test data file nothing imports.
