@@ -1580,6 +1580,13 @@ selection rules.</p>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
+<li>A pytest configuration file (<code>pytest.toml</code>, <code>pytest.ini</code>,
+  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>) or an <code>asv.conf.json</code> that
+  can't be parsed made discovery quietly use the defaults, so tests or
+  benchmarks the file points elsewhere were not targets. It now makes
+  discovery incomplete (exit code <code>3</code>).</li>
+<li><code>asv.conf.jsonc</code> is read like <code>asv.conf.json</code>, and trailing commas in
+  either are accepted, as asv allows.</li>
 <li>An autouse fixture imported into a conftest, a test module or a plugin
   (by name, through star imports at any depth, or as a module attribute)
   was not a dependency of the tests it applies to; nor was a fixture with
@@ -1612,6 +1619,8 @@ selection rules.</p>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Recordings must be made again: the store format changed.</li>
+<li>When <code>run</code> couldn't use a recording because only <code>-O</code> or <code>PYTHONPATH</code>
+  differed, it listed no differences; every difference is now named.</li>
 <li>A process started while a <code>conftest.py</code> is imported or in a hook was not
   credited to anything; what it runs now counts as part of that import or
   hook, and one the recording cannot follow makes every change plan from

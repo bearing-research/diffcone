@@ -1187,7 +1187,7 @@ target. Outside your source roots, these are:</p>
 <ul>
 <li>your runner configuration or build script: <code>pyproject.toml</code>, <code>tox.ini</code>,
   <code>setup.cfg</code>, <code>setup.py</code>, <code>noxfile.py</code>, <code>hatch.toml</code>, a <code>conftest.py</code>,
-  <code>asv.conf.json</code>;</li>
+  <code>asv.conf.json</code> or <code>asv.conf.jsonc</code>;</li>
 <li>your dependencies: a lock file such as <code>uv.lock</code>, any file or directory
   named for requirements, constraints or deps (<code>dev-requirements.txt</code>,
   <code>ci/deps/py311.yaml</code>), a conda <code>environment*.yml</code>, and installed package
@@ -1221,9 +1221,10 @@ that can see the override.</p>
 <p>Each test is a single target: diffcone selects or skips all of its
 parameter cases together.</p>
 <h2 id="asv">ASV<a class="headerlink" href="#asv" title="Permanent link">&para;</a></h2>
-<p><code>benchmark_dir</code> is read from <code>asv.conf.json</code> (the one nearest the root of
-the repository, up to three levels down), relative to the directory that
-holds it; it defaults to <code>benchmarks</code>. Benchmarks are the
+<p><code>benchmark_dir</code> is read from <code>asv.conf.json</code> or <code>asv.conf.jsonc</code> (the one
+nearest the root of the repository, up to three levels down; comments and
+trailing commas are allowed), relative to the directory that holds it; it
+defaults to <code>benchmarks</code>. Benchmarks are the
 functions and methods whose names start with <code>time_</code>, <code>timeraw_</code>, <code>mem_</code>,
 <code>peakmem_</code> or <code>track_</code> (or <code>Time</code>, <code>Timeraw</code>, <code>Mem</code>, <code>PeakMem</code>, <code>Track</code>
 followed by a capital or an underscore), including inherited ones and ones imported into a
@@ -1262,7 +1263,10 @@ it is always selected.</p>
   (<code>TestMachine = Machine.TestCase</code>);</li>
 <li>a plugin your configuration turns on that collects files of its own
   (pytest-typing's <code>typing_checkers</code>, <code>--nbval</code>, <code>--markdown-docs</code>);</li>
-<li>a test file that can't be parsed.</li>
+<li>a test file that can't be parsed;</li>
+<li>a runner configuration file that can't be parsed (<code>pytest.ini</code>,
+  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>, <code>asv.conf.json</code> and the
+  like): what it sets is unknown, so the defaults are used.</li>
 </ul>
 <p>Each one appears as a note in the report's <code>discovery</code> section, and the
 plan exits with code <code>3</code>: running only the selected tests could skip
@@ -1272,7 +1276,8 @@ tests your runner would collect. You can:</p>
 <li>list the missing tests in a <a href="../manifest/">manifest</a>; or</li>
 <li>use <a href="../../guides/evidence/">execution evidence</a>: a recording captures
   what pytest really collected, which settles these notes when nothing was
-  missed.</li>
+  missed (except a configuration file that can't be parsed: fix the
+  file).</li>
 </ul>
 
 
