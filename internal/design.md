@@ -1166,11 +1166,12 @@ collects from the rootdir; a file named there is collected whatever
 `python_files` says (it is an initial path). A test file pytest would
 collect outside the source roots is reported (`test_file_outside_roots`).
 Tests bound by assignment (`test_alias = test_orig`, a class attribute
-`test_x = _check`) to a function or class defined there are targets
-entered at that definition; bound to anything else visible as a name or
-attribute (`TestMachine = Machine.TestCase`) they are reported
-(`unmodelled_test_binding`); data (`test_data = [...]`, a call's result) is
-not a test. `f.__test__ = True` collects `f` whatever its name; a
+`test_x = _check`, under `if`/`try` too) to a function or class defined
+there are targets entered at that definition; bound to anything else
+visible as a name or attribute (`TestMachine = Machine.TestCase`) they are
+reported (`unmodelled_test_binding`); data (`test_data = [...]`, a call's
+result) is not a test. `f.__test__ = True` (under `if` too) collects `f`
+whatever its name; a
 unittest TestCase without `test*` methods runs `runTest`; an imported
 TestCase is collected whatever name it is bound to. A base named
 `*TestCase` that resolves nowhere is excused only when imported from a test
@@ -1205,7 +1206,13 @@ A test class imported into a module is collected there as if defined
 there, with everything it inherits, its class fixtures, marks, xunit
 setup and nested classes, its bases resolved in the module that defines it
 (urllib3's `test_pyopenssl.py` imports `TestHTTPS_TLSv1`, whose tests are
-nearly all on its bases).
+nearly all on its bases). An imported name is followed through aliases,
+`from` imports and star imports to its definition (under `if`/`try` too:
+one binding walker, `_bound_to`, serves fixtures, hooks and tests alike);
+a name the defining module binds to what the walk cannot follow (an
+attribute, or nothing it can find, as with `globals()[...] = f`) is
+reported (`unmodelled_test_binding`), never dropped; data and modules are
+no tests.
 
 A test module may also re-run another's tests with `from <module> import
 *`: the star binds what that module's `__all__` lists when it is one
@@ -1222,9 +1229,12 @@ These notes mean the target list may be short of what the runner collects
 `imported_test_out_of_scope`, `unparsed_file`, `test_file_outside_roots`,
 `unmodelled_test_binding`, `collected_not_target` (evidence) and `plugin_collects_files` (a conftest or
 plugin that binds `pytest_collect_file`, `pytest_collect_directory` or
-`pytest_pycollect_makeitem`, as a function or a value: scrapy's
-`docs/conftest.py` binds a Sybil instance and its `.rst` files become
-doctests) -- as opposed to the ones that only widen a
+`pytest_pycollect_makeitem`, as a function or a value, defined, imported
+from anywhere or star-imported: scrapy's `docs/conftest.py` binds a Sybil
+instance and its `.rst` files become doctests; and a conftest or plugin
+that star-imports from outside the source roots, which may bind one, as
+alembic's conftest star-imports SQLAlchemy's pytest plugin) -- as opposed
+to the ones that only widen a
 target's dependencies. The report carries `discovery_incomplete`, `plan`
 exits 3, and `run` refuses without `--allow-incomplete-discovery`: a
 degraded plan runs too much, an incomplete one would run too little, and
@@ -1290,7 +1300,13 @@ decorator injects one more argument, as `unittest.mock` patches every
 hypothesis `@given` (keyword strategies by name, positional strategies
 filling the last parameters), and names supplied by
 `@pytest.mark.parametrize` on the function, class, its bases, enclosing
-classes or module (`indirect` names stay requests; pytest reads a class's
+classes or module (`indirect` names stay requests: a literal list names
+them, and `indirect=` anything else but a literal false value, by keyword
+or as the third positional argument, a variable or `**kwargs` included,
+hands every argname to its fixture, only maybe unless it is `True`: such
+an argname that names no fixture is a parameter, since pytest fails a test
+whose indirect argname names none (pydantic's `parametrize('decorator1',
+**dataclass_decorators())` stays a parameter); pytest reads a class's
 marks along its MRO, so a base's marks apply to every subclass). Such a name is supplied throughout
 the test's fixture closure, not only to the test: a fixture that requests it
 (`set_engine(engine, ext)` under a class-level `parametrize("engine, ext")`)
@@ -1303,7 +1319,10 @@ requests. A mark may be stored in a variable and applied by name
 `pytestmark` entry that is a bare name or `module.name` is resolved to the
 mark expressions bound to it at module level, in the module that defines
 the decorated function or class, through aliases and `from` imports (only
-names used this way are followed). A mark built by a function call
+names used this way are followed). `pytestmark` (module or class) and a
+variable storing marks are read however the list is built: every
+assignment, `+`, `+=`, `.append`, `.extend`; a module's `pytestmark`
+imported by name is the imported module's. A mark built by a function call
 (`td.skip_if_no(...)`) is not followed. Resolution order is class fixtures (one level per class: pytest
 registers them from `dir(cls)`, so the level holds the class's own
 fixtures and those of its bases in any module in the source roots, the
@@ -1311,7 +1330,13 @@ nearest definition of an attribute hiding the others; a subclass fixture
 requesting its own name therefore reaches past the base's override to the
 next level), then enclosing classes, module fixtures, `conftest.py` from the test's
 directory outward, then plugin modules: those named in `pytest_plugins`
-(conftest declarations are global) and the project's own `pytest11` entry
+(conftest declarations are global; the list is read however it is built:
+a string pytest splits at commas, lists, tuples, `+`, `+=`, `.append`,
+`.extend`, `list(...)`, module-level names bound to those, or imported
+from another module; one that cannot be read, such as a call, a
+comprehension or a name from outside the roots, is reported
+(`unreadable_plugins`) and makes `plugin:<path>:pytest_plugins` an unknown
+dependency of every test) and the project's own `pytest11` entry
 points from `pyproject.toml` (`[project.entry-points]` or
 `[tool.poetry.plugins]`) or `setup.cfg`, and modules loaded with `-p name`
 in `addopts` (a pytest-internal name such as `pytester` resolves to
@@ -1635,15 +1660,28 @@ dependency.
 
 ASV matches a function on the attribute name it is bound to and names it
 after the function (`time_alias = _impl` is `<module>._impl`), or by a
-literal `benchmark_name` set on it (matched on its last part); the module's
-`setup`/`teardown` count when imported (`from .common import setup`); a
-`timeraw_` benchmark depends (`dynamic:`) on the in-scope modules its
-returned code imports, and on the unknown `timeraw:unanalysed` (always
-selected) when that code is not a literal string; `benchmark_dir` is
-normalised (`../benchmarks`); benchmark files under it but outside the
-source roots are reported (`test_file_outside_roots`).
+literal `benchmark_name` set on it (matched on its last part). asv_runner
+reads `benchmark_name` off the function, so it holds wherever the function
+is bound: imported from the module that sets it, aliased, or inherited
+from a base class whose body sets it. Two attributes ending up with one
+name are one benchmark with the dependencies of both. The module's
+`setup`/`teardown` count when imported (`from .common import setup`).
+Whether a benchmark is a `timeraw_` one is decided as asv_runner decides
+the type, by the attribute's name or the `benchmark_name`'s last part, not
+the function's own name; such a benchmark depends (`dynamic:`) on the
+in-scope modules its returned code imports, and on the unknown
+`timeraw:unanalysed` (always selected) when that code is not a literal
+string. `benchmark_dir` is normalised (`../benchmarks`); `"."` is the
+configuration's own directory (at the root: every file of the repository,
+as asv walks it); one outside the repository is a
+`test_file_outside_roots` note (incomplete), since the benchmarks there
+cannot be read; benchmark files under it but outside the source roots are
+reported (`test_file_outside_roots`). Definitions, imports and aliases
+under `if`/`try` count, as asv reads the module's namespace.
 
-Not modelled: `params` expansion.
+Not modelled: `params` expansion, a `benchmark_name` that is not a literal
+string, `skip_benchmark`, and pkgutil skipping a directory without
+`__init__.py` (its files count here: an over-collection).
 
 ### A name match cannot land on a method only the test runner can call
 

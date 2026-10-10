@@ -5,8 +5,15 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 
-from diffcone.indexer import DEF_NODES, FUNC_NODES, decode_source, iter_scope_statements
+from diffcone.indexer import (
+    DEF_NODES,
+    FUNC_NODES,
+    decode_source,
+    iter_scope_statements,
+    resolve_relative_module,
+)
 from diffcone.snapshot import Snapshot, child_modules, member_symbol_id, module_name_for
 
 
@@ -17,10 +24,20 @@ class ParsedModule:
     tree: ast.Module
     # Submodule names of this module (a package): see member_symbol_id.
     submodules: frozenset[str] = field(default_factory=frozenset)
+    # The source it was parsed from, to skip walking a tree for what its
+    # source never mentions.
+    source: bytes = b""
 
     def member_id(self, name: str) -> str:
         """The index identity of this module's top-level ``name``."""
         return member_symbol_id(self.module, name, self.submodules)
+
+    def import_source(self, node: ast.ImportFrom) -> str:
+        """The absolute module ``node`` imports from, a relative import
+        resolved against this module's package (the module itself when it
+        is a package's ``__init__``)."""
+        is_package = PurePosixPath(self.path).name == "__init__.py"
+        return resolve_relative_module(self.module, is_package, node.module, node.level)
 
 
 # Set on a module's function nodes when its source never mentions
@@ -61,7 +78,11 @@ def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModu
             continue
         if b"getfixturevalue" not in snapshot.files[path]:
             _mark_functions(tree.body)
-        parsed.append(ParsedModule(path, module, tree, children.get(module, frozenset())))
+        parsed.append(
+            ParsedModule(
+                path, module, tree, children.get(module, frozenset()), snapshot.files[path]
+            )
+        )
     return parsed, failed
 
 

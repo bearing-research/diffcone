@@ -88,7 +88,7 @@ def asv_run_count(repo: Path, command: str, snapshot, pattern: str) -> tuple[int
     the existing environment and throws the results away: this asks whether
     its real filter agrees with the replay above, not how fast anything is.
     ASV elides long names in that output, so the count is what it reports."""
-    conf_dir = PurePosixPath(read_asv_config(snapshot)["source"] or ".").parent
+    conf_dir = PurePosixPath(read_asv_config(snapshot)["path"] or ".").parent
     argv = shlex.split(command) + [
         "-m",
         "asv",
@@ -112,7 +112,7 @@ def asv_collected(repo: Path, command: str, snapshot) -> tuple[set[str], str, li
     # ASV discovers from the directory holding asv.conf.json, which is what
     # puts the benchmark package's parent on sys.path (networkx's benchmark
     # modules import ``benchmarks.utils``).
-    conf_dir = PurePosixPath(config["source"] or ".").parent
+    conf_dir = PurePosixPath(config["path"] or ".").parent
     bench_dir = PurePosixPath(config["benchmark_dir"])
     rel = bench_dir.relative_to(conf_dir) if conf_dir != PurePosixPath(".") else bench_dir
     with tempfile.TemporaryDirectory(prefix="diffcone-asv-") as tmp:

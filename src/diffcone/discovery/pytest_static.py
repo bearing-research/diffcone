@@ -22,7 +22,11 @@ Collected:
   name, with the defining symbol as entry; an imported class is collected
   as a class defined here (inheritance, class fixtures, marks, xunit
   setup, nested classes), its bases resolved in the module that defines
-  it, followed through re-exports to the module defining it; ``from
+  it, followed through re-exports to the module defining it (a
+  definition under ``if``/``try`` there counts); one the defining module
+  binds to what discovery cannot follow (an attribute, nothing it can
+  find) is reported (``unmodelled_test_binding``), while data (a literal,
+  a call's result, a module) is no test; ``from
   <module> import *`` brings in what the module's ``__all__`` lists, or
   every public name it binds, imports included (poetry's sync tests are the
   install tests, star-imported), or both and every string named when
@@ -37,10 +41,10 @@ Collected:
   reported too (``uncollected_test_class``): a plugin may collect it, as
   SQLAlchemy's testing plugin collects ``<Name>Test``;
 * tests bound by assignment (``test_alias = test_orig``, a class attribute
-  ``test_x = _check``) to a function or class defined there; one bound to
-  something not visible there (``TestMachine = Machine.TestCase``) is
-  reported (``unmodelled_test_binding``); a function marked
-  ``f.__test__ = True``; a unittest ``runTest`` when a TestCase has no
+  ``test_x = _check``, under ``if``/``try`` too) to a function or class
+  defined there; one bound to something not visible there (``TestMachine =
+  Machine.TestCase``) is reported (``unmodelled_test_binding``); a function
+  marked ``f.__test__ = True``; a unittest ``runTest`` when a TestCase has no
   ``test*`` method; an imported TestCase whatever its bound name;
 * initial paths as pytest decides them: the paths among its arguments
   (``.`` is the rootdir), else ``testpaths`` expanded as ``glob`` expands
@@ -55,6 +59,8 @@ Collected:
   False (any ``return`` other than True or None, or one bound by import)
   overrides them below its directory, so they are not applied there, and
   one in a plugin module is reported (``plugin_collects_files``);
+  ``collect_ignore`` and ``collect_ignore_glob`` are not applied, so what
+  they name stays a target (over-collected, never missed);
 * pytest's arguments, in its order: configuration from ``pytest.toml``,
   ``.pytest.toml``, ``pytest.ini``, ``.pytest.ini``, ``pyproject.toml``
   (``[tool.pytest.ini_options]`` or ``[tool.pytest]``), ``tox.ini`` or
@@ -93,7 +99,9 @@ Lifecycle dependencies attached to each test:
   written out or stored in a variable (``skip_pyarrow =
   pytest.mark.usefixtures("pyarrow_skip")`` then ``@skip_pyarrow``, also
   through aliases, ``from`` imports and ``module.name``, resolved in the
-  module that defines the decorated function or class),
+  module that defines the decorated function or class; ``pytestmark``
+  however the list is built: ``+``, ``+=``, ``.append``, ``.extend``,
+  or imported by name),
   and transitively by other fixtures, resolved in pytest's order: class
   (its own fixtures and those it inherits from bases in any module in the
   source roots, the nearest definition of an attribute hiding the rest, as
@@ -101,7 +109,14 @@ Lifecycle dependencies attached to each test:
   ``conftest.py`` outward, then
   ``pytest_plugins`` modules within the source roots (and the plugins those
   declare, as pytest registers them; when several plugins define a name,
-  each definition counts, since which registered last is not tracked); a
+  each definition counts, since which registered last is not tracked;
+  ``pytest_plugins`` is read however it is built: a string, which pytest
+  splits at commas, lists and tuples, ``+``, ``+=``, ``.append``,
+  ``.extend``, ``list(...)``, a module-level name bound to those, or
+  imported from another module; one that cannot be read, such as a call,
+  a comprehension or a name from outside the roots, is reported
+  (``unreadable_plugins``) and is an unknown dependency
+  (``plugin:<path>:pytest_plugins``) of every test); a
   fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
@@ -137,7 +152,14 @@ Lifecycle dependencies attached to each test:
   addopts, ``PYTEST_PLUGINS``, ``pytest11`` entry points of the project or
   of a sibling package in the repository), and those plugin modules
   themselves, whose import-time code runs for every test; a hook or setup
-  function bound by import or assignment counts as one defined there;
+  function bound by import (a star import included) or assignment counts
+  as one defined there (_add_bound), and the module-level
+  ``pytestmark``, ``pytest_plugins``, ``collect_ignore`` and
+  ``collect_ignore_glob`` variables of the test module and its conftests;
+  a collection hook (``COLLECT_HOOKS``) is reported
+  (``plugin_collects_files``) whatever it is bound to, one imported from
+  outside the roots included, and so is a star import from outside the
+  roots in a conftest or a plugin module, which may bind one;
   every ``pytest_*`` method of an in-scope class (a plugin object pytest
   may register: ``config.pluginmanager.register(Obj())``); and the code
   pytest runs while collecting (import-time code of conftests, test
@@ -168,11 +190,17 @@ named as an initial path whatever the globs say, become targets whose entry
 is not a symbol, so they are always selected.
 
 Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
-(``@pytest.fixture``, ``@pytest.fixture(name=...)``, ``@fixture``,
-``@pytest_asyncio.fixture``), or a call of one binding a module function
-(``x = pytest.fixture(scope=...)(f)``, ``x = pytest.fixture(f)``).
-Overriding follows nearest-scope-wins. Fixture parametrisation and
-``indirect`` parametrisation are not modelled. Fixtures from installed
+or ``yield_fixture`` (``@pytest.fixture``, ``@pytest.fixture(name=...)``,
+``@fixture``, ``@pytest_asyncio.fixture``), or a call of one binding a
+module function (``x = pytest.fixture(scope=...)(f)``, ``x =
+pytest.fixture(f)``). Overriding follows nearest-scope-wins. Fixture
+parametrisation (``params=``) is not modelled: a fixture is one dependency
+whatever its parameters. ``indirect`` parametrisation is: an argname handed
+to a fixture stays a request, and ``indirect=`` (by keyword, or as the
+third positional argument) that is anything but a literal false value or a
+literal list of names hands every argname over; unless it is ``True``,
+only maybe: such an argname that names no fixture anywhere is a parameter,
+since pytest fails a test whose indirect argname names none. Fixtures from installed
 plugins cannot be seen: a name found at no in-scope level that a well-known
 plugin provides (``WELL_KNOWN_PLUGIN_FIXTURES``: ``mocker`` from
 pytest-mock, ``httpx_mock`` from pytest-httpx, ...) or that was declared
@@ -189,12 +217,12 @@ import configparser
 import doctest
 import shlex
 import tomllib
-from collections import Counter
-from collections.abc import Callable, Iterable
+from collections import Counter, deque
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from fnmatch import fnmatch
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple, TypeVar
 
 from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
 from diffcone.discovery.common import (
@@ -213,7 +241,7 @@ from diffcone.discovery.session_state import (
     plugin_object_hooks,
     state_writing_roots,
 )
-from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
+from diffcone.indexer import DEF_NODES, iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import DYNAMIC_DEPENDENCY, IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
 from diffcone.snapshot import Snapshot, module_name_for
@@ -575,26 +603,6 @@ LIBRARY_NON_TESTS: dict[str, frozenset[str]] = {
     "aiohttp.test_utils": frozenset({"TestClient", "TestServer"}),
     "werkzeug.test": frozenset({"TestResponse"}),
 }
-
-
-def _framework_base(
-    name: str,
-    parts: list[str],
-    imports_here: dict[str, tuple[str, str]],
-    module_prefixes: dict[str, dict[str, str]],
-    owner: Any,
-) -> bool:
-    """Whether a base that resolves to nothing in scope is a test framework's
-    ``TestCase`` (imported from one of TESTCASE_FRAMEWORKS), not a class
-    discovery merely cannot see (``SharedTestCase = make_base()``)."""
-    if len(parts) > 1:
-        prefixes = module_prefixes.get(owner.module, {})
-        source = prefixes.get(parts[0], parts[0])
-    elif name in imports_here:
-        source = imports_here[name][0]
-    else:
-        return False
-    return source.split(".")[0] in TESTCASE_FRAMEWORKS
 
 
 def _assigned(stmt: ast.stmt) -> tuple[str, ast.expr] | None:
@@ -1238,17 +1246,6 @@ NO_TEST_BASES = frozenset(
 )
 
 
-def _star_names(tree: ast.Module) -> list[str]:
-    """What ``from <module> import *`` binds: ``__all__`` when it is set once
-    to a literal list of strings; with no ``__all__``, every name the module
-    binds at top level (definitions, imports and assignments alike) that does
-    not start with an underscore; with an ``__all__`` built otherwise
-    (``base.__all__ + [...]``, ``__all__ += [...]``, ``__all__.extend``),
-    both and every string it names: a superset. The names the module itself
-    star-imports are not here (_star_exports adds them)."""
-    return _star_names_exact(tree)[0]
-
-
 def _star_exports(facts: ModuleFacts, module_facts, seen: set[str] | None = None) -> list[str]:
     """What ``from <facts' module> import *`` binds, a module's own star
     imports included: without a literal ``__all__``, the public names it
@@ -1276,7 +1273,14 @@ def _star_exports(facts: ModuleFacts, module_facts, seen: set[str] | None = None
 
 
 def _star_names_exact(tree: ast.Module) -> tuple[list[str], bool]:
-    """_star_names, and whether it is exactly a literal ``__all__``."""
+    """What ``from <module> import *`` binds, and whether that is exactly a
+    literal ``__all__``: ``__all__`` when it is set once to a literal list of
+    strings; with no ``__all__``, every name the module binds at top level
+    (definitions, imports and assignments alike) that does not start with an
+    underscore; with an ``__all__`` built otherwise (``base.__all__ +
+    [...]``, ``__all__ += [...]``, ``__all__.extend``), both and every string
+    it names: a superset. The names the module itself star-imports are not
+    here (_star_exports adds them)."""
     literal: list[str] | None = None
     dynamic = False
     strings: list[str] = []
@@ -1321,13 +1325,6 @@ def _star_names_exact(tree: ast.Module) -> tuple[list[str], bool]:
     return list(dict.fromkeys([*(literal or []), *strings, *public])), False
 
 
-def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
-    """Absolute module of a ``from ... import`` statement in ``parsed``."""
-    return resolve_relative_module(
-        parsed.module, parsed.path.endswith("__init__.py"), node.module, node.level
-    )
-
-
 def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
     return _parse_ini_section(raw, name)[0]
 
@@ -1348,7 +1345,9 @@ def _parse_ini_section(raw: bytes, name: str) -> tuple[dict[str, Any] | None, st
 # Hooks that turn files or objects into tests by a plugin's own rules, so the
 # target list cannot be the suite (scrapy's docs/conftest.py binds
 # ``pytest_collect_file`` to a Sybil instance). ``pytest_generate_tests`` is
-# not one: it multiplies a test function that is already a target.
+# not one: it multiplies a test function that is already a target. (Not to be
+# confused with session_state.COLLECTION_HOOKS, every path-scoped hook pytest
+# calls while collecting, whose import-time effects reach every test.)
 COLLECT_HOOKS = frozenset(
     {"pytest_collect_file", "pytest_collect_directory", "pytest_pycollect_makeitem"}
 )
@@ -1367,7 +1366,9 @@ def _matches_python_file(path: str, pattern: str) -> bool:
 
 
 # Module-level names pytest reads from a test module or conftest; when they are
-# variable symbols, every test in the module depends on them.
+# variable symbols, every test in the module, or under the conftest, depends
+# on them. (``collect_ignore`` and ``collect_ignore_glob`` are not applied:
+# the files they name stay targets, which only over-collects.)
 MODULE_LEVEL_PYTEST_NAMES = (
     "pytestmark",
     "pytest_plugins",
@@ -1405,11 +1406,17 @@ class ModuleFacts:
     # The hooks among them pytest calls for the whole session, not through a
     # node's path (see PATH_SCOPED_HOOKS).
     session_hooks: list[str] = field(default_factory=list)
-    # Collection hooks this module binds (as a def or an assignment): they
-    # make tests out of files or objects these rules do not model.
+    # Collection hooks this module binds (defined, assigned or imported,
+    # whatever they are bound to): they make tests out of files or objects
+    # these rules do not model.
     collect_hooks: list[str] = field(default_factory=list)
+    # The plugin modules it names (``pytest_plugins``, also bound by import,
+    # and ``import_plugin``), and what in ``pytest_plugins`` could not be
+    # read (empty when it all reads): _declared_plugins. ``declared_plugins``
+    # is what its own ``pytest_plugins`` statements name, None without one.
     plugins: list[str] = field(default_factory=list)
-    usefixtures: tuple[str, ...] = ()
+    unreadable_plugins: str = ""
+    declared_plugins: list[str] | None = None
     setup_functions: list[str] = field(default_factory=list)
     # Attribute name -> (fixture, whether it names itself): what pytest finds
     # bound in the module's namespace. Fixtures defined here start it; names
@@ -1420,25 +1427,38 @@ class ModuleFacts:
     # ("star", "", module, ""). ``name = pkg.mod.attr`` through an imported
     # module is an "import" of ``attr`` from ``pkg.mod``.
     bindings: list[tuple[str, str, str, str]] = field(default_factory=list)
+    # Module-level names bound to what ``bindings`` cannot follow: the
+    # value's source when it may be a function or class (an attribute, a
+    # subscript, a name bound with others), "" when it is data (a literal,
+    # a call's result, a module).
+    opaque: dict[str, str] = field(default_factory=dict)
     # What ``from <module> import *`` binds (_star_exports), once computed.
     star_exports: list[str] | None = None
     # Whether the module binds a ``pytest_ignore_collect`` that may return
     # False, which collects what ``--ignore``/``norecursedirs`` would skip.
     unignores: bool = False
+    # Modules outside the source roots it star-imports (_link_bound_hooks):
+    # what they bind, a collection hook among it, is unknown.
+    unknown_stars: list[str] = field(default_factory=list)
+
+
+# The decorators that make a fixture (``pytest.fixture``, pytest-asyncio's
+# ``fixture``, the deprecated ``yield_fixture``), by the dotted name's end.
+FIXTURE_DECORATORS = ("fixture", "yield_fixture")
+
+
+def _explicit_name(call: ast.Call | None) -> str | None:
+    """A fixture decorator's literal ``name=``."""
+    node = keyword_value(call, "name")
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
 def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str | None, bool]:
     """(is_fixture, explicit name, autouse)."""
     for dec in node.decorator_list:
         parts, call = decorator_chain(dec)
-        if parts and parts[-1] in ("fixture", "yield_fixture"):
-            name_node = keyword_value(call, "name")
-            name = (
-                name_node.value
-                if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str)
-                else None
-            )
-            return True, name, _autouse(keyword_value(call, "autouse"))
+        if parts and parts[-1] in FIXTURE_DECORATORS:
+            return True, _explicit_name(call), _autouse(keyword_value(call, "autouse"))
     return False, None, False
 
 
@@ -1455,12 +1475,17 @@ class Marks:
     usefixtures: tuple[str, ...] = ()
     parametrized: frozenset[str] = frozenset()  # argnames supplied by parametrize
     indirect: frozenset[str] = frozenset()  # parametrized names that are still fixtures
+    # Of those, the ones only maybe handed to a fixture (``indirect=FLAG``):
+    # one that names no fixture anywhere is a parameter (pytest would fail
+    # the test otherwise), not an unknown fixture.
+    uncertain: frozenset[str] = frozenset()
 
     def __add__(self, other: Marks) -> Marks:
         return Marks(
             self.usefixtures + other.usefixtures,
             self.parametrized | other.parametrized,
             self.indirect | other.indirect,
+            self.uncertain | other.uncertain,
         )
 
     @property
@@ -1489,6 +1514,7 @@ def _marks_from_expressions(exprs: list[ast.expr], expand: MarkExpander | None =
     use: list[str] = []
     parametrized: set[str] = set()
     indirect: set[str] = set()
+    uncertain: set[str] = set()
     if expand is not None:
         exprs = [e for x in exprs for e in (expand(x) or [x])]
     for expr in exprs:
@@ -1500,24 +1526,101 @@ def _marks_from_expressions(exprs: list[ast.expr], expand: MarkExpander | None =
         elif parts[-1] == "parametrize" and call.args:
             names = _split_argnames(call.args[0])
             parametrized.update(names)
-            ind = keyword_value(call, "indirect")
-            if isinstance(ind, ast.Constant) and ind.value is True:
-                indirect.update(names)
-            elif isinstance(ind, (ast.List, ast.Tuple)):
-                indirect.update(string_literals(list(ind.elts)))
-    return Marks(tuple(use), frozenset(parametrized), frozenset(indirect))
+            handed, maybe = _indirect_names(call, names)
+            indirect.update(handed)
+            uncertain.update(handed if maybe else ())
+    return Marks(tuple(use), frozenset(parametrized), frozenset(indirect), frozenset(uncertain))
+
+
+def _indirect_names(call: ast.Call, names: list[str]) -> tuple[list[str], bool]:
+    """The argnames a ``parametrize`` call hands to fixtures (``indirect=``,
+    by keyword or as the third positional argument), and whether that is
+    only maybe: none for no value or a literal false one, those a literal
+    list names, every argname for ``True``, and every argname maybe for
+    anything else (a variable, a list built otherwise, a value that may
+    come through ``*args`` or ``**kwargs``), since a name taken for a
+    fixture is followed and one taken for a parameter is pruned."""
+    node = keyword_value(call, "indirect")
+    unknown = any(k.arg is None for k in call.keywords) or any(
+        isinstance(a, ast.Starred) for a in call.args[:3]
+    )
+    if node is None and len(call.args) > 2:
+        node = call.args[2]
+    if node is None:
+        return (list(names), True) if unknown else ([], False)
+    if isinstance(node, ast.Constant) and not node.value:
+        return [], False
+    if isinstance(node, ast.Constant) and node.value is True:
+        return list(names), False
+    if isinstance(node, (ast.List, ast.Tuple)) and all(
+        isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts
+    ):
+        return string_literals(list(node.elts)), False
+    return list(names), True
+
+
+def _mark_entries(value: ast.expr) -> list[ast.expr]:
+    """The mark expressions a ``pytestmark`` value, or a variable storing
+    marks, holds: the elements of a list or tuple, both sides of ``+``, or
+    the value itself. ``pytestmark`` named in its own value (``pytestmark +
+    [...]``) adds nothing."""
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return [e for elt in value.elts for e in _mark_entries(elt)]
+    if isinstance(value, ast.Starred):
+        return _mark_entries(value.value)
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _mark_entries(value.left) + _mark_entries(value.right)
+    if isinstance(value, ast.Name) and value.id == "pytestmark":
+        return []
+    return [value]
+
+
+# The list methods that add to a list, with the position of the first
+# argument that is an element (``insert(i, x)``).
+_LIST_ADDERS = {"append": 0, "extend": 0, "insert": 1, "__iadd__": 0}
+
+
+def _scope_values(body: list[ast.stmt], name: str) -> list[ast.expr]:
+    """Every expression a scope's statements put into the list ``name``:
+    assigned (``name = [...]``, also to an item or a slice), added (``name
+    += [...]``) or passed to a list method that adds (``name.append(x)``,
+    ``.extend``, ``.insert``). Unpacking into ``name`` (``name, x = ...``)
+    yields the whole value."""
+    values: list[ast.expr] = []
+
+    def named(target: ast.expr) -> bool:
+        if isinstance(target, ast.Subscript):
+            target = target.value
+        if isinstance(target, (ast.Tuple, ast.List)):
+            return any(named(t) for t in target.elts)
+        if isinstance(target, ast.Starred):
+            return named(target.value)
+        return isinstance(target, ast.Name) and target.id == name
+
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, ast.Assign):
+            if any(named(t) for t in stmt.targets):
+                values.append(stmt.value)
+        elif isinstance(stmt, (ast.AnnAssign, ast.AugAssign)):
+            if stmt.value is not None and named(stmt.target):
+                values.append(stmt.value)
+        elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            func = stmt.value.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == name
+                and func.attr in _LIST_ADDERS
+            ):
+                values += stmt.value.args[_LIST_ADDERS[func.attr] :]
+    return values
 
 
 def _marks_from_pytestmark(body: list[ast.stmt], expand: MarkExpander | None = None) -> Marks:
-    exprs: list[ast.expr] = []
-    for name, value in scope_assignments(body):
-        if name == "pytestmark":
-            exprs += list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
+    """The marks a module or class body applies through ``pytestmark``,
+    however it builds the list (_scope_values: every addition counts)."""
+    exprs = [e for value in _scope_values(body, "pytestmark") for e in _mark_entries(value)]
     return _marks_from_expressions(exprs, expand)
-
-
-def _usefixtures_from_pytestmark(body: list[ast.stmt]) -> tuple[str, ...]:
-    return _marks_from_pytestmark(body).usefixtures
 
 
 def _injected_patch_count(decorators: list[ast.expr]) -> int:
@@ -1538,13 +1641,15 @@ def _injected_patch_count(decorators: list[ast.expr]) -> int:
     return count
 
 
-def _imported_plugins(tree: ast.Module) -> list[str]:
+def _imported_plugins(parsed: ParsedModule) -> list[str]:
     """Modules registered by name at run time anywhere in the module
     (``config.pluginmanager.import_plugin("tests.envplug")`` in a hook):
     pytest registers them for the session as it does ``pytest_plugins``. A
     name that is not a literal is not followed."""
     found: list[str] = []
-    for node in ast.walk(tree):
+    if b"import_plugin" not in parsed.source:
+        return found  # the tree cannot hold the call
+    for node in ast.walk(parsed.tree):
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -1558,11 +1663,50 @@ def _imported_plugins(tree: ast.Module) -> list[str]:
     return found
 
 
-def _plugins_from_body(body: list[ast.stmt]) -> list[str]:
+def _declared_plugins(body: list[ast.stmt]) -> tuple[list[str], str]:
+    """The modules a module's ``pytest_plugins`` names, however it builds
+    the list (_scope_values: assigned, ``+=``, ``.append``, ``.extend``):
+    literal strings (a string is a comma-separated list, as pytest splits
+    it), lists, tuples, ``+``, ``list(...)`` and module-level names bound
+    to those (every binding of a name counts). Also the first part that
+    cannot be read that way (a call, a comprehension, an imported name), so
+    the caller can treat the list as unknown; empty when it all reads."""
+    assigned: dict[str, list[ast.expr]] = {}
     for name, value in scope_assignments(body):
-        if name == "pytest_plugins":
-            return string_literals([value])
-    return []
+        assigned.setdefault(name, []).append(value)
+    found: list[str] = []
+    unreadable: list[str] = []
+
+    def read(expr: ast.expr, depth: int = 0) -> None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            found.extend(p.strip() for p in expr.value.split(",") if p.strip())
+        elif isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            for elt in expr.elts:
+                read(elt, depth)
+        elif isinstance(expr, ast.Starred):
+            read(expr.value, depth)
+        elif isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            read(expr.left, depth)
+            read(expr.right, depth)
+        elif isinstance(expr, ast.Name) and expr.id == "pytest_plugins":
+            pass  # what it held already
+        elif isinstance(expr, ast.Name) and expr.id in assigned and depth < 8:
+            for value in assigned[expr.id]:
+                read(value, depth + 1)
+        elif (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id in ("list", "tuple")
+            and len(expr.args) == 1
+            and not expr.keywords
+        ):
+            read(expr.args[0], depth)
+        else:
+            unreadable.append(ast.unparse(expr))
+
+    for value in _scope_values(body, "pytest_plugins"):
+        read(value)
+    return list(dict.fromkeys(found)), (unreadable[0] if unreadable else "")
 
 
 def _fixture_requests(
@@ -1648,10 +1792,36 @@ def _given_arguments(decorators: list[ast.expr]) -> tuple[int, set[str]]:
     return positional, keywords
 
 
+def _add_bound(
+    facts: ModuleFacts, name: str, symbol: str | None, defined_here: bool = False
+) -> None:
+    """Register what the module's namespace binds to ``name``, as pytest
+    finds it there: a ``pytest_*`` hook or an xunit setup function, defined
+    here (``defined_here``) or bound by assignment, import or star import.
+    ``symbol`` is the function, None when it is not one in the source roots
+    (a value, or a function from outside them). A collection hook counts
+    whatever it is bound to; a ``pytest_ignore_collect`` whose code is not
+    here may return False."""
+    if name in COLLECT_HOOKS and name not in facts.collect_hooks:
+        facts.collect_hooks.append(name)
+    if name == "pytest_ignore_collect" and not defined_here:
+        facts.unignores = True
+    if symbol is None:
+        return
+    if name in MODULE_SETUP_FUNCTIONS:
+        facts.setup_functions.append(symbol)
+    elif name.startswith("pytest_"):
+        facts.hooks.append(symbol)
+        if name not in PATH_SCOPED_HOOKS:
+            facts.session_hooks.append(symbol)
+
+
 def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
     facts = ModuleFacts(parsed=parsed)
     body = parsed.tree.body
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
     for func in scope_functions(body):
+        functions[func.name] = func
         is_fixture, explicit, autouse = _is_fixture(func)
         symbol = parsed.member_id(func.name)
         if is_fixture:
@@ -1659,47 +1829,35 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             fixture = Fixture(name, symbol, autouse, _fixture_requests(func, False))
             facts.fixtures[name] = fixture
             facts.fixture_attrs[func.name] = (fixture, explicit is not None)
-        elif func.name.startswith("pytest_"):
-            facts.hooks.append(symbol)
-            if func.name not in PATH_SCOPED_HOOKS:
-                facts.session_hooks.append(symbol)
-            if func.name in COLLECT_HOOKS:
-                facts.collect_hooks.append(func.name)
-        elif func.name in MODULE_SETUP_FUNCTIONS:
-            facts.setup_functions.append(symbol)
-    # ``pytest_collect_file = Sybil(...).pytest()``: a collection hook bound
-    # to a value rather than defined as a function.
-    for name, _ in scope_assignments(body):
-        if name in COLLECT_HOOKS and name not in facts.collect_hooks:
-            facts.collect_hooks.append(name)
-    # ``mocker = pytest.fixture(scope="function")(_mocker)``: a fixture made by
-    # calling the decorator on an in-module function and binding the result;
-    # ``x = pytest.fixture(f, autouse=True)`` is the same in one call.
-    functions = {f.name: f for f in scope_functions(body)}
+        elif func.name.startswith("pytest_") or func.name in MODULE_SETUP_FUNCTIONS:
+            _add_bound(facts, func.name, symbol, defined_here=True)
     for name, value in scope_assignments(body):
+        # ``pytest_collect_file = Sybil(...).pytest()``: a collection hook
+        # bound to a value rather than defined as a function.
+        if name in COLLECT_HOOKS:
+            _add_bound(facts, name, None)
+            continue
+        # ``mocker = pytest.fixture(scope="function")(_mocker)``: a fixture
+        # made by calling the decorator on an in-module function and binding
+        # the result; ``x = pytest.fixture(f, autouse=True)`` is the same in
+        # one call.
         if not isinstance(value, ast.Call):
             continue
         parts, call = decorator_chain(value.func if isinstance(value.func, ast.Call) else value)
-        if not parts or parts[-1] not in ("fixture", "yield_fixture") or len(value.args) != 1:
+        if not parts or parts[-1] not in FIXTURE_DECORATORS or len(value.args) != 1:
             continue
         target = value.args[0]
         if not (isinstance(target, ast.Name) and target.id in functions):
             continue
         func = functions[target.id]
-        explicit = keyword_value(call, "name")
-        explicit_name = (
-            explicit.value
-            if isinstance(explicit, ast.Constant) and isinstance(explicit.value, str)
-            else None
-        )
-        names_itself = explicit_name is not None
+        explicit_name = _explicit_name(call)
         fixture_name = explicit_name or name
         autouse = _autouse(keyword_value(call, "autouse"))
         fixture = Fixture(
             fixture_name, parsed.member_id(func.name), autouse, _fixture_requests(func, False)
         )
         facts.fixtures[fixture_name] = fixture
-        facts.fixture_attrs[name] = (fixture, names_itself)
+        facts.fixture_attrs[name] = (fixture, explicit_name is not None)
     # Names bound to a fixture defined elsewhere (``box2 = box``, ``from
     # pkg.conftest import engine``, ``auto = pkg.fx.auto``): pytest registers
     # a fixture under every name the module binds it to (_link_fixtures
@@ -1712,8 +1870,9 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
                     modules[alias.asname] = alias.name
                 else:
                     modules[alias.name.split(".")[0]] = alias.name.split(".")[0]
+                facts.opaque[alias.asname or alias.name.split(".")[0]] = ""
         elif isinstance(stmt, ast.ImportFrom):
-            source = _absolute_module(parsed, stmt)
+            source = parsed.import_source(stmt)
             for alias in stmt.names:
                 if alias.name == "*":
                     facts.bindings.append(("star", "", source, ""))
@@ -1729,14 +1888,26 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             and isinstance(stmt.value, ast.Name)
         ):
             facts.bindings.append(("alias", stmt.targets[0].id, "", stmt.value.id))
-        elif (assigned := _assigned(stmt)) is not None and isinstance(assigned[1], ast.Attribute):
-            parts, call = decorator_chain(assigned[1])
-            if call is None and len(parts) >= 2 and parts[0] in modules:
-                source = ".".join([modules[parts[0]], *parts[1:-1]])
-                facts.bindings.append(("import", assigned[0], source, parts[-1]))
-    facts.plugins = _plugins_from_body(body) + _imported_plugins(parsed.tree)
-    facts.usefixtures = _usefixtures_from_pytestmark(body)
-    facts.unignores = _may_unignore(body)
+        elif (
+            (assigned := _assigned(stmt)) is not None
+            and isinstance(assigned[1], ast.Attribute)
+            and len(parts := decorator_chain(assigned[1])[0]) >= 2
+            and parts[0] in modules
+        ):
+            source = ".".join([modules[parts[0]], *parts[1:-1]])
+            facts.bindings.append(("import", assigned[0], source, parts[-1]))
+        elif isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+            value = stmt.value
+            may_be_code = isinstance(value, (ast.Attribute, ast.Subscript, ast.Name))
+            text = ast.unparse(value) if may_be_code else ""
+            for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
+                if isinstance(target, ast.Name):
+                    facts.opaque[target.id] = text
+    declared, facts.unreadable_plugins = _declared_plugins(body)
+    if _scope_values(body, "pytest_plugins"):
+        facts.declared_plugins = declared
+    facts.plugins = declared + _imported_plugins(parsed)
+    facts.unignores = facts.unignores or _may_unignore(body)
     return facts
 
 
@@ -1809,7 +1980,7 @@ class _Resolver:
         options: DiscoveryOptions,
         unresolved: Counter[str],
         assumed: Counter[str],
-        usefixtures: tuple[str, ...] = (),
+        usefixtures: tuple[str, ...],
     ) -> None:
         self.module = module
         self.conftests = conftests
@@ -1838,23 +2009,28 @@ class _Resolver:
         class_levels: list[dict[str, Fixture]],
         requests: list[str],
         supplied: frozenset[str] = frozenset(),
+        uncertain: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Fixtures the test's closure reaches. A ``supplied`` name (directly
         parametrized on the test) is a parameter at every depth, as pytest
-        replaces the fixture of that name and prunes what it requests."""
+        replaces the fixture of that name and prunes what it requests. An
+        ``uncertain`` name (maybe handed to a fixture: ``indirect=FLAG``) is
+        followed when a fixture of that name is found, and is a parameter
+        when none is, since pytest fails a test whose indirect argname names
+        no fixture."""
         levels = self.chain(class_levels)
         first_plugin = len(levels) - len(self.plugins)
         deps: list[str] = []
         seen: set[tuple[str, int]] = set()
         # (name, first level to search): a fixture that requests its own name
         # (``def db(db)``) refers to the next definition outward.
-        queue: list[tuple[str, int]] = [(name, 0) for name in [*self.usefixtures, *requests]]
+        queue: deque[tuple[str, int]] = deque((name, 0) for name in [*self.usefixtures, *requests])
         for level in levels:
             for fixture in level.values():
                 if fixture.autouse or self.plugin_requested(fixture.name):
                     queue.append((fixture.name, 0))
         while queue:
-            name, start = queue.pop(0)
+            name, start = queue.popleft()
             if (name, start) in seen or name in supplied:
                 continue
             seen.add((name, start))
@@ -1888,6 +2064,8 @@ class _Resolver:
                 self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES
             ):
                 self.assumed[name] += 1
+            elif name in uncertain:
+                continue  # maybe indirect, and no fixture: a parameter
             else:
                 self.unresolved[name] += 1
                 deps.append(f"fixture:{name}")
@@ -1951,134 +2129,165 @@ def _requested_names(trees: Iterable[ast.Module]) -> set[str]:
     return names
 
 
-def _fixture_bound_to(
-    module: str, attr: str, module_facts, seen: set[tuple[str, str]]
-) -> tuple[Fixture, bool] | None:
+# What a binding walk finds in the module that binds the name itself.
+_Found = TypeVar("_Found")
+
+
+def _bound_to(
+    module: str,
+    attr: str,
+    module_facts: Callable[[str], ModuleFacts | None],
+    local: Callable[[ModuleFacts, str], _Found | None],
+    outside: Callable[[str], _Found | None] = lambda _: None,
+    fallback: Callable[[ModuleFacts, str], _Found | None] = lambda _f, _a: None,
+    past_stars: bool = False,
+    seen: set[tuple[str, str]] | None = None,
+) -> _Found | None:
+    """What ``module``'s namespace binds to ``attr``, following aliases,
+    ``from`` imports and star imports at any depth, the last binding of a
+    name winning: ``local(facts, attr)`` in a module (what it defines wins
+    over any binding), else the module its binding leads to, else
+    ``fallback(facts, attr)`` (what a binding the walk cannot follow holds).
+    A module outside the source roots gives ``outside(module)``; a star
+    import from one may bind anything, so it counts when ``outside`` gives
+    something. A star import whose module offers ``attr`` but binds nothing
+    ``local`` recognises ends the walk, unless ``past_stars``: then it gives
+    way to an earlier binding (what a star import offers can be a superset,
+    _star_exports; a walk for tests may over-collect, one for fixtures must
+    not, since a fixture found where there is none hides the real one)."""
+    seen = set() if seen is None else seen
+    if (module, attr) in seen:
+        return None
+    seen.add((module, attr))
+    facts = module_facts(module)
+    if facts is None:
+        return outside(module)
+    found = local(facts, attr)
+    if found is not None:
+        return found
+    for kind, bound, source, name in reversed(facts.bindings):
+        if kind == "alias" or kind == "import":
+            if bound == attr:
+                target = module if kind == "alias" else source
+                return _bound_to(
+                    target, name, module_facts, local, outside, fallback, past_stars, seen
+                )
+            continue
+        origin = module_facts(source)
+        if origin is None:
+            found = outside(source)
+        elif attr in _star_exports(origin, module_facts):
+            found = _bound_to(
+                source, attr, module_facts, local, outside, fallback, past_stars, seen
+            )
+            if found is None and not past_stars:
+                return None
+        if found is not None:
+            return found
+    return fallback(facts, attr)
+
+
+def _fixture_bound_to(module: str, attr: str, module_facts) -> tuple[Fixture, bool] | None:
     """The fixture ``module``'s namespace binds to ``attr``, with whether it
-    names itself, following aliases, ``from`` imports and star imports (the
-    last binding of a name wins; a fixture defined in the module wins over
-    any binding)."""
-    if (module, attr) in seen:
-        return None
-    seen.add((module, attr))
-    facts = module_facts(module)
-    if facts is None:
-        return None
-    if attr in facts.fixture_attrs:
-        return facts.fixture_attrs[attr]
-    for kind, bound, source, name in reversed(facts.bindings):
-        if kind == "star":
-            origin = module_facts(source)
-            if origin is not None and attr in _star_exports(origin, module_facts):
-                return _fixture_bound_to(source, attr, module_facts, seen)
-        elif bound == attr:
-            return _fixture_bound_to(
-                module if kind == "alias" else source, name, module_facts, seen
-            )
-    return None
+    names itself (_bound_to)."""
+    return _bound_to(module, attr, module_facts, lambda facts, a: facts.fixture_attrs.get(a))
 
 
-def _function_bound_to(
-    module: str, attr: str, module_facts, seen: set[tuple[str, str]]
-) -> str | None:
-    """The function ``module``'s namespace binds to ``attr``, following
-    aliases, ``from`` imports and star imports as _fixture_bound_to does;
+def _function_bound_to(module: str, attr: str, module_facts) -> str | None:
+    """The function ``module``'s namespace binds to ``attr`` (_bound_to);
     None when it is not a function defined in the source roots."""
-    if (module, attr) in seen:
+
+    def local(facts: ModuleFacts, name: str) -> str | None:
+        if any(f.name == name for f in scope_functions(facts.parsed.tree.body)):
+            return facts.parsed.member_id(name)
         return None
-    seen.add((module, attr))
-    facts = module_facts(module)
-    if facts is None:
-        return None
-    if any(f.name == attr for f in scope_functions(facts.parsed.tree.body)):
-        return facts.parsed.member_id(attr)
-    for kind, bound, source, name in reversed(facts.bindings):
-        if kind == "star":
-            origin = module_facts(source)
-            if origin is not None and attr in _star_exports(origin, module_facts):
-                return _function_bound_to(source, attr, module_facts, seen)
-        elif bound == attr:
-            return _function_bound_to(
-                module if kind == "alias" else source, name, module_facts, seen
-            )
-    return None
+
+    return _bound_to(module, attr, module_facts, local)
+
+
+@dataclass(frozen=True)
+class _Unfollowed:
+    """A name bound to a value a binding walk cannot follow: ``value`` is
+    its source when it may be a test (an attribute, a subscript), empty
+    when it is data (a literal, a call's result, a module)."""
+
+    value: str
 
 
 def _definition_bound_to(
-    module: str, attr: str, module_facts, seen: set[tuple[str, str]]
-) -> tuple[ModuleFacts, ast.AST] | str | None:
-    """What ``module``'s namespace binds to ``attr``, following aliases,
-    ``from`` imports and star imports: the defining module's facts and the
-    ``def``/``class`` node when it is defined in the source roots; the
-    module outside the roots it comes from (a string); or None (bound to
-    something else, or not bound)."""
-    if (module, attr) in seen:
-        return None
-    seen.add((module, attr))
-    facts = module_facts(module)
-    if facts is None:
-        return module
-    node = next(
-        (n for n in facts.parsed.tree.body if isinstance(n, DEF_NODES) and n.name == attr), None
-    )
-    if node is not None:
-        return facts, node
-    for kind, bound, source, name in reversed(facts.bindings):
-        if kind == "star":
-            origin = module_facts(source)
-            if origin is None or attr in _star_exports(origin, module_facts):
-                found = _definition_bound_to(source, attr, module_facts, seen)
-                if found is not None:
-                    return found
-        elif bound == attr:
-            return _definition_bound_to(
-                module if kind == "alias" else source, name, module_facts, seen
-            )
-    return None
+    module: str, attr: str, module_facts
+) -> tuple[ModuleFacts, ast.AST] | str | _Unfollowed | None:
+    """What ``module``'s namespace binds to ``attr`` (_bound_to): the
+    defining module's facts and the ``def``/``class`` node when it is
+    defined in the source roots (under ``if``/``try`` too); the module
+    outside the roots it comes from (a string); an _Unfollowed value; or
+    None when no binding of it is found."""
+
+    def local(facts: ModuleFacts, name: str) -> tuple[ModuleFacts, ast.AST] | None:
+        node = None
+        for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if isinstance(stmt, DEF_NODES) and stmt.name == name:
+                node = stmt  # the last definition, as at run time
+        return (facts, node) if node is not None else None
+
+    def fallback(facts: ModuleFacts, name: str) -> _Unfollowed | None:
+        value = facts.opaque.get(name)
+        if value is None and name in facts.parsed.submodules:
+            value = ""  # ``from pkg import submodule``: a module
+        return _Unfollowed(value) if value is not None else None
+
+    return _bound_to(module, attr, module_facts, local, lambda m: m, fallback, past_stars=True)
 
 
 def _link_bound_hooks(facts: ModuleFacts, module_facts) -> None:
     """Hooks and xunit setup functions the module binds without defining
     them (``from tests.common import pytest_generate_tests``, ``setup_module
-    = _setup``): pytest finds them in the namespace all the same."""
+    = _setup``, a star import): pytest finds them in the namespace all the
+    same (_add_bound). A star import from outside the source roots may bind
+    any of them: recorded in ``unknown_stars``."""
     defined = {f.name for f in scope_functions(facts.parsed.tree.body)}
-    for kind, bound, _, _ in facts.bindings:
-        if kind == "star" or bound in defined:
-            continue
-        if not (bound.startswith("pytest_") or bound in MODULE_SETUP_FUNCTIONS):
-            continue
-        symbol = _function_bound_to(facts.parsed.module, bound, module_facts, set())
-        if symbol is None:
-            continue
-        if bound in MODULE_SETUP_FUNCTIONS:
-            facts.setup_functions.append(symbol)
-        else:
-            facts.hooks.append(symbol)
-            if bound not in PATH_SCOPED_HOOKS:
-                facts.session_hooks.append(symbol)
-            if bound in COLLECT_HOOKS and bound not in facts.collect_hooks:
-                facts.collect_hooks.append(bound)
-    # Star imports: any hook or setup name the origin offers.
-    for kind, _, source, _ in facts.bindings:
+    names: list[str] = []
+    for kind, bound, source, _ in facts.bindings:
         if kind != "star":
+            names.append(bound)
             continue
         origin = module_facts(source)
-        for attr in _star_exports(origin, module_facts) if origin is not None else ():
-            if attr in defined or not (
-                attr.startswith("pytest_") or attr in MODULE_SETUP_FUNCTIONS
-            ):
-                continue
-            symbol = _function_bound_to(source, attr, module_facts, set())
-            if symbol is None:
-                continue
-            if attr in MODULE_SETUP_FUNCTIONS:
-                facts.setup_functions.append(symbol)
-            else:
-                facts.hooks.append(symbol)
-                if attr not in PATH_SCOPED_HOOKS:
-                    facts.session_hooks.append(symbol)
-                if attr == "pytest_ignore_collect":
-                    facts.unignores = True  # its code is elsewhere: it may
+        if origin is None:
+            facts.unknown_stars.append(source)
+        else:
+            names += _star_exports(origin, module_facts)
+    for name in dict.fromkeys(names):
+        if name in defined or not (name.startswith("pytest_") or name in MODULE_SETUP_FUNCTIONS):
+            continue
+        if name == "pytest_plugins":
+            _link_bound_plugins(facts, module_facts)
+            continue
+        _add_bound(facts, name, _function_bound_to(facts.parsed.module, name, module_facts))
+
+
+def _link_bound_plugins(facts: ModuleFacts, module_facts) -> None:
+    """A ``pytest_plugins`` the module binds by import (``from
+    tests.shared import pytest_plugins``, a star import): pytest reads the
+    module's attribute, so the plugins it names are this module's too. One
+    that cannot be followed (from outside the source roots) is unknown."""
+
+    def local(other: ModuleFacts, _: str) -> tuple[list[str], str] | None:
+        if other.declared_plugins is None:
+            return None
+        return other.declared_plugins, other.unreadable_plugins
+
+    found = _bound_to(
+        facts.parsed.module,
+        "pytest_plugins",
+        module_facts,
+        local,
+        outside=lambda module: ([], f"pytest_plugins imported from {module}"),
+    )
+    if facts.declared_plugins is not None and found is None:
+        return  # its own statements, read already
+    plugins, unreadable = found or ([], "pytest_plugins bound to a value discovery cannot read")
+    facts.plugins = list(dict.fromkeys([*facts.plugins, *plugins]))
+    facts.unreadable_plugins = facts.unreadable_plugins or unreadable
 
 
 def _link_fixtures(
@@ -2122,7 +2331,7 @@ def _link_fixtures(
         for attr in attrs:
             if attr in facts.fixture_attrs:
                 continue
-            found = _fixture_bound_to(facts.parsed.module, attr, module_facts, set())
+            found = _fixture_bound_to(facts.parsed.module, attr, module_facts)
             if found is None:
                 continue
             fixture, names_itself = found
@@ -2186,7 +2395,7 @@ def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
     for stmt in iter_scope_statements(facts.parsed.tree.body):
         if not isinstance(stmt, ast.ImportFrom):
             continue
-        base = _absolute_module(facts.parsed, stmt)
+        base = facts.parsed.import_source(stmt)
         if not base:
             continue
         names = {a.name for a in stmt.names}
@@ -2214,16 +2423,193 @@ def _reexported_facts(facts: ModuleFacts, module_facts) -> list[ModuleFacts]:
     return out
 
 
-# A module's scope for base-class lookups: (parsed module, its classes, imported
-# class names -> (module, name)).
-_Scope = tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]]
+class _Scope(NamedTuple):
+    """A module's scope for base-class and stored-mark lookups."""
+
+    parsed: ParsedModule
+    classes: dict[str, ast.ClassDef]  # defined there (under ``if``/``try`` too)
+    imported: dict[str, tuple[str, str]]  # imported class name -> (module, name)
+    prefixes: dict[str, str]  # alias -> the module it names (``alias.Class``)
 
 
-def discover_pytest(
-    snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
-) -> DiscoveryResult:
-    result = DiscoveryResult(runner=RUNNER)
-    config = read_pytest_config(snapshot, options.pytest_args)
+class _Scopes:
+    """Module scopes and the marks modules store in variables, built on
+    demand and shared by every test module. A value reached through an
+    import cycle depends on where the walk entered the cycle (the module
+    being built counts as having none), and so does one built from such a
+    value: those are kept for the current test module only (``begin``), as
+    they would be found walking that module alone."""
+
+    def __init__(self, module_facts: Callable[[str], ModuleFacts | None]) -> None:
+        self.module_facts = module_facts
+        # Base class id -> the module defining it, whose names its
+        # decorators use.
+        self.defined_in: dict[str, str] = {}
+        self._scopes: dict[str, _Scope | None] = {}
+        self._marks: dict[tuple[str, str], list[ast.expr]] = {}
+        self._local_scopes: dict[str, _Scope | None] = {}
+        self._local_marks: dict[tuple[str, str], list[ast.expr]] = {}
+        self._building: list[tuple[str, str]] = []
+        self._tainted: set[tuple[str, str]] = set()
+
+    def begin(self) -> None:
+        """Start a test module: forget what depended on the last one's walk."""
+        self._local_scopes.clear()
+        self._local_marks.clear()
+        self._tainted.clear()
+
+    def _cached(self, key, shared, local, compute, in_cycle):
+        if key in shared:
+            return shared[key]
+        if key in local or key in self._building:
+            # A value that depends on the walk taints whatever is being built.
+            self._tainted.update(self._building)
+            return local[key] if key in local else in_cycle
+        self._building.append(key)
+        try:
+            value = compute()
+        finally:
+            self._building.pop()
+        (local if key in self._tainted else shared)[key] = value
+        return value
+
+    def scope_for(self, module: str) -> _Scope | None:
+        """None for a module outside the source roots, or one whose scope is
+        being built (an import cycle)."""
+        return self._cached(
+            ("scope", module),
+            self._scopes,
+            self._local_scopes,
+            lambda: self._build_scope(module),
+            None,
+        )
+
+    def _build_scope(self, module: str) -> _Scope | None:
+        facts = self.module_facts(module)
+        if facts is None:
+            return None
+        prefixes: dict[str, str] = {}
+        classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
+        imported: dict[str, tuple[str, str]] = {}
+        for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if isinstance(stmt, ast.Import):
+                # ``import tests.queues as t``: ``t.LifoDiskQueueTest`` is that
+                # module's class, recorded under the alias as a module prefix.
+                for alias in stmt.names:
+                    prefixes[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+                continue
+            if not isinstance(stmt, ast.ImportFrom):
+                continue
+            src = facts.parsed.import_source(stmt)
+            for alias in stmt.names:
+                if alias.name == "*":
+                    sub_scope = self.scope_for(src)
+                    for name in sub_scope.classes if sub_scope else ():
+                        imported.setdefault(name, (src, name))
+                else:
+                    imported[alias.asname or alias.name] = (src, alias.name)
+                    prefixes.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
+        return _Scope(facts.parsed, classes, imported, prefixes)
+
+    def stored_mark(self, module: str, name: str) -> list[ast.expr]:
+        """The mark expressions ``module`` binds to ``name`` at module level
+        (``skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")``, or a
+        list of marks however it is built), following aliases and ``from``
+        imports; empty when it binds none that can be seen. Only names used
+        as marks are followed, so no imported library is parsed for this."""
+        return self._cached(
+            ("mark", module, name),
+            self._marks,
+            self._local_marks,
+            lambda: self._build_mark(module, name),
+            [],
+        )
+
+    def _build_mark(self, module: str, name: str) -> list[ast.expr]:
+        scope = self.scope_for(module)
+        if scope is None:
+            return []
+        values = _scope_values(scope.parsed.tree.body, name)
+        if values:
+            # Every binding counts: which one is live is not tracked.
+            expand = self.expander(module)
+            return [e for value in values for x in _mark_entries(value) for e in expand(x) or [x]]
+        if name in scope.imported:
+            return self.stored_mark(*scope.imported[name])
+        return []
+
+    def expander(self, module: str) -> MarkExpander:
+        """Resolves ``name`` and ``alias.name`` mark entries in ``module``."""
+
+        def expand(expr: ast.expr) -> list[ast.expr] | None:
+            if isinstance(expr, ast.Name):
+                return self.stored_mark(module, expr.id)
+            parts, call = decorator_chain(expr)
+            if call is None and len(parts) == 2:
+                scope = self.scope_for(module)
+                target = scope.prefixes.get(parts[0]) if scope is not None else None
+                if target is not None:
+                    return self.stored_mark(target, parts[1])
+            return None
+
+        return expand
+
+    def class_in(self, module: str, name: str) -> tuple[ast.ClassDef, str, _Scope] | None:
+        """The class ``name`` names in ``module``: defined there, or imported
+        there from a module in the source roots (pandas's
+        ``tests/extension/base/__init__.py`` re-exports the classes of its
+        submodules), followed to the module that defines it."""
+        visited: set[tuple[str, str]] = set()
+        scope = self.scope_for(module)
+        while scope is not None and (module, name) not in visited:
+            visited.add((module, name))
+            if name in scope.classes:
+                return scope.classes[name], scope.parsed.member_id(name), scope
+            if name not in scope.imported:
+                return None
+            module, name = scope.imported[name]
+            scope = self.scope_for(module)
+        return None
+
+
+def _framework_base(parts: list[str], scope: _Scope) -> bool:
+    """Whether a base that resolves to nothing in scope is a test framework's
+    ``TestCase`` (imported from one of TESTCASE_FRAMEWORKS), not a class
+    discovery merely cannot see (``SharedTestCase = make_base()``)."""
+    if len(parts) > 1:
+        source = _base_source(parts, scope)
+    elif parts[-1] in scope.imported:
+        source = scope.imported[parts[-1]][0]
+    else:
+        return False
+    return source.split(".")[0] in TESTCASE_FRAMEWORKS
+
+
+def _base_source(parts: list[str], scope: _Scope) -> str:
+    """The module a dotted base (``t.LifoDiskQueueTest``,
+    ``pkg.mod.Base``) is looked up in: the prefix through the module an
+    import binds it to, else as written."""
+    head = ".".join(parts[:-1])
+    if parts[0] not in scope.prefixes:
+        return head
+    source = scope.prefixes[parts[0]]
+    return f"{source}.{'.'.join(parts[1:-1])}" if len(parts) > 2 else source
+
+
+def _runner_arguments(
+    config: dict[str, Any],
+    options: DiscoveryOptions,
+    every_path: set[str],
+    result: DiscoveryResult,
+) -> tuple[tuple[str, ...], list[str], list[str]]:
+    """Every argument pytest reads, in its order (the configured addopts,
+    PYTEST_ADDOPTS, the command's own, then those after ``--``), the paths
+    among them pytest collects from, and the tokens that may name a path but
+    cannot be told apart (_argument_paths). What discovery cannot model in
+    the configuration or the arguments is reported; what the run reads
+    besides the configuration file goes into ``config["run_arguments"]``."""
     if "error" in config:
         result.notes.append(
             DiscoveryNote(
@@ -2251,9 +2637,7 @@ def discover_pytest(
                 "known; what they collect is not modelled",
             )
         )
-    # Every argument pytest reads, in its order (the configured addopts,
-    # PYTEST_ADDOPTS, the command's own, then those after ``--``), with
-    # where it was written for the notes.
+    # Each argument with where it was written, for the notes.
     sourced = [
         *((t, f"{config['source']}: addopts") for t in config["ini_addopts"]),
         *((t, "PYTEST_ADDOPTS") for t in options.env_addopts),
@@ -2274,8 +2658,6 @@ def discover_pytest(
                     "in a way discovery does not model",
                 )
             )
-    every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
-    directories = _directories(every_path)
     arg_paths, ambiguous, unknown = _argument_paths(tokens, every_path)
     if unknown:
         # A path the tree does not hold as written (absolute, another
@@ -2291,7 +2673,6 @@ def discover_pytest(
                 "tests that collects is not modelled",
             )
         )
-    # What planning read besides the configuration file, for the report.
     config["run_arguments"] = {
         name: list(values)
         for name, values in (
@@ -2302,6 +2683,132 @@ def discover_pytest(
         )
         if values
     }
+    return tokens, arg_paths, ambiguous
+
+
+class _PluginLoader:
+    """The plugin modules a session loads, and those they declare in turn,
+    each linked as it is found: pytest registers a module plugin, then its
+    own ``pytest_plugins`` (poetry's conftest loads a package whose
+    ``__init__`` lists the modules holding its autouse fixtures)."""
+
+    def __init__(
+        self,
+        snapshot: Snapshot,
+        index: SourceIndex,
+        module_facts: Callable[[str], ModuleFacts | None],
+        link: Callable[[ModuleFacts], ModuleFacts],
+        result: DiscoveryResult,
+    ) -> None:
+        self.snapshot = snapshot
+        self.index = index
+        self.module_facts = module_facts
+        self.link = link
+        self.result = result
+        # What the session loads that cannot be read: a plugin in the
+        # repository but outside the source roots (``plugin:<module>``), a
+        # ``pytest_plugins`` that cannot be read. It loads for the whole
+        # session, so every test depends on each as an unknown, as on a
+        # conftest outside the roots.
+        self.unknown: list[str] = []
+        # The plugin modules the session loads by name (not the submodules
+        # they re-export from, whose import-time code reaches them through
+        # imports).
+        self.declared: list[str] = []
+
+    @property
+    def modules(self) -> list[str]:
+        """The plugin modules, and the unknowns: dependencies of every test."""
+        return sorted(set(self.declared)) + self.unknown
+
+    def _file(self, name: str) -> str | None:
+        stem = name.replace(".", "/")
+        for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
+            for path in sorted(self.snapshot.python_paths):
+                if path == candidate or path.endswith("/" + candidate):
+                    return path
+        return None
+
+    def load(
+        self,
+        declared: list[str],
+        where: str,
+        kind: str = "pytest_plugins",
+        seen: set[str] | None = None,
+    ) -> list[ModuleFacts]:
+        """The plugin modules ``declared`` loads, and those they declare."""
+        seen = set() if seen is None else seen
+        found: list[ModuleFacts] = []
+        for name in declared:
+            # pytest's own plugins are builtin unless this repository *is*
+            # pytest and ships them under _pytest.
+            if name not in self.index.modules and f"_pytest.{name}" in self.index.modules:
+                name = f"_pytest.{name}"
+            if name.split(".")[0] in BUILTIN_PLUGINS and name not in self.index.modules:
+                continue
+            facts = self.module_facts(name)
+            if facts is None:
+                path = self._file(name)
+                if path is not None:
+                    if f"plugin:{name}" not in self.unknown:
+                        self.unknown.append(f"plugin:{name}")
+                    self.result.notes.append(
+                        DiscoveryNote(
+                            RUNNER,
+                            "plugin_outside_roots",
+                            f"{where}: {kind} entry {name!r} is {path}, which the source roots "
+                            "do not hold under that name, so what it defines is unknown and "
+                            "every test is always selected; add a source root that names it",
+                            path,
+                        )
+                    )
+                    continue
+                self.result.notes.append(
+                    DiscoveryNote(
+                        RUNNER,
+                        "plugin_out_of_scope",
+                        f"{where}: {kind} entry {name!r} is not within the source roots",
+                    )
+                )
+                continue
+            if facts.parsed.module in seen:
+                continue
+            seen.add(facts.parsed.module)
+            self.declared.append(facts.parsed.module)
+            found.append(self.link(facts))
+            found.extend(self.link(sub) for sub in _reexported_facts(facts, self.module_facts))
+            found.extend(self.declared_by(facts, seen))
+        return found
+
+    def declared_by(self, facts: ModuleFacts, seen: set[str]) -> list[ModuleFacts]:
+        """The plugins a conftest, test module or plugin module declares. A
+        ``pytest_plugins`` that cannot be read loads what is unknown: an
+        unknown dependency of every test (``plugin:<path>:pytest_plugins``),
+        reported."""
+        path = facts.parsed.path
+        if facts.unreadable_plugins and f"plugin:{path}:pytest_plugins" not in self.unknown:
+            self.unknown.append(f"plugin:{path}:pytest_plugins")
+            self.result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "unreadable_plugins",
+                    f"{path}: pytest_plugins holds {facts.unreadable_plugins}, which discovery "
+                    "cannot read, so which plugins it loads is unknown and every test is always "
+                    "selected; write the list out as strings",
+                    path,
+                )
+            )
+        return self.load(facts.plugins, path, seen=seen) if facts.plugins else []
+
+
+def discover_pytest(
+    snapshot: Snapshot, index: SourceIndex, options: DiscoveryOptions
+) -> DiscoveryResult:
+    result = DiscoveryResult(runner=RUNNER)
+    config = read_pytest_config(snapshot, options.pytest_args)
+    every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
+    directories = _directories(every_path)
+    tokens, arg_paths, ambiguous = _runner_arguments(config, options, every_path, result)
     result.config = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()}
     python_files = tuple(config["python_files"])
     # Where pytest starts collecting: the paths among its arguments, else
@@ -2407,12 +2914,8 @@ def discover_pytest(
     def outside_conftests_of(path: str) -> list[str]:
         """Unknown dependencies on the conftests outside the roots that
         apply to ``path``."""
-        directories = {str(d) for d in PurePosixPath(path).parents}
-        return [
-            f"conftest:{c}"
-            for c in outside_conftests
-            if str(PurePosixPath(c).parent) in directories
-        ]
+        above = {str(d) for d in PurePosixPath(path).parents}
+        return [f"conftest:{c}" for c in outside_conftests if str(PurePosixPath(c).parent) in above]
 
     for path in outside_conftests:
         result.notes.append(
@@ -2468,87 +2971,17 @@ def discover_pytest(
     for facts in list(facts_by_path.values()):
         link(facts)
 
-    # Plugins in the repository but outside the source roots: what they
-    # define is unknown and they load for the whole session, so every test
-    # depends on each as an unknown (``plugin:<module>``), as on a conftest
-    # outside the roots.
-    outside_plugins: list[str] = []
-    # The plugin modules the session loads by name (not the submodules they
-    # re-export from, whose import-time code reaches them through imports).
-    declared_plugins: list[str] = []
-
-    def plugin_file(name: str) -> str | None:
-        stem = name.replace(".", "/")
-        for candidate in (f"{stem}.py", f"{stem}/__init__.py"):
-            for path in sorted(snapshot.python_paths):
-                if path == candidate or path.endswith("/" + candidate):
-                    return path
-        return None
-
-    def plugin_facts(
-        declared: list[str],
-        where: str,
-        kind: str = "pytest_plugins",
-        seen: set[str] | None = None,
-    ) -> list[ModuleFacts]:
-        """The plugin modules ``declared`` loads, and those they declare in
-        turn: pytest registers each module plugin, then its own
-        ``pytest_plugins`` (poetry's conftest loads a package whose
-        ``__init__`` lists the modules holding its autouse fixtures)."""
-        seen = set() if seen is None else seen
-        found: list[ModuleFacts] = []
-        for name in declared:
-            # pytest's own plugins are builtin unless this repository *is*
-            # pytest and ships them under _pytest.
-            if name not in index.modules and f"_pytest.{name}" in index.modules:
-                name = f"_pytest.{name}"
-            if name.split(".")[0] in BUILTIN_PLUGINS and name not in index.modules:
-                continue
-            facts = module_facts(name)
-            if facts is None:
-                path = plugin_file(name)
-                if path is not None:
-                    if f"plugin:{name}" not in outside_plugins:
-                        outside_plugins.append(f"plugin:{name}")
-                    result.notes.append(
-                        DiscoveryNote(
-                            RUNNER,
-                            "plugin_outside_roots",
-                            f"{where}: {kind} entry {name!r} is {path}, which the source roots "
-                            "do not hold under that name, so what it defines is unknown and "
-                            "every test is always selected; add a source root that names it",
-                            path,
-                        )
-                    )
-                    continue
-                result.notes.append(
-                    DiscoveryNote(
-                        RUNNER,
-                        "plugin_out_of_scope",
-                        f"{where}: {kind} entry {name!r} is not within the source roots",
-                    )
-                )
-                continue
-            if facts.parsed.module in seen:
-                continue
-            seen.add(facts.parsed.module)
-            declared_plugins.append(facts.parsed.module)
-            found.append(link(facts))
-            found.extend(link(sub) for sub in _reexported_facts(facts, module_facts))
-            if facts.plugins:
-                found.extend(plugin_facts(facts.plugins, facts.parsed.path, seen=seen))
-        return found
-
+    loader = _PluginLoader(snapshot, index, module_facts, link, result)
     global_plugins: list[ModuleFacts] = []
     if config["entry_point_plugins"]:
         global_plugins.extend(
-            plugin_facts(list(config["entry_point_plugins"]), "pyproject/setup.cfg", "pytest11")
+            loader.load(list(config["entry_point_plugins"]), "pyproject/setup.cfg", "pytest11")
         )
     if config["addopts_plugins"]:
-        global_plugins.extend(plugin_facts(list(config["addopts_plugins"]), "addopts", "-p"))
+        global_plugins.extend(loader.load(list(config["addopts_plugins"]), "addopts", "-p"))
     if options.env_plugins:
         global_plugins.extend(
-            plugin_facts(list(options.env_plugins), "the environment", "PYTEST_PLUGINS")
+            loader.load(list(options.env_plugins), "the environment", "PYTEST_PLUGINS")
         )
     # ``pytest_plugins`` in a conftest or a test module registers the plugin
     # for the session once pytest imports the file, so its fixtures and
@@ -2556,8 +2989,8 @@ def discover_pytest(
     plugins_seen: set[str] = set()
     for path in sorted(conftest_paths) + sorted(test_paths):
         facts = facts_by_path.get(path)
-        if facts is not None and facts.plugins:
-            global_plugins.extend(plugin_facts(facts.plugins, path, seen=plugins_seen))
+        if facts is not None:
+            global_plugins.extend(loader.declared_by(facts, plugins_seen))
     for plugin in global_plugins:
         if plugin.unignores and plugin.parsed.path not in conftest_facts:
             result.notes.append(
@@ -2572,7 +3005,7 @@ def discover_pytest(
             )
     # Plugin modules load for the whole session: their import-time code, as
     # well as their hooks, reaches every test.
-    plugin_modules = sorted(set(declared_plugins)) + outside_plugins
+    plugin_modules = loader.modules
     plugin_hooks = [h for p in global_plugins for h in p.hooks]
     ini_usefixtures = tuple(config["usefixtures"])
     # Hooks of conftests off a test's path that pytest calls for the whole
@@ -2616,6 +3049,7 @@ def discover_pytest(
     # and (symbol, detail) for each class pytest's rules skipped.
     used_as_base: set[str] = set()
     uncollected: list[tuple[str, str]] = []
+    scopes = _Scopes(module_facts)
     for path in sorted(test_paths):
         facts = facts_by_path.get(path)
         if facts is None:
@@ -2645,6 +3079,7 @@ def discover_pytest(
             config,
             module_deps,
             index,
+            scopes,
             module_facts,
             used_as_base,
             uncollected,
@@ -2661,19 +3096,33 @@ def discover_pytest(
             )
 
     # Collection hooks of conftests and test modules, and of the plugin
-    # modules the session loads.
+    # modules the session loads; and what a conftest or a plugin module
+    # star-imports from outside the source roots, which may bind one.
     hook_owners = {f.parsed.path: f for f in facts_by_path.values()}
     for plugin in global_plugins:
         hook_owners.setdefault(plugin.parsed.path, plugin)
-    for _, facts in sorted(hook_owners.items()):
+    registered = set(conftest_facts) | {p.parsed.path for p in global_plugins}
+    for path, facts in sorted(hook_owners.items()):
         for hook in facts.collect_hooks:
             result.notes.append(
                 DiscoveryNote(
                     RUNNER,
                     "plugin_collects_files",
-                    f"{facts.parsed.path}: binds {hook}, which makes tests out of files or "
+                    f"{path}: binds {hook}, which makes tests out of files or "
                     "objects by its own rules; what it collects is not a target",
-                    facts.parsed.path,
+                    path,
+                )
+            )
+        for source in facts.unknown_stars if path in registered else ():
+            result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "plugin_collects_files",
+                    f"{path}: ``from {source} import *`` imports from outside the source roots "
+                    "and may bind a collection hook (pytest_collect_file, "
+                    "pytest_pycollect_makeitem, pytest_ignore_collect, ...) that makes tests by "
+                    "its own rules; what it collects is not a target",
+                    path,
                 )
             )
 
@@ -2733,7 +3182,7 @@ def _collect_doctests(
     index: SourceIndex,
     config: dict[str, Any],
     facts_by_path: dict[str, ModuleFacts],
-    fixture_deps: Callable[[ParsedModule, list[ModuleFacts]], list[str]] | None = None,
+    fixture_deps: Callable[[ParsedModule, list[ModuleFacts]], list[str]],
 ) -> None:
     """Doctest targets (see the module docstring)."""
     parser = doctest.DocTestParser()
@@ -2838,8 +3287,7 @@ def _collect_doctests(
             if not fixtures_added:
                 # Once per module, and only for one with examples.
                 fixtures_added = True
-                if fixture_deps is not None:
-                    base_deps += fixture_deps(pm, conftests)
+                base_deps += fixture_deps(pm, conftests)
             deps = [*base_deps, f"{DYNAMIC_DEPENDENCY}{pm.module}"]
             if examples is None:
                 deps.append("doctest:unparsed")
@@ -2923,6 +3371,19 @@ def _example_imports(examples: list[doctest.Example]) -> list[str | None]:
     return modules
 
 
+def _all_classes(body: list[ast.stmt]) -> Iterator[ast.ClassDef]:
+    """Every class defined anywhere in ``body``, in functions and classes
+    too: a class is a statement, so walking statements finds them all
+    without walking expressions."""
+    stack = list(body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.ClassDef):
+            yield node
+        for name in ("body", "orelse", "finalbody", "handlers", "cases"):
+            stack.extend(getattr(node, name, ()) or ())
+
+
 def _collect_module_tests(
     result: DiscoveryResult,
     facts: ModuleFacts,
@@ -2930,21 +3391,27 @@ def _collect_module_tests(
     config: dict[str, Any],
     module_deps: list[str],
     index: SourceIndex,
-    module_facts: Any = None,
-    used_as_base: set[str] | None = None,
-    uncollected: list[tuple[str, str]] | None = None,
+    scopes: _Scopes,
+    module_facts: Callable[[str], ModuleFacts | None],
+    used_as_base: set[str],
+    uncollected: list[tuple[str, str]],
 ) -> None:
     parsed = facts.parsed
+    body = parsed.tree.body
     functions = tuple(config["python_functions"])
     classes = tuple(config["python_classes"])
-    module_classes = {c.name: c for c in scope_classes(parsed.tree.body)}
+    scopes.begin()
+    # What the module defines, under ``if``/``try`` too, as pytest reads it
+    # from the module's namespace; and what it defines at top level, where a
+    # definition is what the name is bound to (under ``if``/``try`` an
+    # import or assignment may bind it instead).
+    module_classes = {c.name: c for c in scope_classes(body)}
+    module_funcs = {f.name: f for f in scope_functions(body)}
+    defined = {n.name for n in body if isinstance(n, DEF_NODES)}
     # Names used as a base anywhere in the module: such a class contributes
     # its methods through its subclasses, so it is not an uncollected class.
     base_names = {
-        (decorator_chain(base)[0] or [""])[-1]
-        for node in ast.walk(parsed.tree)
-        if isinstance(node, ast.ClassDef)
-        for base in node.bases
+        (decorator_chain(base)[0] or [""])[-1] for node in _all_classes(body) for base in node.bases
     }
 
     def add(
@@ -2959,124 +3426,27 @@ def _collect_module_tests(
             result.notes.append(
                 DiscoveryNote(RUNNER, "missing_symbol", f"{nodeid}: {entry} is not in the index")
             )
-        deps = module_deps + extra + resolver.lifecycle(class_levels, requests, marks.supplied)
+        deps = module_deps + extra
+        deps += resolver.lifecycle(class_levels, requests, marks.supplied, marks.uncertain)
         result.targets.append(Target(RUNNER, nodeid, entry, tuple(sorted(set(deps)))))
 
-    # Module scopes reached through base classes: name -> (parsed, classes,
-    # imported class names). None for a module outside the source roots.
-    scopes: dict[str, _Scope | None] = {}
-    # Per module: alias -> module it names, for a dotted base ``alias.Class``.
-    module_prefixes: dict[str, dict[str, str]] = {}
-
-    def scope_for(module: str) -> _Scope | None:
-        """None for a module outside the source roots, or one whose scope is
-        being built (an import cycle)."""
-        if module in scopes:
-            return scopes[module]
-        scopes[module] = None  # guards import cycles while this one is built
-        facts = module_facts(module) if module_facts is not None else None
-        if facts is None:
-            return None
-        modules: dict[str, str] = {}
-        classes = {c.name: c for c in scope_classes(facts.parsed.tree.body)}
-        imported: dict[str, tuple[str, str]] = {}
-        for stmt in iter_scope_statements(facts.parsed.tree.body):
-            if isinstance(stmt, ast.Import):
-                # ``import tests.queues as t``: ``t.LifoDiskQueueTest`` is that
-                # module's class, recorded under the alias as a module prefix.
-                for alias in stmt.names:
-                    modules[alias.asname or alias.name.split(".")[0]] = (
-                        alias.name if alias.asname else alias.name.split(".")[0]
-                    )
-                continue
-            if not isinstance(stmt, ast.ImportFrom):
-                continue
-            src = _absolute_module(facts.parsed, stmt)
-            for alias in stmt.names:
-                if alias.name == "*":
-                    sub_scope = scope_for(src)
-                    for name in sub_scope[1] if sub_scope else ():
-                        imported.setdefault(name, (src, name))
-                else:
-                    imported[alias.asname or alias.name] = (src, alias.name)
-                    modules.setdefault(alias.asname or alias.name, f"{src}.{alias.name}")
-        module_prefixes[module] = modules
-        scope = (facts.parsed, classes, imported)
-        scopes[module] = scope
-        return scope
-
-    own_scope = (parsed, module_classes, (scope_for(parsed.module) or (None, {}, {}))[2])
-    # Base class id -> the module defining it, whose names its decorators use.
-    defined_in: dict[str, str] = {}
-    stored: dict[tuple[str, str], list[ast.expr]] = {}
-
-    def stored_mark(module: str, name: str) -> list[ast.expr]:
-        """The mark expressions ``module`` binds to ``name`` at module level
-        (``skip_pyarrow = pytest.mark.usefixtures("pyarrow_skip")``, or a
-        list of marks), following aliases and ``from`` imports; empty when
-        it binds none that can be seen. Only names used as marks are
-        followed, so no imported library is parsed for this."""
-        key = (module, name)
-        if key in stored:
-            return stored[key]
-        stored[key] = []  # guards cycles
-        scope = scope_for(module)
-        if scope is None:
-            return []
-        found: list[ast.expr] = []
-        values = [v for n, v in scope_assignments(scope[0].tree.body) if n == name]
-        if values:
-            # Every binding counts: which one is live is not tracked.
-            expand = expander(module)
-            for value in values:
-                elts = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
-                for expr in elts:
-                    found += expand(expr) or [expr]
-        elif name in scope[2]:
-            found = stored_mark(*scope[2][name])
-        stored[key] = found
-        return found
-
-    def expander(module: str) -> MarkExpander:
-        """Resolves ``name`` and ``alias.name`` mark entries in ``module``."""
-
-        def expand(expr: ast.expr) -> list[ast.expr] | None:
-            if isinstance(expr, ast.Name):
-                return stored_mark(module, expr.id)
-            parts, call = decorator_chain(expr)
-            if call is None and len(parts) == 2:
-                target = module_prefixes.get(module, {}).get(parts[0])
-                if target is not None:
-                    return stored_mark(target, parts[1])
-            return None
-
-        return expand
-
-    own_marks = expander(parsed.module)
-    module_marks = _marks_from_pytestmark(parsed.tree.body, own_marks)
-
-    def class_in(module: str, name: str) -> tuple[ast.ClassDef, str, Any] | None:
-        """The class ``name`` names in ``module``: defined there, or imported
-        there from a module in the source roots (pandas's
-        ``tests/extension/base/__init__.py`` re-exports the classes of its
-        submodules), followed to the module that defines it."""
-        visited: set[tuple[str, str]] = set()
-        scope = scope_for(module)
-        while scope is not None and (module, name) not in visited:
-            visited.add((module, name))
-            if name in scope[1]:
-                return scope[1][name], scope[0].member_id(name), scope
-            if name not in scope[2]:
-                return None
-            module, name = scope[2][name]
-            scope = scope_for(module)
-        return None
+    found_scope = scopes.scope_for(parsed.module)
+    own_scope = _Scope(
+        parsed,
+        module_classes,
+        found_scope.imported if found_scope else {},
+        found_scope.prefixes if found_scope else {},
+    )
+    own_marks = scopes.expander(parsed.module)
+    module_marks = _marks_from_pytestmark(body, own_marks)
+    if not _scope_values(body, "pytestmark") and "pytestmark" in own_scope.imported:
+        # ``from tests.marks import pytestmark``: pytest reads the attribute.
+        module_marks = module_marks + _marks_from_expressions(
+            scopes.stored_mark(*own_scope.imported["pytestmark"])
+        )
 
     def mro(
-        cls: ast.ClassDef,
-        nodeid: str,
-        quiet: bool = False,
-        scope: tuple[Any, dict[str, ast.ClassDef], dict[str, tuple[str, str]]] | None = None,
+        cls: ast.ClassDef, nodeid: str, quiet: bool = False, scope: _Scope | None = None
     ) -> list[tuple[ast.ClassDef, str]]:
         """Base classes, nearest first, with their symbol ids. A base defined
         in another module in the source roots is followed too (networkx's
@@ -3085,45 +3455,34 @@ def _collect_module_tests(
         chain: list[tuple[ast.ClassDef, str]] = []
         seen: set[tuple[str, str]] = set()
         start = scope or own_scope
-        queue = [(base, start) for base in cls.bases]
+        queue = deque((base, start) for base in cls.bases)
         while queue:
-            base, (owner, classes_here, imports_here) = queue.pop(0)
+            base, owner = queue.popleft()
             parts, _ = decorator_chain(base)
             name = parts[-1] if parts else ""
-            if name in ("object", "") or (owner.module, name) in seen:
+            if name in ("object", "") or (owner.parsed.module, name) in seen:
                 continue
-            seen.add((owner.module, name))
+            seen.add((owner.parsed.module, name))
             found = None
-            if name in classes_here and not (owner.module == start[0].module and name == cls.name):
-                found = (
-                    classes_here[name],
-                    owner.member_id(name),
-                    (owner, classes_here, imports_here),
-                )
-            elif name in imports_here:
-                found = class_in(*imports_here[name])
+            if name in owner.classes and not (
+                owner.parsed.module == start.parsed.module and name == cls.name
+            ):
+                found = (owner.classes[name], owner.parsed.member_id(name), owner)
+            elif name in owner.imported:
+                found = scopes.class_in(*owner.imported[name])
             elif len(parts) > 1:
                 # ``t.LifoDiskQueueTest``: the prefix names a module.
-                prefixes = module_prefixes.get(owner.module, {})
-                head = ".".join(parts[:-1])
-                source = prefixes.get(parts[0], parts[0])
-                if len(parts) > 2:
-                    source = f"{source}.{'.'.join(parts[1:-1])}" if parts[0] in prefixes else head
-                found = class_in(source, name)
+                found = scopes.class_in(_base_source(parts, owner), name)
             if found is not None:
                 base_cls, base_id, base_scope = found
-                if used_as_base is not None:
-                    used_as_base.add(base_id)
-                defined_in[base_id] = base_scope[0].module
+                used_as_base.add(base_id)
+                scopes.defined_in[base_id] = base_scope.parsed.module
                 chain.append((base_cls, base_id))
                 queue.extend((b, base_scope) for b in base_cls.bases)
             elif not (
                 quiet
                 or name in NO_TEST_BASES
-                or (
-                    name.endswith("TestCase")
-                    and _framework_base(name, parts, imports_here, module_prefixes, owner)
-                )
+                or (name.endswith("TestCase") and _framework_base(parts, owner))
             ):
                 result.notes.append(
                     DiscoveryNote(
@@ -3136,8 +3495,6 @@ def _collect_module_tests(
                     )
                 )
         return chain
-
-    module_funcs = {f.name: f for f in scope_functions(parsed.tree.body)}
 
     def unmodelled(nodeid: str, value: str) -> None:
         result.notes.append(
@@ -3198,8 +3555,7 @@ def _collect_module_tests(
                     "match python_classes; a pytest plugin may collect it, and what it "
                     "collects is not a target"
                 )
-                if uncollected is not None:
-                    uncollected.append((symbol, detail))
+                uncollected.append((symbol, detail))
             return
         if class_id is None:
             class_id = f"{prefix_ids[-1]}.{cls.name}" if prefix_ids else parsed.member_id(cls.name)
@@ -3209,10 +3565,10 @@ def _collect_module_tests(
         class_levels = [_class_level([(cls, class_id), *bases]), *(outer or [])]
         # Marks: the enclosing scopes', the bases' (pytest reads marks along
         # the MRO), then the class's own.
-        home = (scope or own_scope)[0].module
+        home = (scope or own_scope).parsed.module
         class_marks = inherited
         for owner, owner_id in [*reversed(bases), (cls, class_id)]:
-            expand = expander(defined_in.get(owner_id, home))
+            expand = scopes.expander(scopes.defined_in.get(owner_id, home))
             class_marks = class_marks + _marks_from_expressions(owner.decorator_list, expand)
             class_marks = class_marks + _marks_from_pytestmark(owner.body, expand)
         # ``@patch`` on a class (or on a base, whose patched methods are
@@ -3228,13 +3584,14 @@ def _collect_module_tests(
         for f in scope_functions(cls.body):
             methods[f.name] = (f, class_id)
         # Test methods bound by assignment in a class body (``test_b =
-        # test_a``, ``test_x = _check``): pytest collects any attribute whose
-        # name matches and whose value is a function. Entry: the function.
+        # test_a``, ``test_x = _check``, under ``if`` too): pytest collects
+        # any attribute whose name matches and whose value is a function.
+        # Entry: the function.
         entries: dict[str, str] = {}
         for owner, owner_id in [*reversed(bases), (cls, class_id)]:
             owner_defs = {f.name: f for f in scope_functions(owner.body)}
-            same_module = defined_in.get(owner_id, home) == parsed.module
-            for stmt in owner.body:
+            same_module = scopes.defined_in.get(owner_id, home) == parsed.module
+            for stmt in iter_scope_statements(owner.body):
                 assigned = _assigned(stmt)
                 if assigned is None:
                     continue
@@ -3269,7 +3626,7 @@ def _collect_module_tests(
                 collected.append("runTest")
         for method in sorted(collected):
             func, owner_id = methods[method]
-            expand = expander(defined_in.get(owner_id, home))
+            expand = scopes.expander(scopes.defined_in.get(owner_id, home))
             marks = class_marks + _marks_from_expressions(func.decorator_list, expand)
             requests = list(_fixture_requests(func, True, marks, class_injected))
             requests += list(marks.usefixtures)
@@ -3279,7 +3636,7 @@ def _collect_module_tests(
         # attributes along its MRO), the nearest definition of a name winning.
         inners: dict[str, tuple[ast.ClassDef, str, _Scope | None]] = {}
         for owner, owner_id in reversed(bases):
-            owner_scope = scope_for(defined_in.get(owner_id, home))
+            owner_scope = scopes.scope_for(scopes.defined_in.get(owner_id, home))
             for inner in scope_classes(owner.body):
                 inners[inner.name] = (inner, owner_id, owner_scope)
         for inner in scope_classes(cls.body):
@@ -3302,7 +3659,7 @@ def _collect_module_tests(
 
     # ``f.__test__ = True``: pytest collects ``f`` whatever it is called.
     marked_tests: set[str] = set()
-    for stmt in parsed.tree.body:
+    for stmt in iter_scope_statements(body):
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             target = stmt.targets[0]
             if (
@@ -3313,23 +3670,22 @@ def _collect_module_tests(
                 and stmt.value.value is True
             ):
                 marked_tests.add(target.value.id)
-    for func in scope_functions(parsed.tree.body):
+    for func in scope_functions(body):
         if not (_matches(functions, func.name) or func.name in marked_tests):
             continue
         if _is_fixture(func)[0]:
             continue
         module_test(func, func.name)
 
-    # Tests bound by assignment (``test_alias = test_orig``): pytest collects
-    # any module attribute whose name matches and whose value is a function
-    # or class. A value bound to something not visible here (an attribute,
-    # an imported name: Hypothesis's ``TestMachine = Machine.TestCase``) is
-    # reported; data (``test_data = [...]``, a call's result) is not a test.
-    module_classes_here = {c.name: c for c in scope_classes(parsed.tree.body)}
-    module_defined = {n.name for n in parsed.tree.body if isinstance(n, DEF_NODES)}
-    for stmt in parsed.tree.body:
+    # Tests bound by assignment (``test_alias = test_orig``, under ``if``
+    # too): pytest collects any module attribute whose name matches and
+    # whose value is a function or class. A value bound to something not
+    # visible here (an attribute, an imported name: Hypothesis's
+    # ``TestMachine = Machine.TestCase``) is reported; data (``test_data =
+    # [...]``, a call's result) is not a test.
+    for stmt in iter_scope_statements(body):
         assigned = _assigned(stmt)
-        if assigned is None or assigned[0] in module_defined:
+        if assigned is None or assigned[0] in defined:
             continue
         bound, value = assigned
         is_function = _matches(functions, bound)
@@ -3339,8 +3695,8 @@ def _collect_module_tests(
         if isinstance(value, ast.Name) and value.id in module_funcs and is_function:
             if not _is_fixture(module_funcs[value.id])[0]:
                 module_test(module_funcs[value.id], bound)
-        elif isinstance(value, ast.Name) and value.id in module_classes_here:
-            target = module_classes_here[value.id]
+        elif isinstance(value, ast.Name) and value.id in module_classes:
+            target = module_classes[value.id]
             walk_class(
                 target,
                 [],
@@ -3355,16 +3711,16 @@ def _collect_module_tests(
     # pytest collects every module attribute matching the naming rules,
     # including functions and classes imported from elsewhere (fastapi's
     # tutorial tests import ``test_read_main`` from ``docs_src``).
-    defined = {n.name for n in parsed.tree.body if isinstance(n, DEF_NODES)}
-    for stmt in iter_scope_statements(parsed.tree.body):
+    for stmt in iter_scope_statements(body):
         if not isinstance(stmt, ast.ImportFrom):
             continue
-        source = _absolute_module(parsed, stmt)
+        source = parsed.import_source(stmt)
         aliases = list(stmt.names)
-        if any(a.name == "*" for a in aliases):
+        starred = any(a.name == "*" for a in aliases)
+        if starred:
             # ``from tests.test_install import *`` re-runs another module's
             # tests here (poetry's sync command does exactly this).
-            origin = module_facts(source) if module_facts is not None else None
+            origin = module_facts(source)
             if origin is None:
                 result.notes.append(
                     DiscoveryNote(
@@ -3385,11 +3741,7 @@ def _collect_module_tests(
             is_class = _matches(classes, bound)
             # Followed through re-exports (``tests/base.py`` importing the
             # class from ``tests/impl.py``) to the module defining it.
-            found = (
-                _definition_bound_to(source, alias.name, module_facts, set())
-                if module_facts is not None
-                else source
-            )
+            found = _definition_bound_to(source, alias.name, module_facts)
             origin, node = found if isinstance(found, tuple) else (None, None)
             if not (is_function or is_class):
                 # Still a test when it is a unittest TestCase (collected
@@ -3397,10 +3749,19 @@ def _collect_module_tests(
                 if not isinstance(node, ast.ClassDef):
                     continue
             nodeid = f"{parsed.path}::{bound}"
+            if isinstance(found, _Unfollowed) or found is None:
+                # Bound there to what discovery cannot follow: reported,
+                # unless it is data, which is no test. A name a star import
+                # may offer but nothing binds is no test either (what it
+                # offers can be a superset: _star_exports).
+                if found is not None and found.value:
+                    unmodelled(nodeid, f"{found.value} (in {source})")
+                elif found is None and not starred:
+                    unmodelled(nodeid, f"nothing discovery finds in {source}")
+                continue
             if node is None or origin is None:
-                # Data, or outside the source roots: there, whether pytest
-                # collects anything from it is unknown, so it is reported,
-                # not guessed; except
+                # Outside the source roots, whether pytest collects anything
+                # from it is unknown, so it is reported, not guessed; except
                 # unittest's names and a test framework's ``*TestCase``
                 # (``from django.test import TestCase``), which yield none.
                 outside = found if isinstance(found, str) else None
@@ -3429,9 +3790,10 @@ def _collect_module_tests(
                 # everything it inherits (urllib3's test_pyopenssl.py imports
                 # TestHTTPS_TLSv1, whose tests are almost all defined on its
                 # bases), its bases resolved where it is defined.
-                origin_scope = scope_for(origin.parsed.module) or (
+                origin_scope = scopes.scope_for(origin.parsed.module) or _Scope(
                     origin.parsed,
                     {c.name: c for c in scope_classes(origin.parsed.tree.body)},
+                    {},
                     {},
                 )
                 walk_class(
@@ -3446,10 +3808,10 @@ def _collect_module_tests(
                 )
             elif is_function and not _is_fixture(node)[0]:
                 marks = module_marks + _marks_from_expressions(
-                    node.decorator_list, expander(origin.parsed.module)
+                    node.decorator_list, scopes.expander(origin.parsed.module)
                 )
                 requests = list(_fixture_requests(node, False, marks)) + list(marks.usefixtures)
                 add(nodeid, entry, [], requests, [origin.parsed.module], marks)
 
-    for cls in scope_classes(parsed.tree.body):
+    for cls in scope_classes(body):
         walk_class(cls, [], parsed.path, module_marks)

@@ -64,7 +64,10 @@ from diffcone.model import (
     imports_anything,
 )
 
-# Path-scoped hooks pytest calls while collecting, before any test runs.
+# Path-scoped hooks pytest calls while collecting, before any test runs: what
+# they write to the process stays for every later test. (Not to be confused
+# with pytest_static.COLLECT_HOOKS, the hooks that make tests by their own
+# rules, which make the target list possibly short.)
 COLLECTION_HOOKS = frozenset(
     {
         "pytest_generate_tests",
@@ -165,14 +168,15 @@ def state_writing_roots(
         reach.add(symbol_id)
         queue.append(symbol_id)
 
-    for symbol_id in sorted(writers | dynamic):
+    seeds = writers | dynamic
+    for symbol_id in sorted(seeds):
         add(symbol_id)
     while queue:
         current = queue.popleft()
         symbol = index.symbols[current]
         if symbol.kind == MODULE:
             continue
-        if symbol.kind == CLASS and current in writers | dynamic:
+        if symbol.kind == CLASS and current in seeds:
             add(symbol.module)  # its body writes, when the module is imported
             continue
         for caller, detail in sorted(callers.get(current, ())):
