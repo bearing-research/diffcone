@@ -254,7 +254,9 @@ def test_w3_evidence_follows_the_child_itself(repo):
         ({"pkg/core.py": "def value():\n    return 2\n"}, {"tests/test_script.py::test_script"}),
         (
             {"pkg/core.py": CORE["pkg/core.py"], "pkg/other.py": "def g():\n    return 4\n"},
-            {OTHER, BENCH.runner_id},
+            # A child on Windows records nothing: its test is always selected.
+            {OTHER, BENCH.runner_id}
+            | ({"tests/test_script.py::test_script"} if sys.platform == "win32" else set()),
         ),
     ]:
         head = repo.commit(change)
