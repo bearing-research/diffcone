@@ -18,6 +18,7 @@ from diffcone.indexer.definitions import (
     _is_inert_decorator,
     _is_literal,
     _is_special_method,
+    _quiet_def,
     _start_line,
     _variable_statements,
 )
@@ -421,6 +422,9 @@ class FirstPass(IndexerState):
                     class_scope is None or class_scope.plain
                 )
                 inert = header and (deferred or not any(_has_annotations(n) for n in nodes))
+                quiet = all(_quiet_def(n, scope) for n in nodes) and (
+                    class_scope is None or class_scope.plain
+                )
                 symbol = Symbol(
                     id=symbol_id,
                     kind=METHOD if class_scope is not None else FUNCTION,
@@ -437,6 +441,7 @@ class FirstPass(IndexerState):
                     deferred_annotations=deferred,
                     inert_definition=inert,
                     inert_header=header,
+                    quiet_header=quiet,
                     # Nested functions are not symbols: a decorator factory's
                     # wrapper reading ``f.__doc__`` counts for the factory.
                     reads_docstrings=any(_reads_docstrings_deep(n) for n in nodes),

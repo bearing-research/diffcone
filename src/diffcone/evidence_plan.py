@@ -1370,8 +1370,11 @@ class _Observers:
     def _import_code(self, module: str) -> list[str]:
         """The symbols of ``module`` whose code runs when it is imported: the
         module's own code, variable initialisers, class bodies and the
-        headers of ``def`` statements that run code (a function's body is
-        followed with it: references do not tell the two apart). Empty once
+        headers of ``def`` statements that may run project code (a
+        function's body is followed with it: references do not tell the two
+        apart). A ``def`` whose header runs no project code (``quiet_header``:
+        ``@pytest.fixture``, ``@pytest.mark.parametrize("x", CASES)``) is not
+        followed: its body does not run at import. Empty once
         it has been followed."""
         if module in self._import_code_followed:
             return []
@@ -1381,7 +1384,9 @@ class _Observers:
             if symbol.module != module:
                 continue
             if symbol.kind in (MODULE, VARIABLE, CLASS) or (
-                symbol.kind in (FUNCTION, METHOD) and not symbol.inert_definition
+                symbol.kind in (FUNCTION, METHOD)
+                and not symbol.inert_definition
+                and not symbol.quiet_header
             ):
                 out.append(symbol.id)
         return sorted(out)

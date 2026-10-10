@@ -593,3 +593,127 @@ def test_evp7_line_endings_are_no_change_inside_a_cython_string():
     crlf = {"pkg/_ext.pyx": read("pkg/_ext.pyx", text.replace("\n", "\r\n"))}
     changes = cython_changes(lf, crlf)
     assert not changes.functions and not changes.names
+
+
+# The strata shape: escalating a test module follows the code that runs when
+# it is imported, not the bodies of its fixtures.
+
+FIXTURE_MODULE = """\
+import pytest
+
+from pkg.state import set_mode
+
+CASES = {cases}
+
+
+@pytest.fixture{fixture_args}
+def fast():
+    set_mode("fast")
+    yield
+
+
+@pytest.mark.parametrize("c", CASES)
+def test_a(c):
+    pass
+
+
+def test_r(fast):
+    pass
+"""
+
+
+@pytest.mark.parametrize(
+    "fixture_args, readers",
+    [
+        # The fixture's body runs in the tests that use it, which the
+        # recording saw: a changed parameter list changes nothing it does.
+        ("", False),
+        ('(scope="module")', False),
+        # Its decorator's argument calls the writer as the module is
+        # imported: what that writes reaches every reader.
+        ('(params=[set_mode("fast")])', True),
+    ],
+)
+def test_evp6_a_fixture_body_is_not_import_time_code(repo, fixture_args, readers):
+    """``CASES`` changing escalates the test module; before, that followed
+    every fixture's body as if it ran at import, so a fixture writing shared
+    state selected every test reading it (strata: one changed test-data list
+    selected 6 175 of 6 231 tests)."""
+    module = FIXTURE_MODULE.format(cases='["x"]', fixture_args=fixture_args)
+    files = {**BASE, "pkg/state.py": STATE, "tests/test_b.py": READS_MODE}
+    files["tests/test_a.py"] = module
+    base = repo.commit(files)
+    ev = repo.collect()
+    changed = FIXTURE_MODULE.format(cases='["x", "y"]', fixture_args=fixture_args)
+    head = repo.commit({"tests/test_a.py": changed})
+    plan = _plan(repo, base, head, ev)
+    assert {A, "tests/test_a.py::test_r"} <= selected(plan)
+    # (test_b may be selected for its own reasons: the recording saw it stat
+    # tests/test_a.py.) Only the decorator's call reaches it as a reader.
+    (b,) = [d for d in plan.decisions if d.target.runner_id == B]
+    assert ("executed_reader" in {r.rule for r in b.reasons}) is readers
+
+
+QUIET = """\
+import functools
+
+import pytest
+
+from pkg.deco import register
+
+property = register  # rebound: no longer the builtin
+
+
+@pytest.fixture
+def plain():
+    pass
+
+
+@pytest.fixture(scope="session", params=[1, pytest.param(2, id="two")])
+def with_params():
+    pass
+
+
+@pytest.mark.parametrize("x", CASES)
+def test_marked(x):
+    pass
+
+
+@functools.lru_cache(maxsize=None)
+def cached():
+    pass
+
+
+@pytest.fixture(params=make())
+def calls_in_args():
+    pass
+
+
+@register
+def project_decorator():
+    pass
+
+
+@property
+def rebound_builtin():
+    pass
+
+
+def computed_default(x=make()):
+    pass
+
+
+def calls_in_annotation(x: make()):
+    pass
+"""
+
+
+def test_evp6_which_def_headers_run_no_project_code(repo):
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    repo.commit({"pkg/__init__.py": "", "pkg/deco.py": "def register(f):\n    return f\n",
+                 "pkg/mod.py": QUIET})  # fmt: skip
+    index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
+    quiet = {s.name for s in index.symbols.values() if s.module == "pkg.mod" and s.quiet_header}
+    assert quiet == {"plain", "with_params", "test_marked", "cached"}

@@ -603,3 +603,43 @@ def test_rec9_an_emptied_record_under_a_launcher_is_a_problem(tmp_path):
     assert child.resolve(tmp_path, 10, 20, 5, uv).problems == []
     (directory / "22-6.jsonl").write_text("")
     assert child.resolve(tmp_path, 10, 20, 5, uv).problems
+
+
+# REC-1 follow-up: what the standard library runs to ask about the machine.
+
+
+@pytest.mark.parametrize(
+    "argv, problem",
+    [
+        (["uname", "-p"], False),
+        (["/usr/bin/uname", "-m"], False),
+        (["file", "-b", "/opt/py/bin/python3.13"], False),
+        (["/sbin/ldconfig", "-p"], False),
+        (["file", "-b", "data/table.bin"], True),
+        (["file", "-b", "/repo/data/table.bin"], True),
+        (["ldconfig"], True),
+        (["make", "data"], True),
+    ],
+)
+def test_rec1_a_system_query_outside_every_test_is_no_problem(tmp_path, argv, problem):
+    """pytest-xdist workers run ``platform.processor()`` and
+    ``platform.architecture()`` as they start: ``uname -p`` and ``file -b
+    <python>`` outside every test made every change of strata select every
+    test once spawns outside tests counted."""
+    (tmp_path / child.CHILDREN).mkdir()
+    assert bool(child.resolve(tmp_path, 10, 11, 5, argv).problems) is problem
+
+
+def test_rec4_a_windows_environment_is_found_whatever_the_case(monkeypatch):
+    """Windows roots are case-folded; the interpreter's prefix must be too,
+    or the environment's own scripts count as the project's."""
+    import ntpath
+
+    monkeypatch.setattr(child.os, "name", "nt")
+    monkeypatch.setattr(child.os, "path", ntpath)
+    monkeypatch.setattr(child.os, "sep", "\\")
+    for name in ("prefix", "exec_prefix", "base_prefix"):
+        monkeypatch.setattr(child.sys, name, "C:\\Users\\Me\\Repo\\.venv")
+    owned = child.environments(("c:\\users\\me\\repo\\",))
+    monkeypatch.undo()
+    assert ".venv\\scripts\\" in owned and ".venv\\lib\\site-packages\\" in owned

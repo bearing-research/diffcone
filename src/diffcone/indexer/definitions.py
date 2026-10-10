@@ -6,7 +6,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 
-from diffcone.indexer.literals import _collect_store_names
+from diffcone.indexer.literals import COMPREHENSIONS, _collect_store_names
 from diffcone.indexer.scopes import ModuleScope, VariableStatement, _absolute_module
 from diffcone.indexer.syntax import DEF_NODES, _digest, iter_scope_statements
 from diffcone.model import CLASS_STATEMENT, OPAQUE_ATTRIBUTE
@@ -246,6 +246,85 @@ def _inert_def(node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope)
     return all(_is_inert_decorator(d, scope) for d in node.decorator_list) and all(
         _is_literal(d) for d in defaults
     )
+
+
+# Decorators that take the function and return a wrapper or the function
+# itself without calling it: executing a ``def`` under them runs no code of
+# the project (``quiet_header``). By canonical name; ``pytest.mark`` and its
+# attributes as a prefix; builtins only where the module does not rebind them.
+_QUIET_DECORATORS = _INERT_DECORATORS | frozenset(
+    {
+        "pytest.fixture",
+        "pytest.yield_fixture",
+        "functools.cache",
+        "functools.lru_cache",
+        "functools.cached_property",
+        "functools.singledispatch",
+        "functools.singledispatchmethod",
+        "contextlib.contextmanager",
+        "contextlib.asynccontextmanager",
+        "abc.abstractmethod",
+    }
+)
+_QUIET_PREFIXES = ("pytest.mark.",)
+_QUIET_BUILTINS = frozenset({"property", "staticmethod", "classmethod"})
+# Calls a quiet decorator's arguments may make: they build a value and call
+# nothing back (``pytest.param(1, id="one")``).
+_QUIET_CALLS = frozenset({"pytest.param"})
+
+
+def _canonical(node: ast.expr, scope: ModuleScope) -> str | None:
+    parts = _flatten_chain(node)
+    if parts is None:
+        return None
+    binding = scope.imports.get(parts[0])
+    if binding is None:
+        if len(parts) == 1 and parts[0] in _QUIET_BUILTINS and parts[0] not in scope.bindings:
+            return parts[0]
+        return None
+    base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+    return ".".join([base, *parts[1:]])
+
+
+def _quiet_name(name: str | None) -> bool:
+    return name is not None and (
+        name in _QUIET_DECORATORS or name in _QUIET_BUILTINS or name.startswith(_QUIET_PREFIXES)
+    )
+
+
+def _calls_nothing(node: ast.AST, scope: ModuleScope) -> bool:
+    """No call anywhere in ``node`` but the value-building ``_QUIET_CALLS``,
+    and nothing that defers code (a lambda or comprehension builds a function;
+    an await or yield cannot appear here)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Call):
+            if _canonical(sub.func, scope) not in _QUIET_CALLS:
+                return False
+        elif isinstance(sub, (ast.Lambda, *COMPREHENSIONS, ast.NamedExpr)):
+            return False
+    return True
+
+
+def _quiet_def(node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope) -> bool:
+    """Whether executing the ``def`` runs no code of the project: every
+    decorator a quiet one (with arguments that call nothing), literal
+    defaults, annotations that call nothing. The function's body does not
+    run then, so nothing it calls runs at import."""
+    for decorator in node.decorator_list:
+        func = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if not _quiet_name(_canonical(func, scope)):
+            return False
+        if isinstance(decorator, ast.Call) and not all(
+            _calls_nothing(a, scope) for a in (*decorator.args, *decorator.keywords)
+        ):
+            return False
+    defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
+    if not all(_is_literal(d) for d in defaults):
+        return False
+    annotations = [a.annotation for a in _annotated_args(node.args)]
+    if node.returns is not None:
+        annotations.append(node.returns)
+    return all(_calls_nothing(a, scope) for a in annotations if a is not None)
 
 
 def _has_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

@@ -287,3 +287,12 @@ All fixed: IDX-7, IDX-8, PLN-6 (static batch), REC-8, REC-10 (recorder batch), D
 - Crash: a `.py` path containing a newline breaks `cat-file --batch` (IDX-8).
 - Silent: an `always_run` entry with a misspelt runner or pattern only shows `matched: 0`, though declarations.md says a typo can't silently remove tests (PLN-6).
 - Stale text: item 15 promises an exit line at `atexit` and says outside-window spawns "flag as today"; item 10's mechanism describes the old word-list rule (REC-10); the `pytest_static.py` docstring omits `--ignore`/`--ignore-glob` and run-argument paths, and `collection_check.py` discovers without the command's pytest arguments (DSC-11); evidence_design.md says `plan --evidence auto` picks a store whose environment matches, but `find_store` ignores the environment and `plan` never checks it (EVP-9); `release.yml`'s version regex leaves `.` unescaped.
+
+## Found while validating round 3 on strata (V)
+
+| id | finding | status |
+|---|---|---|
+| V1 | REC-1's accounting of spawns outside every test flagged pytest-xdist workers' start-up queries (`platform` running `uname -p` and `file -b <python>`), so every change of strata selected every test. | fixed: standard-library system queries (`uname`, `file -b <interpreter>`, `ldconfig -p`) are no problem |
+| V2 | Escalating a module (EVP-2/EVP-6's `_import_writes`) followed every non-inert `def` body as import-time code; a changed test-data list in a module with a fixture writing shared state selected 6 175 of strata's 6 231 tests. | fixed: a `def` whose header runs no project code (`quiet_header`: `pytest.fixture`, `pytest.mark.*`, `functools`, `contextlib`, `property`, with arguments, defaults and annotations that call nothing) is not followed |
+| V3 | REC-4's `environments()` compared the prefix with case-folded roots without folding it on Windows: the environment was not found. | fixed |
+| V4 | With V1 and V2 fixed, strata's first replayed commit selects 2 693 of 6 231 (43 %) where 0.3 selected 582 (9.3 %): 2 103 tests only through `lookup_site`. strata's run-time module handles (`_deserialize_module`, `_ensure_cell_module`) unbind every literal table (PLN-2), so `strata.__getattr__`'s lazy table can import any module, and EVP-3 lets it (and `GCTracker`'s graph walk) see a test module's changed name. | open: precision, a decision for the user |

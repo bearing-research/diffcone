@@ -89,6 +89,29 @@ TOOLS = (
 INTERPRETER = re.compile(r"python[0-9.]*(\.exe)?", re.IGNORECASE)
 
 
+def system_query(argv: list[str] | None) -> bool:
+    """A program the standard library runs to ask about the machine, which
+    runs no Python and reads no file of the checkout: ``uname`` and ``file
+    -b <interpreter>`` (``platform.processor()``, ``platform.architecture()``),
+    ``ldconfig -p`` (``ctypes.util.find_library``). pytest-xdist workers
+    call them as they start, outside every test."""
+    if not argv:
+        return False
+    name = os.path.basename(argv[0]).lower()
+    if name == "uname":
+        return True
+    if name == "ldconfig":
+        return argv[1:] == ["-p"]
+    if name == "file":
+        return (
+            len(argv) == 3
+            and argv[1] == "-b"
+            and os.path.isabs(argv[2])
+            and bool(INTERPRETER.fullmatch(os.path.basename(argv[2])))
+        )
+    return False
+
+
 # --------------------------------------------------------------------------- spawn accounting
 
 
@@ -334,7 +357,7 @@ def _resolve(
     if (out / f"process-{pid}.json").exists():
         return
     started = _records(out, pid, start)
-    if inert or _matches(argv, TOOLS):
+    if inert or _matches(argv, TOOLS) or system_query(argv):
         for path in started:
             _follow(out, path, tree, seen)
         return
@@ -432,6 +455,8 @@ def environments(roots: tuple[str, ...]) -> tuple[str, ...]:
     for prefix in {sys.prefix, sys.exec_prefix, sys.base_prefix}:
         for path in (os.path.abspath(prefix), os.path.realpath(prefix)):
             path = os.path.join(path, "")
+            if os.name == "nt":
+                path = os.path.normcase(path)  # as the roots are
             for root in roots:
                 if not path.startswith(root):
                     continue

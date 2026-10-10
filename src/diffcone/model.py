@@ -80,6 +80,11 @@ class Symbol:
     # Functions: the decorators and defaults alone run nothing (annotations
     # aside): adding such a function registers nothing anywhere.
     inert_header: bool = False
+    # Functions: executing the ``def`` runs no code of the project (quiet
+    # decorators such as ``pytest.fixture``, arguments, defaults and
+    # annotations that call nothing): the body is not code that runs at
+    # import, so neither is anything it calls.
+    quiet_header: bool = False
     # The symbol's own code reads a docstring (``obj.__doc__``, ``__doc__``,
     # ``getdoc(obj)``): a docstring change of what it references, or of its
     # module, reaches it.
