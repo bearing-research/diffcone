@@ -130,6 +130,17 @@ def file_id(repo: Path, revision: str, path: str) -> str | None:
     return out.decode().strip() or None
 
 
+def has_entry(repo: Path, revision: str, path: str) -> bool:
+    """Whether a commit, or the index (``INDEX``, at any stage), has an entry
+    at ``path``. Unlike file_id, a failure of git is not an absence: it
+    raises GitError."""
+    if revision == INDEX:
+        out = _git(repo, ["ls-files", "-z", "--cached", "--", path])
+    else:
+        out = _git(repo, ["ls-tree", "-z", "--name-only", revision, "--", path])
+    return path.encode("utf-8", "surrogateescape") in out.split(b"\0")
+
+
 def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str, str]:
     """Every path whose content differs between ``commit`` and a snapshot
     (``kind``: a commit, the index or the working tree, untracked files
@@ -293,6 +304,8 @@ def _ls_tree(repo: Path, commit: str, pathspecs: list[str]) -> list[tuple[str, s
 
 
 def _root_pathspecs(source_roots: list[str]) -> list[str]:
+    """The roots' directories as pathspecs; none (everything) when one
+    root is the repository."""
     roots = [_normalise_root(r) for r in source_roots]
     return [] if "" in roots else [r for r in roots if r]
 
@@ -387,15 +400,14 @@ def list_root_files(repo: Path, commit: str) -> set[str]:
 
 
 def _pathspec(source_roots: list[str]) -> list[str]:
-    roots = [_normalise_root(r) for r in source_roots]
-    if "" in roots:
-        return []
-    return ["--", *[r for r in roots if r]]
+    """_root_pathspecs as the tail of a git command line."""
+    specs = _root_pathspecs(source_roots)
+    return ["--", *specs] if specs else []
 
 
-# ``git ls-files -t`` tags: H cached, S skip-worktree (sparse checkout), M unmerged,
-# ? untracked (with --others).
-TAG_CACHED, TAG_SKIP_WORKTREE, TAG_UNMERGED, TAG_OTHER = "H", "S", "M", "?"
+# ``git ls-files -t`` tags read here: S skip-worktree (sparse checkout), M
+# unmerged, ? untracked (with --others); H, cached, is any other.
+TAG_SKIP_WORKTREE, TAG_UNMERGED, TAG_OTHER = "S", "M", "?"
 
 
 def _ls_files_tagged(repo: Path, args: list[str], source_roots: list[str]) -> list[tuple[str, str]]:
@@ -425,7 +437,12 @@ def _ls_files_staged_ids(repo: Path, source_roots: list[str]) -> dict[str, tuple
 
 def _ls_files_staged(repo: Path, source_roots: list[str]) -> dict[str, str]:
     """Stage-0 index entries under the roots: path -> mode."""
-    return {path: mode for path, (mode, _) in _ls_files_staged_ids(repo, source_roots).items()}
+    return _modes(_ls_files_staged_ids(repo, source_roots))
+
+
+def _modes(entries: dict[str, tuple[str, str]]) -> dict[str, str]:
+    """path -> mode of _ls_files_staged_ids's entries."""
+    return {path: mode for path, (mode, _) in entries.items()}
 
 
 def _flagged_paths(repo: Path, pathspec: list[str]) -> dict[str, bool]:
@@ -607,21 +624,24 @@ def read_index_snapshot(
     """
     head = resolve_commit(repo, "HEAD")
     errors: list[AnalysisError] = []
-    paths: list[str] = []
+    unmerged: set[str] = set()
+    found: dict[str, None] = {}  # in order, once each
     for tag, path in _ls_files_tagged(repo, ["--cached"], source_roots):
         if not path.endswith(".py"):
             continue
         if tag == TAG_UNMERGED:
-            if path not in paths and not any(e.path == path for e in errors):
+            if path not in found and path not in unmerged:
+                unmerged.add(path)
                 errors.append(
                     AnalysisError(
                         INDEX, path, "unmerged in the index (merge in progress); no staged content"
                     )
                 )
-        elif path not in paths:
-            paths.append(path)
-    paths = [p for p in paths if not any(e.path == p for e in errors)]
-    staged = _ls_files_staged(repo, source_roots)
+        else:
+            found[path] = None
+    paths = [p for p in found if p not in unmerged]
+    staged_ids = _ls_files_staged_ids(repo, source_roots)
+    staged = _modes(staged_ids)
     link_paths = [p for p, m in staged.items() if m == SYMLINK_MODE]
     paths = [p for p in paths if staged.get(p) != SYMLINK_MODE]
     targets = read_files(repo, "", link_paths, label=INDEX)
@@ -662,9 +682,7 @@ def read_index_snapshot(
         python_paths=python_paths,
         errors=errors,
         other_files={
-            p: oid
-            for p, (_, oid) in sorted(_ls_files_staged_ids(repo, source_roots).items())
-            if _other_file(p, source_roots)
+            p: oid for p, (_, oid) in sorted(staged_ids.items()) if _other_file(p, source_roots)
         },
         cython_files=read_files(
             repo,

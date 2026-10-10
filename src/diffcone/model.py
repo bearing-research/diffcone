@@ -47,6 +47,32 @@ EXTERNAL_WRITTEN = " on an external module in-scope code writes to"
 # (``__import__(name)`` as a statement): it runs the import, but hands the
 # module to no lookup.
 DISCARDED_IMPORT = ", the module not kept"
+# Detail prefixes of the dynamic references to project code a symbol runs by
+# naming it in a string (indexer.scripts): a Python program it builds at run
+# time, and a ``.py`` file no module name maps to. Evidence mode follows
+# child processes itself and leaves both to static planning.
+RUNS_PROGRAM = "starts a Python program it builds at run time"
+RUNS_SCRIPT = "runs or reads "
+# ``runpy.run_path(<non-literal>)``: runs a file by a path known at run time.
+RUN_PATH = "runpy.run_path"
+# Dynamic references that run code named at run time without saying "import"
+# in their detail.
+_RUNS_NAMED = ("runpy.run_module", RUN_PATH, RUNS_PROGRAM, RUNS_SCRIPT)
+
+
+def imports_anything(detail: str) -> bool:
+    """Whether an UNRESOLVED_DYNAMIC reference, by its detail, imports or
+    runs a module, program or file named at run time, so that any module in
+    scope may run behind it and its module's import closure bounds nothing.
+    The one reading of these details for static planning, evidence mode and
+    discovery. The indexer's details of such references say "import"
+    (``importlib.import_module(<non-literal>)``, ``__import__(...)``, "an
+    import of anything", "an import of what the data names", an import from
+    above the top-level package), except ``runpy``'s calls and the programs
+    and scripts a symbol starts, which name what they run."""
+    return "import" in detail or detail.startswith(_RUNS_NAMED)
+
+
 # Modules whose functions hand out objects nothing names (``gc.get_objects()``),
 # and the members of them that hand out none (``gc.collect()``,
 # ``gc.get_stats()``, ``gc.callbacks``).
@@ -78,6 +104,7 @@ GRAPH_INERT = frozenset(
 )
 # SourceIndex.reflection detail of code that hands such a module on, or looks
 # a name up on it by a name nothing bounds: it may walk the object graph.
+GRAPH_HANDLE = ".<object graph module>"
 # Edge detail from a module to code that installs something in
 # sys.modules under its name for good: importers depend on that code,
 # but the module does not run it (indexer.core._install_edges).
@@ -85,7 +112,6 @@ INSTALLED = "installed in sys.modules"
 # The same, by code installing an object under a name nothing bounds (or
 # only by a prefix): static planning only (audit round 3, W25).
 INSTALLED_ANYWHERE = "installed in sys.modules under a name nothing bounds"
-GRAPH_HANDLE = ".<object graph module>"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
 
@@ -166,6 +192,20 @@ def attribute_reachable(symbol: Symbol, modules: set[str] | frozenset[str]) -> b
 # module's variable (``mod.X = v``) depends only on it existing (REBINDS).
 WRITES = "writes"
 REBINDS = "rebinds"
+# Edge detail from a variable to a function that writes into it in place
+# (``REG[k] = v``, ``REG.append(v)`` in the function): what it holds depends
+# on what the writer is handed.
+MUTATED_BY = "mutated_by"
+# Edge detail to code a decorator or a base class may keep and call later,
+# from what keeps it (indexer.core._registrations): the decorator's receiver
+# (``app`` of ``@app.command``), a variable the decorator writes into, a base
+# whose ``__init_subclass__`` runs for the subclass. Code that later calls
+# the registry depends on what it holds; the code that registers does not.
+REGISTERS = "registers"
+# A lifecycle dependency ``dynamic:<module>`` says the target runs code with
+# that module's globals (a doctest): it is affected by any impact-carrying
+# change in the module's import closure, as a dynamic reference is.
+DYNAMIC_DEPENDENCY = "dynamic:"
 
 
 @dataclass(frozen=True, order=True)
@@ -174,6 +214,16 @@ class Edge:
     target: str
     kind: str
     detail: str = ""
+
+
+def edge_mark(edge: Edge) -> str:
+    """What kind of use a ``references`` edge is, beyond a plain one: its
+    detail (WRITES, REBINDS, MUTATED_BY, REGISTERS, INSTALLED,
+    INSTALLED_ANYWHERE, or anything else the resolver says). Only a
+    ``references`` edge says so: the detail of any other kind is not a
+    mark (a name match carries the unresolved name, so a bare call of a
+    function named ``rebinds`` is a call), and gives ""."""
+    return edge.detail if edge.kind == REFERENCES else ""
 
 
 @dataclass(frozen=True, order=True)
@@ -264,11 +314,6 @@ class SourceIndex:
     # the module may find what those can name (planner._ImportReach;
     # audit round 3, W24).
     module_writers: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    # Functions, methods and classes used as a value somewhere (passed,
-    # stored, returned): code the analysis cannot see may call them. Static
-    # planning uses this through the indexer; evidence mode asks whether only
-    # test code can run an external module's writers (roadmap item 14).
-    escaped_values: set[str] = field(default_factory=set)
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)
@@ -302,8 +347,9 @@ class SourceIndex:
     # ``CLASS_STATEMENT`` the bases, keywords and decorators.
     class_attributes: dict[str, dict[str, str]] = field(default_factory=dict)
     # Class -> the in-scope classes its statement names as bases (resolved).
-    # Evidence mode walks class hierarchies with it; static planning does not
-    # use it.
+    # Evidence mode walks class hierarchies with it; static planning finds
+    # the constructors a name-matched class runs through it
+    # (planner._constructor_hooks).
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Classes whose creation may run code that reads their attributes:
     # decorators, keywords (a metaclass), or a base the index cannot see

@@ -45,7 +45,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 39: stores undone after the test (indexer/patches.py: SCOPED, SWAP,
+# 40: no escaped_values; 39: stores undone after the test (indexer/patches.py: SCOPED, SWAP,
 # external writes, restored process state); 38: attribute_modules,
 # any_module_readers, module_writers, module-attribute references,
 # unpicklers and file loaders, installs under unbounded names;
@@ -59,7 +59,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 39
+INDEX_FORMAT = 40
 
 
 def _indexer_fingerprint() -> str:
@@ -118,7 +118,6 @@ def index_to_dict(index: SourceIndex) -> dict:
         "attribute_modules": sorted(index.attribute_modules),
         "any_module_readers": sorted(index.any_module_readers),
         "module_writers": {m: list(w) for m, w in sorted(index.module_writers.items())},
-        "escaped_values": sorted(index.escaped_values),
         "other_files": dict(sorted(index.other_files.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
         "edges": [asdict(e) for e in sorted(index.edges)],
@@ -179,7 +178,6 @@ def index_from_dict(data: dict) -> SourceIndex:
         attribute_modules=set(data["attribute_modules"]),
         any_module_readers=set(data["any_module_readers"]),
         module_writers={m: tuple(w) for m, w in data["module_writers"].items()},
-        escaped_values=set(data["escaped_values"]),
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},
         external_sites={(s, d): tuple(w) for s, d, w in data["external_sites"]},

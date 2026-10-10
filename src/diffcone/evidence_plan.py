@@ -143,7 +143,6 @@ from diffcone.evidence import (
     UNINDEXED_MODULE,
     Evidence,
 )
-from diffcone.indexer.scripts import RUNS_PROGRAM, RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ATTRIBUTE_KINDS,
@@ -161,9 +160,14 @@ from diffcone.model import (
     INSTALLED_ANYWHERE,
     METHOD,
     MODULE,
+    MUTATED_BY,
     OPAQUE_ATTRIBUTE,
     REBINDS,
     REFERENCES,
+    REGISTERS,
+    RUN_PATH,
+    RUNS_PROGRAM,
+    RUNS_SCRIPT,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
@@ -172,6 +176,8 @@ from diffcone.model import (
     Symbol,
     UnresolvedReference,
     attribute_reachable,
+    edge_mark,
+    imports_anything,
 )
 from diffcone.planner import (
     BUILD_SCRIPTS,
@@ -259,7 +265,10 @@ def _site_kind(detail: str) -> str:
         # On an external module: in-scope code anywhere may have stored there,
         # not only the site's own import closure.
         return SITE_ANY
-    if "import" in detail or detail.startswith("runpy.run_module"):
+    if detail.startswith(RUN_PATH):
+        # Runs a file whose code may look anything up, not only import.
+        return SITE_ANY
+    if imports_anything(detail):
         return SITE_IMPORT
     if detail.startswith(("getattr(<non-literal>) on a receiver from elsewhere", "vars(")):
         return SITE_ELSEWHERE
@@ -461,20 +470,21 @@ class _Observers:
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         for index in (c_index, other):
             for edge in index.edges:
-                if edge.detail in (INSTALLED, INSTALLED_ANYWHERE):
+                mark = edge_mark(edge)
+                if mark in (INSTALLED, INSTALLED_ANYWHERE):
                     continue  # static planning's: the record holds what ran
                 if edge.kind in (REFERENCES, DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     written_only[edge.target][edge.source].add(
-                        edge.detail if edge.detail in (WRITES, REBINDS) else ""
+                        mark if mark in (WRITES, REBINDS) else ""
                     )
-                    if edge.detail.startswith("attribute:"):
-                        self.attribute_readers[edge.detail[len("attribute:") :]].add(edge.source)
-                    if edge.detail == "mutated_by":
+                    if mark.startswith("attribute:"):
+                        self.attribute_readers[mark[len("attribute:") :]].add(edge.source)
+                    if mark == MUTATED_BY:
                         self.writes[edge.target].add(edge.source)
-                    elif edge.detail != "registers":
+                    elif mark != REGISTERS:
                         self.calls[edge.source].add(edge.target)
-                    if edge.detail in ("mutated_by", "registers"):
+                    if mark in (MUTATED_BY, REGISTERS):
                         # A registry and what is put in it (``_forward``).
                         self.holds[edge.source].add(edge.target)
                 elif edge.kind in (IMPORTS, IMPORTS_NAME):

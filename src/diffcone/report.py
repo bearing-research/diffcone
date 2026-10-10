@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 from typing import Any
 
-from diffcone.model import SnapshotInfo
+from diffcone.model import UNRESOLVED_DYNAMIC, SnapshotInfo
 from diffcone.planner import RULE_ALWAYS_RUN, Decision, Plan, Reason, without_cyclic_gc
 
 # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
@@ -264,7 +264,7 @@ def to_text(plan: Plan) -> str:
     if not unselected:
         lines.append("  (none)")
     matched = [u for u in plan.unresolved if u.matched_affected_symbols]
-    dynamic = [u for u in plan.unresolved if u.kind == "dynamic"]
+    dynamic = [u for u in plan.unresolved if u.kind == UNRESOLVED_DYNAMIC]
     lines.append("")
     lines.append(
         f"unresolved relationships: {len(plan.unresolved)} "

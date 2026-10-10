@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS, _flatten_chain
 from diffcone.indexer.scopes import External, Resolved, Scope
 from diffcone.indexer.uses import CONTAINER_MUTATORS
-from diffcone.model import CLASS, FUNCTION, METHOD, REFERENCES, VARIABLE, Edge
+from diffcone.model import CLASS, FUNCTION, METHOD, MUTATED_BY, REFERENCES, VARIABLE, Edge
 
 if TYPE_CHECKING:
     from diffcone.indexer.references import _ReferenceCollector
@@ -549,7 +549,7 @@ def apply_writes(indexer: Resolver) -> None:
             # part of its hash already.
             continue
         if writes_through(record):
-            out.edges.add(Edge(variable, caller, REFERENCES, "mutated_by"))
+            out.edges.add(Edge(variable, caller, REFERENCES, MUTATED_BY))
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

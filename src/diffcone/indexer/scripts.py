@@ -54,17 +54,23 @@ from typing import TYPE_CHECKING
 from diffcone.indexer.definitions import _flatten_chain
 from diffcone.indexer.scopes import ModuleNode, Resolved
 from diffcone.indexer.syntax import _digest
-from diffcone.model import IMPORTS, MODULE, UNRESOLVED_DYNAMIC, Edge, UnresolvedReference
+from diffcone.model import (
+    IMPORTS,
+    MODULE,
+    RUNS_PROGRAM,
+    RUNS_SCRIPT,
+    UNRESOLVED_DYNAMIC,
+    Edge,
+    UnresolvedReference,
+)
 from diffcone.snapshot import module_name_for
 
 if TYPE_CHECKING:
     from diffcone.indexer.references import _ReferenceCollector
     from diffcone.indexer.resolver import Resolver
 
-# Detail prefixes of the dynamic references this module records. Evidence
-# mode follows child processes itself and leaves both to static planning.
-RUNS_PROGRAM = "starts a Python program it builds at run time"
-RUNS_SCRIPT = "runs or reads "
+# The detail prefixes of the dynamic references this module records,
+# RUNS_PROGRAM and RUNS_SCRIPT, live in diffcone.model.
 
 _PY_PATH = re.compile(r"""[^\s'"=:,;()<>|&]*\.pyw?(?![\w])""")
 _DASH_M = re.compile(r"(?:^|\s)-m\s*([A-Za-z_][\w.]*)")

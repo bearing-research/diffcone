@@ -158,12 +158,19 @@ blocks are still symbols and are excluded from their scope's body hash.
 | `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, or hands it to a parameter or receiver that the callee changes in place (`set_mode(REG)`, `registry.register(x)`; `indexer/writes.py`), so readers of the variable depend on its writers |
 | `references` (detail `writes`) | function/module → variable | the source names the variable only to empty or add to it, as a statement whose value is unused (`X.clear()`, `X.update(d)`, `X.append(v)`, `X.pop(k, None)`, and `X[k] = v` on a dict), the variable's initialiser builds a builtin container (`{}`, `set()`, `collections.defaultdict(list)`: `Symbol.builtin_container`) and no code binds it anew (`global X; X = ...` in a function, `mod.X = ...`), and no in-scope class defines `__del__` (emptying a container runs the finalizers of what it held). Such a site does the same whatever the container holds; otherwise the reference is an ordinary one. Not modelled: a weakref callback or `weakref.finalize` on what it held |
 | `references` (detail `rebinds`) | function/module → variable | `mod.X = v` from another module: the source needs `X` to exist, not its value |
+| `references` (detail `registers`) | registry → function/class | the target is kept by the source to be called later: a decorator's receiver, a variable a decorator writes into, a base class whose `__init_subclass__` runs for it (see Registration) |
 | `defined_in` | member → container | every class, function and method |
 | `imports` | module, class or function → module | `import m`, `from m import sub`, `importlib.import_module("m")`; an import in a class body gives the class and its module the edge, as it runs when the class is created |
 | `imports_name` | module → symbol | module-level `from m import name` |
 | `entry` | target → symbol | manifest |
 | `lifecycle` | target → symbol | manifest; the lifecycle dependencies the same target had at the base are added to the head target's (a fixture, conftest or setup it used before the change still counts); a target whose manifest does not list its entry's module also reaches that module, after the search, as the runner imports it |
 | `unresolved_name_match` | function → changed symbol | synthesised by the planner, see below |
+
+A detail marks what kind of use an edge is (`mutated_by`, `writes`,
+`rebinds`, `registers`, `installed in sys.modules`) only on a `references`
+edge (`model.edge_mark`). Any other kind's detail is no mark: a name match
+carries the unresolved name, so a bare call of a function named `rebinds`
+is a call (audit round 4, Q1).
 
 ### Resolution rules
 
@@ -806,7 +813,8 @@ Edge rules (impact flows from the edge's target back to its source):
 | `references`, `entry`, `lifecycle`, `unresolved_name_match` | always | behaviour |
 | `references` (detail `mutated_by`) | the writer is affected | content |
 | `references` (detail `writes`) | the variable is affected beyond its content (its own change, a rebinding, an initialiser that captured a changed value) | behaviour |
-| `references` (detail `rebinds`) | the variable is **deleted** | structural |
+| `references` (detail `rebinds`) | the variable is structurally affected (deleted, redefined, or invalidated by its container) | structural |
+| `references` (detail `registers`) | always | registered |
 | `defined_in` | container is structurally affected | structural |
 | `imports` | imported module affected (import-time code) | behaviour (structural if deleted) |
 | `imports_name` | imported name was **deleted** | structural |
@@ -818,7 +826,10 @@ a site that only empties or adds to it (`writes`: an autouse fixture
 running `REG.clear()` after every test is not a reader of `REG`, audit
 round 3, W14). A variable's own change, or one reached any other way, is
 behaviour and reaches those sites too, since the object may be of another
-kind. REGISTERED is weaker still (see Registration).
+kind. **Registered**, weaker still, says what a registry holds changed
+(see Registration): it reaches code that calls the registry later, as
+behaviour, but no module, since the import-time code that registers is
+unchanged.
 
 So: changing a function body reaches its callers and their callers; adding a
 method or editing a class attribute invalidates all methods of the class;
@@ -875,7 +886,13 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). A module other code puts objects on can hold what
+  `dynamic_reference`). One that imports or runs code named at run time
+  (`import_module(name)`, `__import__`, `runpy.run_module`,
+  `runpy.run_path`, a program started with `python -m <name>`, code read
+  at run time) sees any change; `model.imports_anything` reads that off
+  the reference's detail, the one reading static planning, evidence mode
+  and discovery share (audit round 4, Q2: `runpy`'s calls and `python -m
+  <parameter>` had been closure-bounded). A module other code puts objects on can hold what
   that code can name, so the closure follows from it to the writer's
   module as well (audit round 3, W24): a store of one of its attributes
   (`m.x = v`, `setattr(m, ...)`; not one undone after the test, see

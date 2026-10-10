@@ -25,19 +25,41 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
   its readers but not a ``writes`` site, code that only empties or adds to
   a builtin container (``REG.clear()``); any other impact on the variable
   reaches those sites too. ``rebinds`` (``mod.X = v``) carries only a
-  deletion.
+  structural impact (a deletion, a redefinition). ``registers`` (registry
+  -> what it holds) carries any impact as REGISTERED: code that later
+  calls the registry is affected, a module (whose import-time code
+  registers, unchanged) is not.
+* A detail is such a mark only on a ``references`` edge (model.edge_mark):
+  a name match's detail is the unresolved name, and a call of a function
+  named ``rebinds`` is a call.
 
-A change that runs at import (a module body change, a variable, a class, a
-function's decorators or defaults, an added or deleted definition) also
-seeds its module, so every module that transitively imports it is reached,
-and every variable a function it calls mutates in place (``mutated_by``),
-directly or through what that calls: changing the arguments of an
-import-time call changes what the callee leaves behind as a change to its
-body would (_import_call_effects). The same holds for any affected code,
-whoever runs it: what it hands the functions it calls may differ
-(``_store(m + "!")``, ``_store(compute())``), so a variable written in
-place depends on ``calls:`` of its writers, a pseudo-node that every
-caller reaches (_add_caller_effects; ``called_by`` steps).
+Seeds besides the changed symbols themselves:
+
+* A change that runs at import (_runs_at_import: a module body, a class, a
+  variable computed at import, a ``def`` whose decorators, defaults or
+  eager annotations run code, added, deleted or redefined) seeds its
+  module, so every module that transitively imports it is reached; and
+  every variable a function it calls mutates in place (``mutated_by``),
+  directly or through what that calls: changing the arguments of an
+  import-time call changes what the callee leaves behind as a change to
+  its body would (_import_call_effects). The same holds for any affected
+  code, whoever runs it: what it hands the functions it calls may differ
+  (``_store(m + "!")``, ``_store(compute())``), so a variable written in
+  place depends on ``calls:`` of its writers, a pseudo-node that every
+  caller reaches (_add_caller_effects; ``called_by`` steps).
+* A docstring-only change of a symbol whose decorator may read it
+  (``SourceIndex.doc_decorated``) seeds the symbol and its module; any
+  docstring-only change seeds the symbols that read docstrings of what
+  they reference (``Symbol.reads_docstrings``).
+* A symbol that runs a changed ``.py`` file no module name maps to
+  (``SourceIndex.script_refs``) is seeded.
+* A symbol with a dynamic reference is a pseudo-seed when a change lies in
+  its module's import closure, or whatever changed when the reference
+  imports or runs code named at run time (model.imports_anything), runs a
+  script that does, or looks a name up on an external module in-scope code
+  writes to.
+* After the search, a target whose manifest does not list its entry's
+  module reaches that module, which the runner imports.
 
 Every selection is backed by a concrete edge path or an explicit fallback
 rule. See internal/design.md.
@@ -77,13 +99,13 @@ from diffcone.discovery import (
 )
 from diffcone.evidence import Evidence, EvidenceError, has_commit
 from diffcone.indexer import build_index
-from diffcone.indexer.scripts import RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ANY_MODULE,
     CLASS,
     DECLARED,
     DEFINED_IN,
+    DYNAMIC_DEPENDENCY,
     ENTRY,
     EXTERNAL_WRITTEN,
     IMPORTS,
@@ -93,8 +115,11 @@ from diffcone.model import (
     LIFECYCLE,
     METHOD,
     MODULE,
+    MUTATED_BY,
     REBINDS,
     REFERENCES,
+    REGISTERS,
+    RUNS_SCRIPT,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
@@ -106,6 +131,8 @@ from diffcone.model import (
     SourceIndex,
     UnresolvedReference,
     attribute_reachable,
+    edge_mark,
+    imports_anything,
 )
 from diffcone.snapshot import (
     ASV_CONFIGS,
@@ -176,11 +203,6 @@ RULE_CYTHON_CALLER = "cython_caller"
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
-
-# A lifecycle dependency ``dynamic:<module>`` says the target runs code with
-# that module's globals (a doctest): it is affected by any impact-carrying
-# change in the module's import closure, as a dynamic reference is.
-DYNAMIC_DEPENDENCY = "dynamic:"
 
 CONSERVATIVE_RULES = frozenset(
     {
@@ -422,9 +444,14 @@ class Seeds:
     """Where a restricted search starts (evidence mode's escalation): the
     changes to plan from, plus other nodes with the reason each one is a
     starting point (a module whose import ran changed code). A restricted
-    search adds no dynamic-reference pseudo-seeds, no unanalysed-file
-    fallback and no target-level rules (new target, entry docstring,
-    ``dynamic:`` dependencies): the caller decides those."""
+    search drops the edges to code installing objects in ``sys.modules``
+    under a name nothing bounds (INSTALLED_ANYWHERE: the record shows what
+    such an object ran), and adds no dynamic-reference pseudo-seeds, no
+    seeds for symbols running a changed script, no unanalysed-file
+    fallback (changed non-Python files and build scripts), no fallback for
+    changed runner files outside the roots, and no target-level rules (new
+    target, changed lifecycle dependencies, entry docstring, ``dynamic:``
+    dependencies): the caller decides those."""
 
     changes: frozenset[str] = frozenset()
     nodes: dict[str, str] = field(default_factory=dict)
@@ -596,12 +623,13 @@ def _propagate(
 ) -> int | None:
     if edge.kind == DEFINED_IN:
         return STRUCTURAL if target_mode == STRUCTURAL else None
-    if edge.detail == "registers":
+    mark = edge_mark(edge)  # a name match's detail is no mark: it is a call
+    if mark == REGISTERS:
         return REGISTERED
-    if edge.detail == REBINDS:
+    if mark == REBINDS:
         # ``mod.X = v`` needs ``X`` to exist (a deletion), not its value.
         return STRUCTURAL if target_mode == STRUCTURAL else None
-    if edge.detail == WRITES and target_mode <= CONTENT:
+    if mark == WRITES and target_mode <= CONTENT:
         return None  # emptying or adding to a container reads nothing of it
     if target_mode == REGISTERED and source_is_module:
         return None  # registering ran at import, unchanged
@@ -610,7 +638,7 @@ def _propagate(
             return STRUCTURAL
         # Importing a module runs its import-time code.
         return BEHAVIOR if edge.kind == IMPORTS else None
-    if edge.detail == MUTATED_BY:
+    if mark == MUTATED_BY:
         return CONTENT
     return BEHAVIOR
 
@@ -650,14 +678,18 @@ RUNS_AT_IMPORT = "runs_at_import"
 READS_DOCSTRING = "reads_docstring"
 CALLED_AT_IMPORT = "called_at_import"
 CALLED_BY = "called_by"
-MUTATED_BY = "mutated_by"
 # What a call made at import can run: what the caller references (a
 # function, a class's constructor and special methods, a variable holding a
 # function), what an unresolved call may be, what the project declares.
 _CALL_KINDS = frozenset({REFERENCES, UNRESOLVED_NAME_MATCH, DECLARED})
-# Edge details that are no call: a write in place, an object installed in
-# ``sys.modules``.
+# Edge marks (edge_mark) that are no call: a write in place, an object
+# installed in ``sys.modules``.
 _NO_CALL = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
+
+
+def _is_call(edge: Edge) -> bool:
+    """Whether an edge is one a call can take (_CALL_KINDS, not _NO_CALL)."""
+    return edge.kind in _CALL_KINDS and edge_mark(edge) not in _NO_CALL
 
 
 def _import_call_effects(
@@ -687,13 +719,13 @@ def _import_call_effects(
         node = queue.popleft()
         if not _is_name_node(node):
             for source, edge, revs in graph.reverse.get(node, ()):
-                if edge.detail == MUTATED_BY and source not in effects:
+                if edge_mark(edge) == MUTATED_BY and source not in effects:
                     first = Step(source, node, edge.kind, edge.detail, revs)
                     effects[source] = _effect_path(first, parent)
         if node in module_nodes and parent[node] is not None:
             continue
         for target, edge, revs in graph.forward.get(node, ()):
-            if edge.kind in _CALL_KINDS and edge.detail not in _NO_CALL and target not in parent:
+            if _is_call(edge) and target not in parent:
                 parent[target] = (node, edge, revs)
                 queue.append(target)
     return effects
@@ -722,7 +754,7 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
     added: list[tuple[Edge, tuple[str, ...]]] = []
     for source, adj in list(graph.forward.items()):
         for target, edge, revs in adj:
-            if edge.kind not in _CALL_KINDS or edge.detail in _NO_CALL:
+            if not _is_call(edge):
                 continue
             if target in module_nodes:
                 continue
@@ -733,7 +765,7 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
                 added.append((Edge(CALLS + target, CALLS + source, edge.kind, detail), revs))
     for target, adj in list(graph.reverse.items()):
         for source, edge, revs in adj:
-            if edge.detail == MUTATED_BY:
+            if edge_mark(edge) == MUTATED_BY:
                 added.append((Edge(source, CALLS + target, edge.kind, MUTATED_BY), revs))
     for edge, revs in added:
         graph.add(edge, revs)
@@ -752,7 +784,7 @@ def _call_steps(steps: list[Step]) -> list[Step]:
             continue
         source = source.removeprefix(CALLS)
         target = target.removeprefix(CALLS)
-        if step.detail == MUTATED_BY:
+        if step.kind == REFERENCES and step.detail == MUTATED_BY:
             out.append(Step(source, target, REFERENCES, MUTATED_BY, step.revisions))
             continue
         if _is_name_node(source) and out and out[-1].target == source:
@@ -880,22 +912,20 @@ def _runner_only_classes(
         return _inside(symbol_id, runner, base, head)
 
     held = (base.escaped_classes | head.escaped_classes) & runner
+    # Symbol -> the runner classes it refers to.
+    refers: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
-        if edge.kind == REFERENCES and edge.target in runner and not within_runner(edge.source):
-            held.add(edge.target)
-    # A held subclass holds its bases too: its instances carry their methods.
-    changed = True
-    while changed:
-        changed = False
-        for edge in edges:
-            if (
-                edge.kind == REFERENCES
-                and edge.source in held
-                and edge.target in runner
-                and edge.target not in held
-            ):
+        if edge.kind == REFERENCES and edge.target in runner:
+            refers[edge.source].add(edge.target)
+            if not within_runner(edge.source):
                 held.add(edge.target)
-                changed = True
+    # A held subclass holds its bases too: its instances carry their methods.
+    stack = sorted(held)
+    while stack:
+        for target in refers.get(stack.pop(), ()):
+            if target not in held:
+                held.add(target)
+                stack.append(target)
     return runner - held
 
 
@@ -944,7 +974,7 @@ def plan_from_indexes(
     if seeds is not None:
         # Evidence mode's escalation: the record shows what an object
         # installed under a name nothing bounds ran (W25).
-        union = {e: r for e, r in union.items() if e.detail != INSTALLED_ANYWHERE}
+        union = {e: r for e, r in union.items() if edge_mark(e) != INSTALLED_ANYWHERE}
     for edge, revs in union.items():
         graph.add(edge, revs)
 
@@ -952,9 +982,9 @@ def plan_from_indexes(
     # a name nothing resolves (``invoke(obj, name)``), and no static rule can
     # say which. So referring to such a class depends on its members, not only
     # on its structure.
-    class_members = _members_by_container(set(base.symbols) | set(head.symbols))
+    members = _members_by_container(known_symbols)
     for cls in sorted(base.escaped_classes | head.escaped_classes):
-        for member in class_members.get(cls, ()):
+        for member in members.get(cls, ()):
             graph.add(
                 Edge(cls, member, REFERENCES, "attribute of a class passed to other code"),
                 ("base", "head"),
@@ -975,7 +1005,7 @@ def plan_from_indexes(
     reached: set[str] = set()
     for edge, revs in sorted(union.items()):
         if edge.kind == REFERENCES and edge.target in escaped_modules:
-            for member in class_members.get(edge.target, ()):
+            for member in members.get(edge.target, ()):
                 if member != edge.source:
                     graph.add(
                         Edge(
@@ -998,7 +1028,7 @@ def plan_from_indexes(
     for module in sorted(reached):
         node = f"{module}.<imports>"
         for target in sorted(module_reach[module]):
-            for symbol in [target, *class_members.get(target, ())]:
+            for symbol in [target, *members.get(target, ())]:
                 graph.add(
                     Edge(node, symbol, REFERENCES, f"what {module} imports binds"),
                     ("base", "head"),
@@ -1012,7 +1042,6 @@ def plan_from_indexes(
     # it expands to that container's members -- a change to one of them is
     # what the declaration is about, and the container node alone would
     # never see it.
-    members = _members_by_container(known_symbols)
     for decl in declared:
         missing = [e for e in (decl.source, decl.target) if e not in known_symbols]
         if missing:
@@ -1107,7 +1136,7 @@ def plan_from_indexes(
             if ref.detail.startswith(RUNS_SCRIPT):
                 paths = sorted(p for s, p in script_refs if s == ref.symbol)
                 unbounded_dynamic.setdefault(ref.symbol, "script:" + ", ".join(paths))
-            elif "import" in ref.detail:
+            elif imports_anything(ref.detail):
                 unbounded_dynamic[ref.symbol] = "import"
             elif ref.detail.endswith(EXTERNAL_WRITTEN):
                 unbounded_dynamic.setdefault(ref.symbol, "written")
@@ -1155,12 +1184,14 @@ def plan_from_indexes(
                         target=target.node_id,
                     )
                 )
-    _add_caller_effects(
-        graph, {s.id for i in (base, head) for s in i.symbols.values() if s.kind == MODULE}
-    )
+    module_nodes = {
+        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
+    }
+    _add_caller_effects(graph, module_nodes)
     graph.freeze()
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]
-    fallbacks += _runner_dependency_fallbacks(targets, seeded, base, head)
+    reach = _ImportReach(base, head)
+    fallbacks += _runner_dependency_fallbacks(targets, seeded, base, head, reach)
     unanalysed = _changed_unanalysed_files(base, head) if seeds is None else []
     if seeds is None:
         # A build script is Python nobody imports, but it decides what is
@@ -1206,9 +1237,6 @@ def plan_from_indexes(
         mode[change.id] = STRUCTURAL if change.structural else BEHAVIOR
         via[change.id] = None
         queue.append(change.id)
-    module_nodes = {
-        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
-    }
     # Nodes seeded for a change they are not themselves: the steps from the
     # node to the change, and the rule they make the explanation.
     seed_paths: dict[str, tuple[tuple[Step, ...], str]] = {}
@@ -1287,7 +1315,6 @@ def plan_from_indexes(
     # the other end instead (a class whose instances are handed around gains
     # an edge to each of its members), and the closure check stays as well.
     changed_modules = {c.symbol.module for c in impacting}
-    reach = _ImportReach(base, head)
 
     if seeds is None:
         changed_scripts = {
@@ -1474,18 +1501,24 @@ def _decision(target: Target, reasons: list[Reason], mode: dict[str, int]) -> De
 
 
 def _runner_dependency_fallbacks(
-    targets: list[Target], changes: list[SymbolChange], base: SourceIndex, head: SourceIndex
+    targets: list[Target],
+    changes: list[SymbolChange],
+    base: SourceIndex,
+    head: SourceIndex,
+    reach: _ImportReach | None = None,
 ) -> list[Fallback]:
     """A runner whose own process imports modules that are in the source
     roots (pytest runs pluggy's hooks for every test) runs project code for
     every target: a change there selects all of that runner's targets. The
     modules are discovery's RUNNER_MODULES, those under them, and their
-    import closure."""
+    import closure. ``reach``: the import closures of ``base`` and
+    ``head``, when the caller has them."""
     impacting = [c for c in changes if c.carries_impact]
     if not impacting:
         return []
     modules = base.modules | head.modules
-    reach = _ImportReach(base, head)
+    if reach is None:
+        reach = _ImportReach(base, head)
     fallbacks: list[Fallback] = []
     for runner in sorted({t.runner for t in targets}):
         entries = RUNNER_MODULES.get(runner, ())
@@ -1671,8 +1704,8 @@ def _explain(
     change_by_id: dict[str, SymbolChange],
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: dict[str, str],
-    seed_reasons: dict[str, str] | None = None,
-    seed_paths: dict[str, tuple[tuple[Step, ...], str]] | None = None,
+    seed_reasons: dict[str, str],
+    seed_paths: dict[str, tuple[tuple[Step, ...], str]],
 ) -> Reason:
     steps: list[Step] = []
     current = node
@@ -1706,7 +1739,7 @@ def _explain(
         steps.append(Step(edge.source, edge.target, edge.kind, edge.detail, revs))
         current = nxt
     steps = _call_steps(steps)
-    if seed_paths and current in seed_paths and current not in change_by_id:
+    if current in seed_paths and current not in change_by_id:
         # Seeded for a change it is not (its module's import, a callee's
         # effect): the seed's own steps lead on to the change.
         seed_steps, seed_rule = seed_paths[current]
@@ -1718,7 +1751,7 @@ def _explain(
     if change is not None:
         detail = f"{current} {'/'.join(change.changes)}"
         return Reason(rule, detail, tuple(steps), current, change.changes)
-    if seed_reasons and current in seed_reasons:
+    if current in seed_reasons:
         return Reason(RULE_ESCALATED, seed_reasons[current], tuple(steps))
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
@@ -1774,11 +1807,8 @@ def _index_snapshot(
 ) -> tuple[SourceIndex, Snapshot | None]:
     """Index a snapshot, serving committed snapshots from the cache. Returns
     the snapshot too when it had to be read (discovery needs its files)."""
-    if cache is not None and revision not in (WORKTREE, INDEX) and not with_config:
-        try:
-            commit = resolve_commit(repo_path, revision)
-        except GitError:
-            commit = None
+    if cache is not None and not with_config:
+        commit = _cacheable_commit(repo_path, revision)
         if commit is not None:
             cached = cache.load(commit, roots)
             if cached is not None:
@@ -1856,24 +1886,19 @@ def _discovery_at(
 
 
 def _since_recording(
-    repo: Path,
     evidence: Evidence,
-    evidence_index: SourceIndex,
+    discovered_at_c: DiscoveryResult,
     base: SourceIndex,
     base_lifecycle: Lifecycles,
     head_lifecycle: Lifecycles,
-    roots: list[str],
-    options: DiscoveryOptions,
-    cache: IndexCache | None,
 ) -> LifecycleChanges:
     """The pytest targets whose lifecycle dependencies differ between the
-    recording at C and the head, or the base (evidence plans C -> base and
-    C -> head): what the recorded run set up around them is not what runs
-    now, and a fixture, hook or plugin it never ran has no record to meet a
-    change. Added and removed are merged over both sides."""
-    at_c = _lifecycles(
-        [_discovery_at(repo, evidence.commit, evidence_index, roots, "pytest", options, cache)]
-    )
+    recording at C (``discovered_at_c``: pytest discovery there) and the
+    head, or the base (evidence plans C -> base and C -> head): what the
+    recorded run set up around them is not what runs now, and a fixture,
+    hook or plugin it never ran has no record to meet a change. Added and
+    removed are merged over both sides."""
+    at_c = _lifecycles([discovered_at_c])
     sides = [head_lifecycle]
     if not (base.snapshot.committed and base.snapshot.commit == evidence.commit):
         sides.append(base_lifecycle)
@@ -1891,11 +1916,8 @@ def _settle_discovery(
     repo: Path,
     head: str,
     evidence: Evidence,
-    evidence_index: SourceIndex,
+    at_c: DiscoveryResult | None,
     discovered: list[DiscoveryResult],
-    roots: list[str],
-    options: DiscoveryOptions,
-    cache: IndexCache | None,
 ) -> list[DiscoveryResult]:
     """What the recording says about pytest discovery's completeness
     (roadmap item 9). It ran pytest's real collection at C, in the
@@ -1903,10 +1925,11 @@ def _settle_discovery(
     collect tests that are not targets stops counting when the same note was
     there at C, its file is unchanged since C, and pytest collected nothing
     at C that was not a target then. A test it did collect that was not a
-    target is a gap the recording proves, noted as incomplete itself."""
-    if evidence.collected is None or not any(d.runner == "pytest" for d in discovered):
+    target is a gap the recording proves, noted as incomplete itself.
+    ``at_c``: pytest discovery at C, None when this plan discovers no pytest
+    targets."""
+    if evidence.collected is None or at_c is None:
         return discovered
-    at_c = _discovery_at(repo, evidence.commit, evidence_index, roots, "pytest", options, cache)
     targets_at_c = {t.runner_id for t in at_c.targets}
     extra = sorted(evidence.collected - targets_at_c)
     notes_at_c = {(n.kind, n.detail) for n in at_c.notes}
@@ -2179,22 +2202,16 @@ def plan(
         evidence_index, _ = _index_snapshot(
             repo_path, evidence.commit, roots, with_config=False, cache=cache
         )
-        discovered = _settle_discovery(
-            repo_path, head, evidence, evidence_index, discovered, roots, options, cache
-        )
-        since_c: LifecycleChanges = {}
+        # Pytest discovery at the recording, once: both uses below need it.
+        at_c: DiscoveryResult | None = None
         if "pytest" in runners:
-            since_c = _since_recording(
-                repo_path,
-                evidence,
-                evidence_index,
-                base_index,
-                base_lifecycle,
-                head_lifecycle,
-                roots,
-                options,
-                cache,
+            at_c = _discovery_at(
+                repo_path, evidence.commit, evidence_index, roots, "pytest", options, cache
             )
+        discovered = _settle_discovery(repo_path, head, evidence, at_c, discovered)
+        since_c: LifecycleChanges = {}
+        if at_c is not None:
+            since_c = _since_recording(evidence, at_c, base_index, base_lifecycle, head_lifecycle)
         planned = plan_with_evidence(
             base_index,
             head_index,

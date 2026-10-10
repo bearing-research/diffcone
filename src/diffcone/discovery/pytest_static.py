@@ -215,7 +215,7 @@ from diffcone.discovery.session_state import (
 )
 from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
 from diffcone.manifest import Target
-from diffcone.model import IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
+from diffcone.model import DYNAMIC_DEPENDENCY, IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
 from diffcone.snapshot import Snapshot, module_name_for
 
 RUNNER = "pytest"
@@ -2840,7 +2840,7 @@ def _collect_doctests(
                 fixtures_added = True
                 if fixture_deps is not None:
                     base_deps += fixture_deps(pm, conftests)
-            deps = [*base_deps, f"dynamic:{pm.module}"]
+            deps = [*base_deps, f"{DYNAMIC_DEPENDENCY}{pm.module}"]
             if examples is None:
                 deps.append("doctest:unparsed")
             else:
@@ -2848,7 +2848,7 @@ def _collect_doctests(
                     if module is None:
                         deps.append("doctest:unparsed")
                     elif module in index.modules:
-                        deps.append(f"dynamic:{module}")
+                        deps.append(f"{DYNAMIC_DEPENDENCY}{module}")
             name = module_name if not qualname else f"{module_name}.{qualname}"
             result.targets.append(
                 Target(RUNNER, f"{pm.path}::{name}", symbol, tuple(sorted(set(deps))))
