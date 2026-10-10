@@ -1373,6 +1373,33 @@ oracle scripts and a corpus sample were run again on the final code:
   (older flask and rich commits) are errors, now labelled ERRORS rather
   than MISSES.
 
+## After the third audit round (2026-10-09)
+
+Round 3 (internal/audit.md) fixed every confirmed finding; the round-2
+checks then ran again on the final code in the same environments:
+
+* `fixture_check.py` over the 42 census repositories and pandas (22 801
+  tests): no test uses a fixture its dependencies miss.
+* `collection_check.py`: identical to round 2: every collected test is a
+  target except in the same six repositories (alembic, cattrs,
+  itsdangerous, pygments, pytest-asyncio, scrapy), each with
+  incomplete-discovery notes; pandas collects 22 801 of 25 208 targets
+  (the extras are modules this environment skips wholesale). coverage.py's
+  own `addopts` add `-q`, so its collection prints counts the script cannot
+  read, as in round 2.
+* `diffcone corpus` over the last 15 commits of flask, requests, rich,
+  pluggy, more-itertools and marshmallow: identical to round 2, 36
+  validated, 51 outcome changes, none missed.
+* strata, evidence mode, recorded at `edc32ce0` (6 225 tests) and planned
+  to its next first-parent commit (`1241020210`, a changed test-data list
+  and a changed function): 0.3 selected 582 of 6 231 (9.3 %). The first
+  round-3 code selected everything: xdist workers' `platform` queries
+  outside every test, and fixture bodies followed as import-time code
+  (audit V1, V2). With those fixed it selects 2 693 (43 %): 339 notebook
+  tests that run cell code from text (`text_code`, correct), and 2 103
+  only through lookup sites that the round-3 narrowing and evidence fixes
+  let see a test module's names (audit V4).
+
 ## After the second audit round (2026-10-07)
 
 Round 2 (internal/audit.md) fixed every finding, then the same checks ran
