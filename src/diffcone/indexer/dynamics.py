@@ -11,6 +11,7 @@ from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.facts import _AttrWrite, _ParamDynamic
 from diffcone.indexer.resolver import Resolver
 from diffcone.indexer.scopes import Node, Resolved, Unresolved
+from diffcone.indexer.scripts import script_value
 from diffcone.indexer.syntax import IMPORT_ATTRIBUTION_DEPTH
 from diffcone.model import (
     CLASS,
@@ -86,6 +87,8 @@ class DynamicBounds(Resolver):
         for pd, values in planned:
             if pd.kind == "import" and self._import_per_caller(pd):
                 continue
+            if pd.kind == "script" and self._scripts_per_caller(pd):
+                continue
             if values is None:
                 # The name is unbounded. If the *receiver* is one the call
                 # sites name, the read is still bounded: it can only be an
@@ -103,7 +106,9 @@ class DynamicBounds(Resolver):
                 )
                 continue
             for name in dict.fromkeys(values):
-                if pd.kind == "import":
+                if pd.kind == "script":
+                    script_value(self, pd.function, name, pd.detail)
+                elif pd.kind == "import":
                     if name.startswith("."):
                         self.out.unresolved.add(
                             UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
@@ -164,6 +169,24 @@ class DynamicBounds(Resolver):
                 continue
             for name in dict.fromkeys(names):
                 self._module_import_edge(caller, name)
+        return True
+
+    def _scripts_per_caller(self, pd: _ParamDynamic) -> bool:
+        """``run_python(script)`` starting ``[sys.executable, script]``: the
+        script path each call site passes, attributed to that caller as
+        ``_import_per_caller`` attributes module names (diffcone.indexer.
+        scripts). False when the callers are not known."""
+        attributed = self._attributed_imports(pd.function, pd.param, set())
+        if attributed is None:
+            return False
+        for caller, values in attributed:
+            if values is None:
+                self.out.unresolved.add(
+                    UnresolvedReference(caller, UNRESOLVED_DYNAMIC, "", pd.detail)
+                )
+                continue
+            for value in dict.fromkeys(values):
+                script_value(self, caller, value, pd.detail)
         return True
 
     def _attributed_imports(

@@ -247,6 +247,12 @@ class SourceIndex:
     # ``__doc__`` (pandas' ``@doc``). A docstring-only change of one runs at
     # import; of any other symbol it runs nothing.
     doc_decorated: set[str] = field(default_factory=set)
+    # The ``.py`` files under the source roots that no module name maps to
+    # (``scripts/gen-data.py``): path -> digest of the content. The index
+    # does not read them; a symbol naming one (``script_refs``: (symbol,
+    # path)) runs or reads code it cannot see (diffcone.indexer.scripts).
+    scripts: dict[str, str] = field(default_factory=dict)
+    script_refs: set[tuple[str, str]] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

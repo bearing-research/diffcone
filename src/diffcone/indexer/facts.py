@@ -166,6 +166,13 @@ class _Output:
     # (symbol, detail, the names they give). Which code may change those
     # tables only the whole tree tells (SourceIndex.table_imports).
     table_imports: set[tuple[str, str, tuple[str, ...]]] = field(default_factory=set)
+    # Writes through a parameter or a receiver (diffcone.indexer.writes):
+    # (function, parameter) written in place, and what calls are handed.
+    param_writes: set[tuple[str, str]] = field(default_factory=set)
+    passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
+    # (symbol, path suffix) of each ``.py`` file a string names
+    # (diffcone.indexer.scripts), matched against the files after pass 2.
+    script_paths: set[tuple[str, str]] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -189,6 +196,9 @@ class _Output:
         self.external_writes |= other.external_writes
         self.external_lookups |= other.external_lookups
         self.table_imports |= other.table_imports
+        self.param_writes |= other.param_writes
+        self.passes |= other.passes
+        self.script_paths |= other.script_paths
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -275,6 +285,9 @@ def _output_to_dict(out: _Output) -> dict:
         "attr_writes": [[w.cls, w.attr, w.method, w.binding] for w in out.attr_writes],
         "attr_unbound": sorted(out.attr_unbound),
         "attr_refs": [[r.source, r.cls, r.attr, r.rest, r.chain] for r in out.attr_refs],
+        "param_writes": sorted(list(w) for w in out.param_writes),
+        "passes": sorted(list(p) for p in out.passes),
+        "script_paths": sorted(list(p) for p in out.script_paths),
     }
 
 
@@ -341,6 +354,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.attr_writes = [_AttrWrite(*w) for w in data["attr_writes"]]
     out.attr_unbound = {(c, a) for c, a in data["attr_unbound"]}
     out.attr_refs = [_AttrRef(*r) for r in data["attr_refs"]]
+    out.param_writes = {(f, p) for f, p in data["param_writes"]}
+    out.passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["passes"]}
+    out.script_paths = {(a, b) for a, b in data["script_paths"]}
     return out
 
 

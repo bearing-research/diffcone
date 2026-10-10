@@ -58,6 +58,27 @@ everything.
     something on that module, directly or by handing the module to other
     code; then any change can affect it.
 
+**Python programs a test starts.**
+:   A test that runs a script or module of your project in a new process
+    (`[sys.executable, "scripts/gen.py"]`, `python -m mypkg.tool`,
+    `python -c "import mypkg"`) depends on that script or module, and on
+    what it imports, when the code names it in a string. When the program
+    is built at run time (a path from a variable or the environment, `-c`
+    code assembled from pieces, `*args`), the test is affected by any
+    change. So is a test that runs a `.py` file no module name maps to
+    (`scripts/gen-data.py`), which isn't analysed. Console scripts your
+    project installs and files outside your source roots aren't seen;
+    [execution evidence](guides/evidence.md) follows the processes a test
+    starts.
+
+**State changed in place reaches every reader.**
+:   Code that changes a module-level object, directly or by handing it to a
+    function that changes it (`register(REGISTRY)`, `registry.add(x)`), is
+    a dependency of every reader of that object. A change to a function
+    also reaches the readers of whatever the functions it calls change in
+    place. An object stored away and changed later under another name
+    (`self.store = store`, then `self.store[k] = v`) isn't followed.
+
 **A file that doesn't parse selects everything.**
 :   Any file under your source roots that isn't valid Python 3 or isn't
     UTF-8 is an analysis error, even a test data file nothing imports.

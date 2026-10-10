@@ -22,6 +22,11 @@ Supported subset (see internal/design.md):
   not define (``C.__doc__``, ``C.__type_params__``) is a read of the class
   object, and ``C.__mro__``/``__bases__``/``__subclasses__()`` reach the
   classes they hand out (``Resolver.class_object_read``).
+* in-place writes of a module variable, directly or through a parameter or
+  receiver the callee writes (``writes.py``);
+* project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
+  ``-c CODE``, and a Python command whose program cannot be named
+  (``scripts.py``).
 
 Deliberately unsupported: type inference, dynamic dispatch on unknown
 receivers, instance attributes written outside ``__init__`` or reflectively,

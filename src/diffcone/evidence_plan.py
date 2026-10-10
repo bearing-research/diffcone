@@ -138,6 +138,7 @@ from diffcone.evidence import (
     UNINDEXED_MODULE,
     Evidence,
 )
+from diffcone.indexer.scripts import RUNS_PROGRAM, RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     CLASS,
@@ -202,6 +203,9 @@ from diffcone.planner import (
     plan_from_indexes,
 )
 from diffcone.snapshot import changed_paths, split_root
+
+# Dynamic references that stand for a child process (diffcone.indexer.scripts).
+CHILD_PROGRAMS = (RUNS_PROGRAM, RUNS_SCRIPT)
 
 # Module-level names in a conftest that pytest reads to decide what to load
 # or collect at all.
@@ -448,6 +452,10 @@ class _Observers:
                     self.importers_of[edge.target].add(edge.source)
                     self.imported_by[edge.source].add(edge.target)
             for ref in index.unresolved:
+                if ref.kind == UNRESOLVED_DYNAMIC and ref.detail.startswith(CHILD_PROGRAMS):
+                    # A Python program the symbol starts: the record follows
+                    # the child (or flags the test), so no lookup site here.
+                    continue
                 if ref.kind == UNRESOLVED_DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
                     if site[1] == SITE_IMPORT and not ref.detail.endswith(DISCARDED_IMPORT):
@@ -1715,8 +1723,9 @@ class _Observers:
         later test reads without running the writer. So each variable
         written in place (``mutated_by``) by the code the sources can call,
         transitively, is treated as a changed value. Calling a class runs
-        its constructors. A write through an argument or a receiver is not
-        modelled (static planning does not model it either)."""
+        its constructors. A write through an argument or a receiver
+        (``set_mode(REG)``, ``registry.register(x)``) is a ``mutated_by``
+        edge to the caller (diffcone.indexer.writes)."""
         stack = sorted((s for s in sources if s not in self._ran_at_import), reverse=True)
         start = set(stack)
         seen: set[str] = set()

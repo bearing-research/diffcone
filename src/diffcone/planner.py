@@ -27,7 +27,11 @@ seeds its module, so every module that transitively imports it is reached,
 and every variable a function it calls mutates in place (``mutated_by``),
 directly or through what that calls: changing the arguments of an
 import-time call changes what the callee leaves behind as a change to its
-body would (_import_call_effects).
+body would (_import_call_effects). The same holds for any affected code,
+whoever runs it: what it hands the functions it calls may differ
+(``_store(m + "!")``, ``_store(compute())``), so a variable written in
+place depends on ``calls:`` of its writers, a pseudo-node that every
+caller reaches (_add_caller_effects; ``called_by`` steps).
 
 Every selection is backed by a concrete edge path or an explicit fallback
 rule. See internal/design.md.
@@ -67,6 +71,7 @@ from diffcone.discovery import (
 )
 from diffcone.evidence import Evidence, EvidenceError, has_commit
 from diffcone.indexer import build_index
+from diffcone.indexer.scripts import RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     CLASS,
@@ -618,6 +623,7 @@ RUNS_AT_IMPORT = "runs_at_import"
 # changed.
 READS_DOCSTRING = "reads_docstring"
 CALLED_AT_IMPORT = "called_at_import"
+CALLED_BY = "called_by"
 MUTATED_BY = "mutated_by"
 # What a call made at import can run: what the caller references (a
 # function, a class's constructor and special methods, a variable holding a
@@ -662,6 +668,76 @@ def _import_call_effects(
                 parent[target] = (node, edge, revs)
                 queue.append(target)
     return effects
+
+
+# ``calls:Y``: Y may now be called differently (see _add_caller_effects).
+CALLS = "calls:"
+CALLER = "caller"
+
+
+def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
+    """A function that writes state in place leaves it holding what its
+    callers handed it: when a caller behaves differently (it changed, or
+    something it depends on did), it may hand the writer something else
+    (``_store(m + "!")``, ``_store(compute())``), or call it more or less
+    often. The pseudo-node ``calls:Y`` stands for "Y may now be called
+    differently": it depends on every caller of Y and on ``calls:`` of each
+    caller, along the edges a call can take (references, name matches,
+    declared edges; a module is not entered: referring to one runs none of
+    its code); a variable a function writes in place depends on ``calls:``
+    of the writer as it depends on the writer. So a variable is reached
+    whenever the behaviour of anything that can call one of its writers,
+    directly or through what it calls, may differ. The edges keep the kind
+    of the call edge they come from, so a name match on the way shows in the
+    rule; explanations show them as ``called_by`` steps (_call_steps)."""
+    added: list[tuple[Edge, tuple[str, ...]]] = []
+    for source, adj in list(graph.forward.items()):
+        for target, edge, revs in adj:
+            if edge.kind not in _CALL_KINDS or edge.detail == MUTATED_BY:
+                continue
+            if target in module_nodes:
+                continue
+            detail = f"{CALLER}:{edge.detail}" if edge.kind == DECLARED else CALLER
+            if not _is_name_node(source):
+                added.append((Edge(CALLS + target, source, edge.kind, detail), revs))
+            if source not in module_nodes:
+                added.append((Edge(CALLS + target, CALLS + source, edge.kind, detail), revs))
+    for target, adj in list(graph.reverse.items()):
+        for source, edge, revs in adj:
+            if edge.detail == MUTATED_BY:
+                added.append((Edge(source, CALLS + target, edge.kind, MUTATED_BY), revs))
+    for edge, revs in added:
+        graph.add(edge, revs)
+
+
+def _call_steps(steps: list[Step]) -> list[Step]:
+    """Explanation steps through ``calls:`` pseudo-nodes as real symbols:
+    ``Y -[called_by]-> X`` for "X calls Y", a name match collapsed into the
+    step's detail."""
+    out: list[Step] = []
+    pending: str | None = None  # the name a ``calls:name:`` node matched on
+    for step in steps:
+        source, target = step.source, step.target
+        if not (source.startswith(CALLS) or target.startswith(CALLS)):
+            out.append(step)
+            continue
+        source = source.removeprefix(CALLS)
+        target = target.removeprefix(CALLS)
+        if step.detail == MUTATED_BY:
+            out.append(Step(source, target, REFERENCES, MUTATED_BY, step.revisions))
+            continue
+        if _is_name_node(source) and out and out[-1].target == source:
+            source = out.pop().source
+        if _is_name_node(target):
+            pending = target[len(_name_node("")) :]
+            out.append(Step(source, target, CALLED_BY, "", step.revisions))
+            continue
+        detail = f"by name match on {pending!r}" if pending is not None else ""
+        if step.detail.startswith(f"{CALLER}:"):
+            detail = "declared"
+        out.append(Step(source, target, CALLED_BY, detail, step.revisions))
+        pending = None
+    return out
 
 
 def _effect_path(
@@ -946,10 +1022,17 @@ def plan_from_indexes(
     # external module in-scope code writes to (any code may run a writer, at
     # import or in a test, and change what it finds). Symbol -> which.
     unbounded_dynamic: dict[str, str] = {}
+    # A symbol that runs a ``.py`` file no module name maps to
+    # (diffcone.indexer.scripts) sees a change to the file; one whose program
+    # computes what it imports sees any change.
+    script_refs = sorted(base.script_refs | head.script_refs)
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
-            if "import" in ref.detail:
+            if ref.detail.startswith(RUNS_SCRIPT):
+                paths = sorted(p for s, p in script_refs if s == ref.symbol)
+                unbounded_dynamic.setdefault(ref.symbol, "script:" + ", ".join(paths))
+            elif "import" in ref.detail:
                 unbounded_dynamic[ref.symbol] = "import"
             elif ref.detail.endswith(EXTERNAL_WRITTEN):
                 unbounded_dynamic.setdefault(ref.symbol, "written")
@@ -994,6 +1077,9 @@ def plan_from_indexes(
                         target=target.node_id,
                     )
                 )
+    _add_caller_effects(
+        graph, {s.id for i in (base, head) for s in i.symbols.values() if s.kind == MODULE}
+    )
     graph.freeze()
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]
     fallbacks += _runner_dependency_fallbacks(targets, seeded, base, head)
@@ -1071,6 +1157,8 @@ def plan_from_indexes(
             via[node] = None
             seed_paths[node] = (steps, rule)
             queue.append(node)
+    # Whatever else may now call a writer differently reaches what it
+    # writes through the ``calls:`` pseudo-nodes (_add_caller_effects).
     # A symbol reading docstrings (``f.__doc__``, ``getdoc(cls)``, its
     # module's ``__doc__``) sees a docstring-only change of what it references.
     documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
@@ -1122,6 +1210,22 @@ def plan_from_indexes(
     changed_modules = {c.symbol.module for c in impacting}
     reach = _ImportReach(base, head)
 
+    if seeds is None:
+        changed_scripts = {
+            path
+            for path in base.scripts.keys() | head.scripts.keys()
+            if base.scripts.get(path) != head.scripts.get(path)
+        }
+        ran: dict[str, list[str]] = defaultdict(list)
+        for symbol, path in script_refs:
+            if path in changed_scripts:
+                ran[symbol].append(path)
+        for symbol, paths in sorted(ran.items()):
+            if symbol not in mode:
+                mode[symbol] = BEHAVIOR
+                via[symbol] = None
+                queue.append(symbol)
+                unbounded_dynamic[symbol] = "changed-script:" + ", ".join(paths)
     if impacting and seeds is None:
         for symbol in sorted(dynamic_symbols):
             if symbol in mode:
@@ -1447,6 +1551,7 @@ def _explain(
                 continue
         steps.append(Step(edge.source, edge.target, edge.kind, edge.detail, revs))
         current = nxt
+    steps = _call_steps(steps)
     if seed_paths and current in seed_paths and current not in change_by_id:
         # Seeded for a change it is not (its module's import, a callee's
         # effect): the seed's own steps lead on to the change.
@@ -1469,6 +1574,22 @@ def _explain(
             f"{current} looks up a name on an external module that in-scope code writes to "
             f"({', '.join(revs)}); code anywhere may run a writer, so any change can change "
             "what it finds",
+            tuple(steps),
+        )
+    kind = unbounded_dynamic.get(current, "")
+    if kind.startswith("changed-script:"):
+        return Reason(
+            RULE_UNANALYSED_FILE,
+            f"{current} runs {kind[len('changed-script:') :]}, a Python file no module name "
+            "maps to, which changed (the analysis reads only what it imports)",
+            tuple(steps),
+        )
+    if kind.startswith("script:"):
+        return Reason(
+            RULE_DYNAMIC_REFERENCE,
+            f"{current} runs {kind[len('script:') :]}, a Python file no module name maps to "
+            f"({', '.join(revs)}) that imports or runs code by a name it computes, so any "
+            "change can affect it",
             tuple(steps),
         )
     if current in unbounded_dynamic:

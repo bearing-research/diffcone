@@ -45,13 +45,14 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 33: bounded run-time module names, table_imports, graph handles,
-# escaped modules; 32: namespace reads off any object; 31: class-object
-# reads, literal tables of shadowing scopes; 30: quiet_header; 29: uses of
-# tables and modules (indexer.uses); 28: __subclasses__ reads; 27: type
+# 34: writes through parameters and receivers, scripts named in strings;
+# 33: bounded run-time module names, table_imports, graph handles, escaped
+# modules; 32: namespace reads off any object; 31: class-object reads,
+# literal tables of shadowing scopes; 30: quiet_header; 29: uses of tables
+# and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 33
+INDEX_FORMAT = 34
 
 
 def _indexer_fingerprint() -> str:
@@ -124,6 +125,8 @@ def index_to_dict(index: SourceIndex) -> dict:
         "class_bases": {c: list(b) for c, b in sorted(index.class_bases.items())},
         "open_classes": sorted(index.open_classes),
         "doc_decorated": sorted(index.doc_decorated),
+        "scripts": dict(sorted(index.scripts.items())),
+        "script_refs": sorted(list(r) for r in index.script_refs),
         "cython": {
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
@@ -168,6 +171,8 @@ def index_from_dict(data: dict) -> SourceIndex:
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
         open_classes=set(data["open_classes"]),
         doc_decorated=set(data["doc_decorated"]),
+        scripts=dict(data["scripts"]),
+        script_refs={(s, p) for s, p in data["script_refs"]},
         cython={
             path: CythonModule(
                 path,

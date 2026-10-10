@@ -366,8 +366,11 @@ selection or states something the tables left implicit; none narrows it.
   [set_mode("fast")])`). For a Cython function that ran during an import,
   which the index does not follow, every name it mentions that is bound
   outside every function (in a Cython file, or as a Python variable) is
-  treated as changed. A write through an argument or a receiver is not
-  modelled, as in static planning.
+  treated as changed. A write through an argument or a receiver counts
+  too: the index gives the variable handed to a function that writes its
+  parameter or receiver in place a `mutated_by` edge to the caller
+  (`indexer/writes.py`), so `set_mode(REG)` and `registry.register(x)` at
+  import reach the readers of `REG` and `registry`.
 * **What a test stored for later tests** (audit round 3, W7). A module
   cache filled by the first test that asks (`get` storing `compute`'s
   result in `_CACHE`) hides `compute` from every later test's record, in

@@ -19,6 +19,7 @@ from diffcone.indexer.scopes import (
     _resolve_relative_name,
     _string_prefix,
 )
+from diffcone.indexer.scripts import observe_command, observe_shell, observe_string
 from diffcone.indexer.syntax import (
     DYNAMIC_CALLS,
     REFLECTIVE_ATTRIBUTES,
@@ -26,6 +27,7 @@ from diffcone.indexer.syntax import (
     REFLECTIVE_CALLS,
 )
 from diffcone.indexer.uses import CONTAINER_MUTATORS
+from diffcone.indexer.writes import observe_assign, observe_augassign, observe_call
 from diffcone.model import (
     CLASS,
     DISCARDED_IMPORT,
@@ -396,6 +398,23 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         return  # handled by Indexer._import_edges
 
+    # Project code run or read by naming it in a string (diffcone.indexer.scripts).
+    def visit_Constant(self, node: ast.Constant) -> None:
+        observe_string(self, node)
+        observe_shell(self, node)
+
+    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+        observe_shell(self, node)
+        self.generic_visit(node)
+
+    def visit_List(self, node: ast.List) -> None:
+        observe_command(self, node)
+        self.generic_visit(node)
+
+    def visit_Tuple(self, node: ast.Tuple) -> None:
+        observe_command(self, node)
+        self.generic_visit(node)
+
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         return
 
@@ -408,9 +427,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         a receiver of a mutating call) is a subscript/attribute of a variable
         symbol, or the variable itself under ``global``; or another module's
         variable assigned through the module (``settings.DEBUG = True`` in a
-        conftest: whoever reads ``settings.DEBUG`` sees the writer)."""
-        if isinstance(expr, ast.Attribute):
-            chain = _flatten_chain(expr)
+        conftest: whoever reads ``settings.DEBUG`` sees the writer). Items
+        count on the way (``store._CACHE["k"].append(x)``, ``del
+        store._CACHE["k"]``, ``store._CACHE["k"] += [x]``: W15)."""
+        inner = expr
+        while isinstance(inner, (ast.Subscript, ast.Attribute)):
+            chain = _flatten_chain(inner) if isinstance(inner, ast.Attribute) else None
+            inner = inner.value
             if chain is not None and len(chain) > 1 and chain[0] not in self.scope.locals:
                 target = self.indexer.resolve_chain(chain, self.scope)
                 if isinstance(target, Resolved):
@@ -570,6 +593,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._reflective_write(receiver, None)
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        observe_assign(self, node.targets)
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
         for target in node.targets:
@@ -583,6 +607,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        observe_augassign(self, node)
         self._mutation_target(node.target)
         if isinstance(node.target, ast.Subscript):
             self._dict_write(node.target)
@@ -590,6 +615,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
+            observe_assign(self, [node.target])
             self._mutation_target(node.target)
             self._stash_binding(node.target, node.value)
         self.visit(node.target)
@@ -598,6 +624,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.visit(node.value)
 
     def visit_Delete(self, node: ast.Delete) -> None:
+        observe_assign(self, node.targets)
         for target in node.targets:
             self._mutation_target(target)
             if isinstance(target, ast.Subscript):
@@ -606,6 +633,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         parts = _flatten_chain(node.func)
+        observe_call(self, node, parts)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in self.MUTATING_METHODS

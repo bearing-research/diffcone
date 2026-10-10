@@ -155,7 +155,7 @@ blocks are still symbols and are excluded from their scope's body hash.
 | Kind | Source → target | Produced by |
 |---|---|---|
 | `references` | function/class/module → symbol | resolved name or attribute chain; `detail` is `attribute:NAME` when the reference resolves to a module- or class-level variable (the module/class symbol stands in for it) or `module` when a module object itself is referenced |
-| `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, so readers of the variable depend on its writers |
+| `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, or hands it to a parameter or receiver that the callee changes in place (`set_mode(REG)`, `registry.register(x)`; `indexer/writes.py`), so readers of the variable depend on its writers |
 | `defined_in` | member → container | every class, function and method |
 | `imports` | module, class or function → module | `import m`, `from m import sub`, `importlib.import_module("m")`; an import in a class body gives the class and its module the edge, as it runs when the class is created |
 | `imports_name` | module → symbol | module-level `from m import name` |
@@ -247,7 +247,58 @@ Further rules (pre-release audit, round 2):
   `skipif`/`xfail` condition.
 * Assigning another module's variable through the module (`settings.DEBUG
   = True` in a conftest) makes the writer a `mutated_by` dependency of the
-  variable, as an in-place mutation does.
+  variable, as an in-place mutation does; so does a write through the
+  module and an item of the variable (`store._CACHE["k"].append(x)`, `del
+  store._CACHE["k"]`, `store._CACHE["k"] += [x]`).
+* Writes through a parameter or a receiver (`indexer/writes.py`). A
+  function that changes a parameter in place (an item or attribute
+  assigned, augmented or deleted, `p += [x]`, a container mutator on it or
+  on something it holds, `setattr`/`vars(p)`/`p.__dict__`, a
+  standard-library function that changes its first argument such as
+  `heapq.heappush`; through a local bound once to the parameter too) writes
+  what its caller hands it; `self` is a parameter, so a method assigning
+  `self.x` writes its receiver. A parameter handed on to a callee's written
+  parameter is written as well (to a fixed point). A module-level variable
+  handed to a written parameter (`set_mode(REG)`, `fill(cfg.REG)`), or the
+  receiver of a method that writes its receiver (`registry.register(x)`),
+  gets a `mutated_by` edge to the caller. A callee that does not resolve
+  (`obj.fill(REG)`, a method of a variable) is any in-scope function or
+  method of that name, unless the variable's value is known: an instance of
+  an in-scope class (that class's method only), a dict, list or set display
+  (the container mutators only, recorded directly), or a third-party value
+  (`logging.getLogger(...)`: none of ours). A module's own top-level
+  statements naming its variable are part of the variable's hash and add no
+  edge. Not modelled: an object kept under another name and written
+  through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),
+  and a third-party function that changes an argument in place.
+* Project code run by naming it in a string (`indexer/scripts.py`). A
+  string naming a `.py` file (a literal, or the last literal piece of a
+  path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,
+  `Path(__file__).parent / "fixtures" / "run.py"`, an f-string; not a
+  docstring, not a glob pattern) is matched by path suffix against the
+  files under the roots: a module's file is an `imports` edge (running it
+  runs its import-time code). `-m NAME` (in a string, or as two items of a
+  command list) naming an in-scope module is an `imports` edge to it and to
+  `NAME.__main__`; `-c CODE` whose code is written out (a literal, a local
+  bound once to one, `textwrap.dedent` of one) imports what the code
+  imports and references what it reaches through those imports. A command
+  whose first item is the interpreter (a list starting with
+  `sys.executable` or a `python` literal, an f-string starting with
+  `sys.executable`, a string a shell-running call is given that starts
+  with `python`) whose program the analysis cannot name (a path or module
+  from elsewhere, `-c` code built at run time, standard input, `*args`, a
+  directory given to `pytest`/`coverage`) is an unbounded dynamic reference
+  (`starts a Python program it builds at run time`). A `-m` name that is a
+  parameter is bounded by the call sites' literals, as `import_module` of
+  one is. A `.py` file under the roots that no module name maps to
+  (`scripts/gen-data.py`) is not read; a symbol naming one is an unbounded
+  dynamic reference and is seeded when the file changes
+  (`SourceIndex.scripts`, `script_refs`), so a changed script nothing names
+  still selects nothing. Evidence mode leaves both kinds of reference to
+  the recording, which follows child processes. Not modelled: a console
+  script the project installs, a file outside the roots, a command handed
+  over whole with no interpreter in sight, a file loaded by a path built at
+  run time, a test reading a source file as text.
 * A changed build script at the repository root (`setup.py`,
   `hatch_build.py`, `build.py`, `pdm_build.py`) selects every target, as a
   changed compiled source does.
@@ -573,7 +624,10 @@ module and function that imports it, transitively, is affected, and
 through each test's dependency on its own module, every test that
 imports it. A function body change does not run at import; when
 import-time code calls the function, the module's edge to it carries the
-change. The reverse holds too: a change to the import-time code that
+change; that holds for a variable initialiser too, whose calls run at
+import and are recorded for the module as well as for the variable
+(`X = set_mode("slow")`; an alias such as `ib = attrib` calls nothing and
+stays the variable's own). The reverse holds too: a change to the import-time code that
 calls a function (`X = set_mode("slow")` -> `"faster"`, a class
 attribute, a decorator's or a default's argument) changes what that call
 does as a change to the callee's body would. So every variable that a
@@ -583,7 +637,23 @@ declared edges, not into modules) is seeded too, and reaches its readers
 however they get to it; the explanation runs `MODE -[references:mutated_by]->
 _store -[called_at_import]-> set_mode -[called_at_import]-> X`. A module
 seeded because it runs a changed symbol is explained by a
-`runs_at_import` step to that symbol. The changed symbol's references
+`runs_at_import` step to that symbol. The same holds for any code
+whose behaviour may differ, whoever runs it and whenever: what it hands
+the functions it calls may differ (`_store(m + "!")` in a changed
+`set_mode`, `_store(compute())` in an unchanged `setup` after `compute`
+changed), so may what they write in place. The planner adds a pseudo-node
+`calls:Y` ("Y may now be called differently") that depends on every
+caller of Y and on `calls:` of each caller, along references, name-match
+and declared edges and not into modules; a variable written in place
+depends on `calls:` of its writer. A variable is then reached whenever
+anything that can call one of its writers, directly or through what it
+calls, is affected; explanations show these as `called_by` steps
+(`MODE -[references:mutated_by]-> _store -[called_by]-> setup
+-[references]-> compute`). Measured over 14 census repositories (110
+plans), this moves 4 plans to (nearly) every target, through name-matched
+calls; following resolved calls only would move none, at the cost of
+missing a write reached only through a call on an object of unknown
+type. The changed symbol's references
 stand for its calls (a function's decorators, defaults and body share one
 symbol, and nothing tells a call from a read), which over-approximates.
 Type parameters (PEP 695 bounds, constraints and PEP 696 defaults) are
@@ -1170,9 +1240,9 @@ Further rules (pre-release audit, round 2):
   change to one selects every target (`planner.is_build_script`); one no
   module name maps to (`packages/my-api/setup.py`) is listed among the
   unanalysed files instead (`snapshot._other_file`). Other `.py` files no
-  module name maps to are not read at all, like a module nobody imports: a
-  test running one as a script is a subprocess static planning does not
-  follow. Other files outside the roots (`README`, a `Dockerfile`) are
+  module name maps to are not read at all, like a module nobody imports;
+  code that names one (a test running it as a script) depends on any change
+  and on the file (`indexer/scripts.py`). Other files outside the roots (`README`, a `Dockerfile`) are
   assumed not to affect the tests: a test that reads one needs a root over
   it. A static plan
   assumes both revisions run in one environment; a change to what is

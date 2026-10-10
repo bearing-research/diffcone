@@ -19,8 +19,10 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.literals import literal_base, literal_keys
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
+from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import _digest, decode_source
 from diffcone.indexer.uses import ANY, DYN, MUT, STORE, USE, UseRecord
+from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
@@ -138,9 +140,11 @@ class Indexer(DynamicBounds):
                 if key is not None:
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
+        apply_writes(self)
         self._external_lookups()
         self._table_imports()
         self._resolve_param_dynamics()
+        apply_scripts(self)  # after the script parameters are bound
         self._registrations()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name

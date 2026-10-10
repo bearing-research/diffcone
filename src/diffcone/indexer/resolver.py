@@ -112,6 +112,20 @@ def _definition_scope(scope: ModuleScope, class_scope: ClassScope | None) -> Sco
     )
 
 
+def _outermost_calls(expr: ast.expr) -> list[ast.Call]:
+    """The calls in ``expr`` that no other call encloses (a lambda's body
+    does not run)."""
+    found: list[ast.Call] = []
+    stack: list[ast.AST] = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Call):
+            found.append(node)
+        elif not isinstance(node, ast.Lambda):
+            stack.extend(ast.iter_child_nodes(node))
+    return sorted(found, key=lambda c: (c.lineno, c.col_offset))
+
+
 class Resolver(FirstPass):
     """Pass 2: the class model, and references into edges."""
 
@@ -411,8 +425,16 @@ class Resolver(FirstPass):
         for stmt in top_level:
             owner = variable_ids.get(id(stmt))
             if owner is not None:
-                # The right-hand side's references belong to the variable symbol.
+                # The right-hand side's references belong to the variable symbol;
+                # the calls in it run when the module is imported, so (as a
+                # class body's) they are the module's too: a change to a
+                # function ``X = set_mode("slow")`` calls reaches its importers.
+                # (``ib = attrib`` runs nothing: the alias's users depend on it.)
                 _ReferenceCollector(self, owner, module_scope, skip_defs=True).visit(stmt)
+                value = getattr(stmt, "value", None)
+                if isinstance(value, ast.expr):
+                    for call in _outermost_calls(value):
+                        collector.visit(call)
             else:
                 collector.visit(stmt)
         self._resolve_definitions(scope, scope.tree.body, scope.members, None)
