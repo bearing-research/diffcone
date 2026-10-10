@@ -1425,6 +1425,10 @@ selection rules.</p>
   creates an instance of that class or of a third-party class; a
   module-level object made by a third-party call is changed only by
   methods of classes deriving from a third-party class.</li>
+<li>A patch that ends with its test (<code>monkeypatch.setattr</code> on pytest's
+  fixture, <code>mocker.patch</code>, a <code>with mock.patch(...)</code> block, a
+  <code>@mock.patch(...)</code> decorator) no longer makes a lookup on a library
+  module see every change.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1565,6 +1569,13 @@ selection rules.</p>
   bounded by what they load.</li>
 <li>A local name, parameter or function-local import was taken for a
   module-level import or builtin of the same name.</li>
+<li>A patch that may outlast its test (<code>patch(...).start()</code>, a patcher kept
+  for later, a <code>MonkeyPatch()</code> of your own, a <code>with mock.patch(...)</code>
+  around a fixture's <code>yield</code>, <code>setattr</code> on any other receiver) is a store
+  on the module it patches, so lookups on that module follow it; set in
+  <code>sys.modules</code> that way, it counts as installed for good. A <code>with
+  mock.patch.dict(os.environ)</code> or <code>warnings.catch_warnings()</code> block whose
+  body yields no longer counts as putting the process state back.</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>

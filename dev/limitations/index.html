@@ -882,7 +882,14 @@ captures what pytest really collected.</dd>
 <dd>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
 with a computed name is treated as affected by any change in the
 modules its module imports, and in the modules of code that stores
-objects on one of those modules. A module imported by a computed name
+objects on one of those modules. On a library module (<code>getattr(datetime,
+name)</code>), the lookup is affected by any change once your code stores
+something there. A patch that ends with the test making it doesn't
+count: <code>monkeypatch.setattr</code> on pytest's fixture, a <code>with mock.patch(...)</code>
+block, a <code>@mock.patch(...)</code> decorator. One that may outlast the test
+does: <code>patch(...).start()</code>, a patcher kept for later, a <code>MonkeyPatch()</code>
+of your own, or a <code>with mock.patch(...)</code> around a <code>yield</code> in a fixture.
+A module imported by a computed name
 (<code>importlib.import_module(name)</code>), an object unpickled with
 <code>pickle.loads</code>, and a module loaded from a file whose path is computed
 (<code>importlib.util.spec_from_file_location</code>) can be affected by any
