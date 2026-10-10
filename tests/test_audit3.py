@@ -236,14 +236,15 @@ FAKE_GH = """#!/bin/bash
 case "$*" in
   *"runs/11/artifacts"*) ;;
   *"runs/10/artifacts"*) echo posted-diffcone-report ;;
-  *"runs/7/artifacts"*) echo diffcone-ubuntu ;;
+  *"runs/7/artifacts"*) echo 5 diffcone-ubuntu ;;
   *"--jq .workflow_id"*) echo 42 ;;
   *"per_page=30"*) printf '11 2026-10-09T05:00:00Z\\n10 2026-10-09T02:00:00Z\\n' ;;
   *"status=success&per_page=1 "*) echo 2026-10-09T05:00:00Z ;;
   "run list"*) echo '[{"databaseId":7,"url":"u","event":"push",'\
 '"createdAt":"2026-10-09T03:30:00Z","updatedAt":"2026-10-09T04:00:00Z","headSha":"c",'\
 '"headBranch":"main","workflowName":"ci","conclusion":"failure"}]' ;;
-  "run download"*) mkdir -p "${@: -1}" ;;
+  *"actions/artifacts/5/zip"*) "$FAKE_PY" -c 'import sys, zipfile
+with zipfile.ZipFile(sys.stdout.buffer, "w") as z: z.writestr("context.json", "{}")' ;;
 esac
 """
 
@@ -263,6 +264,7 @@ def test_ci6_a_report_that_posted_nothing_does_not_move_the_window(tmp_path):
         "GH_TOKEN": "x", "HOURS": "24", "WORKFLOW": "ci.yml", "PREFIX": "diffcone-",
         "RUNS": str(runs), "RUNS_REPO": "o/r", "GITHUB_REPOSITORY": "o/diffcone",
         "GITHUB_RUN_ID": "1", "MARKER": "posted-diffcone-report",
+        "FAKE_PY": sys.executable,
     }  # fmt: skip
     done = subprocess.run(
         [shutil.which("bash") or "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
@@ -271,6 +273,7 @@ def test_ci6_a_report_that_posted_nothing_does_not_move_the_window(tmp_path):
     )  # fmt: skip
     assert done.returncode == 0, done.stdout + done.stderr
     assert sorted(p.name for p in (runs / "runs").iterdir()) == ["7"]
+    assert (runs / "runs" / "7" / "diffcone-ubuntu" / "context.json").exists()
 
 
 # CI-8: a resolved command is quoted for the platform that splits it.

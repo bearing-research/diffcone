@@ -26,6 +26,27 @@ selection rules.
   whose pattern matches nothing in a plan is flagged in the text report.
 - `plan --evidence` says the environment was not checked
   (`environment_checked: false`): only `run` can check it.
+- A module imported by a name that starts with fixed text
+  (`import_module(f"plugins.{name}")`) is one of the modules with that
+  prefix, not any module. A new `types.ModuleType` is no project module
+  unless it is installed in `sys.modules` under one's name,
+  `exec(code, namespace)` no longer reaches the calling module, and
+  `m.__dict__["X"] = v` changes only `X`.
+- A fixture or function that only empties or fills a module-level dict,
+  list or set (`REG.clear()`), or resets another module's variable
+  (`mod.X = None`), no longer counts as reading it: an autouse reset
+  fixture no longer selects every test when the code filling the registry
+  changes.
+- An attribute read on an object of unknown type is matched to
+  module-level functions, classes and variables only in modules such an
+  object can be: modules passed around, obtained by name or named in a
+  string, and test modules and conftests, which pytest hands out. Methods
+  still match whatever the receiver.
+- A method called on an instance attribute (`self._client.get()`) is
+  resolved to one class's method when every assignment of the attribute
+  creates an instance of that class or of a third-party class; a
+  module-level object made by a third-party call is changed only by
+  methods of classes deriving from a third-party class.
 
 ### Fixed
 
@@ -115,6 +136,49 @@ selection rules.
   edits, still counts as a change. A path containing a line break no
   longer fails the plan.
 
+- A test that runs project code in a new process (a script path, `-m
+  module` or `-c` code named in the code) did not depend on it; a script
+  no module name maps to is now read too, and a Python command whose
+  program is built at run time is affected by any change.
+- State changed through an argument or a receiver (`register(REGISTRY)`,
+  `registry.add(x)`) did not reach its readers, in either mode; nor did a
+  change to code that may call such a writer differently, or a write
+  through a module attribute and an item (`store._CACHE["k"].append(x)`,
+  `del store._CACHE[k]`). A function a module-level variable's
+  initialiser calls runs at import, so a change to it reaches the
+  module's importers.
+- Reading an attribute a class does not define (`C.__doc__`,
+  `C.__type_params__`, an attribute a decorator sets) did not depend on
+  the class. `C.__subclasses__()`, `C.__mro__` and `C.__bases__` reach the
+  classes they return, `C.__dict__[name]` and `obj.__dict__[name]` read
+  members as `getattr` does, and `getattr(obj, "__doc__")` reads a
+  docstring.
+- A parameter or class-body name that shares its name with a module-level
+  string table was bounded by that table, though the caller can pass
+  anything.
+- Code that passes a module to other code (`read(ops, name)`) did not
+  depend on that module's functions, nor on what the module's imports
+  bind (`api.core.TABLE`).
+- An object put in `sys.modules` (assignment, `setdefault`, `update`,
+  `monkeypatch.setitem`, `mock.patch.dict`) was ignored. It is now the
+  module of that name: lookups on that module see it, and while it stays
+  installed, the module's importers depend on the code that installed it.
+  Without a recording, code that installs an object under a name computed
+  at run time makes every test importing a project module depend on it.
+- A function's `__globals__`, a frame's `f_globals`, `pickle.loads`,
+  `pkgutil.resolve_name`, `pydoc.locate`, `gc.get_objects()` and
+  `importlib.util.module_from_spec` copies are recognised as ways to
+  change a module's tables. A lookup by a computed name on a module sees
+  objects other code puts on that module.
+- Functions obtained from `pickle.load`/`loads` (and cloudpickle, dill,
+  joblib) or from a module loaded by a computed file path were invisible
+  to planning without a recording; such code is now affected by any
+  change. A round trip (`loads(dumps(x))`, a temporary file), pickle
+  bytes written in the code and a path in the module's own directory are
+  bounded by what they load.
+- A local name, parameter or function-local import was taken for a
+  module-level import or builtin of the same name.
+
 ### Discovery
 
 - An autouse fixture imported into a conftest, a test module or a plugin
@@ -138,6 +202,13 @@ selection rules.
   in `addopts`.
 - ASV: `setUp` and `TearDown` in any case, and the benchmark class's
   `__init__`, are dependencies of its benchmarks.
+- The `pytest_*` methods of an object registered as a plugin
+  (`config.pluginmanager.register(...)`), and plugins registered with
+  `import_plugin("name")`, apply to every test.
+- Code pytest runs while collecting that changes the process (a conftest,
+  test module or module they import that sets an environment variable or
+  extends `sys.path` at import, a `pytest_generate_tests` that does) is a
+  dependency of every test.
 
 ### Execution evidence
 
@@ -205,6 +276,19 @@ selection rules.
   non-literal `getattr` on such a module now sees changes anywhere in the
   project, not only in its own imports, and a test module's import-time
   change now reaches lookups in library code.
+- A test whose fixtures, hooks or plugins change though its own code did
+  not is selected under a recording too (`lifecycle_changed`), and code a
+  hook ran that changed, or that reads a change, selects every test.
+- A module-level cache filled by an earlier test hid the function that
+  filled it from later tests' records, in every order: a change to that
+  function now reaches the tests reading the cache.
+- A docstring-only change selects the tests that read that docstring.
+- A lazy-export `__getattr__` whose table only test-time code can change
+  no longer counts as importing test modules; `gc.get_stats()`,
+  `gc.collect()` and `gc.callbacks` no longer count as walking the object
+  graph; `hasattr(obj, "name")` notices only `name`.
+- Unpicklers and loaders of a computed path count as code that can obtain
+  a test module.
 
 ### CI
 
@@ -220,6 +304,9 @@ selection rules.
 - `run -o` adds `evidence_not_used` (why the recording was not used, and
   what differed) to the plan it writes, and `diffcone report` shows those
   differences per job.
+- The `report` action failed whenever a job of a reported run had been
+  re-run, since the run then holds two artifacts of the same name; it now
+  reads the latest attempt's.
 
 ## [0.3.0] - 2026-10-08
 

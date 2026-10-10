@@ -569,3 +569,60 @@ def test_on_problem_comments_only_when_something_is_wrong(tmp_path):
     assert not [c for c in quiet if c[:2] == ["issue", "comment"]]
     loud = _post(tmp_path / "b", source="o/a", target="o/a", comment="on-problem", ok="false")
     assert [c for c in loud if c[:2] == ["issue", "comment"]]
+
+
+FAKE_ARTIFACTS_GH = """#!{python}
+import io, json, os, sys, zipfile
+args = sys.argv[1:]
+with open(os.environ["GH_LOG"], "a") as f:
+    f.write(json.dumps(args) + "\\n")
+if args[0] == "api" and any("artifacts?per_page=100" in a for a in args):
+    # What the --jq filter prints: a re-run job's artifact twice, newest last.
+    print("11 diffcone-a")
+    print("12 diffcone-b")
+    print("13 diffcone-a")
+elif args[0] == "api" and args[1].endswith("/zip"):
+    attempt = args[1].split("/")[-2]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("context.json", json.dumps({{"artifact": attempt}}))
+    sys.stdout.buffer.write(buffer.getvalue())
+"""
+
+
+def test_the_report_downloads_a_re_run_jobs_latest_artifact(tmp_path):
+    """A re-run job uploads its artifact again under the same name: the
+    report downloads each name once, from the latest attempt."""
+    if os.name == "nt":
+        pytest.skip("the fake gh is a POSIX script")
+    text = (ACTIONS / "report" / "action.yml").read_text()
+    start = text.index("        count=0; errors=0")
+    loop = textwrap.dedent(text[start : text.index('        echo "$errors"', start)])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_ARTIFACTS_GH.format(python=sys.executable))
+    gh.chmod(0o755)
+    runs = tmp_path / "runs"
+    (runs / "runs" / "7").mkdir(parents=True)
+    (runs / "ids").write_text("7\n")
+    log = tmp_path / "gh.log"
+    script = f'py="{sys.executable}"\n{loop}echo "$count $errors"\n'
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_LOG": str(log),
+        "RUNS": str(runs),
+        "RUNS_REPO": "o/s",
+        "PREFIX": "diffcone-",
+    }
+    done = subprocess.run(
+        ["bash", "-e", "-o", "pipefail"], input=script, text=True, env=env,
+        capture_output=True, check=True,
+    )  # fmt: skip
+    assert done.stdout.split() == ["1", "0"]
+    downloads = [c[1] for c in map(json.loads, log.read_text().splitlines()) if "/zip" in c[1]]
+    assert downloads == ["repos/o/s/actions/artifacts/13/zip", "repos/o/s/actions/artifacts/12/zip"]
+    context = json.loads((runs / "runs" / "7" / "diffcone-a" / "context.json").read_text())
+    assert context == {"artifact": "13"}
+    assert (runs / "runs" / "7" / "diffcone-b" / "context.json").exists()

@@ -172,25 +172,39 @@ runs:
         PY
         count=0; errors=0
         while read -r id; do
-          if ! names=$(gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
-            --jq ".artifacts[] | select(.expired | not) | select(.name | startswith(\"$PREFIX\")) | .name" \
+          if ! listed=$(gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.expired | not) | select(.name | startswith(\"$PREFIX\")) | \"\(.id) \(.name)\"" \
             < /dev/null); then
             echo "::error::could not list the artifacts of run $id"
             errors=$((errors + 1))
             continue
           fi
-          names=$(echo "$names" | tr -d '\r')
-          if [ -z "$names" ]; then
+          # A re-run job uploads its artifact again under the same name:
+          # keep the latest attempt's (the highest id) of each name.
+          artifacts=$(echo "$listed" | tr -d '\r' | "$py" -c '
+        import sys
+        newest = {}
+        for line in sys.stdin.read().splitlines():
+            if line.strip():
+                aid, name = line.split(" ", 1)
+                newest[name] = max(newest.get(name, 0), int(aid))
+        for name, aid in sorted(newest.items()):
+            print(aid, name)
+        ' | tr -d '\r')
+          if [ -z "$artifacts" ]; then
             rm -rf "$RUNS/runs/$id"
             continue
           fi
           count=$((count + 1))
-          while IFS= read -r name; do
-            gh run download "$id" --repo "$RUNS_REPO" -n "$name" -D "$RUNS/runs/$id/$name" \
-              < /dev/null && continue
+          while read -r aid name; do
+            gh api "repos/$RUNS_REPO/actions/artifacts/$aid/zip" > "$RUNS/artifact.zip" < /dev/null \
+              && "$py" -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+                "$RUNS/artifact.zip" "$RUNS/runs/$id/$name" \
+              && continue
             echo "::error::could not download $name of run $id"
             errors=$((errors + 1))
-          done <<< "$names"
+          done <<< "$artifacts"
+          rm -f "$RUNS/artifact.zip"
         done < "$RUNS/ids"
         [ -f "$RUNS/truncated" ] && errors=$((errors + 1))
         echo "$errors" > "$RUNS/errors"
