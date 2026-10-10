@@ -45,12 +45,13 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 32: namespace reads off any object; 31: class-object reads, literal
-# tables of shadowing scopes; 30: quiet_header; 29: uses of tables and
-# modules (indexer.uses); 28: __subclasses__ reads; 27: type parameters,
-# unnameable build scripts as other files; 26: escaped values; 25: external
-# sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 32
+# 33: bounded run-time module names, table_imports, graph handles,
+# escaped modules; 32: namespace reads off any object; 31: class-object
+# reads, literal tables of shadowing scopes; 30: quiet_header; 29: uses of
+# tables and modules (indexer.uses); 28: __subclasses__ reads; 27: type
+# parameters, unnameable build scripts as other files; 26: escaped values;
+# 25: external sites; 24: docstring decorators; 23: open classes
+INDEX_FORMAT = 33
 
 
 def _indexer_fingerprint() -> str:
@@ -104,6 +105,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "modules": sorted(index.modules),
         "failed_modules": sorted(index.failed_modules),
         "escaped_classes": sorted(index.escaped_classes),
+        "escaped_modules": sorted(index.escaped_modules),
         "escaped_values": sorted(index.escaped_values),
         "other_files": dict(sorted(index.other_files.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
@@ -113,6 +115,9 @@ def index_to_dict(index: SourceIndex) -> dict:
         "errors": [asdict(e) for e in sorted(index.errors)],
         "reflection": sorted(list(r) for r in index.reflection),
         "external_sites": [[s, d, list(w)] for (s, d), w in sorted(index.external_sites.items())],
+        "table_imports": [
+            [s, d, list(c), list(w)] for (s, d), (c, w) in sorted(index.table_imports.items())
+        ],
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(index.class_attributes.items())
         },
@@ -153,10 +158,12 @@ def index_from_dict(data: dict) -> SourceIndex:
         errors=[AnalysisError(**e) for e in data["errors"]],
         failed_modules=set(data["failed_modules"]),
         escaped_classes=set(data["escaped_classes"]),
+        escaped_modules=set(data["escaped_modules"]),
         escaped_values=set(data["escaped_values"]),
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},
         external_sites={(s, d): tuple(w) for s, d, w in data["external_sites"]},
+        table_imports={(s, d): (tuple(c), tuple(w)) for s, d, c, w in data["table_imports"]},
         class_attributes={c: dict(a) for c, a in data["class_attributes"].items()},
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
         open_classes=set(data["open_classes"]),

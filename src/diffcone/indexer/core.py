@@ -23,6 +23,8 @@ from diffcone.indexer.syntax import _digest, decode_source
 from diffcone.indexer.uses import ANY, DYN, MUT, STORE, USE, UseRecord
 from diffcone.model import (
     EXTERNAL_WRITTEN,
+    GRAPH_HANDLE,
+    GRAPH_MODULES,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
     Edge,
@@ -137,6 +139,7 @@ class Indexer(DynamicBounds):
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
         self._external_lookups()
+        self._table_imports()
         self._resolve_param_dynamics()
         self._registrations()
         # Classes whose instances (or the class itself) are handed to someone
@@ -186,22 +189,40 @@ class Indexer(DynamicBounds):
             else:
                 suffixes.add((module, writer))
 
+        def matches(pattern: str, module: str) -> bool:
+            # ``PREFIX*``: any module whose name starts with PREFIX (``*``: any).
+            return pattern.endswith(ANY) and module.startswith(pattern[:-1])
+
         def writers(module: str) -> set[str]:
             return (
                 {
                     writer
                     for w, writer in written
-                    if w in ("*", module)
+                    if w == module
+                    or matches(w, module)
                     or w.startswith(module + ".")
                     or module.startswith(w + ".")
                 }
                 # A module handed on may be written by whoever gets it, and so
                 # may every module reachable from it as an attribute.
-                | {w for e, w in escaped if e in ("*", module) or module.startswith(e + ".")}
-                | {w for e, w in below if module.startswith(e + ".")}
+                | {
+                    w
+                    for e, w in escaped
+                    if e == module or matches(e, module) or module.startswith(e + ".")
+                }
+                | {w for e, w in below if matches(e, module) or module.startswith(e + ".")}
                 | {w for e, w in suffixes if e + "." in "." + module + "."}
             )
 
+        # Code that hands a module walking the object graph on (``walk(gc)``)
+        # or looks a name up on it by a name nothing bounds: the evidence
+        # planner cannot tell which of its functions that code calls.
+        for mode, module, writer in self._use_external:
+            if mode in ("escape", "below") and module.split(".")[0] in GRAPH_MODULES:
+                self.out.reflection.add((writer, GRAPH_HANDLE))
+        for symbol, module, _kind, _detail in self._global.external_lookups:
+            if module.split(".")[0] in GRAPH_MODULES:
+                self.out.reflection.add((symbol, GRAPH_HANDLE))
         for symbol, module, kind, detail in sorted(self._global.external_lookups):
             by = writers(module)
             if not by:
@@ -213,6 +234,19 @@ class Indexer(DynamicBounds):
                 self.out.unresolved.add(UnresolvedReference(symbol, UNRESOLVED_DYNAMIC, "", detail))
             known = self.index.external_sites.get((symbol, detail), ())
             self.index.external_sites[(symbol, detail)] = tuple(sorted(by.union(known)))
+
+    def _table_imports(self) -> None:
+        """Each dynamic import whose name a literal table of its module would
+        bound, with the code whose uses may change that module's tables
+        (every unbound one of them: more writers only weaken what evidence
+        mode concludes)."""
+        for symbol, detail, names in sorted(self._global.table_imports):
+            found = self.index.symbols.get(symbol)
+            scope = self.scopes.get(found.module) if found is not None else None
+            if scope is None or not scope.literal_writers:
+                continue
+            writers = sorted(set().union(*scope.literal_writers.values()))
+            self.index.table_imports[(symbol, detail)] = (names, tuple(writers))
 
     def _registrations(self) -> None:
         """Edges to code a decorator or a base class may keep and call later:
@@ -328,16 +362,23 @@ class Indexer(DynamicBounds):
         from a literal table that turns out to change is about any module.
         Records about modules outside the source roots are kept for
         ``_external_lookups``."""
-        poison: dict[str, set[str]] = defaultdict(set)  # module -> literal names
-        whole: set[str] = set()  # modules none of whose literal names hold
-        tables: set[str] = set()  # modules none of whose containers hold
-        named: set[str] = set()  # names no module's literal of that name holds
-        named_tables: set[str] = set()  # names no module's container of that name holds
-        anything = False
+        # Each fact keeps the writers (the symbols whose uses gave it): a
+        # name that unbinds is attributed to the code that may change it.
+        poison: dict[str, dict[str, set[str]]] = defaultdict(
+            lambda: defaultdict(set)
+        )  # module -> literal name -> writers
+        # Modules none of whose literal names hold, modules none of whose
+        # containers hold, names no module's literal of that name holds,
+        # names no module's container of that name holds.
+        whole: dict[str, set[str]] = defaultdict(set)
+        tables: dict[str, set[str]] = defaultdict(set)
+        named: dict[str, set[str]] = defaultdict(set)
+        named_tables: dict[str, set[str]] = defaultdict(set)
+        anything: set[str] = set()  # the writers that may change any module
         external: set[tuple[str, str, str]] = set()  # (mode, module, writer)
 
         def changed(module: str, name: str) -> bool:
-            return (
+            return bool(
                 anything
                 or module in whole
                 or name in poison[module]
@@ -348,24 +389,76 @@ class Indexer(DynamicBounds):
                 )
             )
 
+        def writers_of(module: str, name: str) -> set[str]:
+            found = set(anything) | whole.get(module, set()) | named.get(name, set())
+            found |= poison[module].get(name, set())
+            if name in self.scopes[module].containers:
+                found |= tables.get(module, set()) | named_tables.get(name, set())
+            return found
+
         def under(module: str) -> list[str]:
             return [m for m in self.scopes if m == module or m.startswith(module + ".")]
 
         def size() -> tuple[int, ...]:
-            sizes = (len(whole), len(tables), len(named), len(named_tables))
-            return (anything, *sizes, sum(map(len, poison.values())))
+            def count(facts: dict[str, set[str]]) -> int:
+                return sum(len(v) + 1 for v in facts.values())
+
+            sizes = (count(whole), count(tables), count(named), count(named_tables))
+            held = sum(count(v) for v in poison.values())
+            return (len(anything), *sizes, held)
+
+        def concrete(module: str, kind: str, target: str, writer: str) -> None:
+            """A record about a dotted name (no pattern)."""
+            parts = target.split(".")
+            if kind == STORE:
+                parent, name = parts[:-1], parts[-1]
+                places = self._locate_target(module, parent)
+                if places is None:
+                    external.add(("write", ".".join(parent), writer))
+                for place, rest in places or ():
+                    if not rest:
+                        poison[place][name].add(writer)
+                return
+            places = self._locate_target(module, parts)
+            if places is None:
+                if kind == USE:
+                    external.add(("escape", target, writer))
+                elif kind == DYN:
+                    external.add(("below", target, writer))
+                return
+            for place, rest in places:
+                if not rest:
+                    if kind == USE:
+                        for m in under(place):
+                            whole[m].add(writer)
+                            self.index.escaped_modules.add(m)
+                    elif kind == DYN:
+                        tables[place].add(writer)
+                        for m in under(place):
+                            if m != place:
+                                whole[m].add(writer)
+                                self.index.escaped_modules.add(m)
+                elif len(rest) == 1 and rest[0] in self.scopes[place].containers:
+                    poison[place][rest[0]].add(writer)
 
         records = [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
         while True:
             before = size()
             for module, record in records:
                 kind, target = record.kind, record.target
-                if record.sources and any(changed(module, n) for n in record.sources):
-                    kind, target = USE, ANY
                 writer = self._writer_symbol(module, record.writer)
+                lost = [n for n in record.sources if changed(module, n)]
+                if lost:
+                    # Computed from a table that may change: about any module,
+                    # once the table's own writers ran (they are what it is
+                    # attributed to). What it does with the table as it is
+                    # still counts, below.
+                    for name in lost:
+                        anything.update(writers_of(module, name))
+                    external.add(("escape", ANY, writer))
                 if target == ANY:
                     if kind in (USE, DYN):
-                        anything = True
+                        anything.add(writer)
                         external.add(("escape", ANY, writer))
                     continue
                 if target.startswith(ANY + "."):
@@ -374,65 +467,61 @@ class Indexer(DynamicBounds):
                     # place), or a submodule of that name handed on.
                     chain = target.split(".")[1:]
                     if kind == STORE:
-                        named.add(chain[-1])
+                        named[chain[-1]].add(writer)
                         external.add(("write", ANY, writer))
                     elif kind == MUT:
-                        named_tables.add(chain[-1])
+                        named_tables[chain[-1]].add(writer)
                     else:
                         suffix = "." + ".".join(chain)
-                        named_tables.add(chain[-1])
+                        named_tables[chain[-1]].add(writer)
                         for m in self.scopes:
                             if ("." + m).endswith(suffix):
                                 if kind == USE:
-                                    whole.update(under(m))
+                                    for u in under(m):
+                                        whole[u].add(writer)
                                 else:
-                                    tables.add(m)
-                                    whole.update(u for u in under(m) if u != m)
+                                    tables[m].add(writer)
+                                    for u in under(m):
+                                        if u != m:
+                                            whole[u].add(writer)
                         external.add(("suffix", suffix, writer))
                     continue
-                parts = target.split(".")
-                if kind == STORE:
-                    parent, name = parts[:-1], parts[-1]
-                    places = self._locate_target(module, parent)
-                    if places is None:
-                        external.add(("write", ".".join(parent), writer))
-                    for place, rest in places or ():
-                        if not rest:
-                            poison[place].add(name)
+                if ANY in target:
+                    # A module whose name starts with a literal prefix
+                    # (``import_module(f"plugins.{name}")``): each in-scope
+                    # module with that prefix, and any module outside.
+                    prefix, _, rest = target.partition(ANY)
+                    for m in sorted(self.scopes):
+                        if m.startswith(prefix):
+                            concrete(module, kind, m + rest, writer)
+                    mode = {USE: "escape", DYN: "escape", STORE: "write"}.get(kind)
+                    if mode is not None:
+                        external.add((mode, prefix + ANY, writer))
                     continue
-                places = self._locate_target(module, parts)
-                if places is None:
-                    if kind == USE:
-                        external.add(("escape", target, writer))
-                    elif kind == DYN:
-                        external.add(("below", target, writer))
-                    continue
-                for place, rest in places:
-                    if not rest:
-                        if kind == USE:
-                            whole.update(under(place))
-                        elif kind == DYN:
-                            tables.add(place)
-                            whole.update(m for m in under(place) if m != place)
-                    elif len(rest) == 1 and rest[0] in self.scopes[place].containers:
-                        poison[place].add(rest[0])
+                concrete(module, kind, target, writer)
             if size() == before:
                 break
         self._use_external = external
         for module, scope in self.scopes.items():
+            scope.literal_pristine = dict(scope.literal_names)
             present = {literal_base(k) for k in scope.literal_names}
-            lost = {n for n in present if changed(module, n)}
+            lost = {n: writers_of(module, n) for n in present if changed(module, n)}
             # What was read out of a table that changes is not what it was.
             while True:
                 more = {
-                    n for n, taken in scope.literal_sources.items() if lost.intersection(taken)
-                } - lost
+                    n: set().union(*(lost[t] for t in taken if t in lost))
+                    for n, taken in scope.literal_sources.items()
+                    if n not in lost and lost.keys() & set(taken)
+                }
                 if not more:
                     break
-                lost |= more
-            for name in lost:
+                lost.update(more)
+            scope.literal_writers = {}
+            for name, by in lost.items():
                 for key in literal_keys(name):
                     if key in scope.literal_names:
+                        if scope.literal_names[key] is not None:
+                            scope.literal_writers[key] = frozenset(by)
                         scope.literal_names[key] = None
 
     def _locate_target(

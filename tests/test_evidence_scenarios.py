@@ -1174,22 +1174,33 @@ USES_PLUGIN = "import pkg.plugin  # noqa: F401\n\n\ndef test_plugin():\n    pass
 OPS_AT_IMPORT = OPS + "\n\nif OPS_READY := True:\n    pass\n"
 
 
-@pytest.mark.parametrize("writer", ["tests only", "library"])
+OPS_RUNS_INSTALL = (
+    OPS
+    + "\n\nimport pkg.extra\n\n\ndef _setup():\n    pkg.extra.install()\n\n\n"
+    + "if _setup():\n    pass\n"
+)
+
+
+@pytest.mark.parametrize("writer", ["tests only", "library", "library, run at import"])
 def test_a_library_import_reaches_a_lookup_only_through_a_library_writer(repo, writer):
     files = dict(TESTS_ONLY)
-    if writer == "library":
+    if writer != "tests only":
         files["pkg/extra.py"] = EXTERNAL["pkg/extra.py"]
     base, ev = _collected(repo, files)
     # Module-level code of pkg.ops changed: its import-time state may differ.
-    head = repo.commit({"pkg/ops.py": OPS_AT_IMPORT})
+    ops = OPS_RUNS_INSTALL if writer == "library, run at import" else OPS_AT_IMPORT
+    head = repo.commit({"pkg/ops.py": ops})
     plan = _plan(repo, base, head, ev)
     assert "pkg.ops" in plan.evidence["escalated_modules"]
-    if writer == "library":
-        # pkg.extra.install could now run at import, for every later test.
+    if writer == "library, run at import":
+        # pkg.extra.install now runs at import, through a helper, for every
+        # later test.
         assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
         assert "lookup_site" in rules(plan, EXT_NAMES)
     else:
-        # Library code cannot run a test's writer.
+        # Audit round 3, W1: the new import-time code runs nothing that
+        # writes to builtins (a library writer stays out of reach as a test's
+        # does).
         assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
 
 

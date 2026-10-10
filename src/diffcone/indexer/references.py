@@ -28,7 +28,11 @@ from diffcone.indexer.syntax import (
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
     CLASS,
+    DISCARDED_IMPORT,
     FUNCTION,
+    GRAPH_HANDLE,
+    GRAPH_INERT,
+    GRAPH_MODULES,
     METHOD,
     MODULE,
     REFERENCES,
@@ -218,6 +222,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         chain = ".".join(parts)
         self.indexer._record(self.source, node, kind=kind, chain=chain)
         self.indexer.class_object_read(self.source, parts, self.scope)
+        if isinstance(node, External) and node.module.split(".")[0] in GRAPH_MODULES:
+            # ``gc.get_objects``: a member that hands out objects nothing
+            # names (the bare module is its import, or a value the use scan
+            # sees handed on).
+            member = (self._canonical_name(parts) or "").split(".")[1:2]
+            if member and member[0] not in GRAPH_INERT:
+                self.indexer.out.reflection.add((self.source, GRAPH_HANDLE))
         for name in rest:
             self.indexer.out.unresolved.add(
                 UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, chain)
@@ -508,6 +519,30 @@ class _ReferenceCollector(ast.NodeVisitor):
         ):
             self._bindings[id(target)] = self._init_binding(value)
 
+    def _bounded_hasattr(self, node: ast.Call) -> bool:
+        """``hasattr(obj, name)`` with a name a literal bounds: a reference
+        to each attribute it may be (resolved on a known object, name-bounded
+        on any other), as ``getattr(obj, "x")`` is, and no reflection site.
+        False (nothing recorded) when the name is unbounded."""
+        if len(node.args) < 2 or node.keywords:
+            return False
+        names = self.scope.string_candidates(node.args[1])
+        if names is None or not all(
+            n.isidentifier() and not (n.startswith("__") and n.endswith("__")) for n in names
+        ):
+            return False  # a dunder is matched by no name: keep the reflection site
+        base = _flatten_chain(node.args[0])
+        for name in names:
+            if base is None:
+                self.indexer.out.unresolved.add(
+                    UnresolvedReference(
+                        self.source, UNRESOLVED_ATTRIBUTE, name, f"hasattr(..., {name!r})"
+                    )
+                )
+            else:
+                self._resolve(base + [name])
+        return True
+
     def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
         """``setattr(receiver, name, ...)`` and its relatives."""
         if (module := self._written_module(receiver)) is not None:
@@ -590,7 +625,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         if parts is not None:
             name = ".".join(parts)
             builtin = len(parts) == 1 and not self._is_shadowed(name)
-            if (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
+            if builtin and parts[0] == "hasattr" and self._bounded_hasattr(node):
+                pass  # ``hasattr(obj, "x")`` notices only ``x``, as ``obj.x`` does
+            elif (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
                 not builtin and self._canonical_name(parts) in REFLECTIVE_CALLS
             ):
                 module = self._external_module(node.args[0]) if node.args else None
@@ -1026,6 +1063,16 @@ class _ReferenceCollector(ast.NodeVisitor):
         base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
         return ".".join([base, *parts[1:]])
 
+    def _own_name(self) -> str | None:
+        """What ``__name__`` is here: the module's name, unless the program
+        rebinds it or the source roots give the module another name than
+        Python does (a ``DIR=PREFIX`` root)."""
+        module = self.scope.module
+        roots = [split_root(r)[0] for r in self.indexer.snapshot.source_roots]
+        if module_name_for(module.path, roots) != module.name or self._is_shadowed("__name__"):
+            return None
+        return module.name
+
     def _import_package(self, node: ast.Call) -> str | None:
         """``import_module``'s ``package`` argument when it is known: a
         literal, ``__name__`` (this module) or ``__package__``."""
@@ -1060,7 +1107,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if all(r is not None for r in resolved):
                 names = tuple(r for r in resolved if r is not None)
         if names is None:
-            prefix = _string_prefix(node.args[0])
+            prefix = _string_prefix(node.args[0], self._own_name())
             if prefix is not None and prefix.startswith(".") and package is not None:
                 prefix = _resolve_relative_name(prefix, package, prefix=True)
             if prefix is not None and not prefix.startswith("."):
@@ -1071,10 +1118,20 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self.indexer.out.external.add(ExternalReference(self.source, prefix + "*"))
                     return
         if names is None or any(n.startswith(".") for n in names):
-            if names is not None or not self._param_dynamic(
-                node.args[0], "import", None, f"{name}(<non-literal>)"
-            ):
-                self._dynamic(f"{name}(<non-literal>)")
+            detail = f"{name}(<non-literal>)"
+            if isinstance(self._parent(node), ast.Expr):
+                # ``__import__(name)`` as a statement: it runs the module's
+                # import, but hands the module to nothing.
+                detail += DISCARDED_IMPORT
+            if names is not None or not self._param_dynamic(node.args[0], "import", None, detail):
+                self._dynamic(detail)
+                bound = self.scope.table_candidates(node.args[0]) if names is None else None
+                if bound is not None and package is not None:
+                    resolved = [_resolve_relative_name(n, package) for n in bound]
+                    bound = None if None in resolved else tuple(r for r in resolved if r)
+                if bound is not None and not any(n.startswith(".") or not n for n in bound):
+                    # Bounded but for other code that may change the table.
+                    self.indexer.out.table_imports.add((self.source, detail, tuple(sorted(bound))))
             return
         for module in names:
             self.indexer._module_import_edge(self.source, module)

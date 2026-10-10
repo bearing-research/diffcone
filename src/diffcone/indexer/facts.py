@@ -162,6 +162,10 @@ class _Output:
     # (Indexer._external_lookups).
     external_writes: set[tuple[str, str]] = field(default_factory=set)
     external_lookups: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # Dynamic imports whose name this module's own literal tables bound:
+    # (symbol, detail, the names they give). Which code may change those
+    # tables only the whole tree tells (SourceIndex.table_imports).
+    table_imports: set[tuple[str, str, tuple[str, ...]]] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -184,6 +188,7 @@ class _Output:
         self.decorations |= other.decorations
         self.external_writes |= other.external_writes
         self.external_lookups |= other.external_lookups
+        self.table_imports |= other.table_imports
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -246,6 +251,7 @@ def _output_to_dict(out: _Output) -> dict:
         "decorations": sorted(list(d) for d in out.decorations),
         "external_writes": sorted(list(w) for w in out.external_writes),
         "external_lookups": sorted(list(x) for x in out.external_lookups),
+        "table_imports": sorted([s, d, list(n)] for s, d, n in out.table_imports),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -315,6 +321,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.decorations = {(a, b, c) for a, b, c in data["decorations"]}
     out.external_writes = {(m, w) for m, w in data["external_writes"]}
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
+    out.table_imports = {(s, d, tuple(n)) for s, d, n in data["table_imports"]}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.func_params = {
         f: _FuncParams(

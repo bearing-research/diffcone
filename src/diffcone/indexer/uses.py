@@ -17,16 +17,26 @@ counts as a possible change:
   ``getattr(m, n)``, ``m.f()``); bound to a name, passed (``setattr(m, ...)``
   and ``vars(m)`` included), returned, or reached through ``__dict__``,
   ``__setattr__`` or ``__delattr__``, it may be written to. An attribute
-  stored on it (``m.T = v``, ``setattr(m, "T", v)``, a dotted string a
-  ``patch``/``monkeypatch`` call names) rebinds that attribute.
-* a module named at run time by a name nothing bounds is any module (``*``).
-  A function-local name bound once to a module and only read is followed
-  instead of counted as an escape (``mod = import_module(name)`` then
-  ``getattr(mod, attr)``); returned or passed on, it escapes.
+  stored on it (``m.T = v``, ``setattr(m, "T", v)``, ``m.__dict__["T"] =
+  v``, a dotted string a ``patch``/``monkeypatch`` call names) rebinds that
+  attribute.
+* a module named at run time by a name nothing bounds is any module (``*``);
+  by a name starting with literal text (``f"plugins.{name}"``, ``"cell_" +
+  key``, ``f"{__name__}.{name}"``), any module with that prefix
+  (``plugins.*``). A function-local name bound only to modules and only
+  read is followed instead of counted as an escape (``mod =
+  import_module(name)`` then ``getattr(mod, attr)``); returned or passed
+  on, it escapes.
+* a module made here (``types.ModuleType(name)``, ``FRESH``) is no module
+  other code holds, and nothing done to it is recorded, unless it is
+  installed in ``sys.modules`` under a name: then it is the modules that
+  name may be.
 * ``globals()``, ``vars()``/``locals()`` without arguments, and ``exec``/
   ``eval`` of code that is not a literal reach this module's namespace, and
-  code ``exec`` runs can reach what the module's globals can name. A literal
-  code string is read as the code it is.
+  code ``exec`` runs can reach what the module's globals can name; given a
+  namespace of its own (``exec(code, m.__dict__)``), it reaches that one,
+  which counts where it stands. A literal code string is read as the code
+  it is.
 
 The records name what they reach by absolute dotted name, as far as the
 module's own imports say; the indexer resolves them over every module
@@ -122,11 +132,20 @@ SAFE_BUILTINS = frozenset(
 # Calls whose result is a module named by their first argument.
 _IMPORT_CALLS = frozenset({"importlib.import_module", "importlib.__import__"})
 
+# Calls whose result is a new, empty module object, no module any code
+# imported. (``importlib.util.module_from_spec`` is not one: once its loader
+# runs, the module is a copy of whatever module the spec names.)
+_FRESH_MODULES = frozenset({"types.ModuleType"})
+
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 READ, USE, MUT, DYN = "read", "use", "mut", "dyn"
 STORE = "store"
 ANY = "*"
+# A module created here (``types.ModuleType(name)``): no module any other
+# code holds, so nothing done to it is recorded, unless it is installed in
+# ``sys.modules`` (then it is the modules its name there may be).
+FRESH = "+"
 
 
 @dataclass(frozen=True)
@@ -136,7 +155,8 @@ class UseRecord:
     mutator reached on it, or an item assigned), ``store`` (the attribute
     ``target`` names is rebound), ``dyn`` (an attribute read by a run-time
     name off it is handed on). ``target`` is an absolute dotted name, ``*``
-    (any module) or ``*.NAME``, or ``@NAME`` (a name this module may have
+    (any module) or ``*.NAME``, ``PREFIX*`` or ``PREFIX*.NAME`` (any module
+    whose name starts with PREFIX), or ``@NAME`` (a name this module may have
     from a star import). ``sources`` are this module's literal names a
     bounded target was computed from: if one of them is not the literal it
     was, the target is any module. ``writer`` is the def path the use is in."""
@@ -417,17 +437,69 @@ class _Scanner:
 
     # ------------------------------------------------------------ module handles
 
-    def _module_name(self, expr: ast.expr | None) -> tuple[set[str], tuple[str, ...]]:
+    def _own_name(self) -> str | None:
+        return self.module if "__name__" not in self.bound else None
+
+    def _module_name(
+        self, expr: ast.expr | None, package: ast.expr | None = None
+    ) -> tuple[set[str], tuple[str, ...]]:
         """The modules a run-time name may be: the literals it evaluates to,
-        this module for ``__name__``, or any module."""
+        this module for ``__name__``, every module whose name starts with a
+        literal prefix (``f"plugins.{name}"``, ``"cell_" + key``,
+        ``f"{__name__}.{name}"``: the pattern ``PREFIX*``), or any module.
+        ``package`` is ``import_module``'s, for a relative prefix."""
         if expr is None:
             return {ANY}, ()
         if isinstance(expr, ast.Name) and expr.id == "__name__" and "__name__" not in self.bound:
             return {self.module}, ()
         names, sources = self._evaluate(expr)
-        if names is None or any(n.startswith(".") or not n for n in names):
-            return {ANY}, ()
-        return set(names), sources
+        if names is None and isinstance(expr, ast.JoinedStr):
+            names, sources = self._joined(expr)
+        if names is not None and not any(n.startswith(".") or not n for n in names):
+            return set(names), sources
+        if names is None:
+            from diffcone.indexer.scopes import _resolve_relative_name, _string_prefix
+
+            prefix = _string_prefix(expr, self._own_name())
+            if prefix is not None and prefix.startswith("."):
+                own = self._package_name(package)
+                prefix = _resolve_relative_name(prefix, own, prefix=True) if own else None
+            if prefix:
+                return {prefix + ANY}, ()
+        return {ANY}, ()
+
+    def _joined(self, expr: ast.JoinedStr) -> tuple[tuple[str, ...] | None, tuple[str, ...]]:
+        """The strings an f-string may be when each part is bounded
+        (``f"{name}.{sub}"`` with both bound to literals), up to a few."""
+        texts: list[str] = [""]
+        sources: tuple[str, ...] = ()
+        for value in expr.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts: tuple[str, ...] | None = (value.value,)
+            elif (
+                isinstance(value, ast.FormattedValue)
+                and value.conversion in (-1, ord("s"))
+                and value.format_spec is None
+            ):
+                parts, more = self._evaluate(value.value)
+                sources += more
+            else:
+                parts = None
+            if parts is None or len(texts) * len(parts) > 64:
+                return None, ()
+            texts = [t + p for t in texts for p in parts]
+        return tuple(texts), sources
+
+    def _package_name(self, package: ast.expr | None) -> str | None:
+        """``import_module``'s ``package`` when it is this module's
+        ``__name__`` or ``__package__``."""
+        if isinstance(package, ast.Name) and package.id in ("__name__", "__package__"):
+            if package.id in self.bound:
+                return None
+            if package.id == "__package__" and not self.is_package:
+                return self.module.rpartition(".")[0] or None
+            return self.module
+        return None
 
     def _handle(self, node: ast.AST) -> tuple[set[str], tuple[str, ...]] | None:
         """The modules an expression yields when it is ``sys.modules[...]``,
@@ -465,7 +537,7 @@ class _Scanner:
                     resolved = _resolve_relative_name(literal, own)
                     return ({resolved}, ()) if resolved else ({ANY}, ())
                 return {ANY}, ()
-            return self._module_name(first)
+            return self._module_name(first, package)
         if "__import__" in names:
             found, sources = self._module_name(first)
             fromlist = node.args[3] if len(node.args) > 3 else None
@@ -478,7 +550,62 @@ class _Scanner:
             return found, sources
         if names & {"inspect.getmodule", "runpy.run_path", "runpy.run_module"}:
             return {ANY}, ()
+        if names & _FRESH_MODULES:
+            return {FRESH}, ()
         return None
+
+    def _install_keys(self, node: ast.AST) -> list[ast.expr] | None:
+        """The names ``node``'s value is installed under in ``sys.modules``
+        (``sys.modules[k] = node``, ``sys.modules.setdefault(k, node)``,
+        ``monkeypatch.setitem(sys.modules, k, node)``,
+        ``sys.modules.update({k: node})``, ``mock.patch.dict(sys.modules,
+        {k: node})``), or None when it is not installed there."""
+        p = self.parents.get(id(node))
+        keys: list[ast.expr] = []
+        if isinstance(p, ast.Assign) and p.value is node:
+            keys = [
+                t.slice
+                for t in p.targets
+                if isinstance(t, ast.Subscript) and self._is_sys_modules(t.value)
+            ]
+        elif isinstance(p, ast.Call) and any(a is node for a in p.args):
+            func = p.func
+            at = next(i for i, a in enumerate(p.args) if a is node)
+            if (
+                at == 1
+                and isinstance(func, ast.Attribute)
+                and func.attr in ("setdefault", "__setitem__")
+                and self._is_sys_modules(func.value)
+            ):
+                keys = [p.args[0]]
+            elif (
+                at == 2
+                and (_chain(func) or [""])[-1] == "setitem"
+                and self._is_sys_modules(p.args[0])
+            ):
+                keys = [p.args[1]]
+        elif isinstance(p, ast.Dict):
+            q = self.parents.get(id(p))
+            installs = isinstance(q, ast.Call) and (
+                (
+                    isinstance(q.func, ast.Attribute)
+                    and q.func.attr == "update"
+                    and self._is_sys_modules(q.func.value)
+                    and p in q.args
+                )
+                or (
+                    (_chain(q.func) or [""])[-1] == "dict"
+                    and len(q.args) > 1
+                    and self._is_sys_modules(q.args[0])
+                    and q.args[1] is p
+                )
+            )
+            if installs:
+                keys = [k for k, v in zip(p.keys, p.values, strict=True) if v is node and k]
+        return keys or None
+
+    def _is_sys_modules(self, expr: ast.expr) -> bool:
+        return "sys.modules" in self._canonical(expr)
 
     # ------------------------------------------------------------ the walk
 
@@ -564,15 +691,29 @@ class _Scanner:
                 self.out.namespace |= inner.namespace
                 return
         # Code built at run time: it runs in this module's namespace, and can
-        # reach whatever its globals name; read from a file, anything.
-        self.out.namespace = True
+        # reach whatever its globals name; read from a file, anything. Given
+        # a namespace of its own (``exec(code, m.__dict__)``, ``exec(code,
+        # {})``), it runs there instead: that argument is handed on where it
+        # stands (a module's ``__dict__`` is that module written to,
+        # ``globals()`` this one's namespace), and this module's namespace is
+        # not reached.
+        from diffcone.indexer.references import _reads_files
+
+        reads_files = bool(node.args) and _reads_files(node.args[0])
+        namespace = node.args[1] if len(node.args) > 1 else None
+        for k in node.keywords:
+            if k.arg == "globals":
+                namespace = k.value
+        own = namespace is None or (isinstance(namespace, ast.Constant) and namespace.value is None)
+        if own:
+            self.out.namespace = True
         if not self.want_records:
             return
         writer = self._writer(node)
-        from diffcone.indexer.references import _reads_files
-
-        if node.args and _reads_files(node.args[0]):
+        if reads_files:
             self._record(USE, ANY, (), writer)
+            return
+        if not own:
             return
         for targets in self.imports.values():
             for target in targets:
@@ -632,6 +773,20 @@ class _Scanner:
                     sources += root[1]
                     values.append(id(assign.value))
                 else:
+                    if FRESH in targets:
+                        # A module made here is the modules its name in
+                        # ``sys.modules`` may be, wherever it is installed.
+                        for load in ast.walk(scope):
+                            if (
+                                isinstance(load, ast.Name)
+                                and load.id == name
+                                and isinstance(load.ctx, ast.Load)
+                                and (keys := self._install_keys(load)) is not None
+                            ):
+                                for key in keys:
+                                    found, more = self._module_name(key)
+                                    targets |= found
+                                    sources += more
                     self.aliases[(id(scope), name)] = (targets, sources)
                     self.aliased_values.update(values)
 
@@ -746,6 +901,12 @@ class _Scanner:
                     return
             if id(node) in self.aliased_values:
                 return  # followed through the name it is bound to
+            if targets is not None and (keys := self._install_keys(node)) is not None:
+                # Installed in ``sys.modules``: whoever imports that name
+                # later gets this object, whatever it holds.
+                for key in keys:
+                    found, more = self._module_name(key)
+                    self._emit(node, found, more, (), USE)
             kind = classify(node, self.parents, self.bound)
             if kind != READ:
                 self._emit(node, targets, sources, chain, kind)
@@ -768,7 +929,13 @@ class _Scanner:
         key: ast.expr | None = None
         if isinstance(p, ast.Subscript) and p.value is node:
             if not isinstance(p.ctx, ast.Load):
-                self._changes(node, targets, sources, chain, MUT)
+                names, more = self._evaluate(p.slice) if targets is not None else (None, ())
+                if names is None:
+                    self._changes(node, targets, sources, chain, MUT)
+                else:
+                    # ``m.__dict__["T"] = v`` rebinds ``m.T``, as ``m.T = v`` does.
+                    for name in names:
+                        self._emit(p, targets, sources + more, (*chain, name), STORE)
                 return
             item, key = p, p.slice
         elif isinstance(p, ast.Attribute) and p.value is node:
@@ -873,13 +1040,14 @@ class _Scanner:
             self._record(USE, ANY, (), writer)
             return
         for target in sorted(targets):
-            self._record(kind, _join(target, chain), sources, writer)
+            if target != FRESH:
+                self._record(kind, _join(target, chain), sources, writer)
 
     def _record(
         self, kind: str, target: str, sources: tuple[str, ...], writer: tuple[str, ...]
     ) -> None:
-        if target == ANY or target.startswith(ANY + "."):
-            sources = ()
+        if target == ANY:
+            sources = ()  # already any module
         self.out.records.add(UseRecord(kind, target, tuple(sorted(set(sources))), writer))
 
 

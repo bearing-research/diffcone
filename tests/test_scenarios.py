@@ -3996,7 +3996,7 @@ def test_a_builtin_import_of_an_unbounded_name_still_reaches_anything(repo):
     )
     assert selected(plan) == {"t::pkg", "bench_other.Other.time_other"}
     assert [u.detail for u in plan.unresolved if u.kind == "dynamic"] == [
-        "__import__(<non-literal>)"
+        "__import__(<non-literal>), the module not kept"
     ]
 
 

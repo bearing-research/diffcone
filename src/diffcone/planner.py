@@ -850,6 +850,24 @@ def plan_from_indexes(
                 Edge(cls, member, REFERENCES, "attribute of a class passed to other code"),
                 ("base", "head"),
             )
+    # So can a module handed on as a value (``read(ops, name)`` reading
+    # ``getattr(obj, name)``): what refers to it depends on its members. The
+    # edges go from each referrer, not from the module, whose importers an
+    # impact on it would reach.
+    escaped_modules = base.escaped_modules | head.escaped_modules
+    for edge, revs in sorted(union.items()):
+        if edge.kind == REFERENCES and edge.target in escaped_modules:
+            for member in class_members.get(edge.target, ()):
+                if member != edge.source:
+                    graph.add(
+                        Edge(
+                            edge.source,
+                            member,
+                            REFERENCES,
+                            "attribute of a module passed to other code",
+                        ),
+                        revs,
+                    )
 
     # Dependencies the project declares (diffcone.toml): the analysis cannot
     # see them, and they only add edges, so they widen selection and never

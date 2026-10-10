@@ -412,15 +412,28 @@ selection or states something the tables left implicit; none narrows it.
   change to the writer or to what it stores selects that test through the
   writer. So the site joins E only for a change to code that runs at
   import (an escalation, a variable, a class body), which may now write
-  there for every later test. If only test code can run the writers, so
-  that no library code, value or helper module reaches them, only a change
-  to that code counts.
+  there for every later test, and only when that code can run one of the
+  site's writers (audit round 3, W1): what it references, transitively
+  (calls, and what the variables it reads hold: a registry and what is put
+  in it), what an unresolved name it uses may be (`obj.install()`), the
+  constructors of the classes it uses, and, when a module's imports
+  changed, the import-time code of what it imports; or when that code
+  reaches a lookup site, a module getter or a graph walk, which call what
+  no edge shows. A variable bound to a literal on both sides runs no code
+  at all. On strata, a test module's changed `MALFORMED = [...]`, read by a
+  `parametrize`, reached every lookup on `logging` before (any import-time
+  change did); it reaches none now. Writes made through a callback no
+  reference shows (a function handed to a library that calls it later)
+  are outside this, as they are for `_import_writes` (W4).
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures
   (`inspect.signature`, `get_type_hints`). The indexer records these sites
   in a field static planning does not use, and they join the lookup sites
-  for added, deleted and redefined names.
+  for added, deleted and redefined names. `hasattr(obj, "x")` with a name
+  a literal bounds (not a dunder) is no such site: it is a reference to
+  `x`, as `getattr(obj, "x")` is (audit round 3, W13; strata's conftest
+  `hasattr(session.config, "workerinput")`).
 * **Test code.** Test modules are the modules holding a pytest target, or
   the entry of one; conftests are test code too. Any change in test code
   other than a function body also selects the tests in its scope. That
@@ -458,7 +471,23 @@ selection or states something the tables left implicit; none narrows it.
     (`importlib.import_module("tests." + name)` with a name a test passes;
     audit round 3, EVP-3), and code walking the object graph. When such
     code ran outside every test, every lookup on an object from elsewhere
-    counts.
+    counts. Audit round 3, W1 bounds three of these:
+    - an import whose module is not kept (`__import__(name)` as a
+      statement, strata's `warm_imports`) hands it to nothing;
+    - `gc` walks the graph only through what hands objects out
+      (`get_objects`, `get_referrers`, `get_referents`, `garbage`, or the
+      module handed on or looked up by a computed name); `gc.callbacks`,
+      `gc.collect()` and `gc.get_stats()` do not (strata's `GCTracker`);
+    - an import whose name a literal table would bound to no test module
+      (a lazy-export `__getattr__`), when the table unbinds only because
+      of code that may change it (`SourceIndex.table_imports`), can obtain
+      a test module only after one of those writers ran. When every writer
+      is a function or method that never ran outside every test, it counts
+      only in a test that also ran a writer (a guard, as for a fake's
+      member), and never as code that obtained a module outside every
+      test; otherwise it is any getter. On strata, the serializer's data-
+      named modules unbind `strata._LAZY_EXPORTS`, but they run only in
+      tests, while `strata.__getattr__` runs at import.
   - *A test's own change* reaches the targets it is the entry of, not its
     class's scope.
 * **Unresolved fixtures.** Static mode selects every test with a fixture

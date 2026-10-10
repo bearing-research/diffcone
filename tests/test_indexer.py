@@ -169,7 +169,7 @@ def test_dynamic_and_literal_reflection():
     assert ("pkg.a.target", "references", "") in edges(idx, "pkg.b.literal")
     assert not [u for u in idx.unresolved if u.symbol == "pkg.b.literal"]
     assert {u.detail for u in idx.unresolved if u.symbol == "pkg.b.dynamic"} == {
-        "importlib.import_module(<non-literal>)",
+        "importlib.import_module(<non-literal>), the module not kept",
         "getattr(<non-literal>)",
     }
 

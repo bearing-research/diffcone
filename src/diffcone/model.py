@@ -34,6 +34,42 @@ OPAQUE_ATTRIBUTE = "*"  # SourceIndex.class_attributes: class-body code binding 
 # Ends the detail of a lookup on an external module that in-scope code writes
 # to (SourceIndex.external_sites). No "import" in it: details are read for that.
 EXTERNAL_WRITTEN = " on an external module in-scope code writes to"
+# Ends the detail of a dynamic import whose module is not kept
+# (``__import__(name)`` as a statement): it runs the import, but hands the
+# module to no lookup.
+DISCARDED_IMPORT = ", the module not kept"
+# Modules whose functions hand out objects nothing names (``gc.get_objects()``),
+# and the members of them that hand out none (``gc.collect()``,
+# ``gc.get_stats()``, ``gc.callbacks``).
+GRAPH_MODULES = frozenset({"gc"})
+GRAPH_INERT = frozenset(
+    {
+        "callbacks",
+        "collect",
+        "disable",
+        "enable",
+        "isenabled",
+        "freeze",
+        "unfreeze",
+        "get_freeze_count",
+        "get_count",
+        "get_debug",
+        "set_debug",
+        "get_stats",
+        "get_threshold",
+        "set_threshold",
+        "is_tracked",
+        "is_finalized",
+        "DEBUG_STATS",
+        "DEBUG_COLLECTABLE",
+        "DEBUG_UNCOLLECTABLE",
+        "DEBUG_SAVEALL",
+        "DEBUG_LEAK",
+    }
+)
+# SourceIndex.reflection detail of code that hands such a module on, or looks
+# a name up on it by a name nothing bounds: it may walk the object graph.
+GRAPH_HANDLE = ".<object graph module>"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
 
@@ -157,6 +193,9 @@ class SourceIndex:
     # Classes whose instances are passed to someone else, who may then read
     # any attribute off them by a name nothing resolves.
     escaped_classes: set[str] = field(default_factory=set)
+    # Modules handed to someone else as a value (passed, bound to a name,
+    # returned, stored; indexer.uses), with their submodules: the same holds.
+    escaped_modules: set[str] = field(default_factory=set)
     # Functions, methods and classes used as a value somewhere (passed,
     # stored, returned): code the analysis cannot see may call them. Static
     # planning uses this through the indexer; evidence mode asks whether only
@@ -179,6 +218,15 @@ class SourceIndex:
     # -> the symbols writing there. Static planning does not use these;
     # evidence mode bounds such a site by its writers (roadmap item 14).
     external_sites: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
+    # (symbol, detail) of a dynamic import whose name a module-level literal
+    # table would bound, had other code not been found able to change it
+    # (the lazy-export ``__getattr__``) -> (the modules the literals name,
+    # the symbols whose uses may change the table). Static planning does not
+    # use these; evidence mode asks whether such an import can obtain a test
+    # module without one of those writers running first.
+    table_imports: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = field(
+        default_factory=dict
+    )
     # Class -> {attribute bound in the class body: hash of its statements}.
     # Class attributes are not symbols; evidence mode compares these to find
     # which attribute names a class-body change touched. ``OPAQUE_ATTRIBUTE``

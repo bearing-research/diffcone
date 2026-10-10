@@ -45,7 +45,15 @@ everything.
     the table's name) is bounded by it only while nothing can change it: once
     the table, or the module holding it, is modified, passed to other code,
     or reached through `globals()`, `vars()`, `sys.modules` or `exec`, the
-    lookup counts as dynamic. A lookup on a standard-library or third-party
+    lookup counts as dynamic. A module your code gets by a name it computes
+    counts as any module, so passing it on or writing to it makes every such
+    table dynamic, unless the name starts with fixed text
+    (`f"plugins.{name}"` is one of the `plugins.` modules) or the module is
+    a new one (`types.ModuleType(name)`) that isn't installed in
+    `sys.modules` under a name of yours. Code that passes a module to other
+    code (`read(ops, name)`) depends on everything in that module, as it
+    does on every member of a class whose instances it passes on.
+    A lookup on a standard-library or third-party
     module (`getattr(logging, name)`) is bounded unless your code may store
     something on that module, directly or by handing the module to other
     code; then any change can affect it.

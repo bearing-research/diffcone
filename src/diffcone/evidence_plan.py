@@ -74,7 +74,15 @@ escalated module joins E too. A lookup on an external module that only
 code running inside tests writes to joins E only for a change to code that
 runs at import (which may now write there): what it finds of the
 project's, a test's record holds through the writer
-(``_Observers._written_in_tests``, ``import_sites``).
+(``_Observers._written_in_tests``, ``import_sites``). Any such lookup joins
+E for an import-time change only when the changed code can run one of its
+writers (``_forward``).
+
+A test module's names are seen by code that can obtain the module without
+importing it: an import of a module named at run time whose module is
+kept, a graph walk (``gc`` functions that hand objects out), and an import
+whose name a literal table bounds to no test module only once code that
+may change the table ran (``table_getters``, guarded by those writers).
 
 Targets of other runners, which have no evidence, keep their static
 decision. A pytest target with no record (new, or never run) is selected.
@@ -125,8 +133,10 @@ from diffcone.model import (
     CLASS_STATEMENT,
     DECLARED,
     DEFINED_IN,
+    DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
     FUNCTION,
+    GRAPH_HANDLE,
     IMPORTS,
     IMPORTS_NAME,
     METHOD,
@@ -184,13 +194,24 @@ from diffcone.snapshot import changed_paths, split_root
 # or collect at all.
 PYTEST_COLLECTION_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
 
-# Attributes and modules that hand out objects without naming them: a
-# class's subclasses, a function's or frame's globals, a closure cell, every
-# object the collector tracks.
+# Attributes that hand out objects without naming them: a class's
+# subclasses, a function's or frame's globals, a closure cell, the objects
+# the collector tracks (read off a ``gc`` module handed on: the module itself
+# is model.GRAPH_MODULES, and its members that hand out nothing are
+# model.GRAPH_INERT).
 GRAPH_ATTRIBUTES = frozenset(
-    {"__subclasses__", "__globals__", "f_globals", "f_locals", "cell_contents"}
+    {
+        "__subclasses__",
+        "__globals__",
+        "f_globals",
+        "f_locals",
+        "cell_contents",
+        "get_objects",
+        "get_referrers",
+        "get_referents",
+        "garbage",
+    }
 )
-GRAPH_MODULES = frozenset({"gc"})
 
 # What calling or creating a class runs.
 _CONSTRUCTORS = frozenset(
@@ -370,11 +391,13 @@ class _Observers:
         self.importers_of: dict[str, set[str]] = defaultdict(set)
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, str]] = []  # (symbol, kind)
-        # Sites on an external module that only test-window code writes to
-        # (``_written_in_tests``) -> the writers: seen only by a change to
-        # code that runs at import (``import_sites``).
-        bounded: dict[tuple[str, str], set[str]] = defaultdict(set)
-        unbounded: set[tuple[str, str]] = set()  # the other external sites
+        # Sites on an external module the project writes to -> the writers.
+        # When only test-window code writes there (``_written_in_tests``), the
+        # site is seen only by a change to code that runs at import and can
+        # run a writer (``import_sites``); the others (``unbounded``) are
+        # lookup sites as well.
+        site_writers: dict[tuple[str, str], set[str]] = defaultdict(set)
+        unbounded: set[tuple[str, str]] = set()
         external: dict[tuple[str, str], set[str]] = defaultdict(set)
         for index in (c_index, other):
             for key, writers in index.external_sites.items():
@@ -385,10 +408,16 @@ class _Observers:
         # can hand on what nothing names.
         self.module_getters: set[str] = set()
         self.graph_readers: set[str] = set()
+        # Getters whose module name a literal table bounds to no test module,
+        # but which other code may change -> that code (``table_getters``).
+        table_getters: dict[str, set[str]] = defaultdict(set)
         # Code a symbol's code can run (references, forward), and the
         # variables each function writes into in place (``mutated_by``).
         self.calls: dict[str, set[str]] = defaultdict(set)
         self.writes: dict[str, set[str]] = defaultdict(set)
+        self.holds: dict[str, set[str]] = defaultdict(set)
+        self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
+        self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
         for index in (c_index, other):
             for edge in index.edges:
                 if edge.kind in (REFERENCES, DECLARED):
@@ -399,47 +428,67 @@ class _Observers:
                         self.writes[edge.target].add(edge.source)
                     elif edge.detail != "registers":
                         self.calls[edge.source].add(edge.target)
+                    if edge.detail in ("mutated_by", "registers"):
+                        # A registry and what is put in it (``_forward``).
+                        self.holds[edge.source].add(edge.target)
                 elif edge.kind in (IMPORTS, IMPORTS_NAME):
                     self.importers_of[edge.target].add(edge.source)
+                    self.imported_by[edge.source].add(edge.target)
             for ref in index.unresolved:
                 if ref.kind == UNRESOLVED_DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
-                    if site[1] == SITE_IMPORT:
+                    if site[1] == SITE_IMPORT and not ref.detail.endswith(DISCARDED_IMPORT):
                         # Imports a module named at run time (or runs code
                         # read at run time): it can hold any module. Code
                         # generated in the program reaches what its module
-                        # can, as static planning bounds it.
-                        self.module_getters.add(ref.symbol)
+                        # can, as static planning bounds it. An import
+                        # whose module is not kept hands it to nothing.
+                        table = index.table_imports.get((ref.symbol, ref.detail))
+                        if table is not None and not any(
+                            self._names_test_module(n) for n in table[0]
+                        ):
+                            # The lazy-export table: only its writers can
+                            # make it name a test module.
+                            table_getters[ref.symbol].update(table[1])
+                        else:
+                            self.module_getters.add(ref.symbol)
                     writers = external.get((ref.symbol, ref.detail))
-                    if writers and self._written_in_tests(writers):
-                        bounded[site].update(writers)
-                    else:
+                    if writers:
+                        site_writers[site].update(writers)
+                    if not (writers and self._written_in_tests(writers)):
                         if writers:
                             unbounded.add(site)
                         self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
+                    self.names_used[ref.symbol].add(ref.name)
                     if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name in GRAPH_ATTRIBUTES:
                         self.graph_readers.add(ref.symbol)
-            for x in index.external:
-                symbol_ = index.symbols.get(x.symbol)
-                if x.module.split(".")[0] in GRAPH_MODULES and (
-                    symbol_ is None or symbol_.kind != MODULE  # the import statement
-                ):
-                    self.graph_readers.add(x.symbol)
             for symbol, detail in index.reflection:
-                if detail[1:] in GRAPH_ATTRIBUTES:
+                # GRAPH_HANDLE: a ``gc`` function that hands out objects
+                # (not ``gc.collect()`` or ``gc.get_stats()``), or the module
+                # handed on or looked up by a name nothing bounds.
+                if detail == GRAPH_HANDLE or detail[1:] in GRAPH_ATTRIBUTES:
                     # Hands objects out (``type.__subclasses__(c)``); looks no
                     # name up.
                     self.graph_readers.add(symbol)
                     continue
                 writers = external.get((symbol, detail))
-                if writers and self._written_in_tests(writers):
-                    bounded[(symbol, SITE_ANY)].update(writers)
-                else:
+                if writers:
+                    site_writers[(symbol, SITE_ANY)].update(writers)
+                if not (writers and self._written_in_tests(writers)):
                     if writers:
                         unbounded.add((symbol, SITE_ANY))
                     self.sites.append((symbol, SITE_ANY))
+        # A table getter whose writers all run only inside test windows
+        # obtains a test module only in a test that ran one of them (and
+        # never outside every test); otherwise it is any getter.
+        self.table_getters: dict[str, frozenset[str]] = {}
+        for getter, writers in sorted(table_getters.items()):
+            if getter in self.module_getters or not self._written_in_tests(writers):
+                self.module_getters.add(getter)
+            else:
+                self.table_getters[getter] = frozenset(writers)
         for decl in declarations:
             self.readers_of[decl.target].add(decl.source)
         self.hands_on = {
@@ -507,15 +556,34 @@ class _Observers:
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
         # The lookups on an external module that a change to code running at
         # import may make write there, for every later test (``_seeing_sites``):
-        # site -> None when any such change may (code outside the tests can
-        # run a writer), else the test code that can run one (``_callers``).
-        self.import_sites: dict[tuple[str, str], frozenset[str] | None] = {
-            site: None for site in unbounded
+        # site -> its writers. ``library_sites``: those with a writer that can
+        # run outside every test.
+        self.import_sites: dict[tuple[str, str], frozenset[str]] = {
+            site: frozenset(writers) for site, writers in sorted(site_writers.items())
         }
-        for site, writers in sorted(bounded.items()):
-            self.import_sites[site] = self._callers(writers)
+        self.library_sites = set(unbounded)
+        # Code that can call what no edge shows: a lookup by a name nothing
+        # bounds, an import of a module named at run time, a graph walk.
+        self._opaque_callers = (
+            {site for site, _ in self.sites}
+            | self.module_getters
+            | set(self.table_getters)
+            | self.graph_readers
+        )
+        self._forward_of: dict[frozenset[str], frozenset[str]] = {}
+        self._symbols_named: dict[str, set[str]] | None = None
 
     # -- recording --------------------------------------------------------------
+
+    def _names_test_module(self, name: str) -> bool:
+        """Whether importing ``name`` may yield a test module or conftest, or
+        a package holding one (whatever name the runner gives it at run
+        time: the indexed name or a tail of it)."""
+        for module in self.test_code.modules | self.test_code.conftests:
+            dotted, wanted = "." + module, "." + name
+            if dotted.endswith(wanted) or wanted.endswith(dotted) or module.startswith(name + "."):
+                return True
+        return False
 
     def _in_test_code(self, symbol_id: str) -> bool:
         symbol = self.symbols.get(symbol_id)
@@ -536,33 +604,57 @@ class _Observers:
                 return False
         return True
 
-    def _callers(self, writers: set[str]) -> frozenset[str] | None:
-        """The code that can run one of ``writers``: each writer and every
-        function that can call one (a reference, a name match, a lookup site
-        that can see it), transitively, with the top-level code (of a module,
-        a class, a variable) that does; top-level code ends a chain, since it
-        runs at its module's import. None unless all of it is test code and
-        none is used as a value (a callback, a registry entry): then library
-        code running at import cannot run a writer, and test code can only
-        through a symbol of the set."""
-        escaped = self.c.escaped_values | self.other.escaped_values
-        seen = set(writers)
-        stack = list(writers)
-        while stack:
-            current = stack.pop()
-            if not self._in_test_code(current) or current in escaped:
-                return None
-            symbol = self.symbols[current]
-            if symbol.kind not in (FUNCTION, METHOD):
-                continue
-            callers = set(self.readers_of.get(current, ()))
-            if not _is_dunder(symbol.name):
-                callers |= self.by_name.get(symbol.name, set())
-            callers.update(site for site, _ in self._seeing_sites(symbol))
-            for caller in callers - seen:
-                seen.add(caller)
-                stack.append(caller)
-        return frozenset(seen)
+    def _forward(self, sources: Iterable[str], *, imports: bool = False) -> frozenset[str]:
+        """What code running at import (``sources``) can run: the code it
+        references, transitively (a call, or a value it may call later), with
+        the code an unresolved name it uses may be (``obj.install()``), the
+        constructors of the classes it uses, and what a variable it reads
+        holds (initialiser, decorated functions, what code puts in it). With
+        ``imports`` (a module whose imports changed), the import-time code of
+        what a module of ``sources`` imports, transitively, as well."""
+        key = frozenset(sources)
+        if imports:
+            stack = sorted(s for s in key if s in self.symbols and self.symbols[s].kind == MODULE)
+            modules: set[str] = set()
+            while stack:
+                module = stack.pop()
+                if module in modules:
+                    continue
+                modules.add(module)
+                stack.extend(self.imported_by.get(module, ()))
+            key = key | frozenset(modules)
+        if key not in self._forward_of:
+            if self._symbols_named is None:
+                self._symbols_named = defaultdict(set)
+                for symbol in self.symbols.values():
+                    if symbol.kind in (FUNCTION, METHOD, CLASS) and not _is_dunder(symbol.name):
+                        self._symbols_named[symbol.name].add(symbol.id)
+            seen: set[str] = set()
+            stack = sorted(key)
+            while stack:
+                current = stack.pop()
+                if current in seen:
+                    continue
+                seen.add(current)
+                symbol = self.symbols.get(current)
+                if symbol is None:
+                    continue
+                if symbol.kind == CLASS:
+                    stack.extend(self._constructors(current))
+                if symbol.kind == MODULE and current not in key:
+                    continue  # its import ran already: it runs nothing new
+                stack.extend(self.calls.get(current, ()))
+                for holder in self.holds.get(current, ()):
+                    held = self.symbols.get(holder)
+                    if held is not None and held.kind == MODULE:
+                        # Top-level code put something in it: whatever it names.
+                        stack.extend(self.calls.get(holder, ()))
+                    else:
+                        stack.append(holder)
+                for name in self.names_used.get(current, ()):
+                    stack.extend(self._symbols_named.get(name, ()))
+            self._forward_of[key] = frozenset(seen)
+        return self._forward_of[key]
 
     def _observe(self, symbol: str, rule: str, detail: str, change: SymbolChange | None) -> None:
         if symbol not in self.E:
@@ -813,7 +905,7 @@ class _Observers:
                 self._reader(reader, None, label)
             # A lookup by a name nothing bounds may find it, and read its
             # value as well as notice it come or go.
-            library = {site for site, callers in self.import_sites.items() if callers is None}
+            library = self.library_sites
             for site, kind in sorted(set(self.sites) | library):
                 if kind != SITE_IMPORT and site in self.symbols:
                     self._observe(
@@ -1041,7 +1133,9 @@ class _Observers:
                 self._readers(change.id, change, label)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
-                self._sites(symbol, change, label, imports=True, at_import=True)
+                # What it imports runs at its import too.
+                runs = sorted(self._forward([change.id], imports=True))
+                self._sites(symbol, change, label, imports=True, at_import=True, runs=runs)
             else:
                 self._escalate_change(change, f"{label}: module-level code runs at import")
             return
@@ -1096,8 +1190,13 @@ class _Observers:
             self._readers(change.id, change, label)
             # A lookup by a name nothing bounds reads the value as well as
             # noticing the name come or go: a variable runs no code of its
-            # own for the record to show. Its initialiser runs at import.
-            self._sites(symbol, change, label, at_import=True)
+            # own for the record to show. Its initialiser runs at import,
+            # and may write somewhere unless it binds a literal on both sides
+            # (an annotation evaluated at import is code too).
+            runs_code = DEFINITION_CHANGED in kinds or not all(
+                s.inert_definition for s in (change.base, change.head) if s is not None
+            )
+            self._sites(symbol, change, label, at_import=runs_code)
             if DELETED in kinds:
                 self._importers(change.id, change, label)
             if not all(s.inert_definition for s in (change.base, change.head) if s is not None):
@@ -1386,8 +1485,14 @@ class _Observers:
         self.seed_changes.add(change.id)
         symbol = change.symbol
         self._module_symbols(symbol.module, why)
-        self._sites(symbol, change, why, imports=symbol.kind == MODULE, at_import=True)
         sources = self._import_code(symbol.module) if symbol.kind == MODULE else [change.id]
+        runs = sources
+        before = change.base.imports if change.base is not None else None
+        after = change.head.imports if change.head is not None else None
+        if symbol.kind == MODULE and before != after:
+            # Its imports changed: what it imports may now run at its import.
+            runs = sorted(self._forward([*sources, change.id], imports=True))
+        self._sites(symbol, change, why, imports=symbol.kind == MODULE, at_import=True, runs=runs)
         self._import_writes(sources, change, why)
 
     def _escalate_module(self, module: str, why: str) -> None:
@@ -1397,9 +1502,10 @@ class _Observers:
             self.seed_nodes[module] = why
         self._module_symbols(module, why)
         module_symbol = self.symbols.get(module)
+        code = self._import_code(module)
         if module_symbol is not None:
-            self._sites(module_symbol, None, why, imports=True, at_import=True)
-        self._import_writes(self._import_code(module), None, why)
+            self._sites(module_symbol, None, why, imports=True, at_import=True, runs=code)
+        self._import_writes(code, None, why)
 
     def _import_code(self, module: str) -> list[str]:
         """The symbols of ``module`` whose code runs when it is imported: the
@@ -1508,12 +1614,33 @@ class _Observers:
         *,
         imports: bool = False,
         at_import: bool = False,
+        runs: Iterable[str] | None = None,
     ) -> None:
         handed: list[str] = []
+        guarded: list[tuple[str, frozenset[str], str]] = []
         for site, detail in self._seeing_sites(
-            symbol, imports=imports, at_import=at_import, handed=handed
+            symbol,
+            imports=imports,
+            at_import=at_import,
+            runs=runs,
+            handed=handed,
+            guarded=guarded,
         ):
             self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
+        for site, writers, detail in guarded:
+            self.guarded[site].append(
+                (
+                    writers,
+                    frozenset(),
+                    Reason(
+                        RULE_LOOKUP_SITE,
+                        f"{detail}; {label}",
+                        (),
+                        change.id if change is not None else None,
+                        change.changes if change is not None else (),
+                    ),
+                )
+            )
         if handed and symbol.container:
             # Library code finds a test class's member only on an instance
             # (or the class) a test handed it: guarded like a name match.
@@ -1533,7 +1660,9 @@ class _Observers:
         *,
         imports: bool = False,
         at_import: bool = False,
+        runs: Iterable[str] | None = None,
         handed: list[str] | None = None,
+        guarded: list[tuple[str, frozenset[str], str]] | None = None,
     ) -> list[tuple[str, str]]:
         """Code that finds names by a name nothing bounds and can see the
         namespace of ``symbol``: a read off an object from anywhere, eval and
@@ -1614,6 +1743,22 @@ class _Observers:
                             f"can see {namespace}",
                         )
                     )
+            for site, writers in sorted(self.table_getters.items()):
+                # It imports what a table names, no test module, unless code
+                # that may change the table ran first: in the same test, as
+                # none of it runs outside every test.
+                if site in listed or site not in self.symbols:
+                    continue
+                listed.add(site)
+                how = (
+                    f"{site} imports a module a literal table names, which "
+                    f"{sorted(writers)[0]} may change, and may hand a test module on to a "
+                    f"lookup that can see {namespace}"
+                )
+                if guarded is not None:
+                    guarded.append((site, writers, how))
+                else:
+                    out.append((site, how))
             ev = self.evidence
             outside = sorted(
                 g
@@ -1649,8 +1794,14 @@ class _Observers:
                 )
         if at_import:
             listed = {site for site, _ in out}
-            for (site, _kind), callers in self.import_sites.items():
-                if callers is not None and symbol.id not in callers:
+            # Only where that code (``runs``: the import-time code that
+            # changed, by default the symbol) can run one of the site's
+            # writers, as ``_import_writes`` follows it, or reaches code that
+            # calls what no edge shows.
+            reach = self._forward(runs if runs is not None else [symbol.id])
+            opaque = bool(reach & self._opaque_callers)
+            for (site, _kind), writers in self.import_sites.items():
+                if not opaque and not reach & writers:
                     continue
                 if site not in listed and site in self.symbols:
                     listed.add(site)

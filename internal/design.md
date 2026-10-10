@@ -409,11 +409,32 @@ written to: handed on (bound to a name, passed, returned, `vars(core)`,
 ...)` with a name that is not a literal) or its namespace reached
 (`globals()`, a bare `vars()` at module level, `exec`/`eval` of code that
 is not a literal: such code can also reach every module its globals
-name). A literal code string is read as the code it is. A module named at
-run time by a name nothing bounds (`sys.modules[name]`,
+name). A literal code string is read as the code it is. `exec`/`eval`
+given a namespace of its own (`exec(code, m.__dict__)`, `exec(code, {})`)
+runs there instead: that argument counts where it stands (a module's
+`__dict__` handed on is the module written to, `globals()` this one's
+namespace), and this module's namespace is not reached. A store into a
+module's namespace by a literal key (`m.__dict__["T"] = v`,
+`vars(m)["T"] = v`) rebinds that name, as `m.T = v` does. A module named
+at run time by a name nothing bounds (`sys.modules[name]`,
 `import_module(name)`, `__import__(name)`) may be any module: a store
 through it (`sys.modules[name].TABLE[k] = v`) unbounds that name in every
-module, and handing it on unbounds every table in the program. A
+module, and handing it on unbounds every table in the program. A name
+that starts with literal text (`f"plugins.{name}"`, `"cell_" + key`,
+`"pkg.%s" % name`, `f"{__name__}.{name}"`) is any module with that prefix,
+in scope or not (strata's driver registry and lazy `__getattr__`s). A
+module created by `types.ModuleType(name)` is no module other code holds:
+nothing done to it counts, unless it is installed in `sys.modules`
+(`sys.modules[k] = m`, `setdefault`, `update`, `monkeypatch.setitem`,
+`mock.patch.dict`) under a name one of yours may have, which it then is
+(any module, for a name nothing bounds). `importlib.util.module_from_spec`
+is not such a module: once its loader runs it is a copy of the module its
+spec names, so it stays outside the model as before. Each table that
+unbinds keeps the symbols whose uses unbound it (`ModuleScope.
+literal_writers`; a use computed from another table is attributed to that
+table's writers), and a dynamic import whose name such a table would
+bound is recorded with those writers (`SourceIndex.table_imports`, for
+evidence mode). A
 function-local name bound only to modules and used in no nested scope is
 followed rather than counted as handing the module on (`mod =
 import_module(name)` then `getattr(mod, attr)`). Where a module name was
@@ -1308,6 +1329,16 @@ an instance of where the argument says so (`C()` passes an instance of `C`,
 gains an edge to each of its members: whoever holds one may read any
 attribute off it by a name nothing resolves, so *referring to that class
 depends on its members*, not only on its structure.
+
+A module handed to other code is such an object too (`read(ops, names)`
+reading `getattr(obj, names[0])`; audit round 3, W9). The modules a use
+hands on (`indexer/uses.py`: passed, bound to a name, returned, stored),
+with their submodules, are `escaped_modules`, and each reference to one as
+a value gains an edge to each of its members (`attribute of a module passed
+to other code`): the code that refers to it depends on everything in it.
+The edges start at the referrer, not at the module, since impact on a
+module reaches all its importers. A module only read from (`ops.add(1, 2)`)
+does not count.
 
 An object also reaches such code out of a factory, and nothing at that
 call site names its class: `obj = make(); invoke(obj, name)`. So a

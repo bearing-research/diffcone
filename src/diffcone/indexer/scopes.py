@@ -89,6 +89,12 @@ class ModuleScope:
     containers: frozenset[str] = frozenset()
     # Module-level literal name -> the names its values were taken from.
     literal_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # ``literal_names`` as this module's own code leaves them, before other
+    # modules' uses unbound some (Indexer._apply_uses), and for each name
+    # that unbound, the code whose uses did (None: code that is not a
+    # function or method, or nothing to name).
+    literal_pristine: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
+    literal_writers: dict[str, frozenset[str]] = field(default_factory=dict)
     # Module cache bookkeeping: the content key of the file and the digest
     # of everything other modules' resolution may read from this one.
     cache_key: str | None = None
@@ -114,6 +120,7 @@ class Scope:
     literal_bound: frozenset[str] = frozenset()
     literal_extra: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
     _literal_cache: dict[str, tuple[str, ...] | None] | None = field(default=None, repr=False)
+    _pristine_cache: dict[str, tuple[str, ...] | None] | None = field(default=None, repr=False)
     # The enclosing function's own parameters (only in that function's scope,
     # not in nested scopes): name -> positional index or None for keyword-only.
     params: dict[str, int | None] = field(default_factory=dict)
@@ -137,29 +144,44 @@ class Scope:
     @property
     def literal_names(self) -> dict[str, tuple[str, ...] | None]:
         if self._literal_cache is None:
-            names: dict[str, tuple[str, ...] | None] = {}
-            if self.literal_parent is not None:
-                parent = self.literal_parent.literal_names
-                names = {
-                    k: v for k, v in parent.items() if literal_base(k) not in self.literal_bound
-                }
-            # A name this scope binds is not the module's literal of that
-            # name, whatever it holds (``def f(NAMES)``, ``lambda NAMES:``,
-            # ``for NAMES, _ in ...``): see own_literal_bindings.
-            names.update(
-                own_literal_bindings(
-                    self.literal_node, self.literal_bound, self.module.literal_names
-                )
-            )
-            names.update(self.literal_extra)
-            names.update({k + INDEXED: None for k in self.literal_extra})
-            names.update({k + NESTED: None for k in self.literal_extra})
-            self._literal_cache = names
+            self._literal_cache = self._collect_literals(pristine=False)
         return self._literal_cache
+
+    def _collect_literals(self, *, pristine: bool) -> dict[str, tuple[str, ...] | None]:
+        module_literals = self.module.literal_pristine if pristine else self.module.literal_names
+        names: dict[str, tuple[str, ...] | None] = {}
+        if self.literal_parent is not None:
+            parent = (
+                self.literal_parent._pristine_names()
+                if pristine
+                else self.literal_parent.literal_names
+            )
+            names = {k: v for k, v in parent.items() if literal_base(k) not in self.literal_bound}
+        # A name this scope binds is not the module's literal of that name,
+        # whatever it holds (``def f(NAMES)``, ``lambda NAMES:``, ``for
+        # NAMES, _ in ...``): see own_literal_bindings.
+        names.update(own_literal_bindings(self.literal_node, self.literal_bound, module_literals))
+        names.update(self.literal_extra)
+        names.update({k + INDEXED: None for k in self.literal_extra})
+        names.update({k + NESTED: None for k in self.literal_extra})
+        return names
+
+    def _pristine_names(self) -> dict[str, tuple[str, ...] | None]:
+        if self._pristine_cache is None:
+            self._pristine_cache = self._collect_literals(pristine=True)
+        return self._pristine_cache
 
     def string_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
         """Every string ``expr`` may evaluate to, or None when unbounded."""
         return _string_candidates(expr, self.literal_names, self.module.literal_names)
+
+    def table_candidates(self, expr: ast.expr) -> tuple[str, ...] | None:
+        """What ``string_candidates`` would give had no other code been found
+        able to change this module's literal tables (ModuleScope.
+        literal_writers), when that is what unbounds it; else None."""
+        if not self.module.literal_writers:
+            return None
+        return _string_candidates(expr, self._pristine_names(), self.module.literal_pristine)
 
 
 @dataclass(frozen=True)
@@ -244,19 +266,31 @@ def _absolute_module(scope_module: ModuleScope, module: str | None, level: int) 
     return resolve_relative_module(scope_module.name, scope_module.is_package, module, level)
 
 
-def _string_prefix(expr: ast.expr) -> str | None:
+def _string_prefix(expr: ast.expr, own: str | None = None) -> str | None:
     """The literal prefix of a string built at runtime: an f-string starting
     with text, ``"pkg." + name``, ``"pkg.%s" % name`` or ``"pkg.{}".format(name)``.
-    None when the string does not start with a literal."""
+    With ``own`` (the module's name, when ``__name__`` is the builtin one),
+    a leading ``__name__`` is that text (``f"{__name__}.{name}"``,
+    ``__name__ + "." + name``). None when the string does not start with a
+    literal."""
     if isinstance(expr, ast.JoinedStr):
         if expr.values and isinstance(expr.values[0], ast.Constant):
             return str(expr.values[0].value) or None
+        if own is not None and expr.values and _is_own_name(expr.values[0]):
+            rest = expr.values[1] if len(expr.values) > 1 else None
+            if isinstance(rest, ast.Constant) and isinstance(rest.value, str):
+                return own + rest.value
+            return own
         return None
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+        if own is not None and _is_own_name(expr.left):
+            if isinstance(expr.right, ast.Constant) and isinstance(expr.right.value, str):
+                return own + expr.right.value
+            return own
         left = _literal_strings(expr.left)
         if left is not None and len(left) == 1:
             return left[0] or None
-        return _string_prefix(expr.left)
+        return _string_prefix(expr.left, own)
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
         if isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str):
             return expr.left.value.split("%", 1)[0] or None
@@ -270,6 +304,15 @@ def _string_prefix(expr: ast.expr) -> str | None:
     ):
         return expr.func.value.value.split("{", 1)[0] or None
     return None
+
+
+def _is_own_name(expr: ast.expr) -> bool:
+    """``__name__``, bare or as an f-string part without a format."""
+    if isinstance(expr, ast.FormattedValue):
+        if expr.conversion not in (-1, ord("s")) or expr.format_spec is not None:
+            return False
+        expr = expr.value
+    return isinstance(expr, ast.Name) and expr.id == "__name__"
 
 
 def _resolve_relative_name(name: str, package: str, *, prefix: bool = False) -> str | None:
