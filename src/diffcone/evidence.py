@@ -14,6 +14,7 @@ internal/evidence_design.md.
 from __future__ import annotations
 
 import array
+import contextlib
 import glob
 import json
 import os
@@ -25,9 +26,10 @@ import time
 import zlib
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping, Set
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from diffcone import child
 from diffcone.cache import make_own_dir
@@ -93,8 +95,6 @@ class Evidence:
     # ``path:<file>`` for a module outside the index).
     import_paths: dict[str, frozenset[str]] = field(default_factory=dict)
     import_dirs: dict[str, frozenset[str]] = field(default_factory=dict)  # listed, likewise
-    # Something outside every test window started a subprocess.
-    import_subprocess: bool = False
     # The modules whose import ran what no record shows (a process no record
     # follows, text code), ``path:<file>`` for one outside the index, and ""
     # for code outside every import (a hook, collection): any change may
@@ -249,7 +249,6 @@ class _Raw:
     import_by: dict[str, set[str]]
     import_paths: dict[str, set[str]]
     import_dirs: dict[str, set[str]]
-    import_subprocess: bool
     environment: dict
     environment_hash: str
     collected: set[str] | None = None
@@ -346,9 +345,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             "the suite wrote no evidence: was the plugin loaded (-p diffcone_collect), "
             "and did pytest run at all?"
         )
-    raw = _Raw(
-        {}, set(), set(), defaultdict(set), defaultdict(set), defaultdict(set), False, {}, ""
-    )
+    raw = _Raw({}, set(), set(), defaultdict(set), defaultdict(set), defaultdict(set), {}, "")
     environments: list[dict] = []
     seen_pids = set()
     children = _Children(directory, owners, {m.split(".")[0] for m in project_modules})
@@ -412,7 +409,6 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             for path, modules in data[key].items():
                 for module_path in modules:
                     seen[canonical(path)].add(module_of(module_path))
-        raw.import_subprocess |= bool(data["import_flags"] & FLAG_SUBPROCESS)
         raw.import_flagged.update(module_of(m) for m in data.get("import_flagged", ()))
         for key, modules in data["import_by"].items():
             symbol = symbol_of[int(key)]
@@ -445,23 +441,8 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 raw.import_dirs[path].add(module)
             if c_flags:
                 raw.import_flagged.add(module)
-        for key, w in data.get("fixtures", {}).items():
-            symbols, paths, dirs, flags = raw.fixtures.setdefault(key, (set(), set(), set(), 0))
-            for c in w["codes"]:
-                if symbol_of[c] is not None:
-                    symbols.add(symbol_of[c])
-                elif file_of[c] is not None:
-                    paths.add(file_of[c])
-            paths.update(canonical(p) for p in w["paths"])
-            dirs.update(canonical(d) for d in w["dirs"])
-            flags |= w["flags"]
-            for spawn in w.get("spawns", ()):
-                c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
-                symbols |= c_symbols
-                paths |= c_paths
-                dirs |= c_dirs
-                flags |= c_flags
-            raw.fixtures[key] = (symbols, paths, dirs, flags)
+        for key, window in data.get("fixtures", {}).items():
+            _fold_window(raw.fixtures, key, window, symbol_of, file_of, canonical, children)
         tests_file = directory / f"tests-{pid}.bin"
         if data["wrote_tests"]:
             if not tests_file.exists():
@@ -480,22 +461,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                         f"process {pid} wrote a truncated or corrupt test file ({exc})"
                     ) from exc
                 i += m
-                symbols, paths, dirs, flags = raw.tests.setdefault(name, (set(), set(), set(), 0))
-                for c in record["codes"]:
-                    if symbol_of[c] is not None:
-                        symbols.add(symbol_of[c])
-                    elif file_of[c] is not None:
-                        paths.add(file_of[c])
-                paths.update(canonical(p) for p in record["paths"])
-                dirs.update(canonical(d) for d in record["dirs"])
-                flags |= record["flags"]
-                for spawn in record.get("spawns", ()):
-                    c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
-                    symbols |= c_symbols
-                    paths |= c_paths
-                    dirs |= c_dirs
-                    flags |= c_flags
-                raw.tests[name] = (symbols, paths, dirs, flags)
+                _fold_window(raw.tests, name, record, symbol_of, file_of, canonical, children)
                 raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
     orphans = [
         p
@@ -523,6 +489,38 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             flags |= f_flags
         raw.tests[name] = (symbols, paths, dirs, flags)
     return raw
+
+
+def _fold_window(
+    into: dict[str, tuple[set[str], set[str], set[str], int]],
+    key: str,
+    window: dict,
+    symbol_of: list[str | None],
+    file_of: list[str | None],
+    canonical: Callable[[str], str],
+    children: _Children,
+) -> None:
+    """Add what one window of a process (a test, a shared fixture's setup)
+    ran and touched, with what the processes it started ran, to
+    ``into[key]``: code by index into the process's table (``symbol_of``, or
+    ``file_of`` for a file the index does not read), paths and directories
+    as the index spells them (``canonical``)."""
+    symbols, paths, dirs, flags = into.setdefault(key, (set(), set(), set(), 0))
+    for c in window["codes"]:
+        if symbol_of[c] is not None:
+            symbols.add(symbol_of[c])
+        elif file_of[c] is not None:
+            paths.add(file_of[c])
+    paths.update(canonical(p) for p in window["paths"])
+    dirs.update(canonical(d) for d in window["dirs"])
+    flags |= window["flags"]
+    for spawn in window.get("spawns", ()):
+        c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
+        symbols |= c_symbols
+        paths |= c_paths
+        dirs |= c_dirs
+        flags |= c_flags
+    into[key] = (symbols, paths, dirs, flags)
 
 
 def _check_environments(owned: Iterable[str], owners: _Owners) -> None:
@@ -616,14 +614,7 @@ def fold(
         symbols=symbol_table,
         paths=path_table,
         tests=records,
-        import_phase=frozenset().union(*(r.import_phase for r in raws)),
-        hook_phase=frozenset().union(*(r.hook_phase for r in raws)),
-        import_by=_merged(r.import_by for r in raws),
-        import_paths=_merged(r.import_paths for r in raws),
-        import_dirs=_merged(r.import_dirs for r in raws),
-        import_subprocess=any(r.import_subprocess for r in raws),
-        import_flagged=frozenset().union(*(r.import_flagged for r in raws)),
-        case_insensitive=any(r.case_insensitive for r in raws),
+        **_process_wide(raws),
         reverse_checked=len(raws) > 1,
         collected=(
             frozenset().union(*(r.collected for r in raws if r.collected is not None))
@@ -714,14 +705,7 @@ def advance(
         symbols=symbol_table,
         paths=path_table,
         tests=records,
-        import_phase=frozenset().union(*(e.import_phase for e in sources)),
-        hook_phase=frozenset().union(*(e.hook_phase for e in sources)),
-        import_by=_merged(e.import_by for e in sources),
-        import_paths=_merged(e.import_paths for e in sources),
-        import_dirs=_merged(e.import_dirs for e in sources),
-        import_subprocess=any(e.import_subprocess for e in sources),
-        import_flagged=frozenset().union(*(e.import_flagged for e in sources)),
-        case_insensitive=any(e.case_insensitive for e in sources),
+        **_process_wide(sources),
         reverse_checked=previous.reverse_checked,
         advanced_from=previous.commit,
         full_commit=previous.full_commit or previous.commit,
@@ -731,11 +715,29 @@ def advance(
     )
 
 
-def _merged(maps: Iterable[dict[str, set[str]]]) -> dict[str, frozenset[str]]:
+def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
+    """The process-wide part of evidence (what ran or was touched outside
+    every test window, and how paths compare), as ``Evidence`` fields: the
+    union over ``sources``, raw collections (``fold``) or the evidence an
+    advanced store comes from (``advance``). One place, so that neither
+    drops a field: a field left out loses what a phase built, and a miss
+    follows."""
+    return {
+        "import_phase": frozenset().union(*(s.import_phase for s in sources)),
+        "hook_phase": frozenset().union(*(s.hook_phase for s in sources)),
+        "import_by": _merged(s.import_by for s in sources),
+        "import_paths": _merged(s.import_paths for s in sources),
+        "import_dirs": _merged(s.import_dirs for s in sources),
+        "import_flagged": frozenset().union(*(s.import_flagged for s in sources)),
+        "case_insensitive": any(s.case_insensitive for s in sources),
+    }
+
+
+def _merged(maps: Iterable[Mapping[str, Set[str]]]) -> dict[str, frozenset[str]]:
     out: dict[str, set[str]] = defaultdict(set)
     for mapping in maps:
         for key, values in mapping.items():
-            out[key] |= values
+            out[key].update(values)
     return {k: frozenset(v) for k, v in sorted(out.items())}
 
 
@@ -763,8 +765,9 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
     fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
     os.close(fd)
     try:
-        db = sqlite3.connect(tmp)
-        with db:
+        # Committed or rolled back, then closed even on an error: an open
+        # handle keeps Windows from removing the temporary file.
+        with contextlib.closing(sqlite3.connect(tmp)) as db, db:
             db.executescript(
                 """
                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -790,7 +793,6 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "hook_phase": sorted(evidence.hook_phase),
                 "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
                 "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
-                "import_subprocess": evidence.import_subprocess,
                 "import_flagged": sorted(evidence.import_flagged),
                 "case_insensitive": evidence.case_insensitive,
                 "reverse_checked": evidence.reverse_checked,
@@ -818,7 +820,6 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "INSERT INTO import_by VALUES (?, ?)",
                 [(s, m) for s, modules in evidence.import_by.items() for m in sorted(modules)],
             )
-        db.close()
         os.replace(tmp, target)
     finally:
         if os.path.exists(tmp):
@@ -827,13 +828,20 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
     return target
 
 
+def _read_only(path: Path) -> sqlite3.Connection:
+    """Open a store read-only. The URI is built from the resolved path, so a
+    ``#``, ``?`` or ``%`` in it is percent-encoded instead of read as the
+    URI's fragment, query or an escape."""
+    return sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+
+
 def _meta(db: sqlite3.Connection) -> dict:
     return {k: json.loads(v) for k, v in db.execute("SELECT key, value FROM meta")}
 
 
 def load_store(path: Path) -> Evidence:
     try:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        db = _read_only(path)
     except sqlite3.Error as exc:
         raise EvidenceError(f"cannot open evidence recording {path}: {exc}") from exc
     try:
@@ -871,7 +879,6 @@ def load_store(path: Path) -> Evidence:
             import_by={s: frozenset(m) for s, m in import_by.items()},
             import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
-            import_subprocess=meta["import_subprocess"],
             import_flagged=frozenset(meta["import_flagged"]),
             case_insensitive=bool(meta["case_insensitive"]),
             reverse_checked=meta["reverse_checked"],
@@ -976,7 +983,7 @@ def list_stores(repo: Path) -> list[StoreInfo]:
     found = []
     for path in sorted((repo / EVIDENCE_DIR).glob("*.sqlite")):
         try:
-            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            db = _read_only(path)
             try:
                 meta = _meta(db)
                 (count,) = db.execute("SELECT COUNT(*) FROM tests").fetchone()
@@ -994,7 +1001,7 @@ def list_stores(repo: Path) -> list[StoreInfo]:
                 tuple(meta["source_roots"]),
                 meta["created"],
                 count,
-                meta["environment"]["python"].split()[0],
+                python_version(meta["environment"]),
                 meta.get("advanced_from"),
                 meta.get("full_commit") or meta["commit"],
             )
@@ -1002,6 +1009,11 @@ def list_stores(repo: Path) -> list[StoreInfo]:
             continue  # a malformed store is skipped, not fatal to every plan
         found.append(info)
     return sorted(found, key=lambda s: -s.created)
+
+
+def python_version(environment: dict) -> str:
+    """The Python version a recorded environment names ("3.13.1"), or ""."""
+    return (str(environment.get("python") or "").split() or [""])[0]
 
 
 def environment_differences(recorded: dict, met: dict) -> list[str]:

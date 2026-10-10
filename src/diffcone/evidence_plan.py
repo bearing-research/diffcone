@@ -15,11 +15,13 @@ observed by"), and a test is selected when its record meets E:
   into another module's state, which tests read without running it: the
   variables written in place by what it can call are changed values
   (``_import_writes``), and so are those of a changed variable
-  initialiser, class body or ``def`` header that runs code;
+  statement, class body or ``def`` header that runs code;
 * a function's signature, defaults, decorators or annotations: also its
   readers (resolved references and name matches, one hop), the lookup and
   reflection sites that can see its namespace, and escalation when the
-  ``def`` runs code at import. A name match on a member of a class in test
+  ``def`` runs code at import (``_runs_at_import``: decorators, defaults,
+  and annotations that call something, which before Python 3.14 are
+  evaluated with the ``def``). A name match on a member of a class in test
   code, and a library lookup by a name nothing bounds, is guarded: it
   selects a test only if the test also ran code that can hand it an
   instance (``_Observers._holders``), which includes code finding classes
@@ -31,7 +33,9 @@ observed by"), and a test is selected when its record meets E:
 * a variable: its readers and the lookup and reflection sites that can see
   its namespace (a lookup by a name nothing bounds reads the value too); a
   reader that is itself a variable captured the value and is followed in
-  turn; a module's or class's top-level reader escalates its module;
+  turn; a module's or class's top-level reader escalates its module. An
+  initialiser that runs code, or an annotation evaluated at import, may
+  write elsewhere (``_import_writes``);
 * a class body: the attributes whose statements changed, through every
   reader of those names and the lookup and reflection sites; an opaque
   body statement, a dunder attribute or a changed class statement (bases,
@@ -45,24 +49,43 @@ observed by"), and a test is selected when its record meets E:
 * an added or deleted name: its readers, the unbounded lookup and
   reflection sites that can see the namespace, and for a deletion the
   modules importing it (their import now fails); an added or deleted
-  definition that runs code at import (a decorated function, a class whose
-  creation runs code) escalates too;
+  definition that runs code at import (a decorated function, one whose
+  defaults or annotations call code, a class whose creation runs code)
+  escalates too;
 * module-level code: escalates the module, and so does a change to
   ``__all__`` (what star imports bind);
 * a docstring only: the code reading docstrings (``reads_docstrings``)
   that refers to the symbol or sits in its module, as in static planning;
-  such a reader running at import escalates its module;
+  such a reader running at import escalates its module. A docstring its
+  decorator reads at import (``doc_decorated``: pandas' ``@doc``)
+  escalates the change;
 * a non-Python file, or any file outside the source roots (read from a
   git diff, since the index holds only the roots): the tests that touched
-  it or a directory above it; everything when it is compiled source, build
-  or pytest configuration, a ``conftest.py`` outside the roots, or was
-  touched outside every test;
+  it or a directory above it (one listed, for an added or deleted file);
+  touched while a module was imported, that module is escalated.
+  Everything when it was touched outside every test and import (a hook,
+  collection), or is compiled source, build, dependency or pytest
+  configuration (``build_input``), or a ``conftest.py`` outside the
+  roots. A Python source file is data to the tests that opened it as a
+  file (``inspect.getsource``) too; a module's file selects everything
+  only when it is a build script as static planning judges it
+  (planner.is_build_script: ``setup.py``, a ``build.py`` at the root or
+  beside the project's metadata, not ``pkg/build.py``);
+* a Cython source (``.pyx``, ``.pxd``, ``.pxi``), at function level: a
+  changed body reaches the tests that ran the function in a profiled
+  build, and for one such a build does not always report (``nogil``,
+  ``cpdef``, ``profile(False)``) those that ran a Cython function naming
+  it; a changed name bound outside the functions reaches the code that
+  can see it and names it; anything else selects everything
+  (``_cython``);
 * test code other than a function body: the tests that list the symbol as
   a lifecycle dependency (a fixture) or are collected from its class or a
   subclass, and for a test module's variable (``pytestmark``) every test
   of the module, since pytest reads marks, fixtures and parameters without
-  a static reader. ``pytest_plugins`` in any module selects everything:
-  the plugins it names serve the whole session.
+  a static reader. ``pytest_plugins`` in any module selects everything
+  (the plugins it names serve the whole session), and so do a
+  ``pytest_*`` function anywhere (a hook) and a conftest's
+  ``collect_ignore`` or ``collect_ignore_glob`` (what pytest collects).
 
 Code that ran at C in a hook or during collection, changed or reading a
 change, selects everything: what a hook leaves behind (an environment
@@ -89,7 +112,7 @@ escalated module joins E too. A lookup on an external module that only
 code running inside tests writes to joins E only for a change to code that
 runs at import (which may now write there): what it finds of the
 project's, a test's record holds through the writer
-(``_Observers._written_in_tests``, ``import_sites``). Any such lookup joins
+(``_Observers._only_in_tests``, ``import_sites``). Any such lookup joins
 E for an import-time change only when the changed code can run one of its
 writers (``_forward``).
 
@@ -107,7 +130,7 @@ decision. A pytest target with no record (new, or never run) is selected.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from diffcone.classify import (
@@ -142,6 +165,7 @@ from diffcone.evidence import (
     FLAG_UNSTABLE,
     UNINDEXED_MODULE,
     Evidence,
+    python_version,
 )
 from diffcone.indexer.scripts import RUNS_PROGRAM, RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
@@ -150,7 +174,6 @@ from diffcone.model import (
     CLASS,
     CLASS_STATEMENT,
     DECLARED,
-    DEFINED_IN,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
     FUNCTION,
@@ -164,17 +187,14 @@ from diffcone.model import (
     OPAQUE_ATTRIBUTE,
     REBINDS,
     REFERENCES,
-    UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     WRITES,
     SourceIndex,
     Symbol,
-    UnresolvedReference,
     attribute_reachable,
 )
 from diffcone.planner import (
-    BUILD_SCRIPTS,
     OWN_DIRS,
     OWN_FILES,
     RULE_ANALYSIS_ERROR,
@@ -208,8 +228,12 @@ from diffcone.planner import (
     _inside,
     _is_dunder,
     _members_by_container,
+    _on_unknown_value,
+    _project_dirs,
     _runner_dependency_fallbacks,
     build_input,
+    docstring_readers,
+    is_build_script,
     lifecycle_reason,
     merge_targets,
     plan_from_indexes,
@@ -266,6 +290,57 @@ def _site_kind(detail: str) -> str:
     if detail.startswith(("getattr(<non-literal>)", "globals(")):
         return SITE_CLOSURE
     return SITE_ANY  # eval, exec, runpy.run_path, anything not recognised
+
+
+def _definition_runs_code(symbol: Symbol) -> bool:
+    """Whether executing ``symbol``'s definition at import runs code beyond
+    binding the name. A ``def`` runs its decorators and defaults
+    (``inert_header``) and, before Python 3.14, its annotations, unless they
+    are deferred (``from __future__ import annotations``) or absent
+    (``inert_definition``) or call nothing (``quiet_header``):
+    ``def f(x: set_mode("fast"))`` calls project code at import, ``def f(x:
+    Item)`` only looks a name up (audit round 2, F3; round 4, Q3). A
+    variable runs its initialiser (``inert_definition``: a literal runs
+    nothing) and an annotation evaluated at import
+    (``X: set_mode("fast") = 1``), which its ``inert_definition`` does not
+    cover."""
+    if symbol.kind in (FUNCTION, METHOD):
+        return not (symbol.inert_header and (symbol.inert_definition or symbol.quiet_header))
+    if symbol.kind == VARIABLE:
+        eager = bool(symbol.annotation_hash) and not symbol.deferred_annotations
+        return not symbol.inert_definition or eager
+    return True
+
+
+def _runs_at_import(change: SymbolChange) -> bool:
+    """planner._runs_at_import, as evidence mode bounds a ``def``
+    (``_definition_runs_code``): module bodies and class bodies run at
+    import; a function's change does when it adds, deletes or changes a
+    ``def`` whose header runs code on either side (a body edit, or a
+    deferred annotation's, does not); a variable's when its definition
+    changed (an annotation evaluated at import), or its statement runs code
+    on either side. An unchanged annotation runs the same code again: a
+    variable's evaluated annotation matters only to its addition or
+    deletion."""
+    symbol = change.symbol
+    kinds = set(change.changes)
+    if symbol.kind in (MODULE, CLASS):
+        return True
+    sides = [s for s in (change.base, change.head) if s is not None]
+    if symbol.kind == VARIABLE:
+        if DEFINITION_CHANGED in kinds:
+            return True
+        if not all(s.inert_definition for s in sides):
+            return True
+        return bool(kinds & {ADDED, DELETED}) and any(_definition_runs_code(s) for s in sides)
+    if not kinds & {ADDED, DELETED, DEFINITION_CHANGED}:
+        return False
+    return any(_definition_runs_code(s) for s in sides)
+
+
+# ``_Observers._related``: which way to follow the class graph.
+BASES = "bases"
+SUBCLASSES = "subclasses"
 
 
 def _ancestors(path: str) -> list[str]:
@@ -348,14 +423,29 @@ def _class_graph(
     return bases, subclasses
 
 
+def _closure(starts: Iterable[str], graph: Mapping[str, Iterable[str]]) -> set[str]:
+    """``starts`` and every class reachable from them in ``graph`` (class ->
+    its bases, or -> its subclasses)."""
+    found = set(starts)
+    stack = list(found)
+    while stack:
+        for nxt in graph.get(stack.pop(), ()):
+            if nxt not in found:
+                found.add(nxt)
+                stack.append(nxt)
+    return found
+
+
 def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]) -> set[str]:
     """Test classes (with the bases they inherit from) whose instances only
-    pytest ever holds: planner._runner_only_classes, with two differences.
+    pytest ever holds: planner._runner_only_classes, with three differences.
     A class that is only ever a base of test classes (pandas' ExtensionTests
     combines a dozen Base*Tests) counts too, since its instances are the
-    test classes' instances. And a read of ``.instance`` does not turn the
-    rule off: the tests that executed one are selected instead (see
-    ``_Observers._sites``)."""
+    test classes' instances. A read of ``.instance`` does not turn the rule
+    off: the tests that executed one are selected instead
+    (``_Observers._seeing_sites``, ``hands_on``). And the runner's classes
+    are those of every pytest target, a manifest's as well as discovery's
+    (the static rule reads discovery's only)."""
     symbols = {**c_index.symbols, **other.symbols}
     bases, _ = _class_graph((c_index, other))
     runner: set[str] = set()
@@ -367,12 +457,7 @@ def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]
             owner = symbols.get(dep)
             if owner is not None and owner.kind == CLASS:
                 runner.add(dep)
-    stack = list(runner)
-    while stack:
-        for base in bases.get(stack.pop(), ()):
-            if base not in runner:
-                runner.add(base)
-                stack.append(base)
+    runner = _closure(runner, bases)
     if not runner:
         return set()
     held = (c_index.escaped_classes | other.escaped_classes) & runner
@@ -384,13 +469,8 @@ def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]
                 and not _inside(edge.source, runner, c_index, other)
             ):
                 held.add(edge.target)
-    stack = list(held)
-    while stack:  # a held subclass holds its bases: its instances carry their methods
-        for base in bases.get(stack.pop(), ()):
-            if base in runner and base not in held:
-                held.add(base)
-                stack.append(base)
-    return runner - held
+    # A held subclass holds its bases: its instances carry their methods.
+    return runner - _closure(held, bases)
 
 
 def _is_conftest(path: str) -> bool:
@@ -421,12 +501,11 @@ class _Observers:
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, str]] = []  # (symbol, kind)
         # Sites on an external module the project writes to -> the writers.
-        # When only test-window code writes there (``_written_in_tests``), the
+        # When only test-window code writes there (``_only_in_tests``), the
         # site is seen only by a change to code that runs at import and can
-        # run a writer (``import_sites``); the others (``unbounded``) are
-        # lookup sites as well.
+        # run a writer (``import_sites``); the others are lookup sites as
+        # well (``sites``).
         site_writers: dict[tuple[str, str], set[str]] = defaultdict(set)
-        unbounded: set[tuple[str, str]] = set()
         external: dict[tuple[str, str], set[str]] = defaultdict(set)
         for index in (c_index, other):
             for key, writers in index.external_sites.items():
@@ -505,14 +584,12 @@ class _Observers:
                     writers = external.get((ref.symbol, ref.detail))
                     if writers:
                         site_writers[site].update(writers)
-                    if not (writers and self._written_in_tests(writers)):
-                        if writers:
-                            unbounded.add(site)
+                    if not (writers and self._only_in_tests(writers)):
                         self.sites.append(site)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
                     self.names_used[ref.symbol].add(ref.name)
-                    if not self._on_unknown_value(ref):
+                    if not _on_unknown_value(ref, self._any_module_readers, c_index, other):
                         self.global_names[ref.name].add(ref.symbol)
                         self.global_used[ref.symbol].add(ref.name)
                     if ref.kind in ATTRIBUTE_KINDS and ref.name in GRAPH_ATTRIBUTES:
@@ -529,16 +606,14 @@ class _Observers:
                 writers = external.get((symbol, detail))
                 if writers:
                     site_writers[(symbol, SITE_ANY)].update(writers)
-                if not (writers and self._written_in_tests(writers)):
-                    if writers:
-                        unbounded.add((symbol, SITE_ANY))
+                if not (writers and self._only_in_tests(writers)):
                     self.sites.append((symbol, SITE_ANY))
         # A table getter whose writers all run only inside test windows
         # obtains a test module only in a test that ran one of them (and
         # never outside every test); otherwise it is any getter.
         self.table_getters: dict[str, frozenset[str]] = {}
         for getter, writers in sorted(table_getters.items()):
-            if getter in self.module_getters or not self._written_in_tests(writers):
+            if getter in self.module_getters or not self._only_in_tests(writers):
                 self.module_getters.add(getter)
             else:
                 self.table_getters[getter] = frozenset(writers)
@@ -589,8 +664,10 @@ class _Observers:
         self.members = _members_by_container(set(self.symbols))
         # Code that puts objects on a module only inside tests is seen by a
         # lookup there only in a test that ran it (W24).
-        self.reach = _ImportReach(c_index, other, lambda w: not self._written_in_tests({w}))
+        self.reach = _ImportReach(c_index, other, lambda w: not self._only_in_tests({w}))
         self.bases, self.subclasses = _class_graph((c_index, other))
+        self._related_of: dict[tuple[str, str], frozenset[str]] = {}
+        self._by_module: dict[str, list[Symbol]] | None = None
 
         # Whether a module that uses pytest added, deleted or redefined a
         # function or class: a fixture (or a class holding them) could have
@@ -619,6 +696,10 @@ class _Observers:
         self.direct: dict[str, Reason] = {}
         self.fallbacks: list[Fallback] = []
         self.files: dict[str, tuple[str, bool]] = {}  # changed path -> (what, names too)
+        # Changed files under the roots the index does not read.
+        self.unanalysed = _changed_unanalysed_files(c_index, other)
+        # Where a ``build.py`` is a build script (planner.is_build_script).
+        self.project_dirs = _project_dirs(c_index, other)
         # Changed paths outside the source roots (set by plan_with_evidence):
         # the index reads none of them, but the recorder saw what tests ran
         # and opened there.
@@ -643,12 +724,10 @@ class _Observers:
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
         # The lookups on an external module that a change to code running at
         # import may make write there, for every later test (``_seeing_sites``):
-        # site -> its writers. ``library_sites``: those with a writer that can
-        # run outside every test.
+        # site -> its writers.
         self.import_sites: dict[tuple[str, str], frozenset[str]] = {
             site: frozenset(writers) for site, writers in sorted(site_writers.items())
         }
-        self.library_sites = set(unbounded)
         # Code that can call what no edge shows: a lookup by a name nothing
         # bounds, an import of a module named at run time, a graph walk.
         self._opaque_callers = (
@@ -663,15 +742,6 @@ class _Observers:
         self._attribute_named: dict[str, set[str]] = {}
 
     # -- recording --------------------------------------------------------------
-
-    def _on_unknown_value(self, ref: UnresolvedReference) -> bool:
-        """Whether ``ref`` reads an attribute off a value of unknown type,
-        which is a module only if it is one of ``attribute_modules`` (as
-        planner._on_unknown_value)."""
-        if ref.kind != UNRESOLVED_ATTRIBUTE:
-            return False
-        symbol = self.symbols.get(ref.symbol)
-        return symbol is None or symbol.module not in self._any_module_readers
 
     def _runner_modules(self) -> set[str]:
         """The modules the test runner imports and can hand to other code
@@ -743,16 +813,7 @@ class _Observers:
         builders = set(self._module_handers) | self.module_getters | self.graph_readers
         builders |= set(self.table_getters)
         builders |= self.readers_of.get(module, set())
-        ev = self.evidence
-        found: frozenset[str] | None = frozenset(builders)
-        for builder in builders:
-            symbol = self.symbols.get(builder)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
-                found = None
-                break
-            if builder in ev.import_phase or builder in ev.import_by or builder in ev.hook_phase:
-                found = None
-                break
+        found = frozenset(builders) if self._only_in_tests(builders) else None
         self._module_holders_of[module] = found
         return found
 
@@ -770,18 +831,42 @@ class _Observers:
         symbol = self.symbols.get(symbol_id)
         return symbol is not None and self.test_code.is_test_code(symbol.module)
 
-    def _written_in_tests(self, writers: set[str]) -> bool:
-        """Whether a lookup on an external module written by ``writers`` can
-        find the project's code only in a test that ran one of them (roadmap
-        item 14): each is a function or method, and none ran at C during an
-        import or outside every test. A write at import (module or class
-        top-level code, a decorator) stays for every later test."""
+    def _symbols_of(self, module: str) -> list[Symbol]:
+        """The symbols of ``module`` over both revisions, by identity."""
+        if self._by_module is None:
+            self._by_module = defaultdict(list)
+            for symbol in self.symbols.values():
+                self._by_module[symbol.module].append(symbol)
+        return self._by_module.get(module, [])
+
+    def _related(self, cls: str, direction: str) -> frozenset[str]:
+        """``cls`` with its ancestors (``BASES``) or its descendants
+        (``SUBCLASSES``) over both revisions, computed once."""
+        key = (cls, direction)
+        found = self._related_of.get(key)
+        if found is None:
+            graph = self.bases if direction == BASES else self.subclasses
+            found = self._related_of[key] = frozenset(_closure([cls], graph))
+        return found
+
+    def _ran_outside_tests(self, code: str) -> bool:
+        """Whether ``code`` (a symbol) ran at C outside every test: during
+        an import, in a hook or during collection."""
         ev = self.evidence
-        for writer in writers:
-            symbol = self.symbols.get(writer)
+        return code in ev.import_phase or code in ev.import_by or code in ev.hook_phase
+
+    def _only_in_tests(self, code: Iterable[str]) -> bool:
+        """Whether what ``code`` does (writes, obtains, hands on) serves only
+        the test running it: each is a function or method, and none ran at C
+        outside every test. A lookup on an external module written by such
+        writers finds the project's code only in a test that ran one of them
+        (roadmap item 14); code run at import (module or class top-level
+        code, a decorator) leaves what it did for every later test."""
+        for sid in code:
+            symbol = self.symbols.get(sid)
             if symbol is None or symbol.kind not in (FUNCTION, METHOD):
                 return False
-            if writer in ev.import_phase or writer in ev.import_by or writer in ev.hook_phase:
+            if self._ran_outside_tests(sid):
                 return False
         return True
 
@@ -867,12 +952,7 @@ class _Observers:
             if holder is None:
                 break
             if holder.kind == CLASS:
-                stack = [current]
-                while stack:
-                    cls = stack.pop()
-                    if cls not in classes:
-                        classes.add(cls)
-                        stack.extend(self.subclasses.get(cls, ()))
+                classes |= self._related(current, SUBCLASSES)
             current = holder.container
         whole_module = (
             symbol.kind == VARIABLE
@@ -896,12 +976,12 @@ class _Observers:
     # -- rules -------------------------------------------------------------------
 
     def run(self) -> None:
-        if self.changes or _changed_unanalysed_files(self.c, self.other) or self.outside:
+        if self.changes or self.unanalysed or self.outside:
             self._unrecorded_phases()
         decorated = self.c.doc_decorated | self.other.doc_decorated
         for change in self.changes:
-            if change.symbol.path in BUILD_SCRIPTS:
-                self._file(change.symbol.path, "edited", names=False)
+            if is_build_script(change.symbol.path, self.project_dirs):
+                self._file(change.symbol.path, "edited", names=False, source=True)
                 continue
             if change.carries_impact:
                 self._change(change)
@@ -913,7 +993,7 @@ class _Observers:
                 )
         self._docstring_readers()
         cython = self._cython()
-        for path in _changed_unanalysed_files(self.c, self.other):
+        for path in self.unanalysed:
             if path in cython:
                 continue
             before, after = path in self.c.other_files, path in self.other.other_files
@@ -923,15 +1003,15 @@ class _Observers:
             symbol = change.symbol
             if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):
                 what = f"{change.id} {'/'.join(change.changes)}"
-                self._file(symbol.path, what, names=True)
+                self._file(symbol.path, what, names=True, source=True)
         # A source file is also data to whoever reads it as a file
         # (``exec(open("version.py").read())``, ``inspect.getsource``): its
         # edit reaches the tests that opened it.
         for path in sorted({c.symbol.path for c in self.changes} - set(self.files)):
-            if path.endswith(".py") and path not in BUILD_SCRIPTS:
-                self._file(path, "edited", names=False)
+            if path.endswith(".py"):
+                self._file(path, "edited", names=False, source=True)
         for path, what in sorted(self.outside.items()):
-            if path.rsplit("/", 1)[-1] == "conftest.py":
+            if _is_conftest(path):
                 # pytest loads it for tests that never ran a line of it (a new
                 # autouse fixture, a hook): no record can vouch for them.
                 self._select_all(
@@ -1029,14 +1109,7 @@ class _Observers:
         container = self.symbols.get(symbol.container or "")
         if symbol.kind in (FUNCTION, METHOD) and _is_dunder(symbol.name):
             if container is not None and container.kind == CLASS:
-                family = {container.id}
-                stack = [container.id]
-                while stack:
-                    for sub_ in self.subclasses.get(stack.pop(), ()):
-                        if sub_ not in family:
-                            family.add(sub_)
-                            stack.append(sub_)
-                for cls in family:
+                for cls in self._related(container.id, SUBCLASSES):
                     out |= self._called_by.get(cls, set())
         elif symbol.kind in (FUNCTION, METHOD) and by_name:
             plain, held = self._matched(symbol, symbol.name)
@@ -1057,11 +1130,7 @@ class _Observers:
         if not documented:
             return
         for index in (self.c, self.other):
-            readers = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
-            for edge in index.edges:
-                if edge.source in readers and edge.kind != DEFINED_IN:
-                    readers[edge.source].add(edge.target)
-            for reader, referenced in sorted(readers.items()):
+            for reader, referenced in sorted(docstring_readers(index).items()):
                 hits = sorted(referenced & documented.keys())
                 if not hits:
                     continue
@@ -1094,16 +1163,22 @@ class _Observers:
                 self._escalate_module(module, f"{why} ran while {module} was imported")
 
     def _cython(self) -> set[str]:
-        """Cython sources (roadmap item 7): the paths this rule handled.
+        """Cython sources (roadmap items 7 and 8): the paths this rule
+        handled.
 
         A body edit selects the tests that executed the function in a
-        profiled build at C, and for a ``nogil`` or ``cpdef`` function (which
-        such a build does not always report) the tests that executed any
-        Cython function naming it. Anything else, or a module the store holds
-        no Cython record of (built without ``profile=True``), selects all."""
+        profiled build at C, and for a ``nogil``, ``cpdef`` or unprofiled
+        (``profile(False)``, ``linetrace(False)``) function, which such a
+        build does not always report, the tests that executed any Cython
+        function naming it (``_cython_ran``). A name bound outside every
+        function whose binding changed reaches the code that can see it and
+        names it (``_cython_name``). Any other change (an added or deleted
+        ``.pyx``, a statement that binds nothing by name, a file
+        ``tokenize`` cannot read), or a module the store holds no Cython
+        record of (built without ``profile=True``), selects all."""
         paths = {
             p
-            for p in _changed_unanalysed_files(self.c, self.other)
+            for p in self.unanalysed
             if is_cython(p) and (p in self.c.cython or p in self.other.cython)
         }
         if not paths:
@@ -1141,9 +1216,10 @@ class _Observers:
         recorded: set[str],
     ) -> None:
         """The tests that executed ``function`` at C observe the change;
-        when it is ``nogil`` or ``cpdef``, which a profiled build does not
-        always report, so do those that executed a Cython function naming
-        it."""
+        when it is ``nogil``, ``cpdef`` or unprofiled (``profile(False)``,
+        ``linetrace(False)``), which a profiled build does not always
+        report, so do those that executed a Cython function naming it
+        (``_cython_callers``)."""
         sid = symbol_id(path, function.name)
         if path not in recorded:
             self._select_all(
@@ -1197,8 +1273,7 @@ class _Observers:
                 self._reader(reader, None, label)
             # A lookup by a name nothing bounds may find it, and read its
             # value as well as notice it come or go.
-            library = self.library_sites
-            for site, kind in sorted(set(self.sites) | library):
+            for site, kind in self.sites:
                 if kind != SITE_IMPORT and site in self.symbols:
                     self._observe(
                         site,
@@ -1302,7 +1377,8 @@ class _Observers:
 
     def _cython_callers(self, path: str, name: str) -> list[str]:
         """The Cython functions at C that name ``path::name``, and through
-        any of them that is itself ``nogil`` or ``cpdef``, theirs."""
+        any of them that is itself ``nogil``, ``cpdef`` or unprofiled,
+        theirs."""
         found: set[str] = set()
         stack = [(path, name)]
         while stack:
@@ -1321,7 +1397,15 @@ class _Observers:
         """Cython code that ran while a module was imported built its state;
         code that ran in a hook or during collection cannot be planned
         statically, so it selects all. Either may have written into state
-        elsewhere that later tests read (``_cython_writes``)."""
+        elsewhere that later tests read (``_cython_writes``).
+
+        The Python side is ``_import_effect``; this one differs where a
+        Cython function differs from an indexed symbol. What it can write is
+        not known from edges, so ``_cython_writes`` treats every name it
+        mentions as written (``_import_writes`` follows ``mutated_by``). And
+        it is never a test's own collection code (``_collects_itself``) nor
+        a node static planning can be seeded from, so having run in a hook
+        or during collection always selects everything."""
         if self.evidence.import_by.get(symbol_id_):
             self._cython_writes(symbol_id_, label, recorded)
         for module in sorted(self.evidence.import_by.get(symbol_id_, ())):
@@ -1434,34 +1518,21 @@ class _Observers:
         if symbol.kind in (FUNCTION, METHOD):
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
             self._import_effect(change.id, change, label)
-            if kinds & {ADDED, DELETED}:
+            if kinds & {ADDED, DELETED, DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
                 self._readers(change.id, change, label)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
                 self._sites(symbol, change, label)
-                # Decorators and defaults are what can register a function;
-                # its annotations cannot.
-                inert = all(s.inert_header for s in (change.base, change.head) if s is not None)
-                if not inert:
-                    # ``@register def two()``: the decorator runs at import and
-                    # may change shared state no test's record names. A
-                    # test's own decorators reach other tests only through
-                    # what they write (``@parametrize("x", [set_mode(1)])``).
-                    why = f"{label}: its definition runs code at import"
-                    self._import_writes([change.id], change, why)
-                    if change.id not in self.test_code.entries:
-                        self._escalate_change(change, why)
-            elif kinds & {DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
-                self._readers(change.id, change, label)
-                self._sites(symbol, change, label)
-                runs_code = not all(
-                    s.inert_definition for s in (change.base, change.head) if s is not None
-                )
-                if runs_code:
-                    why = f"{label}: its definition runs code at import"
-                    self._import_writes([change.id], change, why)
-                    if change.id not in self.test_code.entries:
-                        self._escalate_change(change, why)
+            if _runs_at_import(change):
+                # ``@register def two()``, ``def f(x: set_mode("fast"))``: the
+                # ``def`` runs code at import that may change shared state no
+                # test's record names. A test's own decorators reach other
+                # tests only through what they write
+                # (``@parametrize("x", [set_mode(1)])``).
+                why = f"{label}: its definition runs code at import"
+                self._import_writes([change.id], change, why)
+                if change.id not in self.test_code.entries:
+                    self._escalate_change(change, why)
             if _is_dunder(symbol.name) and not body_only and symbol.container:
                 container = self.symbols.get(symbol.container)
                 if container is not None and container.kind == CLASS:
@@ -1485,16 +1556,15 @@ class _Observers:
             # own for the record to show. Its initialiser runs at import,
             # and may write somewhere unless it binds a literal on both sides
             # (an annotation evaluated at import is code too).
-            runs_code = DEFINITION_CHANGED in kinds or not all(
-                s.inert_definition for s in (change.base, change.head) if s is not None
-            )
+            runs_code = _runs_at_import(change)
             self._sites(symbol, change, label, at_import=runs_code)
             if DELETED in kinds:
                 self._importers(change.id, change, label)
-            if not all(s.inert_definition for s in (change.base, change.head) if s is not None):
-                # ``X = set_mode("fast")``: what the initialiser's calls write
-                # is read elsewhere, by tests that never run it.
-                self._import_writes([change.id], change, f"{label}: its initialiser runs code")
+            if runs_code:
+                # ``X = set_mode("fast")``, ``X: set_mode("fast") = 1``: what
+                # the statement's calls write is read elsewhere, by tests
+                # that never run it.
+                self._import_writes([change.id], change, f"{label}: its statement runs code")
             return
         if symbol.kind == CLASS:
             self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
@@ -1536,18 +1606,11 @@ class _Observers:
         it or an ancestor is open (decorators, keywords, a base outside the
         index) or an ancestor defines ``__init_subclass__``."""
         for index in (self.c, self.other):
-            seen = {class_id}
-            stack = [class_id]
-            while stack:
-                cls = stack.pop()
+            for cls in _closure([class_id], index.class_bases):
                 if cls in index.open_classes:
                     return True
                 if cls != class_id and f"{cls}.__init_subclass__" in index.symbols:
                     return True
-                for base in index.class_bases.get(cls, ()):
-                    if base not in seen:
-                        seen.add(base)
-                        stack.append(base)
         return False
 
     def _class_body(self, symbol: Symbol, change: SymbolChange, label: str) -> None:
@@ -1584,14 +1647,7 @@ class _Observers:
     def _hierarchy(self, cls: str, change: SymbolChange, label: str) -> None:
         """Members of the class, its bases and its subclasses: code running on
         an instance of any of them may see the change."""
-        related = {cls}
-        for graph in (self.bases, self.subclasses):
-            stack = [cls]
-            while stack:
-                for nxt in graph.get(stack.pop(), ()):
-                    if nxt not in related:
-                        related.add(nxt)
-                        stack.append(nxt)
+        related = self._related(cls, BASES) | self._related(cls, SUBCLASSES)
         for c in sorted(related):
             for member in self.members.get(c, ()):
                 kind = self.symbols[member].kind
@@ -1696,20 +1752,8 @@ class _Observers:
         if cls in self._holders_of:
             return self._holders_of[cls]
         self._holders_of[cls] = None
-        family = {cls}
-        stack = [cls]
-        while stack:
-            for sub_ in self.subclasses.get(stack.pop(), ()):
-                if sub_ not in family:
-                    family.add(sub_)
-                    stack.append(sub_)
-        ancestors = set(family)
-        stack = list(family)
-        while stack:
-            for base in self.bases.get(stack.pop(), ()):
-                if base not in ancestors:
-                    ancestors.add(base)
-                    stack.append(base)
+        family = self._related(cls, SUBCLASSES)
+        ancestors = _closure(family, self.bases)
         if not all(self._in_test_code(c) for c in ancestors):
             return None
         if any(self._runs_on_creation(c) for c in family):
@@ -1730,14 +1774,9 @@ class _Observers:
         # ``__subclasses__()`` (or any class's: ``object.__subclasses__()``
         # walks every class), the collector, a frame's or function's globals.
         builders |= self.graph_readers
-        ev = self.evidence
-        for builder in builders:
-            symbol = self.symbols.get(builder)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
-                return None
-        for holder in builders | members:
-            if holder in ev.import_phase or holder in ev.import_by or holder in ev.hook_phase:
-                return None
+        # ``members`` are methods: only whether they ran outside tests matters.
+        if not self._only_in_tests(builders | members):
+            return None
         self._holders_of[cls] = (frozenset(builders), frozenset(members))
         return self._holders_of[cls]
 
@@ -1885,9 +1924,7 @@ class _Observers:
             return []
         self._import_code_followed.add(module)
         out = []
-        for symbol in self.symbols.values():
-            if symbol.module != module:
-                continue
+        for symbol in self._symbols_of(module):
             if symbol.kind in (MODULE, VARIABLE, CLASS) or (
                 symbol.kind in (FUNCTION, METHOD)
                 and not symbol.inert_definition
@@ -1943,19 +1980,12 @@ class _Observers:
         """What calling or creating ``cls`` can run: the constructors,
         ``__call__``, ``__init_subclass__`` and ``__set_name__`` of it and
         its ancestors."""
-        out: list[str] = []
-        seen = {cls}
-        stack = [cls]
-        while stack:
-            current = stack.pop()
-            for member in self.members.get(current, ()):
-                if member.rsplit(".", 1)[-1] in _CONSTRUCTORS:
-                    out.append(member)
-            for base in self.bases.get(current, ()):
-                if base not in seen:
-                    seen.add(base)
-                    stack.append(base)
-        return out
+        return [
+            member
+            for current in sorted(self._related(cls, BASES))
+            for member in self.members.get(current, ())
+            if member.rsplit(".", 1)[-1] in _CONSTRUCTORS
+        ]
 
     def _module_symbols(self, module: str, why: str) -> None:
         """Every symbol of a module whose import-time state may differ: code
@@ -1963,8 +1993,8 @@ class _Observers:
         if module in self.escalated_modules:
             return
         self.escalated_modules.add(module)
-        for symbol in self.symbols.values():
-            if symbol.module == module and symbol.kind in (FUNCTION, METHOD, CLASS, MODULE):
+        for symbol in self._symbols_of(module):
+            if symbol.kind in (FUNCTION, METHOD, CLASS, MODULE):
                 self._observe(
                     symbol.id,
                     RULE_ESCALATED,
@@ -2060,7 +2090,7 @@ class _Observers:
         code walking the object graph. When one of those ran outside every
         test, what it obtained may serve any later test, and every lookup on
         an object from elsewhere counts. A member of a class only the runner
-        ever instantiates (planner._runner_only_classes) is seen only by sites
+        ever instantiates (``_runner_only``) is seen only by sites
         inside that class, its bases and its subclasses: no other code can
         hold one of its instances. A member of another test-code class is
         also seen by library lookups on an object from elsewhere, once a test
@@ -2139,12 +2169,7 @@ class _Observers:
                     guarded.append((site, writers, how))
                 else:
                     out.append((site, how))
-            ev = self.evidence
-            outside = sorted(
-                g
-                for g in getters
-                if g in ev.import_phase or g in ev.import_by or g in ev.hook_phase
-            )
+            outside = sorted(g for g in getters if self._ran_outside_tests(g))
             if outside:
                 # What it obtained outside every test may serve any later one.
                 for site, kind in self.sites:
@@ -2200,24 +2225,20 @@ class _Observers:
         current: str | None = symbol_id
         while current:
             if current in self.runner_only:
-                family = {current}
-                for graph in (self.bases, self.subclasses):
-                    stack = [current]
-                    while stack:
-                        for nxt in graph.get(stack.pop(), ()):
-                            if nxt not in family:
-                                family.add(nxt)
-                                stack.append(nxt)
-                return family
+                return set(self._related(current, BASES) | self._related(current, SUBCLASSES))
             symbol = self.symbols.get(current)
             current = symbol.container if symbol is not None else None
         return None
 
-    def _file(self, path: str, what: str, *, names: bool) -> None:
-        """A changed file the index does not read. Its content is observed by
-        whoever opened or stat'ed it; that it exists (``names``: it was added
-        or deleted) also by whoever listed a directory above it."""
-        if build_input(path):
+    def _file(self, path: str, what: str, *, names: bool, source: bool = False) -> None:
+        """A changed file the index does not read, or the file of a changed
+        module (``source``). Its content is observed by whoever opened or
+        stat'ed it; that it exists (``names``: it was added or deleted) also
+        by whoever listed a directory above it. Everything is selected for a
+        build input, which for a module's file is a build script as static
+        planning judges it (planner.is_build_script): an ordinary
+        ``pkg/build.py`` is imported like any module."""
+        if is_build_script(path, self.project_dirs) if source else build_input(path):
             self._select_all(
                 RULE_UNOBSERVED_FILE,
                 f"{path} {what}: compiled source, build, dependency or pytest configuration, "
@@ -2371,11 +2392,22 @@ def plan_with_evidence(
         )
         static_other = {d.target.node_id: d for d in full.decisions if d.target.runner != "pytest"}
 
+    # What each pair's E and guarded readers are in the evidence's symbol
+    # table, to meet a record's indices without spelling its symbols out.
+    index_of = {s: i for i, s in enumerate(evidence.symbols)}
+    met = [
+        (
+            frozenset(index_of[s] for s in obs.E if s in index_of),
+            frozenset(index_of[s] for s in obs.guarded if s in index_of),
+        )
+        for obs in observed
+    ]
     decisions = [
         _evidence_decision(
             target,
             evidence,
             observed,
+            met,
             fallbacks,
             escalated,
             target_fallbacks,
@@ -2413,6 +2445,7 @@ def _evidence_decision(
     target: Target,
     evidence: Evidence,
     observed: list[_Observers],
+    met: list[tuple[frozenset[int], frozenset[int]]],
     fallbacks: list[Fallback],
     escalated: dict[str, list[Reason]],
     target_fallbacks: dict[str, list[Reason]],
@@ -2464,24 +2497,28 @@ def _evidence_decision(
                     "which may use any name",
                 )
             )
-        executed = evidence.executed(record)
-        touched = evidence.touched(record)
-        listed = evidence.listed(record)
-        for obs in observed:
-            hits = sorted(executed & obs.E.keys())
+        files = any(obs.files for obs in observed)
+        touched = evidence.touched(record) if files else set()
+        listed = evidence.listed(record) if files else set()
+        executed: set[str] | None = None  # spelled out only for a guarded reader
+        for obs, (e_ids, guarded_ids) in zip(observed, met, strict=True):
+            hits = record.symbols & e_ids
             if hits:
-                why = obs.E[hits[0]]
+                first = min(evidence.symbols[i] for i in hits)
+                why = obs.E[first]
                 more = f" (and {len(hits) - 1} more)" if len(hits) > 1 else ""
                 reasons.append(
                     Reason(
                         why.rule,
-                        f"executed {hits[0]} in the evidence run at {short}{more}: {why.detail}",
+                        f"executed {first} in the evidence run at {short}{more}: {why.detail}",
                         (),
                         why.changed_symbol,
                         why.changes,
                     )
                 )
-            for reader in sorted(executed & obs.guarded.keys()):
+            for reader in sorted(evidence.symbols[i] for i in record.symbols & guarded_ids):
+                if executed is None:
+                    executed = evidence.executed(record)
                 guard = _guarded_hit(executed, obs.guarded[reader])
                 if guard is not None:
                     holder, why = guard
@@ -2589,7 +2626,7 @@ def _summary(
         # is unknown here. ``run`` checks it in the test process before any
         # test runs, and sets this when it matched.
         "environment_checked": False,
-        "python": evidence.environment.get("python", "").split()[0],
+        "python": python_version(evidence.environment),
         "hash_seed": evidence.environment.get("variables", {}).get("PYTHONHASHSEED"),
         "variables": sorted(evidence.environment.get("variables", {})),
         "created": evidence.created,

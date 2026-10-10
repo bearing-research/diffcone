@@ -3,7 +3,8 @@
 A tolerant reader of ``.pyx``, ``.pxd`` and ``.pxi`` files that works from
 indentation alone: diffcone is stdlib only, so it does not use Cython's
 parser, and it does not need to. What evidence planning asks of a Cython file
-is which functions changed and what each function's body mentions.
+is which functions changed, what each function's body mentions, and which
+names bound outside the functions changed.
 
 * A *function* is a ``def``, ``cpdef`` or ``cdef`` statement with a parameter
   list and a body: its header (which may span lines) ends with ``:`` at
@@ -17,11 +18,13 @@ is which functions changed and what each function's body mentions.
   first line is, and ends at its last indented line. A function nested in
   another belongs to it: its text is part of the parent's body, as nested
   functions are part of their parent in the Python index.
-* ``nogil`` and ``cpdef`` are recorded, and so is every name the body
-  mentions: a profiled build raises no call event for a ``nogil`` function,
-  nor for a ``cpdef`` method's C body under ``skip_dispatch`` (an explicit
-  ``Base.method(self, ...)`` call), so those are found through the functions
-  that name them, which also covers a function taken as a pointer.
+* ``nogil``, ``cpdef`` and *unprofiled* (``@cython.profile(False)``,
+  ``@cython.linetrace(False)``) are recorded, and so is every name the body
+  mentions: a profiled build raises no call event for a ``nogil`` or an
+  unprofiled function, nor for a ``cpdef`` method's C body under
+  ``skip_dispatch`` (an explicit ``Base.method(self, ...)`` call), so those
+  are found through the functions that name them, which also covers a
+  function taken as a pointer.
 * Blank lines and comment-only lines are ignored by both hashes, except
   compiler directives (``# cython: boundscheck=False``, ``# distutils:``),
   which change how every function in the file is compiled, and lines inside
