@@ -1,20 +1,23 @@
-"""Per-commit index cache.
+"""The cache under ``<repo>/.diffcone/cache`` (``cache_dir``; diffcone
+gives ``.diffcone/`` a ``.gitignore`` of its own). It is an optimisation
+only: a hit must produce a byte-identical plan to a miss.
 
-A committed snapshot's :class:`SourceIndex` is a pure function of the commit,
-the source roots and the indexer version, so it can be stored and reused.
-The working tree and the git index are never cached whole (their content is
-not identified by a commit). A cache hit must produce a byte-identical plan
-to a cache miss; the cache is an optimisation only.
+- ``index/<key>.json`` (:class:`IndexCache`): a committed snapshot's whole
+  :class:`SourceIndex`, a pure function of the commit, the source roots and
+  the indexer version. The working tree and the git index are never cached
+  whole (their content is not identified by a commit), and neither is an
+  index whose analysis ran out of stack (``TOO_DEEP``).
+- ``discovery/<key>.json`` (:class:`DiscoveryCache`): static discovery
+  results per committed snapshot, runner and options.
+- ``modules.sqlite`` (:class:`ModuleCache`): per-module results for every
+  snapshot kind, the working tree included: a module's first-pass facts are
+  a pure function of its file, and its second-pass resolution a pure
+  function of the file plus a fingerprint of what other modules expose (see
+  ``Indexer.build``). A warm working-tree plan after a one-line edit then
+  re-parses and re-resolves only the edited module.
 
-Layout: ``<cache_dir>/index/<key>.json`` where ``cache_dir`` defaults to
-``<repo>/.diffcone/cache`` (add ``.diffcone/`` to ``.gitignore``).
-
-Beside it, the :class:`ModuleCache` keeps per-module results for every
-snapshot kind, including the working tree: a module's first-pass facts are a
-pure function of its file, and its second-pass resolution a pure function of
-the file plus a fingerprint of what other modules expose (see
-``Indexer.build``). A warm working-tree plan after a one-line edit then
-re-parses and re-resolves only the edited module.
+:func:`prune` (``diffcone prune``) keeps only what planning at given commits
+reads.
 """
 
 from __future__ import annotations
@@ -23,7 +26,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -33,6 +35,8 @@ from typing import Any
 
 from diffcone.cython import CythonFunction, CythonModule, CythonStatement
 from diffcone.discovery import DiscoveryNote, DiscoveryOptions, DiscoveryResult
+from diffcone.indexer.facts import symbol_from_dict
+from diffcone.indexer.syntax import TOO_DEEP
 from diffcone.manifest import Target
 from diffcone.model import (
     AnalysisError,
@@ -40,12 +44,13 @@ from diffcone.model import (
     ExternalReference,
     SnapshotInfo,
     SourceIndex,
-    Symbol,
     UnresolvedReference,
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 40: no escaped_values; 39: stores undone after the test (indexer/patches.py: SCOPED, SWAP,
+# 40: no escaped_values; decorated symbols (``decorated`` edges, passive decorators), the known
+# callers of a parameter, deeply nested modules as analysis errors;
+# 39: stores undone after the test (indexer/patches.py: SCOPED, SWAP,
 # external writes, restored process state); 38: attribute_modules,
 # any_module_readers, module_writers, module-attribute references,
 # unpicklers and file loaders, installs under unbounded names;
@@ -95,6 +100,25 @@ def make_own_dir(directory: Path) -> None:
                 except OSError:
                     pass
             break
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    """Write ``data`` as JSON to ``path`` through a temporary file in the
+    same directory, so a concurrent reader never sees a partial file. A
+    cache write that fails is never an error: the temporary file goes."""
+    tmp: str | None = None
+    try:
+        make_own_dir(path.parent)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def default_cache_dir(repo: Path) -> Path:
@@ -155,14 +179,7 @@ def index_to_dict(index: SourceIndex) -> dict:
 def index_from_dict(data: dict) -> SourceIndex:
     if data.get("format") != INDEX_FORMAT:
         raise ValueError("unsupported index format")
-    symbols = {}
-    for s in data["symbols"]:
-        s = dict(s)
-        s["line_ranges"] = tuple(tuple(r) for r in s["line_ranges"])
-        s["imports"] = tuple(s["imports"])
-        s["import_layout"] = tuple(s["import_layout"])
-        symbol = Symbol(**s)
-        symbols[symbol.id] = symbol
+    symbols = {s.id: s for s in map(symbol_from_dict, data["symbols"])}
     return SourceIndex(
         snapshot=SnapshotInfo(**data["snapshot"]),
         modules=set(data["modules"]),
@@ -240,6 +257,7 @@ class ModuleCache:
 
     def __init__(self, directory: Path) -> None:
         self.path = directory / "modules.sqlite"
+        # Hit and miss counters: test instrumentation, nothing reads them else.
         self.facts_hits = 0
         self.facts_misses = 0
         self.resolved_hits = 0
@@ -423,25 +441,16 @@ class DiscoveryCache:
             "notes": [asdict(n) for n in result.notes],
             "config": result.config,
         }
-        try:
-            make_own_dir(path.parent)
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-            os.replace(tmp, path)
-        except (OSError, TypeError, ValueError):
-            pass  # a cache write failure is never an error
+        _write_json_atomic(path, data)
 
 
 class IndexCache:
     def __init__(self, directory: Path) -> None:
         self.directory = directory
-        self.hits = 0
+        self.hits = 0  # hit and miss counters: test instrumentation
         self.misses = 0
         self.modules = ModuleCache(directory)
         self.discovery = DiscoveryCache(directory)
-        # The per-file hash cache this replaced left ``hashes/`` behind.
-        shutil.rmtree(directory / "hashes", ignore_errors=True)
 
     def _path(self, commit: str, source_roots: list[str]) -> Path:
         return self.directory / "index" / f"{index_key(commit, source_roots)}.json"
@@ -461,16 +470,9 @@ class IndexCache:
         return index
 
     def store(self, index: SourceIndex, source_roots: list[str]) -> None:
-        path = self._path(index.snapshot.commit, source_roots)
-        try:
-            make_own_dir(path.parent)
-            # Write atomically so a concurrent reader never sees a partial file.
-            fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(index_to_dict(index), f)
-            os.replace(tmp, path)
-        except OSError:
-            pass  # a cache write failure is never an error
+        if any(e.message.startswith(TOO_DEEP) for e in index.errors):
+            return  # depends on the caller's stack depth, not only on the commit
+        _write_json_atomic(self._path(index.snapshot.commit, source_roots), index_to_dict(index))
 
 
 # --------------------------------------------------------------------------- pruning

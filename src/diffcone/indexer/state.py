@@ -4,6 +4,7 @@ the scopes, and where pass-2 writes go."""
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from diffcone.cython import read as read_cython
 from diffcone.indexer.facts import _Output
@@ -15,7 +16,8 @@ from diffcone.snapshot import Snapshot
 class IndexerState:
     """Shared state of the indexer's passes."""
 
-    # Submodules per package (pass 2), set by ``Indexer.build``.
+    # Submodules per package, set by ``Indexer.build`` before pass 1 (top-level
+    # identities, member_symbol_id) and read in pass 2.
     _children: dict[str, frozenset[str]]
 
     def __init__(self, snapshot: Snapshot, module_cache=None) -> None:
@@ -69,6 +71,18 @@ class IndexerState:
         self._use_external: set[tuple[str, str, str]] = set()
         # Classes with an unresolved ``super().<name>``, per name (final pass).
         self._super_misses: dict[str, set[str]] = defaultdict(set)
+        # Set by Indexer._apply_uses: what each module's imports make reachable
+        # off it (_attribute_reach, memoised), and the objects installed in
+        # ``sys.modules`` for good under a module's name, as (module, writer):
+        # by a name the records give, and by one nothing bounds.
+        self._reach_cache: dict[str, Any] = {}
+        self._installed: set[tuple[str, str]] = set()
+        self._installed_anywhere: set[tuple[str, str]] = set()
+        # In-scope modules per module name, the name included (Indexer._under);
+        # built on first use, once every module is known.
+        self._under_map: dict[str, list[str]] | None = None
+        # Every symbol's name, sorted (FirstPass.symbol_names_with_prefix).
+        self._symbol_names: list[str] | None = None
 
     def _error(self, path: str, message: str) -> None:
         self.index.errors.append(

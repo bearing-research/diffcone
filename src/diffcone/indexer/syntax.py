@@ -62,6 +62,13 @@ REFLECTIVE_ATTRIBUTES = frozenset(
 IMPORT_ATTRIBUTION_DEPTH = 4
 
 
+# The analysis error of a module nested too deeply for the recursive walks
+# of its syntax tree (``RecursionError``). Whether a walk runs out of stack
+# depends on how deep the caller already is, so an index carrying it is
+# never cached whole (IndexCache.store).
+TOO_DEEP = "too deeply nested to analyse"
+
+
 DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 

@@ -319,13 +319,6 @@ def test_module_cache_keeps_one_resolution_per_file_and_serves_read_only(repo, t
             os.chmod(p, 0o755 if p.is_dir() else 0o644)
 
 
-def test_index_cache_removes_the_legacy_hash_directory(tmp_path):
-    (tmp_path / "c" / "hashes").mkdir(parents=True)
-    (tmp_path / "c" / "hashes" / "x.json").write_text("{}")
-    IndexCache(tmp_path / "c")
-    assert not (tmp_path / "c" / "hashes").exists()
-
-
 def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
     """Every field of the index must go through the per-commit cache. This
     walks the dataclass rather than a list of names, so a field added to

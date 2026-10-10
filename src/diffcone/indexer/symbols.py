@@ -4,12 +4,15 @@ their hashes, line spans and import tables."""
 from __future__ import annotations
 
 import ast
+from bisect import bisect_left
 from collections import defaultdict
 
 from diffcone.indexer.definitions import (
     _annotated_args,
+    _calls_nothing,
     _canonical_imports,
     _container_kind,
+    _dispatcher_def,
     _end_line,
     _flatten_chain,
     _future_annotations,
@@ -19,6 +22,9 @@ from diffcone.indexer.definitions import (
     _is_inert_decorator,
     _is_literal,
     _is_special_method,
+    _least_passive,
+    _passive_decorator_def,
+    _passive_factory_def,
     _quiet_def,
     _start_line,
     _variable_statements,
@@ -63,14 +69,15 @@ from diffcone.model import (
 from diffcone.snapshot import member_symbol_id
 
 
-def _doc_reads(body: list[ast.stmt]):
+def _doc_reads(body: list[ast.stmt], *, deep: bool = False):
     """``__doc__`` names, attributes and strings, and ``getdoc(...)`` calls,
-    in a scope's own statements (not in nested definitions, which are symbols
-    of their own)."""
+    in a scope's own statements: not in nested definitions, which are symbols
+    of their own, unless ``deep`` (a decorator factory's wrapper reading
+    ``f.__doc__`` is no symbol: it counts for the factory)."""
     stack: list[ast.AST] = list(body)
     while stack:
         node = stack.pop()
-        if isinstance(node, DEF_NODES):
+        if isinstance(node, DEF_NODES) and not deep:
             # Decorators, defaults and bases run in this scope; the body not.
             stack.extend(node.decorator_list)
             if isinstance(node, ast.ClassDef):
@@ -96,24 +103,8 @@ def _doc_reads(body: list[ast.stmt]):
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _reads_docstrings_deep(node: ast.AST) -> bool:
-    """Like _reads_docstrings, nested definitions included."""
-    for inner in ast.walk(node):
-        if isinstance(inner, (ast.Name, ast.Attribute)) and isinstance(inner.ctx, ast.Load):
-            if getattr(inner, "id", None) == "__doc__" or getattr(inner, "attr", None) == "__doc__":
-                return True
-        if isinstance(inner, ast.Call):
-            func = inner.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name == "getdoc":
-                return True
-        if isinstance(inner, ast.Constant) and inner.value == "__doc__":
-            return True
-    return False
-
-
-def _reads_docstrings(body: list[ast.stmt]) -> bool:
-    return next(_doc_reads(body), None) is not None
+def _reads_docstrings(body: list[ast.stmt], *, deep: bool = False) -> bool:
+    return next(_doc_reads(body, deep=deep), None) is not None
 
 
 def _names_module_doc(body: list[ast.stmt]) -> bool:
@@ -235,7 +226,14 @@ class FirstPass(IndexerState):
                 # only readers of the value can observe the change. ``__all__``
                 # is not inert: it decides what ``from m import *`` binds.
                 inert_definition=(
-                    name != "__all__" and not mutators.get(name) and _is_literal(value)
+                    name != "__all__"
+                    and not mutators.get(name)
+                    and _is_literal(value)
+                    and (
+                        not isinstance(stmt, ast.AnnAssign)
+                        or _future_annotations(scope)
+                        or _calls_nothing(stmt.annotation, scope)
+                    )
                 ),
                 builtin_container=_container_kind(scope, value),
             )
@@ -280,7 +278,17 @@ class FirstPass(IndexerState):
         container_id: str,
         members: dict[str, str],
         class_scope: ClassScope | None,
+        module_defs: frozenset[str] | None = None,
     ) -> None:
+        # A decorator is evaluated where the statement stands: a name this
+        # body (or, for a method, the module) defines is not the import of
+        # that name, whichever statement comes first (_canonical_names).
+        defined = frozenset(s.name for s in iter_scope_statements(body) if isinstance(s, DEF_NODES))
+        if module_defs is None:
+            module_defs = defined
+        shadowed = (
+            module_defs if class_scope is None else module_defs | defined | class_scope.bindings
+        )
         funcs: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
         classes: dict[str, list[ast.ClassDef]] = {}
         order: list[str] = []
@@ -370,7 +378,9 @@ class FirstPass(IndexerState):
                 # one symbol, so its members are indexed together: a method
                 # defined in several of them is one symbol too.
                 bodies = [stmt for n in nodes for stmt in n.body]
-                self._index_definitions(scope, bodies, symbol_id, cscope.members, cscope)
+                self._index_definitions(
+                    scope, bodies, symbol_id, cscope.members, cscope, module_defs
+                )
                 # Special methods run implicitly on instances (``==``, ``len()``,
                 # calling one, ``with``): whatever references the class may
                 # trigger them, so the class depends on them.
@@ -422,16 +432,31 @@ class FirstPass(IndexerState):
                 annotation_hash, body_hash, definition_hash, doc_hash = function_hashes()
                 deferred = (
                     _future_annotations(scope)
-                    and all(_is_inert_decorator(d, scope) for n in nodes for d in n.decorator_list)
+                    and all(
+                        _is_inert_decorator(d, scope, shadowed)
+                        for n in nodes
+                        for d in n.decorator_list
+                    )
                     and (class_scope is None or class_scope.plain)
                 )
-                header = all(_inert_def(n, scope) for n in nodes) and (
+                header = all(_inert_def(n, scope, shadowed) for n in nodes) and (
                     class_scope is None or class_scope.plain
                 )
                 inert = header and (deferred or not any(_has_annotations(n) for n in nodes))
-                quiet = all(_quiet_def(n, scope) for n in nodes) and (
+                quiet = all(_quiet_def(n, scope, shadowed) for n in nodes) and (
                     class_scope is None or class_scope.plain
                 )
+                # A module-level function used as a decorator (``@name``) or
+                # a decorator factory (``@name(...)``): whether it calls
+                # nothing of what it decorates (Resolver._decorated_at_import).
+                passive = factory = ""
+                if class_scope is None:
+                    passive = _least_passive(
+                        {_passive_decorator_def(n, scope, shadowed) for n in nodes}
+                    )
+                    factory = _least_passive(
+                        {_passive_factory_def(n, scope, shadowed) for n in nodes}
+                    )
                 symbol = Symbol(
                     id=symbol_id,
                     kind=METHOD if class_scope is not None else FUNCTION,
@@ -449,9 +474,12 @@ class FirstPass(IndexerState):
                     inert_definition=inert,
                     inert_header=header,
                     quiet_header=quiet,
+                    passive_decorator=passive,
+                    passive_factory=factory,
+                    dispatcher=all(_dispatcher_def(n, scope, shadowed) for n in nodes),
                     # Nested functions are not symbols: a decorator factory's
                     # wrapper reading ``f.__doc__`` counts for the factory.
-                    reads_docstrings=any(_reads_docstrings_deep(n) for n in nodes),
+                    reads_docstrings=any(_reads_docstrings([n], deep=True) for n in nodes),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -465,5 +493,13 @@ class FirstPass(IndexerState):
         return tuple(sorted(m for m in self.scopes if m.startswith(prefix)))
 
     def symbol_names_with_prefix(self, prefix: str) -> tuple[str, ...]:
-        names = {s.name for s in self.index.symbols.values() if s.name.startswith(prefix)}
-        return tuple(sorted(names))
+        """The distinct names of symbols that start with ``prefix``; asked in
+        pass 2, once every symbol is known."""
+        if self._symbol_names is None:
+            self._symbol_names = sorted({s.name for s in self.index.symbols.values()})
+        names = self._symbol_names
+        start = bisect_left(names, prefix)
+        end = start
+        while end < len(names) and names[end].startswith(prefix):
+            end += 1
+        return tuple(names[start:end])

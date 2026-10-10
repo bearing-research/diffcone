@@ -23,6 +23,12 @@ class ImportBinding:
     module: str
     attr: str | None
 
+    @property
+    def dotted(self) -> str:
+        """The dotted name the binding stands for: ``pkg.mod`` for ``import
+        pkg.mod``, ``pkg.mod.name`` for ``from pkg.mod import name``."""
+        return self.module if self.attr is None else f"{self.module}.{self.attr}"
+
 
 @dataclass
 class ClassScope:
@@ -119,6 +125,9 @@ class ModuleScope:
 class Scope:
     module: ModuleScope
     local_imports: dict[str, ImportBinding] = field(default_factory=dict)
+    # The other bindings of a name ``local_imports`` holds the last one of
+    # (an import in a ``try`` and its ``except``), as ModuleScope.alt_imports.
+    local_alt_imports: dict[str, list[ImportBinding]] = field(default_factory=dict)
     locals: set[str] = field(default_factory=set)
     self_name: str | None = None
     self_class: str | None = None
@@ -224,6 +233,10 @@ class Resolved:
 @dataclass(frozen=True)
 class ModuleNode:
     module: str
+    # Other modules or symbols the name may be bound to, as
+    # Resolved.alternatives (``try: import pkg.fast as backend`` / ``except
+    # ImportError: import pkg.slow as backend``).
+    alternatives: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

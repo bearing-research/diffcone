@@ -202,7 +202,10 @@ A name or dotted chain `a.b.c` is resolved from its base:
    every binding: the first (the definition, else the last import) resolves
    the name and the in-scope others get `references` edges too
    (`alternative binding`), since which one is live is not known
-   statically. A relative import climbing above the top-level package
+   statically. So does an attribute chain off it (`backend.impl` with
+   `backend` either module), a name a package binds beside a submodule of
+   that name, and a function-local import bound in a `try` and its
+   `except`. A relative import climbing above the top-level package
    (often a source root that names the module differently from runtime,
    `tests/__init__.py` under the root `tests`) is recorded as an unbounded
    dynamic import, not an external one.
@@ -244,6 +247,32 @@ Further rules (pre-release audit, round 2):
   what they hold. Impact through such an edge is REGISTERED: it reaches the
   code that later calls the registry, not the import-time code that
   registers.
+* Decoration is a call: `@deco def f` runs `deco(f)` when the statement
+  runs, at import, and the decorator may call `f` then, or return a wrapper
+  that calls it later with arguments of its own. A decorator known to call
+  nothing of what it decorates and to return it (or a wrapper passing the
+  call's arguments on) changes nothing: a quiet one (the `typing` inert
+  ones, `property`/`staticmethod`/`classmethod`, `functools.cache`/
+  `lru_cache`/`cached_property`/`singledispatch`,
+  `contextlib.contextmanager`, `abc.abstractmethod`, `pytest.fixture`,
+  `pytest.mark.*`), a property's `.setter`/`.getter`/`.deleter` of a `def`
+  above it in the class body, `dataclasses.dataclass` and
+  `functools.total_ordering` on a class, the `register` of an in-scope
+  `functools.singledispatch` function, and an in-scope module-level
+  function whose own code (nested functions' bodies run later) only
+  returns the argument, reads or sets its attributes, compares it by
+  identity or hands it to `functools.wraps`/`update_wrapper`, `setattr`,
+  `getattr`, `hasattr`, `isinstance`, `callable` or `typing.cast`, and
+  returns it itself (`Symbol.passive_decorator` "same"; for `@f(...)`,
+  what `f` returns: `passive_factory`). One that may return a wrapper of
+  its own ("wrapper") makes the decorated symbol escape (its callers are
+  not all known). Any other decorator (one outside the source roots, a
+  method, one that calls, registers or hands on what it decorates) may
+  call it at import: the module running the statement, and the class
+  whose body it stands in, get a `references` edge (detail `decorated`) to
+  the decorated symbol, as the argument of an explicit `deco(f)` would,
+  and the symbol escapes. A decorator's name is known only through an
+  import that is its only binding (see the inert decorators below).
 * Dependency signatures include each symbol's unresolved and external
   references (when its body did not change), so a name that starts resolving
   (`from json import dumps` fixing a NameError, a builtin shadowed by an
@@ -652,7 +681,15 @@ and every in-scope subclass escape. Expanding a `getattr` can make a
 function escape, or record a name-bounded reference (a candidate that
 does not resolve on its receiver, or a name after a chain stops), either
 of which can unbound another expansion, so expansion is repeated until
-both the escape set and the unresolved names are stable.
+both the escape set and the unresolved names are stable. Every rule that
+bounds a parameter by what the call sites pass (these literals, an import
+or a script attributed to each caller, the classes a `getattr` receiver
+may be) asks the same question first: are the call sites all the calls
+(not escaping, no unresolved reference of the name, no unresolved
+`super()` call reaching it, no unseen construction of a class running the
+`__init__`)? A function under a decorator other than a quiet one, or one
+of the project's that returns it unchanged, escapes: the decorator may
+call it with arguments of its own.
 
 The name can also be an instance attribute: `getattr(hooks,
 self.identifier)` in a method of class C is expanded over what
@@ -797,11 +834,23 @@ dynamic import. A module-level variable bound to a literal (constants,
 and tuples, lists, sets or dicts of literals) with no module-level
 mutation runs no code when the module is imported, so it does not seed
 its module and only its readers are reached; `__all__` is never inert,
-since it decides what `from m import *` binds. A `def` statement runs code at import only through its
+since it decides what `from m import *` binds, and neither is one whose
+annotation is evaluated at import and may run project code (`X:
+Registry["k"] = 1` runs `Registry.__class_getitem__`; such an annotation's
+references are the module's too). An annotation, a default or a
+decorator's argument runs no project code only when it calls nothing and
+subscripts or reads attributes of builtins and `typing`,
+`typing_extensions`, `collections`, `types` and `abc` names only (a class
+of the project may define `__class_getitem__` or have a metaclass, a
+module `__getattr__`); `X | Y` on classes is taken to call nothing. A `def` statement runs code at import only through its
 decorators, its defaults and its annotations when they are evaluated
 eagerly: a function whose decorators are inert (`overload`, `override`
 or `final` imported from `typing` or `typing_extensions`; a project
-decorator of the same name is not), whose defaults are literals, whose annotations are
+decorator of the same name is not, nor is a name the module also binds
+another way: another import of it in a `try`/`except` or `if`/`else`
+unless that one is inert too, a star import, which may rebind it whatever
+the order, a definition or assignment in the module, or a name the class
+body binds), whose defaults are literals, whose annotations are
 absent or deferred (`from __future__ import annotations`), and which is
 module-level or in a plain class, only binds its name, so adding,
 deleting or redefining it does not seed its module (deleting or rebinding
@@ -1000,8 +1049,10 @@ Unknown is never treated as unaffected:
   and only a caller passing something unbounded keeps the dynamic reference.
   A caller that passes its own parameter on is followed a few levels further
   out (pandas' `skip_if_no(name)` hands it to `import_optional_dependency`),
-  and where the helper escapes or has no call site in scope the callers are
-  unknown and the seed stays on the helper. An unbounded import
+  and where the callers are not all known (the helper escapes, its name
+  occurs as an unresolved reference, an unresolved `super()` call may reach
+  it, it is an `__init__` a class may run unseen, or it has no call site in
+  scope: the test `getattr` expansion uses) the seed stays on the helper. An unbounded import
   stays always-on; the reason says which of the two fired, since "any
   module in scope may be the one" and "reachable from its module's
   imports" are different claims. A project-defined function named `vars`
@@ -1054,9 +1105,13 @@ Unknown is never treated as unaffected:
   declarations are read from both revisions anyway) are excluded. Not
   seen: files outside every source root. A root that leaves out a data
   directory leaves its changes out too.
-* **Analysis errors** (unparsable file, identity collision): every target is
+* **Analysis errors** (unparsable file, identity collision, a module
+  nested too deeply for the recursive walks of its syntax tree, which is
+  left out as an unparsable one is): every target is
   selected (`analysis_error`, scope `all_targets`), the report status is
   `degraded` and the CLI exits 1. An error can never produce an empty plan.
+  Whether a walk runs out of stack depends on how deep the caller already
+  is, so an index with such an error is never cached whole.
 
 Every reason in the report carries either a full edge path ending at a
 changed symbol (with its change kinds) or the name of the fallback rule.

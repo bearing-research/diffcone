@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope, Scope
 from diffcone.indexer.syntax import _digest
@@ -17,7 +18,9 @@ class _FuncParams:
     positional: list[str]  # including self/cls for bound methods
     bound: bool
     defaults: dict[str, tuple[str, ...] | None]
-    has_varargs: bool
+
+
+_NOTHING: Any = object()  # a call site passes nothing for the parameter
 
 
 @dataclass
@@ -28,27 +31,12 @@ class _CallSite:
     receiver_bound: bool  # ``obj.m(...)`` / ``self.m(...)``: self is implicit
     # The symbol the call sits in: a by-name import is attributed to the
     # caller that named the module, not to the helper that imports it.
-    caller: str = ""
+    caller: str
     # Per argument, the caller's own parameter it is, when it is exactly
     # that: ``skip_if_no(name)`` passes its parameter to the importer, so the
     # answer is one level further out.
     positional_params: list[str | None] = field(default_factory=list)
     keyword_params: dict[str, str | None] = field(default_factory=dict)
-
-    def param_for(self, param: str, info: _FuncParams) -> str | None:
-        """The caller's parameter passed for ``param`` here, if it is one."""
-        if self.unbounded:
-            return None
-        if param in self.keyword_params:
-            return self.keyword_params[param]
-        if param in info.positional:
-            index = info.positional.index(param)
-            if info.bound and self.receiver_bound:
-                index -= 1
-            if 0 <= index < len(self.positional_params):
-                return self.positional_params[index]
-        return None
-
     # The class each argument is an instance of, where the argument says so
     # (``C()`` or ``C``); None when it does not. Used to bound what a
     # ``getattr`` on a parameter may read.
@@ -59,39 +47,49 @@ class _CallSite:
     positional_sources: list[str | None] = field(default_factory=list)
     keyword_sources: dict[str, str | None] = field(default_factory=dict)
 
+    def _argument(self, param: str, info: _FuncParams, positional: list, keywords: dict) -> Any:
+        """The entry of one per-argument table (``positional``/``keywords``)
+        for the argument this site passes for ``param``: by keyword, else by
+        position, shifted by the implicit receiver of a bound method.
+        _NOTHING when the site passes nothing for it."""
+        if param in keywords:
+            return keywords[param]
+        if param in info.positional:
+            index = info.positional.index(param)
+            if info.bound and self.receiver_bound:
+                index -= 1
+            if 0 <= index < len(positional):
+                return positional[index]
+        return _NOTHING
+
+    def param_for(self, param: str, info: _FuncParams) -> str | None:
+        """The caller's parameter passed for ``param`` here, if it is one."""
+        if self.unbounded:
+            return None
+        found = self._argument(param, info, self.positional_params, self.keyword_params)
+        return None if found is _NOTHING else found
+
     def class_for(self, param: str, info: _FuncParams) -> str | None:
         """The class of the argument passed for ``param`` here, if it says."""
         if self.unbounded:
             return None
-        if param in self.keyword_classes:
-            return self.keyword_classes[param]
-        if param in info.positional:
-            index = info.positional.index(param)
-            if info.bound and self.receiver_bound:
-                index -= 1
-            if 0 <= index < len(self.positional_classes):
-                return self.positional_classes[index]
-        return None
+        found = self._argument(param, info, self.positional_classes, self.keyword_classes)
+        return None if found is _NOTHING else found
 
     def value_for(self, param: str, info: _FuncParams) -> tuple[str, ...] | None:
+        """The strings passed for ``param`` here (its default when nothing
+        is), or None when unbounded."""
         if self.unbounded:
             return None
-        if param in self.keywords:
-            return self.keywords[param]
-        if param in info.positional:
-            index = info.positional.index(param)
-            if info.bound and self.receiver_bound:
-                index -= 1
-            if 0 <= index < len(self.positional):
-                return self.positional[index]
-        return info.defaults.get(param)
+        found = self._argument(param, info, self.positional, self.keywords)
+        return info.defaults.get(param) if found is _NOTHING else found
 
 
 @dataclass
 class _ParamDynamic:
     function: str
     param: str  # a parameter name, or an instance attribute name with self_class
-    kind: str  # "getattr" | "import"
+    kind: str  # "getattr" | "import" | "script"
     base: list[str] | None  # receiver chain for getattr, when it is a name chain
     scope: Scope
     detail: str
@@ -230,6 +228,9 @@ def _scope_to_dict(scope: Scope) -> dict:
     return {
         "module": scope.module.name,
         "local_imports": {k: [b.module, b.attr] for k, b in scope.local_imports.items()},
+        "local_alt_imports": {
+            k: [[b.module, b.attr] for b in v] for k, v in sorted(scope.local_alt_imports.items())
+        },
         "locals": sorted(scope.locals),
         "self_name": scope.self_name,
         "self_class": scope.self_class,
@@ -241,6 +242,9 @@ def _scope_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> Scope:
     return Scope(
         module=scopes[data["module"]],
         local_imports={k: ImportBinding(m, a) for k, (m, a) in data["local_imports"].items()},
+        local_alt_imports={
+            k: [ImportBinding(m, a) for m, a in v] for k, v in data["local_alt_imports"].items()
+        },
         locals=set(data["locals"]),
         self_name=data["self_name"],
         self_class=data["self_class"],
@@ -289,10 +293,7 @@ def _output_to_dict(out: _Output) -> dict:
         },
         "returns": {f: sorted(c) for f, c in sorted(out.returns.items())},
         "external_returns": sorted(out.external_returns),
-        "func_params": {
-            f: [p.positional, p.bound, p.defaults, p.has_varargs]
-            for f, p in out.func_params.items()
-        },
+        "func_params": {f: [p.positional, p.bound, p.defaults] for f, p in out.func_params.items()},
         "param_dynamics": [
             [
                 pd.function,
@@ -368,9 +369,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
             positional=list(positional),
             bound=bound,
             defaults={k: _tuples(v) for k, v in defaults.items()},
-            has_varargs=has_varargs,
         )
-        for f, (positional, bound, defaults, has_varargs) in data["func_params"].items()
+        for f, (positional, bound, defaults) in data["func_params"].items()
     }
     out.param_dynamics = [
         _ParamDynamic(
@@ -385,6 +385,16 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["passes"]}
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     return out
+
+
+def symbol_from_dict(data: dict) -> Symbol:
+    """A Symbol from its ``vars``/``asdict`` form, as JSON gives it back
+    (lists where the dataclass holds tuples)."""
+    data = dict(data)
+    data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
+    data["imports"] = tuple(data["imports"])
+    data["import_layout"] = tuple(data["import_layout"])
+    return Symbol(**data)
 
 
 def _facts_to_dict(
@@ -434,7 +444,18 @@ def _facts_to_dict(
         record["variables"],
         record["uses"],
         record["containers"],
-        [[s.id, s.kind, s.module, s.reads_docstrings] for s in symbols],
+        [
+            [
+                s.id,
+                s.kind,
+                s.module,
+                s.reads_docstrings,
+                s.passive_decorator,
+                s.passive_factory,
+                s.dispatcher,
+            ]
+            for s in symbols
+        ],
         [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
     ]
     record["env"] = _digest(json.dumps(env, sort_keys=True))
