@@ -193,6 +193,13 @@ selection rules.
 
 ### Discovery
 
+- A pytest configuration file (`pytest.toml`, `pytest.ini`,
+  `pyproject.toml`, `tox.ini`, `setup.cfg`) or an `asv.conf.json` that
+  can't be parsed made discovery quietly use the defaults, so tests or
+  benchmarks the file points elsewhere were not targets. It now makes
+  discovery incomplete (exit code `3`).
+- `asv.conf.jsonc` is read like `asv.conf.json`, and trailing commas in
+  either are accepted, as asv allows.
 - An autouse fixture imported into a conftest, a test module or a plugin
   (by name, through star imports at any depth, or as a module attribute)
   was not a dependency of the tests it applies to; nor was a fixture with
@@ -225,6 +232,8 @@ selection rules.
 ### Execution evidence
 
 - Recordings must be made again: the store format changed.
+- When `run` couldn't use a recording because only `-O` or `PYTHONPATH`
+  differed, it listed no differences; every difference is now named.
 - A process started while a `conftest.py` is imported or in a hook was not
   credited to anything; what it runs now counts as part of that import or
   hook, and one the recording cannot follow makes every change plan from

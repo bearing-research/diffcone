@@ -108,6 +108,7 @@ from diffcone.model import (
     attribute_reachable,
 )
 from diffcone.snapshot import (
+    ASV_CONFIGS,
     BUILD_SCRIPTS,
     CONFIG_FILES,
     INDEX,
@@ -385,7 +386,8 @@ def _runner_files_outside_roots(
 ) -> list[str]:
     """Changed files outside the source roots that decide what is installed
     and how the tests run: the runners' configuration at the repository root
-    (``pyproject.toml``'s pytest table, ``asv.conf.json`` anywhere),
+    (``pyproject.toml``'s pytest table, ``asv.conf.json`` or ``.jsonc``
+    anywhere),
     conftests, and anything ``build_input`` names (build scripts, dependency
     declarations and lock files, compiled sources). Inside a root such a
     file is an unanalysed file; out of every root nothing else would see it
@@ -410,7 +412,7 @@ def _runner_files_outside_roots(
         and (
             path in CONFIG_FILES
             or build_input(path)
-            or PurePosixPath(path).name in ("conftest.py", "asv.conf.json")
+            or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS)
         )
     )
 

@@ -1566,8 +1566,10 @@ nbval: not reported; a recording settles them).
 ### ASV
 
 Collected: `.py` files under `benchmark_dir` (default `benchmarks`; read
-from `asv.conf.json`, whose `//` and `/* */` comments are stripped, with an
-`unparsable_config` note if it still fails to parse). ASV resolves
+from `asv.conf.json` or `asv.conf.jsonc`, whose `//` and `/* */` comments
+and trailing commas are stripped; one that still fails to parse, or that
+sits beside the other spelling, is an `unparsable_config` note, which makes
+discovery incomplete (audit W27), and the default stands in). ASV resolves
 `benchmark_dir` against the directory holding that file, which is usually
 not the repository root -- numpy and networkx keep both under `benchmarks/`,
 pandas under `asv_bench/` -- so the snapshot reads `asv.conf.json` up to

@@ -120,7 +120,7 @@ target. Outside your source roots, these are:
 
 - your runner configuration or build script: `pyproject.toml`, `tox.ini`,
   `setup.cfg`, `setup.py`, `noxfile.py`, `hatch.toml`, a `conftest.py`,
-  `asv.conf.json`;
+  `asv.conf.json` or `asv.conf.jsonc`;
 - your dependencies: a lock file such as `uv.lock`, any file or directory
   named for requirements, constraints or deps (`dev-requirements.txt`,
   `ci/deps/py311.yaml`), a conda `environment*.yml`, and installed package
@@ -161,9 +161,10 @@ parameter cases together.
 
 ## ASV
 
-`benchmark_dir` is read from `asv.conf.json` (the one nearest the root of
-the repository, up to three levels down), relative to the directory that
-holds it; it defaults to `benchmarks`. Benchmarks are the
+`benchmark_dir` is read from `asv.conf.json` or `asv.conf.jsonc` (the one
+nearest the root of the repository, up to three levels down; comments and
+trailing commas are allowed), relative to the directory that holds it; it
+defaults to `benchmarks`. Benchmarks are the
 functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
 `peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`, `PeakMem`, `Track`
 followed by a capital or an underscore), including inherited ones and ones imported into a
@@ -204,7 +205,10 @@ Some things can't be known by reading the source:
   (`TestMachine = Machine.TestCase`);
 - a plugin your configuration turns on that collects files of its own
   (pytest-typing's `typing_checkers`, `--nbval`, `--markdown-docs`);
-- a test file that can't be parsed.
+- a test file that can't be parsed;
+- a runner configuration file that can't be parsed (`pytest.ini`,
+  `pyproject.toml`, `tox.ini`, `setup.cfg`, `asv.conf.json` and the
+  like): what it sets is unknown, so the defaults are used.
 
 Each one appears as a note in the report's `discovery` section, and the
 plan exits with code `3`: running only the selected tests could skip
@@ -214,4 +218,5 @@ tests your runner would collect. You can:
 - list the missing tests in a [manifest](manifest.md); or
 - use [execution evidence](../guides/evidence.md): a recording captures
   what pytest really collected, which settles these notes when nothing was
-  missed.
+  missed (except a configuration file that can't be parsed: fix the
+  file).

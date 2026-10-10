@@ -1466,10 +1466,11 @@ def _dirty(repo: Path) -> list[str]:
 
 
 def _asv_output_dirs(repo: Path) -> list[str]:
-    """Where ASV writes beside each tracked ``asv.conf.json``: its
-    ``results_dir``, ``env_dir`` and ``html_dir`` (``results``, ``env`` and
-    ``html`` by default), repository-relative."""
-    listed = _git(repo, ["ls-files", "-z", "--", "asv.conf.json", "*/asv.conf.json"])
+    """Where ASV writes beside each tracked ``asv.conf.json`` (or
+    ``.jsonc``): its ``results_dir``, ``env_dir`` and ``html_dir``
+    (``results``, ``env`` and ``html`` by default), repository-relative."""
+    names = [p for name in ("asv.conf.json", "asv.conf.jsonc") for p in (name, f"*/{name}")]
+    listed = _git(repo, ["ls-files", "-z", "--", *names])
     dirs: list[str] = []
     for raw in listed.split(b"\0"):
         if not raw:

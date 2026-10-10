@@ -1005,17 +1005,66 @@ def list_stores(repo: Path) -> list[StoreInfo]:
 
 
 def environment_differences(recorded: dict, met: dict) -> list[str]:
-    """Human-readable differences between two recorder environments."""
+    """Human-readable differences between two recorder environments
+    (``collect.environment``): every field the environment hash covers, a
+    field only one side has included. Called on a mismatch, it is never
+    empty: environments whose fields all agree get a line saying only the
+    hash differs."""
     out = []
+    missing = object()
+
+    def shown(value: object) -> str:
+        return "nothing" if value is missing else repr(value)
+
     for key in ("implementation", "python", "platform", "machine"):
-        if recorded.get(key) != met.get(key):
-            out.append(f"{key}: {recorded.get(key)!r} recorded, {met.get(key)!r} now")
+        if recorded.get(key, missing) != met.get(key, missing):
+            out.append(
+                f"{key}: {shown(recorded.get(key, missing))} recorded, "
+                f"{shown(met.get(key, missing))} now"
+            )
+    if recorded.get("optimize", missing) != met.get("optimize", missing):
+        # ``sys.flags.optimize``: 1 under ``-O``/``PYTHONOPTIMIZE=1``, 2 under ``-OO``.
+        out.append(
+            f"optimization level (python -O, PYTHONOPTIMIZE): "
+            f"{shown(recorded.get('optimize', missing))} recorded, "
+            f"{shown(met.get('optimize', missing))} now"
+        )
     before, after = set(recorded.get("distributions", ())), set(met.get("distributions", ()))
     for dist in sorted(before - after)[:5]:
         out.append(f"distribution {dist} recorded, not installed now")
     for dist in sorted(after - before)[:5]:
         out.append(f"distribution {dist} installed now, not recorded")
-    for name, value in sorted(recorded.get("variables", {}).items()):
-        if met.get("variables", {}).get(name) != value:
-            out.append(f"{name}: {value!r} recorded, {met['variables'].get(name)!r} now")
+    variables = (recorded.get("variables") or {}, met.get("variables") or {})
+    for name in sorted({*variables[0], *variables[1]}):
+        then, now = variables[0].get(name, missing), variables[1].get(name, missing)
+        if then != now:
+            out.append(f"{name}: {shown(then)} recorded, {shown(now)} now")
+    if recorded.get("pythonpath", missing) != met.get("pythonpath", missing):
+        out.append(
+            f"PYTHONPATH entries: {shown(recorded.get('pythonpath', missing))} recorded, "
+            f"{shown(met.get('pythonpath', missing))} now"
+        )
+    # Fields a later recorder adds, so a difference is never left unsaid.
+    listed = {
+        "implementation",
+        "python",
+        "platform",
+        "machine",
+        "optimize",
+        "distributions",
+        "variables",
+        "pythonpath",
+    }
+    for key in sorted({*recorded, *met} - listed):
+        if recorded.get(key, missing) != met.get(key, missing):
+            out.append(
+                f"{key}: {shown(recorded.get(key, missing))} recorded, "
+                f"{shown(met.get(key, missing))} now"
+            )
+    if not out:
+        out.append(
+            "the environment hash differs from the recording's, though every recorded field agrees"
+            if recorded == met
+            else "the environment differs from the recording's"
+        )
     return out

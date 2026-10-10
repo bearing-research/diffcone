@@ -44,14 +44,15 @@ CONFIG_FILES = (
     "tox.ini",
     "setup.cfg",
     "asv.conf.json",
+    "asv.conf.jsonc",
 )
 # ASV projects usually keep their configuration beside the benchmarks rather
 # than at the repository root (numpy and networkx use ``benchmarks/``, pandas
 # ``asv_bench/``), and ``benchmark_dir`` is relative to it, so nested copies
 # are read too -- shallowest first, and only a few levels down.
-ASV_CONFIG = "asv.conf.json"
+ASV_CONFIGS = ("asv.conf.json", "asv.conf.jsonc")
 ASV_CONFIG_DEPTH = 3
-NESTED_CONFIGS = (ASV_CONFIG, "pyproject.toml", "setup.cfg")
+NESTED_CONFIGS = (*ASV_CONFIGS, "pyproject.toml", "setup.cfg")
 
 WORKTREE = "WORKTREE"
 INDEX = "INDEX"
@@ -506,7 +507,7 @@ def _listed(listing: bytes) -> list[str]:
 
 
 def _nested_configs(listing: bytes) -> list[str]:
-    """Paths of ``asv.conf.json``, and of the package metadata a sibling
+    """Paths of ``asv.conf.json`` (or ``.jsonc``), and of the package metadata a sibling
     package declares its pytest plugins in (``pyproject.toml``,
     ``setup.cfg``), below the root in a NUL-separated file listing,
     shallowest first and no deeper than ASV_CONFIG_DEPTH."""

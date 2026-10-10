@@ -2,9 +2,13 @@
 
 Reproduces ASV's collection rules without importing benchmark code:
 
-* ``benchmark_dir`` from ``asv.conf.json`` (the shallowest one, at the
-  repository root or up to three levels below; default ``benchmarks``),
-  relative to the directory holding it; every ``.py`` file below it,
+* ``benchmark_dir`` from ``asv.conf.json`` or ``asv.conf.jsonc`` (the
+  shallowest one, at the repository root or up to three levels below;
+  default ``benchmarks``), relative to the directory holding it, read as
+  JSON with comments and trailing commas; a configuration that does not
+  read that way (asv reads JSON5) or that sits beside the other spelling
+  is an ``unparsable_config`` note, which makes discovery incomplete, and
+  the default directory is used; every ``.py`` file below it,
   underscore modules included (ASV walks the package with ``pkgutil``),
   named relative to that directory with dots, the package's own
   ``__init__`` with no module prefix at all;
@@ -70,7 +74,7 @@ from diffcone.discovery.common import (
 from diffcone.indexer import resolve_relative_module
 from diffcone.manifest import Target
 from diffcone.model import SourceIndex
-from diffcone.snapshot import Snapshot, module_name_for
+from diffcone.snapshot import ASV_CONFIGS, Snapshot, module_name_for
 
 RUNNER = "asv"
 PREFIXES = ("time_", "timeraw_", "mem_", "peakmem_", "track_")
@@ -94,17 +98,27 @@ def _lifecycle(name: str) -> bool:
 
 def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
     """``benchmark_dir`` as a repository-relative path. ASV resolves it
-    against the directory holding ``asv.conf.json``, which is usually not the
-    repository root (numpy and networkx keep both under ``benchmarks/``,
-    pandas under ``asv_bench/``); the snapshot reads those nested copies, and
-    the shallowest one wins as ASV's own search does."""
+    against the directory holding ``asv.conf.json`` (or ``asv.conf.jsonc``),
+    which is usually not the repository root (numpy and networkx keep both
+    under ``benchmarks/``, pandas under ``asv_bench/``); the snapshot reads
+    those nested copies, and the shallowest one wins as ASV's own search
+    does. A configuration that cannot be read has an ``error``: what it
+    sets is unknown, and the defaults stand in for it."""
     config: dict[str, Any] = {"source": None, "benchmark_dir": "benchmarks"}
-    name = next(
-        (n for n in snapshot.config_files if PurePosixPath(n).name == "asv.conf.json"), None
+    names = sorted(
+        (n for n in snapshot.config_files if PurePosixPath(n).name in ASV_CONFIGS),
+        key=lambda n: (n.count("/"), n),
     )
-    if name is None:
+    if not names:
         return config
+    name = names[0]
     here = PurePosixPath(name).parent
+    twins = [n for n in names[1:] if PurePosixPath(n).parent == here]
+    if twins:
+        # asv refuses to choose between the two spellings.
+        config["source"] = f"{name} (beside {twins[0]}, defaults used)"
+        config["error"] = f"both {name} and {twins[0]} exist, and asv reads only one"
+        return config
     text = snapshot.config_files[name].decode("utf-8", "replace")
     try:
         data = json.loads(strip_json_comments(text))
@@ -130,8 +144,9 @@ def read_asv_config(snapshot: Snapshot) -> dict[str, Any]:
 
 
 def strip_json_comments(text: str) -> str:
-    """Remove ``//`` and ``/* */`` comments outside string literals, as asv's
-    configuration loader allows."""
+    """Remove ``//`` and ``/* */`` comments outside string literals, and a
+    comma before a closing ``]`` or ``}``, as asv's configuration loader
+    (JSON5) allows."""
     out: list[str] = []
     i, n = 0, len(text)
     in_string = False
@@ -156,6 +171,13 @@ def strip_json_comments(text: str) -> str:
             i = n if end < 0 else end + 2
             continue
         else:
+            if ch in "]}":
+                # A trailing comma: the last character kept, past blanks.
+                j = len(out) - 1
+                while j >= 0 and out[j].isspace():
+                    j -= 1
+                if j >= 0 and out[j] == ",":
+                    del out[j]
             out.append(ch)
         i += 1
     return "".join(out)
@@ -326,8 +348,9 @@ def discover_asv(
             DiscoveryNote(
                 RUNNER,
                 "unparsable_config",
-                f"asv.conf.json could not be parsed ({config['error']}); "
-                f"using benchmark_dir {config['benchmark_dir']!r}",
+                f"the asv configuration could not be read ({config['error']}), so its "
+                f"benchmark_dir is not known; using {config['benchmark_dir']!r}, and "
+                "benchmarks elsewhere are not targets",
             )
         )
     bench_dir = config["benchmark_dir"]

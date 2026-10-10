@@ -178,6 +178,9 @@ INCOMPLETE_NOTE_KINDS = frozenset(
         "unmodelled_test_binding",
         # An option given to pytest after ``--`` that discovery cannot model.
         "unmodelled_runner_option",
+        # A runner configuration that could not be read: the directories and
+        # patterns it sets are unknown, and the defaults stand in for them.
+        "unparsable_config",
         # Evidence mode: pytest collected tests at the recorded commit that
         # were not targets there.
         "collected_not_target",

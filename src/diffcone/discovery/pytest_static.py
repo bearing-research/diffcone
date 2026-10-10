@@ -59,7 +59,9 @@ Collected:
   ``.pytest.toml``, ``pytest.ini``, ``.pytest.ini``, ``pyproject.toml``
   (``[tool.pytest.ini_options]`` or ``[tool.pytest]``), ``tox.ini`` or
   ``setup.cfg`` at the repository root, in pytest 9's order (INI values
-  split as a shell would), its ``addopts``, then ``PYTEST_ADDOPTS``, the
+  split as a shell would; the first of them that does not parse, which
+  pytest stops on, is an ``unparsable_config`` note, and the defaults
+  stand in for it), its ``addopts``, then ``PYTEST_ADDOPTS``, the
   arguments written into the run's command and those after ``--``
   (DiscoveryOptions; the plugins ``PYTEST_PLUGINS`` names load like ``-p``
   ones); ``-o key=value`` overrides the configuration as pytest applies it
@@ -628,10 +630,15 @@ def _toml_table(data: Any, *keys: str) -> dict[str, Any] | None:
 
 
 def _load_toml(raw: bytes) -> dict[str, Any]:
+    return _parse_toml(raw)[0]
+
+
+def _parse_toml(raw: bytes) -> tuple[dict[str, Any], str | None]:
+    """The TOML document, or an empty one and why it does not parse."""
     try:
-        return tomllib.loads(raw.decode("utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
-        return {}
+        return tomllib.loads(raw.decode("utf-8")), None
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        return {}, str(exc)
 
 
 # Configuration that switches on an installed plugin's own collection of
@@ -712,35 +719,52 @@ def read_pytest_config(snapshot: Snapshot, runner_args: tuple[str, ...] = ()) ->
     }
     section: dict[str, Any] | None = None
     files = snapshot.config_files
+
+    def unparsable(name: str, error: str) -> dict[str, Any]:
+        # pytest stops on a configuration file it cannot parse, wherever it
+        # is in the order; one that pytest's own parser reads and this one
+        # does not may set anything (testpaths, python_files, ...).
+        config["source"] = f"{name} (unparsable, defaults used)"
+        config["error"] = f"{name}: {error}"
+        return {}
+
     # pytest's precedence (pytest 9): pytest.toml, .pytest.toml, pytest.ini,
     # .pytest.ini, pyproject.toml, tox.ini, setup.cfg. The first four are the
     # config file whenever present, even empty.
     for name in ("pytest.toml", ".pytest.toml"):
         if section is None and name in files:
-            section = _toml_table(_load_toml(files[name]), "pytest") or {}
+            data, error = _parse_toml(files[name])
+            section = _toml_table(data, "pytest") or {}
             config["source"] = name
+            if error is not None:
+                section = unparsable(name, error)
     for name in ("pytest.ini", ".pytest.ini"):
         if section is None and name in files:
-            section = _ini_section(files[name], "pytest") or {}
+            found, error = _parse_ini_section(files[name], "pytest")
+            section = found or {}
             config["source"] = name
+            if error is not None:
+                section = unparsable(name, error)
     if section is None and "pyproject.toml" in files:
-        tool = _toml_table(_load_toml(files["pyproject.toml"]), "tool", "pytest") or {}
+        data, error = _parse_toml(files["pyproject.toml"])
+        tool = _toml_table(data, "tool", "pytest") or {}
         ini_options = tool.get("ini_options")
-        if isinstance(ini_options, dict):
+        if error is not None:
+            section = unparsable("pyproject.toml", error)
+        elif isinstance(ini_options, dict):
             section = ini_options
             config["source"] = "pyproject.toml"
         elif tool:
             # pytest >= 9 native TOML table: [tool.pytest] with real TOML values.
             section = {k: v for k, v in tool.items() if k != "ini_options"}
             config["source"] = "pyproject.toml [tool.pytest]"
-    if section is None and "tox.ini" in files:
-        section = _ini_section(files["tox.ini"], "pytest")
-        if section is not None:
-            config["source"] = "tox.ini"
-    if section is None and "setup.cfg" in files:
-        section = _ini_section(files["setup.cfg"], "tool:pytest")
-        if section is not None:
-            config["source"] = "setup.cfg"
+    for name, table in (("tox.ini", "pytest"), ("setup.cfg", "tool:pytest")):
+        if section is None and name in files:
+            section, error = _parse_ini_section(files[name], table)
+            if error is not None:
+                section = unparsable(name, error)
+            elif section is not None:
+                config["source"] = name
     if section is None and runner_args:
         section = {}
     if section is not None and (section or runner_args):
@@ -1305,14 +1329,20 @@ def _absolute_module(parsed: ParsedModule, node: ast.ImportFrom) -> str:
 
 
 def _ini_section(raw: bytes, name: str) -> dict[str, Any] | None:
+    return _parse_ini_section(raw, name)[0]
+
+
+def _parse_ini_section(raw: bytes, name: str) -> tuple[dict[str, Any] | None, str | None]:
+    """The INI file's section ``name`` (None when it has none), or None and
+    why the file does not parse."""
     parser = configparser.ConfigParser(interpolation=None)
     try:
         parser.read_string(raw.decode("utf-8"))
-    except (configparser.Error, UnicodeDecodeError):
-        return None
+    except (configparser.Error, UnicodeDecodeError) as exc:
+        return None, str(exc).splitlines()[0] if str(exc) else type(exc).__name__
     if not parser.has_section(name):
-        return None
-    return dict(parser.items(name))
+        return None, None
+    return dict(parser.items(name)), None
 
 
 # Hooks that turn files or objects into tests by a plugin's own rules, so the
@@ -2194,6 +2224,16 @@ def discover_pytest(
 ) -> DiscoveryResult:
     result = DiscoveryResult(runner=RUNNER)
     config = read_pytest_config(snapshot, options.pytest_args)
+    if "error" in config:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unparsable_config",
+                f"the pytest configuration could not be read ({config['error']}), so what it "
+                "sets (testpaths, python_files, addopts, ...) is not known; pytest's defaults "
+                "are used, and tests they do not collect are not targets",
+            )
+        )
     for plugin in config["collecting_plugins"]:
         result.notes.append(
             DiscoveryNote(

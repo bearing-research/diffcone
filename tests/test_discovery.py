@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from diffcone.cli import main
 from diffcone.discovery import DiscoveryOptions, discover
 from diffcone.indexer import build_index
@@ -655,10 +657,131 @@ def test_asv_config_with_inline_comments(repo):
     assert set(by_id(result)) == {"b.time_x"}
     assert result.notes == []
 
-    rev2 = repo.commit({"asv.conf.json": '{"benchmark_dir": "perf",}\n'})
+    rev2 = repo.commit({"asv.conf.json": '{"benchmark_dir": "perf" "repo": "x"}\n'})
     result = run_discovery(repo, rev2, "asv")
     assert result.config["benchmark_dir"] == "benchmarks"
     assert [n.kind for n in result.notes] == ["unparsable_config", "no_benchmarks"]
+
+
+def test_w27_asv_trailing_commas_parse_as_asv_reads_them(repo):
+    """asv reads its configuration as JSON5, so a trailing comma is valid."""
+    from diffcone.discovery.asv_static import strip_json_comments
+
+    text = '{\n  "benchmark_dir": "perf", // c\n  "pythons": ["3.12", ],\n  "s": ",]",\n}\n'
+    assert json.loads(strip_json_comments(text)) == {
+        "benchmark_dir": "perf",
+        "pythons": ["3.12"],
+        "s": ",]",
+    }
+    rev = repo.commit({"asv.conf.json": text, "perf/b.py": "def time_x():\n    pass\n"})
+    result = run_discovery(repo, rev, "asv")
+    assert result.config["benchmark_dir"] == "perf"
+    assert set(by_id(result)) == {"b.time_x"}
+    assert result.notes == []
+
+
+def test_w27_asv_conf_jsonc_is_the_configuration(repo):
+    """asv reads ``asv.conf.jsonc`` as well as ``asv.conf.json``: its
+    ``benchmark_dir`` is where the benchmarks are, and a change to it is a
+    runner configuration change."""
+    rev = repo.commit(
+        {
+            "asv_bench/asv.conf.jsonc": '{"benchmark_dir": "perf", // jsonc\n}\n',
+            "asv_bench/perf/b.py": "def time_x():\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "asv")
+    assert result.config["source"] == "asv_bench/asv.conf.jsonc"
+    assert result.config["benchmark_dir"] == "asv_bench/perf"
+    assert set(by_id(result)) == {"b.time_x"}
+    assert result.notes == []
+
+    # Both spellings in one directory: asv refuses to choose.
+    rev2 = repo.commit({"asv_bench/asv.conf.json": '{"benchmark_dir": "perf"}\n'})
+    result = run_discovery(repo, rev2, "asv")
+    assert [n.kind for n in result.incomplete] == ["unparsable_config"]
+
+
+W27_TREE = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n",
+    "tests/test_ops.py": "from pkg.ops import sub\n\n\ndef test_sub():\n    assert sub(2, 1)\n",
+    # Not valid JSON (a missing comma), so its benchmark_dir is unknown.
+    "asv.conf.json": '{"version": 1, "benchmark_dir": "perf" "repo": "."}\n',
+    "perf/__init__.py": "",
+    "perf/bench_ops.py": "from pkg.ops import add\n\n\ndef time_add():\n    add(1, 2)\n",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench_sub.py": "from pkg.ops import sub\n\n\ndef time_sub():\n    sub(2, 1)\n",
+}
+
+
+def test_w27_an_unparsable_asv_config_makes_the_plan_incomplete(repo, capsys):
+    """The benchmarks ASV runs live under a ``benchmark_dir`` discovery could
+    not read: the plan holds the default directory's benchmarks, and says
+    the list may be short (exit 3) instead of passing as complete."""
+    base = repo.commit(W27_TREE)
+    head = repo.commit(
+        {"pkg/ops.py": "def add(a, b):\n    return b + a\n\n\ndef sub(a, b):\n    return a - b\n"}
+    )
+    args = ["--repo", str(repo.path), "--base", base, "--head", head]
+    code = main(["plan", *args, "--discover", "pytest", "--discover", "asv", "--format", "json"])
+    data = json.loads(capsys.readouterr().out)
+    assert code == 3
+    assert data["discovery_incomplete"] is True
+    notes = {d["runner"]: [n["kind"] for n in d["notes"]] for d in data["discovery"]}
+    assert notes == {"pytest": [], "asv": ["unparsable_config"]}
+    # The default directory's benchmarks are still targets.
+    ids = {t["runner_id"] for t in data["selected_targets"] + data["unselected_targets"]}
+    assert ids == {"tests/test_ops.py::test_sub", "bench_sub.time_sub"}
+
+    code = main(["run", *args, "--discover", "asv", "--dry-run", "--command", "asv run"])
+    assert code == 3
+    assert "--allow-incomplete-discovery" in capsys.readouterr().err
+
+
+# Each the only configuration file, and each not parsable.
+W27_PYTEST_CONFIGS = {
+    "pytest.toml": '[pytest]\npython_files = ["check_*.py"\n',
+    "pytest.ini": "[pytest]\npython_files check_*.py\n",
+    "pyproject.toml": '[tool.pytest.ini_options]\npython_files = ["check_*.py"\n',
+    "tox.ini": "[pytest]\npython_files = check_*.py\n[pytest]\n",
+    "setup.cfg": "python_files = check_*.py\n[tool:pytest]\n",
+}
+
+INCOMPLETE_W27_PYTEST = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+    "tests/test_ops.py": "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1)\n",
+}
+
+
+@pytest.mark.parametrize("name", sorted(W27_PYTEST_CONFIGS))
+def test_w27_an_unparsable_pytest_config_makes_discovery_incomplete(repo, name):
+    """pytest stops on a configuration file it cannot parse; one this parser
+    cannot read may set testpaths or python_files, so the default rules do
+    not vouch for the target list."""
+    text = W27_PYTEST_CONFIGS[name]
+    rev = repo.commit(
+        {
+            name: text,
+            "tests/test_default.py": "def test_x():\n    pass\n",
+            "tests/check_y.py": "def test_y():\n    pass\n",
+        }
+    )
+    result = run_discovery(repo, rev, "pytest")
+    assert [n.kind for n in result.incomplete] == ["unparsable_config"]
+    assert result.config["source"] == f"{name} (unparsable, defaults used)"
+    assert result.config["error"].startswith(f"{name}: ")
+    assert set(by_id(result)) == {"tests/test_default.py::test_x"}
+
+
+def test_w27_an_unparsable_pytest_config_exits_three(repo, capsys):
+    base = repo.commit({**INCOMPLETE_W27_PYTEST, "pytest.ini": "[pytest]\ntestpaths\n"})
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    args = ["--repo", str(repo.path), "--base", base, "--head", head, "--discover", "pytest"]
+    code = main(["plan", *args, "--format", "json"])
+    assert code == 3
+    assert json.loads(capsys.readouterr().out)["discovery_incomplete"] is True
 
 
 def test_snapshot_reads_config_only_on_request(repo):

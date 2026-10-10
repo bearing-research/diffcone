@@ -694,3 +694,50 @@ def test_run_collect_drops_the_records_of_deleted_tests(repo, capfd):
     (store,) = [s for s in list_stores(repo.path) if s.commit == head_commit]
     advanced = load_store(store.path)
     assert set(advanced.tests) == set(ev.tests) - {T + "test_listing"}
+
+
+def test_w28_optimize_and_pythonpath_differences_are_reported():
+    """``-O`` and PYTHONPATH are in the recorded environment and its hash, so
+    a run that differs only there names them instead of an empty list."""
+    from diffcone.collect import environment
+    from diffcone.evidence import environment_differences
+
+    recorded = environment()
+    level = recorded["optimize"]
+    assert environment_differences(recorded, {**recorded, "optimize": level + 1}) == [
+        f"optimization level (python -O, PYTHONOPTIMIZE): {level} recorded, {level + 1} now"
+    ]
+    met = {**recorded, "pythonpath": [*recorded["pythonpath"], "/opt/extra"]}
+    (line,) = environment_differences(recorded, met)
+    assert line.startswith("PYTHONPATH entries: ") and "/opt/extra" in line
+
+
+def test_w28_every_recorded_field_has_a_difference_line():
+    """Whatever field differs, the list names it; a field only one side has
+    (a variable added with ``--env-var``, a later recorder's field) too."""
+    from diffcone.collect import environment
+    from diffcone.evidence import environment_differences
+
+    recorded = environment()
+    for key, value in recorded.items():
+        if isinstance(value, list):
+            changed: object = [*value, "x==1"]
+        elif isinstance(value, dict):
+            changed = {**value, "EXTRA_FLAG": "on"}
+        else:
+            changed = f"{value}-other"
+        assert environment_differences(recorded, {**recorded, key: changed}), key
+    assert environment_differences(recorded, {**recorded, "newfield": 1}) == [
+        "newfield: nothing recorded, 1 now"
+    ]
+
+
+def test_w28_a_mismatch_is_never_explained_by_an_empty_list():
+    """The caller has a hash mismatch: when no field differs, the list still
+    says so rather than printing nothing."""
+    from diffcone.collect import environment
+    from diffcone.evidence import environment_differences
+
+    recorded = environment()
+    (line,) = environment_differences(recorded, dict(recorded))
+    assert "hash differs" in line
