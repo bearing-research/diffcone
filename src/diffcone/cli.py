@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -66,6 +65,7 @@ from diffcone.execution import (
     corpus_to_dict,
     corpus_to_text,
     corpus_validation,
+    join_command,
     run_selected,
     run_with_evidence,
     split_command,
@@ -74,9 +74,8 @@ from diffcone.execution import (
     validation_to_text,
     worktree_mismatch,
 )
-from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
-from diffcone.planner import plan
+from diffcone.planner import _index_snapshot, plan
 from diffcone.report import snapshot_to_dict, to_json, to_text
 from diffcone.snapshot import GitError, read_snapshot, resolve_commit
 
@@ -123,8 +122,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--no-cache",
         action="store_true",
-        help="do not read or write the cache (<repo>/.diffcone/cache): whole indexes of "
-        "committed snapshots and per-module results, which also serve WORKTREE and INDEX",
+        help="do not read or write the cache (<repo>/.diffcone/cache): whole indexes and "
+        "discovery results of committed snapshots, and per-module results, which also serve "
+        "WORKTREE and INDEX",
     )
     p.add_argument("--cache-dir", help="where to keep the cache (default: <repo>/.diffcone/cache)")
 
@@ -250,8 +250,9 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument(
         "--coverage",
         action="store_true",
-        help="also run the head suite under pytest-cov with per-test contexts and require "
-        "every test that executed a changed symbol to be selected (reports recall/precision)",
+        help="also run both suites under pytest-cov with per-test contexts and require "
+        "every test that executed a changed symbol, at either snapshot, to be selected "
+        "(reports recall/precision)",
     )
     v.add_argument(
         "--setup-command",
@@ -740,15 +741,29 @@ def _main(argv: list[str] | None) -> int:
             Path(args.cache_dir) if args.cache_dir else default_cache_dir(Path(args.repo))
         )
 
+    loaded: list = []
+
+    def manifest():
+        """The ``--targets`` manifest (None without one), read once."""
+        if not loaded:
+            targets = getattr(args, "targets", None)
+            loaded.append(load_manifest(targets) if targets else None)
+        return loaded[0]
+
+    def evidence_roots() -> list[str]:
+        """The source roots a plan uses, which a recording must share: as
+        ``planner.plan`` resolves them."""
+        found = manifest()
+        return list(args.source_roots or (found.source_roots if found else None) or ["."])
+
     def build_plan(evidence=None):
         if not args.targets and not args.discover:
             parser.error(f"{args.command} requires --targets and/or --discover")
-        manifest = load_manifest(args.targets) if args.targets else None
         return plan(
             Path(args.repo),
             args.base,
             args.head,
-            manifest,
+            manifest(),
             source_roots=args.source_roots,
             discover_runners=args.discover or (),
             discovery_options=options,
@@ -759,11 +774,9 @@ def _main(argv: list[str] | None) -> int:
     def load_evidence():
         if not getattr(args, "evidence", None):
             return None
-        manifest_roots = load_manifest(args.targets).source_roots if args.targets else None
-        roots = list(args.source_roots or manifest_roots or ["."])
         head = args.head if args.head not in ("WORKTREE", "INDEX") else "HEAD"
         reference = resolve_commit(Path(args.repo), head)
-        return load_store(find_store(Path(args.repo), args.evidence, roots, reference))
+        return load_store(find_store(Path(args.repo), args.evidence, evidence_roots(), reference))
 
     try:
         if args.command == "plan":
@@ -921,7 +934,7 @@ def _main(argv: list[str] | None) -> int:
                 if not outcome.selected:
                     print("diffcone: nothing selected; not running", file=sys.stderr)
                     return 0
-                return _write(" ".join(shlex.quote(a) for a in outcome.command) + "\n", args.output)
+                return _write(join_command(outcome.command) + "\n", args.output)
             if outcome.returncode is None:
                 # Nothing ran: an empty selection (a whole-suite fallback ran
                 # something even when no static target was selected).
@@ -947,21 +960,19 @@ def _main(argv: list[str] | None) -> int:
         if args.command == "corpus":
             if not args.targets and not args.discover:
                 parser.error("corpus requires --targets and/or --discover")
-            manifest = load_manifest(args.targets) if args.targets else None
+            manifest()  # read before any pair: a bad manifest is no pair's error
             fixed = load_store(Path(args.evidence)) if args.evidence not in (None, "auto") else None
 
             def make_plan(base: str, head: str):
                 evidence = fixed
                 if args.evidence == "auto":
-                    roots = list(
-                        args.source_roots or (manifest.source_roots if manifest else None) or ["."]
-                    )
-                    evidence = load_store(find_store(Path(args.repo), "auto", roots, head))
+                    found = find_store(Path(args.repo), "auto", evidence_roots(), head)
+                    evidence = load_store(found)
                 return plan(
                     Path(args.repo),
                     base,
                     head,
-                    manifest,
+                    manifest(),
                     source_roots=args.source_roots,
                     discover_runners=args.discover or (),
                     discovery_options=options,
@@ -995,9 +1006,26 @@ def _main(argv: list[str] | None) -> int:
         if args.command == "discover":
             runners = args.discover or list(RUNNERS)
             roots = args.source_roots or ["."]
-            snapshot = read_snapshot(Path(args.repo), args.rev, roots, with_config=True)
-            index = build_index(snapshot)
-            results = [discover(r, snapshot, index, options) for r in runners]
+            # Through the caches as ``plan`` goes: the module records, and a
+            # committed snapshot's whole index and discovery results.
+            index, read = _index_snapshot(
+                Path(args.repo), args.rev, roots, with_config=True, cache=cache
+            )
+            assert read is not None  # with_config always reads the snapshot
+            snapshot = read
+            committed = cache is not None and snapshot.info.committed
+            results = []
+            for runner in runners:
+                found = (
+                    cache.discovery.load(snapshot.commit, roots, runner, options)
+                    if cache is not None and committed
+                    else None
+                )
+                if found is None:
+                    found = discover(runner, snapshot, index, options)
+                    if cache is not None and committed:
+                        cache.discovery.store(found, snapshot.commit, roots, options)
+                results.append(found)
             data = manifest_to_dict([t for r in results for t in r.targets], roots)
             data["discovery"] = {
                 "snapshot": snapshot_to_dict(snapshot.info),

@@ -110,7 +110,9 @@ try:
 except ImportError:  # imported as diffcone.collect, not as the plugin
     from diffcone import child
 
-TOOL = 3
+# Shared with the child recorder (child.py), which records the processes a
+# test starts the way this plugin records the test's own.
+TOOL = child.TOOL
 FLAG_SUBPROCESS = 1
 # The test ran code compiled from text no file of the checkout holds (a
 # doctest, ``timeit``), which can read any name of the project.
@@ -125,24 +127,9 @@ def _variables() -> tuple[str, ...]:
     return ENV_VARIABLES + tuple(sorted(extra - set(ENV_VARIABLES)))
 
 
-SUBPROCESS_EVENTS = frozenset(
-    {
-        "subprocess.Popen",
-        "os.system",
-        "os.exec",
-        "os.posix_spawn",
-        "os.spawn",
-        "os.fork",
-        "os.forkpty",
-        "os.startfile",
-        # Windows' process creation (multiprocessing's spawn there).
-        "_winapi.CreateProcess",
-    }
-)
-# Files opened by C code, which raises no ``open`` event: the first
-# argument is the path.
-C_OPEN_EVENTS = frozenset({"sqlite3.connect", "ctypes.dlopen"})
-LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
+SUBPROCESS_EVENTS = child.SUBPROCESS_EVENTS
+C_OPEN_EVENTS = child.C_OPEN_EVENTS
+LISTING_EVENTS = child.LISTING_EVENTS
 
 
 # --------------------------------------------------------------------------- environment
@@ -263,8 +250,8 @@ def _case_folds(root: str) -> bool:
 
 
 CASE_FOLDS = _case_folds(os.path.realpath(_root))
-IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
-INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
+IGNORED_DIRS = child.IGNORED_DIRS
+INSTALLED = child.INSTALLED
 
 
 ENVIRONMENTS = child.environments(ROOTS)
@@ -303,19 +290,18 @@ caches: list = []
 recording = False
 
 
+# A window's sets; ``flags`` is a bit mask beside them. ``fixtures``: the
+# non-function-scoped fixtures a test used, by key, so a fixture another
+# process (an xdist worker) set up is credited too. ``spawns``: (spawner,
+# pid, start, argv, inert) of the processes it started, or that were still
+# running when it opened, through ``subprocess.Popen``.
+_SETS = ("codes", "paths", "dirs", "fixtures", "spawns")
+
+
 def _window() -> dict:
-    # ``fixtures``: the non-function-scoped fixtures a test used, by key, so
-    # a fixture another process (an xdist worker) set up is credited too.
-    # ``spawns``: (spawner, pid, start, argv) of the processes it started, or
-    # that were still running when it opened, through ``subprocess.Popen``.
-    return {
-        "codes": set(),
-        "paths": set(),
-        "dirs": set(),
-        "flags": 0,
-        "fixtures": set(),
-        "spawns": set(),
-    }
+    window: dict = {key: set() for key in _SETS}
+    window["flags"] = 0
+    return window
 
 
 import_window = _window()
@@ -323,6 +309,33 @@ import_window = _window()
 
 def _windows():
     return active if active else (import_window,)
+
+
+def _merge(into: dict, window: dict) -> None:
+    """Add what ``window`` recorded to ``into``: every field, so none is
+    lost on the way (a dropped field is a record missing from the store)."""
+    for key in _SETS:
+        into[key] |= window[key]
+    into["flags"] |= window["flags"]
+
+
+def _serialised(window: dict) -> dict:
+    """A window as the records hold it (``tests-<pid>.bin``, and a shared
+    fixture's in ``process-<pid>.json``): every field."""
+    data: dict = {key: sorted(window[key]) for key in _SETS if key != "spawns"}
+    data["spawns"] = _spawn_list(window["spawns"])
+    data["flags"] = window["flags"]
+    return data
+
+
+def _code_index(code, rel: str) -> int:
+    """``code``'s row in the code table, added on first sight (``rel``: its
+    checkout-relative file)."""
+    i = codes.get(code)
+    if i is None:
+        i = codes[code] = len(table)
+        table.append([rel, code.co_firstlineno, code.co_qualname])
+    return i
 
 
 def _flag(flag: int = FLAG_SUBPROCESS) -> None:
@@ -380,7 +393,7 @@ def _under_root(path: str) -> str | None:
     return None
 
 
-CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
+CYTHON_SUFFIXES = child.CYTHON_SUFFIXES
 
 
 _code_paths: dict[str, str | None] = {}
@@ -429,10 +442,7 @@ def _on_start(code, offset):
         rel = _code_path(code.co_filename)
         if rel is None:
             return mon.DISABLE
-        i = codes.get(code)
-        if i is None:
-            i = codes[code] = len(table)
-            table.append([rel, code.co_firstlineno, code.co_qualname])
+        i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
         if not active and not importing and code.co_name != "<module>":
@@ -457,10 +467,7 @@ def _on_resume(code, offset):
         rel = _code_path(code.co_filename)
         if rel is None:
             return mon.DISABLE
-        i = codes.get(code)
-        if i is None:
-            i = codes[code] = len(table)
-            table.append([rel, code.co_firstlineno, code.co_qualname])
+        i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
     except Exception as exc:
@@ -471,13 +478,13 @@ def _on_resume(code, offset):
 def _on_throw(code, offset, exc):
     # A generator or coroutine re-entered by ``.throw()`` or ``.close()``:
     # resumed like PY_RESUME, but this event cannot be disabled.
-    if code not in codes and _code_path(code.co_filename) is None:
-        return
     try:
         i = codes.get(code)
         if i is None:
-            i = codes[code] = len(table)
-            table.append([_code_path(code.co_filename), code.co_firstlineno, code.co_qualname])
+            rel = _code_path(code.co_filename)
+            if rel is None:
+                return
+            i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
     except Exception as err:
@@ -509,9 +516,7 @@ def _on_unwind(code, offset, exc):
 # --------------------------------------------------------------------------- paths
 
 
-# Loader methods that read a package's data for its caller
-# (``pkgutil.get_data``, ``importlib.resources``), not to import a module.
-DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
+DATA_READERS = child.DATA_READERS
 
 
 def _actor() -> str:
@@ -542,7 +547,7 @@ def _actor() -> str:
     return "library" if imported else "other"
 
 
-METADATA_MODULES = ("importlib.metadata", "importlib_metadata", "pkg_resources")
+METADATA_MODULES = child.METADATA_MODULES
 _search_path: tuple[list[str], frozenset[str]] = ([], frozenset())
 
 
@@ -719,7 +724,7 @@ _LOADING_NAMES = frozenset(
 )
 # Environment variables that make an interpreter run or find other code.
 _LOADING_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH")
-_INTERPRETER = re.compile(r"python[0-9.]*(\.exe)?", re.IGNORECASE)
+_INTERPRETER = child.INTERPRETER
 
 
 def _inert_snippet(code: str) -> bool:
@@ -823,11 +828,7 @@ def _credit_running_threads(window: dict) -> None:
             code = frame.f_code
             rel = _code_path(code.co_filename)
             if rel is not None:
-                i = codes.get(code)
-                if i is None:
-                    i = codes[code] = len(table)
-                    table.append([rel, code.co_firstlineno, code.co_qualname])
-                window["codes"].add(i)
+                window["codes"].add(_code_index(code, rel))
             frame = frame.f_back
 
 
@@ -903,7 +904,7 @@ def _flag_multiprocessing_spawns() -> None:
     event: flag the test from the function they all go through. A
     subinterpreter (``concurrent.interpreters``, Python 3.14) raises none
     either, and runs code this interpreter's monitoring does not see."""
-    for module, name in (("multiprocessing.util", "spawnv_passfds"), ("_interpreters", "create")):
+    for module, name in child.UNAUDITED_STARTS:
         try:
             _flag_calls(importlib.import_module(module), name)
         except ImportError:  # not on this platform or version
@@ -1081,26 +1082,12 @@ class _Writer:
         if test_id != self.current:
             self.flush()
             self.current = test_id
-        self.acc["codes"] |= w["codes"]
-        self.acc["paths"] |= w["paths"]
-        self.acc["dirs"] |= w["dirs"]
-        self.acc["flags"] |= w["flags"]
-        self.acc["fixtures"] |= w["fixtures"]
-        self.acc["spawns"] |= w["spawns"]
+        _merge(self.acc, w)
 
     def flush(self) -> None:
         if self.current is None:
             return
-        payload = json.dumps(
-            {
-                "codes": sorted(self.acc["codes"]),
-                "paths": sorted(self.acc["paths"]),
-                "dirs": sorted(self.acc["dirs"]),
-                "flags": self.acc["flags"],
-                "fixtures": sorted(self.acc["fixtures"]),
-                "spawns": _spawn_list(self.acc["spawns"]),
-            }
-        ).encode()
+        payload = json.dumps(_serialised(self.acc)).encode()
         name = self.current.encode()
         blob = zlib.compress(payload, 6)
         self.f.write(struct.pack("<II", len(name), len(blob)) + name + blob)
@@ -1183,7 +1170,7 @@ def pytest_configure(config):
         # checked, and diffcone does not trust its evidence plan.
         report = os.environ.get("DIFFCONE_CHECK_REPORT")
         if report:
-            with open(report, "w") as f:
+            with open(report, "w", encoding="utf-8") as f:
                 json.dump({"match": match, "environment": env}, f)
         if not match:
             pytest.exit(
@@ -1333,11 +1320,7 @@ def pytest_runtest_protocol(item, nextitem):
                     mine["fixtures"].add(fixture_key(key))
                     shared = fixture_windows.get(key)
                     if shared:
-                        mine["codes"] |= shared["codes"]
-                        mine["paths"] |= shared["paths"]
-                        mine["dirs"] |= shared["dirs"]
-                        mine["flags"] |= shared["flags"]
-                        mine["spawns"] |= shared["spawns"]
+                        _merge(mine, shared)
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
         except Exception as exc:
@@ -1407,14 +1390,7 @@ def _finish():
         # What each shared fixture ran here: a fixture computed once for
         # every worker (a file lock and a cache file) runs its code in one.
         "fixtures": {
-            fixture_key(key): {
-                "codes": sorted(w["codes"]),
-                "paths": sorted(w["paths"]),
-                "dirs": sorted(w["dirs"]),
-                "flags": w["flags"],
-                "spawns": _spawn_list(w["spawns"]),
-            }
-            for key, w in sorted(fixture_windows.items())
+            fixture_key(key): _serialised(w) for key, w in sorted(fixture_windows.items())
         },
         "environment": env,
         "environment_hash": environment_hash(env),
@@ -1423,7 +1399,7 @@ def _finish():
         "collected": sorted(collected) if collection_ran else None,
         "errors": errors,
     }
-    with open(os.path.join(OUT, f"process-{os.getpid()}.json"), "w") as f:
+    with open(os.path.join(OUT, f"process-{os.getpid()}.json"), "w", encoding="utf-8") as f:
         json.dump(record, f)
 
 

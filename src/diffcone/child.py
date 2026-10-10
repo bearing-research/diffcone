@@ -412,6 +412,8 @@ _roots: tuple[str, ...] = ()
 _environments: tuple[str, ...] = ()  # as collect.ENVIRONMENTS, for this interpreter
 _cwd = ""
 _packages: frozenset[str] = frozenset()
+# What both recorders share (the plugin, collect.py, aliases these): not
+# the checkout's, though under its root.
 IGNORED_DIRS = (".git" + os.sep, ".diffcone" + os.sep)
 INSTALLED = (os.sep + "site-packages" + os.sep, os.sep + "dist-packages" + os.sep)
 CYTHON_SUFFIXES = (".pyx", ".pxd", ".pxi")
@@ -425,12 +427,22 @@ SUBPROCESS_EVENTS = frozenset(
         "os.fork",
         "os.forkpty",
         "os.startfile",
+        # Windows' process creation (multiprocessing's spawn there).
         "_winapi.CreateProcess",
     }
 )
+# Files opened by C code, which raises no ``open`` event: the first
+# argument is the path.
 C_OPEN_EVENTS = frozenset({"sqlite3.connect", "ctypes.dlopen"})
 LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
+# Loader methods that read a package's data for its caller
+# (``pkgutil.get_data``, ``importlib.resources``), not to import a module.
 DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
+# Starts that raise no audit event: ``multiprocessing``'s spawn and
+# forkserver children (through ``_posixsubprocess.fork_exec``), and a
+# subinterpreter (Python 3.14), whose code this interpreter's monitoring
+# does not see. (module, function) pairs.
+UNAUDITED_STARTS = (("multiprocessing.util", "spawnv_passfds"), ("_interpreters", "create"))
 
 
 def environments(roots: tuple[str, ...]) -> tuple[str, ...]:
@@ -606,12 +618,18 @@ def _actor() -> str:
 
 
 METADATA_MODULES = ("importlib.metadata", "importlib_metadata", "pkg_resources")
+_search_path: tuple[list[str], frozenset[str]] = ([], frozenset())
 
 
 def _metadata_scan(path: str) -> bool:
     """As ``collect._metadata_scan``: ``importlib.metadata`` stat'ing or
-    listing a ``sys.path`` entry, below any project frame."""
-    if path not in {os.path.abspath(e or ".") for e in sys.path}:
+    listing a ``sys.path`` entry, below any project frame. The entries'
+    absolute paths are kept until ``sys.path`` changes: this runs per touch."""
+    global _search_path
+    if _search_path[0] != sys.path:
+        entries = list(sys.path)
+        _search_path = (entries, frozenset(os.path.abspath(e or ".") for e in entries))
+    if path not in _search_path[1]:
         return False
     frame = sys._getframe(2)
     while frame is not None:
@@ -871,10 +889,7 @@ def start() -> None:
     on_spawn = _spawned
     install_popen()
     os.register_at_fork(after_in_child=_forked)
-    for module_name, name in (
-        ("multiprocessing.util", "spawnv_passfds"),
-        ("_interpreters", "create"),
-    ):
+    for module_name, name in UNAUDITED_STARTS:
         _flag_calls(module_name, name)
     recording = True
 
