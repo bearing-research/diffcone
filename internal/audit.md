@@ -296,3 +296,20 @@ All fixed: IDX-7, IDX-8, PLN-6 (static batch), REC-8, REC-10 (recorder batch), D
 | V2 | Escalating a module (EVP-2/EVP-6's `_import_writes`) followed every non-inert `def` body as import-time code; a changed test-data list in a module with a fixture writing shared state selected 6 175 of strata's 6 231 tests. | fixed: a `def` whose header runs no project code (`quiet_header`: `pytest.fixture`, `pytest.mark.*`, `functools`, `contextlib`, `property`, with arguments, defaults and annotations that call nothing) is not followed |
 | V3 | REC-4's `environments()` compared the prefix with case-folded roots without folding it on Windows: the environment was not found. | fixed |
 | V4 | With V1 and V2 fixed, strata's first replayed commit selects 2 693 of 6 231 (43 %) where 0.3 selected 582 (9.3 %): 2 103 tests only through `lookup_site`. strata's run-time module handles (`_deserialize_module`, `_ensure_cell_module`) unbind every literal table (PLN-2), so `strata.__getattr__`'s lazy table can import any module, and EVP-3 lets it (and `GCTracker`'s graph walk) see a test module's changed name. | open: precision, a decision for the user |
+
+## Known after round 3 (W)
+
+What the round-3 fixes noticed outside their scope, and V4. Each is
+reproduced before it is fixed; a plausible one that does not reproduce is
+closed with the scenario that shows it.
+
+| id | finding | status |
+|---|---|---|
+| W1 | V4: a module named at run time (an unbounded `import_module(name)`, `sys.modules.get(n)`, `exec` into a module's `__dict__`) is taken to be any module: it unbinds every literal table and lets lookup sites see any test module. Precision: strata 9.3 % -> 43 % on one commit. Bound what such a handle can be instead. | open |
+| W2 | An attribute read off a resolved class that nothing defines (`C.__type_params__`, `C.__mro__`, `C.__name__`, `C.nothing`) records no edge to the class, only a name match (none for dunders): what is reached only through the class is missed (plausible). | open |
+| W3 | Static planning does not see a test running a project script or module as a subprocess (`[sys.executable, "scripts/gen.py"]`, `-m pkg.tool`): a change to it selects nothing. | open |
+| W4 | Writes through an argument or receiver at import are not modelled (`set_mode(REG)` where the callee mutates its parameter), in both modes; and statically, a body change in a function that calls a writer through a helper with another argument (`_store(m + "!")`) misses the readers. | open |
+| W5 | Evidence mode: `lifecycle_changed` (a target whose fixtures, hooks or plugins change without its code changing) is static only; in-process code a hook calls with no static path to a test may be planned only by static escalation (plausible). | open |
+| W6 | A parameter whose name matches a module-level literal may be read as that literal (`_string_candidates` falls back to the module table) (plausible). | open |
+| W7 | EVP-4's residual: a module-level cache filled by an earlier test (`get()` storing `compute()`'s result) hides `compute` from a later test's record in every order, so a change to `compute` misses it, also after `collect --reverse-check`. | open |
+| W8 | Text: a module seeded by an added member is explained as `uses a dynamic import/attribute access ()`; `collection_check.py` cannot read a collection when the project's `addopts` add `-q` (coverage.py); CLAUDE.md's indexer layout omits `uses.py`. | open |
