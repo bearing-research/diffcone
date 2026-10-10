@@ -226,15 +226,17 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
     variable on to a callee."""
     func = node.func
     indexer = collector.indexer
-    canonical = collector._canonical_name(parts) if parts is not None else None
     if (
         parts is not None
-        and canonical in ARGUMENT_MUTATORS
         and node.args
-        and (
-            len(parts) > 1
-            or canonical != parts[0]  # imported: ``from heapq import heappush``
-            or not collector._is_shadowed(parts[0])  # the builtin ``setattr``
+        and any(
+            canonical in ARGUMENT_MUTATORS
+            and (
+                len(parts) > 1
+                or canonical != parts[0]  # imported: ``from heapq import heappush``
+                or not collector._is_shadowed(parts[0])  # the builtin ``setattr``
+            )
+            for canonical in collector._canonical_names(parts)
         )
     ):
         first = node.args[0]

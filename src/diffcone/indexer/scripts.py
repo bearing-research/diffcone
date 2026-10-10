@@ -242,7 +242,7 @@ def _is_interpreter(collector: _ReferenceCollector, expr: ast.expr) -> bool:
         first = text.split()[0] if text.split() else ""
         return bool(_PYTHON.match(first))
     parts = _flatten_chain(expr)
-    return parts is not None and collector._canonical_name(parts) == "sys.executable"
+    return parts is not None and "sys.executable" in collector._canonical_names(parts)
 
 
 def _names_py_file(expr: ast.expr) -> bool:
@@ -278,15 +278,22 @@ def _module_file(collector: _ReferenceCollector, expr: ast.expr) -> bool:
     parts = _flatten_chain(expr)
     if parts is None or len(parts) < 2 or parts[-1] != "__file__":
         return False
-    node = collector.indexer.resolve_chain(parts[:-1], collector.scope)
+    # Each module the name may be: on a name bound several ways (an import
+    # in ``try`` and another in ``except``), any of them is the one run.
+    indexer = collector.indexer
+    node = indexer.resolve_chain(parts[:-1], collector.scope)
+    modules: list[str] = []
     if isinstance(node, Resolved):
-        symbol = collector.indexer.index.symbols.get(node.symbol)
+        symbol = indexer.index.symbols.get(node.symbol)
         if symbol is not None and symbol.kind == MODULE and not node.detail:
-            node = ModuleNode(symbol.id)
-    if isinstance(node, ModuleNode):
-        scope = collector.indexer.scopes.get(node.module)
+            modules.append(symbol.id)
+        modules += [*node.also, *node.alternatives]
+    elif isinstance(node, ModuleNode):
+        modules += [node.module, *node.alternatives]
+    for module in modules:
+        scope = indexer.scopes.get(module)
         if scope is not None:
-            collector.indexer.out.script_paths.add((collector.source, scope.path))
+            indexer.out.script_paths.add((collector.source, scope.path))
     return True
 
 
@@ -606,7 +613,7 @@ def observe_shell(collector: _ReferenceCollector, node: ast.Constant | ast.Joine
             and parent.args
             and parent.args[0] is node
             and (parts := _flatten_chain(parent.func)) is not None
-            and collector._canonical_name(parts) in SHELL_CALLS
+            and collector._canonical_names(parts) & SHELL_CALLS
         ):
             return
         text = node.value if isinstance(node.value, str) else ""

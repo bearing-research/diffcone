@@ -346,7 +346,7 @@ def _timeraw_deps(
                 return [TIMERAW_UNANALYSED]
             try:
                 code = ast.parse(textwrap.dedent(value.value))
-            except SyntaxError:
+            except (SyntaxError, ValueError, RecursionError):
                 return [TIMERAW_UNANALYSED]
             for inner in ast.walk(code):
                 names = (
@@ -465,9 +465,11 @@ def discover_asv(
             queue.extend((b, found_mod) for b in found_cls.bases)
         return chain
 
-    for path in failed:
+    for path, why in failed.items():
         result.notes.append(
-            DiscoveryNote(RUNNER, "unparsed_file", f"{path}: not parsed or outside source roots")
+            DiscoveryNote(
+                RUNNER, "unparsed_file", f"{path}: {why or 'cannot be named from any source root'}"
+            )
         )
 
     def qualified(*names: str) -> str:

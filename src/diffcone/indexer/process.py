@@ -9,7 +9,10 @@ writing symbols are recorded (``SourceIndex.process_writes``) and discovery
 makes the code pytest runs before every test that can reach one a
 dependency of every test (pytest_static).
 
-What is recognised, by canonical dotted name through the scope's imports:
+What is recognised, by canonical dotted name through the scope's imports
+(each name a chain may stand for: every binding of an import in ``try`` and
+another in ``except``, and what a star import may bind; a ``with`` puts the
+state back only when every name is the restoring one):
 
 * a store, ``del`` or augmented assignment into ``STATE_OBJECTS`` or below
   them (``os.environ[k] = v``, ``sys.path[:0] = [...]``,
