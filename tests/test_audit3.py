@@ -283,3 +283,48 @@ def test_ci8_a_resolved_command_is_joined_as_windows_reads_it(monkeypatch):
     joined = execution.join_command([r"C:\Program Files\venv\python.exe", "-m", "pytest"])
     assert joined == r'"C:\Program Files\venv\python.exe" -m pytest'
     assert "'" not in execution.join_command([r"C:\a b\python.exe"])
+
+
+# W8: every selection is explained by its path, not a placeholder.
+
+ASV_CONF = '{"version": 1, "benchmark_dir": "benchmarks"}'
+
+DOCS = {
+    "asv.conf.json": ASV_CONF,
+    "pkg/__init__.py": "",
+    "pkg/deco.py": (
+        "def doc(**kw):\n    def wrap(f):\n        f.__doc__ = f.__doc__.format(**kw)\n"
+        "        return f\n    return wrap\n"
+    ),
+    "pkg/a.py": (
+        "from pkg.deco import doc\n\n\n@doc(klass='Frame')\ndef reduce():\n"
+        '    """Reduce a {klass}."""\n    return 1\n\n\n'
+        'def greet():\n    """Hello."""\n    return 2\n\n\n'
+        'def plain():\n    """Plain."""\n    return 3\n'
+    ),
+    "tests/__init__.py": "",
+    "tests/test_reduce.py": "from pkg.a import reduce\n\n\ndef test_reduce():\n    reduce()\n",
+    "tests/test_doc.py": (
+        "from pkg.a import greet\n\n\ndef test_doc():\n    assert greet.__doc__ == 'Hello.'\n"
+    ),
+    "tests/test_plain.py": "from pkg.a import plain\n\n\ndef test_plain():\n    plain()\n",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench.py": "def time_noop():\n    pass\n",
+}
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("Reduce a {klass}.", "Reduce a {klass} along {axis}."),  # a decorator reads it
+        ('"""Hello."""', '"""Hi."""'),  # a test reads ``greet.__doc__``
+    ],
+)
+def test_w8_a_docstring_seed_is_explained_by_its_steps(repo, old, new):
+    base = repo.commit(DOCS)
+    head = repo.commit({"pkg/a.py": DOCS["pkg/a.py"].replace(old, new)})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    reasons = [r for d in plan.decisions if d.selected for r in d.reasons]
+    assert reasons
+    assert not any("dynamic import/attribute access ()" in r.detail for r in reasons)
+    assert all(r.rule == "dependency" and r.changed_symbol for r in reasons)

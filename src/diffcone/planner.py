@@ -614,6 +614,9 @@ def _sides(change: SymbolChange) -> tuple[str, ...]:
 # symbol when it is imported (_runs_at_import), and import-time code calls a
 # function (_import_call_effects).
 RUNS_AT_IMPORT = "runs_at_import"
+# A symbol reading docstrings (``f.__doc__``) of something whose docstring
+# changed.
+READS_DOCSTRING = "reads_docstring"
 CALLED_AT_IMPORT = "called_at_import"
 MUTATED_BY = "mutated_by"
 # What a call made at import can run: what the caller references (a
@@ -1062,6 +1065,10 @@ def plan_from_indexes(
                 if node not in mode:
                     mode[node] = BEHAVIOR
                     via[node] = None
+                    if node != change.id:
+                        step = Step(node, change.id, RUNS_AT_IMPORT, "its decorator reads the "
+                                    "docstring", _sides(change))  # fmt: skip
+                        seed_paths[node] = ((step,), RULE_DEPENDENCY)
                     queue.append(node)
     if documented:
         for index in (base, head):
@@ -1075,6 +1082,10 @@ def plan_from_indexes(
                 if reader not in mode and referenced & documented:
                     mode[reader] = BEHAVIOR
                     via[reader] = None
+                    target = min(referenced & documented)
+                    sides = _sides(next(c for c in seeded if c.id == target))
+                    step = Step(reader, target, READS_DOCSTRING, "", sides)
+                    seed_paths[reader] = ((step,), RULE_DEPENDENCY)
                     queue.append(reader)
     seed_reasons = dict(seeds.nodes) if seeds is not None else {}
     for node in sorted(seed_reasons):

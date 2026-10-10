@@ -137,11 +137,12 @@ def collected(repo: Path, command: str, clean_addopts: bool = False) -> tuple[se
     the fiddly part: ``--collect-only -q`` lists node ids, but a project whose
     own ``addopts`` carry ``-v`` gets the tree format instead, and there one
     more ``-q`` is what lists them (while on a quiet project that same second
-    ``-q`` prints per-file counts). So: try one, and if nothing that looks
-    like a node id comes back, try two."""
+    ``-q`` prints per-file counts). A project whose ``addopts`` carry ``-q``
+    (coverage.py) lists them with none of ours. So: try one, and if nothing
+    that looks like a node id comes back, two, then none."""
     extra = ["-o", "addopts="] if clean_addopts else []
     log = ""
-    for quiet in (["-q"], ["-q", "-q"]):
+    for quiet in (["-q"], ["-q", "-q"], []):
         argv = shlex.split(command) + ["--collect-only", "--no-header", *quiet, *extra]
         proc = subprocess.run(argv, cwd=repo, capture_output=True, text=True)
         log = proc.stdout + proc.stderr
