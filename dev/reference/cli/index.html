@@ -1225,9 +1225,12 @@ repository, and with <code>3</code> when discovery may be incomplete (unless
 <p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
 <code>1</code> when some were missed, <code>2</code> on errors. <code>check</code> exits <code>0</code> when every new
 failure of the full run was selected, <code>1</code> when the plan missed one, <code>2</code>
-when an input cannot be read. <code>collect</code>, <code>prune</code> and <code>evidence</code> exit <code>0</code>
-on success (<code>collect</code> records whatever the suite's own results) and <code>2</code> on
-errors.</p>
+when an input cannot be read. <code>report</code> exits <code>0</code> when the runs it read
+show no problem, <code>1</code> when they show one (a miss, a check that reached no
+verdict, a selected test pytest did not collect, an artifact it could not
+read), <code>2</code> on errors. <code>collect</code>, <code>prune</code> and
+<code>evidence</code> exit <code>0</code> on success (<code>collect</code> records whatever the suite's own
+results) and <code>2</code> on errors. An internal error exits <code>2</code> in every command.</p>
 <h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>
 <p>Produce a selection plan between two snapshots (revisions, INDEX or WORKTREE).</p>
 <p>Compare two snapshots and report which targets are affected. A snapshot is a git revision, INDEX (staged content) or WORKTREE (files on disk). The report states exactly which kind was read. Targets come from --targets, from --discover, or both. Project code is never executed.</p>
@@ -1421,7 +1424,7 @@ errors.</p>
 <tr>
 <td><code>--collect</code></td>
 <td></td>
-<td>With --evidence: record the selected tests too and advance the recording to head (their new records, the old ones for every other test); needs a clean checkout of head and the pytest arguments the recording was made with.</td>
+<td>With --evidence: record the selected tests too and advance the recording to head (their new records, the old ones for every other test); needs a clean checkout of head and the command, pytest arguments and source roots the recording was made with.</td>
 </tr>
 <tr>
 <td><code>runner_args ...</code> (after <code>--</code>)</td>
@@ -1802,7 +1805,7 @@ errors.</p>
 <tr>
 <td><code>--source-root</code> <code>DIR[=PREFIX]</code></td>
 <td></td>
-<td>As for plan (repeatable; default: .).</td>
+<td>The roots you plan with (repeatable; default: .); entries for other roots are deleted.</td>
 </tr>
 <tr>
 <td><code>--cache-dir</code> <code>CACHE_DIR</code></td>

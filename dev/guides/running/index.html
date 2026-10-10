@@ -1027,7 +1027,13 @@ in <a href="../planning/#source-roots">planning</a>.</p>
 <p><code>run</code> builds the same plan as <code>diffcone plan</code>, then runs only the selected
 tests. Everything after <code>--</code> is passed to pytest. pytest collects your
 suite as usual and a small plugin keeps the selected tests, so conftests
-and plugins load exactly as in a full run.</p>
+and plugins load exactly as in a full run. Tests pytest collects that the
+plan doesn't know about (from a plugin's own collection, for example) are
+kept too.</p>
+<p><code>run</code> exits with pytest's exit code. If a selected test wasn't collected,
+it exits <code>3</code>, since the run may have skipped tests; if nothing ran because
+nothing was selected, it exits <code>0</code> (see
+<a href="../../reference/cli/#exit-codes">exit codes</a>).</p>
 <p>Discovery reads the same pytest options the run will use: those after
 <code>--</code>, those written into <code>--command</code> (<code>uv run pytest -p tests.plugin</code>),
 and the <code>PYTEST_ADDOPTS</code> and <code>PYTEST_PLUGINS</code> environment variables. When
@@ -1061,7 +1067,9 @@ run. It doesn't run anything, so you can add it next to an existing CI job:</p>
 selected, and exits with <code>1</code> if there is one. Options:</p>
 <ul>
 <li><code>--baseline base.xml</code> takes a run from before the change. Tests that
-  failed there too are reported as already failing, not as misses.</li>
+  failed there too are reported as already failing, not as misses. Each
+  parametrized case counts on its own: a case that failed at the baseline
+  doesn't excuse a new failure of another case.</li>
 <li><code>--run NAME=JUNIT</code> adds a selective run to compare on the same failures:
   diffcone's own run of the plan, or another test-selection tool's. Name
   diffcone's own run <code>diffcone</code> (<code>--run diffcone=diffcone.xml</code>): a new
@@ -1081,8 +1089,10 @@ run), it also records which tests executed changed code, and reports any
 such test that wasn't selected.</p>
 <p><code>diffcone corpus --range A..B</code> validates every commit in a range and
 summarises the results: how many failures were missed and what share of
-tests each plan would have skipped. Use <code>--jobs N</code> to validate several
-commits in parallel.</p>
+tests each plan would have skipped. It skips commits that change no <code>.py</code>
+file unless you pass <code>--all-commits</code>. Use <code>--jobs N</code> to validate several
+commits in parallel. Both commands take <code>--evidence</code> to validate plans made
+from a recording.</p>
 <p>Tips for both commands:</p>
 <ul>
 <li>Pass the source roots that contain your package, so the tests run

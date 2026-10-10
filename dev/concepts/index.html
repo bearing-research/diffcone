@@ -1047,9 +1047,10 @@ change to any of these can affect the target.</p>
 <h2 id="symbols-and-changes">Symbols and changes<a class="headerlink" href="#symbols-and-changes" title="Permanent link">&para;</a></h2>
 <p>diffcone reads every Python module under your
 <a href="../guides/planning/#source-roots">source roots</a> and records its
-<strong>symbols</strong>: modules, classes, functions and methods, each named the way
-it is imported (<code>calc.ops.mul</code>). It compares the two snapshots symbol by
-symbol, and classifies each difference:</p>
+<strong>symbols</strong>: modules, classes, functions, methods and module-level
+variables, each named the way it is imported (<code>calc.ops.mul</code>). It compares
+the two snapshots symbol by symbol, and classifies each difference (the
+report's names in brackets):</p>
 <table>
 <thead>
 <tr>
@@ -1059,27 +1060,43 @@ symbol, and classifies each difference:</p>
 </thead>
 <tbody>
 <tr>
-<td>added or deleted</td>
+<td>added or deleted (<code>added</code>, <code>deleted</code>)</td>
 <td>A new helper function, a removed method.</td>
 </tr>
 <tr>
-<td>body changed</td>
+<td>body changed (<code>body_changed</code>)</td>
 <td>The code inside a function changed.</td>
 </tr>
 <tr>
-<td>definition changed</td>
-<td>Its signature, defaults, decorators or class bases changed.</td>
+<td>definition changed (<code>definition_changed</code>)</td>
+<td>Its parameters, defaults, decorators or class bases changed.</td>
 </tr>
 <tr>
-<td>dependencies changed</td>
-<td>It now calls or imports something different, or a name it uses now resolves (a missing import was added).</td>
+<td>annotations changed (<code>annotations_changed</code>)</td>
+<td>Only a function's type annotations changed.</td>
+</tr>
+<tr>
+<td>dependencies changed (<code>dependencies_changed</code>)</td>
+<td>It now calls or imports something different, or no longer uses something it did.</td>
+</tr>
+<tr>
+<td>dependencies added (<code>dependencies_added</code>)</td>
+<td>A name it uses now resolves to something (a missing import was added).</td>
+</tr>
+<tr>
+<td>imports added (<code>imports_added</code>)</td>
+<td>A module gained imports and nothing else. This selects nothing by itself; the code that uses the new names has changed too.</td>
+</tr>
+<tr>
+<td>docstring changed (<code>docstring_changed</code>)</td>
+<td>Only its docstring changed.</td>
 </tr>
 </tbody>
 </table>
 <p>Formatting and comments are not changes: moving a function down the file or
-adding blank lines selects nothing. Neither is a docstring edit, unless code
-uses the docstring: a decorator that rewrites it, or code that reads
-<code>__doc__</code>.</p>
+adding blank lines selects nothing. A docstring edit counts only where the
+docstring is used: a doctest, a decorator that rewrites it, or code that
+reads <code>__doc__</code>.</p>
 <h2 id="from-a-change-to-a-test">From a change to a test<a class="headerlink" href="#from-a-change-to-a-test" title="Permanent link">&para;</a></h2>
 <p>diffcone links symbols by the calls, references and imports it can resolve
 in the code. To plan, it starts from each test and follows those links: a
@@ -1101,13 +1118,14 @@ selects the tests that used it.</p>
 <h2 id="when-diffcone-cant-tell">When diffcone can't tell<a class="headerlink" href="#when-diffcone-cant-tell" title="Permanent link">&para;</a></h2>
 <p>Python is dynamic, and not every relationship can be read from the source:
 <code>getattr</code> with a computed name, a module imported by a name built at run
-time, a plugin registered through entry points. diffcone does not guess.
+time, an object loaded with <code>pickle</code>. diffcone does not guess.
 When it cannot bound what a change reaches, it selects more tests and
 records why in the report's <code>fallback_decisions</code>. If an error stops the
 analysis altogether (a file that doesn't parse, for example), it selects
 every target.</p>
-<p>You can also tell diffcone about dependencies it cannot see in
-<a href="../reference/declarations/"><code>diffcone.toml</code></a>.</p>
+<p>Some dependencies leave no trace in the code at all, such as a plugin
+registered through entry points or a handler named in a configuration
+file. Tell diffcone about them in <a href="../reference/declarations/"><code>diffcone.toml</code></a>.</p>
 <h2 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h2>
 <p>Reading the code works well when changes stay local. In a large library
 where nearly every module imports a few central ones, a change to a

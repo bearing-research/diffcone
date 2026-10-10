@@ -948,11 +948,14 @@ selected test comes with the reason it was selected.</p>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="go">selected targets (2):</span>
 <a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="go">  pytest: tests/test_calc.py::test_mul</span>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="go">    - dependency: calc.ops.mul body_changed</span>
-<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">  pytest: tests/test_calc.py::test_square</span>
-<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">    - dependency: calc.ops.mul body_changed</span>
-<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
-<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">unselected targets (1):</span>
-<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="go">  pytest: tests/test_calc.py::test_add</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="go">      target:pytest:tests/test_calc.py::test_mul -[entry]-&gt; tests.test_calc.test_mul -[references]-&gt; calc.ops.mul</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="go">  pytest: tests/test_calc.py::test_square</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="go">    - dependency: calc.ops.mul body_changed</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="go">      target:pytest:tests/test_calc.py::test_square -[entry]-&gt; tests.test_calc.test_square -[references]-&gt; calc.ops.square -[references]-&gt; calc.ops.mul</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="go">unselected targets (1):</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="go">  pytest: tests/test_calc.py::test_add</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="go">...</span>
 </code></pre></div>
 <h2 id="why-diffcone">Why diffcone<a class="headerlink" href="#why-diffcone" title="Permanent link">&para;</a></h2>
 <dl>

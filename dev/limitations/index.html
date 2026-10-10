@@ -860,67 +860,74 @@ the whole importing module; adding one affects only the code that uses
 the new name, unless the imported module runs code of its own that
 the importing module did not run before.</dd>
 <dt><strong>Calls through objects of unknown type are matched by name.</strong></dt>
-<dd>diffcone doesn't infer types. <code>self.method()</code> and <code>cls.method()</code> are
+<dd>
+<p>diffcone doesn't infer types. <code>self.method()</code> and <code>cls.method()</code> are
 resolved through the class hierarchy, but a call like <code>obj.run()</code> on an
 object of unknown type is matched against every method named <code>run</code>,
 and against every module-level function, class or variable named <code>run</code>
 in a module such an object can be: one your code passes around as a
 value, gets by name (<code>importlib.import_module</code>, <code>sys.modules</code>, a string
 naming it), or one pytest hands out (test modules, conftests). So it's
-selected whenever any of those changes. Instance attributes are
-resolved only when every assignment is a simple one in <code>__init__</code>; a
-method called on one (<code>self.client.get()</code>) is known to be the method
-of a class only when every assignment of the attribute creates an
-instance of that class (or of a third-party one).</dd>
-<dt><strong>Plugins that collect files of their own.</strong></dt>
-<dd>diffcone reports the collecting plugins it recognises from your
-configuration. A plugin that collects files just by being installed is
-invisible to a plan from the code. Whenever <code>run</code> starts pytest, it
-runs every collected test the plan doesn't know, and a recording
-captures what pytest really collected.</dd>
+selected whenever any of those changes.</p>
+<p>An instance attribute is followed only when every assignment of it is
+in <code>__init__</code> and assigns a parameter, a string, or one of your
+functions or classes by name. An attribute that holds an object
+(<code>self.client = Client()</code>) is not typed for calls: <code>self.client.get()</code>
+is matched against every method named <code>get</code>.</p>
+</dd>
 <dt><strong>Dynamic code is bounded by imports, if at all.</strong></dt>
-<dd>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
+<dd>
+<p>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
 with a computed name is treated as affected by any change in the
 modules its module imports, and in the modules of code that stores
-objects on one of those modules. On a library module (<code>getattr(datetime,
-name)</code>), the lookup is affected by any change once your code stores
-something there. A patch that ends with the test making it doesn't
-count: <code>monkeypatch.setattr</code> on pytest's fixture, a <code>with mock.patch(...)</code>
-block, a <code>@mock.patch(...)</code> decorator. One that may outlast the test
-does: <code>patch(...).start()</code>, a patcher kept for later, a <code>MonkeyPatch()</code>
-of your own, or a <code>with mock.patch(...)</code> around a <code>yield</code> in a fixture.
-A module imported by a computed name
-(<code>importlib.import_module(name)</code>), an object unpickled with
-<code>pickle.loads</code>, and a module loaded from a file whose path is computed
-(<code>importlib.util.spec_from_file_location</code>) can be affected by any
-change at all.
-A name taken from a dict, list or set written in the code
-(<code>getattr(handlers, NAMES[key])</code>, the export table of a lazy
-<code>__getattr__</code>; not a parameter or local variable that happens to share
-the table's name) is bounded by it only while nothing can change it: once
-the table, or the module holding it, is modified, passed to other code,
-or reached through <code>globals()</code>, <code>vars()</code>, <code>sys.modules</code> or <code>exec</code>, the
-lookup counts as dynamic. A module your code gets by a name it computes
-counts as any module, so passing it on or writing to it makes every such
-table dynamic, unless the name starts with fixed text
-(<code>f"plugins.{name}"</code> is one of the <code>plugins.</code> modules) or the module is
-a new one (<code>types.ModuleType(name)</code>) that isn't installed in
-<code>sys.modules</code> under a name of yours. The same goes for a function's
-<code>__globals__</code>, a frame's <code>f_globals</code>, what <code>pickle.loads</code>,
-<code>pkgutil.resolve_name</code> or <code>gc.get_objects()</code> hand back, and a copy made
-with <code>importlib.util.module_from_spec</code> (which is the module whose file it
-loads). Passing a module on also passes on whatever its imports bind
-(<code>api.core.TABLE</code>). Code that passes a module to other
-code (<code>read(ops, name)</code>) depends on everything in that module and on
-what its imports bind, as it does on every member of a class whose
-instances it passes on.
-A lookup on a standard-library or third-party
-module (<code>getattr(logging, name)</code>) is bounded unless your code may store
-something on that module, directly, by handing the module to other
-code, or by putting an object in <code>sys.modules</code> under its name; then any
-change can affect it. Code that puts an object in <code>sys.modules</code> for
-good under a computed name may replace any of your modules, so without
-a recording every test that imports one of them depends on that code.</dd>
+objects on one of those modules. Some code widens that bound:</p>
+<ul>
+<li><strong>Lookups on a library module.</strong> <code>getattr(logging, name)</code> is bounded
+  unless your code may store something on that module: directly, by
+  handing the module to other code, or by putting an object in
+  <code>sys.modules</code> under its name. Then any change can affect the lookup.</li>
+<li><strong>Patches in tests.</strong> A patch undone when the test ends doesn't count
+  as storing: a method of pytest's <code>monkeypatch</code> fixture or
+  pytest-mock's <code>mocker</code> in the test or fixture that requests it, a
+  <code>with mock.patch(...)</code> or <code>with MonkeyPatch.context()</code> block, a
+  <code>@mock.patch(...)</code> decorator. A patch that may outlast the test
+  does: <code>patch(...).start()</code>, a patcher kept for later, a
+  <code>MonkeyPatch()</code> of your own, <code>monkeypatch</code> handed to a helper
+  function, or a <code>with mock.patch(...)</code> around a <code>yield</code> in a fixture.</li>
+<li><strong>Code loaded at run time.</strong> A module imported by a name nothing
+  bounds (<code>importlib.import_module(name)</code>), an object unpickled with
+  <code>pickle.loads</code>, and a module loaded from a file whose path is
+  computed (<code>importlib.util.spec_from_file_location</code>) can be affected
+  by any change at all. A name that starts with fixed text
+  (<code>f"plugins.{name}"</code>) is bounded to the modules it can name.</li>
+<li><strong>Lookup tables.</strong> A name taken from a dict, list or set written in
+  the code (<code>getattr(handlers, NAMES[key])</code>, the export table of a
+  lazy <code>__getattr__</code>) is bounded by that table only while nothing can
+  change it. Once the table, or the module holding it, is modified,
+  passed to other code, or reached through <code>globals()</code>, <code>vars()</code>,
+  <code>sys.modules</code> or <code>exec</code>, the lookup counts as dynamic. A parameter or
+  local variable that happens to share the table's name isn't bounded
+  by it.</li>
+<li><strong>Modules obtained at run time.</strong> A module your code gets by a name
+  it computes counts as any of your modules, so passing it on or
+  writing to it makes every lookup table dynamic. The same goes for a
+  function's <code>__globals__</code>, a frame's <code>f_globals</code>, and what
+  <code>pickle.loads</code>, <code>pkgutil.resolve_name</code> or <code>gc.get_objects()</code> hand
+  back. Two exceptions: a name that starts with fixed text, and a new
+  module (<code>types.ModuleType(name)</code>) that isn't installed in
+  <code>sys.modules</code> under a name of yours. A copy made with
+  <code>importlib.util.module_from_spec</code> counts as the module whose file it
+  loads.</li>
+<li><strong>Passing a module on.</strong> Code that passes a module to other code
+  (<code>read(ops, name)</code>) depends on everything in that module and on what
+  its imports bind (<code>api.core.TABLE</code>), as it depends on every member of
+  a class whose instances it passes on.</li>
+<li><strong>Replacing modules.</strong> Code that puts an object in <code>sys.modules</code> for
+  good under a computed name may replace any of your modules, so
+  without a recording every test that imports one of them depends on
+  that code.</li>
+</ul>
+</dd>
 <dt><strong>Python programs a test starts.</strong></dt>
 <dd>A test that runs a script or module of your project in a new process
 (<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
@@ -938,18 +945,34 @@ starts.</dd>
 function that changes it (<code>register(REGISTRY)</code>, <code>registry.add(x)</code>), is
 a dependency of every reader of that object. A change to a function
 also reaches the readers of whatever the functions it calls change in
-place. An object stored away and changed later under another name
-(<code>self.store = store</code>, then <code>self.store[k] = v</code>) isn't followed.</dd>
+place. Not followed: an object stored away and changed later under
+another name (<code>self.store = store</code>, then <code>self.store[k] = v</code>), an
+object a function returns that its caller then changes, and a library
+function that changes an argument you pass it.</dd>
+<dt><strong>Code that changes the process while pytest collects reaches every test.</strong></dt>
+<dd>A <code>conftest.py</code>, a test module or a module they import that sets an
+environment variable, extends <code>sys.path</code> or configures a library
+(<code>warnings.filterwarnings</code>, <code>logging.basicConfig</code>) when it's imported,
+or a collection hook that does, can change what any later test sees.
+Such code is a dependency of every test
+(<a href="../reference/discovery/#pytest">static discovery</a> lists what is
+recognised). diffcone assumes a test doesn't depend on state an
+earlier test left behind.</dd>
 <dt><strong>A file that doesn't parse selects everything.</strong></dt>
-<dd>Any file under your source roots that isn't valid Python 3 or isn't
-UTF-8 is an analysis error, even a test data file nothing imports.
-Choose source roots that leave such files out.</dd>
+<dd>Any file under your source roots that isn't valid Python 3, or can't be
+decoded in its declared encoding (UTF-8 unless the file says
+otherwise), is an analysis error, even a test data file nothing
+imports. Choose source roots that leave such files out.</dd>
 <dt><strong>Discovery reads the source, so it can't see what plugins do.</strong></dt>
 <dd>A pytest plugin that collects tests by its own rules, or a test base
 class outside your source roots, can mean diffcone's target list is
 incomplete. diffcone reports it and the plan exits with code <code>3</code>
 (<a href="../reference/discovery/#when-the-target-list-may-be-short">static discovery</a>).
-Parametrized tests are selected or skipped as a whole.</dd>
+A plugin that collects files just by being installed is invisible to a
+plan from the code. Whenever <code>run</code> starts pytest, it runs every
+collected test the plan doesn't know, and a recording captures what
+pytest really collected. Parametrized tests are selected or skipped as
+a whole.</dd>
 <dt><strong>Uncommitted analysis is only as stable as your working tree.</strong></dt>
 <dd>A plan of <code>WORKTREE</code> or <code>INDEX</code> describes the files at the moment you
 planned. The report always marks such plans as uncommitted.</dd>

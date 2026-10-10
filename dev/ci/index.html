@@ -1236,7 +1236,9 @@ using the previous one.</p>
 <a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">          </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-results</span>
 <a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-results</span>
 </code></pre></div>
-<p>The job fails when a selected test fails, like any test job. The plan and
+<p>The job fails when a selected test fails, like any test job. It also fails
+when a selected test wasn't collected by pytest, and when discovery may be
+incomplete (unless you set <code>allow-incomplete-discovery: true</code>). The plan and
 the run's JUnit XML are written to <code>diffcone-results/</code>; upload them with
 <code>if: always()</code> so they're kept when tests fail.</p>
 <div class="admonition important">
@@ -1245,7 +1247,8 @@ the run's JUnit XML are written to <code>diffcone-results/</code>; upload them w
 environment must match: the same Python version and installed packages.
 Installing from a lock file makes this automatic. When the environment
 differs, diffcone runs a plan from the code instead of from the
-recording; when the pull request changes the lock file or another
+recording (or every test, if that plan's discovery may be incomplete);
+when the pull request changes the lock file or another
 dependency, build or CI file diffcone recognises (see
 <a href="../reference/discovery/">discovery</a>), it runs every test.</p>
 </div>
@@ -1273,7 +1276,8 @@ write JUnit XML (<code>--junitxml=full.xml</code>) and upload it, then add:</p>
 <p>The check writes its result to the job summary. A miss is a new failure
 of the full run that the plan didn't select, or that diffcone's own run
 didn't execute. It doesn't fail the workflow unless you set
-<code>fail-on-miss: true</code>. Tests that already failed in
+<code>fail-on-miss: true</code>, but an error in the check itself (an input it can't
+read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses.</p>
 <h2 id="or-record-on-every-push-to-the-default-branch">Or: record on every push to the default branch<a class="headerlink" href="#or-record-on-every-push-to-the-default-branch" title="Permanent link">&para;</a></h2>
 <p>If your default branch already runs the full suite on every push, that run
@@ -1320,14 +1324,16 @@ test diffcone should have selected fails the default branch's workflow.</p>
 <li>compares the plan with the full run. A new failure the plan didn't
    select is run again, with the same pytest options. If it fails again,
    it is a miss, and the job fails. If it passes the second time, it is
-   reported as flaky. Failures the recorded run already had are not
-   misses;</li>
+   reported as flaky. Only a test can be run again: a file that failed to
+   collect, or a failure that matches no target, is a miss straight away.
+   Failures the recorded run already had are not misses;</li>
 <li>saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.</li>
 </ol>
 <p>The check is skipped, with a note, when there is nothing to compare with:
 no recording yet, a recording diffcone can't use (made with other source
-roots, for example), or a commit with no parent. The recording is still
+roots, or for a commit that can't be fetched or isn't from before the
+pushed commit, for example), or a commit with no parent. The recording is still
 made and saved.</p>
 <p>With <code>fail-on-test-failure: true</code> a failing test fails the job too, as a
 plain test run would, after the recording is saved. A test file that can't
@@ -1367,7 +1373,8 @@ issue labelled <code>diffcone-report</code>, and opens one issue, labelled
 upload the results of <code>run</code> and <code>record</code> (as in the workflows above) under
 a name that starts with <code>diffcone-</code> and differs per job, and per cell of a
 matrix: <code>diffcone-${{ matrix.os }}-py${{ matrix.python-version }}</code>, for
-example. The report has one row per name.</p>
+example. The report has one row per name; when a job was re-run, it reads
+the latest upload.</p>
 <p>Each report covers the runs that completed since the last successful
 report that posted started, so a run still going when one report starts is
 in the next. A report with both <code>report-label</code> and <code>miss-label</code> empty
@@ -1411,12 +1418,12 @@ one directory per run and run <code>diffcone report</code>:</p>
 </code></pre></div>
 <h2 id="how-the-cache-is-shared">How the cache is shared<a class="headerlink" href="#how-the-cache-is-shared" title="Permanent link">&para;</a></h2>
 <p>Each recording is saved with <code>actions/cache</code> under its own key,
-<code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run id&gt;-&lt;attempt&gt;</code>, and pull requests restore the newest one
-with their prefix (<code>diffcone-ubuntu</code> never restores a recording of
-<code>diffcone-ubuntu-py312</code>). If a recording's commit is no longer on the
-branch (after a force push), the run plans without it and says so. A
-shallow checkout is deepened until the base revision is there. GitHub lets pull requests,
-including those from forks, read caches saved on the default branch but
+<code>&lt;key-prefix&gt;--&lt;commit&gt;-&lt;run id&gt;-&lt;attempt&gt;</code>, and pull requests restore the
+newest one with their prefix (<code>diffcone-ubuntu</code> never restores a recording of
+<code>diffcone-ubuntu-py312</code>). If a recording's commit can no longer be fetched
+(after a force push), the run plans without it and says so. A shallow
+checkout is deepened until the base revision is there. GitHub lets pull
+requests, including those from forks, read caches saved on the default branch but
 never write them, so a pull request can't change the recording. The
 <code>cache-mode</code> settings above give each job only the access it needs.</p>
 <p>The saved directory also holds diffcone's analysis cache, pruned to the
@@ -1465,7 +1472,14 @@ target branch of the pull request's merge commit) and
 <a href="../reference/discovery/#when-the-target-list-may-be-short">when the target list may be short</a>).</p>
 <p><code>check</code> takes <code>full</code> (required: the full run's JUnit XML), <code>results</code> (the
 directory <code>run</code> wrote; default <code>diffcone-results</code>), <code>others</code> (more
-selective runs to compare, as <code>NAME=JUNIT</code> pairs), and <code>fail-on-miss</code>.</p>
+selective runs to compare, as <code>NAME=JUNIT</code> pairs), <code>fail-on-miss</code> (default
+<code>false</code>) and <code>diffcone-ref</code>. <code>report</code> also takes <code>github-token</code> (default
+the workflow's token, which reads the runs and posts the issues) and
+<code>diffcone-ref</code>.</p>
+<p>Outputs: <code>run</code> sets <code>selected</code> (how many tests the plan selected);
+<code>record</code> sets <code>results</code> (the directory to upload) and, with <code>check</code>,
+<code>misses</code>; <code>report</code> sets <code>ok</code> and <code>report</code> (the directory holding
+<code>report.md</code> and <code>report.json</code>).</p>
 
 
 

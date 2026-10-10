@@ -1168,6 +1168,10 @@ started in, so the recorded tests changed it).</p>
 <td><code>uncommitted</code></td>
 <td><code>true</code> for <code>INDEX</code> and <code>WORKTREE</code>.</td>
 </tr>
+<tr>
+<td><code>description</code></td>
+<td>A readable summary, as the text report prints it.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="changed-symbols">Changed symbols<a class="headerlink" href="#changed-symbols" title="Permanent link">&para;</a></h2>
@@ -1180,8 +1184,11 @@ started in, so the recorded tests changed it).</p>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">}</span>
 </code></pre></div>
 <p><code>changes</code> lists one or more of <code>added</code>, <code>deleted</code>, <code>body_changed</code>,
-<code>definition_changed</code> and <code>dependencies_changed</code>
-(<a href="../../concepts/#symbols-and-changes">what they mean</a>).</p>
+<code>definition_changed</code>, <code>annotations_changed</code>, <code>dependencies_changed</code>,
+<code>dependencies_added</code>, <code>imports_added</code> and <code>docstring_changed</code>
+(<a href="../../concepts/#symbols-and-changes">what they mean</a>). <code>imports_added</code>
+and <code>docstring_changed</code> are listed for completeness: they select tests
+only where the new names or the docstring are used.</p>
 <h2 id="selected-targets">Selected targets<a class="headerlink" href="#selected-targets" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"runner"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pytest"</span><span class="p">,</span>
@@ -1238,12 +1245,12 @@ selected the target to be safe.</p>
 <tr>
 <td><code>dynamic_reference</code></td>
 <td>yes</td>
-<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), and a change could be among them.</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), and a change could be among them; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
 </tr>
 <tr>
 <td><code>unresolved_name_match</code></td>
 <td>yes</td>
-<td>It reaches a call diffcone couldn't resolve, whose name matches a changed function or method.</td>
+<td>It reaches a reference diffcone couldn't resolve (a call, a name or an attribute) whose name matches something that changed.</td>
 </tr>
 <tr>
 <td><code>entry_symbol_unresolved</code></td>
@@ -1258,7 +1265,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>analysis_error</code></td>
 <td>yes</td>
-<td>A file couldn't be analysed, so every target is selected.</td>
+<td>A file, or <code>diffcone.toml</code>, couldn't be analysed, so every target is selected.</td>
 </tr>
 <tr>
 <td><code>runner_dependency</code></td>
@@ -1320,7 +1327,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>lookup_site</code></td>
 <td>yes</td>
-<td>The test looked a name up dynamically where a name was added or removed.</td>
+<td>The test looked a name up dynamically where something the lookup can see changed: a name added or removed, a definition or a value.</td>
 </tr>
 <tr>
 <td><code>no_evidence</code></td>
@@ -1335,7 +1342,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>subprocess</code></td>
 <td>yes</td>
-<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, one running your code from a <code>-c</code> snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a <code>multiprocessing</code> pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook).</td>
+<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, one running your code from a <code>-c</code> snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a <code>multiprocessing</code> pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook, during collection, or while a file outside the source roots was imported).</td>
 </tr>
 <tr>
 <td><code>text_code</code></td>
@@ -1350,7 +1357,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>unobserved_file_changed</code></td>
 <td>yes</td>
-<td>A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a <code>conftest.py</code> outside the source roots, Cython outside functions or without a profiled build.</td>
+<td>A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a <code>conftest.py</code> outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files.</td>
 </tr>
 <tr>
 <td><code>unindexed_import</code></td>

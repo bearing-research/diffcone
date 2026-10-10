@@ -1107,14 +1107,20 @@ without checking it out, add <code>--rev REV</code>. <code>diffcone evidence</co
 recordings:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>evidence
 </code></pre></div>
+<p><code>collect</code> refuses to record a commit with a file it can't analyse, since
+the code in it couldn't be matched to what the tests ran. If pytest stops
+early (an interrupt, an internal error, a usage error), nothing is
+written. A recording made by an earlier version of diffcone may not be
+readable by a later one; <code>diffcone evidence</code> then leaves it out, and you
+need to record again.</p>
 <p>Some tests behave differently depending on what ran before them. Add
 <code>--reverse-check</code> to run the suite a second time in reverse order; tests
 whose recordings differ are marked unstable and always selected.</p>
 <h2 id="plan-with-a-recording">Plan with a recording<a class="headerlink" href="#plan-with-a-recording" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>diffcone<span class="w"> </span>plan<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>WORKTREE<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span>--evidence<span class="w"> </span>auto
 </code></pre></div>
-<p><code>--evidence auto</code> uses the recording from the closest earlier commit (or
-pass a recording's path). The recording doesn't need to be at your base:
+<p><code>--evidence auto</code> uses the recording, made with the same source roots, from
+the nearest ancestor of the head (or pass a recording's path). The recording doesn't need to be at your base:
 diffcone also accounts for the changes made since it was recorded.</p>
 <p><code>plan</code> doesn't run anything, so it can't check that your test environment
 is the one the recording was made in: the report says
@@ -1125,9 +1131,14 @@ before any test runs (see below).</p>
 <ul>
 <li>ran a function that changed;</li>
 <li>read a value or definition that changed;</li>
-<li>looked up a name dynamically where a name was added or removed; or</li>
+<li>looked up a name dynamically where something the lookup can see
+  changed; or</li>
 <li>read a file that changed.</li>
 </ul>
+<p>It is also selected when its own code, class or module changed, when the
+fixtures, hooks or plugins around it changed, and when an
+<a href="../../reference/declarations/#tests-to-run-on-every-change"><code>[[always_run]]</code></a>
+entry names it.</p>
 <p>Some changes can't be judged from a recording, and diffcone says so in the
 report:</p>
 <ul>
@@ -1135,8 +1146,8 @@ report:</p>
   evidence.</li>
 <li>Tests with no recording (new tests, for example) and tests whose
   recording was unstable are always selected.</li>
-<li>A Python process a test starts with <code>subprocess</code> (directly, or through
-  <code>uv run</code>) records itself on Linux and macOS, and the test is credited
+<li>A Python process a test starts with <code>subprocess</code> (directly, through
+  <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and the test is credited
   with what it ran, as is every test that runs while it is still running.
   A test that starts a process any other way (<code>os.system</code>, a shell,
   <code>multiprocessing</code>, or anything on Windows), or whose child can't record
@@ -1156,7 +1167,11 @@ report:</p>
   always selected: that code can use any name of your code.</li>
 <li>Code that background threads are running while a test runs is credited
   to that test.</li>
-<li>Changes to compiled sources, build files and configuration select every
+<li>Code that ran outside every test, in a pytest hook or while pytest
+  collected, can affect any test: a change to it, or to what it reads,
+  selects every test, and so does a change to <code>pytest_plugins</code>.</li>
+<li>Changes to compiled sources (except <a href="#cython">Cython</a> with a profiled
+  recording), build files, dependencies and configuration select every
   test.</li>
 <li>On a file system that ignores case (macOS and Windows by default), a file
   a test opened under another spelling (<code>Data/Expected.TXT</code>) still counts
@@ -1169,10 +1184,12 @@ report:</p>
 </code></pre></div>
 <p>A recording is only valid in the environment it was made in. Before any
 test runs, even when the plan selects nothing, <code>run</code> checks that the Python
-version and its <code>-O</code> setting, the installed packages, your <code>PYTHONPATH</code>
-and a few environment variables (<code>PYTHONHASHSEED</code>, <code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>,
-<code>PYTHONWARNINGS</code>) match the recording. If they don't, it falls back to a
-plan from the code and tells you what differed. A package installed in
+implementation and version and its <code>-O</code> setting, the platform and machine,
+the installed packages, your <code>PYTHONPATH</code> and a few environment variables
+(<code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>, <code>PYTHONWARNINGS</code>) match the recording; it sets
+<code>PYTHONHASHSEED</code> to the recorded value itself. If they don't match, it
+falls back to a plan from the code and tells you what differed. If that
+plan's discovery may be incomplete, it runs the whole suite instead. A package installed in
 editable mode from outside your repository (<code>pip install -e ../lib</code>)
 counts as installed: diffcone doesn't see edits to its code, as with any
 other installed package. If your tests also depend on your own
@@ -1194,11 +1211,11 @@ didn't select, which behave the same at the head.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>diffcone<span class="w"> </span>run<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>pytest<span class="w"> </span><span class="se">\</span>
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span>--command<span class="w"> </span><span class="s2">"uv run pytest"</span><span class="w"> </span>--evidence<span class="w"> </span>auto<span class="w"> </span>--collect<span class="w"> </span>--<span class="w"> </span>-n<span class="w"> </span><span class="m">8</span>
 </code></pre></div>
-<p>This needs a clean checkout of the head and the same pytest arguments the
-recording was made with. If the recording was made with <code>--reverse-check</code>,
-<code>run --collect</code> runs the selected tests a second time in reverse order, so
-the new records are checked the same way. If the environment differs or pytest stops early,
-no recording is written.</p>
+<p>This needs a clean checkout of the head, and the same <code>--command</code>, pytest
+arguments and source roots the recording was made with. If the recording
+was made with <code>--reverse-check</code>, <code>run --collect</code> runs the selected tests a
+second time in reverse order, so the new records are checked the same way.
+If the environment differs or pytest stops early, no recording is written.</p>
 <p>In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See <a href="../../ci/">CI</a>.</p>
 <h2 id="cython">Cython<a class="headerlink" href="#cython" title="Permanent link">&para;</a></h2>

@@ -933,7 +933,7 @@ targets.json</code> reads one.</p>
 <tbody>
 <tr>
 <td><code>source_roots</code></td>
-<td>Optional. The <a href="../../guides/planning/#source-roots">source roots</a> the names below use. <code>--source-root</code> overrides it.</td>
+<td>Optional. The <a href="../../guides/planning/#source-roots">source roots</a> the names below use, <code>DIR=PREFIX</code> included. <code>--source-root</code> overrides it.</td>
 </tr>
 <tr>
 <td><code>runner</code></td>
@@ -954,7 +954,12 @@ targets.json</code> reads one.</p>
 </tbody>
 </table>
 <p>A manifest may also be just the list of targets, without the surrounding
-object.</p>
+object. An unknown key, a missing field or the same target listed twice is
+an error, and the plan exits with code <code>2</code>.</p>
+<p>A manifest written by <code>diffcone discover</code> also has a <code>discovery</code> key with
+the notes discovery reported. Keep it: a manifest whose notes say the
+target list may be short makes the plan exit with code <code>3</code>, as discovery
+itself would.</p>
 <p>When you combine a manifest with <code>--discover</code>, a manifest entry replaces a
 discovered target with the same <code>runner</code> and <code>runner_id</code>.</p>
 <p>A dependency written <code>fixture:&lt;name&gt;</code> marks a fixture whose definition
