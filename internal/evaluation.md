@@ -1441,6 +1441,38 @@ the like in the autouse reset fixture are no longer reads; the fixture
 still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
 W13 and W15: 939 of 6 231 with and without these rules.
 
+## Before 0.4.0: the known items fixed (audit W1-W26; 2026-10-10)
+
+Every item round 3 left known (internal/audit.md, W1-W26) is fixed. The
+checks ran again on the final code:
+
+* `fixture_check.py` over the 42 census repositories and pandas: no test
+  uses a fixture its dependencies miss.
+* `collection_check.py` over the same: identical to round 3, except
+  coverage.py, whose quiet `addopts` the script now reads (W8): 1 188 of
+  1 188 collected tests are targets. pandas: 22 801 collected, 25 208
+  targets, none missing.
+* `diffcone corpus` over the last 15 commits of flask, requests, rich,
+  pluggy, more-itertools and marshmallow: 36 validated, 51 outcome
+  changes, none missed; selections identical to round 3 except
+  marshmallow's `024d8d358a` (2 -> 1). This check found W26: from W4 on, marshmallow's `024d8d358a` (one test's body) selected
+  646 of 646, because a test's `with patch("datetime.datetime", ...)`
+  counted as a lasting write onto `datetime`, which `getattr(dt, name)` in
+  `fields.py` reads and W4's caller effects carried into every reader of
+  the class registry. With W26 it selects the changed test alone; round 3
+  also selected `test_context_load_dump` through the same write.
+* Plan-only census (42 repositories, 334 plans), before and after
+  W20-W25: 314 048 selected either way, mean 93.4 %; W20 changes why
+  tests are selected (boltons' `pop` name matches go) but no total.
+* strata, evidence mode (`edc32ce0` -> `1241020210`): 958 of 6 231
+  (15.4 %; 0.3 selected 582). By rule: `executed_changed` 403, `text_code`
+  339 (notebook tests that run cell code from text), `lookup_site` 174,
+  `subprocess` 57, `touched_file` 15, `test_scope` 10. From 2 693 after
+  round 3, W1's bounds on run-time module handles brought it to 939; W23
+  (unpicklers and loaders of a computed path can obtain a test module)
+  adds 19 tests that ran `serializer._CloudPickleObjectCodec.loads` or the
+  test loaders `_load_shim` and `_load_by_file`.
+
 ## After the second audit round (2026-10-07)
 
 Round 2 (internal/audit.md) fixed every finding, then the same checks ran

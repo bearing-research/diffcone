@@ -47,6 +47,10 @@ selection rules.
   creates an instance of that class or of a third-party class; a
   module-level object made by a third-party call is changed only by
   methods of classes deriving from a third-party class.
+- A patch that ends with its test (`monkeypatch.setattr` on pytest's
+  fixture, `mocker.patch`, a `with mock.patch(...)` block, a
+  `@mock.patch(...)` decorator) no longer makes a lookup on a library
+  module see every change.
 
 ### Fixed
 
@@ -178,6 +182,13 @@ selection rules.
   bounded by what they load.
 - A local name, parameter or function-local import was taken for a
   module-level import or builtin of the same name.
+- A patch that may outlast its test (`patch(...).start()`, a patcher kept
+  for later, a `MonkeyPatch()` of your own, a `with mock.patch(...)`
+  around a fixture's `yield`, `setattr` on any other receiver) is a store
+  on the module it patches, so lookups on that module follow it; set in
+  `sys.modules` that way, it counts as installed for good. A `with
+  mock.patch.dict(os.environ)` or `warnings.catch_warnings()` block whose
+  body yields no longer counts as putting the process state back.
 
 ### Discovery
 
