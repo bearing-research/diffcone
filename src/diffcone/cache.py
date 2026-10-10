@@ -8,7 +8,9 @@ only: a hit must produce a byte-identical plan to a miss.
   whole (their content is not identified by a commit), and neither is an
   index whose analysis ran out of stack (``TOO_DEEP``).
 - ``discovery/<key>.json`` (:class:`DiscoveryCache`): static discovery
-  results per committed snapshot, runner and options.
+  results per committed snapshot, runner and options; not one that left a
+  module out as too deeply nested to walk (``TOO_DEEP``), for the same
+  reason.
 - ``modules.sqlite`` (:class:`ModuleCache`): per-module results for every
   snapshot kind, the working tree included: a module's first-pass facts are
   a pure function of its file, and its second-pass resolution a pure
@@ -431,6 +433,8 @@ class DiscoveryCache:
         roots: list[str],
         options: DiscoveryOptions,
     ) -> None:
+        if any(TOO_DEEP in n.detail for n in result.notes):
+            return  # depends on the caller's stack depth, not only on the commit
         path = self._path(commit, roots, result.runner, options)
         data = {
             "format": DISCOVERY_FORMAT,

@@ -205,7 +205,13 @@ A name or dotted chain `a.b.c` is resolved from its base:
    statically. So does an attribute chain off it (`backend.impl` with
    `backend` either module), a name a package binds beside a submodule of
    that name, and a function-local import bound in a `try` and its
-   `except`. A relative import climbing above the top-level package
+   `except`. The rules that recognise a library name through the imports
+   (a write to `os.environ`, a call of `importlib.import_module`, a
+   `with warnings.catch_warnings():` that puts the filters back) read every
+   name a chain may stand for, star imports included: a rule that adds a
+   dependency applies when any of them is the name, one that leaves
+   something out only when all of them are; a module's `__file__` run as a
+   script is each module the name may be. A relative import climbing above the top-level package
    (often a source root that names the module differently from runtime,
    `tests/__init__.py` under the root `tests`) is recorded as an unbounded
    dynamic import, not an external one.
@@ -1308,7 +1314,13 @@ plan because the environment differs and that plan is incomplete, it runs
 the whole suite.
 
 `unparsed_file` covers two cases. A file that does not parse is also an
-analysis error, so the plan degrades and selects everything. A file that
+analysis error, so the plan degrades and selects everything. One nested
+too deeply for discovery's recursive walks is reported the same way (and
+is usually an analysis error of the indexer's too): when a walk runs out of
+stack, discovery runs again leaving out every module nested more than 100
+levels deep (real modules stay under 50) as one that does not parse, and
+such a result is not cached, since running out of stack depends on the
+caller. A file that
 cannot be named from any source root -- a directory component that is not
 a Python identifier, such as pytest-asyncio's `docs/how-to-guides` -- is
 dropped instead: pytest imports a test file by its basename and collects

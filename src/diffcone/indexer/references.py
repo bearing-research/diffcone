@@ -4,7 +4,7 @@ references, calls, writes and looks up dynamically."""
 from __future__ import annotations
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
@@ -105,6 +105,10 @@ _READ = "read"
 
 # Calls that hand out every member of their argument, values included.
 MEMBER_LISTINGS = frozenset({"inspect.getmembers", "inspect.getmembers_static"})
+# Calls that import a module by name, and those that hand one back by name.
+IMPORT_CALLS = frozenset({"importlib.import_module", "importlib.__import__", "runpy.run_module"})
+MODULE_GETTERS = frozenset({"importlib.import_module", "sys.modules.get"})
+CASTS = frozenset({"typing.cast", "typing_extensions.cast"})
 
 
 class _ReferenceCollector(ast.NodeVisitor):
@@ -139,6 +143,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._binding_maps: dict[
             int, tuple[ast.AST, dict[str, list[ast.Name]], dict[int, ast.expr | None]]
         ] = {}
+        # Name -> what this module's star imports may bind it to.
+        self._star_names: dict[str, list[str]] = {}
 
     def visit(self, node: ast.AST) -> None:
         self._stack.append(node)
@@ -272,8 +278,12 @@ class _ReferenceCollector(ast.NodeVisitor):
             # ``gc.get_objects``: a member that hands out objects nothing
             # names (the bare module is its import, or a value the use scan
             # sees handed on).
-            member = (self._canonical_name(parts) or "").split(".")[1:2]
-            if member and member[0] not in GRAPH_INERT:
+            if any(
+                name.split(".")[0] in GRAPH_MODULES
+                and (member := name.split(".")[1:2])
+                and member[0] not in GRAPH_INERT
+                for name in self._canonical_names(parts)
+            ):
                 self.indexer.out.reflection.add((self.source, GRAPH_HANDLE))
         for name in rest:
             self.indexer.out.unresolved.add(
@@ -423,14 +433,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         key: ast.expr | None = None
         if isinstance(expr, ast.Subscript):
             chain = _flatten_chain(expr.value)
-            if chain is not None and self._canonical_name(chain) == "sys.modules":
+            if chain is not None and self._canonical_names(chain) == {"sys.modules"}:
                 key = expr.slice
         elif isinstance(expr, ast.Call) and expr.args:
             chain = _flatten_chain(expr.func)
-            if chain is not None:
-                canonical = self._canonical_name(chain)
-                if canonical in ("importlib.import_module", "sys.modules.get"):
-                    key = expr.args[0]
+            if chain is not None and self._only(chain, MODULE_GETTERS):
+                key = expr.args[0]
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
             parts = key.value.split(".")
             if all(p.isidentifier() for p in parts):
@@ -759,7 +767,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if builtin and parts[0] == "hasattr" and self._bounded_hasattr(node):
                 pass  # ``hasattr(obj, "x")`` notices only ``x``, as ``obj.x`` does
             elif (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
-                not builtin and self._canonical_name(parts) in REFLECTIVE_CALLS
+                not builtin and self._canonical_names(parts) & REFLECTIVE_CALLS
             ):
                 module = self._external_module(node.args[0]) if node.args else None
                 if module is not None:
@@ -771,7 +779,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self.indexer.out.reflection.add((self.source, f"{name}()"))
                 if (
                     node.args
-                    and self._canonical_name(parts) in MEMBER_LISTINGS
+                    and self._canonical_names(parts) & MEMBER_LISTINGS
                     and (self._is_module(node.args[0]) or self._is_class(node.args[0]))
                 ):
                     # ``inspect.getmembers(mod)`` hands out every member's
@@ -797,18 +805,18 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._import_module(node, "__import__")
             elif builtin and parts[0] == "getattr":
                 self._getattr(node)
-            elif (canonical := self._canonical_name(parts)) in (
-                "importlib.import_module",
-                "importlib.__import__",
-                "runpy.run_module",
-            ):
-                self._import_module(node, canonical)
-            elif canonical == "runpy.run_path":
-                self._dynamic("runpy.run_path()")  # runs a file by path: anything
-            elif canonical in UNPICKLER_CALLS:
-                self._unpickle(node, canonical or "Unpickler.load")
-            elif canonical in FILE_LOADERS:
-                self._file_loader(node, canonical, FILE_LOADERS[canonical])
+            else:
+                # Each name the callee may be (an import in ``try`` and
+                # another in ``except``, a star import): each one's call.
+                for canonical in sorted(self._canonical_names(parts)):
+                    if canonical in IMPORT_CALLS:
+                        self._import_module(node, canonical)
+                    elif canonical == "runpy.run_path":
+                        self._dynamic("runpy.run_path()")  # runs a file by path: anything
+                    elif canonical in UNPICKLER_CALLS:
+                        self._unpickle(node, canonical)
+                    elif canonical in FILE_LOADERS:
+                        self._file_loader(node, canonical, FILE_LOADERS[canonical])
             if builtin and parts[0] == "vars" and node.args:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.out.attr_unbound.add((cls, "*"))
@@ -823,10 +831,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._string_targets(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
                 self._mark_type_node(node.args[1])
-            elif node.args and self._canonical_name(parts) in (
-                "typing.cast",
-                "typing_extensions.cast",
-            ):
+            elif node.args and self._only(parts, CASTS):
                 self._mark_type_node(node.args[0])
             self._record_call_site(node, parts)
         elif (
@@ -1309,26 +1314,33 @@ class _ReferenceCollector(ast.NodeVisitor):
                 if parts is None:
                     continue
                 if patch_target_form(parts) == DICT:
-                    if call.args and id(call) in undone and self._state_dict(call.args[0]) == what:
+                    if (
+                        call.args
+                        and id(call) in undone
+                        and self._state_dicts(call.args[0]) == {what}
+                    ):
                         return True
                     continue
-                name = self._canonical_name(parts)
+                names = self._canonical_names(parts)
                 if (
-                    name is not None
-                    and name.endswith("catch_warnings")
+                    names
+                    and all(name.endswith("catch_warnings") for name in names)
                     and what.startswith("warnings.")
                     and not suspends(node.body)
                 ):
                     return True
         return False
 
-    def _state_dict(self, target: ast.expr) -> str | None:
+    def _state_dicts(self, target: ast.expr) -> set[str | None]:
         """The process-wide object (indexer/process.py) a ``patch.dict``
-        target is: a dotted string, or a name through the scope's imports."""
+        target may be: a dotted string, or a name through the scope's
+        imports, one for each name it may stand for; None for a name that
+        is none (or a target that is not a name)."""
         if isinstance(target, ast.Constant) and isinstance(target.value, str):
-            return state_object(target.value)
+            return {state_object(target.value)}
         chain = _flatten_chain(target)
-        return state_object(self._canonical_name(chain) if chain else None)
+        names = self._canonical_names(chain) if chain else frozenset()
+        return {state_object(name) for name in names} if names else {None}
 
     def _patched_state(self, node: ast.Call) -> None:
         """A store into process-global state through a patcher or a
@@ -1361,8 +1373,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if first is None or isinstance(first, ast.Constant):
             return []
         if last in ("setitem", "delitem") or form == DICT:
-            obj = self._state_dict(first)
-            return [obj] if obj is not None else []
+            return sorted(obj for obj in self._state_dicts(first) if obj is not None)
         if form not in (SETATTR, OBJECT, MULTIPLE):
             return []
         module = self._written_module(first)
@@ -1395,16 +1406,17 @@ class _ReferenceCollector(ast.NodeVisitor):
                 if sub.attr in LOGGER_MUTATORS and self._is_logger(sub.value):
                     self._process_write(f"logging.getLogger().{sub.attr}")
             chain = _flatten_chain(expr)
-            obj = state_object(self._canonical_name(chain) if chain else None)
-            if obj is not None:
-                self._process_write(obj)
+            for name in sorted(self._canonical_names(chain) if chain else ()):
+                obj = state_object(name)
+                if obj is not None:
+                    self._process_write(obj)
 
     def _is_logger(self, expr: ast.expr) -> bool:
         """``logging.getLogger(...)``."""
         if not isinstance(expr, ast.Call):
             return False
         parts = _flatten_chain(expr.func)
-        return parts is not None and self._canonical_name(parts) in LOGGER_GETTERS
+        return parts is not None and bool(self._canonical_names(parts) & LOGGER_GETTERS)
 
     def _process_call(self, node: ast.Call, parts: list[str] | None) -> None:
         """A call that writes process-global state outside the source roots
@@ -1419,13 +1431,13 @@ class _ReferenceCollector(ast.NodeVisitor):
             ):
                 self._process_write(f"logging.getLogger().{func.attr}")
             return
-        canonical = self._canonical_name(parts)
-        if canonical in STATE_CALLS:
+        for canonical in sorted(self._canonical_names(parts) & STATE_CALLS):
             self._process_write(canonical)
         if len(parts) > 1 and parts[-1] in STATE_MUTATORS:
-            obj = state_object(self._canonical_name(parts[:-1]))
-            if obj is not None:
-                self._process_write(obj)
+            for name in sorted(self._canonical_names(parts[:-1])):
+                obj = state_object(name)
+                if obj is not None:
+                    self._process_write(obj)
         if (
             len(parts) == 1
             and parts[0] in ("setattr", "delattr")
@@ -1436,20 +1448,43 @@ class _ReferenceCollector(ast.NodeVisitor):
             if module is not None:
                 self._process_write(f"{parts[0]}({module})")
 
-    def _canonical_name(self, parts: list[str]) -> str | None:
-        """The dotted name a callee chain refers to through the scope's import
+    def _canonical_names(self, parts: list[str]) -> frozenset[str]:
+        """Every dotted name a chain may refer to through the scope's import
         bindings (``import_module`` from ``from importlib import
-        import_module`` is ``importlib.import_module``); None for a local."""
-        head = parts[0]
-        binding = self.scope.local_imports.get(head)
-        if binding is None:
-            if head in self.scope.locals:
-                return None
-            binding = self.scope.module.imports.get(head)
-        if binding is None:
-            return ".".join(parts)
-        base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
-        return ".".join([base, *parts[1:]])
+        import_module`` is ``importlib.import_module``), as
+        definitions._canonical_names has them: each binding of a
+        function-local import of its head (one in ``try`` and another in
+        ``except``), or else each module-level one, and what each star
+        import may bind the head to; the chain itself for a head no import
+        binds (a builtin, a module-level definition). Empty for a local.
+
+        A caller recognising a name to add what it implies asks whether any
+        of them is that name; one recognising a name to leave something out
+        (_only) asks whether all of them are."""
+        head, rest = parts[0], parts[1:]
+        local = self.scope.local_imports.get(head)
+        if local is not None:
+            bindings = [local, *self.scope.local_alt_imports.get(head, ())]
+            return frozenset(".".join([b.dotted, *rest]) for b in bindings)
+        if head in self.scope.locals:
+            return frozenset()
+        module = self.scope.module
+        binding = module.imports.get(head)
+        bases = (
+            [binding.dotted, *(b.dotted for b in module.alt_imports.get(head, ()))]
+            if binding is not None
+            else [head]
+        )
+        if module.star_imports:
+            if head not in self._star_names:
+                self._star_names[head] = list(self.indexer._star_bases(module)(head))
+            bases += self._star_names[head]
+        return frozenset(".".join([base, *rest]) for base in bases)
+
+    def _only(self, parts: list[str], names: Collection[str]) -> bool:
+        """Whether every name the chain may refer to is among ``names``."""
+        found = self._canonical_names(parts)
+        return bool(found) and all(name in names for name in found)
 
     def _own_name(self) -> str | None:
         """What ``__name__`` is here: the module's name, unless the program
@@ -1497,7 +1532,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(inner, ast.Call):
             return False
         parts = _flatten_chain(inner.func)
-        return parts is not None and self._canonical_name(parts) in UNPICKLER_CLASSES
+        return parts is not None and bool(self._canonical_names(parts) & UNPICKLER_CLASSES)
 
     def _unpickle(self, node: ast.Call, name: str) -> None:
         """An unpickler imports whatever module the data names and hands back
@@ -1553,7 +1588,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(data, ast.Call):
             return False
         parts = _flatten_chain(data.func)
-        return parts is not None and self._canonical_name(parts) in PICKLER_DUMPS
+        return parts is not None and self._only(parts, PICKLER_DUMPS)
 
     def _dumped_into(self, name: str) -> bool:
         """Whether local ``name`` is bound once, to a new empty file, and this
@@ -1577,7 +1612,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                         bound.append(inner.value)
             elif isinstance(inner, ast.Call):
                 parts = _flatten_chain(inner.func)
-                if parts is not None and self._canonical_name(parts) in PICKLER_DUMP:
+                if parts is not None and self._only(parts, PICKLER_DUMP):
                     file = inner.args[1] if len(inner.args) > 1 else None
                     for k in inner.keywords:
                         if k.arg == "file":
@@ -1591,10 +1626,11 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(value, ast.Call):
             return False
         parts = _flatten_chain(value.func)
-        canonical = self._canonical_name(parts) if parts is not None else None
-        if canonical == "io.BytesIO":
+        if parts is None:
+            return False
+        if self._only(parts, {"io.BytesIO"}):
             return not value.args and not value.keywords
-        return canonical in FRESH_FILES
+        return self._only(parts, FRESH_FILES)
 
     def _literal_bytes(self, data: ast.expr) -> bytes | None:
         """The bytes ``data`` is when the code writes them out: a literal, or

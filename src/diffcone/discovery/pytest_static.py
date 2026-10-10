@@ -244,7 +244,7 @@ from diffcone.discovery.session_state import (
 from diffcone.indexer import DEF_NODES, iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import DYNAMIC_DEPENDENCY, IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
-from diffcone.snapshot import Snapshot, module_name_for
+from diffcone.snapshot import Snapshot
 
 RUNNER = "pytest"
 
@@ -2929,16 +2929,16 @@ def discover_pytest(
             )
         )
     parsed, failed = parse_modules(snapshot, sorted(set(test_paths + conftest_paths)))
-    for path in failed:
+    for path, why in failed.items():
         # Two reasons, and they need different answers: a file that does not
-        # parse is also an analysis error (the plan degrades and selects
-        # everything), while one that cannot be named is dropped silently --
-        # pytest imports it by its basename, so its tests are collected and
-        # are not targets (pytest-asyncio's ``docs/how-to-guides``).
-        nameable = module_name_for(path, snapshot.source_roots) is not None
+        # parse (or nests too deeply to walk) is also an analysis error (the
+        # plan degrades and selects everything), while one that cannot be
+        # named is dropped silently -- pytest imports it by its basename, so
+        # its tests are collected and are not targets (pytest-asyncio's
+        # ``docs/how-to-guides``).
         detail = (
-            f"{path}: did not parse"
-            if nameable
+            f"{path}: {why}"
+            if why
             else (
                 f"{path}: cannot be named from any source root (a directory component is not a "
                 "Python identifier), so pytest collects it and it is not a target; name it with "
@@ -3244,13 +3244,13 @@ def _collect_doctests(
                 )
             )
     parsed, failed = parse_modules(snapshot, sorted(paths))
-    for path in failed:
+    for path, why in failed.items():
         result.notes.append(
             DiscoveryNote(
                 RUNNER,
                 "unparsed_file",
-                f"{path}: --doctest-modules collects its docstrings, but it did not parse or "
-                "cannot be named from any source root, so they are not targets",
+                f"{path}: --doctest-modules collects its docstrings, but it "
+                f"{why or 'cannot be named from any source root'}, so they are not targets",
                 path,
             )
         )
@@ -3359,7 +3359,7 @@ def _example_imports(examples: list[doctest.Example]) -> list[str | None]:
     for example in examples:
         try:
             tree = ast.parse(example.source)
-        except SyntaxError:
+        except (SyntaxError, ValueError, RecursionError):
             modules.append(None)
             continue
         for node in ast.walk(tree):

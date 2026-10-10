@@ -48,6 +48,7 @@ from diffcone.indexer.scopes import resolve_relative_module
 from diffcone.indexer.syntax import (
     DEF_NODES,
     FUNC_NODES,
+    TOO_DEEP,
     decode_source,
     hash_nodes,
     hash_scope_body,
@@ -57,6 +58,7 @@ from diffcone.indexer.syntax import (
 __all__ = [
     "DEF_NODES",
     "FUNC_NODES",
+    "TOO_DEEP",
     "Indexer",
     "build_index",
     "decode_source",

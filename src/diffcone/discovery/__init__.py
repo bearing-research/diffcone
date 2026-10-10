@@ -4,7 +4,8 @@ Discovery turns a head snapshot into manifest targets without importing or
 executing project code. Each runner module documents the subset of its
 runner's collection rules that it reproduces; anything outside that subset
 surfaces as a note or as an unresolved lifecycle dependency, which the
-planner treats conservatively.
+planner treats conservatively. A module nested too deeply for discovery's
+recursive walks is left out as one that does not parse (``discover``).
 """
 
 from __future__ import annotations
@@ -209,11 +210,23 @@ def discover(
 ) -> DiscoveryResult:
     options = options or DiscoveryOptions()
     if runner == "pytest":
-        from diffcone.discovery.pytest_static import discover_pytest
+        from diffcone.discovery.pytest_static import discover_pytest as run
+    elif runner == "asv":
+        from diffcone.discovery.asv_static import discover_asv as run
+    else:
+        raise ValueError(f"unknown runner {runner!r}; expected one of {', '.join(RUNNERS)}")
+    try:
+        return run(snapshot, index, options)
+    except RecursionError:
+        pass
+    # A module too deeply nested for discovery's recursive walks: run again,
+    # leaving out every module deeper than common.MAX_DEPTH as one that does
+    # not parse (an ``unparsed_file`` note, so discovery is incomplete). Out
+    # of the except clause, so the second run has the stack back.
+    from diffcone.discovery.common import CHECK_DEPTH
 
-        return discover_pytest(snapshot, index, options)
-    if runner == "asv":
-        from diffcone.discovery.asv_static import discover_asv
-
-        return discover_asv(snapshot, index, options)
-    raise ValueError(f"unknown runner {runner!r}; expected one of {', '.join(RUNNERS)}")
+    token = CHECK_DEPTH.set(True)
+    try:
+        return run(snapshot, index, options)
+    finally:
+        CHECK_DEPTH.reset(token)

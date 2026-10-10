@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from diffcone.indexer import (
     DEF_NODES,
     FUNC_NODES,
+    TOO_DEEP,
     decode_source,
     iter_scope_statements,
     resolve_relative_module,
@@ -61,20 +63,53 @@ def _mark_functions(body: list[ast.stmt]) -> None:
                 stack.extend(getattr(node, name, ()) or ())
 
 
-def parse_modules(snapshot: Snapshot, paths: list[str]) -> tuple[list[ParsedModule], list[str]]:
-    """Parse the given snapshot paths. Returns (parsed, failed paths)."""
+# How deep a syntax tree discovery walks once a walk has run out of stack
+# (``RecursionError``): discover() then runs the runner again with
+# CHECK_DEPTH set, and parse_modules leaves out every module nested deeper
+# than this as one that does not parse. Real modules stay far below it (the
+# deepest of some 10,000 files, site-packages included, is 48 levels), and
+# the recursive walks spend a few frames a level, well inside Python's
+# default limit of 1000. Measuring depth costs a third of parsing, so it is
+# only paid on that second run.
+MAX_DEPTH = 100
+CHECK_DEPTH: ContextVar[bool] = ContextVar("CHECK_DEPTH", default=False)
+
+
+def deeper_than(tree: ast.AST, bound: int) -> bool:
+    """Whether ``tree`` nests more than ``bound`` levels (without recursing)."""
+    level = [tree]
+    for _ in range(bound + 1):
+        level = [child for node in level for child in ast.iter_child_nodes(node)]
+        if not level:
+            return False
+    return True
+
+
+def parse_modules(
+    snapshot: Snapshot, paths: list[str]
+) -> tuple[list[ParsedModule], dict[str, str]]:
+    """Parse the given snapshot paths. Returns (parsed, failed paths), each
+    failed path with why: it cannot be named from a source root (empty), it
+    does not parse, or it nests too deeply to walk (TOO_DEEP)."""
     parsed: list[ParsedModule] = []
-    failed: list[str] = []
+    failed: dict[str, str] = {}
     children = child_modules(snapshot)
+    check_depth = CHECK_DEPTH.get()
     for path in sorted(paths):
         module = module_name_for(path, snapshot.source_roots)
         if module is None:
-            failed.append(path)
+            failed[path] = ""
             continue
         try:
             tree = ast.parse(decode_source(snapshot.files[path]), filename=path)
         except (SyntaxError, UnicodeDecodeError, ValueError):
-            failed.append(path)
+            failed[path] = "did not parse"
+            continue
+        except RecursionError:
+            failed[path] = TOO_DEEP
+            continue
+        if check_depth and deeper_than(tree, MAX_DEPTH):
+            failed[path] = TOO_DEEP
             continue
         if b"getfixturevalue" not in snapshot.files[path]:
             _mark_functions(tree.body)
