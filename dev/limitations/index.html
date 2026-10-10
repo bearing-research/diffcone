@@ -879,7 +879,8 @@ modules its module imports. A module imported by a computed name
 (<code>importlib.import_module(name)</code>) can be affected by any change at all.
 A name taken from a dict, list or set written in the code
 (<code>getattr(handlers, NAMES[key])</code>, the export table of a lazy
-<code>__getattr__</code>) is bounded by it only while nothing can change it: once
+<code>__getattr__</code>; not a parameter or local variable that happens to share
+the table's name) is bounded by it only while nothing can change it: once
 the table, or the module holding it, is modified, passed to other code,
 or reached through <code>globals()</code>, <code>vars()</code>, <code>sys.modules</code> or <code>exec</code>, the
 lookup counts as dynamic. A lookup on a standard-library or third-party
