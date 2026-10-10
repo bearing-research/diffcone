@@ -51,6 +51,8 @@ from diffcone.model import (
     DECLARED,
     EXTERNAL_WRITTEN,
     IMPORTS,
+    INSTALLED,
+    INSTALLED_ANYWHERE,
     METHOD,
     MODULE,
     REFERENCES,
@@ -75,8 +77,9 @@ COLLECTION_HOOKS = frozenset(
     }
 )
 
-# Edges that do not mean the source's code can run the target's.
-_NOT_RUN = frozenset({"mutated_by", "registers"})
+# Edges that do not mean the source's code can run the target's (a module
+# does not run what installs an object under its name).
+_NOT_RUN = frozenset({"mutated_by", "registers", INSTALLED, INSTALLED_ANYWHERE})
 # Edges from a class to a member that whoever uses an instance runs (a
 # special method, a method an external base calls); the class's other
 # edges are its body's code, which runs when its module is imported.

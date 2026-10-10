@@ -32,7 +32,11 @@ mutators, which pass 2 already records as writes), or a third-party value
 (a call into a module outside the roots, or a project factory whose every
 ``return`` is one, ``cast(T, ...)`` included: only the call is trusted), whose
 methods are those of in-scope classes deriving from a third-party class
-(``logging.setLoggerClass(StructuredLogger)``).
+(``logging.setLoggerClass(StructuredLogger)``). A method called on an
+instance attribute (``self._client.get(...)``) is one of what the attribute
+holds when every write of it says (a construction of a plainly built
+in-scope class, a third-party value: ``_attribute_values``), and any method
+of that name otherwise.
 
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v``; a parameter
@@ -46,7 +50,7 @@ import ast
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.definitions import _flatten_chain
+from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS, _flatten_chain
 from diffcone.indexer.scopes import External, Resolved, Scope
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import CLASS, FUNCTION, METHOD, REFERENCES, VARIABLE, Edge
@@ -110,6 +114,9 @@ ARGUMENT_MUTATORS = frozenset(
 
 # Slot of the receiver in a pass record.
 RECEIVER = "self"
+# A pass record's callee ``@<class id>.<attribute>``: the method of that name
+# of whatever ``self.<attribute>`` holds in a method of the class.
+HELD_BY = "@"
 
 # A pass record: (caller, what is handed on, callee or "", called name,
 # slot, receiver bound). What is handed on is ``param:<name>`` or
@@ -290,6 +297,16 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
                     )
             elif symbol is not None:
                 return  # a variable or module called: not a function of ours
+        if (
+            not callees
+            and len(parts) == 3
+            and parts[0] == collector.scope.self_name
+            and collector.scope.self_class is not None
+        ):
+            # ``self._client.get(...)``: a method of what the instance
+            # attribute holds, typed after pass 2 when every binding of it
+            # says (apply_writes, audit round 3, W21).
+            callees.append(f"{HELD_BY}{collector.scope.self_class}.{parts[1]}")
     out = indexer.out.passes
     for slot, what in handed:
         for callee in callees or [""]:
@@ -435,6 +452,23 @@ def apply_writes(indexer: Resolver) -> None:
 
     def callees(record: Pass) -> list[str]:
         _, what, callee, name, slot, _ = record
+        if callee.startswith(HELD_BY):
+            cls, _, attr = callee[len(HELD_BY) :].rpartition(".")
+            kinds = attribute_values(cls, attr)
+            if kinds is None:
+                return by_name.get(name, [])
+            found: list[str] = []
+            for kind in kinds:
+                if kind == "external":
+                    found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+                    continue
+                hit = indexer.lookup_in_class(kind, name)
+                if isinstance(hit, Resolved) and not hit.detail:
+                    found.append(hit.symbol)
+                elif indexer.class_scopes[kind].opaque:
+                    # Not found in scope: a third-party base's method.
+                    found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+            return sorted(set(found))
         if callee:
             return [callee]
         if slot == RECEIVER and what.startswith("var:"):
@@ -457,6 +491,25 @@ def apply_writes(indexer: Resolver) -> None:
                         found.append(hit.symbol)
                 return found
         return by_name.get(name, [])
+
+    attribute_cache: dict[tuple[str, str], list[str] | None] = {}
+
+    def attribute_values(cls: str, attr: str) -> list[str] | None:
+        """What ``self.<attr>`` may hold in a method of ``cls``, as the
+        in-scope classes of the instances and ``external`` for a third-party
+        value; None when it is not known (audit round 3, W21). Known when
+        every write of ``self.<attr>``, in any method of any class (so a
+        subclass the index cannot place counts too), binds a construction
+        of a plain in-scope class with no in-scope ``__new__`` in its MRO, a
+        call into a module outside the source roots, or a call of a project
+        factory whose every return is such a call; and nothing writes the
+        attribute otherwise (through another receiver, ``setattr``,
+        ``__dict__``), binds it at class level, or customises attribute
+        access in the class's family."""
+        key = (cls, attr)
+        if key not in attribute_cache:
+            attribute_cache[key] = _attribute_values(indexer, cls, attr)
+        return attribute_cache[key]
 
     def derives_from_third_party(method: str) -> bool:
         container = symbols[method].container if method in symbols else None
@@ -497,3 +550,54 @@ def apply_writes(indexer: Resolver) -> None:
             continue
         if writes_through(record):
             out.edges.add(Edge(variable, caller, REFERENCES, "mutated_by"))
+
+
+def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:
+    """See ``apply_writes.attribute_values``. The instance may be one of an
+    in-scope subclass, or of a class whose base the index cannot resolve
+    (which may be a subclass): what their methods write counts too."""
+    out = indexer.out
+    family: set[str] = set()
+    for cid in (cls, *indexer._descendants.get(cls, ())):
+        family.update(indexer._mro(cid))
+    holders = family | {c for c, scope in indexer.class_scopes.items() if not scope.complete}
+    for owner, written in out.attr_unbound:
+        if written in (attr, "*") and (owner == "" or owner in holders):
+            return None
+    for cid in holders:
+        cscope = indexer.class_scopes.get(cid)
+        if cscope is None or _ATTRIBUTE_HOOKS & cscope.members.keys():
+            return None
+        if attr in cscope.members or attr in cscope.bindings:
+            return None
+    found: set[str] = set()
+    writes = [w for w in out.attr_writes if w.attr == attr and w.cls in holders]
+    if not writes:
+        return None
+    for w in writes:
+        binding = w.binding
+        if not binding:
+            return None
+        if binding[0] == "external":
+            found.add("external")
+        elif binding[0] == "factory" and binding[1] in out.external_returns:
+            found.add("external")
+        elif binding[0] == "instance" and _plainly_built(indexer, binding[1]):
+            found.add(binding[1])
+        else:
+            return None
+    return sorted(found)
+
+
+def _plainly_built(indexer: Resolver, cls: str) -> bool:
+    """Whether calling in-scope class ``cls`` makes an instance of it: no
+    decorator or metaclass in its MRO, and no in-scope ``__new__``."""
+    if cls not in indexer.class_scopes:
+        return False
+    for cid in indexer._mro(cls):
+        cscope = indexer.class_scopes.get(cid)
+        if cscope is None or not cscope.plain:
+            return False
+        if "__new__" in cscope.members:
+            return False
+    return True

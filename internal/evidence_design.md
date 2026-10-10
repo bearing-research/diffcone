@@ -443,6 +443,41 @@ selection or states something the tables left implicit; none narrows it.
   frame's or function's globals, a closure cell (audit round 3, EVP-1).
   A library lookup by a name nothing bounds (`getattr(obj, name)`) on such a
   class's member is guarded the same way (EVP-3).
+* **An attribute read off a value of unknown type finds a module-level
+  name only on its module** (audit round 3, W20). `value.real` reads a
+  fixture `real` of a test module only if `value` can be that module. As in
+  static planning, a name match on a module-level function, class or
+  variable counts only for a module such a value may be
+  (`SourceIndex.attribute_modules`: handed on, held through a handle, named
+  by a string, what those reach), for a bare name, for a name looked up on
+  a module, and for the reads of a module holding a module named at run
+  time; the reads that call (`_forward`, `_callers_of`) follow the same
+  matches. A module the test runner holds (a test module, a conftest, one
+  defining a fixture) can still be handed out by pytest (`request.module`,
+  a collector's `obj`), so a name-matched reader of one of its names is
+  guarded: it selects a test only when the record also holds code that can
+  obtain the module and hand it on (a `.module` or `.obj` read, a
+  `sys.modules` read, a module getter, a graph walk, a reference to the
+  module as a value), and is a plain reader when such code is not a
+  function or ran during an import or outside every test.
+* **Unpicklers and loaders are module getters** (audit round 3, W22, W23).
+  `pickle.loads` (and `load`, `Unpickler(...).load()`, `cloudpickle`,
+  `dill`, `joblib.load`) and a module loaded from a path nothing bounds
+  (`spec_from_file_location`) are imports by a name nothing bounds, so
+  they can hand a test module (or one of its functions) to a lookup, as
+  `import_module(name)` can. On strata this adds 19 tests to the sample
+  commit (939 to 958): tests that ran `cloudpickle` loads or a test's file
+  loader, for a test module's changed `MALFORMED`.
+* **A lookup on a module sees what other code put there** (audit round 3,
+  W24). A closure-bounded lookup (`getattr(registry, name)`) sees the
+  namespaces of the code that stores on a module of its closure, hands it
+  on or installs an object under its name, as in static planning; in
+  evidence mode only code that is not a function, or ran during an import
+  or outside every test, counts: what a function running inside a test
+  stores is seen by a test that ran it (a store one test leaves for a later
+  one falls under the isolation assumption, as for an external module
+  below). Objects installed in `sys.modules` under a name nothing bounds
+  are not followed at all (W25): the record shows what they ran.
   Static readers are not guarded. The guard is off when holding one does
   not need that code to run in the same test: a class or ancestor outside
   test code, a class that runs code when created, a reference from module

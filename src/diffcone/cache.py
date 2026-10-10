@@ -45,6 +45,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 38: attribute_modules, any_module_readers, module_writers, module-attribute
+# references, unpicklers and file loaders, installs under unbounded names;
 # 37: module_reach, sys.modules installs, scoped names in the use scan;
 # 36: process writes, `writes`/`rebinds` edges, builtin containers,
 # main-guarded code; 35: third-party values of project factories (external_returns); 34:
@@ -55,7 +57,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 37
+INDEX_FORMAT = 38
 
 
 def _indexer_fingerprint() -> str:
@@ -111,6 +113,9 @@ def index_to_dict(index: SourceIndex) -> dict:
         "escaped_classes": sorted(index.escaped_classes),
         "escaped_modules": sorted(index.escaped_modules),
         "module_reach": {m: list(r) for m, r in sorted(index.module_reach.items())},
+        "attribute_modules": sorted(index.attribute_modules),
+        "any_module_readers": sorted(index.any_module_readers),
+        "module_writers": {m: list(w) for m, w in sorted(index.module_writers.items())},
         "escaped_values": sorted(index.escaped_values),
         "other_files": dict(sorted(index.other_files.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
@@ -169,6 +174,9 @@ def index_from_dict(data: dict) -> SourceIndex:
         escaped_classes=set(data["escaped_classes"]),
         escaped_modules=set(data["escaped_modules"]),
         module_reach={m: tuple(r) for m, r in data["module_reach"].items()},
+        attribute_modules=set(data["attribute_modules"]),
+        any_module_readers=set(data["any_module_readers"]),
+        module_writers={m: tuple(w) for m, w in data["module_writers"].items()},
         escaped_values=set(data["escaped_values"]),
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},

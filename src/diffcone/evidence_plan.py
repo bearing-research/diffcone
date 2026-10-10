@@ -23,7 +23,11 @@ observed by"), and a test is selected when its record meets E:
   code, and a library lookup by a name nothing bounds, is guarded: it
   selects a test only if the test also ran code that can hand it an
   instance (``_Observers._holders``), which includes code finding classes
-  without naming them (``__subclasses__``, ``gc``);
+  without naming them (``__subclasses__``, ``gc``). An attribute read off a
+  value of unknown type matches a module-level name only of a module such
+  a value may be (``SourceIndex.attribute_modules``, W20); of a module the
+  test runner holds, it is guarded by code that can obtain the module
+  (``_module_guard``);
 * a variable: its readers and the lookup and reflection sites that can see
   its namespace (a lookup by a name nothing bounds reads the value too); a
   reader that is itself a variable captured the value and is followed in
@@ -91,9 +95,10 @@ writers (``_forward``).
 
 A test module's names are seen by code that can obtain the module without
 importing it: an import of a module named at run time whose module is
-kept, a graph walk (``gc`` functions that hand objects out), and an import
-whose name a literal table bounds to no test module only once code that
-may change the table ran (``table_getters``, guarded by those writers).
+kept (an unpickler, a module loaded from a path nothing bounds), a graph
+walk (``gc`` functions that hand objects out), and an import whose name a
+literal table bounds to no test module only once code that may change the
+table ran (``table_getters``, guarded by those writers).
 
 Targets of other runners, which have no evidence, keep their static
 decision. A pytest target with no record (new, or never run) is selected.
@@ -141,6 +146,7 @@ from diffcone.evidence import (
 from diffcone.indexer.scripts import RUNS_PROGRAM, RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
+    ATTRIBUTE_KINDS,
     CLASS,
     CLASS_STATEMENT,
     DECLARED,
@@ -152,6 +158,7 @@ from diffcone.model import (
     IMPORTS,
     IMPORTS_NAME,
     INSTALLED,
+    INSTALLED_ANYWHERE,
     METHOD,
     MODULE,
     OPAQUE_ATTRIBUTE,
@@ -163,6 +170,8 @@ from diffcone.model import (
     WRITES,
     SourceIndex,
     Symbol,
+    UnresolvedReference,
+    attribute_reachable,
 )
 from diffcone.planner import (
     BUILD_SCRIPTS,
@@ -438,13 +447,21 @@ class _Observers:
         self.holds: dict[str, set[str]] = defaultdict(set)
         self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
         self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
+        # An attribute read off a value of unknown type finds a module-level
+        # name only on a module such a value may be (``attribute_modules``;
+        # audit round 3, W20). The readers by a bare name or off a module
+        # (``global_names``) may find any symbol of the name.
+        self.attribute_modules = c_index.attribute_modules | other.attribute_modules
+        self._any_module_readers = c_index.any_module_readers | other.any_module_readers
+        self.global_names: dict[str, set[str]] = defaultdict(set)
+        self.global_used: dict[str, set[str]] = defaultdict(set)
         # Per variable, the code naming it only to empty or add to it
         # (``writes`` edges) or to rebind it (``rebinds``), and the code
         # naming it any other way (a read): see ``_readers``.
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         for index in (c_index, other):
             for edge in index.edges:
-                if edge.detail == INSTALLED:
+                if edge.detail in (INSTALLED, INSTALLED_ANYWHERE):
                     continue  # static planning's: the record holds what ran
                 if edge.kind in (REFERENCES, DECLARED):
                     self.readers_of[edge.target].add(edge.source)
@@ -495,7 +512,10 @@ class _Observers:
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
                     self.names_used[ref.symbol].add(ref.name)
-                    if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name in GRAPH_ATTRIBUTES:
+                    if not self._on_unknown_value(ref):
+                        self.global_names[ref.name].add(ref.symbol)
+                        self.global_used[ref.symbol].add(ref.name)
+                    if ref.kind in ATTRIBUTE_KINDS and ref.name in GRAPH_ATTRIBUTES:
                         self.graph_readers.add(ref.symbol)
             for symbol, detail in index.reflection:
                 # GRAPH_HANDLE: a ``gc`` function that hands out objects
@@ -536,23 +556,40 @@ class _Observers:
             ref.symbol
             for index in (c_index, other)
             for ref in index.unresolved
-            if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name in ("instance", "cls")
+            if ref.kind in ATTRIBUTE_KINDS and ref.name in ("instance", "cls")
         }
         self.module_hands_on = {
             ref.symbol
             for index in (c_index, other)
             for ref in index.unresolved
-            if ref.kind == UNRESOLVED_ATTRIBUTE and ref.name == "module"
+            if ref.kind in ATTRIBUTE_KINDS and ref.name == "module"
         } | {
             symbol
             for index in (c_index, other)
             for symbol, detail in index.reflection
             if detail == ".modules"
         }
+        # Code that may obtain a module the test runner holds and hand it on
+        # (``_module_holders``), in test code or not.
+        self._module_handers = {
+            ref.symbol
+            for index in (c_index, other)
+            for ref in index.unresolved
+            if ref.kind in ATTRIBUTE_KINDS and ref.name in ("module", "obj")
+        } | {
+            symbol
+            for index in (c_index, other)
+            for symbol, detail in index.reflection
+            if detail == ".modules"
+        }
+        self._module_holders_of: dict[str, frozenset[str] | None] = {}
+        self._runner_held: set[str] | None = None
         self.module_hands_on = {s for s in self.module_hands_on if self._in_test_code(s)}
         self.sites = sorted(set(self.sites))
         self.members = _members_by_container(set(self.symbols))
-        self.reach = _ImportReach(c_index, other)
+        # Code that puts objects on a module only inside tests is seen by a
+        # lookup there only in a test that ran it (W24).
+        self.reach = _ImportReach(c_index, other, lambda w: not self._written_in_tests({w}))
         self.bases, self.subclasses = _class_graph((c_index, other))
 
         # Whether a module that uses pytest added, deleted or redefined a
@@ -622,8 +659,102 @@ class _Observers:
         )
         self._forward_of: dict[frozenset[str], frozenset[str]] = {}
         self._symbols_named: dict[str, set[str]] | None = None
+        # The same, for an attribute read off a value of unknown type (W20).
+        self._attribute_named: dict[str, set[str]] = {}
 
     # -- recording --------------------------------------------------------------
+
+    def _on_unknown_value(self, ref: UnresolvedReference) -> bool:
+        """Whether ``ref`` reads an attribute off a value of unknown type,
+        which is a module only if it is one of ``attribute_modules`` (as
+        planner._on_unknown_value)."""
+        if ref.kind != UNRESOLVED_ATTRIBUTE:
+            return False
+        symbol = self.symbols.get(ref.symbol)
+        return symbol is None or symbol.module not in self._any_module_readers
+
+    def _runner_modules(self) -> set[str]:
+        """The modules the test runner imports and can hand to other code
+        (``request.module``, a collector's ``obj``): test modules,
+        conftests, and those defining a test's lifecycle dependencies."""
+        if self._runner_held is None:
+            held = self.test_code.modules | self.test_code.conftests
+            for dep in self.test_code.users:
+                symbol = self.symbols.get(dep)
+                if symbol is not None:
+                    held.add(symbol.module)
+            self._runner_held = held
+        return self._runner_held
+
+    def _matched(self, symbol: Symbol | None, name: str) -> tuple[set[str], set[str]]:
+        """The code reading ``name`` by name that may find ``symbol``: (the
+        readers, and those that find it only on a module the test runner
+        hands out, which ``_module_guard`` guards). A module-level name is
+        found by an attribute read off a value of unknown type only on a
+        module such a value may be (audit round 3, W20)."""
+        matched = self.by_name.get(name, set())
+        if symbol is None or attribute_reachable(symbol, self.attribute_modules):
+            return set(matched), set()
+        plain = set(self.global_names.get(name, set()))
+        if symbol.module in self._runner_modules():
+            return plain, matched - plain
+        return plain, set()
+
+    def _module_guard(
+        self, matched: set[str], module: str, change: SymbolChange | None, label: str
+    ) -> set[str]:
+        """Readers that find a module-level name of ``module``, a module the
+        test runner holds, only on a value of unknown type: those that are
+        functions or methods meet the change only in a test that also ran
+        code that can obtain the module and hand it on
+        (``_module_holders``); the rest are returned, to be read as now."""
+        if not matched:
+            return matched
+        builders = self._module_holders(module)
+        if builders is None:
+            return matched
+        rest: set[str] = set()
+        for reader in sorted(matched):
+            symbol = self.symbols.get(reader)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+                rest.add(reader)
+                continue
+            why = Reason(
+                RULE_EXECUTED_READER,
+                f"{reader} reads {label} by name, on a value only code obtaining {module} "
+                "can hand it",
+                (),
+                change.id if change is not None else None,
+                change.changes if change is not None else (),
+            )
+            self.guarded[reader].append((builders, frozenset(), why))
+        return rest
+
+    def _module_holders(self, module: str) -> frozenset[str] | None:
+        """The code that can obtain ``module``, held by the test runner, and
+        hand it to other code: a read of ``.module`` or ``.obj`` (pytest's
+        request, a node, a collector), of ``sys.modules``, a module named at
+        run time, a graph walk, a reference to the module as a value. None
+        unless each is a function or method that never ran during an import
+        or outside every test: otherwise what it obtained may serve any
+        later test."""
+        if module in self._module_holders_of:
+            return self._module_holders_of[module]
+        builders = set(self._module_handers) | self.module_getters | self.graph_readers
+        builders |= set(self.table_getters)
+        builders |= self.readers_of.get(module, set())
+        ev = self.evidence
+        found: frozenset[str] | None = frozenset(builders)
+        for builder in builders:
+            symbol = self.symbols.get(builder)
+            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+                found = None
+                break
+            if builder in ev.import_phase or builder in ev.import_by or builder in ev.hook_phase:
+                found = None
+                break
+        self._module_holders_of[module] = found
+        return found
 
     def _names_test_module(self, name: str) -> bool:
         """Whether importing ``name`` may yield a test module or conftest, or
@@ -676,9 +807,15 @@ class _Observers:
         if key not in self._forward_of:
             if self._symbols_named is None:
                 self._symbols_named = defaultdict(set)
+                self._attribute_named = defaultdict(set)
+                runner = self._runner_modules()
                 for symbol in self.symbols.values():
                     if symbol.kind in (FUNCTION, METHOD, CLASS) and not _is_dunder(symbol.name):
                         self._symbols_named[symbol.name].add(symbol.id)
+                        if symbol.module in runner or attribute_reachable(
+                            symbol, self.attribute_modules
+                        ):
+                            self._attribute_named[symbol.name].add(symbol.id)
             seen: set[str] = set()
             stack = sorted(key)
             while stack:
@@ -702,7 +839,10 @@ class _Observers:
                     else:
                         stack.append(holder)
                 for name in self.names_used.get(current, ()):
-                    stack.extend(self._symbols_named.get(name, ()))
+                    if name in self.global_used.get(current, ()):
+                        stack.extend(self._symbols_named.get(name, ()))
+                    else:
+                        stack.extend(self._attribute_named.get(name, ()))
             self._forward_of[key] = frozenset(seen)
         return self._forward_of[key]
 
@@ -899,7 +1039,8 @@ class _Observers:
                 for cls in family:
                     out |= self._called_by.get(cls, set())
         elif symbol.kind in (FUNCTION, METHOD) and by_name:
-            out |= self.by_name.get(symbol.name, set())
+            plain, held = self._matched(symbol, symbol.name)
+            out |= plain | held
         out.discard(symbol.id)
         return out
 
@@ -1488,13 +1629,21 @@ class _Observers:
             readers -= self.rebind_sites.get(target, set())
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
-            matched = self.by_name.get(name, set()) - readers - {target}
             symbol = self.symbols.get(target)
+            matched, held = self._matched(symbol, name)
+            matched -= readers | {target}
+            own = change is not None and target == change.id
             container = self.symbols.get(symbol.container) if symbol and symbol.container else None
             if container is not None and container.kind == CLASS:
-                own = change is not None and target == change.id
                 matched = self._guard(
                     matched, container.id, change, label if own else f"{label} via {target}"
+                )
+            if symbol is not None and held:
+                matched |= self._module_guard(
+                    held - readers - {target},
+                    symbol.module,
+                    change,
+                    label if own else f"{label} via {target}",
                 )
             readers |= matched
         readers.discard(target)

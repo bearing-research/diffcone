@@ -49,7 +49,7 @@ import functools
 import gc
 import re
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
@@ -80,6 +80,7 @@ from diffcone.indexer import build_index
 from diffcone.indexer.scripts import RUNS_SCRIPT
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
+    ANY_MODULE,
     CLASS,
     DECLARED,
     DEFINED_IN,
@@ -88,11 +89,13 @@ from diffcone.model import (
     IMPORTS,
     IMPORTS_NAME,
     INSTALLED,
+    INSTALLED_ANYWHERE,
     LIFECYCLE,
     METHOD,
     MODULE,
     REBINDS,
     REFERENCES,
+    UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
     VARIABLE,
@@ -102,6 +105,7 @@ from diffcone.model import (
     SnapshotInfo,
     SourceIndex,
     UnresolvedReference,
+    attribute_reachable,
 )
 from diffcone.snapshot import (
     BUILD_SCRIPTS,
@@ -649,6 +653,9 @@ MUTATED_BY = "mutated_by"
 # function, a class's constructor and special methods, a variable holding a
 # function), what an unresolved call may be, what the project declares.
 _CALL_KINDS = frozenset({REFERENCES, UNRESOLVED_NAME_MATCH, DECLARED})
+# Edge details that are no call: a write in place, an object installed in
+# ``sys.modules``.
+_NO_CALL = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
 
 
 def _import_call_effects(
@@ -684,11 +691,7 @@ def _import_call_effects(
         if node in module_nodes and parent[node] is not None:
             continue
         for target, edge, revs in graph.forward.get(node, ()):
-            if (
-                edge.kind in _CALL_KINDS
-                and edge.detail not in (MUTATED_BY, INSTALLED)
-                and target not in parent
-            ):
+            if edge.kind in _CALL_KINDS and edge.detail not in _NO_CALL and target not in parent:
                 parent[target] = (node, edge, revs)
                 queue.append(target)
     return effects
@@ -717,7 +720,7 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
     added: list[tuple[Edge, tuple[str, ...]]] = []
     for source, adj in list(graph.forward.items()):
         for target, edge, revs in adj:
-            if edge.kind not in _CALL_KINDS or edge.detail in (MUTATED_BY, INSTALLED):
+            if edge.kind not in _CALL_KINDS or edge.detail in _NO_CALL:
                 continue
             if target in module_nodes:
                 continue
@@ -753,7 +756,7 @@ def _call_steps(steps: list[Step]) -> list[Step]:
         if _is_name_node(source) and out and out[-1].target == source:
             source = out.pop().source
         if _is_name_node(target):
-            pending = target[len(_name_node("")) :]
+            pending = _matched_name(target)
             out.append(Step(source, target, CALLED_BY, "", step.revisions))
             continue
         detail = f"by name match on {pending!r}" if pending is not None else ""
@@ -781,7 +784,7 @@ def _effect_path(
         elif edge.kind == DECLARED and rule == RULE_DEPENDENCY:
             rule = RULE_DECLARED_DEPENDENCY
         if _is_name_node(caller):
-            pending = caller[len(_name_node("")) :]
+            pending = _matched_name(caller)
             node = caller
             continue
         if pending is not None:
@@ -936,6 +939,10 @@ def plan_from_indexes(
 
     graph = _Graph()
     union = _union(base.edges, head.edges)
+    if seeds is not None:
+        # Evidence mode's escalation: the record shows what an object
+        # installed under a name nothing bounds ran (W25).
+        union = {e: r for e, r in union.items() if e.detail != INSTALLED_ANYWHERE}
     for edge, revs in union.items():
         graph.add(edge, revs)
 
@@ -1048,23 +1055,39 @@ def plan_from_indexes(
     # ``__eq__``) are excluded: they exist on nearly every class and bound
     # nothing; constructors are reached through explicit class references.
     # Dynamic references are pseudo-seeds.
+    #
+    # An attribute read off a value of unknown type (``v.real``) finds a
+    # module-level name only through the module object, so it matches the
+    # module-level symbols of the modules such a value may be
+    # (``SourceIndex.attribute_modules``: escaped, held through a handle,
+    # what those reach; and the modules the test runner imports and hands
+    # out, ``request.module``), and members of classes whatever the
+    # receiver: it goes to ``name:.<n>`` (audit round 3, W20). A bare name,
+    # or a name looked up on a module that does not bind it, may be any
+    # symbol of that name: ``name:<n>``.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
+    attribute_by_name: dict[str, list[str]] = defaultdict(list)
     runner_only = _runner_only_classes(base, head, discovered, union)
+    reachable = _attribute_modules(base, head, targets, known_symbols)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
         if symbol.kind != MODULE and not _is_dunder(symbol.name):
             if _inside(symbol_id, runner_only, base, head):
                 continue  # only the test runner can hold an instance: see below
             symbols_by_name[symbol.name].append(symbol_id)
-    for name, symbols in symbols_by_name.items():
-        for symbol_id in symbols:
-            graph.add(Edge(_name_node(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
-            # Whatever obtains a class this way can call it, which runs the
-            # constructor its MRO resolves to (a resolved class reference gets
-            # the same edges from the indexer). The hooks are dunders, so no
-            # name matches them directly.
-            for hook, revs in _constructor_hooks(symbol_id, base, head):
-                graph.add(Edge(_name_node(name), hook, UNRESOLVED_NAME_MATCH, "constructor"), revs)
+            if attribute_reachable(symbol, reachable):
+                attribute_by_name[symbol.name].append(symbol_id)
+    for node_of, by_name in ((_name_node, symbols_by_name), (_attribute_node, attribute_by_name)):
+        for name, symbols in by_name.items():
+            for symbol_id in symbols:
+                graph.add(Edge(node_of(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
+                # Whatever obtains a class this way can call it, which runs
+                # the constructor its MRO resolves to (a resolved class
+                # reference gets the same edges from the indexer). The hooks
+                # are dunders, so no name matches them directly.
+                for hook, revs in _constructor_hooks(symbol_id, base, head):
+                    graph.add(Edge(node_of(name), hook, UNRESOLVED_NAME_MATCH, "constructor"), revs)
+    any_module_readers = base.any_module_readers | head.any_module_readers
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
     # Dynamic references that see any change, not only their import closure:
@@ -1087,9 +1110,12 @@ def plan_from_indexes(
             elif ref.detail.endswith(EXTERNAL_WRITTEN):
                 unbounded_dynamic.setdefault(ref.symbol, "written")
         elif ref.name in symbols_by_name and not _is_dunder(ref.name):
-            graph.add(
-                Edge(ref.symbol, _name_node(ref.name), UNRESOLVED_NAME_MATCH, ref.detail), revs
+            node = (
+                _attribute_node(ref.name)
+                if _on_unknown_value(ref, any_module_readers, base, head)
+                else _name_node(ref.name)
             )
+            graph.add(Edge(ref.symbol, node, UNRESOLVED_NAME_MATCH, ref.detail), revs)
         pending_unresolved.append((ref, revs))
 
     # Targets join the graph as nodes with explicit dependency edges.
@@ -1314,17 +1340,22 @@ def plan_from_indexes(
     affected_by_name = {
         name: tuple(s for s in symbols if s in mode) for name, symbols in symbols_by_name.items()
     }
-    unresolved_records = [
-        UnresolvedRecord(
-            ref.symbol,
-            ref.kind,
-            ref.name,
-            ref.detail,
-            revs,
-            tuple(s for s in affected_by_name.get(ref.name, ()) if s != ref.symbol)
-            if ref.kind != UNRESOLVED_DYNAMIC
-            else (),
+    affected_by_attribute = {
+        name: tuple(s for s in symbols if s in mode) for name, symbols in attribute_by_name.items()
+    }
+
+    def matched(ref: UnresolvedReference) -> tuple[str, ...]:
+        if ref.kind == UNRESOLVED_DYNAMIC:
+            return ()
+        by_name = (
+            affected_by_attribute
+            if _on_unknown_value(ref, any_module_readers, base, head)
+            else affected_by_name
         )
+        return tuple(s for s in by_name.get(ref.name, ()) if s != ref.symbol)
+
+    unresolved_records = [
+        UnresolvedRecord(ref.symbol, ref.kind, ref.name, ref.detail, revs, matched(ref))
         for ref, revs in pending_unresolved
     ]
 
@@ -1479,9 +1510,23 @@ def _runner_dependency_fallbacks(
 
 
 class _ImportReach:
-    """Transitive import closure of modules, over both revisions."""
+    """Transitive import closure of modules, over both revisions: what a
+    module's globals can name. A module other code puts objects on (an
+    attribute stored, the module handed on, another object installed under
+    its name: ``SourceIndex.module_writers``) can hold whatever that code's
+    module can name, so the closure follows from it to the writer's module
+    too, and to the modules of code that may write any module (audit round
+    3, W24)."""
 
-    def __init__(self, base: SourceIndex, head: SourceIndex) -> None:
+    def __init__(
+        self,
+        base: SourceIndex,
+        head: SourceIndex,
+        writer: Callable[[str], bool] | None = None,
+    ) -> None:
+        """``writer``: which writers count (evidence mode leaves out code that
+        ran only inside tests: what it stores is seen in a test that ran
+        it)."""
         self.module_of: dict[str, str] = {}
         self.imports_of: dict[str, set[str]] = defaultdict(set)
         for index in (base, head):
@@ -1493,6 +1538,18 @@ class _ImportReach:
                     source_module = self.module_of.get(edge.source)
                     if source_module is not None:
                         self.imports_of[source_module].add(edge.target)
+        self._anywhere: set[str] = set()
+        for index in (base, head):
+            for module, writers in index.module_writers.items():
+                found = {
+                    self.module_of[w]
+                    for w in writers
+                    if w in self.module_of and (writer is None or writer(w))
+                }
+                if module == ANY_MODULE:
+                    self._anywhere |= found
+                else:
+                    self.imports_of[module] |= found - {module}
         self._closures: dict[str, set[str]] = {}
 
     def closure_of(self, symbol_id: str) -> set[str]:
@@ -1500,8 +1557,8 @@ class _ImportReach:
         if module is None:
             return set()
         if module not in self._closures:
-            seen = {module}
-            stack = [module]
+            seen = {module, *self._anywhere}
+            stack = [module, *self._anywhere]
             while stack:
                 for target in self.imports_of.get(stack.pop(), ()):
                     if target not in seen:
@@ -1515,8 +1572,52 @@ def _name_node(name: str) -> str:
     return f"name:{name}"
 
 
+def _attribute_node(name: str) -> str:
+    """The name-match pseudo-node of an attribute read off a value of
+    unknown type (see plan_from_indexes)."""
+    return f"name:.{name}"
+
+
 def _is_name_node(node_id: str) -> bool:
     return node_id.startswith("name:")
+
+
+def _matched_name(node_id: str) -> str:
+    """The name a name-match pseudo-node matches on."""
+    return node_id[len("name:") :].removeprefix(".")
+
+
+def _on_unknown_value(
+    ref: UnresolvedReference, any_module_readers: set[str], base: SourceIndex, head: SourceIndex
+) -> bool:
+    """Whether ``ref`` reads an attribute off a value of unknown type that
+    can be a module only through ``SourceIndex.attribute_modules``: not a
+    bare name, not a name looked up on a module, not in a module holding a
+    module named at run time."""
+    if ref.kind != UNRESOLVED_ATTRIBUTE:
+        return False
+    symbol = head.symbols.get(ref.symbol) or base.symbols.get(ref.symbol)
+    return symbol is None or symbol.module not in any_module_readers
+
+
+def _attribute_modules(
+    base: SourceIndex, head: SourceIndex, targets: list[Target], known_symbols: set[str]
+) -> set[str]:
+    """What a value of unknown type may be (SourceIndex.attribute_modules,
+    over both revisions), and the modules the test runner imports and can
+    hand out (``request.module``, a collector's ``obj``, the plugin
+    manager): those of each target's entry and lifecycle dependencies, and
+    every ``conftest``."""
+    found = base.attribute_modules | head.attribute_modules
+    for target in targets:
+        for dep in (target.entry_symbol, *target.lifecycle_dependencies):
+            symbol = head.symbols.get(dep) or base.symbols.get(dep)
+            if symbol is not None:
+                found.add(symbol.id if symbol.kind == MODULE else symbol.module)
+    for module in known_symbols:
+        if module.rsplit(".", 1)[-1] == "conftest":
+            found.add(module)
+    return found
 
 
 def _constructor_hooks(

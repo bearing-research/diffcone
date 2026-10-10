@@ -55,6 +55,7 @@ from diffcone.model import (
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
+    UNRESOLVED_MODULE_ATTRIBUTE,
     UNRESOLVED_NAME,
     VARIABLE,
     Edge,
@@ -307,6 +308,20 @@ class Resolver(FirstPass):
         if self._bases_final:
             cscope.mro = result
         return result
+
+    def pickling_hooks(self) -> list[str]:
+        """Every in-scope method pickling runs without naming it
+        (references.PICKLING_HOOKS)."""
+        if self._pickling_hooks is None:
+            from diffcone.indexer.references import PICKLING_HOOKS
+
+            self._pickling_hooks = sorted(
+                symbol
+                for cscope in self.class_scopes.values()
+                for name, symbol in cscope.members.items()
+                if name in PICKLING_HOOKS
+            )
+        return self._pickling_hooks
 
     def lookup_in_class(
         self, class_id: str, attr: str, *, skip_self: bool = False, dispatch: bool = False
@@ -759,7 +774,10 @@ class Resolver(FirstPass):
             if self._module_in_scope(module.split(".")[0]):
                 self.out.unresolved.add(
                     UnresolvedReference(
-                        source, UNRESOLVED_ATTRIBUTE, module.rsplit(".", 1)[-1], f"import {module}"
+                        source,
+                        UNRESOLVED_MODULE_ATTRIBUTE,
+                        module.rsplit(".", 1)[-1],
+                        f"import {module}",
                     )
                 )
             else:
@@ -907,14 +925,14 @@ class Resolver(FirstPass):
         if not binding.module:
             # Bound by a relative import above the top-level package (see
             # _import_edges, which records the import as unbounded).
-            return Unresolved(UNRESOLVED_ATTRIBUTE, binding.attr or "")
+            return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, binding.attr or "")
         if not self._module_in_scope(binding.module):
             if self._module_in_scope(binding.module.split(".")[0]):
                 # ``pkg.missing`` inside an analysed package: not an external
                 # dependency, but nothing we can see either (deleted module,
                 # compiled extension, generated code).
                 name = binding.attr or binding.module.rsplit(".", 1)[-1]
-                return Unresolved(UNRESOLVED_ATTRIBUTE, name)
+                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, name)
             return External(binding.module)
         node: Node = ModuleNode(binding.module)
         if binding.attr is not None:
@@ -922,7 +940,7 @@ class Resolver(FirstPass):
             # (a compiled extension) resolves through itself: stop there.
             key = (binding.module, binding.attr)
             if key in self._resolving_bindings:
-                return Unresolved(UNRESOLVED_ATTRIBUTE, binding.attr)
+                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, binding.attr)
             self._resolving_bindings.add(key)
             try:
                 node = self._step(node, binding.attr)
@@ -955,7 +973,7 @@ class Resolver(FirstPass):
                     return Resolved(shadow.symbol, shadow.detail, also=(sub,))
                 return ModuleNode(sub)
             if target is None:
-                return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, attr)
             found = self._lookup_in_module(target, attr, set())
             if found is None or isinstance(found, Unresolved):
                 lazy = target.members.get("__getattr__")
@@ -964,7 +982,13 @@ class Resolver(FirstPass):
                     # does not bind (lazy loading): the reference depends on it,
                     # and stays bounded by the name for what it hands back.
                     return Resolved(lazy, uncertain_attr=attr)
-            return found if found is not None else Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+            if found is None:
+                # Looked up on a module that binds nothing of that name: what
+                # finds it there was put on the module (W20).
+                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, attr)
+            if isinstance(found, Unresolved):
+                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, found.name)
+            return found
         if isinstance(node, External):
             return node
         if isinstance(node, Resolved):
@@ -1122,8 +1146,17 @@ class Resolver(FirstPass):
             if node.symbol != source:
                 self.out.edges.add(Edge(source, node.symbol, kind, node.detail))
             if node.uncertain_attr:
+                # On a module (its PEP 562 ``__getattr__``), or on a class
+                # whose MRO has a base the index cannot see.
+                lazy = self.index.symbols.get(node.symbol)
+                on_module = (
+                    lazy is not None
+                    and lazy.name == "__getattr__"
+                    and lazy.container == lazy.module
+                )
+                kind = UNRESOLVED_MODULE_ATTRIBUTE if on_module else UNRESOLVED_ATTRIBUTE
                 self.out.unresolved.add(
-                    UnresolvedReference(source, UNRESOLVED_ATTRIBUTE, node.uncertain_attr, chain)
+                    UnresolvedReference(source, kind, node.uncertain_attr, chain)
                 )
             for symbol_id, detail in node.overrides:
                 if symbol_id != source:

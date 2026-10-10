@@ -48,6 +48,14 @@ counts as a possible change:
   unpickler's result, ``pkgutil.resolve_name``/``pydoc.locate`` by a name
   nothing bounds, and an element of a ``gc`` object list (``OBJECTS``) are
   an object of any module, a table included.
+* every handle is recorded as well, however it is used (``HANDLE``), with
+  every string naming a module (``"pkg.mod"``, ``"pkg.mod:attr"``; not a
+  patch target, a logger's name, a comparison or a docstring), which code
+  the analysis cannot see may import and hand back: a value of unknown
+  type may be such a module (audit round 3, W20). A patch undone after the
+  test (``monkeypatch.setattr``, ``mock.patch``, ``patch.object``) is
+  marked beside its STORE (``SCOPED``): it puts nothing on a module for
+  later code (W24).
 * ``globals()``, ``vars()``/``locals()`` without arguments, and ``exec``/
   ``eval`` of code that is not a literal reach this module's namespace, and
   code ``exec`` runs can reach what the module's globals can name; given a
@@ -155,7 +163,9 @@ SAFE_BUILTINS = frozenset(
 )
 
 # Calls whose result is a module named by their first argument.
-_IMPORT_CALLS = frozenset({"importlib.import_module", "importlib.__import__"})
+_IMPORT_CALLS = frozenset(
+    {"importlib.import_module", "importlib.__import__", "pytest.importorskip"}
+)
 
 # Calls whose result is a new, empty module object, no module any code
 # imported. (``importlib.util.module_from_spec`` is not one: once its loader
@@ -179,6 +189,16 @@ _UNPICKLERS = frozenset(
     }
 )
 _UNPICKLER_CLASSES = frozenset({"pickle.Unpickler", "_pickle.Unpickler", "dill.Unpickler"})
+UNPICKLER_CALLS, UNPICKLER_CLASSES = _UNPICKLERS, _UNPICKLER_CLASSES
+_PICKLER_DUMPS = frozenset(f"{m}.dumps" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
+# Calls that load a module from a file by path: the path's (argument
+# position, keyword).
+FILE_LOADERS = {
+    "importlib.util.spec_from_file_location": (1, "location"),
+    "importlib.machinery.SourceFileLoader": (1, "path"),
+    "importlib.machinery.SourcelessFileLoader": (1, "path"),
+    "imp.load_source": (1, "pathname"),
+}
 _RESOLVERS = frozenset({"pkgutil.resolve_name", "pydoc.locate"})
 
 # ``gc`` functions and attributes that hand out a list of objects nothing
@@ -216,6 +236,16 @@ AS = "as"
 # An object installed in ``sys.modules`` under the name ``target`` (INSTALL:
 # for good; SWAP: for a test, ``monkeypatch.setitem``, ``patch.dict``).
 INSTALL, SWAP = "install", "swap"
+# A module object obtained here other than by an import statement (a handle:
+# ``import_module("m")``, ``sys.modules[...]``, a ``module_from_spec`` copy,
+# an unpickled object, a ``gc`` list's element), however it is then used: a
+# value of unknown type may be that module (``Indexer._attribute_modules``,
+# audit round 3, W20).
+HANDLE = "handle"
+# A STORE that lasts one test (``monkeypatch.setattr``, ``mock.patch``,
+# ``patch.object``): beside the STORE record, for what may put objects on a
+# module for later code (``SourceIndex.module_writers``, W24).
+SCOPED = "scoped"
 ANY = "*"
 # A module created here (``types.ModuleType(name)``): no module any other
 # code holds, so nothing done to it is recorded, unless it is installed in
@@ -236,7 +266,8 @@ class UseRecord:
     name off it is handed on); ``install``/``swap``/``as`` (installed in
     ``sys.modules``), ``held``/``loader``/``call`` (what only this module
     holds, and the bounds that hold while no other code reaches it: see the
-    constants). ``target`` is an absolute dotted name, ``*``
+    constants); ``handle`` (a module object obtained here) and ``scoped`` (a
+    store undone after the test). ``target`` is an absolute dotted name, ``*``
     (any module) or ``*.NAME``, ``PREFIX*`` or ``PREFIX*.NAME`` (any module
     whose name starts with PREFIX), or ``@NAME`` (a name this module may have
     from a star import). ``sources`` are this module's literal names a
@@ -843,6 +874,12 @@ class _Scanner:
             and isinstance(func.value, ast.Call)
             and self._canonical(func.value.func) & _UNPICKLER_CLASSES
         ):
+            if (
+                isinstance(first, ast.Call)
+                and self._canonical(first.func) & _PICKLER_DUMPS
+                and names & _UNPICKLERS
+            ):
+                return None  # a round trip: a copy of what the code holds
             return {ANY}, ()
         if names & _RESOLVERS:
             found, sources = self._module_name(first)
@@ -1244,6 +1281,8 @@ class _Scanner:
                 self._call(node)
             if not self.want_records:
                 continue
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                self._named_module(node)
             if isinstance(node, (ast.Assign, ast.AugAssign, ast.Call)):
                 self._install(node)
             if (
@@ -1260,6 +1299,10 @@ class _Scanner:
                     self._globals(node, node.value, None, (), (), node.attr)
             if (handle := self._handle(node)) is not None:
                 targets, sources = handle
+                for target in sorted(targets):
+                    if target != FRESH:
+                        found = ANY if target == OBJECTS else target
+                        self._record(HANDLE, found, sources, self._writer(node))
                 if OBJECTS in targets:
                     self._objects(node)
                 else:
@@ -1274,6 +1317,29 @@ class _Scanner:
             for writer in self.loaders:
                 self._record(USE, ANY, (), writer)
         return self.out
+
+    def _named_module(self, node: ast.Constant) -> None:
+        """A string naming a module (``"pkg.mod"``, ``"pkg.mod:attr"``): code
+        the analysis cannot see may import the module by it and hand it back
+        (``import_string``, a framework's settings, an entry point), so it is
+        a handle (``HANDLE``; the indexer keeps the names of in-scope modules
+        only). Not one a comparison tests, a docstring, a patch target, or a
+        logger's name."""
+        text = node.value
+        if not isinstance(text, str) or "." not in text and ":" not in text:
+            return
+        name = text.split(":", 1)[0]
+        parts = name.split(".")
+        if len(parts) < 2 and ":" not in text or not all(p.isidentifier() for p in parts):
+            return
+        p = self.parents.get(id(node))
+        if p is None or isinstance(p, (ast.Expr, ast.Compare)):
+            return
+        if isinstance(p, ast.Call) and p.args and p.args[0] is node:
+            callee = _chain(p.func) or []
+            if callee and (_patch_like(callee) or callee[-1] in ("getLogger", "get_logger")):
+                return
+        self._record(HANDLE, name, (), self._writer(node))
 
     def _objects(self, node: ast.AST) -> None:
         """A list of objects from anywhere (``gc.get_objects()``): ``len()``
@@ -1354,8 +1420,10 @@ class _Scanner:
                     for k in node.keywords:
                         if k.arg is not None:
                             self._record(STORE, f"{target}.{k.arg}", (), writer)
+                            self._record(SCOPED, f"{target}.{k.arg}", (), writer)
                 else:
                     self._record(STORE, target, (), writer)
+                    self._record(SCOPED, target, (), writer)
         canonical = self._canonical(node.func)
         if canonical & {"runpy.run_path"}:
             self._record(USE, ANY, (), self._writer(node))
@@ -1723,6 +1791,10 @@ class _Scanner:
                     else:
                         for name in names:
                             self._emit(node, targets, sources + more, (*chain, name), STORE)
+                            if builtin is None:
+                                # ``monkeypatch.setattr``, ``patch.object``:
+                                # undone after the test.
+                                self._emit(node, targets, sources, (*chain, name), SCOPED)
                     return
                 if builtin == "vars":
                     if targets is not None:

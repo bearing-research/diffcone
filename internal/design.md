@@ -273,7 +273,17 @@ Further rules (pre-release audit, round 2):
   logging.getLogger(name))`; only the call counts, not the annotation).
   A third-party value's methods are those of a third-party class or of an
   in-scope class deriving from one (`logging.setLoggerClass`), so only
-  those are matched; a test fake of the same name is not. A module's own top-level
+  those are matched; a test fake of the same name is not. A method called on
+  an instance attribute (`self._client.get(...)`) is likewise a method of
+  what the attribute holds when every write of `self._client`, in any
+  method of the class, of a subclass or of a class whose bases the index
+  cannot resolve, binds a construction of a plain in-scope class (no
+  decorator, metaclass or in-scope `__new__` in its MRO) or a third-party
+  value (a call into a module outside the roots, or a project factory
+  returning one); nothing writes the attribute otherwise (through another
+  receiver, `setattr`, `__dict__`), binds it at class level or customises
+  attribute access in the family (audit round 3, W21). A parameter, a
+  local or anything else bound there leaves it any method of that name. A module's own top-level
   statements naming its variable are part of the variable's hash and add no
   edge. Not modelled: an object kept under another name and written
   through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),
@@ -529,10 +539,17 @@ W18):
   on the installing code (an edge from it, `installed in sys.modules`: its
   importers get what that code put there; the module runs none of it, so
   the edge is no call for import-time effects or for evidence mode's view of
-  what code can run). Under a name nothing bounds, only the external write
-  counts: the install changes no module's own tables, and no in-scope
-  module is singled out as depending on the installer (static planning
-  does not see an import of such a name get it). `sys.modules.update` with
+  what code can run). Under a name nothing bounds (or only by a literal
+  prefix), the install changes no module's own tables, but an import of
+  any in-scope module (any under the prefix) may get the object: in static
+  planning every such module depends on the installing code (an edge
+  `installed in sys.modules under a name nothing bounds`, audit round 3,
+  W25, the user's decision: boltons' `deprutils.deprecate_module_member`
+  installs under its parameter, so a change to it, or to what it runs,
+  selects every test importing a boltons module; none of the census
+  commits touched it). Evidence mode follows neither kind of install
+  edge, in its own rules or in its static escalation: the record shows
+  what an installed object ran. `sys.modules.update` with
   a dict display installs the names it gives, and any module handed on
   otherwise; `sys.modules = ...` is any module. A module handle installed
   under names literals give (`sys.modules["_nb_ser"] = copy`) is that
@@ -825,7 +842,30 @@ Unknown is never treated as unaffected:
   in-scope ancestors, as a resolved class reference does: whatever obtains
   the class by that name (`m.Alt()` on a receiver of unknown type, a
   lazy-export `__getattr__`, `getattr(import_module(...), "Alt")`) can
-  call it. The report lists each
+  call it. An attribute read off a value of unknown type (`v.real`,
+  `self.app`) finds a module-level name only through the module object
+  (audit round 3, W20), so it matches the members of classes (methods,
+  nested classes) whatever the receiver, and a module-level function,
+  class or variable only when its module is one such a value may be
+  (`SourceIndex.attribute_modules`): a module handed on (W9's escaped
+  modules) and what its imports bind (W16's reach); a module a handle
+  names (`import_module("m")`, `sys.modules[...]`, `__import__`,
+  `pytest.importorskip`, a `module_from_spec` copy), read in place or
+  held, with its submodules and reach; a module a string names
+  (`"pkg.mod"`, `"pkg.mod:attr"`; not a patch target, a logger's name, a
+  comparison or a docstring), since code the analysis cannot see may
+  import it by that string and hand it back; and the modules the test
+  runner imports and hands out (`request.module`, a collector's `obj`):
+  those of each target's entry and lifecycle dependencies, and every
+  conftest. A module named at run time by a name nothing bounds may be any
+  module: handed on, matching is not narrowed at all; held where it is
+  obtained (`import_module(name)`, `gc.get_objects()`, an unpickled
+  object), the reads of that module's code match every module. A bare name
+  nothing binds, and a name looked up on an in-scope module that does not
+  bind it (a PEP 562 `__getattr__`, a name other code puts there, a
+  missing submodule: kind `module_attribute`), match every symbol of the
+  name. The call-effect rules (`calls:` nodes, `_import_call_effects`)
+  follow the same narrowed matches. The report lists each
   unresolved reference with the matches that actually carry impact
   (`matched_affected_symbols`).
 * **Dynamic references.** A symbol containing a dynamic attribute access,
@@ -833,7 +873,36 @@ Unknown is never treated as unaffected:
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule
-  `dynamic_reference`). Reading a module's (or class's) members wholesale
+  `dynamic_reference`). A module other code puts objects on can hold what
+  that code can name, so the closure follows from it to the writer's
+  module as well (audit round 3, W24): a store of one of its attributes
+  (`m.x = v`, `setattr(m, ...)`; not `monkeypatch.setattr`, `mock.patch`
+  or `patch.object`, undone after the test), the module handed on (whoever
+  gets it may write it), an object installed for good under its name; and
+  every closure holds the modules of code that may write any module (a
+  module named at run time handed on or written to)
+  (`SourceIndex.module_writers`). An unpickler (`pickle.loads`/`load`,
+  `Unpickler(...).load()`, `cloudpickle`, `dill`, `joblib.load`) imports
+  whatever the data names and hands back any module's function or class
+  by reference, so it is a dynamic import by a name nothing bounds (W22),
+  unless the code says what the data is: a round trip (`loads(dumps(x))`,
+  or `load` of a new empty file, `tempfile.TemporaryFile()` or
+  `io.BytesIO()`, the same function `dump`s into) loads copies of what the
+  code holds and runs only pickling hooks, so it depends on every in-scope
+  `__reduce__`, `__reduce_ex__`, `__getstate__`, `__setstate__`,
+  `__getnewargs__`, `__getnewargs_ex__`, `__new__`, `__getattr__` and
+  `__getattribute__`; bytes written in the code (a literal, or a module
+  constant bound once) name their globals in their opcodes (`GLOBAL`,
+  `INST`, `STACK_GLOBAL` of literal strings): an import of each module, a
+  reference to each name, and the pickling hooks of each class (data whose
+  opcodes do not spell a name out stays unbounded);
+  so is a module loaded from a file by a path nothing bounds
+  (`importlib.util.spec_from_file_location`, `SourceFileLoader`,
+  `imp.load_source`). A literal path is the module or script it names (as
+  in `indexer/scripts.py`), a path joined to the module's own directory
+  (`Path(__file__).parent / name`) too, with a `name` parameter bounded by
+  what the call sites pass; a path with a literal prefix is an import of
+  every in-scope module under it. Reading a module's (or class's) members wholesale
   is a lookup by such a name too: `mod.__dict__[n]`,
   `mod.__dict__.get(n)`, `mod.__dict__.items()`,
   `sys.modules["pkg.mod"].__dict__[n]` and `inspect.getmembers(mod)`

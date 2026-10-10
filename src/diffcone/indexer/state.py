@@ -60,6 +60,7 @@ class IndexerState:
         self._descendants: dict[str, tuple[str, ...]] = {}
         # Import bindings being resolved (guards self-referential imports).
         self._resolving_bindings: set[tuple[str, str]] = set()
+        self._pickling_hooks: list[str] | None = None
         # Top-level import name -> the analysed package it most likely means
         # under another root (see Resolver._misrooted); built on first use.
         self._misrooted_names: dict[str, str] | None = None

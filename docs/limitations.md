@@ -22,10 +22,16 @@ everything.
 **Calls through objects of unknown type are matched by name.**
 :   diffcone doesn't infer types. `self.method()` and `cls.method()` are
     resolved through the class hierarchy, but a call like `obj.run()` on an
-    object of unknown type is matched against every function and method
-    named `run`, so it's selected whenever any of them changes. Instance
-    attributes are resolved only when every assignment is a simple one in
-    `__init__`.
+    object of unknown type is matched against every method named `run`,
+    and against every module-level function, class or variable named `run`
+    in a module such an object can be: one your code passes around as a
+    value, gets by name (`importlib.import_module`, `sys.modules`, a string
+    naming it), or one pytest hands out (test modules, conftests). So it's
+    selected whenever any of those changes. Instance attributes are
+    resolved only when every assignment is a simple one in `__init__`; a
+    method called on one (`self.client.get()`) is known to be the method
+    of a class only when every assignment of the attribute creates an
+    instance of that class (or of a third-party one).
 
 **Plugins that collect files of their own.**
 :   diffcone reports the collecting plugins it recognises from your
@@ -37,8 +43,12 @@ everything.
 **Dynamic code is bounded by imports, if at all.**
 :   A function that uses `eval`, `exec`, `globals()`, `vars()` or `getattr`
     with a computed name is treated as affected by any change in the
-    modules its module imports. A module imported by a computed name
-    (`importlib.import_module(name)`) can be affected by any change at all.
+    modules its module imports, and in the modules of code that stores
+    objects on one of those modules. A module imported by a computed name
+    (`importlib.import_module(name)`), an object unpickled with
+    `pickle.loads`, and a module loaded from a file whose path is computed
+    (`importlib.util.spec_from_file_location`) can be affected by any
+    change at all.
     A name taken from a dict, list or set written in the code
     (`getattr(handlers, NAMES[key])`, the export table of a lazy
     `__getattr__`; not a parameter or local variable that happens to share
@@ -63,7 +73,9 @@ everything.
     module (`getattr(logging, name)`) is bounded unless your code may store
     something on that module, directly, by handing the module to other
     code, or by putting an object in `sys.modules` under its name; then any
-    change can affect it.
+    change can affect it. Code that puts an object in `sys.modules` for
+    good under a computed name may replace any of your modules, so without
+    a recording every test that imports one of them depends on that code.
 
 **Python programs a test starts.**
 :   A test that runs a script or module of your project in a new process

@@ -30,6 +30,15 @@ LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
 UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
 UNRESOLVED_ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
 UNRESOLVED_DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
+# ``pkg.name`` on an in-scope module that does not bind ``name`` (a PEP 562
+# ``__getattr__``, a name other code puts there, a missing submodule): the
+# receiver is a module, so the name may be any module-level symbol, of any
+# module (audit round 3, W20).
+UNRESOLVED_MODULE_ATTRIBUTE = "module_attribute"
+# Unresolved kinds that look an attribute up by name.
+ATTRIBUTE_KINDS = frozenset({UNRESOLVED_ATTRIBUTE, UNRESOLVED_MODULE_ATTRIBUTE})
+# SourceIndex.attribute_modules: any module may be a value of unknown type.
+ANY_MODULE = "*"
 OPAQUE_ATTRIBUTE = "*"  # SourceIndex.class_attributes: class-body code binding nothing by name
 # Ends the detail of a lookup on an external module that in-scope code writes
 # to (SourceIndex.external_sites). No "import" in it: details are read for that.
@@ -73,6 +82,9 @@ GRAPH_INERT = frozenset(
 # sys.modules under its name for good: importers depend on that code,
 # but the module does not run it (indexer.core._install_edges).
 INSTALLED = "installed in sys.modules"
+# The same, by code installing an object under a name nothing bounds (or
+# only by a prefix): static planning only (audit round 3, W25).
+INSTALLED_ANYWHERE = "installed in sys.modules under a name nothing bounds"
 GRAPH_HANDLE = ".<object graph module>"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
@@ -134,6 +146,17 @@ class Symbol:
     # ``clear`` on one do the same whatever it holds, so a site that only
     # calls them reads nothing of it (``writes`` edges).
     builtin_container: str = ""
+
+
+def attribute_reachable(symbol: Symbol, modules: set[str] | frozenset[str]) -> bool:
+    """Whether an attribute read off a value of unknown type (``v.real``) may
+    find ``symbol``, given what such a value may be
+    (``SourceIndex.attribute_modules``): a member of a class may be on any
+    instance, a module-level name only on its module (audit round 3,
+    W20)."""
+    if symbol.container != symbol.module:
+        return True
+    return ANY_MODULE in modules or symbol.module in modules or symbol.id in modules
 
 
 # Edge details of a reference that does not read the variable's value: a site
@@ -220,6 +243,27 @@ class SourceIndex:
     # symbols (audit round 3, W16). The planner adds what an escaped one
     # reaches to what its referrers depend on.
     module_reach: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The modules (and symbols) a value of unknown type may be, or hold as
+    # an attribute: the escaped modules, the modules a handle names
+    # (``import_module("m")``, ``sys.modules[...]``, a ``module_from_spec``
+    # copy), the modules a string handed to other code names, and what each
+    # reaches (``_attribute_reach``); ``ANY_MODULE`` when a module found at
+    # run time is handed on. An attribute read off such a value
+    # (``v.real``) reaches a module-level name only through the module
+    # object, so it is name-matched to the module-level symbols of these
+    # alone (audit round 3, W20); members of classes match whatever the
+    # receiver.
+    attribute_modules: set[str] = field(default_factory=set)
+    # Modules whose code holds a module named at run time by a name nothing
+    # bounds (``import_module(name)``, ``gc.get_objects()``, an unpickled
+    # object): an attribute read in them may be on any module.
+    any_module_readers: set[str] = field(default_factory=set)
+    # In-scope module -> the symbols whose code may put objects on it (an
+    # attribute stored, the module handed on, something installed under its
+    # name); ANY_MODULE -> those that may do so on any module. A lookup on
+    # the module may find what those can name (planner._ImportReach;
+    # audit round 3, W24).
+    module_writers: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Functions, methods and classes used as a value somewhere (passed,
     # stored, returned): code the analysis cannot see may call them. Static
     # planning uses this through the indexer; evidence mode asks whether only

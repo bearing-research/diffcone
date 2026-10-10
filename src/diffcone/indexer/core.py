@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from diffcone.indexer.dynamics import DynamicBounds
@@ -28,10 +29,12 @@ from diffcone.indexer.uses import (
     AS,
     CALL,
     DYN,
+    HANDLE,
     HELD,
     INSTALL,
     LOADER,
     MUT,
+    SCOPED,
     STORE,
     SWAP,
     USE,
@@ -39,10 +42,12 @@ from diffcone.indexer.uses import (
 )
 from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
+    ANY_MODULE,
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
     GRAPH_MODULES,
     INSTALLED,
+    INSTALLED_ANYWHERE,
     METHOD,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
@@ -544,6 +549,7 @@ class Indexer(DynamicBounds):
 
         self._reach_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
+        installs_anywhere: set[tuple[str, str]] = set()
         records = [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
         # A handle installed under a name literals give (an AS record): what
         # names that module names the handle's module too.
@@ -602,6 +608,8 @@ class Indexer(DynamicBounds):
             for module, record in records:
                 kind, target, sources = record.kind, record.target, record.sources
                 writer = self._writer_symbol(module, record.writer)
+                if kind in (HANDLE, SCOPED):
+                    continue  # what a value may be, not a use (_attribute_modules)
                 if kind == HELD:
                     # Held where only its module's code reads it, unless other
                     # code can reach the holder: then handed on.
@@ -644,6 +652,13 @@ class Indexer(DynamicBounds):
                         for m in sorted(self.scopes) if prefix else ():
                             if m.startswith(prefix):
                                 concrete(module, USE, m, writer)
+                        if kind == INSTALL:
+                            # Installed for good under a name nothing bounds
+                            # (or only by a prefix): an import of any module
+                            # it may name gets it (audit round 3, W25).
+                            installs_anywhere.update(
+                                (m, writer) for m in self.scopes if m.startswith(prefix)
+                            )
                         continue
                     concrete(module, USE, target, writer)
                     found = self._locate_target(module, target.split("."))
@@ -693,6 +708,9 @@ class Indexer(DynamicBounds):
                 break
         self._use_external = external
         self._installed = installs
+        self._installed_anywhere = installs_anywhere - installs
+        self._attribute_modules(records, changed)
+        self._module_writers(records, anything)
         for module, scope in self.scopes.items():
             scope.literal_pristine = dict(scope.literal_names)
             present = {literal_base(k) for k in scope.literal_names}
@@ -714,6 +732,85 @@ class Indexer(DynamicBounds):
                         if scope.literal_names[key] is not None:
                             scope.literal_writers[key] = frozenset(by)
                         scope.literal_names[key] = None
+
+    def _attribute_modules(
+        self, records: list[tuple[str, UseRecord]], changed: Callable[[str, str], bool]
+    ) -> None:
+        """What a value of unknown type may be, for the name matching of an
+        attribute read off one (``SourceIndex.attribute_modules``, audit
+        round 3, W20): an attribute read reaches a module-level name only
+        through the module object, and code holds a module object only
+        through an import statement (then the read resolves), by having it
+        handed on (the escaped modules), or by a handle (``HANDLE``
+        records). Each such module counts with its submodules and what its
+        imports bind (``_attribute_reach``). A module named at run time by a
+        name nothing bounds may be any module: handed on, for every read
+        (``ANY_MODULE``); held, for the reads of the module holding it
+        (``any_module_readers``)."""
+        places: set[str] = set(self.index.escaped_modules)
+        readers: set[str] = set()
+        for module, record in records:
+            if record.kind != HANDLE:
+                continue
+            target = record.target
+            if target == ANY or any(changed(module, n) for n in record.sources):
+                readers.add(module)
+                continue
+            names = [target]
+            if ANY in target:
+                prefix, _, rest = target.partition(ANY)
+                names = [m + rest for m in sorted(self.scopes) if m.startswith(prefix)]
+            for name in names:
+                for place, rest in self._locate_target(module, name.split(".")) or ():
+                    if not rest:
+                        places.add(place)
+        found: set[str] = set()
+        if any(mode == "escape" and target == ANY for mode, target, _ in self._use_external):
+            found.add(ANY_MODULE)
+        for place in sorted(places):
+            found.update(self._under(place))
+            reach = self._attribute_reach(place)
+            found |= reach.modules | reach.stars | reach.symbols
+        self.index.attribute_modules = found
+        self.index.any_module_readers = readers
+
+    def _module_writers(self, records: list[tuple[str, UseRecord]], anything: set[str]) -> None:
+        """What may put objects on each in-scope module for later code
+        (``SourceIndex.module_writers``, audit round 3, W24): a store of one
+        of its attributes (not a patch undone after the test), the module
+        (or a module above it) handed on, which whoever gets it may write,
+        and an object installed for good under its name; under a run-time
+        name nothing bounds, any module, as for the code that may change
+        the literal table a name was computed from (``anything``)."""
+        scoped = {(m, r.target, r.writer) for m, r in records if r.kind == SCOPED}
+        writers: dict[str, set[str]] = defaultdict(set)
+        writers[ANY_MODULE] |= anything
+        for module, record in records:
+            kind, target = record.kind, record.target
+            if kind not in (STORE, USE, DYN, HELD, INSTALL):
+                continue
+            if kind == STORE and (module, target, record.writer) in scoped:
+                continue
+            writer = self._writer_symbol(module, record.writer)
+            if target == ANY or target.startswith(ANY + "."):
+                writers[ANY_MODULE].add(writer)
+                continue
+            names = [target]
+            if ANY in target:
+                prefix, _, rest = target.partition(ANY)
+                names = [m + rest for m in sorted(self.scopes) if m.startswith(prefix)]
+            for name in names:
+                parts = name.split(".")
+                if kind == STORE:
+                    parts = parts[:-1]
+                for place, rest in self._locate_target(module, parts) or ():
+                    if rest:
+                        continue
+                    for m in [place] if kind in (STORE, INSTALL) else self._under(place):
+                        writers[m].add(writer)
+        self.index.module_writers = {
+            m: tuple(sorted(w - {m})) for m, w in sorted(writers.items()) if w - {m}
+        }
 
     def _under(self, module: str) -> list[str]:
         """``module`` and its submodules that are in scope."""
@@ -788,11 +885,16 @@ class Indexer(DynamicBounds):
         module's name (``sys.modules["pkg.core"] = fake``): a later import of
         it gets what the installing code put there, so the module depends on
         that code (an edge from the module: impact on it reaches its
-        importers). Under a name nothing bounds no module is singled out
-        (internal/design.md)."""
+        importers). Under a name nothing bounds, every in-scope module
+        depends on it, or every one the name's literal prefix allows (audit
+        round 3, W25; evidence mode does not follow these edges: the record
+        shows what an installed object ran)."""
         for module, writer in sorted(self._installed):
             if writer != module:
                 self.index.edges.add(Edge(module, writer, REFERENCES, INSTALLED))
+        for module, writer in sorted(self._installed_anywhere):
+            if writer != module:
+                self.index.edges.add(Edge(module, writer, REFERENCES, INSTALLED_ANYWHERE))
 
     def _module_reach(self) -> None:
         """For each module referenced as a value, what is reachable as an
@@ -877,10 +979,16 @@ class Indexer(DynamicBounds):
         """Digest of everything a module's resolution reads from other
         modules: their observable facts plus every class's resolved bases,
         and the root specs (whether ``__name__`` is a module's runtime name)."""
+        paths = {scope.path for scope in self.scopes.values()}
         material = [
             sorted(self.snapshot.source_roots),
             [[m, self.scopes[m].env_digest] for m in sorted(self.scopes)],
             [[c, cs.bases, cs.complete] for c, cs in sorted(self.class_scopes.items())],
+            # A loader of a path with a literal prefix reads which ``.py``
+            # files no module name maps to (references._file_loader).
+            sorted(
+                p for p in self.snapshot.files if p.endswith((".py", ".pyw")) and p not in paths
+            ),
         ]
         return _digest(json.dumps(material))
 

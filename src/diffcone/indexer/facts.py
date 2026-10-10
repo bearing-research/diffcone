@@ -102,7 +102,9 @@ class _ParamDynamic:
 class _AttrWrite:
     """A write of ``self.<attr>`` in a method of ``cls``. ``binding`` is what
     an ``__init__`` assignment binds (``["param", name]``, ``["strings",
-    [...]]``, ``["symbol", id]``); None for any other write."""
+    [...]]``, ``["symbol", id]``), or what an assignment in any method makes
+    (``["instance", class id]``, ``["external"]``, ``["factory", function
+    id]``: writes.py); None for any other write."""
 
     cls: str
     attr: str

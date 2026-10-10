@@ -357,7 +357,7 @@ def test_deleted_function_and_redirected_dependency(repo):
     assert "pkg.old.old_helper" in base_edges and "pkg.old.old_helper" not in head_edges
     # In head the import cannot be resolved, and that is reported rather than dropped.
     assert any(
-        u.symbol == "tests.test_old" and u.kind == "attribute" and u.revisions == ("head",)
+        u.symbol == "tests.test_old" and u.kind == "module_attribute" and u.revisions == ("head",)
         for u in plan.unresolved
     )
 

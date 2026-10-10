@@ -27,14 +27,19 @@ from diffcone.indexer.scopes import (
     _resolve_relative_name,
     _string_prefix,
 )
-from diffcone.indexer.scripts import observe_command, observe_shell, observe_string
+from diffcone.indexer.scripts import observe_command, observe_shell, observe_string, script_value
 from diffcone.indexer.syntax import (
     DYNAMIC_CALLS,
     REFLECTIVE_ATTRIBUTES,
     REFLECTIVE_BUILTINS,
     REFLECTIVE_CALLS,
 )
-from diffcone.indexer.uses import CONTAINER_MUTATORS
+from diffcone.indexer.uses import (
+    CONTAINER_MUTATORS,
+    FILE_LOADERS,
+    UNPICKLER_CALLS,
+    UNPICKLER_CLASSES,
+)
 from diffcone.indexer.writes import observe_assign, observe_augassign, observe_call
 from diffcone.model import (
     CLASS,
@@ -577,14 +582,49 @@ class _ReferenceCollector(ast.NodeVisitor):
             return ["symbol", target.symbol]
         return None
 
-    def _stash_binding(self, target: ast.expr, value: ast.expr | None) -> None:
-        if (
-            value is not None
-            and isinstance(target, ast.Attribute)
-            and self._is_self(target.value)
-            and self.scope.method.rsplit(".", 1)[-1] == "__init__"
+    def _instance_binding(self, value: ast.expr) -> list | None:
+        """What ``self.<attr> = value`` binds when ``value`` makes an object
+        of a known kind (audit round 3, W21): ``["instance", class id]`` for
+        a construction of an in-scope class, ``["external"]`` for a call
+        into a module outside the source roots, ``["factory", function
+        id]`` for a call of an in-scope function (third-party only when its
+        every return is, ``writes.returns_third_party``)."""
+        if not isinstance(value, ast.Call):
+            return None
+        parts = _flatten_chain(value.func)
+        if parts is None or (
+            parts[0] in self.scope.locals and parts[0] not in self.scope.local_imports
         ):
-            self._bindings[id(target)] = self._init_binding(value)
+            return None  # a parameter or local may hold anything
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if isinstance(target, External):
+            return ["external"]
+        if (
+            not isinstance(target, Resolved)
+            or target.detail
+            or target.receiver
+            or target.overrides
+            or target.uncertain_attr
+            or target.alternatives
+            or target.also
+        ):
+            return None
+        symbol = self.indexer.index.symbols.get(target.symbol)
+        if symbol is None:
+            return None
+        if symbol.kind == CLASS:
+            return ["instance", symbol.id]
+        if symbol.kind == FUNCTION:
+            return ["factory", symbol.id]
+        return None
+
+    def _stash_binding(self, target: ast.expr, value: ast.expr | None) -> None:
+        if value is not None and isinstance(target, ast.Attribute) and self._is_self(target.value):
+            if self.scope.method.rsplit(".", 1)[-1] == "__init__":
+                binding = self._init_binding(value) or self._instance_binding(value)
+            else:
+                binding = self._instance_binding(value)
+            self._bindings[id(target)] = binding
 
     def _bounded_hasattr(self, node: ast.Call) -> bool:
         """``hasattr(obj, name)`` with a name a literal bounds: a reference
@@ -710,6 +750,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             if receiver is None and node.args and self._is_self(node.args[0]):
                 receiver = node.args[0]
             self._reflective_write(receiver, None)
+        if self._unpickler_load(node):
+            self._unpickle(node, "Unpickler.load")
         if parts is not None:
             name = ".".join(parts)
             builtin = len(parts) == 1 and not self._is_shadowed(name)
@@ -764,6 +806,10 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._import_module(node, canonical)
             elif canonical == "runpy.run_path":
                 self._dynamic("runpy.run_path()")  # runs a file by path: anything
+            elif canonical in UNPICKLER_CALLS:
+                self._unpickle(node, canonical or "Unpickler.load")
+            elif canonical in FILE_LOADERS:
+                self._file_loader(node, canonical, FILE_LOADERS[canonical])
             if builtin and parts[0] == "vars" and node.args:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.out.attr_unbound.add((cls, "*"))
@@ -1316,6 +1362,196 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return module.name if module.is_package else module.name.rpartition(".")[0]
         return None
 
+    def _unpickler_load(self, node: ast.Call) -> bool:
+        """``pickle.Unpickler(f).load()``."""
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "load"):
+            return False
+        inner = func.value
+        if not isinstance(inner, ast.Call):
+            return False
+        parts = _flatten_chain(inner.func)
+        return parts is not None and self._canonical_name(parts) in UNPICKLER_CLASSES
+
+    def _unpickle(self, node: ast.Call, name: str) -> None:
+        """An unpickler imports whatever module the data names and hands back
+        any of its objects by reference (a function, a class, a table): an
+        import by a name nothing bounds (audit round 3, W22). Two kinds of
+        data say what they name. A round trip (``loads(dumps(x))``) loads
+        what the code dumped, objects it holds already, and runs the
+        pickling hooks of their classes, which may be any class's: it
+        depends on every in-scope ``__reduce__``, ``__setstate__`` and the
+        like. Bytes written in the code (``loads(b"...")``, a module-level
+        constant) name their globals in their opcodes: an import of each
+        module and a reference to each name, with the pickling hooks of a
+        class among them."""
+        data = node.args[0] if node.args and name != "Unpickler.load" else None
+        if data is not None and self._dumped(data):
+            for hook in self.indexer.pickling_hooks():
+                if hook != self.source:
+                    self.indexer.out.edges.add(Edge(self.source, hook, REFERENCES, "unpickled"))
+            return
+        found = _pickled_globals(self._literal_bytes(data)) if data is not None else None
+        if found is not None:
+            for module, qualname in found:
+                parts = [*module.split("."), *qualname.split(".")]
+                if not all(p.isidentifier() for p in parts):
+                    continue
+                target = self.indexer.resolve_dotted(parts)
+                if target is None:
+                    continue  # a third-party name
+                self.indexer._module_import_edge(self.source, module)
+                self.indexer._record(self.source, target, chain=f"{module}.{qualname}")
+                if isinstance(target, Resolved) and target.symbol in self.indexer.class_scopes:
+                    for hook in sorted(PICKLING_HOOKS):
+                        found_hook = self.indexer.lookup_in_class(target.symbol, hook)
+                        if isinstance(found_hook, Resolved) and not found_hook.detail:
+                            self.indexer._record(self.source, found_hook, chain=hook)
+            return
+        detail = f"{name}(): an import of what the data names"
+        if isinstance(self._parent(node), ast.Expr):
+            detail += DISCARDED_IMPORT
+        self._dynamic(detail)
+
+    def _dumped(self, data: ast.expr) -> bool:
+        """Whether ``data`` is what a pickler's ``dumps`` returns (directly,
+        or a local bound once to it), or a new, empty file this function
+        ``dump``s into (``tempfile.TemporaryFile()``, ``io.BytesIO()``)."""
+        if isinstance(data, ast.Name) and self._dumped_into(data.id):
+            return True
+        if isinstance(data, ast.Name) and data.id in self.scope.locals:
+            source = self._local_source(data.id)
+            if source is None:
+                return False
+            data = source
+        if not isinstance(data, ast.Call):
+            return False
+        parts = _flatten_chain(data.func)
+        return parts is not None and self._canonical_name(parts) in PICKLER_DUMPS
+
+    def _dumped_into(self, name: str) -> bool:
+        """Whether local ``name`` is bound once, to a new empty file, and this
+        function hands it to a pickler's ``dump``."""
+        body = self.scope.literal_node
+        if body is None or name not in self.scope.locals or name in self.scope.params:
+            return False
+        bound: list[ast.expr | None] = []
+        dumped = False
+        for inner in ast.walk(body):
+            if isinstance(inner, ast.Name) and inner.id == name:
+                if not isinstance(inner.ctx, ast.Load):
+                    bound.append(None)
+            elif isinstance(inner, ast.withitem):
+                target = inner.optional_vars
+                if isinstance(target, ast.Name) and target.id == name:
+                    bound.append(inner.context_expr)
+            elif isinstance(inner, ast.Assign):
+                if len(inner.targets) == 1 and isinstance(inner.targets[0], ast.Name):
+                    if inner.targets[0].id == name:
+                        bound.append(inner.value)
+            elif isinstance(inner, ast.Call):
+                parts = _flatten_chain(inner.func)
+                if parts is not None and self._canonical_name(parts) in PICKLER_DUMP:
+                    file = inner.args[1] if len(inner.args) > 1 else None
+                    for k in inner.keywords:
+                        if k.arg == "file":
+                            file = k.value
+                    dumped |= isinstance(file, ast.Name) and file.id == name
+        # Each binding is seen twice: as its Name node and as its statement.
+        values = [b for b in bound if b is not None]
+        if not dumped or len(values) != 1 or len(bound) != 2:
+            return False
+        value = values[0]
+        if not isinstance(value, ast.Call):
+            return False
+        parts = _flatten_chain(value.func)
+        canonical = self._canonical_name(parts) if parts is not None else None
+        if canonical == "io.BytesIO":
+            return not value.args and not value.keywords
+        return canonical in FRESH_FILES
+
+    def _literal_bytes(self, data: ast.expr) -> bytes | None:
+        """The bytes ``data`` is when the code writes them out: a literal, or
+        a name this module binds once, at module level, to one."""
+        if isinstance(data, ast.Constant) and isinstance(data.value, bytes):
+            return data.value
+        if not isinstance(data, ast.Name) or data.id in self.scope.locals:
+            return None
+        tree = self.scope.module.tree
+        if tree is None:
+            return None
+        values: list[ast.expr] = []
+        stores = 0
+        for inner in ast.walk(tree):
+            if isinstance(inner, ast.Name) and inner.id == data.id:
+                stores += not isinstance(inner.ctx, ast.Load)
+        for stmt in tree.body:
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)
+                and stmt.targets[0].id == data.id
+            ):
+                values.append(stmt.value)
+        if stores != 1 or len(values) != 1:
+            return None
+        value = values[0]
+        return (
+            value.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, bytes)
+            else None
+        )
+
+    def _file_loader(self, node: ast.Call, name: str, slot: tuple[int, str]) -> None:
+        """A module loaded from a file by path (``spec_from_file_location``,
+        ``SourceFileLoader``, ``imp.load_source``): a literal path is the
+        module (or the script) it names, matched as a run argument's script
+        is (diffcone.indexer.scripts); so is a path joined to this module's
+        own directory (``Path(__file__).parent / name``), with a name a
+        parameter gives bounded by what the call sites pass; a path with a
+        literal prefix is any in-scope file under it; any other path,
+        anything (audit round 3, W22)."""
+        index, keyword = slot
+        location: ast.expr | None = node.args[index] if len(node.args) > index else None
+        for k in node.keywords:
+            if k.arg == keyword:
+                location = k.value
+        if location is None:
+            return
+        detail = f"{name}(<non-literal>): an import of anything"
+        for _ in range(4):
+            if isinstance(location, ast.Name) and location.id not in self.scope.params:
+                source = self._local_source(location.id)
+                if source is None:
+                    break
+                location = source
+            else:
+                break
+        relative = _own_directory_relative(location)
+        if relative is not None:
+            location = relative
+            if self._param_dynamic(location, "script", None, detail):
+                return
+        paths = self.scope.string_candidates(location)
+        if paths is not None and all(p.rstrip().endswith((".py", ".pyw")) for p in paths):
+            for path in paths:
+                script_value(self.indexer, self.source, path, detail)
+            return
+        prefix = _string_prefix(location)
+        files = self.indexer.snapshot.files
+        if prefix and not prefix.startswith(("/", ".")):
+            under = [p for p in files if p.startswith(prefix) or f"/{prefix}" in f"/{p}"]
+            modules = {
+                scope.path: module
+                for module, scope in self.indexer.scopes.items()
+                if scope.path in under
+            }
+            if all(p in modules or not p.endswith((".py", ".pyw")) for p in under):
+                for path in sorted(modules):
+                    self.indexer._module_import_edge(self.source, modules[path])
+                return
+        self._dynamic(detail)
+
     def _import_module(self, node: ast.Call, name: str) -> None:
         if not node.args:
             return
@@ -1354,3 +1590,106 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         for module in names:
             self.indexer._module_import_edge(self.source, module)
+
+
+def _own_directory_relative(path: ast.expr) -> ast.expr | None:
+    """``name`` of ``Path(__file__).parent / name`` or
+    ``os.path.join(os.path.dirname(__file__), name)`` (``resolve()``,
+    ``absolute()``, ``abspath``, ``realpath`` on the way): the part of a
+    path relative to the module's own directory."""
+
+    def own_file(node: ast.expr) -> bool:
+        while True:
+            func = node.func if isinstance(node, ast.Call) else None
+            if isinstance(node, ast.Call) and not node.args and isinstance(func, ast.Attribute):
+                if func.attr not in ("resolve", "absolute"):
+                    return False
+                node = func.value
+            elif isinstance(node, ast.Call) and len(node.args) == 1:
+                parts = _flatten_chain(node.func) or []
+                if parts[-1:] not in (["Path"], ["abspath"], ["realpath"], ["PurePath"]):
+                    return False
+                node = node.args[0]
+            else:
+                return isinstance(node, ast.Name) and node.id == "__file__"
+
+    def own_directory(node: ast.expr) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            return own_file(node.value)
+        if isinstance(node, ast.Call) and len(node.args) == 1:
+            parts = _flatten_chain(node.func) or []
+            return parts[-1:] == ["dirname"] and own_file(node.args[0])
+        return False
+
+    if isinstance(path, ast.BinOp) and isinstance(path.op, ast.Div) and own_directory(path.left):
+        return path.right
+    if isinstance(path, ast.Call) and len(path.args) == 2 and not path.keywords:
+        parts = _flatten_chain(path.func) or []
+        if parts[-1:] == ["join"] and own_directory(path.args[0]):
+            return path.args[1]
+    return None
+
+
+# Methods pickling runs on an object without naming them.
+PICKLING_HOOKS = frozenset(
+    {
+        "__reduce__",
+        "__reduce_ex__",
+        "__getstate__",
+        "__setstate__",
+        "__getnewargs__",
+        "__getnewargs_ex__",
+        "__new__",
+        "__getattr__",
+        "__getattribute__",
+    }
+)
+PICKLER_DUMP = frozenset(f"{m}.dump" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
+# Calls that make a new, empty file (``io.BytesIO`` with no initial bytes).
+FRESH_FILES = frozenset(
+    {"tempfile.TemporaryFile", "tempfile.NamedTemporaryFile", "tempfile.SpooledTemporaryFile"}
+)
+PICKLER_DUMPS = frozenset(f"{m}.dumps" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
+
+
+def _pickled_globals(data: bytes | None) -> list[tuple[str, str]] | None:
+    """The (module, name) pairs a pickle's opcodes import, or None when the
+    data cannot be read or names something its opcodes do not spell out
+    (an extension code, a name built on the stack from anything but
+    strings)."""
+    if data is None:
+        return None
+    import pickletools
+
+    found: list[tuple[str, str]] = []
+    strings: list[str | None] = []
+    memo: dict[int, str | None] = {}
+    try:
+        for op, arg, _ in pickletools.genops(data):
+            if op.name in ("GLOBAL", "INST"):
+                module, _, name = str(arg).partition(" ")
+                found.append((module, name))
+            elif op.name == "STACK_GLOBAL":
+                if len(strings) < 2 or strings[-1] is None or strings[-2] is None:
+                    return None
+                found.append((str(strings[-2]), str(strings[-1])))
+            elif op.name.startswith("EXT"):
+                return None
+            elif op.name in ("SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE"):
+                strings.append(str(arg))
+                continue
+            elif op.name in ("PROTO", "FRAME"):
+                continue
+            elif op.name == "MEMOIZE":
+                memo[len(memo)] = strings[-1] if strings else None
+                continue
+            elif op.name in ("PUT", "BINPUT", "LONG_BINPUT"):
+                memo[int(str(arg))] = strings[-1] if strings else None
+                continue
+            elif op.name in ("GET", "BINGET", "LONG_BINGET"):
+                strings.append(memo.get(int(str(arg))))
+                continue
+            strings.append(None)
+    except Exception:  # noqa: BLE001 - any malformed data is unbounded
+        return None
+    return found
