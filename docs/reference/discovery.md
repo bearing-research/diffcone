@@ -95,7 +95,10 @@ Among those options:
   `os.environ`, `sys.path` and `sys.modules`, attributes set on
   third-party modules, and common configuration calls such as
   `warnings.filterwarnings`, `logging.basicConfig`, `locale.setlocale`,
-  `numpy.random.seed` and hypothesis's `settings.load_profile`. State a
+  `numpy.random.seed` and hypothesis's `settings.load_profile`, whether
+  made directly or through a patch that is not undone when a test ends
+  (`mock.patch.dict(os.environ, ...).start()`,
+  `pytest.MonkeyPatch().setenv(...)`). State a
   library keeps behind its own configuration function is not recognised;
   declare such a dependency in [`diffcone.toml`](declarations.md) if a
   test relies on it.

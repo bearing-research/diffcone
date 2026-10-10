@@ -50,8 +50,9 @@ import ast
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS, _flatten_chain
+from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.scopes import External, Resolved, Scope
+from diffcone.indexer.syntax import _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import CLASS, FUNCTION, METHOD, MUTATED_BY, REFERENCES, VARIABLE, Edge
 
@@ -245,16 +246,16 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         if func.attr in CONTAINER_MUTATORS or func.attr in ("__setattr__", "__delattr__"):
             _write(collector, func.value)
             _dict_receiver(collector, func.value)
-    passes: list[tuple[str, ast.expr, str]] = []
+    passes: list[tuple[str, ast.expr]] = []  # (slot, argument)
     for i, arg in enumerate(node.args):
         if isinstance(arg, ast.Starred):
             break
-        passes.append((str(i), arg, ""))
+        passes.append((str(i), arg))
     for kw in node.keywords:
         if kw.arg is not None:
-            passes.append((f"={kw.arg}", kw.value, ""))
+            passes.append((f"={kw.arg}", kw.value))
     handed: list[tuple[str, str]] = []  # (slot, what)
-    for slot, expr, _ in passes:
+    for slot, expr in passes:
         what = _handed(collector, expr)
         if what is not None:
             handed.append((slot, what))

@@ -16,21 +16,31 @@ Supported subset (see internal/design.md):
   ``for k, v in D.items()``) while every use of the table is a read (see
   ``uses.py``), with parameters whose call sites pass literals,
   and with instance attributes that ``__init__`` binds to such values
-  (``getattr(x, self.name)``);
+  (``getattr(x, self.name)``); with a name starting with literal text
+  (``import_module(f"plugins.{name}")``, ``getattr(obj, f"do_{name}")``),
+  every in-scope module or attribute name with that prefix;
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an
   inherited ``m``, ``Sub.m``, ``super().m``); an attribute the class does
   not define (``C.__doc__``, ``C.__type_params__``) is a read of the class
   object, and ``C.__mro__``/``__bases__``/``__subclasses__()`` reach the
-  classes they hand out (``Resolver.class_object_read``).
+  classes they hand out (``Resolver.class_object_read``);
+* instance attributes ``self.x = ...`` binds in any method to an object of
+  a known kind (a construction of an in-scope class, a call into a module
+  outside the source roots, an in-scope factory), and in ``__init__`` to a
+  parameter, a literal or a symbol as well; any other write leaves the
+  attribute unbounded;
 * in-place writes of a module variable, directly or through a parameter or
   receiver the callee writes (``writes.py``);
 * project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
   ``-c CODE``, and a Python command whose program cannot be named
-  (``scripts.py``).
+  (``scripts.py``); a module loaded from a file by path
+  (``spec_from_file_location``, ``SourceFileLoader``) and what an unpickler
+  loads (a round trip, or bytes written in the code);
+* writes of process-global state outside the source roots (``process.py``),
+  and the stores a test makes that are undone when it ends (``patches.py``).
 
 Deliberately unsupported: type inference, dynamic dispatch on unknown
-receivers, instance attributes written outside ``__init__`` or reflectively,
-decorators that rewrite call targets.
+receivers, decorators that rewrite call targets.
 """
 
 from diffcone.indexer.core import Indexer, build_index

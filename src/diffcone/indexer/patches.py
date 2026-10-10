@@ -56,34 +56,89 @@ from __future__ import annotations
 
 import ast
 
-# A patcher's method chain after ``patch`` (``patch.object``).
-_PATCH_FORMS = (["patch", "object"], ["patch", "dict"], ["patch", "multiple"])
+from diffcone.indexer.syntax import SCOPE_NODES, _flatten_chain, parent_map
+
+# How a call names what it patches (``patch_target_form``).
+PATCH = "patch"  # ``patch("pkg.mod.NAME", ...)``: a dotted string
+OBJECT = "object"  # ``patch.object(obj, "NAME", ...)``
+DICT = "dict"  # ``patch.dict(d, ...)``: a dict, or a dotted string naming one
+MULTIPLE = "multiple"  # ``patch.multiple(obj, NAME=...)``: an object or a dotted string
+SETATTR = "setattr"  # ``x.setattr(obj, "NAME", v)``, ``x.setattr("pkg.mod.NAME", v)``, delattr
+
+# ``patch.multiple``'s own options: every other keyword names an attribute.
+MULTIPLE_OPTIONS = frozenset({"spec", "create", "spec_set", "autospec", "new_callable"})
 
 # Function-scoped fixtures whose stores pytest undoes when the test ends,
 # and the attribute a store goes through (None: any method).
 _TEST_FIXTURES: dict[str, str | None] = {"monkeypatch": None, "mocker": "patch"}
 
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
-def _chain(expr: ast.AST) -> list[str] | None:
+def patch_target_form(parts: list[str]) -> str | None:
+    """How a call (by its callee chain) names the target it patches:
+    ``PATCH``, ``OBJECT``, ``DICT``, ``MULTIPLE`` (``patch``, ``x.patch``,
+    ``x.patch.object``/``dict``/``multiple``) or ``SETATTR`` (a method
+    ``x.setattr``/``x.delattr``, as on ``monkeypatch``); None for anything
+    else, the builtins ``setattr``/``delattr`` included. A dotted string
+    first argument names the target in every form but ``OBJECT``."""
+    last = parts[-1]
+    if last == "patch":
+        return PATCH
+    if len(parts) > 1 and parts[-2] == "patch" and last in (OBJECT, DICT, MULTIPLE):
+        return last
+    if len(parts) > 1 and last in ("setattr", "delattr"):
+        return SETATTR
+    return None
+
+
+def callee_parts(func: ast.expr) -> list[str]:
+    """A callee's dotted chain, with ``""`` for a head that is no name
+    (``MonkeyPatch().setattr`` is ``["", "setattr"]``): what
+    ``patch_target_form`` reads when the receiver is a value."""
     parts: list[str] = []
-    while isinstance(expr, ast.Attribute):
-        parts.append(expr.attr)
-        expr = expr.value
-    if not isinstance(expr, ast.Name):
-        return None
-    parts.append(expr.id)
+    while isinstance(func, ast.Attribute):
+        parts.append(func.attr)
+        func = func.value
+    parts.append(func.id if isinstance(func, ast.Name) else "")
     return parts[::-1]
 
 
-def _parents(nodes: list[ast.AST]) -> dict[int, ast.AST]:
-    parents: dict[int, ast.AST] = {}
-    for node in nodes:
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
-    return parents
+def patched_names(node: ast.Call) -> list[str]:
+    """The attribute names a ``patch.multiple`` call patches: its keywords
+    other than the options."""
+    return [k.arg for k in node.keywords if k.arg is not None and k.arg not in MULTIPLE_OPTIONS]
+
+
+def dict_patch_keys(node: ast.Call) -> list[str] | None:
+    """The keys a ``patch.dict`` call sets: its keywords and the keys of a
+    dict display given as its values. None when they are not all known
+    (values from elsewhere, ``**kwargs``, a key that is no identifier, a
+    ``clear`` other than a literal false)."""
+    values = node.args[1] if len(node.args) > 1 else None
+    clear = node.args[2] if len(node.args) > 2 else None
+    keys: list[str] = []
+    for k in node.keywords:
+        if k.arg is None:
+            return None
+        if k.arg == "values":
+            values = k.value
+        elif k.arg == "clear":
+            clear = k.value
+        else:
+            keys.append(k.arg)
+    if clear is not None and not (isinstance(clear, ast.Constant) and not clear.value):
+        return None
+    if isinstance(values, ast.Dict):
+        for key in values.keys:
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                return None
+            if not key.value.isidentifier():
+                return None
+            keys.append(key.value)
+    elif values is not None and not (isinstance(values, (ast.Tuple, ast.List)) and not values.elts):
+        return None
+    return keys
 
 
 def suspends(body: list[ast.stmt]) -> bool:
@@ -94,7 +149,7 @@ def suspends(body: list[ast.stmt]) -> bool:
         node = stack.pop()
         if isinstance(node, (ast.Yield, ast.YieldFrom)):
             return True
-        if not isinstance(node, _SCOPES):
+        if not isinstance(node, SCOPE_NODES):
             stack.extend(ast.iter_child_nodes(node))
     return False
 
@@ -102,9 +157,10 @@ def suspends(body: list[ast.stmt]) -> bool:
 def _patcher(parts: list[str]) -> bool:
     """``patch``, ``x.patch``, ``x.patch.object``/``dict``/``multiple``, not
     through a pytest-mock fixture (``module_mocker.patch``)."""
-    if parts[-1] == "patch":
+    form = patch_target_form(parts)
+    if form == PATCH:
         head = parts[:-1]
-    elif parts[-2:] in _PATCH_FORMS:
+    elif form in (OBJECT, DICT, MULTIPLE):
         head = parts[:-2]
     else:
         return False
@@ -146,7 +202,7 @@ def _bindings(scope: ast.AST, name: str) -> list[ast.AST]:
             found.append(n)
         elif isinstance(n, ast.MatchMapping) and n.rest == name:
             found.append(n)
-        if not isinstance(n, _SCOPES):
+        if not isinstance(n, SCOPE_NODES):
             stack.extend(ast.iter_child_nodes(n))
     return found
 
@@ -159,7 +215,7 @@ def _requests_fixtures(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool
         return True
     for decorator in function.decorator_list:
         func = decorator.func if isinstance(decorator, ast.Call) else decorator
-        parts = _chain(func)
+        parts = _flatten_chain(func)
         if parts and parts[-1] == "fixture":
             return True
     return False
@@ -182,7 +238,7 @@ def _monkeypatch_context(expr: ast.expr) -> bool:
     ``monkeypatch.context()``: a MonkeyPatch undone when the ``with`` ends."""
     if not isinstance(expr, ast.Call) or expr.args or expr.keywords:
         return False
-    parts = _chain(expr.func)
+    parts = _flatten_chain(expr.func)
     return (
         bool(parts)
         and len(parts) >= 2
@@ -262,11 +318,11 @@ def undone_calls(
     for node in nodes:
         if not isinstance(node, ast.Call):
             continue
-        parts = _chain(node.func)
+        parts = _flatten_chain(node.func)
         if not parts:
             continue
         if parents is None:
-            parents = _parents(nodes)
+            parents = parent_map(nodes)
         if _undone(node, parts, parents, contexts):
             found.add(id(node))
     return frozenset(found)

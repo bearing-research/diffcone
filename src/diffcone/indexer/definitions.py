@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from diffcone.indexer.literals import COMPREHENSIONS, _collect_store_names
 from diffcone.indexer.scopes import ModuleScope, VariableStatement, _absolute_module
-from diffcone.indexer.syntax import DEF_NODES, _digest, iter_scope_statements
+from diffcone.indexer.syntax import DEF_NODES, _digest, _flatten_chain, iter_scope_statements
 from diffcone.model import CLASS_STATEMENT, OPAQUE_ATTRIBUTE
 
 
@@ -409,14 +409,3 @@ def _container_kind(scope: ModuleScope, value: ast.expr) -> str:
     else:
         return ""
     return _CONTAINER_CALLS.get(name, "")
-
-
-def _flatten_chain(node: ast.expr) -> list[str] | None:
-    parts: list[str] = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        return list(reversed(parts))
-    return None

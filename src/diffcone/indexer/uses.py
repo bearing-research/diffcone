@@ -14,12 +14,15 @@ counts as a possible change:
   assigned, or a mutating method (``T.update``) reached: it may change.
 * a module object (named through an import, ``sys.modules[...]``,
   ``import_module(...)`` or ``__import__``) may be read from (``m.x``,
-  ``getattr(m, n)``, ``m.f()``); bound to a name, passed (``setattr(m, ...)``
-  and ``vars(m)`` included), returned, or reached through ``__dict__``,
-  ``__setattr__`` or ``__delattr__``, it may be written to. An attribute
-  stored on it (``m.T = v``, ``setattr(m, "T", v)``, ``m.__dict__["T"] =
-  v``, a dotted string a ``patch``/``monkeypatch`` call names) rebinds that
-  attribute.
+  ``getattr(m, n)``, ``m.f()``, a read through its ``__dict__``:
+  ``m.__dict__[k]``, ``m.__dict__.get(k)``); passed (``vars(m)`` included),
+  returned, bound to a name that is not followed (below), or reached
+  through ``__setattr__``, ``__delattr__`` or a ``__dict__`` used other than
+  by a read, it may be written to. An attribute stored on it (``m.T = v``,
+  ``setattr(m, "T", v)`` and ``patch.object``/``patch.multiple`` with
+  literal names, ``m.__dict__["T"] = v``, a dotted string a ``patch``/
+  ``monkeypatch`` call names) rebinds that attribute; a name nothing bounds
+  there, any attribute.
 * a module named at run time by a name nothing bounds is any module (``*``);
   by a name starting with literal text (``f"plugins.{name}"``, ``"cell_" +
   key``, ``f"{__name__}.{name}"``), any module with that prefix
@@ -86,7 +89,24 @@ import ast
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from diffcone.indexer.patches import undone_calls
+from diffcone.indexer.patches import (
+    DICT,
+    MULTIPLE,
+    OBJECT,
+    SETATTR,
+    callee_parts,
+    dict_patch_keys,
+    patch_target_form,
+    patched_names,
+    undone_calls,
+)
+from diffcone.indexer.syntax import (
+    SCOPE_NODES,
+    _flatten_chain,
+    own_directory_join,
+    parent_map,
+    reads_files,
+)
 
 # Every method of the builtin list, dict and set that changes the container
 # in place (and the dunders behind ``+=``, ``|=`` and item assignment). The
@@ -189,16 +209,15 @@ _SPEC_FROM_FILE = frozenset({"importlib.util.spec_from_file_location"})
 # Calls that return an object by a run-time name, imported and read off its
 # module: an unpickler's ``find_class`` (any module's attribute the data
 # names, a table included), ``pkgutil.resolve_name`` and ``pydoc.locate``.
-_UNPICKLERS = frozenset(
+UNPICKLER_CALLS = frozenset(
     {
         f"{m}.{f}"
         for m in ("pickle", "_pickle", "cloudpickle", "dill", "joblib")
         for f in ("load", "loads")
     }
 )
-_UNPICKLER_CLASSES = frozenset({"pickle.Unpickler", "_pickle.Unpickler", "dill.Unpickler"})
-UNPICKLER_CALLS, UNPICKLER_CLASSES = _UNPICKLERS, _UNPICKLER_CLASSES
-_PICKLER_DUMPS = frozenset(f"{m}.dumps" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
+UNPICKLER_CLASSES = frozenset({"pickle.Unpickler", "_pickle.Unpickler", "dill.Unpickler"})
+PICKLER_DUMPS = frozenset(f"{m}.dumps" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
 # Calls that load a module from a file by path: the path's (argument
 # position, keyword).
 FILE_LOADERS = {
@@ -208,6 +227,15 @@ FILE_LOADERS = {
     "imp.load_source": (1, "pathname"),
 }
 _RESOLVERS = frozenset({"pkgutil.resolve_name", "pydoc.locate"})
+# The path functions ``own_directory_join`` names, by their dotted names.
+_PATH_FUNCTIONS = {
+    "Path": ("pathlib.Path",),
+    "PurePath": ("pathlib.PurePath",),
+    "abspath": ("os.path.abspath",),
+    "realpath": ("os.path.realpath",),
+    "dirname": ("os.path.dirname",),
+    "join": ("os.path.join", "posixpath.join"),
+}
 
 # ``gc`` functions and attributes that hand out a list of objects nothing
 # names (modules, their namespaces and tables among them).
@@ -223,8 +251,6 @@ _LIST_READERS = frozenset(
 # module it is defined in), a frame's globals, and a frame's locals (which at
 # module level are its globals).
 GLOBALS_ATTRIBUTES = frozenset({"__globals__", "f_globals", "f_locals"})
-
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 READ, USE, MUT, DYN = "read", "use", "mut", "dyn"
 STORE = "store"
@@ -324,14 +350,6 @@ class Uses:
     namespace: bool = False
 
 
-def _parents(nodes: list[ast.AST]) -> dict[int, ast.AST]:
-    parents: dict[int, ast.AST] = {}
-    for node in nodes:
-        for child in ast.iter_child_nodes(node):
-            parents[id(child)] = node
-    return parents
-
-
 def _bound_names(nodes: list[ast.AST]) -> set[str]:
     """Every name the code binds anywhere (a builtin of that name is shadowed
     somewhere, so it is not taken for the builtin)."""
@@ -408,40 +426,10 @@ def classify(
         return USE
 
 
-def _chain(expr: ast.AST) -> list[str] | None:
-    parts: list[str] = []
-    while isinstance(expr, ast.Attribute):
-        parts.append(expr.attr)
-        expr = expr.value
-    if not isinstance(expr, ast.Name):
-        return None
-    parts.append(expr.id)
-    return parts[::-1]
-
-
 def _constant(expr: ast.AST | None) -> str | None:
     if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
         return expr.value
     return None
-
-
-def _patch_like(parts: list[str]) -> bool:
-    """A call naming what it patches by a dotted string first argument."""
-    last = parts[-1]
-    return (
-        (last in ("setattr", "delattr") and len(parts) > 1)
-        or last == "patch"
-        or parts[-2:] in (["patch", "object"], ["patch", "dict"], ["patch", "multiple"])
-    )
-
-
-def _setattr_like(parts: list[str], builtin: str | None) -> bool:
-    """A call storing on its first argument the attribute its second names."""
-    return (
-        builtin in ("setattr", "delattr")
-        or (parts[-1] in ("setattr", "delattr") and len(parts) > 1)
-        or parts[-2:] == ["patch", "object"]
-    )
 
 
 # Evaluates a string expression in its scope (the innermost function, lambda
@@ -486,7 +474,7 @@ class _Scanner:
         self.want_records = records
         # Every node, once: the walks below read this list.
         self.nodes: list[ast.AST] = list(ast.walk(root))
-        self.parents = _parents(self.nodes)
+        self.parents = parent_map(self.nodes)
         # The calls whose store is undone after the test (patches.py).
         self.undone = undone_calls(root, self.nodes, self.parents) if records else frozenset()
         self.bound = bound if bound is not None else _bound_names(self.nodes)
@@ -555,7 +543,7 @@ class _Scanner:
         bound in the scope around it (a name bound both ways is read both
         ways, which only adds records)."""
         found: dict[int, _ScopeNames] = {}
-        scopes = [root, *(n for n in nodes if isinstance(n, _SCOPES) and n is not root)]
+        scopes = [root, *(n for n in nodes if isinstance(n, SCOPE_NODES) and n is not root)]
         for scope in scopes:
             names = found.setdefault(id(scope), _ScopeNames())
             if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -567,14 +555,14 @@ class _Scanner:
             else:
                 body = list(ast.iter_child_nodes(scope))
             stack: list[ast.AST] = list(body)
-            nodes: list[ast.AST] = []
+            own: list[ast.AST] = []
             while stack:
                 n = stack.pop()
-                nodes.append(n)
-                if isinstance(n, _SCOPES):
+                own.append(n)
+                if isinstance(n, SCOPE_NODES):
                     # Its header runs here; its body is a scope of its own.
                     if not isinstance(n, ast.Lambda):
-                        nodes.append(ast.Name(id=n.name, ctx=ast.Store()))
+                        own.append(ast.Name(id=n.name, ctx=ast.Store()))
                         stack.extend(n.decorator_list)
                     if isinstance(n, ast.ClassDef):
                         stack.extend(n.bases)
@@ -588,13 +576,13 @@ class _Scanner:
                     stack.extend([n.iter, *n.ifs])
                     continue
                 stack.extend(ast.iter_child_nodes(n))
-            for n in nodes:
+            for n in own:
                 if isinstance(n, ast.Global):
                     names.globals.update(n.names)
                 elif isinstance(n, ast.Nonlocal):
                     names.nonlocals.update(n.names)
             top = found.setdefault(id(root), _ScopeNames())
-            for n in nodes:
+            for n in own:
                 if isinstance(n, (ast.Import, ast.ImportFrom)):
                     for name, target in self._import_bindings(n):
                         into = top if name in names.globals else names
@@ -618,7 +606,7 @@ class _Scanner:
         p = self.parents.get(id(node))
         path: list[ast.AST] = [node]
         while p is not None:
-            if isinstance(p, _SCOPES) and p is not self.root and not self._in_header(p, path):
+            if isinstance(p, SCOPE_NODES) and p is not self.root and not self._in_header(p, path):
                 return self._body_chain(p)
             path.append(p)
             p = self.parents.get(id(p))
@@ -683,12 +671,6 @@ class _Scanner:
         """Whether nothing in scope binds ``name`` where ``node`` stands."""
         return self._binding(name, node) is None
 
-    def _bare(self, name: str, node: ast.AST) -> bool:
-        """Whether ``name`` where ``node`` stands may be something no import
-        binds: a local, a parameter, a def, a builtin, a star import's."""
-        names = self._binding(name, node)
-        return names is None or name in names.other
-
     def _builtin(self, func: ast.AST) -> str | None:
         """The builtin a callee names: a name nothing in scope binds there."""
         if isinstance(func, ast.Name) and self._unbound(func.id, func):
@@ -698,7 +680,7 @@ class _Scanner:
     def _canonical(self, expr: ast.AST) -> set[str]:
         """The dotted names a callee or value chain may be: through the
         imports in scope where it stands, or a builtin's own name."""
-        parts = _chain(expr)
+        parts = _flatten_chain(expr)
         if parts is None:
             return set()
         head, rest = parts[0], parts[1:]
@@ -711,7 +693,7 @@ class _Scanner:
 
     def _scope_of(self, node: ast.AST) -> ast.AST:
         p = self.parents.get(id(node))
-        while p is not None and not isinstance(p, _SCOPES):
+        while p is not None and not isinstance(p, SCOPE_NODES):
             p = self.parents.get(id(p))
         return p if p is not None else self.root
 
@@ -727,7 +709,7 @@ class _Scanner:
             p = self.parents.get(id(p))
         outer = self.parents.get(id(scope)) if scope is not self.root else None
         while outer is not None:
-            if isinstance(outer, _SCOPES):
+            if isinstance(outer, SCOPE_NODES):
                 shadowed |= _LocalBindings().collect(outer)
             elif isinstance(outer, ast.comprehension):
                 shadowed |= _collect_store_names(outer.target)
@@ -881,16 +863,16 @@ class _Scanner:
             return {FRESH}, ()
         if names & _MODULE_COPIES:
             return self._spec_module(first)
-        if names & _UNPICKLERS or (
+        if names & UNPICKLER_CALLS or (
             isinstance(func, ast.Attribute)
             and func.attr == "load"
             and isinstance(func.value, ast.Call)
-            and self._canonical(func.value.func) & _UNPICKLER_CLASSES
+            and self._canonical(func.value.func) & UNPICKLER_CLASSES
         ):
             if (
                 isinstance(first, ast.Call)
-                and self._canonical(first.func) & _PICKLER_DUMPS
-                and names & _UNPICKLERS
+                and self._canonical(first.func) & PICKLER_DUMPS
+                and names & UNPICKLER_CALLS
             ):
                 return None  # a round trip: a copy of what the code holds
             return {ANY}, ()
@@ -958,21 +940,8 @@ class _Scanner:
         private module-level function the path is built in, when every use
         of that function in this module is a call passing a literal for it
         (``_call_site_strings``)."""
-        if isinstance(path, ast.Name):
-            value = self._single_value(path)
-            return self._file_modules(value) if value is not None else None
-        base: ast.expr | None = None
-        rest: ast.expr | None = None
-        if isinstance(path, ast.BinOp) and isinstance(path.op, ast.Div):
-            base, rest = path.left, path.right
-        elif (
-            isinstance(path, ast.Call)
-            and self._canonical(path.func) & {"os.path.join", "posixpath.join"}
-            and len(path.args) == 2
-            and not path.keywords
-        ):
-            base, rest = path.args
-        if base is None or rest is None or not self._own_directory(base):
+        rest = own_directory_join(path, self._calls_path, self._own_file, self._single_value)
+        if rest is None:
             return None
         names = self._strings(rest)
         if names is None:
@@ -992,51 +961,16 @@ class _Scanner:
             found.add(".".join([package, *parts[:-1], *([] if stem == "__init__" else [stem])]))
         return found
 
-    def _own_directory(self, expr: ast.expr) -> bool:
-        """Whether ``expr`` is this module's own directory:
-        ``Path(__file__).parent`` (``.resolve()``/``.absolute()`` on the
-        way), ``os.path.dirname(__file__)`` (of ``abspath``/``realpath``), or
-        a local name bound once to one."""
-        if isinstance(expr, ast.Name):
-            value = self._single_value(expr)
-            return value is not None and self._own_directory(value)
-        paths = {"pathlib.Path", "pathlib.PurePath"}
+    def _calls_path(self, func: ast.expr, names: tuple[str, ...]) -> bool:
+        """Whether ``func`` is one of the path functions ``names`` gives by
+        their last name, through the imports in scope (``own_directory_join``)."""
+        return bool(self._canonical(func) & {f for n in names for f in _PATH_FUNCTIONS[n]})
 
-        def strip(node: ast.expr) -> ast.expr:
-            while True:
-                if (
-                    isinstance(node, ast.Call)
-                    and not node.args
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in ("resolve", "absolute")
-                ):
-                    node = node.func.value
-                elif (
-                    isinstance(node, ast.Call)
-                    and len(node.args) == 1
-                    and self._canonical(node.func) & {"os.path.abspath", "os.path.realpath", *paths}
-                ):
-                    node = node.args[0]
-                else:
-                    return node
-
-        def own_file(node: ast.expr) -> bool:
-            node = strip(node)
-            return (
-                isinstance(node, ast.Name)
-                and node.id == "__file__"
-                and self._unbound("__file__", node)
-            )
-
-        if isinstance(expr, ast.Attribute) and expr.attr == "parent":
-            return own_file(expr.value)
-        if (
-            isinstance(expr, ast.Call)
-            and len(expr.args) == 1
-            and self._canonical(expr.func) & {"os.path.dirname"}
-        ):
-            return own_file(expr.args[0])
-        return False
+    def _own_file(self, node: ast.expr) -> bool:
+        """``__file__``, when nothing in scope binds it."""
+        return (
+            isinstance(node, ast.Name) and node.id == "__file__" and self._unbound("__file__", node)
+        )
 
     def _strings(self, expr: ast.expr) -> set[str] | None:
         """The strings an expression may be: what the evaluator bounds, or,
@@ -1147,7 +1081,7 @@ class _Scanner:
             found += self._entries(node.value)
         elif isinstance(node, ast.Call):
             func, args = node.func, node.args
-            parts = _chain(func) or [""]
+            parts = _flatten_chain(func) or [""]
             if isinstance(func, ast.Attribute) and self._is_sys_modules(func.value):
                 if func.attr in ("setdefault", "__setitem__") and len(args) > 1:
                     found.append((args[0], args[1]))
@@ -1226,7 +1160,7 @@ class _Scanner:
                 keys = [p.args[0]]
             elif (
                 at == 2
-                and (_chain(func) or [""])[-1] == "setitem"
+                and (_flatten_chain(func) or [""])[-1] == "setitem"
                 and self._is_sys_modules(p.args[0])
             ):
                 keys = [p.args[1]]
@@ -1240,7 +1174,7 @@ class _Scanner:
                     and p in q.args
                 )
                 or (
-                    (_chain(q.func) or [""])[-1] == "dict"
+                    (_flatten_chain(q.func) or [""])[-1] == "dict"
                     and len(q.args) > 1
                     and self._is_sys_modules(q.args[0])
                     and q.args[1] is p
@@ -1350,8 +1284,8 @@ class _Scanner:
         if p is None or isinstance(p, (ast.Expr, ast.Compare)):
             return
         if isinstance(p, ast.Call) and p.args and p.args[0] is node:
-            callee = _chain(p.func) or []
-            if callee and (_patch_like(callee) or callee[-1] in ("getLogger", "get_logger")):
+            callee = _flatten_chain(p.func) or []
+            if callee and (patch_target_form(callee) or callee[-1] in ("getLogger", "get_logger")):
                 return
         self._record(HANDLE, name, (), self._writer(node))
 
@@ -1425,21 +1359,39 @@ class _Scanner:
             return
         if not self.want_records:
             return
-        parts = _chain(node.func)
-        if parts and _patch_like(parts) and node.args:
+        form = patch_target_form(callee_parts(node.func))
+        if form is not None and node.args:
             target = _constant(node.args[0])
             if target is not None and all(p.isidentifier() for p in target.split(".")):
-                writer = self._writer(node)
-                kind = SCOPED if id(node) in self.undone else STORE
-                if parts[-2:] == ["patch", "multiple"]:
-                    for k in node.keywords:
-                        if k.arg is not None:
-                            self._record(kind, f"{target}.{k.arg}", (), writer)
-                else:
-                    self._record(kind, target, (), writer)
+                self._string_patch(node, form, target)
         canonical = self._canonical(node.func)
         if canonical & {"runpy.run_path"}:
             self._record(USE, ANY, (), self._writer(node))
+
+    def _string_patch(self, node: ast.Call, form: str, target: str) -> None:
+        """A patcher naming its target by a dotted string
+        (``patches.patch_target_form``): it stores the attribute the string
+        names; ``patch.multiple`` stores each name its keywords give on the
+        object the string names, and ``patch.dict`` of a module's
+        ``__dict__`` each key it sets there (any, unless the keys are
+        literal). SCOPED when undone after the test (patches.py)."""
+        writer = self._writer(node)
+        kind = SCOPED if id(node) in self.undone else STORE
+        if form == MULTIPLE:
+            if any(k.arg is None for k in node.keywords):
+                self._record(USE, target, (), writer)  # ``**names``: any attribute
+            for name in patched_names(node):
+                self._record(kind, f"{target}.{name}", (), writer)
+            return
+        if form == DICT and target.endswith(".__dict__"):
+            owner = target.removesuffix(".__dict__")
+            names = dict_patch_keys(node)
+            if names is None:
+                self._record(USE, owner, (), writer)
+            for name in names or ():
+                self._record(kind, f"{owner}.{name}", (), writer)
+            return
+        self._record(kind, target, (), writer)
 
     def _visible(self, node: ast.AST) -> _ScopeNames:
         """Every binding of the scopes ``node`` resolves names in, merged (the
@@ -1486,9 +1438,7 @@ class _Scanner:
         # stands (a module's ``__dict__`` is that module written to,
         # ``globals()`` this one's namespace), and this module's namespace is
         # not reached.
-        from diffcone.indexer.references import _reads_files
-
-        reads_files = bool(node.args) and _reads_files(node.args[0])
+        from_file = bool(node.args) and reads_files(node.args[0])
         namespace = node.args[1] if len(node.args) > 1 else None
         for k in node.keywords:
             if k.arg == "globals":
@@ -1499,7 +1449,7 @@ class _Scanner:
         if not self.want_records:
             return
         writer = self._writer(node)
-        if reads_files:
+        if from_file:
             self._record(USE, ANY, (), writer)
             return
         if not own:
@@ -1523,7 +1473,7 @@ class _Scanner:
             stack = list(ast.iter_child_nodes(scope))
             while stack:
                 n = stack.pop()
-                if isinstance(n, _SCOPES):
+                if isinstance(n, SCOPE_NODES):
                     nested_loads |= {m.id for m in ast.walk(n) if isinstance(m, ast.Name)}
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                         stores.setdefault(n.name, []).append(n)
@@ -1765,7 +1715,7 @@ class _Scanner:
                     isinstance(p, ast.Call)
                     and bool(p.args)
                     and p.args[0] is node
-                    and (_chain(p.func) or [""])[-1] in ("setitem", "delitem", "dict")
+                    and (_flatten_chain(p.func) or [""])[-1] in ("setitem", "delitem", "dict")
                 )
                 if not installs and not isinstance(
                     p, (ast.Subscript, ast.Compare, ast.For, ast.comprehension)
@@ -1778,7 +1728,7 @@ class _Scanner:
                 return
             if isinstance(p, ast.Call) and p.args and p.args[0] is node:
                 builtin = self._builtin(p.func)
-                parts = _chain(p.func) or []
+                parts = _flatten_chain(p.func) or []
                 if builtin == "getattr":
                     names, more = self._evaluate(p.args[1]) if len(p.args) > 1 else (None, ())
                     if names is None:
@@ -1793,12 +1743,24 @@ class _Scanner:
                         else:
                             self._climb(p, targets, sources + more, (*chain, name))
                     return
-                if parts and _setattr_like(parts, builtin):
-                    name_arg = p.args[1] if len(p.args) > 1 else None
-                    for k in p.keywords:
-                        if k.arg in ("name", "attribute"):
-                            name_arg = k.value
-                    names, more = self._evaluate(name_arg) if name_arg is not None else (None, ())
+                form = patch_target_form(parts) if parts else None
+                if builtin in ("setattr", "delattr") or form in (SETATTR, OBJECT, MULTIPLE):
+                    # A call storing on its first argument the attributes
+                    # its second argument (``patch.multiple``: its
+                    # keywords) names.
+                    more: tuple[str, ...] = ()
+                    if form == MULTIPLE:
+                        names = None
+                        if all(k.arg is not None for k in p.keywords):
+                            names = tuple(patched_names(p))
+                    else:
+                        name_arg = p.args[1] if len(p.args) > 1 else None
+                        for k in p.keywords:
+                            if k.arg in ("name", "attribute"):
+                                name_arg = k.value
+                        names, more = (
+                            self._evaluate(name_arg) if name_arg is not None else (None, ())
+                        )
                     if names is None:
                         self._emit(node, targets, sources, chain, USE)
                     else:
@@ -2050,7 +2012,7 @@ def _own_nodes(scope: ast.AST) -> list[ast.AST]:
     while stack:
         n = stack.pop()
         found.append(n)
-        if not isinstance(n, _SCOPES):
+        if not isinstance(n, SCOPE_NODES):
             stack.extend(ast.iter_child_nodes(n))
     return found
 
