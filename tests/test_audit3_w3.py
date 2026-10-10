@@ -186,6 +186,7 @@ PRECISE = {
     "another module": "subprocess.run([sys.executable, '-m', 'venv', str(ROOT)])",
     "a command line": "subprocess.run(f'{sys.executable} -c \"import sys; print(1)\"')",
     "a git command": "subprocess.run(['git', 'commit', '-m', MESSAGE])",
+    "interpreter paths": "assert [p for p in (sys.executable, str(sys.executable))]",
     "a list of words": "assert {'python'} <= set(['python', 'recursion', MESSAGE])",
     "a docstring naming a file": "'''Like scripts/gen.py and python -m scripts.gen.'''",
 }

@@ -649,11 +649,16 @@ depends on `calls:` of its writer. A variable is then reached whenever
 anything that can call one of its writers, directly or through what it
 calls, is affected; explanations show these as `called_by` steps
 (`MODE -[references:mutated_by]-> _store -[called_by]-> setup
--[references]-> compute`). Measured over 14 census repositories (110
-plans), this moves 4 plans to (nearly) every target, through name-matched
-calls; following resolved calls only would move none, at the cost of
-missing a write reached only through a call on an object of unknown
-type. The changed symbol's references
+-[references]-> compute`). This is the one costly rule among the W3/W4
+fixes: over the 42-repository census (334 plans) mean selection went from
+92.6 % to 95.2 % with all of them, and 6 plans went to (nearly) every
+target through this rule (httpx twice, starlette, marshmallow, networkx,
+isort), each through a chain of name-matched calls or a lazily filled
+module table (isort's `profiles.setdefault` in `Config.__init__`, reached
+from any changed test that builds a `Config`). Following resolved calls
+only moved none of the 110 plans of a 14-repository subset, but would
+miss a write reached only through a call on an object of unknown type.
+The changed symbol's references
 stand for its calls (a function's decorators, defaults and body share one
 symbol, and nothing tells a call from a read), which over-approximates.
 Type parameters (PEP 695 bounds, constraints and PEP 696 defaults) are

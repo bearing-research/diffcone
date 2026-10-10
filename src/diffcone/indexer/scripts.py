@@ -440,6 +440,8 @@ def observe_command(collector: _ReferenceCollector, node: ast.List | ast.Tuple) 
     items = list(node.elts)
     if not items or not _is_interpreter(collector, items[0]):
         return
+    if any(_is_interpreter(collector, item) for item in items[1:]):
+        return  # ``(sys.executable, realpath(sys.executable))``: paths, not a command
     parent = collector._parent(node)
     if _string(_unwrap(items[0])) is not None and not (
         (
