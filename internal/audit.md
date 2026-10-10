@@ -314,4 +314,9 @@ closed with the scenario that shows it.
 | W7 | EVP-4's residual: a module-level cache filled by an earlier test (`get()` storing `compute()`'s result) hides `compute` from a later test's record in every order, so a change to `compute` misses it, also after `collect --reverse-check`. | open |
 | W9 | An in-scope module passed as a value and read with an unbounded `getattr` (`read(ops, ["other"])` with `def read(obj, names): return getattr(obj, names[0])()`) misses a change to `ops.other`: the receiver-from-elsewhere rule counts only classes handed on, never modules. | open |
 | W10 | `obj.__dict__[k]` and `self.__class__.__dict__[k]` on an object of unknown type recorded no read, where `getattr(obj, k)` records a dynamic one. | fixed: read as `getattr` |
+| W11 | Static planning misses code a hook runs that reaches tests only through its effects: a plugin object's `pytest_*` methods registered in `pytest_configure` select nothing, `pytest_generate_tests` in a sub-directory conftest reaches only that directory; process-global effects (`os.environ`) are not modelled. | open |
+| W12 | A test module's import-time code writing `os.environ` (or other process state) read by a test that does not import it (plausible). | open |
+| W13 | `hasattr(obj, "literal")` is recorded as a reflection site that sees every name (precision). | open |
+| W14 | A write-only reference (`global X; X = None`) is not told from a read, so a reset fixture counts as a reader of what it resets (precision). | open |
+| W15 | `store._CACHE[k] = v` (a write through a module attribute and a subscript) probably records no `mutated_by` edge (plausible). | open |
 | W8 | Text: a module seeded by an added member is explained as `uses a dynamic import/attribute access ()`; `collection_check.py` cannot read a collection when the project's `addopts` add `-q` (coverage.py); CLAUDE.md's indexer layout omits `uses.py`. | fixed |

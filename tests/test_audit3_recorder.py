@@ -622,6 +622,8 @@ def test_rec9_an_emptied_record_under_a_launcher_is_a_problem(tmp_path):
     ],
 )
 def test_rec1_a_system_query_outside_every_test_is_no_problem(tmp_path, argv, problem):
+    # An absolute path as the platform has them (``/opt`` has no drive on Windows).
+    argv = [str(tmp_path / a.lstrip("/")) if a.startswith("/opt/") else a for a in argv]
     """pytest-xdist workers run ``platform.processor()`` and
     ``platform.architecture()`` as they start: ``uname -p`` and ``file -b
     <python>`` outside every test made every change of strata select every

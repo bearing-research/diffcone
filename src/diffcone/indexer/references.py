@@ -303,8 +303,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         namespace: a module's or a class's (``C.__dict__``, ``cls.__dict__``),
         or an object's of any type (``obj.__dict__[k]``,
         ``self.__class__.__dict__[k]``): the attribute ``k`` names, read as
-        ``getattr(x, k)`` is; anything else reads any attribute."""
+        ``getattr(x, k)`` is. Uses that see only the names (``k in
+        x.__dict__``, iterating it, ``len``) read no attribute; anything else
+        reads any attribute."""
         parent = self._parent(node)
+        if self._keys_only(node, parent):
+            return
         key: ast.expr | None = None
         if isinstance(parent, ast.Subscript) and parent.value is node:
             key = parent.slice
@@ -313,6 +317,22 @@ class _ReferenceCollector(ast.NodeVisitor):
             if isinstance(call, ast.Call) and call.func is parent and call.args:
                 key = call.args[0]
         self._member_read(node.value, key)
+
+    def _keys_only(self, node: ast.expr, parent: ast.AST | None) -> bool:
+        """Whether ``node`` (a ``__dict__``) is used only for its names."""
+        if isinstance(parent, ast.Compare):
+            return node in parent.comparators and all(
+                isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops
+            )
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.comprehension)):
+            return parent.iter is node
+        if isinstance(parent, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            # The iterators are visited from the comprehension itself.
+            return any(gen.iter is node for gen in parent.generators)
+        if isinstance(parent, ast.Call) and node in parent.args:
+            chain = _flatten_chain(parent.func)
+            return chain == ["len"]
+        return False
 
     def _member_read(self, receiver: ast.expr, key: ast.expr | None) -> None:
         """A read of ``receiver``'s attribute by the name ``key`` (any name

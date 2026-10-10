@@ -360,3 +360,25 @@ def test_w10_a_namespace_read_off_any_object_is_a_getattr(repo, read):
     via_getattr = facts("return getattr(obj, k)")
     assert via_getattr
     assert facts(f"return {read}") == via_getattr
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        "return k in obj.__dict__",
+        "return [n for n in obj.__dict__]",
+        "return len(obj.__dict__)",
+        "return list(obj.__dict__.keys())",
+    ],
+)
+def test_w10_a_use_of_the_names_only_reads_no_attribute(repo, use):
+    """``m in cls.__dict__`` (flask's ``MethodView``) sees names, no value:
+    no dynamic read."""
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    repo.commit({"pkg/__init__.py": "", "pkg/reader.py": f"def read(obj, k):\n    {use}\n"})
+    index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
+    assert not [
+        u for u in index.unresolved if u.symbol == "pkg.reader.read" and u.kind == "dynamic"
+    ]
