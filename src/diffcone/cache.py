@@ -45,8 +45,10 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 38: attribute_modules, any_module_readers, module_writers, module-attribute
-# references, unpicklers and file loaders, installs under unbounded names;
+# 39: stores undone after the test (indexer/patches.py: SCOPED, SWAP,
+# external writes, restored process state); 38: attribute_modules,
+# any_module_readers, module_writers, module-attribute references,
+# unpicklers and file loaders, installs under unbounded names;
 # 37: module_reach, sys.modules installs, scoped names in the use scan;
 # 36: process writes, `writes`/`rebinds` edges, builtin containers,
 # main-guarded code; 35: third-party values of project factories (external_returns); 34:
@@ -57,7 +59,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 38
+INDEX_FORMAT = 39
 
 
 def _indexer_fingerprint() -> str:

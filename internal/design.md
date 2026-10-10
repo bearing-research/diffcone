@@ -534,8 +534,10 @@ W18):
   while the module's own code keeps its own namespace. A lookup on an
   external module of that name may find the project's objects (an
   external write); an in-scope module of that name counts as handed on, as
-  a `types.ModuleType` installed there does; installed for good (not by
-  `monkeypatch` or `patch.dict`, which last one test), the module depends
+  a `types.ModuleType` installed there does; installed for good (not
+  undone after the test as W26 below says: `monkeypatch.setitem` on the
+  fixture or a `with patch.dict(...)` last one test, while a `MonkeyPatch()`
+  of its own or `patch.dict(...).start()` installs for good), the module depends
   on the installing code (an edge from it, `installed in sys.modules`: its
   importers get what that code put there; the module runs none of it, so
   the edge is no call for import-time effects or for evidence mode's view of
@@ -876,8 +878,8 @@ Unknown is never treated as unaffected:
   `dynamic_reference`). A module other code puts objects on can hold what
   that code can name, so the closure follows from it to the writer's
   module as well (audit round 3, W24): a store of one of its attributes
-  (`m.x = v`, `setattr(m, ...)`; not `monkeypatch.setattr`, `mock.patch`
-  or `patch.object`, undone after the test), the module handed on (whoever
+  (`m.x = v`, `setattr(m, ...)`; not one undone after the test, see
+  below), the module handed on (whoever
   gets it may write it), an object installed for good under its name; and
   every closure holds the modules of code that may write any module (a
   module named at run time handed on or written to)
@@ -916,8 +918,9 @@ Unknown is never treated as unaffected:
   count are those that may write a module wherever it is used
   (`indexer/uses.py`, the same rules as for in-scope tables above): a
   store through a name it resolves (a function-local import included:
-  `logging.X = ...`, `setattr(logging, ...)`, `monkeypatch.setattr(logging,
-  ...)`, a dotted string naming it, a literal `exec` string doing so); the
+  `logging.X = ...`, `setattr(logging, ...)`, `pytest.MonkeyPatch().setattr(
+  logging, ...)`, a dotted string naming it, a literal `exec` string doing
+  so; not one undone after the test, see below); the
   module handed on, since whoever gets it may write it (bound to another
   name, module-level or not, passed to a helper, iterated over in a tuple,
   returned, `object.__setattr__(logging, ...)`, `logging.__setattr__`,
@@ -933,6 +936,33 @@ Unknown is never treated as unaffected:
   only one in its import closure: a writer anywhere may run, at import or
   in a test, and change what it finds (a test's decorator or default that
   newly runs a writer at collection selects every reader).
+  *A store undone after the test that made it* is seen only by code running
+  during that test, which already depends on its own code and on what it
+  stores, so it is no write onto an external module, puts nothing on an
+  in-scope module for later code, and installs nothing in `sys.modules` for
+  good (audit round 3, W26; it still rebinds a literal it names for the
+  lookups of that test). `indexer/patches.py` decides it from the syntax,
+  and when in doubt a store is not undone. Undone: a patcher (`patch`,
+  `mock.patch`, `patch.object`, `patch.dict`, `patch.multiple`) that is an
+  item of a `with`/`async with` inside a function whose body does not
+  `yield` (a body that yields stays patched across the yield, into whatever
+  runs meanwhile: the tests under a module-scoped generator fixture, the
+  caller of a `@contextmanager`), or a decorator of a function or class
+  (`mock.patch` patches while the call runs; on a generator function only
+  while the call makes the generator); a method of the `monkeypatch`
+  fixture or a patcher of pytest-mock's `mocker`, a parameter of that name
+  of the test (`test*`) or fixture (`@fixture`) the call stands in and not
+  rebound there (both fixtures are function-scoped); a method of what `with
+  MonkeyPatch.context() as mp:` binds in a body that does not yield.
+  Everything else stays a write: `patch(...).start()`, a patcher kept in a
+  name or attribute, a `MonkeyPatch()` of its own, `MonkeyPatch.context()`
+  entered other than by `with`, a helper's `monkeypatch` parameter,
+  `module_mocker` and the other wider pytest-mock fixtures, any other
+  receiver, and the builtins. The same no-`yield` condition applies to a
+  `with` that puts process state back (`mock.patch.dict(os.environ)`,
+  `warnings.catch_warnings()`, `indexer/process.py`). Concurrency is the
+  isolation assumption's: a thread or task started elsewhere that runs
+  while a test's patch is active sees it.
   A dynamic *import* (`__import__`,
   `importlib.import_module` or the builtin `__import__` with an unbounded
   name) can reach anything. Such an import is attributed to the *caller that

@@ -40,9 +40,10 @@ counts as a possible change:
   (``find_spec("m")``, or a literal file next to this module's own), any
   module otherwise; a loader's ``exec_module`` runs its own code in it.
 * anything installed in ``sys.modules`` is what an import of that name
-  gets (INSTALL, or SWAP for one test: ``monkeypatch.setitem``,
-  ``patch.dict``); a handle installed under a literal name is that module
-  for whatever names it (AS).
+  gets (INSTALL, or SWAP when undone after the test, as
+  ``indexer/patches.py`` decides: ``monkeypatch.setitem`` on the fixture,
+  ``with patch.dict(...)``); a handle installed under a literal name is
+  that module for whatever names it (AS).
 * a function's ``__globals__``, a frame's ``f_globals``/``f_locals`` are a
   module's namespace (that of the function's module, or any module's); an
   unpickler's result, ``pkgutil.resolve_name``/``pydoc.locate`` by a name
@@ -52,10 +53,15 @@ counts as a possible change:
   every string naming a module (``"pkg.mod"``, ``"pkg.mod:attr"``; not a
   patch target, a logger's name, a comparison or a docstring), which code
   the analysis cannot see may import and hand back: a value of unknown
-  type may be such a module (audit round 3, W20). A patch undone after the
-  test (``monkeypatch.setattr``, ``mock.patch``, ``patch.object``) is
-  marked beside its STORE (``SCOPED``): it puts nothing on a module for
-  later code (W24).
+  type may be such a module (audit round 3, W20).
+* a store undone after the test that made it (``indexer/patches.py``:
+  ``monkeypatch.setattr`` on the fixture, ``with mock.patch(...)``,
+  ``@patch.object(...)``) is a SCOPED record in place of a STORE: the
+  attribute is rebound for that test (a literal it names is not the
+  literal it was), but nothing is put on a module for later code (W24)
+  and no external module is written (W26). Any other store is a STORE
+  (``patch(...).start()``, a ``MonkeyPatch()`` of its own, a ``with
+  patch`` around a ``yield``).
 * ``globals()``, ``vars()``/``locals()`` without arguments, and ``exec``/
   ``eval`` of code that is not a literal reach this module's namespace, and
   code ``exec`` runs can reach what the module's globals can name; given a
@@ -79,6 +85,8 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+from diffcone.indexer.patches import undone_calls
 
 # Every method of the builtin list, dict and set that changes the container
 # in place (and the dunders behind ``+=``, ``|=`` and item assignment). The
@@ -234,7 +242,8 @@ HELD = "held"
 # names that module is the handle's module (``sources[0]`` is ``>`` and it).
 AS = "as"
 # An object installed in ``sys.modules`` under the name ``target`` (INSTALL:
-# for good; SWAP: for a test, ``monkeypatch.setitem``, ``patch.dict``).
+# for good; SWAP: undone after the test, patches.py: ``monkeypatch.setitem``
+# on the fixture, ``with patch.dict(...)``).
 INSTALL, SWAP = "install", "swap"
 # A module object obtained here other than by an import statement (a handle:
 # ``import_module("m")``, ``sys.modules[...]``, a ``module_from_spec`` copy,
@@ -242,9 +251,11 @@ INSTALL, SWAP = "install", "swap"
 # value of unknown type may be that module (``Indexer._attribute_modules``,
 # audit round 3, W20).
 HANDLE = "handle"
-# A STORE that lasts one test (``monkeypatch.setattr``, ``mock.patch``,
-# ``patch.object``): beside the STORE record, for what may put objects on a
-# module for later code (``SourceIndex.module_writers``, W24).
+# A STORE undone after the test that made it (patches.py: ``monkeypatch.
+# setattr`` on the fixture, ``with mock.patch(...)``, ``@patch.object(...)``),
+# in place of the STORE record: it rebinds the attribute for that test, but
+# puts nothing on a module for later code (``SourceIndex.module_writers``,
+# W24) and writes no external module (W26).
 SCOPED = "scoped"
 ANY = "*"
 # A module created here (``types.ModuleType(name)``): no module any other
@@ -476,6 +487,8 @@ class _Scanner:
         # Every node, once: the walks below read this list.
         self.nodes: list[ast.AST] = list(ast.walk(root))
         self.parents = _parents(self.nodes)
+        # The calls whose store is undone after the test (patches.py).
+        self.undone = undone_calls(root, self.nodes, self.parents) if records else frozenset()
         self.bound = bound if bound is not None else _bound_names(self.nodes)
         # Every import anywhere (what code ``exec`` runs here may name).
         self.imports = imports if imports is not None else self._import_map(self.nodes)
@@ -1117,8 +1130,9 @@ class _Scanner:
         ``sys.modules`` (``sys.modules[k] = v``, ``setdefault``,
         ``__setitem__``, ``update``, ``|=``: INSTALL, for good;
         ``monkeypatch.setitem(sys.modules, k, v)``, ``mock.patch.dict(
-        sys.modules, {k: v})``: SWAP, for a test): a key None is a name
-        nothing bounds, a value None one nothing tells."""
+        sys.modules, {k: v})``: SWAP when undone after the test, patches.py,
+        INSTALL otherwise): a key None is a name nothing bounds, a value
+        None one nothing tells."""
         found: list[tuple[ast.expr | None, ast.expr | None]] = []
         kind = INSTALL
         if isinstance(node, ast.Assign):
@@ -1146,7 +1160,7 @@ class _Scanner:
                     ]
             elif parts[-1] == "setitem" and len(args) > 2 and self._is_sys_modules(args[0]):
                 found.append((args[1], args[2]))
-                kind = SWAP
+                kind = SWAP if id(node) in self.undone else INSTALL
             elif (
                 parts[-1] == "dict"
                 and args
@@ -1159,7 +1173,7 @@ class _Scanner:
                     for k in node.keywords
                     if k.arg != "clear"
                 ]
-                kind = SWAP
+                kind = SWAP if id(node) in self.undone else INSTALL
         return [(key, value, kind) for key, value in found]
 
     @staticmethod
@@ -1416,14 +1430,13 @@ class _Scanner:
             target = _constant(node.args[0])
             if target is not None and all(p.isidentifier() for p in target.split(".")):
                 writer = self._writer(node)
+                kind = SCOPED if id(node) in self.undone else STORE
                 if parts[-2:] == ["patch", "multiple"]:
                     for k in node.keywords:
                         if k.arg is not None:
-                            self._record(STORE, f"{target}.{k.arg}", (), writer)
-                            self._record(SCOPED, f"{target}.{k.arg}", (), writer)
+                            self._record(kind, f"{target}.{k.arg}", (), writer)
                 else:
-                    self._record(STORE, target, (), writer)
-                    self._record(SCOPED, target, (), writer)
+                    self._record(kind, target, (), writer)
         canonical = self._canonical(node.func)
         if canonical & {"runpy.run_path"}:
             self._record(USE, ANY, (), self._writer(node))
@@ -1789,12 +1802,11 @@ class _Scanner:
                     if names is None:
                         self._emit(node, targets, sources, chain, USE)
                     else:
+                        # ``monkeypatch.setattr``, ``with patch.object(...)``
+                        # undone after the test (patches.py): SCOPED.
+                        kind = SCOPED if builtin is None and id(p) in self.undone else STORE
                         for name in names:
-                            self._emit(node, targets, sources + more, (*chain, name), STORE)
-                            if builtin is None:
-                                # ``monkeypatch.setattr``, ``patch.object``:
-                                # undone after the test.
-                                self._emit(node, targets, sources, (*chain, name), SCOPED)
+                            self._emit(node, targets, sources + more, (*chain, name), kind)
                     return
                 if builtin == "vars":
                     if targets is not None:
@@ -2024,7 +2036,7 @@ class _Scanner:
     def _record(
         self, kind: str, target: str, sources: tuple[str, ...], writer: tuple[str, ...]
     ) -> None:
-        if kind == STORE and target == "sys.modules":
+        if kind in (STORE, SCOPED) and target == "sys.modules":
             kind, target = USE, ANY  # a table of modules of its own: any import
         if target == ANY and kind != HELD:
             sources = ()  # already any module

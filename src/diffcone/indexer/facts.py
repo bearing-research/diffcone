@@ -159,8 +159,9 @@ class _Output:
     # may hold the decorated function afterwards (see Indexer._registrations).
     decorations: set[tuple[str, str, str]] = field(default_factory=set)
     # External modules in-scope code writes attributes onto (``logging.x =
-    # ...``, ``setattr(logging, ...)``, ``monkeypatch.setattr("logging.x",
-    # ...)``), as (module, the symbol writing), and lookups by a name nothing
+    # ...``, ``setattr(logging, ...)``, ``patch("logging.x", ...).start()``;
+    # not a store undone after the test, indexer/patches.py), as (module,
+    # the symbol writing), and lookups by a name nothing
     # bounds on an external module: (symbol, module, "dynamic" or
     # "reflection", detail). Such a lookup can reach in-scope code only
     # through a write onto that module, which only the whole tree can tell

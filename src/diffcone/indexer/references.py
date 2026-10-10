@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from diffcone.indexer.definitions import _flatten_chain
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
+from diffcone.indexer.patches import suspends
 from diffcone.indexer.process import (
     LOGGER_GETTERS,
     LOGGER_MUTATORS,
@@ -650,9 +651,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._resolve(base + [name])
         return True
 
-    def _reflective_write(self, receiver: ast.expr | None, name: ast.expr | None) -> None:
-        """``setattr(receiver, name, ...)`` and its relatives."""
-        if (module := self._written_module(receiver)) is not None:
+    def _reflective_write(
+        self, receiver: ast.expr | None, name: ast.expr | None, *, undone: bool = False
+    ) -> None:
+        """``setattr(receiver, name, ...)`` and its relatives (``undone``: a
+        store undone after the test, which writes no external module for
+        later code; indexer/patches.py)."""
+        if not undone and (module := self._written_module(receiver)) is not None:
             self.indexer.out.external_writes.add((module, self.source))
         names = self.scope.string_candidates(name) if name is not None else None
         owner = (self._self_class(receiver) if receiver is not None else None) or ""
@@ -875,9 +880,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                 node_ = self.indexer.resolve_dotted(chain)
                 if node_ is not None:
                     self.indexer._record(self.source, node_, chain=first.value)
-                else:
+                elif not self._undone(node):
                     # A third-party target: whichever prefix is the module,
-                    # something may now be stored on it.
+                    # something may now be stored on it (unless the store is
+                    # undone after the test: then only that test sees it,
+                    # and it depends on what it stores; audit round 3, W26).
                     for i in range(1, len(chain)):
                         self.indexer.out.external_writes.add((".".join(chain[:i]), self.source))
             return
@@ -898,7 +905,12 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         receiver = args[0] if args else keywords.get("target")
         name = args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))
-        self._reflective_write(receiver, name)
+        self._reflective_write(receiver, name, undone=len(parts) > 1 and self._undone(node))
+
+    def _undone(self, node: ast.Call) -> bool:
+        """Whether what ``node`` stores is undone after the test that made
+        it (indexer/patches.py)."""
+        return id(node) in self.scope.module.undone()
 
     def _record_call_site(self, node: ast.Call, parts: list[str]) -> None:
         target = self.indexer.resolve_chain(parts, self.scope)
@@ -1234,7 +1246,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         ``warnings.catch_warnings()`` for the warning filters,
         ``mock.patch.dict(os.environ, ...)`` for the dict it patches."""
         for node in self._stack:
-            if not isinstance(node, (ast.With, ast.AsyncWith)):
+            if not isinstance(node, (ast.With, ast.AsyncWith)) or suspends(node.body):
+                # A body that yields stays patched while it is suspended.
                 continue
             for item in node.items:
                 call = item.context_expr

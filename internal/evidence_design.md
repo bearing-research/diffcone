@@ -487,9 +487,12 @@ selection or states something the tables left implicit; none narrows it.
   assumption above.
 * **A lookup on an external module sees what the project stored there**
   (roadmap item 14). `dir(builtins)` or `getattr(os, name)` is bounded
-  until project code may write to that module (`monkeypatch.setattr(builtins,
-  ...)`; what counts is the static rule in design.md, under which handing
-  the module on counts too, attributed to the code that hands it on).
+  until project code may write to that module (`setattr(builtins, ...)`,
+  `patch("builtins.open", ...).start()`; what counts is the static rule in
+  design.md, under which handing the module on counts too, attributed to
+  the code that hands it on, and a store undone after the test that made
+  it, such as `monkeypatch.setattr(builtins, ...)` on the fixture, does
+  not: audit round 3, W26).
   Then it is a site that sees every namespace, since a writer
   anywhere may have stored there, not only one in the site's import
   closure. When every writer is a function or method that ran only inside

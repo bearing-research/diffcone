@@ -44,7 +44,14 @@ everything.
 :   A function that uses `eval`, `exec`, `globals()`, `vars()` or `getattr`
     with a computed name is treated as affected by any change in the
     modules its module imports, and in the modules of code that stores
-    objects on one of those modules. A module imported by a computed name
+    objects on one of those modules. On a library module (`getattr(datetime,
+    name)`), the lookup is affected by any change once your code stores
+    something there. A patch that ends with the test making it doesn't
+    count: `monkeypatch.setattr` on pytest's fixture, a `with mock.patch(...)`
+    block, a `@mock.patch(...)` decorator. One that may outlast the test
+    does: `patch(...).start()`, a patcher kept for later, a `MonkeyPatch()`
+    of your own, or a `with mock.patch(...)` around a `yield` in a fixture.
+    A module imported by a computed name
     (`importlib.import_module(name)`), an object unpickled with
     `pickle.loads`, and a module loaded from a file whose path is computed
     (`importlib.util.spec_from_file_location`) can be affected by any

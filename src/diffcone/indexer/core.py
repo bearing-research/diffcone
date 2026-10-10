@@ -524,10 +524,14 @@ class Indexer(DynamicBounds):
                 for owner in owners:
                     concrete(module, kind, ".".join([owner, *after]), writer)
                 return
-            if kind == STORE:
+            if kind in (STORE, SCOPED):
+                # A store undone after the test (SCOPED) is seen only during
+                # the test that made it, which depends on what it stores: no
+                # write onto an external module (audit round 3, W26), but a
+                # literal it rebinds is not the literal it was.
                 parent, name = parts[:-1], parts[-1]
                 places = self._locate_target(module, parent)
-                if places is None:
+                if places is None and kind == STORE:
                     external.add(("write", ".".join(parent), writer))
                 for place, rest in places or ():
                     if not rest:
@@ -574,7 +578,9 @@ class Indexer(DynamicBounds):
         # import of the name, a use of it as a value, a star import of its
         # module): a bound taken from the calls in its own module (a LOADER
         # record) does not hold for them.
-        reached: set[str] = {r.target for _, r in records if r.kind in (CALL, USE, DYN, MUT, STORE)}
+        reached: set[str] = {
+            r.target for _, r in records if r.kind in (CALL, USE, DYN, MUT, STORE, SCOPED)
+        }
         for scope in self.scopes.values():
             for binding in [
                 *scope.imports.values(),
@@ -608,7 +614,7 @@ class Indexer(DynamicBounds):
             for module, record in records:
                 kind, target, sources = record.kind, record.target, record.sources
                 writer = self._writer_symbol(module, record.writer)
-                if kind in (HANDLE, SCOPED):
+                if kind == HANDLE:
                     continue  # what a value may be, not a use (_attribute_modules)
                 if kind == HELD:
                     # Held where only its module's code reads it, unless other
@@ -678,9 +684,10 @@ class Indexer(DynamicBounds):
                     # module's literal of that name (rebound or changed in
                     # place), or a submodule of that name handed on.
                     chain = target.split(".")[1:]
-                    if kind == STORE:
+                    if kind in (STORE, SCOPED):
                         named[chain[-1]].add(writer)
-                        external.add(("write", ANY, writer))
+                        if kind == STORE:
+                            external.add(("write", ANY, writer))
                     elif kind == MUT:
                         named_tables[chain[-1]].add(writer)
                     else:
@@ -777,19 +784,16 @@ class Indexer(DynamicBounds):
     def _module_writers(self, records: list[tuple[str, UseRecord]], anything: set[str]) -> None:
         """What may put objects on each in-scope module for later code
         (``SourceIndex.module_writers``, audit round 3, W24): a store of one
-        of its attributes (not a patch undone after the test), the module
+        of its attributes (not one undone after the test, SCOPED), the module
         (or a module above it) handed on, which whoever gets it may write,
         and an object installed for good under its name; under a run-time
         name nothing bounds, any module, as for the code that may change
         the literal table a name was computed from (``anything``)."""
-        scoped = {(m, r.target, r.writer) for m, r in records if r.kind == SCOPED}
         writers: dict[str, set[str]] = defaultdict(set)
         writers[ANY_MODULE] |= anything
         for module, record in records:
             kind, target = record.kind, record.target
             if kind not in (STORE, USE, DYN, HELD, INSTALL):
-                continue
-            if kind == STORE and (module, target, record.writer) in scoped:
                 continue
             writer = self._writer_symbol(module, record.writer)
             if target == ANY or target.startswith(ANY + "."):

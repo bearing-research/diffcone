@@ -14,6 +14,7 @@ from diffcone.indexer.literals import (
     literal_base,
     own_literal_bindings,
 )
+from diffcone.indexer.patches import undone_calls
 from diffcone.indexer.uses import UseRecord
 
 
@@ -99,6 +100,19 @@ class ModuleScope:
     # of everything other modules' resolution may read from this one.
     cache_key: str | None = None
     env_digest: str = ""
+    # ``undone()`` for the tree it was computed from.
+    _undone: tuple[ast.Module, frozenset[int]] | None = field(
+        default=None, repr=False, compare=False
+    )
+
+    def undone(self) -> frozenset[int]:
+        """The ``id`` of each call in ``tree`` whose store is undone after
+        the test (indexer/patches.py)."""
+        if self.tree is None:
+            return frozenset()
+        if self._undone is None or self._undone[0] is not self.tree:
+            self._undone = (self.tree, undone_calls(self.tree))
+        return self._undone[1]
 
 
 @dataclass
