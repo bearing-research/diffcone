@@ -53,8 +53,9 @@ everything.
       does: `patch(...).start()`, a patcher kept for later, a
       `MonkeyPatch()` of your own, `monkeypatch` handed to a helper
       function, or a `with mock.patch(...)` around a `yield` in a fixture.
-    - **Code loaded at run time.** A module imported by a name nothing
-      bounds (`importlib.import_module(name)`), an object unpickled with
+    - **Code loaded at run time.** A module imported or run by a name
+      nothing bounds (`importlib.import_module(name)`,
+      `runpy.run_module(name)`, `runpy.run_path(path)`), an object unpickled with
       `pickle.loads`, and a module loaded from a file whose path is
       computed (`importlib.util.spec_from_file_location`) can be affected
       by any change at all. A name that starts with fixed text

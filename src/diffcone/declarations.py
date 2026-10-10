@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from diffcone.snapshot import INDEX, WORKTREE, GitError, read_files, resolve_commit
+from diffcone.snapshot import INDEX, WORKTREE, GitError, has_entry, read_files, resolve_commit
 
 FILENAME = "diffcone.toml"
 
@@ -102,12 +102,13 @@ def read_file(repo: Path, revision: str) -> bytes | None:
             raise Unreadable(f"{FILENAME}: {exc}") from exc
     try:
         commit = "" if revision == INDEX else resolve_commit(repo, revision)
-    except GitError as exc:  # an unknown revision is the caller's problem
+        if not has_entry(repo, revision if revision == INDEX else commit, FILENAME):
+            return None  # not in this snapshot: the ordinary case
+        # There, so a failure to read it (an unmerged entry, a missing
+        # object) is not an absence.
+        return read_files(repo, commit, [FILENAME], label=revision)[FILENAME]
+    except GitError as exc:
         raise Unreadable(f"{FILENAME}: {exc}") from exc
-    try:
-        return read_files(repo, commit, [FILENAME], label=revision).get(FILENAME)
-    except GitError:
-        return None  # not in this snapshot: the ordinary case
 
 
 def parse(raw: bytes) -> Declared:

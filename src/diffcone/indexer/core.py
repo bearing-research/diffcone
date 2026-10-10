@@ -49,7 +49,9 @@ from diffcone.model import (
     INSTALLED,
     INSTALLED_ANYWHERE,
     METHOD,
+    MUTATED_BY,
     REFERENCES,
+    REGISTERS,
     UNRESOLVED_DYNAMIC,
     WRITES,
     Edge,
@@ -190,7 +192,6 @@ class Indexer(DynamicBounds):
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
         returns = self._global.returns
-        self.index.escaped_values = set(self._global.escapes)
         self.index.escaped_classes = {
             cls
             for sites in self._global.call_sites.values()
@@ -332,19 +333,19 @@ class Indexer(DynamicBounds):
         edges are."""
         writers: dict[str, set[str]] = defaultdict(set)
         for e in self.index.edges:
-            if e.detail == "mutated_by":
+            if e.detail == MUTATED_BY:
                 writers[e.target].add(e.source)
         for decorated, decorator, receiver in sorted(self._global.decorations):
             if receiver:
-                self.index.edges.add(Edge(receiver, decorated, REFERENCES, "registers"))
+                self.index.edges.add(Edge(receiver, decorated, REFERENCES, REGISTERS))
             for variable in sorted(writers.get(decorator, ())):
-                self.index.edges.add(Edge(variable, decorated, REFERENCES, "registers"))
+                self.index.edges.add(Edge(variable, decorated, REFERENCES, REGISTERS))
         for cls, bases in sorted(self.index.class_bases.items()):
             stack, seen = list(bases), set(bases)
             while stack:
                 base = stack.pop()
                 if f"{base}.__init_subclass__" in self.index.symbols:
-                    self.index.edges.add(Edge(base, cls, REFERENCES, "registers"))
+                    self.index.edges.add(Edge(base, cls, REFERENCES, REGISTERS))
                 for up in self.index.class_bases.get(base, ()):
                     if up not in seen:
                         seen.add(up)

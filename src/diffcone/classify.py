@@ -30,7 +30,8 @@ ANNOTATIONS_CHANGED = "annotations_changed"
 # deletions, everything that imports it), not just direct references.
 # Pure additions (a new import binding, a new dependency edge) cannot break
 # an existing member: a member whose own resolution changed because of the
-# addition carries its own dependencies_changed.
+# addition carries its own dependencies_added (a name it used now
+# resolves) or dependencies_changed (a binding it used moved).
 STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED})
 
 # Changes that are reported but carry no impact of their own: nothing an
@@ -153,7 +154,7 @@ def _module_additions_matter(
     module: str,
     added: frozenset[tuple[str, str, str]],
     base_closures: dict[str, set[str]],
-    base: SourceIndex,
+    base_modules: set[str],
     b: Symbol,
     h: Symbol,
 ) -> bool:
@@ -162,15 +163,15 @@ def _module_additions_matter(
     at import reaches an in-scope module importing it did not run before (a
     registration import such as ``import pkg.json_handler``, one moved out of
     a function or out of ``if TYPE_CHECKING:``). A module new in head is
-    added, and reached through its own change."""
+    added, and reached through its own change. ``base_modules``: the
+    base's modules."""
     closure = base_closures.get(module, {module})
     for kind, _target, _detail in added:
         # A new third-party import is not import-time code of the project's
         # (installed code is assumed unchanged); anything else is.
         if kind not in (IMPORTS, IMPORTS_NAME, EXTERNAL_SIG):
             return True
-    modules = {s.id for s in base.symbols.values() if s.kind == MODULE}
-    newly_run = _runtime_imports(h, modules) - _runtime_imports(b, modules)
+    newly_run = _runtime_imports(h, base_modules) - _runtime_imports(b, base_modules)
     return bool(newly_run - closure)
 
 
@@ -185,6 +186,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     base_deps = _dependency_signatures(base)
     head_deps = _dependency_signatures(head)
     base_closures = _import_closures(base)
+    base_modules = {s.id for s in base.symbols.values() if s.kind == MODULE}
     empty: frozenset[tuple[str, str, str]] = frozenset()
     for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
         b = base.symbols.get(symbol_id)
@@ -237,7 +239,9 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             elif (
                 h.kind != MODULE
                 or resolved_now
-                or _module_additions_matter(symbol_id, after - before, base_closures, base, b, h)
+                or _module_additions_matter(
+                    symbol_id, after - before, base_closures, base_modules, b, h
+                )
             ):
                 kinds.append(DEPENDENCIES_ADDED)
             elif IMPORTS_ADDED not in kinds:
@@ -245,7 +249,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         elif (
             h.kind == MODULE
             and IMPORTS_ADDED in kinds
-            and _module_additions_matter(symbol_id, frozenset(), base_closures, base, b, h)
+            and _module_additions_matter(symbol_id, frozenset(), base_closures, base_modules, b, h)
         ):
             # No new edge (a TYPE_CHECKING copy already had it), but the
             # import now runs.

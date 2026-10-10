@@ -51,6 +51,7 @@ from diffcone.model import (
     GRAPH_MODULES,
     METHOD,
     MODULE,
+    MUTATED_BY,
     REBINDS,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
@@ -498,7 +499,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                         )
                     ):
                         self.indexer.out.edges.add(
-                            Edge(symbol.id, self.source, REFERENCES, "mutated_by")
+                            Edge(symbol.id, self.source, REFERENCES, MUTATED_BY)
                         )
                         return
         base = expr
@@ -517,7 +518,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
-            self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, "mutated_by"))
+            self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, MUTATED_BY))
 
     def _external_module(self, expr: ast.expr | None) -> str | None:
         """The external module ``expr`` names (``logging``, ``os.path``), if

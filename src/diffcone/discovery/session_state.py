@@ -55,9 +55,13 @@ from diffcone.model import (
     INSTALLED_ANYWHERE,
     METHOD,
     MODULE,
+    MUTATED_BY,
     REFERENCES,
+    REGISTERS,
     UNRESOLVED_DYNAMIC,
     SourceIndex,
+    edge_mark,
+    imports_anything,
 )
 
 # Path-scoped hooks pytest calls while collecting, before any test runs.
@@ -79,7 +83,7 @@ COLLECTION_HOOKS = frozenset(
 
 # Edges that do not mean the source's code can run the target's (a module
 # does not run what installs an object under its name).
-_NOT_RUN = frozenset({"mutated_by", "registers", INSTALLED, INSTALLED_ANYWHERE})
+_NOT_RUN = frozenset({MUTATED_BY, REGISTERS, INSTALLED, INSTALLED_ANYWHERE})
 # Edges from a class to a member that whoever uses an instance runs (a
 # special method, a method an external base calls); the class's other
 # edges are its body's code, which runs when its module is imported.
@@ -116,7 +120,7 @@ def state_writing_roots(
     for edge in index.edges:
         if (edge.source, "edge", edge.target) in main_only:
             continue  # only under ``if __name__ == "__main__":``
-        if edge.kind in (REFERENCES, DECLARED) and edge.detail not in _NOT_RUN:
+        if edge.kind in (REFERENCES, DECLARED) and edge_mark(edge) not in _NOT_RUN:
             callers[edge.target].add((edge.source, edge.detail))
         elif edge.kind == IMPORTS:
             imported[edge.source].add(edge.target)
@@ -140,7 +144,7 @@ def state_writing_roots(
         if ref.kind == UNRESOLVED_DYNAMIC:
             symbol = index.symbols.get(ref.symbol)
             if symbol is not None and (
-                "import" in ref.detail
+                imports_anything(ref.detail)
                 or ref.detail.endswith(EXTERNAL_WRITTEN)
                 or symbol.module in writing_closures
             ):

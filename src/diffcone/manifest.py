@@ -159,8 +159,8 @@ def manifest_to_dict(
 def load_manifest(path: str | Path) -> Manifest:
     try:
         data = json.loads(Path(path).read_text("utf-8"))
+    except json.JSONDecodeError as exc:  # a ValueError: before the next clause
+        raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from exc
     except (OSError, ValueError) as exc:  # ValueError covers UnicodeDecodeError
         raise ManifestError(f"cannot read manifest {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ManifestError(f"manifest {path} is not valid JSON: {exc}") from exc
     return parse_manifest(data)

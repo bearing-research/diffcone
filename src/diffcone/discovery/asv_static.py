@@ -73,7 +73,7 @@ from diffcone.discovery.common import (
 )
 from diffcone.indexer import resolve_relative_module
 from diffcone.manifest import Target
-from diffcone.model import SourceIndex
+from diffcone.model import DYNAMIC_DEPENDENCY, SourceIndex
 from diffcone.snapshot import ASV_CONFIGS, Snapshot, module_name_for
 
 RUNNER = "asv"
@@ -332,7 +332,7 @@ def _timeraw_deps(func: ast.FunctionDef | ast.AsyncFunctionDef, index: SourceInd
                     parts = name.split(".")
                     for i in range(len(parts), 0, -1):
                         if ".".join(parts[:i]) in index.modules:
-                            deps.append(f"dynamic:{'.'.join(parts[:i])}")
+                            deps.append(f"{DYNAMIC_DEPENDENCY}{'.'.join(parts[:i])}")
                             break
     return deps
 
