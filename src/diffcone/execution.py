@@ -1,8 +1,9 @@
-"""Execution integration: run selected targets, and validate plans.
+"""Execution integration: run selected targets, validate plans, record evidence.
 
 Planning never executes project code. Everything in this module runs
-*after* a plan exists and is invoked only by the ``run`` and ``validate``
-commands, in a subprocess, with a command the user controls.
+*after* a plan exists and is invoked only by the ``run``, ``validate``,
+``corpus`` and ``collect`` commands, in a subprocess, with a command the
+user controls.
 
 ``run``      executes the selected targets of a plan with the runner's CLI.
 ``validate`` runs the full pytest suite at both snapshots (in temporary
@@ -10,10 +11,15 @@ commands, in a subprocess, with a command the user controls.
              and checks that every test whose outcome changed was selected.
              This is outcome-based validation: a test whose behaviour
              changed without changing its pass/fail outcome is not detected.
-             With ``coverage=True`` it also runs the head suite under
-             pytest-cov with per-test contexts and checks that every test
-             that *executed* a changed symbol was selected, which measures
-             recall (and reports precision) against dynamic ground truth.
+             With ``coverage=True`` both suites also run under pytest-cov
+             with per-test contexts, and every test that *executed* a
+             changed symbol (as it is at either snapshot) must have been
+             selected, which measures recall (and reports precision)
+             against dynamic ground truth.
+``corpus``   validates every ``parent -> commit`` pair of a range.
+``collect``  runs the whole suite under the evidence recorder
+             (``collect.py``) and writes a store; ``run --collect``
+             advances one.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
 from diffcone.planner import Plan, _index_snapshot
 from diffcone.snapshot import (
+    ASV_CONFIGS,
     INDEX,
     WORKTREE,
     GitError,
@@ -87,24 +94,18 @@ def split_command(command: str) -> list[str]:
 
 DEFAULT_COMMANDS = {"pytest": "python -m pytest", "asv": "asv run --python=same"}
 
-# Parameter ids may contain spaces, pipes and nested brackets
-# (``test_x[choices4-[TEXT: a|b]] PASSED [ 12%]``), so the node id is
-# everything up to the outcome token.
-_PYTEST_LINE = re.compile(
-    r"^(?P<nodeid>\S+::.*?) (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:\s|$)"
-)
 # pytest-xdist's report of a worker that died mid-run, and the interpreter's
 # own last words.
 _CRASH_LINE = re.compile(
     r"node down|crashed while running|replacing crashed worker|Fatal Python error|"
     r"Segmentation fault|Bus error|Killed"
 )
-# pytest-xdist puts the worker and the outcome first: ``[gw3] PASSED a.py::t``
-# (``[gw3] [ 12%] PASSED ...`` in some versions).
-_XDIST_LINE = re.compile(
-    r"^\[gw\d+\](?: \[\s*\d+%\])? (?P<outcome>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS) "
-    r"(?P<nodeid>\S+::.*?)\s*$"
-)
+
+
+def pytest_argv(command: str | None, *extra: str) -> list[str]:
+    """The pytest command line (``--command``, or the default) followed by
+    ``extra``."""
+    return [*split_command(command or DEFAULT_COMMANDS["pytest"]), *extra]
 
 
 # --------------------------------------------------------------------------- run
@@ -142,11 +143,13 @@ def resolve_command(command: str | None, repo: Path) -> str | None:
     absolute, against the current directory and then the repository, so
     the command still works from a temporary worktree. Symlinks are kept:
     a venv's ``python`` is a link to the base interpreter, and following it
-    would run outside the venv."""
+    would run outside the venv. On Windows ``.venv/Scripts/python.exe`` is
+    as much a relative path as ``.venv\\Scripts\\python.exe``."""
     if command is None:
         return None
     argv = split_command(command)
-    if not argv or os.path.isabs(argv[0]) or os.sep not in argv[0]:
+    separators = {"/", os.sep}
+    if not argv or os.path.isabs(argv[0]) or not any(s in argv[0] for s in separators):
         return command
     for base in (Path.cwd(), repo):
         candidate = base / argv[0]
@@ -260,12 +263,7 @@ def run_selected(
         Path(tmp, "targets").write_text(
             "".join(f"{t.runner_id}\n" for t in every), encoding="utf-8"
         )
-        result.command = [
-            *split_command(command or DEFAULT_COMMANDS["pytest"]),
-            "-p",
-            SELECT_PLUGIN,
-            *(extra or []),
-        ]
+        result.command = pytest_argv(command, "-p", SELECT_PLUGIN, *(extra or []))
         try:
             result.returncode = subprocess.run(result.command, cwd=cwd, env=run_env).returncode
         finally:
@@ -378,26 +376,13 @@ def fold_nodeid(nodeid: str) -> str:
     return re.sub(r"\[.*\]$", "", nodeid)
 
 
-def parse_pytest_verbose(output: str) -> dict[str, str]:
-    """Map pytest node ids (parameter cases folded into their function) to
-    the outcomes observed for that function, in a fixed order and joined
-    with ``+`` (``PASSED+SKIPPED``). The fold must not depend on the order
-    the cases ran in: under pytest-xdist that order varies from run to run,
-    and a fold that kept the first or last case would report changes that
-    never happened."""
-    order = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
-    seen: dict[str, set[str]] = {}
-    for line in output.splitlines():
-        m = _PYTEST_LINE.match(line.strip()) or _XDIST_LINE.match(line.strip())
-        if not m:
-            continue
-        seen.setdefault(fold_nodeid(m.group("nodeid")), set()).add(m.group("outcome"))
-    return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
-
-
 def parse_outcome_lines(lines: list[str]) -> dict[str, str]:
-    """``parse_pytest_verbose`` for the selection plugin's outcome lines
-    (``nodeid<TAB>OUTCOME``): the same fold, the same order."""
+    """Map pytest node ids (parameter cases folded into their function) to
+    the outcomes the selection plugin wrote for them (``nodeid<TAB>OUTCOME``
+    lines), in a fixed order and joined with ``+`` (``PASSED+SKIPPED``).
+    The fold must not depend on the order the cases ran in: under
+    pytest-xdist that order varies from run to run, and a fold that kept
+    the first or last case would report changes that never happened."""
     order = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
     seen: dict[str, set[str]] = {}
     for line in lines:
@@ -461,6 +446,7 @@ class _SuiteRun:
     log: str
     returncode: int
     coverage_db: Path | None = None
+    argv: list[str] = field(default_factory=list)  # the command line that ran
 
 
 def _checkout_env(cwd: Path, source_roots: list[str]) -> dict[str, str]:
@@ -490,19 +476,11 @@ def _run_full_pytest(
     hash_seed: str | None = None,
     coverage_include: list[str] | None = None,
 ) -> Iterator[_SuiteRun]:
-    """Run the whole suite once with ``-v``; with ``coverage`` the same run
-    also records per-test coverage contexts into a temporary database that
-    lives for the duration of the context."""
-    argv = [
-        *split_command(command or DEFAULT_COMMANDS["pytest"]),
-        "-v",
-        "-p",
-        "no:cacheprovider",
-        "-p",
-        SELECT_PLUGIN,
-        "--no-header",
-        "-rN",
-    ]
+    """Run the whole suite once (the outcomes come from the selection
+    plugin); with ``coverage`` the same run also records per-test coverage
+    contexts into a temporary database that lives for the duration of the
+    context."""
+    argv = pytest_argv(command, "-p", "no:cacheprovider", "-p", SELECT_PLUGIN, "--no-header", "-rN")
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
         # Outcomes come from the selection plugin, not the console: a project
         # whose addopts carry ``-q`` prints no per-test lines at all.
@@ -533,7 +511,7 @@ def _run_full_pytest(
                 argv += ["--cov"]
             else:
                 argv += ["--cov=."]
-            rc.write_text(config)
+            rc.write_text(config, encoding="utf-8")
             argv += ["--cov-context=test", "--cov-report=", f"--cov-config={rc}"]
             env["COVERAGE_FILE"] = str(db)
             # coverage.py 7.x defaults to the sys.monitoring core on Python
@@ -581,7 +559,7 @@ def _run_full_pytest(
                 "outcomes: diffcone's outcome plugin did not load, so there is nothing to "
                 f"compare\n{log[-2000:]}"
             )
-        yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db)
+        yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db, argv)
 
 
 # --------------------------------------------------------------------------- coverage
@@ -619,17 +597,25 @@ def read_coverage_contexts(
     """
     result: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     root = root.resolve()
+    # One file has a row per test that ran it: resolve each path once.
+    resolved: dict[str, str | None] = {}
 
     def rel_path(path: str) -> str | None:
+        try:
+            return resolved[path]
+        except KeyError:
+            pass
         p = Path(path)
         if not p.is_absolute():
             p = root / p
         try:
-            return p.resolve().relative_to(root).as_posix()
+            rel: str | None = p.resolve().relative_to(root).as_posix()
         except ValueError:
             if outside is not None:
                 outside.add(str(p))
-            return None
+            rel = None
+        resolved[path] = rel
+        return rel
 
     con = sqlite3.connect(db_path)
     try:
@@ -920,6 +906,7 @@ def _validate_pytest(
             hash_seed=seed,
         ) as head_run:
             head_outcomes, head_log = head_run.outcomes, head_run.log
+            head_argv = head_run.argv
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected)
                 if head_run.coverage_db is not None and plan.head.kind == KIND_COMMIT:
@@ -941,7 +928,7 @@ def _validate_pytest(
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
         "pytest",
-        [*split_command(command or DEFAULT_COMMANDS["pytest"]), "-v"],
+        head_argv,
         base_log=base_log,
         head_log=head_log,
         coverage=cov,
@@ -1401,16 +1388,14 @@ def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str
     return names
 
 
+def _packages(modules: set[str]) -> str:
+    """``DIFFCONE_COLLECT_PACKAGES``: the project's top-level packages."""
+    return ",".join(sorted({m.split(".")[0] for m in modules}))
+
+
 def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
     """The suite under the recorder, as a store's ``command`` records it."""
-    return [
-        *split_command(command or DEFAULT_COMMANDS["pytest"]),
-        "-p",
-        PLUGIN,
-        "-p",
-        "no:cacheprovider",
-        *(extra or []),
-    ]
+    return pytest_argv(command, "-p", PLUGIN, "-p", "no:cacheprovider", *(extra or []))
 
 
 def advance_refusal(
@@ -1447,21 +1432,31 @@ def _dirty(repo: Path) -> list[str]:
     """Changes in the working tree that make it differ from its commit.
     Untracked output nobody runs does not count: Python's bytecode (in a
     repository that does not ignore it) and ASV's results, environments and
-    HTML beside its configuration."""
-    status = _git(repo, ["status", "--porcelain", "--untracked-files=normal"]).decode(
+    HTML beside its configuration.
+
+    ``-z``: without it git quotes a name with non-ASCII characters
+    (``"pkg/__pycache__/\\303\\251.cpython-313.pyc"``), which then matches
+    none of those filters. With it a rename or copy is two names, the new
+    one in the entry and the original in the next field: both changed."""
+    status = _git(repo, ["status", "--porcelain", "-z", "--untracked-files=normal"]).decode(
         "utf-8", "surrogateescape"
     )
     outputs = _asv_output_dirs(repo)
     found = []
-    for line in status.splitlines():
-        path = line[3:]
-        if not path or path.startswith(str(EVIDENCE_DIR.parts[0]) + "/"):
-            continue
-        if line.startswith("??") and (
-            is_bytecode(path) or any(path.startswith(d + "/") for d in outputs)
-        ):
-            continue
-        found.append(path)
+    fields = iter(status.split("\0"))
+    for entry in fields:
+        code, path = entry[:2], entry[3:]
+        paths = [path]
+        if "R" in code or "C" in code:
+            paths.append(next(fields, ""))
+        for path in paths:
+            if not path or path.startswith(str(EVIDENCE_DIR.parts[0]) + "/"):
+                continue
+            if code == "??" and (
+                is_bytecode(path) or any(path.startswith(d + "/") for d in outputs)
+            ):
+                continue
+            found.append(path)
     return found
 
 
@@ -1469,7 +1464,7 @@ def _asv_output_dirs(repo: Path) -> list[str]:
     """Where ASV writes beside each tracked ``asv.conf.json`` (or
     ``.jsonc``): its ``results_dir``, ``env_dir`` and ``html_dir``
     (``results``, ``env`` and ``html`` by default), repository-relative."""
-    names = [p for name in ("asv.conf.json", "asv.conf.jsonc") for p in (name, f"*/{name}")]
+    names = [p for name in ASV_CONFIGS for p in (name, f"*/{name}")]
     listed = _git(repo, ["ls-files", "-z", "--", *names])
     dirs: list[str] = []
     for raw in listed.split(b"\0"):
@@ -1504,7 +1499,7 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     it shadows itself."""
     env = dict(base)
     link_dir = Path(tempfile.mkdtemp(prefix=PLUGIN_DIR_PREFIX))
-    (link_dir / "sitecustomize.py").write_text(SITECUSTOMIZE)
+    (link_dir / "sitecustomize.py").write_text(SITECUSTOMIZE, encoding="utf-8")
     for name, source in (
         (PLUGIN, "collect.py"),
         (SELECT_PLUGIN, "selection.py"),
@@ -1591,7 +1586,7 @@ def collect_evidence(
         base_env.setdefault("PYTHONHASHSEED", "0")
         if env_variables:
             base_env["DIFFCONE_ENV_VARIABLES"] = ",".join(sorted(set(env_variables)))
-        base_env["DIFFCONE_COLLECT_PACKAGES"] = ",".join(sorted({m.split(".")[0] for m in modules}))
+        base_env["DIFFCONE_COLLECT_PACKAGES"] = _packages(modules)
         runs = [Path(tmp) / "forward"] + ([Path(tmp) / "reverse"] if reverse_check else [])
         logs, returncode = [], 0
         for out in runs:
@@ -1690,8 +1685,15 @@ def run_with_evidence(
     With ``advance_from`` (the plan's store; the caller has checked
     :func:`advance_refusal`) the recorder also records, and the store is
     advanced to head: the run's records for the selected tests, the old ones
-    for the rest."""
+    for the rest.
+
+    A dry run reports the command a user can run: without the recorder,
+    which only diffcone's own run can load, and so without its check."""
     assert plan.evidence is not None
+    if dry_run:
+        return EvidenceRun(
+            run_selected(plan, "pytest", cwd=cwd, command=command, extra=extra, dry_run=True)
+        )
     with tempfile.TemporaryDirectory(prefix="diffcone-check-") as tmp:
         report = Path(tmp) / "environment.json"
         out = Path(tmp) / "records" if advance_from is not None else None
@@ -1701,7 +1703,7 @@ def run_with_evidence(
         plugins = ["-p", PLUGIN]
         if advance_from is not None:
             modules = _python_module_names(plan.head_index, plan.source_roots)
-            env["DIFFCONE_COLLECT_PACKAGES"] = ",".join(sorted({m.split(".")[0] for m in modules}))
+            env["DIFFCONE_COLLECT_PACKAGES"] = _packages(modules)
             plugins += ["-p", "no:cacheprovider"]
         try:
             result = run_selected(
@@ -1710,10 +1712,9 @@ def run_with_evidence(
                 cwd=cwd,
                 command=command,
                 extra=[*plugins, *(extra or [])],
-                dry_run=dry_run,
                 env=env,
             )
-            if not dry_run and not result.selected:
+            if not result.selected:
                 # Nothing selected is a verdict of the evidence too: check
                 # that it applies to this environment before trusting it.
                 argv = build_command("pytest", [], command, ["-p", PLUGIN, *(extra or [])])
@@ -1721,9 +1722,9 @@ def run_with_evidence(
         finally:
             remove_plugin_dir(env)
         checked = json.loads(report.read_text("utf-8")) if report.exists() else None
-        if dry_run or (checked is not None and checked.get("match")):
-            run = EvidenceRun(result, environment_checked=not dry_run)
-            if advance_from is not None and out is not None and not dry_run:
+        if checked is not None and checked.get("match"):
+            run = EvidenceRun(result, environment_checked=True)
+            if advance_from is not None and out is not None:
                 outs = [out]
                 if advance_from.reverse_checked and result.selected and result.returncode in (0, 1):
                     # The recording was order-checked (``collect

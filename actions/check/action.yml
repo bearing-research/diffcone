@@ -28,22 +28,7 @@ runs:
       shell: bash
       env:
         REF: ${{ inputs.diffcone-ref }}
-      run: |
-        # The runner has this action's repository at the action's ref in
-        # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
-        # ``python3`` is ``python`` on Windows runners, and a venv keeps its
-        # programs in Scripts there.
-        py=$(command -v python3 || command -v python)
-        "$py" -m venv "$RUNNER_TEMP/diffcone"
-        bin="$RUNNER_TEMP/diffcone/bin"
-        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
-        if [ -n "$REF" ]; then
-          source="git+https://github.com/bearing-research/diffcone@$REF"
-        else
-          source="$GITHUB_ACTION_PATH/../.."
-        fi
-        "$bin/python" -m pip install --quiet "$source"
-        echo "$bin" >> "$GITHUB_PATH"
+      run: bash "$GITHUB_ACTION_PATH/../install.sh"
     - name: Check
       shell: bash
       env:

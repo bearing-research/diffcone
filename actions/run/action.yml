@@ -44,22 +44,7 @@ runs:
       shell: bash
       env:
         REF: ${{ inputs.diffcone-ref }}
-      run: |
-        # The runner has this action's repository at the action's ref in
-        # GITHUB_ACTION_PATH (actions/<name>), so diffcone matches the action.
-        # ``python3`` is ``python`` on Windows runners, and a venv keeps its
-        # programs in Scripts there.
-        py=$(command -v python3 || command -v python)
-        "$py" -m venv "$RUNNER_TEMP/diffcone"
-        bin="$RUNNER_TEMP/diffcone/bin"
-        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
-        if [ -n "$REF" ]; then
-          source="git+https://github.com/bearing-research/diffcone@$REF"
-        else
-          source="$GITHUB_ACTION_PATH/../.."
-        fi
-        "$bin/python" -m pip install --quiet "$source"
-        echo "$bin" >> "$GITHUB_PATH"
+      run: bash "$GITHUB_ACTION_PATH/../install.sh"
     - name: Restore the evidence
       uses: actions/cache/restore@v6
       with:
@@ -80,22 +65,20 @@ runs:
         eval "args=($PYTEST_ARGS)"
         mkdir -p diffcone-results
         py=$(command -v python3 || command -v python)
-        store=$(ls .diffcone/evidence/*.sqlite 2>/dev/null | head -1 || true)
+        source "$GITHUB_ACTION_PATH/../recording.sh"
         evidence=()
         recording=""
         note=""
-        if [ -n "$store" ]; then
-          commit=$(basename "$store" | cut -d- -f1)
-          # A shallow checkout may lack the recorded commit; a force-pushed
-          # branch may have lost it, and then the plan is static.
-          if git cat-file -e "$commit^{commit}" 2>/dev/null \
-            || git fetch --quiet --depth=1 origin "$commit"; then
-            evidence=(--evidence "$store")
-            recording=$commit
-          else
-            echo "::warning::the evidence recorded at $commit cannot be fetched; planning statically"
-            note="the recorded commit $commit cannot be fetched"
-          fi
+        found=0
+        find_recording || found=$?
+        if [ "$found" -eq 0 ]; then
+          evidence=(--evidence "$store")
+          recording=$commit
+        elif [ "$found" -eq 2 ]; then
+          # A force-pushed branch may have lost the recorded commit: the
+          # plan is static then.
+          echo "::warning::the evidence recorded at $commit cannot be fetched; planning statically"
+          note="the recorded commit $commit cannot be fetched"
         else
           echo "::warning::no diffcone evidence restored; planning statically"
           note="no recording restored"

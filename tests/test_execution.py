@@ -14,7 +14,7 @@ import pytest
 
 from diffcone import execution
 from diffcone.cli import main
-from diffcone.execution import build_command, parse_pytest_verbose, run_selected, validate_pytest
+from diffcone.execution import build_command, parse_outcome_lines, run_selected, validate_pytest
 from diffcone.snapshot import GitError
 from diffcone.testing import asv_target, changes, py_target
 
@@ -69,15 +69,16 @@ def test_the_asv_pattern_selects_parameterised_benchmarks_and_nothing_else():
     assert not selects("other.time_add")
 
 
-def test_parse_pytest_verbose_folds_parameter_cases():
-    out = (
-        "tests/test_a.py::test_x[1] PASSED [ 25%]\n"
-        "tests/test_a.py::test_x[2] FAILED [ 50%]\n"
-        "tests/test_a.py::TestK::test_m PASSED [ 75%]\n"
-        "tests/test_a.py::test_e ERROR [100%]\n"
-        "some other line\n"
-    )
-    assert parse_pytest_verbose(out) == {
+def test_parse_outcome_lines_folds_parameter_cases():
+    out = [
+        "tests/test_a.py::test_x[1]\tPASSED",
+        "tests/test_a.py::test_x[2]\tFAILED",
+        "tests/test_a.py::TestK::test_m\tPASSED",
+        "tests/test_a.py::test_e\tERROR",
+        "some other line",
+        "tests/test_a.py::test_q\tNOT-AN-OUTCOME",
+    ]
+    assert parse_outcome_lines(out) == {
         "tests/test_a.py::test_x": "PASSED+FAILED",
         "tests/test_a.py::TestK::test_m": "PASSED",
         "tests/test_a.py::test_e": "ERROR",
@@ -653,7 +654,7 @@ def test_corpus_replays_history_and_aggregates(repo, capsys):
     # Each commit's suite ran once: c1, c2 (head, coverage), c3 (base of the
     # next pair: skipped as a commit, but its non-.py change could still alter
     # outcomes, so it is not assumed equal to c2) and c4 (head, coverage).
-    suite_runs = [c for c in calls if "-m" in c and "pytest" in c and "-v" in c]
+    suite_runs = [c for c in calls if "-m" in c and "pytest" in c and "--no-header" in c]
     assert len(suite_runs) == 4
     # Symmetric instrumentation: every run is under coverage when requested.
     assert sum(1 for c in suite_runs if "--cov-context=test" in c) == 4
@@ -805,12 +806,12 @@ def test_shadowed_files_detects_installed_copies(repo):
 def test_parsers_cope_with_spaces_pipes_and_brackets_in_parameter_ids():
     from diffcone.execution import fold_nodeid
 
-    out = (
-        "tests/test_o.py::test_choice[choices4-[TEXT: a|b]] PASSED [ 12%]\n"
-        "tests/test_o.py::test_choice[c-x] FAILED [ 50%]\n"
-        "tests/test_o.py::test_plain PASSED\n"
-    )
-    assert parse_pytest_verbose(out) == {
+    out = [
+        "tests/test_o.py::test_choice[choices4-[TEXT: a|b]]\tPASSED",
+        "tests/test_o.py::test_choice[c-x]\tFAILED",
+        "tests/test_o.py::test_plain\tPASSED",
+    ]
+    assert parse_outcome_lines(out) == {
         "tests/test_o.py::test_choice": "PASSED+FAILED",
         "tests/test_o.py::test_plain": "PASSED",
     }
@@ -1073,20 +1074,21 @@ def test_coverage_can_be_restricted_to_some_files(repo):
     assert set(contexts) == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}
 
 
-def test_parse_pytest_verbose_reads_xdist_lines():
-    out = (
-        "[gw6] PASSED tests/test_a.py::test_x[5-mean] \n"
-        "[gw0] [ 12%] FAILED tests/test_a.py::test_x[6-sum]\n"
-        "[gw2] SKIPPED tests/test_b.py::TestB::test_y \n"
-        "[gw3] PASSED tests/test_b.py::TestB::test_y[1] \n"
-    )
-    assert parse_pytest_verbose(out) == {
+def test_parse_outcome_lines_does_not_depend_on_the_order_xdist_workers_finish():
+    # Several processes write outcome files (the xdist controller and its
+    # workers), and workers finish cases in any order.
+    out = [
+        "tests/test_a.py::test_x[5-mean]\tPASSED",
+        "tests/test_a.py::test_x[6-sum]\tFAILED",
+        "tests/test_b.py::TestB::test_y\tSKIPPED",
+        "tests/test_b.py::TestB::test_y[1]\tPASSED",
+        "tests/test_a.py::test_x[5-mean]\tPASSED",
+    ]
+    assert parse_outcome_lines(out) == {
         "tests/test_a.py::test_x": "PASSED+FAILED",
         "tests/test_b.py::TestB::test_y": "PASSED+SKIPPED",
     }
-    # Workers finish cases in any order; the fold must not depend on it.
-    lines = out.splitlines(keepends=True)
-    assert parse_pytest_verbose("".join(reversed(lines))) == parse_pytest_verbose(out)
+    assert parse_outcome_lines(list(reversed(out))) == parse_outcome_lines(out)
 
 
 def test_run_selects_under_a_conftest_that_skips_its_directory(repo, capfd):

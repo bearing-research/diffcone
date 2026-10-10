@@ -26,7 +26,9 @@ the environment:
 * ``DIFFCONE_OUTCOMES``: a directory; each process writes ``outcomes-<pid>``,
   one ``nodeid<TAB>OUTCOME`` line per report (``PASSED``, ``FAILED``,
   ``SKIPPED``, ``XFAIL``, ``XPASS``, ``ERROR``), as ``validate`` reads them:
-  pytest's console output depends on the project's verbosity options.
+  pytest's console output depends on the project's verbosity options. The
+  file stays open, line-buffered, so every line is written as its report
+  comes in: a process that crashes later keeps what it wrote.
 """
 
 from __future__ import annotations
@@ -43,6 +45,13 @@ _ROOT = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 # under whichever its rootdir is, and a linked or relative ``--repo`` differs.
 ROOTS = tuple(dict.fromkeys([os.path.realpath(_ROOT), os.path.abspath(_ROOT)]))
 skipped: list[str] = []  # repository-relative paths of collectors that skipped
+_outcomes = None  # this process's outcomes file, once a report came in
+_outcomes_pid = 0  # the process that opened it (a fork must open its own)
+
+
+def fold_nodeid(nodeid: str) -> str:
+    """Drop the parameter case, exactly as ``execution.fold_nodeid`` does."""
+    return re.sub(r"\[.*\]$", "", nodeid)
 
 
 def _relative(where) -> str:
@@ -59,7 +68,7 @@ def _key(item) -> str:
     path = _relative(getattr(item, "path", None) or item.fspath)  # ``path`` from pytest 7
     if "::" not in item.nodeid:
         return path
-    rest = re.sub(r"\[.*\]$", "", item.nodeid.split("::", 1)[1])
+    rest = fold_nodeid(item.nodeid.split("::", 1)[1])
     return path + "::" + rest
 
 
@@ -114,6 +123,7 @@ def pytest_collection_modifyitems(session, config, items):
 
 
 def pytest_runtest_logreport(report):
+    global _outcomes, _outcomes_pid
     if not OUTCOMES:
         return
     outcome = None
@@ -128,6 +138,15 @@ def pytest_runtest_logreport(report):
     elif report.when == "setup" and report.skipped:
         outcome = "XFAIL" if xfail else "SKIPPED"
     if outcome is not None:
-        path = os.path.join(OUTCOMES, f"outcomes-{os.getpid()}")
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"{report.nodeid}\t{outcome}\n")
+        if _outcomes is None or _outcomes_pid != os.getpid():
+            path = os.path.join(OUTCOMES, f"outcomes-{os.getpid()}")
+            _outcomes = open(path, "a", encoding="utf-8", buffering=1)
+            _outcomes_pid = os.getpid()
+        _outcomes.write(f"{report.nodeid}\t{outcome}\n")
+
+
+def pytest_sessionfinish(session):
+    global _outcomes
+    if _outcomes is not None and _outcomes_pid == os.getpid():
+        _outcomes.close()
+    _outcomes = None

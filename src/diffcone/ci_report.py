@@ -402,15 +402,16 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def _code(text: str) -> str:
+def code_span(text: str) -> str:
     """``text`` as a Markdown code span, whatever backticks it holds (a test
-    id is the project's text, and the report becomes an issue)."""
+    id is the project's text, and the report becomes an issue). The report
+    action's miss issues use it too."""
     longest = run = 0
     for char in text:
         run = run + 1 if char == "`" else 0
         longest = max(longest, run)
     fence = "`" * (longest + 1)
-    pad = " " if text.startswith("`") or text.endswith("`") or longest else ""
+    pad = " " if longest else ""
     return f"{fence}{pad}{text}{pad}{fence}"
 
 
@@ -443,7 +444,7 @@ def to_markdown(report: Report) -> str:
         for m in report.misses:
             where = f"[{m.commit[:12]}]({m.run_url})" if m.run_url else m.commit[:12]
             reason = f"; the plan: {m.reason}" if m.reason else ""
-            lines.append(f"- {_code(m.test)} ({m.kind}) in {m.cell} at {where}{reason}")
+            lines.append(f"- {code_span(m.test)} ({m.kind}) in {m.cell} at {where}{reason}")
         if report.earlier_misses:
             lines.append(
                 f"- {report.earlier_misses} kept from an earlier run of the same commit "
@@ -502,7 +503,9 @@ def to_markdown(report: Report) -> str:
             "|---|---|---|---|---|---|---|---|",
         ]
         for c in pushes:
-            not_checked = ", ".join(f"{n} ({why})" for why, n in c.not_checked.most_common()) or "0"
+            not_checked = (
+                ", ".join(f"{n} ({_cell(why)})" for why, n in c.not_checked.most_common()) or "0"
+            )
             lines.append(
                 f"| {c.name} | {c.pushes} | {c.checked} | {not_checked} | {c.new_failures} | "
                 f"{c.flaky} | {c.misses} | {c.check_errors} |"

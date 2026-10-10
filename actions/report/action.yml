@@ -75,18 +75,7 @@ runs:
       shell: bash
       env:
         REF: ${{ inputs.diffcone-ref }}
-      run: |
-        py=$(command -v python3 || command -v python)
-        "$py" -m venv "$RUNNER_TEMP/diffcone"
-        bin="$RUNNER_TEMP/diffcone/bin"
-        [ -d "$bin" ] || bin="$RUNNER_TEMP/diffcone/Scripts"
-        if [ -n "$REF" ]; then
-          source="git+https://github.com/bearing-research/diffcone@$REF"
-        else
-          source="$GITHUB_ACTION_PATH/../.."
-        fi
-        "$bin/python" -m pip install --quiet "$source"
-        echo "$bin" >> "$GITHUB_PATH"
+      run: bash "$GITHUB_ACTION_PATH/../install.sh"
     - name: Download the runs' results
       shell: bash
       env:
@@ -245,10 +234,13 @@ runs:
         REPORT_LABEL: ${{ inputs.report-label }}
         MISS_LABEL: ${{ inputs.miss-label }}
       run: |
-        py=$(command -v python3 || command -v python)
-        VERSION=$(diffcone --version | tr -d '\r') "$py" - <<'PY'
-        import json, os, re, subprocess, sys
+        # The interpreter diffcone is installed in: the issues quote test ids
+        # as the report does.
+        VERSION=$(diffcone --version | tr -d '\r') "$DIFFCONE_PYTHON" - <<'PY'
+        import json, os, subprocess, sys
         from urllib.parse import urlencode
+
+        from diffcone.ci_report import code_span as code
 
         UPSTREAM = "bearing-research/diffcone"
         source = os.environ["RUNS_REPO"]
@@ -269,13 +261,6 @@ runs:
 
         def label(name, description):
             gh("label", "create", name, "--force", "--description", description)
-
-
-        def code(text):
-            """A Markdown code span, whatever backticks the test id holds."""
-            fence = "`" * (max((len(run) for run in re.findall("`+", text)), default=0) + 1)
-            pad = " " if "`" in text else ""
-            return f"{fence}{pad}{text}{pad}{fence}"
 
 
         def issue(title, body, name):
