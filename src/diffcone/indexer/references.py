@@ -264,8 +264,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if node.attr == "get" and isinstance(call, ast.Call) and call.func is node:
                 key = call.args[0] if call.args else None
             if node.attr not in ("keys", "__contains__", "__len__"):
-                if self._is_module(inner.value) or self._is_class_object(inner.value):
-                    self._member_read(inner.value, key)
+                self._member_read(inner.value, key)
         parts = _flatten_chain(node)
         if parts is not None:
             self._resolve(parts)
@@ -301,11 +300,10 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _namespace_read(self, node: ast.Attribute) -> None:
         """``m.__dict__[k]``, ``m.__dict__.get(k)`` or any other read of a
-        module's or a class's namespace (``C.__dict__``, ``cls.__dict__``):
-        the attribute ``k`` names, read as ``getattr(m, k)`` is; anything
-        else reads any attribute."""
-        if not (self._is_module(node.value) or self._is_class_object(node.value)):
-            return
+        namespace: a module's or a class's (``C.__dict__``, ``cls.__dict__``),
+        or an object's of any type (``obj.__dict__[k]``,
+        ``self.__class__.__dict__[k]``): the attribute ``k`` names, read as
+        ``getattr(x, k)`` is; anything else reads any attribute."""
         parent = self._parent(node)
         key: ast.expr | None = None
         if isinstance(parent, ast.Subscript) and parent.value is node:

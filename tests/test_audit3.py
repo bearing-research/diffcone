@@ -328,3 +328,35 @@ def test_w8_a_docstring_seed_is_explained_by_its_steps(repo, old, new):
     assert reasons
     assert not any("dynamic import/attribute access ()" in r.detail for r in reasons)
     assert all(r.rule == "dependency" and r.changed_symbol for r in reasons)
+
+
+# W10: a namespace read off any object is a getattr.
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        "obj.__dict__[k]",
+        "obj.__dict__.get(k)",
+        "obj.__class__.__dict__[k]",
+    ],
+)
+def test_w10_a_namespace_read_off_any_object_is_a_getattr(repo, read):
+    """``x.__dict__[k]`` on an object of any type reads what ``getattr(x,
+    k)`` reads; it recorded nothing unless ``x`` was a known module or
+    class."""
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    def facts(body):
+        repo.commit({"pkg/__init__.py": "", "pkg/reader.py": f"def read(obj, k):\n    {body}\n"})
+        index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
+        return {
+            (u.kind, u.name)
+            for u in index.unresolved
+            if u.symbol == "pkg.reader.read" and u.kind == "dynamic"
+        }
+
+    via_getattr = facts("return getattr(obj, k)")
+    assert via_getattr
+    assert facts(f"return {read}") == via_getattr

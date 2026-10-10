@@ -45,12 +45,12 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 31: class-object reads, literal tables of shadowing scopes; 30:
-# quiet_header; 29: uses of tables and modules (indexer.uses); 28:
-# __subclasses__ reads; 27: type parameters, unnameable build scripts as
-# other files; 26: escaped values; 25: external sites; 24: docstring
-# decorators; 23: open classes
-INDEX_FORMAT = 31
+# 32: namespace reads off any object; 31: class-object reads, literal
+# tables of shadowing scopes; 30: quiet_header; 29: uses of tables and
+# modules (indexer.uses); 28: __subclasses__ reads; 27: type parameters,
+# unnameable build scripts as other files; 26: escaped values; 25: external
+# sites; 24: docstring decorators; 23: open classes
+INDEX_FORMAT = 32
 
 
 def _indexer_fingerprint() -> str:
