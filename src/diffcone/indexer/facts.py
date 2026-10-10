@@ -138,6 +138,9 @@ class _Output:
     # one of them yields a class. A factory is how an object reaches code
     # that reads attributes off it by a name nothing resolves.
     returns: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Functions whose every ``return`` yields what a third-party call returns
+    # (``return logging.getLogger(name)``; diffcone.indexer.writes).
+    external_returns: set[str] = field(default_factory=set)
     param_dynamics: list[_ParamDynamic] = field(default_factory=list)
     attr_writes: list[_AttrWrite] = field(default_factory=list)
     # (class id, attribute) pairs whose value cannot be bounded; the class is
@@ -183,6 +186,7 @@ class _Output:
         self.escapes |= other.escapes
         self.func_params.update(other.func_params)
         self.returns.update(other.returns)
+        self.external_returns |= other.external_returns
         self.param_dynamics.extend(other.param_dynamics)
         self.attr_writes.extend(other.attr_writes)
         self.attr_unbound |= other.attr_unbound
@@ -266,6 +270,7 @@ def _output_to_dict(out: _Output) -> dict:
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
         "returns": {f: sorted(c) for f, c in sorted(out.returns.items())},
+        "external_returns": sorted(out.external_returns),
         "func_params": {
             f: [p.positional, p.bound, p.defaults, p.has_varargs]
             for f, p in out.func_params.items()
@@ -336,6 +341,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
     out.table_imports = {(s, d, tuple(n)) for s, d, n in data["table_imports"]}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
+    out.external_returns = set(data["external_returns"])
     out.func_params = {
         f: _FuncParams(
             positional=list(positional),

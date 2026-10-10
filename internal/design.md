@@ -265,8 +265,13 @@ Further rules (pre-release audit, round 2):
   (`obj.fill(REG)`, a method of a variable) is any in-scope function or
   method of that name, unless the variable's value is known: an instance of
   an in-scope class (that class's method only), a dict, list or set display
-  (the container mutators only, recorded directly), or a third-party value
-  (`logging.getLogger(...)`: none of ours). A module's own top-level
+  (the container mutators only, recorded directly), or a third-party value:
+  a call into a module outside the roots, or a project factory whose every
+  `return` is one (`get_logger(name)` returning `cast(StructuredLogger,
+  logging.getLogger(name))`; only the call counts, not the annotation).
+  A third-party value's methods are those of a third-party class or of an
+  in-scope class deriving from one (`logging.setLoggerClass`), so only
+  those are matched; a test fake of the same name is not. A module's own top-level
   statements naming its variable are part of the variable's hash and add no
   edge. Not modelled: an object kept under another name and written
   through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),

@@ -476,18 +476,30 @@ def test_w4_a_call_at_import_writing_through_its_receiver(repo):
 
 
 @pytest.mark.parametrize(
-    ("value", "reaches"),
+    ("value", "base", "reaches"),
     [
-        ("Recorder()", True),  # an instance of ours whose ``info`` writes it
-        ("make()", True),  # what a factory returns: any ``info`` of ours
-        ("logging.getLogger('x')", False),  # a third-party value: no ``info`` of ours
-        ("{'name': 'x'}", False),  # a dict display: only its own mutators
+        ("Recorder()", "", True),  # an instance of ours whose ``info`` writes it
+        ("make()", "", True),  # what a factory returns: any ``info`` of ours
+        ("{'name': 'x'}", "", False),  # a dict display: only its own mutators
+        # A third-party value: no ``info`` of ours, unless a class of ours
+        # derives from a third-party one (``logging.setLoggerClass``).
+        ("logging.getLogger('x')", "", False),
+        ("logging.getLogger('x')", "logging.Logger", True),
+        # A wrapper whose every return is a third-party call: the same,
+        # whatever ``cast`` says (W4 on strata: ``logger.info`` matched a
+        # test fake's ``info``).
+        ("get_logger('x')", "", False),
+        ("get_logger('x')", "logging.Logger", True),
     ],
 )
-def test_w4_a_method_called_on_a_variable_writes_it_when_it_may_be_ours(repo, value, reaches):
+def test_w4_a_method_called_on_a_variable_writes_it_when_it_may_be_ours(repo, value, base, reaches):
     log = (
-        "import logging\n\n\nclass Recorder:\n    def info(self, m):\n        self.last = m\n\n\n"
-        f"def make():\n    return Recorder()\n\n\nlog = {value}\n\n\n"
+        "import logging\nfrom typing import cast\n\n\n"
+        f"class Recorder({base}):\n    def info(self, m):\n        self.last = m\n\n\n"
+        "def make():\n    return Recorder()\n\n\n"
+        "def get_logger(name):\n    if not name:\n        return logging.getLogger()\n"
+        "    return cast(Recorder, logging.getLogger(name))\n\n\n"
+        f"log = {value}\n\n\n"
         "def get():\n    return log\n"
     )
     files = {

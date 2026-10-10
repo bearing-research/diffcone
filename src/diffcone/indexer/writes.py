@@ -27,8 +27,12 @@ to a written parameter gets a ``mutated_by`` edge to the caller. A callee
 that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
 any in-scope function or method of that name, unless the receiver is a
 variable whose value is known: an instance of an in-scope class (only that
-class's method), or a dict, list or set display (only the container
-mutators, which pass 2 already records as writes).
+class's method), a dict, list or set display (only the container
+mutators, which pass 2 already records as writes), or a third-party value
+(a call into a module outside the roots, or a project factory whose every
+``return`` is one, ``cast(T, ...)`` included: only the call is trusted), whose
+methods are those of in-scope classes deriving from a third-party class
+(``logging.setLoggerClass(StructuredLogger)``).
 
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v``; a parameter
@@ -43,7 +47,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.definitions import _flatten_chain
-from diffcone.indexer.scopes import External, Resolved
+from diffcone.indexer.scopes import External, Resolved, Scope
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import CLASS, FUNCTION, METHOD, REFERENCES, VARIABLE, Edge
 
@@ -323,6 +327,43 @@ def _handed(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
     return None
 
 
+def returns_third_party(indexer: Resolver, node: ast.AST, scope: Scope) -> bool:
+    """Whether every ``return`` of a function yields what a call into a
+    module outside the roots returns: ``return logging.getLogger(name)``,
+    or that under ``typing.cast(T, ...)`` (the annotation ``T`` is not
+    trusted, only the call). Such a value is a third-party object, or an
+    instance of an in-scope class deriving from a third-party one
+    (``logging.setLoggerClass``)."""
+    returns: list[ast.Return] = []
+    stack: list[ast.AST] = list(ast.iter_child_nodes(node))
+    while stack:
+        inner = stack.pop()
+        if isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(inner, (ast.Yield, ast.YieldFrom)):
+            return False
+        if isinstance(inner, ast.Return):
+            returns.append(inner)
+        stack.extend(ast.iter_child_nodes(inner))
+    if not returns:
+        return False
+    for ret in returns:
+        value = ret.value
+        while (
+            isinstance(value, ast.Call)
+            and (parts := _flatten_chain(value.func)) is not None
+            and parts[-1] == "cast"
+            and len(value.args) == 2
+        ):
+            value = value.args[1]
+        if not isinstance(value, ast.Call):
+            return False
+        parts = _flatten_chain(value.func)
+        if parts is None or not isinstance(indexer.resolve_chain(parts, scope), External):
+            return False
+    return True
+
+
 # --------------------------------------------------------------------------- after pass 2
 
 
@@ -360,19 +401,27 @@ def apply_writes(indexer: Resolver) -> None:
         index = int(slot) + (1 if info.bound and bound else 0)
         return info.positional[index] if index < len(info.positional) else None
 
+    def third_party(variable: str) -> bool:
+        """``log = logging.getLogger(__name__)``, or a project factory whose
+        every return is such a call (``get_logger(__name__)``): nothing of
+        ours is called but third-party calls and such factories."""
+        found = edges_from.get(variable, [])
+        ours = [
+            target
+            for e in found
+            if (target := symbols.get(e.target)) is not None
+            and target.kind in (FUNCTION, METHOD, CLASS)
+        ]
+        if any(t.id not in out.external_returns for t in ours):
+            return False
+        return bool(ours) or variable in external_users
+
     def value_classes(variable: str) -> list[str] | None:
         """The classes a variable's value is an instance of, when its
         initialiser says so (a constructor call and nothing else callable)."""
         found = edges_from.get(variable, [])
         if not any(e.detail == "constructor" for e in found):
-            # ``log = logging.getLogger(__name__)``: a third-party value, whose
-            # methods are none of ours, when nothing of ours is called.
-            ours = any(
-                (target := symbols.get(e.target)) is not None
-                and target.kind in (FUNCTION, METHOD, CLASS)
-                for e in found
-            )
-            return [] if not ours and variable in external_users else None
+            return None
         classes: list[str] = []
         for e in found:
             target = symbols.get(e.target)
@@ -394,6 +443,11 @@ def apply_writes(indexer: Resolver) -> None:
                 scope = indexer.scopes.get(variable.module)
                 if scope is not None and variable.name in scope.containers:
                     return []  # a display: only the container mutators write it
+            if third_party(what[4:]):
+                # Its methods are a third-party class's, or those of an
+                # in-scope class deriving from one (a logger class set with
+                # ``logging.setLoggerClass``).
+                return [m for m in by_name.get(name, []) if derives_from_third_party(m)]
             classes = value_classes(what[4:])
             if classes is not None:
                 found: list[str] = []
@@ -403,6 +457,16 @@ def apply_writes(indexer: Resolver) -> None:
                         found.append(hit.symbol)
                 return found
         return by_name.get(name, [])
+
+    def derives_from_third_party(method: str) -> bool:
+        container = symbols[method].container if method in symbols else None
+        if container is None or container not in indexer.class_scopes:
+            return False
+        return any(
+            indexer.class_scopes[c].opaque
+            for c in indexer._mro(container)
+            if c in indexer.class_scopes
+        )
 
     def writes_through(record: Pass) -> bool:
         _, _, _, _, slot, bound = record

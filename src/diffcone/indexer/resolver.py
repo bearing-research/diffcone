@@ -44,6 +44,7 @@ from diffcone.indexer.syntax import (
     iter_scope_statements,
     type_param_exprs,
 )
+from diffcone.indexer.writes import returns_third_party
 from diffcone.model import (
     CLASS,
     FUNCTION,
@@ -614,6 +615,8 @@ class Resolver(FirstPass):
         returned = self._returned_class(node, fscope)
         if returned is not None:
             self.out.returns[symbol_id] = returned
+        elif returns_third_party(self, node, fscope):
+            self.out.external_returns.add(symbol_id)
         # Function-local imports are visible to the whole body.
         for inner in ast.walk(node):
             if isinstance(inner, (ast.Import, ast.ImportFrom)):

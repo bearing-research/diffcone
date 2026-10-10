@@ -45,14 +45,15 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 34: writes through parameters and receivers, scripts named in strings;
+# 35: third-party values of project factories (external_returns); 34:
+# writes through parameters and receivers, scripts named in strings;
 # 33: bounded run-time module names, table_imports, graph handles, escaped
 # modules; 32: namespace reads off any object; 31: class-object reads,
 # literal tables of shadowing scopes; 30: quiet_header; 29: uses of tables
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 34
+INDEX_FORMAT = 35
 
 
 def _indexer_fingerprint() -> str:
