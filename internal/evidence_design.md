@@ -126,6 +126,7 @@ For each change diffcone classifies between C and head:
 | docstring changed | the doctest target (as today) + static readers of `__doc__` (`inspect.getdoc`, `.__doc__`, `getattr(obj, "__doc__")`) that refer to the symbol or sit in its module: the tests that ran them | when read at import (`@doc`, `Appender`), or when the reader is import-time code (its module) |
 | signature or defaults changed | `{f}` + its static callers (resolved references and name matches of its name) + introspection sites (`inspect.signature`) | — |
 | decorators changed | as a signature change; for a fixture (in a test module or a conftest), every test in its scope, since `autouse`, `scope`, `params` and `name` change who runs it | library code and conftests' non-fixture functions: always, since decorators run at import and may register. A test function's own decorators: never, since they reach only that test |
+| annotations changed, or a function added or deleted with them | as a signature change (an addition or deletion: as an added or deleted name) | when an annotation calls code (`def f(x: set_mode("fast"))`, `X: set_mode("fast") = 1`): before Python 3.14 it runs with the `def` or the assignment, and what it writes reaches its readers. One that only names something (`x: Item`), or a deferred one (`from __future__ import annotations`), runs nothing (audit F3, Q3) |
 | added or deleted name `n` in module or class N | static readers of `n` (resolved, imported, name-matched), enumeration sites (`dir`, `vars`, `__dict__`, `inspect.getmembers`, star imports), the symbol itself, and the unbounded lookup sites that can see N: for a method, reads off objects from elsewhere; for a module-level name, reads off modules and `globals()`/`vars()`. For test code, only lookup sites in test code: nothing else holds a test module or a runner-only test instance | — |
 | added or deleted fixture | the tests in its visibility scope that request that name: a new fixture can shadow a conftest one they used (static discovery knows which) | — |
 | added, deleted or changed pytest hook (`pytest_*` in a conftest or plugin) | everything | — |
@@ -135,7 +136,7 @@ For each change diffcone classifies between C and head:
 | class structure changed (bases, metaclass, class decorators, class body) | every member of C, its bases and its subclasses + static readers of those classes | class decorators and metaclasses: always |
 | module-level statements or imports changed | — | always: they run at import |
 | a test or fixture changed | selected (`changed_target`, as today) | — |
-| changed file the index does not read | tests with the file in `F(T)`, or with code from it in `X(T)` (a `.py` outside the source roots) | when opened or executed at import; compiled sources always (see below) |
+| changed file the index does not read | tests with the file in `F(T)`, or with code from it in `X(T)` (a `.py` outside the source roots) | when opened or executed at import; compiled sources and build inputs always (see below). A module's own file (opened as data: `inspect.getsource`) selects everything only when it is a build script as static planning judges it (`setup.py`; `build.py` at the root or beside `pyproject.toml`/`setup.cfg`, not `pkg/build.py`; audit Q17) |
 
 "Escalates to static" means that one change is planned statically and the
 rest of the commit still uses evidence; selection is the union over all
@@ -151,14 +152,24 @@ own tests plus static reach, not to every lookup site. Without that, one
 unbounded import in pandas (`_get_plot_backend`) made every escalation
 select everything.
 
-**Compiled code.** A `.pyx` change is invisible to a Python tracer. The
-first version escalates it. The follow-up maps a changed `.pyx`/`.pxd` to
-its extension module and follows `cimport` edges among the extension
-modules. It then selects the tests that executed a Python function
-referencing any affected module. That is sound only once a test's use of
-extension *objects* is covered too (a `Timestamp` returned by one extension
-and used through another), so it needs its own measurement before it
-replaces escalation.
+**Compiled code.** A `.pyx` change is invisible to a Python tracer unless
+the extension is built with Cython's `profile=True` directive, whose
+functions raise the same `PY_START` events as Python code (roadmap items 7
+and 8, shipped). Evidence recorded against such a build is planned at
+function level (`diffcone.cython` reads the sources without Cython's
+parser): a changed function body selects the tests that executed it, and
+for a function a profiled build does not always report (`nogil`, a
+`cpdef` method's C body, `@cython.profile(False)` or
+`@cython.linetrace(False)`) the tests that executed a Cython function
+naming it (`cython_caller`). A changed name bound outside the functions
+(a constant, a `cdef` global, a class attribute declaration, a `.pxd`
+declaration) reaches the Cython functions that can see and name it, and
+for a name Python can see, the Python code reading it by name and the
+lookup sites. Anything else outside the functions (a statement binding no
+name, an added or deleted `.pyx`, a file `tokenize` cannot read), and any
+change to a module the store holds no Cython record of (not built with
+`profile=True`), selects everything. Other compiled sources (`.c`,
+`.cpp`) always select everything.
 
 **Targets without evidence** (added since C, or never collected) are
 selected. **ASV targets** have no evidence in the first version and keep
@@ -242,14 +253,21 @@ an inferred path:
 * `executed_reader`: "T executed `g`; `g` references `v` (edge); `v` changed".
 * `lookup_site`: "T executed `g`, which looks attributes up by a name nothing
   bounds and can see N; `n` was added to N".
-* `opened_file`: "T opened `pandas/tests/io/data/x.csv`; it changed".
+* `touched_file`: "T opened `pandas/tests/io/data/x.csv`; it changed".
 * `escalated`: "`f` ran at import: static planning for this change".
 * `cython_caller`: "T executed the Cython function `g`, which names `f`; `f`
-  is `nogil` or `cpdef` and changed" (a profiled build does not always
-  report those itself; roadmap item 7).
+  is `nogil`, `cpdef` or `profile(False)` and changed" (a profiled build
+  does not always report those itself; roadmap item 7).
 
 Plus fallbacks: `no_evidence`, `unstable`, `subprocess`, `text_code`,
-`environment_mismatch`.
+`pytest_hook_changed`, `unobserved_file_changed`, `unindexed_import`. An
+environment that differs from the recording's is no rule of the plan:
+`plan` reads files only and cannot ask the project's interpreter what is
+installed (`analysis.evidence.environment_checked` stays false). `run`
+checks it in the test process before any test runs; on a mismatch it runs
+the static plan instead (the whole suite when discovery may be
+incomplete), names every difference, and `--collect` does not advance the
+store.
 
 ## How it will be checked
 

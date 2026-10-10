@@ -1377,7 +1377,6 @@ def _finish():
         "import_phase": sorted(import_window["codes"]),
         "import_paths": {p: sorted(m) for p, m in sorted(import_paths.items())},
         "import_dirs": {p: sorted(m) for p, m in sorted(import_dirs.items())},
-        "import_flags": import_window["flags"],
         "import_flagged": sorted(import_flagged),
         # Spawns outside every window, with the module being imported then.
         "import_spawns": [[*_spawn_list([spawn])[0], module] for spawn, module in import_spawns],

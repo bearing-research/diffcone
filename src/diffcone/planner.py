@@ -664,6 +664,18 @@ def _runs_at_import(change: SymbolChange) -> bool:
     return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
 
 
+def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
+    """Each symbol whose code reads docstrings (``reads_docstrings``:
+    ``f.__doc__``, ``getdoc(cls)``) -> what it may read one of: its own
+    module (``__doc__``) and whatever it refers to. Static and evidence
+    planning both reach such a reader from a docstring-only change."""
+    read = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
+    for edge in index.edges:
+        if edge.source in read and edge.kind != DEFINED_IN:
+            read[edge.source].add(edge.target)
+    return read
+
+
 def _sides(change: SymbolChange) -> tuple[str, ...]:
     """The revisions a changed symbol exists in."""
     return tuple(r for r, s in (("base", change.base), ("head", change.head)) if s is not None)
@@ -1285,13 +1297,7 @@ def plan_from_indexes(
                     queue.append(node)
     if documented:
         for index in (base, head):
-            read: dict[str, set[str]] = {
-                s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings
-            }
-            for e in index.edges:
-                if e.source in read and e.kind != DEFINED_IN:
-                    read[e.source].add(e.target)
-            for reader, referenced in sorted(read.items()):
+            for reader, referenced in sorted(docstring_readers(index).items()):
                 if reader not in mode and referenced & documented:
                     mode[reader] = BEHAVIOR
                     via[reader] = None
