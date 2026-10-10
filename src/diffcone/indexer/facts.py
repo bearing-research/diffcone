@@ -176,6 +176,15 @@ class _Output:
     # (symbol, path suffix) of each ``.py`` file a string names
     # (diffcone.indexer.scripts), matched against the files after pass 2.
     script_paths: set[tuple[str, str]] = field(default_factory=set)
+    # (symbol, what): writes of process-global state (indexer/process.py).
+    process_writes: set[tuple[str, str]] = field(default_factory=set)
+    # Module variables some code binds anew (``global X; X = ...`` in a
+    # function, ``mod.X = ...`` elsewhere): what they hold may be any kind of
+    # object (Indexer._write_only_references).
+    rebound: set[str] = field(default_factory=set)
+    # (module, kind, target): what a module's own code does only under
+    # ``if __name__ == "__main__":`` (SourceIndex.main_guarded).
+    main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -203,6 +212,9 @@ class _Output:
         self.param_writes |= other.param_writes
         self.passes |= other.passes
         self.script_paths |= other.script_paths
+        self.process_writes |= other.process_writes
+        self.rebound |= other.rebound
+        self.main_guarded |= other.main_guarded
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -266,6 +278,9 @@ def _output_to_dict(out: _Output) -> dict:
         "external_writes": sorted(list(w) for w in out.external_writes),
         "external_lookups": sorted(list(x) for x in out.external_lookups),
         "table_imports": sorted([s, d, list(n)] for s, d, n in out.table_imports),
+        "process_writes": sorted(list(w) for w in out.process_writes),
+        "rebound": sorted(out.rebound),
+        "main_guarded": sorted(list(m) for m in out.main_guarded),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -340,6 +355,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.external_writes = {(m, w) for m, w in data["external_writes"]}
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
     out.table_imports = {(s, d, tuple(n)) for s, d, n in data["table_imports"]}
+    out.process_writes = {(s, w) for s, w in data["process_writes"]}
+    out.rebound = set(data["rebound"])
+    out.main_guarded = {(a, b, c) for a, b, c in data["main_guarded"]}
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.external_returns = set(data["external_returns"])
     out.func_params = {

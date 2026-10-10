@@ -360,6 +360,57 @@ def _rebound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     return names
 
 
+# Builtin container types by constructor (canonical name) and by display:
+# ``clear``, ``append`` or ``update`` on one behave the same whatever it
+# holds (Symbol.builtin_container, edges with the detail ``writes``).
+_CONTAINER_CALLS = {
+    "dict": "dict",
+    "list": "list",
+    "set": "set",
+    "collections.defaultdict": "dict",
+    "collections.OrderedDict": "dict",
+    "collections.Counter": "dict",
+    "collections.deque": "deque",
+    "weakref.WeakValueDictionary": "dict",
+    "weakref.WeakKeyDictionary": "dict",
+    "weakref.WeakSet": "set",
+}
+_CONTAINER_NODES: tuple[tuple[type, str], ...] = (
+    (ast.Dict, "dict"),
+    (ast.DictComp, "dict"),
+    (ast.List, "list"),
+    (ast.ListComp, "list"),
+    (ast.Set, "set"),
+    (ast.SetComp, "set"),
+)
+
+
+def _container_kind(scope: ModuleScope, value: ast.expr) -> str:
+    """``dict``, ``list``, ``set`` or ``deque`` when ``value`` builds a builtin
+    container of that kind (``{}``, ``set()``, ``collections.defaultdict(
+    list)``), else "". A name the module binds itself is not the builtin."""
+    for node_type, kind in _CONTAINER_NODES:
+        if isinstance(value, node_type):
+            return kind
+    if not isinstance(value, ast.Call):
+        return ""
+    parts = _flatten_chain(value.func)
+    if parts is None:
+        return ""
+    head = parts[0]
+    binding = scope.imports.get(head)
+    if head in scope.alt_imports:
+        return ""
+    if binding is not None:
+        base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
+        name = ".".join([base, *parts[1:]])
+    elif len(parts) == 1 and head not in scope.bindings and head not in scope.members:
+        name = head  # the builtin
+    else:
+        return ""
+    return _CONTAINER_CALLS.get(name, "")
+
+
 def _flatten_chain(node: ast.expr) -> list[str] | None:
     parts: list[str] = []
     while isinstance(node, ast.Attribute):

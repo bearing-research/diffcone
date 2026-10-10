@@ -361,8 +361,12 @@ selection or states something the tables left implicit; none narrows it.
   that ran during an import or a hook at C), every variable written in
   place (`mutated_by`) by the code it can call, transitively, is treated as
   a changed value: its readers, the variables that captured it and the
-  lookup sites that can see it join E. Calling a class runs its
-  constructors. A test's own decorators are included (`@parametrize("x",
+  lookup sites that can see it join E. What it holds changed, not what
+  kind of object it is, so code that only empties or adds to it (a
+  `writes` edge: `REG.clear()` in an autouse fixture, audit round 3, W14)
+  is not a reader; code rebinding it from another module (`mod.X = v`, a
+  `rebinds` edge) reads it only when it was deleted. Calling a class runs
+  its constructors. A test's own decorators are included (`@parametrize("x",
   [set_mode("fast")])`). For a Cython function that ran during an import,
   which the index does not follow, every name it mentions that is bound
   outside every function (in a Cython file, or as a Python variable) is

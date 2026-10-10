@@ -18,7 +18,7 @@ from diffcone.indexer.definitions import (
     _is_staticmethod,
     _rebound_names,
 )
-from diffcone.indexer.facts import _FuncParams
+from diffcone.indexer.facts import _FuncParams, _Output
 from diffcone.indexer.literals import NESTED_SCOPES, _LocalBindings
 from diffcone.indexer.references import _ReferenceCollector
 from diffcone.indexer.scopes import (
@@ -423,6 +423,10 @@ class Resolver(FirstPass):
             for name, stmt in scope.variable_stmts.items()
             for symbol in [scope.variables[name]]
         }
+        # ``if __name__ == "__main__":`` runs when the module is the program,
+        # not when it is imported: what only that block does is recorded as
+        # such (SourceIndex.main_guarded), though it stays the module's code.
+        main_out = _Output()
         for stmt in top_level:
             owner = variable_ids.get(id(stmt))
             if owner is not None:
@@ -436,9 +440,41 @@ class Resolver(FirstPass):
                 if isinstance(value, ast.expr):
                     for call in _outermost_calls(value):
                         collector.visit(call)
+            elif _is_main_guard(stmt, scope):
+                assert isinstance(stmt, ast.If)
+                collector.visit(stmt.test)
+                outer, self.out = self.out, main_out
+                try:
+                    for inner in stmt.body:
+                        collector.visit(inner)
+                finally:
+                    self.out = outer
+                for inner in stmt.orelse:
+                    collector.visit(inner)
             else:
                 collector.visit(stmt)
+        self._main_guarded(scope.name, main_out)
         self._resolve_definitions(scope, scope.tree.body, scope.members, None)
+
+    def _main_guarded(self, module: str, main_out: _Output) -> None:
+        """Merge what a module's ``__main__`` block recorded, noting what the
+        module's own code does only there: references, names and dynamic
+        lookups (``main_guarded``); its writes of process state are dropped,
+        since they never run at import."""
+        own_edges = {(e.target, e.kind) for e in self.out.edges if e.source == module}
+        own_names = {
+            (u.kind, u.name or u.detail) for u in self.out.unresolved if u.symbol == module
+        }
+        own_targets = {target for target, _ in own_edges}
+        for e in main_out.edges:
+            if e.source == module and e.target not in own_targets:
+                self.out.main_guarded.add((module, "edge", e.target))
+        for u in main_out.unresolved:
+            key = (u.kind, u.name or u.detail)
+            if u.symbol == module and key not in own_names:
+                self.out.main_guarded.add((module, *key))
+        main_out.process_writes = {w for w in main_out.process_writes if w[0] != module}
+        self.out.merge(main_out)
 
     def _resolve_definitions(
         self,
@@ -1112,3 +1148,22 @@ class Resolver(FirstPass):
             self.out.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):
             self.out.unresolved.add(UnresolvedReference(source, node.kind, node.name, chain))
+
+
+def _is_main_guard(stmt: ast.stmt, scope: ModuleScope) -> bool:
+    """``if __name__ == "__main__":`` (either way round), with ``__name__``
+    not rebound by the module."""
+    if not isinstance(stmt, ast.If) or "__name__" in scope.bindings:
+        return False
+    test = stmt.test
+    if not (
+        isinstance(test, ast.Compare)
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Eq)
+        and len(test.comparators) == 1
+    ):
+        return False
+    sides = (test.left, test.comparators[0])
+    return any(isinstance(a, ast.Name) and a.id == "__name__" for a in sides) and any(
+        isinstance(b, ast.Constant) and b.value == "__main__" for b in sides
+    )

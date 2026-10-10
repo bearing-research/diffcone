@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import defaultdict
+from dataclasses import replace
 
 from diffcone.indexer.dynamics import DynamicBounds
 from diffcone.indexer.facts import (
@@ -18,6 +19,7 @@ from diffcone.indexer.facts import (
     _tuples,
 )
 from diffcone.indexer.literals import literal_base, literal_keys
+from diffcone.indexer.references import SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import _digest, decode_source
@@ -27,8 +29,10 @@ from diffcone.model import (
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
     GRAPH_MODULES,
+    METHOD,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
+    WRITES,
     Edge,
     SourceIndex,
     Symbol,
@@ -146,6 +150,7 @@ class Indexer(DynamicBounds):
         self._resolve_param_dynamics()
         apply_scripts(self)  # after the script parameters are bound
         self._registrations()
+        self._write_only_references()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -168,6 +173,35 @@ class Indexer(DynamicBounds):
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
+
+    def _write_only_references(self) -> None:
+        """Settle the references that only change a module variable
+        (``X.clear()``, ``X[k] = v``): one keeps the detail WRITES when the
+        variable holds a builtin container nothing binds anew, so calling a
+        container method on it does the same whatever it holds (an item
+        store only on a dict, as a list's may raise on what it holds), and
+        becomes an ordinary reference otherwise, and always when an in-scope
+        class defines ``__del__`` (emptying a container runs the finalizers
+        of what it held). Computed over the whole index on every build:
+        whether something rebinds a variable is known only from every
+        module."""
+        rebound = self._global.rebound
+        # Emptying a container drops what it held, which runs the finalizers
+        # of in-scope classes (``__del__``): then what it held matters.
+        finalizers = any(
+            s.kind == METHOD and s.name == "__del__" for s in self.index.symbols.values()
+        )
+        for edge in sorted(e for e in self.index.edges if e.detail in (WRITES, SETITEM)):
+            symbol = self.index.symbols.get(edge.target)
+            kind = symbol.builtin_container if symbol is not None else ""
+            settled = (
+                kind != ""
+                and not finalizers
+                and edge.target not in rebound
+                and (edge.detail == WRITES or kind == "dict")
+            )
+            self.index.edges.discard(edge)
+            self.index.edges.add(replace(edge, detail=WRITES if settled else ""))
 
     def _external_lookups(self) -> None:
         """A lookup by a name nothing bounds on an external module

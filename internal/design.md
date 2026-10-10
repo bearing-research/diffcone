@@ -156,6 +156,8 @@ blocks are still symbols and are excluded from their scope's body hash.
 |---|---|---|
 | `references` | function/class/module → symbol | resolved name or attribute chain; `detail` is `attribute:NAME` when the reference resolves to a module- or class-level variable (the module/class symbol stands in for it) or `module` when a module object itself is referenced |
 | `references` (detail `mutated_by`) | variable → function/module | the target assigns into, augments, deletes from or calls a mutating method (`update`, `append`, ...) on the variable, or hands it to a parameter or receiver that the callee changes in place (`set_mode(REG)`, `registry.register(x)`; `indexer/writes.py`), so readers of the variable depend on its writers |
+| `references` (detail `writes`) | function/module → variable | the source names the variable only to empty or add to it, as a statement whose value is unused (`X.clear()`, `X.update(d)`, `X.append(v)`, `X.pop(k, None)`, and `X[k] = v` on a dict), the variable's initialiser builds a builtin container (`{}`, `set()`, `collections.defaultdict(list)`: `Symbol.builtin_container`) and no code binds it anew (`global X; X = ...` in a function, `mod.X = ...`), and no in-scope class defines `__del__` (emptying a container runs the finalizers of what it held). Such a site does the same whatever the container holds; otherwise the reference is an ordinary one. Not modelled: a weakref callback or `weakref.finalize` on what it held |
+| `references` (detail `rebinds`) | function/module → variable | `mod.X = v` from another module: the source needs `X` to exist, not its value |
 | `defined_in` | member → container | every class, function and method |
 | `imports` | module, class or function → module | `import m`, `from m import sub`, `importlib.import_module("m")`; an import in a class body gives the class and its module the edge, as it runs when the class is created |
 | `imports_name` | module → symbol | module-level `from m import name` |
@@ -705,9 +707,21 @@ Edge rules (impact flows from the edge's target back to its source):
 | Edge kind | Propagates when | Resulting mode |
 |---|---|---|
 | `references`, `entry`, `lifecycle`, `unresolved_name_match` | always | behaviour |
+| `references` (detail `mutated_by`) | the writer is affected | content |
+| `references` (detail `writes`) | the variable is affected beyond its content (its own change, a rebinding, an initialiser that captured a changed value) | behaviour |
+| `references` (detail `rebinds`) | the variable is **deleted** | structural |
 | `defined_in` | container is structurally affected | structural |
 | `imports` | imported module affected (import-time code) | behaviour (structural if deleted) |
 | `imports_name` | imported name was **deleted** | structural |
+
+A third mode, **content**, says what a variable holds changed in place (a
+writer of it changed, or import-time code calls a writer with other
+arguments): it reaches every reader of the variable as behaviour, but not
+a site that only empties or adds to it (`writes`: an autouse fixture
+running `REG.clear()` after every test is not a reader of `REG`, audit
+round 3, W14). A variable's own change, or one reached any other way, is
+behaviour and reaches those sites too, since the object may be of another
+kind. REGISTERED is weaker still (see Registration).
 
 So: changing a function body reaches its callers and their callers; adding a
 method or editing a class attribute invalidates all methods of the class;
@@ -1181,7 +1195,52 @@ Further rules (pre-release audit, round 2):
   `pytest_configure`, `pytest_sessionstart`, ...) are dependencies of every
   test, from every conftest, not only those on the test's path. Import-time
   code of an off-path conftest is not (making every conftest a dependency
-  of every test would select the suite whenever any fixture is added).
+  of every test would select the suite whenever any fixture is added),
+  unless it writes process state (below).
+* Audit round 3 (W11, W12; `discovery/session_state.py`): every `pytest_*`
+  method of an in-scope class is a session-wide hook: such a class is a
+  plugin object once registered (`config.pluginmanager.register(Obj())`),
+  pytest calls its hooks for every node, path-scoped names included, and
+  which class a registration hands over is not traced (`register(self)`, an
+  object kept in a list). A test class's own `pytest_generate_tests` is
+  excepted. A module registered by a literal name
+  (`config.pluginmanager.import_plugin("tests.plug")`, anywhere in a
+  conftest, test module or plugin) is a plugin like one in
+  `pytest_plugins`; a module object registered at run time
+  (`register(module)`) and a hook implemented under another name
+  (`@pytest.hookimpl(specname=...)`) are not modelled. And code pytest runs while collecting, before any test, that
+  writes process-global state outside the source roots is a dependency of
+  every test: the import-time code of every conftest and collected test
+  module and of every module they import at module level, transitively,
+  and the collection hooks (`pytest_generate_tests`, `pytest_collect_file`,
+  ...; `session_state.COLLECTION_HOOKS`) of conftests and test modules,
+  class-level `pytest_generate_tests` included. A sub-directory conftest's
+  `pytest_generate_tests` runs only for the tests under it, but the
+  environment variable it sets stays set for every later test, and whoever
+  reads it cannot be bounded (any library may read the environment). The
+  index records the writing symbols (`SourceIndex.process_writes`,
+  `indexer/process.py`: stores, deletes and mutating calls on `os.environ`,
+  `sys.path`, `sys.modules`, ...; attribute stores and `setattr` on an
+  external module; a catalogue of configuring calls such as `os.putenv`,
+  `warnings.filterwarnings`, `locale.setlocale`, `numpy.random.seed`,
+  `hypothesis.settings.load_profile`; not inside `with
+  warnings.catch_warnings()` or `with mock.patch.dict(os.environ)`, which
+  put the state back). Such code counts when it writes, or can run code
+  that writes: backwards from the writers through `references` (not
+  `mutated_by` or `registers`), declared edges, name matches of unresolved
+  calls, and dynamic references (an unbounded import, a lookup on an
+  external module in-scope code writes to, or one whose module's import
+  closure holds a writer). A class's body counts for its module; a class
+  reached through a special method or a method an external base calls runs
+  it for whoever uses the class. What a module does only under `if
+  __name__ == "__main__":` does not run on import (`SourceIndex.
+  main_guarded`) and is left out here, though static planning still treats
+  that block as the module's code. Not modelled: another library's
+  configuration call missing from the catalogue, state a library keeps on
+  objects it hands out, and what code running inside a test (a fixture,
+  `pytest_runtest_setup`) leaves for later tests (tests are assumed not to
+  depend on what earlier tests left). State in in-scope variables needs
+  none of this: writers reach readers through `mutated_by` edges.
 * `pytest_plugins` in a test module registers the plugin for the session
   (pytest's `consider_module`), so it is a global plugin like a conftest's.
 * The ini option `usefixtures` is requested by every test and doctest.

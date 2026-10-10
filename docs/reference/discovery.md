@@ -80,7 +80,24 @@ Among those options:
   `conftest.py` pytest loads (including the one in a `test*` directory of a
   path pytest starts from, which it loads even when that directory is
   ignored) and in your plugins;
-- your plugins' modules, which load for the whole session.
+- your plugins' modules, which load for the whole session;
+- the `pytest_*` methods of any class in your source roots, since pytest
+  calls them for every test once the class is registered as a plugin
+  (`config.pluginmanager.register(MyPlugin())`), and the hooks of a
+  module registered by name (`config.pluginmanager.import_plugin(
+  "tests.plugin")`);
+- code pytest runs while it collects, before any test, that changes the
+  process for every test after it: a `conftest.py`, a test module or a
+  module they import that sets an environment variable or extends
+  `sys.path` when imported, or a `pytest_generate_tests` in a
+  sub-directory's `conftest.py` that does. Diffcone recognises writes to
+  `os.environ`, `sys.path` and `sys.modules`, attributes set on
+  third-party modules, and common configuration calls such as
+  `warnings.filterwarnings`, `logging.basicConfig`, `locale.setlocale`,
+  `numpy.random.seed` and hypothesis's `settings.load_profile`. State a
+  library keeps behind its own configuration function is not recognised;
+  declare such a dependency in [`diffcone.toml`](declarations.md) if a
+  test relies on it.
 
 A test is also selected when what runs around it changes although its own
 code did not: for example, a test module adds a plugin to

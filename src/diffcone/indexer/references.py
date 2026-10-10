@@ -4,11 +4,19 @@ references, calls, writes and looks up dynamically."""
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.definitions import _flatten_chain
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
+from diffcone.indexer.process import (
+    LOGGER_GETTERS,
+    LOGGER_MUTATORS,
+    STATE_CALLS,
+    STATE_MUTATORS,
+    state_object,
+)
 from diffcone.indexer.scopes import (
     External,
     ModuleNode,
@@ -37,10 +45,12 @@ from diffcone.model import (
     GRAPH_MODULES,
     METHOD,
     MODULE,
+    REBINDS,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
+    WRITES,
     Edge,
     ExternalReference,
     UnresolvedReference,
@@ -49,6 +59,29 @@ from diffcone.snapshot import module_name_for, split_root
 
 if TYPE_CHECKING:
     from diffcone.indexer.resolver import Resolver
+
+# Methods that change a builtin container the same way whatever it holds,
+# and return nothing a statement uses (``pop`` only with a default).
+WRITE_ONLY_METHODS = frozenset(
+    {
+        "clear",
+        "update",
+        "append",
+        "extend",
+        "add",
+        "discard",
+        "insert",
+        "setdefault",
+        "appendleft",
+        "extendleft",
+        "pop",
+    }
+)
+# Detail of an item store (``X[k] = v``) until the tree is known: it reads
+# nothing of a dict only (Indexer._write_only_references).
+SETITEM = "writes[]"
+# A store target that reads the old value too (augmented assignment).
+_READ = "read"
 
 
 # Calls that hand out every member of their argument, values included.
@@ -97,6 +130,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._bindings: dict[int, list | None] = {}
         # The nodes being visited, outermost first (see visit).
         self._stack: list[ast.AST] = []
+        # Nodes naming a variable only to change it (``X`` in ``X.clear()``
+        # or ``X[k] = v``) -> the edge detail their reference gets.
+        self._write_only: dict[int, str] = {}
 
     def visit(self, node: ast.AST) -> None:
         self._stack.append(node)
@@ -219,10 +255,11 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
-    def _resolve(self, parts: list[str], kind: str = REFERENCES) -> None:
+    def _resolve(self, parts: list[str], kind: str = REFERENCES, mark: str = "") -> None:
         node, rest = self.indexer.resolve_chain_names(parts, self.scope)
         chain = ".".join(parts)
-        self.indexer._record(self.source, node, kind=kind, chain=chain)
+        if not (mark and self._write_reference(node, rest, mark)):
+            self.indexer._record(self.source, node, kind=kind, chain=chain)
         self.indexer.class_object_read(self.source, parts, self.scope)
         if isinstance(node, External) and node.module.split(".")[0] in GRAPH_MODULES:
             # ``gc.get_objects``: a member that hands out objects nothing
@@ -243,8 +280,10 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
-            self._resolve([node.id])
+            self._resolve([node.id], mark=self._write_only.get(id(node), ""))
             self._mark_escape(node, [node.id])
+        elif not self.skip_defs and node.id not in self.scope.locals:
+            self._global_rebinding(node.id)
 
     def _self_class(self, node: ast.expr) -> str | None:
         """The class of the method this is in, when ``node`` is its ``self``
@@ -280,7 +319,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._member_read(inner.value, key)
         parts = _flatten_chain(node)
         if parts is not None:
-            self._resolve(parts)
+            mark = self._write_only.get(id(node), "")
+            if mark == _READ:
+                mark = ""
+            elif isinstance(node.ctx, ast.Store):
+                mark = REBINDS
+            self._resolve(parts, mark=mark)
             self._mark_escape(node, parts)
             if (
                 isinstance(node.ctx, ast.Load)
@@ -597,6 +641,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
         for target in node.targets:
+            self._process_store(target)
+            if isinstance(target, ast.Subscript):
+                self._mark_write_only(target.value, SETITEM)
             if isinstance(target, ast.Subscript):
                 self._dict_write(target)
             for sub in ast.walk(target):
@@ -608,6 +655,8 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         observe_augassign(self, node)
+        self._write_only[id(node.target)] = _READ  # ``mod.X += 1`` reads it
+        self._process_store(node.target)
         self._mutation_target(node.target)
         if isinstance(node.target, ast.Subscript):
             self._dict_write(node.target)
@@ -616,6 +665,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             observe_assign(self, [node.target])
+            self._process_store(node.target)
             self._mutation_target(node.target)
             self._stash_binding(node.target, node.value)
         self.visit(node.target)
@@ -626,6 +676,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Delete(self, node: ast.Delete) -> None:
         observe_assign(self, node.targets)
         for target in node.targets:
+            self._process_store(target)
             self._mutation_target(target)
             if isinstance(target, ast.Subscript):
                 self._dict_write(target)
@@ -634,6 +685,15 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         parts = _flatten_chain(node.func)
         observe_call(self, node, parts)
+        self._process_call(node, parts)
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in WRITE_ONLY_METHODS
+            and (node.func.attr != "pop" or (len(node.args) == 2 and not node.keywords))
+            and isinstance(self._parent(node), ast.Expr)
+        ):
+            # A statement whose value nobody uses: ``X.clear()``.
+            self._write_only[id(node.func)] = WRITES
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in self.MUTATING_METHODS
@@ -1075,6 +1135,137 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.indexer._module_import_edge(self.source, node.module)
         self._dynamic("getattr(<non-literal>)")
         return True
+
+    def _mark_write_only(self, expr: ast.expr, mark: str) -> None:
+        """``expr`` (a name or a dotted chain) is named only to be changed."""
+        if isinstance(expr, ast.Name) or (
+            isinstance(expr, ast.Attribute) and _flatten_chain(expr) is not None
+        ):
+            self._write_only[id(expr)] = mark
+
+    def _write_reference(self, node: Node, rest: Sequence[str], mark: str) -> bool:
+        """Record a reference to a module variable that does not read its
+        value (``mark``: WRITES, SETITEM or REBINDS); False when ``node`` is
+        not one, to be recorded as an ordinary reference. Whether a
+        container method or item store reads nothing is settled once the
+        whole tree is known (Indexer._write_only_references)."""
+        if not (
+            isinstance(node, Resolved)
+            and not node.detail
+            and not node.overrides
+            and not node.also
+            and not node.alternatives
+            and not node.uncertain_attr
+            and node.symbol != self.source
+        ):
+            return False
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        if symbol is None or symbol.kind != VARIABLE:
+            return False
+        if mark == REBINDS:
+            if rest or symbol.module == self.scope.module.name:
+                return False
+            self.indexer.out.rebound.add(symbol.id)
+        elif len(rest) != (1 if mark == WRITES else 0):
+            return False
+        self.indexer.out.edges.add(Edge(self.source, symbol.id, REFERENCES, mark))
+        return True
+
+    def _global_rebinding(self, name: str) -> None:
+        """A function binding a module variable under ``global``."""
+        node = self.indexer.resolve_chain([name], self.scope)
+        if isinstance(node, Resolved) and not node.detail:
+            symbol = self.indexer.index.symbols.get(node.symbol)
+            if symbol is not None and symbol.kind == VARIABLE:
+                self.indexer.out.rebound.add(symbol.id)
+
+    def _process_write(self, what: str) -> None:
+        if not self._restored(what):
+            self.indexer.out.process_writes.add((self.source, what))
+
+    def _restored(self, what: str) -> bool:
+        """Whether an enclosing ``with`` puts ``what`` back on exit:
+        ``warnings.catch_warnings()`` for the warning filters,
+        ``mock.patch.dict(os.environ, ...)`` for the dict it patches."""
+        for node in self._stack:
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
+                continue
+            for item in node.items:
+                call = item.context_expr
+                if not isinstance(call, ast.Call):
+                    continue
+                parts = _flatten_chain(call.func)
+                name = self._canonical_name(parts) if parts else None
+                if name is None:
+                    continue
+                if name.endswith("catch_warnings") and what.startswith("warnings."):
+                    return True
+                if parts and parts[-2:] == ["patch", "dict"] and call.args:
+                    target = call.args[0]
+                    if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                        patched = target.value
+                    else:
+                        chain = _flatten_chain(target)
+                        patched = self._canonical_name(chain) if chain else None
+                    if patched is not None and state_object(patched) == what:
+                        return True
+        return False
+
+    def _process_store(self, target: ast.expr) -> None:
+        """A store, ``del`` or augmented assignment that writes process-global
+        state outside the source roots (indexer/process.py)."""
+        for sub in ast.walk(target):
+            if not isinstance(sub, (ast.Subscript, ast.Attribute)) or isinstance(sub.ctx, ast.Load):
+                continue
+            expr: ast.expr = sub
+            while isinstance(expr, ast.Subscript):
+                expr = expr.value
+            if isinstance(sub, ast.Attribute):
+                module = self._written_module(sub.value)
+                if module is not None:
+                    self._process_write(f"{module}.{sub.attr}")
+                if sub.attr in LOGGER_MUTATORS and self._is_logger(sub.value):
+                    self._process_write(f"logging.getLogger().{sub.attr}")
+            chain = _flatten_chain(expr)
+            obj = state_object(self._canonical_name(chain) if chain else None)
+            if obj is not None:
+                self._process_write(obj)
+
+    def _is_logger(self, expr: ast.expr) -> bool:
+        """``logging.getLogger(...)``."""
+        if not isinstance(expr, ast.Call):
+            return False
+        parts = _flatten_chain(expr.func)
+        return parts is not None and self._canonical_name(parts) in LOGGER_GETTERS
+
+    def _process_call(self, node: ast.Call, parts: list[str] | None) -> None:
+        """A call that writes process-global state outside the source roots
+        (indexer/process.py)."""
+        func = node.func
+        if parts is None:
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in LOGGER_MUTATORS
+                and self._is_logger(func.value)
+            ):
+                self._process_write(f"logging.getLogger().{func.attr}")
+            return
+        canonical = self._canonical_name(parts)
+        if canonical in STATE_CALLS:
+            self._process_write(canonical)
+        if len(parts) > 1 and parts[-1] in STATE_MUTATORS:
+            obj = state_object(self._canonical_name(parts[:-1]))
+            if obj is not None:
+                self._process_write(obj)
+        if (
+            len(parts) == 1
+            and parts[0] in ("setattr", "delattr")
+            and not self._is_shadowed(parts[0])
+            and node.args
+        ):
+            module = self._written_module(node.args[0])
+            if module is not None:
+                self._process_write(f"{parts[0]}({module})")
 
     def _canonical_name(self, parts: list[str]) -> str | None:
         """The dotted name a callee chain refers to through the scope's import

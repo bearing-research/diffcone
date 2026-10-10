@@ -1400,6 +1400,47 @@ checks then ran again on the final code in the same environments:
   only through lookup sites that the round-3 narrowing and evidence fixes
   let see a test module's names (audit V4).
 
+## What the session-state rules cost (audit W11, W12, W14; 2026-10-09)
+
+Code pytest runs while collecting that writes process state (W12), and the
+`pytest_*` methods of in-scope classes (W11), became dependencies of every
+test. Measured at HEAD of the census repositories (static planning, roots
+`src` and `.`): for a sample of 30 functions whose change now reaches such
+a dependency, the mean number of tests a body change selects, before ->
+after:
+
+| repository | tests | functions newly reaching every test | mean selected |
+|---|---|---|---|
+| rich | 721 | 461 (27.6 %) | 648 -> 718 |
+| werkzeug | 578 | 548 (30.1 %) | 578 -> 578 |
+| black | 297 | 361 (22.1 %) | 297 -> 297 |
+| trio | 684 | 323 (17.6 %) | 642 -> 684 |
+| typer | 971 | 259 (12.7 %) | 939 -> 971 |
+| pygments | 294 | 231 (17.8 %) | 294 -> 294 |
+| cattrs | 454 | 148 (19.3 %) | 454 -> 454 |
+| pydantic | 4 578 | 640 (9.4 %) | 3 413 -> 4 578 |
+| pip | 1 936 | 537 (7.3 %) | 1 821 -> 1 936 |
+| networkx | 5 532 | 386 (5.4 %) | 1 564 -> 5 532 |
+| scrapy | 5 117 | 139 (2.3 %) | 3 292 -> 5 117 |
+| pre-commit | 682 | 138 (11.8 %) | 164 -> 682 |
+
+Real writes drive pre-commit (`pre_commit.main` pops `os.environ` keys at
+import), scrapy (`warnings.filterwarnings` in `scrapy/__init__.py`) and
+cattrs (`hypothesis.settings.load_profile` in `tests/__init__.py`). In
+networkx and pydantic the writer is reached through name matches and
+dynamic references, the same over-approximation the planner applies, and
+the dependency is the whole module whose import-time code reaches it.
+Leaving out `if __name__ == "__main__":` blocks and writes inside `with
+warnings.catch_warnings()` halved fastapi's share (14.3 % -> 6.1 % of
+functions). The other 30 repositories add nothing or under 3 points.
+
+strata (evidence, `edc32ce0` -> `1241020210`): before W1/W5/W7 landed,
+2 693 of 6 231 with and without these rules; with the W5/W7 rules,
+`executed_reader` reasons fell from 5 019 to 3 507 (`_azure.clear()` and
+the like in the autouse reset fixture are no longer reads; the fixture
+still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
+W13 and W15: 939 of 6 231 with and without these rules.
+
 ## After the second audit round (2026-10-07)
 
 Round 2 (internal/audit.md) fixed every finding, then the same checks ran

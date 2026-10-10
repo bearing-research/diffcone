@@ -45,7 +45,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 35: third-party values of project factories (external_returns); 34:
+# 36: process writes, `writes`/`rebinds` edges, builtin containers,
+# main-guarded code; 35: third-party values of project factories (external_returns); 34:
 # writes through parameters and receivers, scripts named in strings;
 # 33: bounded run-time module names, table_imports, graph handles, escaped
 # modules; 32: namespace reads off any object; 31: class-object reads,
@@ -53,7 +54,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 35
+INDEX_FORMAT = 36
 
 
 def _indexer_fingerprint() -> str:
@@ -128,6 +129,8 @@ def index_to_dict(index: SourceIndex) -> dict:
         "doc_decorated": sorted(index.doc_decorated),
         "scripts": dict(sorted(index.scripts.items())),
         "script_refs": sorted(list(r) for r in index.script_refs),
+        "process_writes": sorted(list(w) for w in index.process_writes),
+        "main_guarded": sorted(list(m) for m in index.main_guarded),
         "cython": {
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
@@ -174,6 +177,8 @@ def index_from_dict(data: dict) -> SourceIndex:
         doc_decorated=set(data["doc_decorated"]),
         scripts=dict(data["scripts"]),
         script_refs={(s, p) for s, p in data["script_refs"]},
+        process_writes={(s, w) for s, w in data["process_writes"]},
+        main_guarded={(a, b, c) for a, b, c in data["main_guarded"]},
         cython={
             path: CythonModule(
                 path,

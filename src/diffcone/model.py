@@ -125,6 +125,20 @@ class Symbol:
     # ``getdoc(obj)``): a docstring change of what it references, or of its
     # module, reaches it.
     reads_docstrings: bool = False
+    # Variables: the builtin container kind the initializer builds (``dict``,
+    # ``list``, ``set``, ``deque``; "" for anything else). Methods such as
+    # ``clear`` on one do the same whatever it holds, so a site that only
+    # calls them reads nothing of it (``writes`` edges).
+    builtin_container: str = ""
+
+
+# Edge details of a reference that does not read the variable's value: a site
+# that only empties or adds to a builtin container (``X.clear()``,
+# ``X.append(v)``, ``X[k] = v`` on a dict) depends on what kind of object the
+# variable holds, not on what it holds (WRITES); one that rebinds another
+# module's variable (``mod.X = v``) depends only on it existing (REBINDS).
+WRITES = "writes"
+REBINDS = "rebinds"
 
 
 @dataclass(frozen=True, order=True)
@@ -253,6 +267,18 @@ class SourceIndex:
     # path)) runs or reads code it cannot see (diffcone.indexer.scripts).
     scripts: dict[str, str] = field(default_factory=dict)
     script_refs: set[tuple[str, str]] = field(default_factory=set)
+    # (symbol, what): code whose own statements write process-global state
+    # outside the source roots (``os.environ[k] = v``, ``sys.path.insert``,
+    # ``warnings.filterwarnings``: indexer/process.py). Discovery makes the
+    # code pytest runs before every test that can reach one a dependency of
+    # every test; the planners do not use it otherwise.
+    process_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (module, kind, target) for what a module's own code does only under
+    # ``if __name__ == "__main__":``, which does not run on import: an
+    # ``edge`` to a symbol, or an unresolved reference by its kind and name.
+    # Static planning treats that block as import-time code like any other;
+    # discovery leaves it out of what runs while pytest collects.
+    main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

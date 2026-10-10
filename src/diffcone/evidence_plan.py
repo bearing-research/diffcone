@@ -154,10 +154,12 @@ from diffcone.model import (
     METHOD,
     MODULE,
     OPAQUE_ATTRIBUTE,
+    REBINDS,
     REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
+    WRITES,
     SourceIndex,
     Symbol,
 )
@@ -435,10 +437,17 @@ class _Observers:
         self.holds: dict[str, set[str]] = defaultdict(set)
         self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
         self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
+        # Per variable, the code naming it only to empty or add to it
+        # (``writes`` edges) or to rebind it (``rebinds``), and the code
+        # naming it any other way (a read): see ``_readers``.
+        written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         for index in (c_index, other):
             for edge in index.edges:
                 if edge.kind in (REFERENCES, DECLARED):
                     self.readers_of[edge.target].add(edge.source)
+                    written_only[edge.target][edge.source].add(
+                        edge.detail if edge.detail in (WRITES, REBINDS) else ""
+                    )
                     if edge.detail.startswith("attribute:"):
                         self.attribute_readers[edge.detail[len("attribute:") :]].add(edge.source)
                     if edge.detail == "mutated_by":
@@ -512,6 +521,14 @@ class _Observers:
                 self.table_getters[getter] = frozenset(writers)
         for decl in declarations:
             self.readers_of[decl.target].add(decl.source)
+        self.write_sites: dict[str, set[str]] = defaultdict(set)
+        self.rebind_sites: dict[str, set[str]] = defaultdict(set)
+        for target, sources in written_only.items():
+            for source, details in sources.items():
+                if source in self.readers_of[target] and "" not in details:
+                    self.write_sites[target].add(source)
+                    if details == {REBINDS}:
+                        self.rebind_sites[target].add(source)
         self.hands_on = {
             ref.symbol
             for index in (c_index, other)
@@ -839,7 +856,7 @@ class _Observers:
                 f"read what an earlier one stored ({why.detail})"
             )
             self._observe(variable, RULE_EXECUTED_READER, label, change)
-            self._readers(variable, change, label, in_tests=True)
+            self._readers(variable, change, label, in_tests=True, content_only=True)
             self._sites(self.symbols[variable], change, label, in_tests=True)
         return bool(found)
 
@@ -1445,13 +1462,27 @@ class _Observers:
                 self._readers(c, change, label)
 
     def _readers(
-        self, target: str, change: SymbolChange | None, label: str, *, in_tests: bool = False
+        self,
+        target: str,
+        change: SymbolChange | None,
+        label: str,
+        *,
+        in_tests: bool = False,
+        content_only: bool = False,
     ) -> None:
         """``in_tests``: what changed is what code running inside the tests
         stored (``_stored_results``), which no import or hook that ran before
         them can have read: function readers are observed, not followed into
-        what imports and hooks they ran in."""
+        what imports and hooks they ran in. ``content_only``: what ``target``
+        holds changed in place (code writing into it ran differently), so
+        code that only empties or adds to it (``X.clear()``) reads nothing
+        that changed. Code rebinding it from another module (``mod.X = v``)
+        reads nothing of it unless it was deleted."""
         readers = set(self.readers_of.get(target, ()))
+        if content_only:
+            readers -= self.write_sites.get(target, set())
+        elif not (change is not None and target == change.id and DELETED in change.changes):
+            readers -= self.rebind_sites.get(target, set())
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
             matched = self.by_name.get(name, set()) - readers - {target}
@@ -1752,7 +1783,7 @@ class _Observers:
                 self._followed.add(variable)
                 why = f"{label}; it can run {current}, which writes into {variable}"
                 self._observe(variable, RULE_EXECUTED_READER, f"{variable}: {why}", change)
-                self._readers(variable, change, why)
+                self._readers(variable, change, why, content_only=True)
                 self._sites(written, change, why, at_import=True)
             stack.extend(sorted(self.calls.get(current, ()), reverse=True))
 

@@ -20,6 +20,12 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
 * ``imports_name``: only a deletion of the imported name propagates
   (structural); the accompanying ``imports`` edge to the module carries
   import-time impact.
+* ``references`` with the detail ``mutated_by`` (variable -> writer): a
+  changed writer changes what the variable holds (CONTENT), which reaches
+  its readers but not a ``writes`` site, code that only empties or adds to
+  a builtin container (``REG.clear()``); any other impact on the variable
+  reaches those sites too. ``rebinds`` (``mod.X = v``) carries only a
+  deletion.
 
 A change that runs at import (a module body change, a variable, a class, a
 function's decorators or defaults, an added or deleted definition) also
@@ -84,10 +90,12 @@ from diffcone.model import (
     LIFECYCLE,
     METHOD,
     MODULE,
+    REBINDS,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_NAME_MATCH,
     VARIABLE,
+    WRITES,
     AnalysisError,
     Edge,
     SnapshotInfo,
@@ -113,9 +121,13 @@ from diffcone.snapshot import (
 # Impact modes, weakest first. REGISTERED: what a registry holds changed (a
 # function ``@app.command`` registered): code that later calls the registry
 # behaves differently, the import-time code that registers does not.
+# CONTENT: what a variable holds changed in place (a writer of it changed,
+# a ``mutated_by`` edge): code reading it behaves differently, code that only
+# empties or adds to it (a ``writes`` edge: ``X.clear()``) does not.
 REGISTERED = 1
-BEHAVIOR = 2
-STRUCTURAL = 3
+CONTENT = 2
+BEHAVIOR = 3
+STRUCTURAL = 4
 
 RULE_DEPENDENCY = "dependency"
 RULE_UNRESOLVED_NAME_MATCH = "unresolved_name_match"
@@ -579,6 +591,11 @@ def _propagate(
         return STRUCTURAL if target_mode == STRUCTURAL else None
     if edge.detail == "registers":
         return REGISTERED
+    if edge.detail == REBINDS:
+        # ``mod.X = v`` needs ``X`` to exist (a deletion), not its value.
+        return STRUCTURAL if target_mode == STRUCTURAL else None
+    if edge.detail == WRITES and target_mode <= CONTENT:
+        return None  # emptying or adding to a container reads nothing of it
     if target_mode == REGISTERED and source_is_module:
         return None  # registering ran at import, unchanged
     if edge.kind in (IMPORTS, IMPORTS_NAME):
@@ -586,6 +603,8 @@ def _propagate(
             return STRUCTURAL
         # Importing a module runs its import-time code.
         return BEHAVIOR if edge.kind == IMPORTS else None
+    if edge.detail == MUTATED_BY:
+        return CONTENT
     return BEHAVIOR
 
 
@@ -1150,10 +1169,11 @@ def plan_from_indexes(
     # changing them changes what the callee does at import as a change to
     # its body would. State the callee -- or anything it calls -- mutates in
     # place (``mutated_by`` edges) holds something else, and every reader of
-    # it is affected, however it reaches that state.
+    # it is affected, however it reaches that state; code that only empties
+    # or adds to it is not (CONTENT).
     for node, (steps, rule) in sorted(_import_call_effects(graph, at_import, module_nodes).items()):
         if node not in mode:
-            mode[node] = BEHAVIOR
+            mode[node] = CONTENT
             via[node] = None
             seed_paths[node] = (steps, rule)
             queue.append(node)

@@ -130,11 +130,18 @@ Lifecycle dependencies attached to each test:
   pytest calls for the whole session (any not in ``PATH_SCOPED_HOOKS``:
   ``pytest_collection_modifyitems``, ``pytest_configure``, ...) of every
   conftest, wherever it is; the hooks of the plugin modules the session
-  loads (``pytest_plugins`` in a conftest or a test module, ``-p`` in
+  loads (``pytest_plugins`` in a conftest or a test module, a literal
+  ``pluginmanager.import_plugin("pkg.plug")`` anywhere in one, ``-p`` in
   addopts, ``PYTEST_PLUGINS``, ``pytest11`` entry points of the project or
   of a sibling package in the repository), and those plugin modules
   themselves, whose import-time code runs for every test; a hook or setup
   function bound by import or assignment counts as one defined there;
+  every ``pytest_*`` method of an in-scope class (a plugin object pytest
+  may register: ``config.pluginmanager.register(Obj())``); and the code
+  pytest runs while collecting (import-time code of conftests, test
+  modules and what they import; collection hooks such as a sub-directory's
+  ``pytest_generate_tests``) that writes process-global state such as
+  ``os.environ`` (discovery/session_state.py);
 * xunit-style setup/teardown functions and methods when present
   (``setUpModule``, ``asyncSetUp``, Django's ``setUpTestData`` and a
   class-level ``pytest_generate_tests`` included); a ``@staticmethod``
@@ -199,9 +206,14 @@ from diffcone.discovery.common import (
     scope_functions,
     string_literals,
 )
+from diffcone.discovery.session_state import (
+    COLLECTION_HOOKS,
+    plugin_object_hooks,
+    state_writing_roots,
+)
 from diffcone.indexer import DEF_NODES, iter_scope_statements, resolve_relative_module
 from diffcone.manifest import Target
-from diffcone.model import IMPORTS, IMPORTS_NAME, SourceIndex
+from diffcone.model import IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
 from diffcone.snapshot import Snapshot, module_name_for
 
 RUNNER = "pytest"
@@ -1496,6 +1508,26 @@ def _injected_patch_count(decorators: list[ast.expr]) -> int:
     return count
 
 
+def _imported_plugins(tree: ast.Module) -> list[str]:
+    """Modules registered by name at run time anywhere in the module
+    (``config.pluginmanager.import_plugin("tests.envplug")`` in a hook):
+    pytest registers them for the session as it does ``pytest_plugins``. A
+    name that is not a literal is not followed."""
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_plugin"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+            and node.args[0].value not in found
+        ):
+            found.append(node.args[0].value)
+    return found
+
+
 def _plugins_from_body(body: list[ast.stmt]) -> list[str]:
     for name, value in scope_assignments(body):
         if name == "pytest_plugins":
@@ -1672,7 +1704,7 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             if call is None and len(parts) >= 2 and parts[0] in modules:
                 source = ".".join([modules[parts[0]], *parts[1:-1]])
                 facts.bindings.append(("import", assigned[0], source, parts[-1]))
-    facts.plugins = _plugins_from_body(body)
+    facts.plugins = _plugins_from_body(body) + _imported_plugins(parsed.tree)
     facts.usefixtures = _usefixtures_from_pytestmark(body)
     facts.unignores = _may_unignore(body)
     return facts
@@ -2512,6 +2544,31 @@ def discover_pytest(
         if path in facts_by_path
         for h in facts_by_path[path].session_hooks
     ]
+    # Hooks of plugin objects (``config.pluginmanager.register(Obj())``), and
+    # code pytest runs while collecting that leaves process-global state
+    # behind for every later test (discovery/session_state.py).
+    test_modules = {facts_by_path[p].parsed.module for p in test_paths if p in facts_by_path}
+    collected = [
+        facts_by_path[p]
+        for p in sorted(set(conftest_paths) | set(test_paths))
+        if p in facts_by_path
+    ]
+    plugin_hooks += plugin_object_hooks(index, test_modules)
+    plugin_hooks += state_writing_roots(
+        index,
+        [f.parsed.module for f in collected],
+        [
+            *(h for f in collected for h in f.hooks if h.rsplit(".", 1)[-1] in COLLECTION_HOOKS),
+            *(
+                s.id
+                for s in index.symbols.values()
+                if s.kind == METHOD
+                and s.name == "pytest_generate_tests"
+                and s.module in test_modules
+            ),
+        ],
+    )
+    plugin_hooks = list(dict.fromkeys(plugin_hooks))
 
     unresolved: Counter[str] = Counter()
     assumed: Counter[str] = Counter()

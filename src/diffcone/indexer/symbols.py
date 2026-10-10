@@ -9,6 +9,7 @@ from collections import defaultdict
 from diffcone.indexer.definitions import (
     _annotated_args,
     _canonical_imports,
+    _container_kind,
     _end_line,
     _flatten_chain,
     _future_annotations,
@@ -236,6 +237,7 @@ class FirstPass(IndexerState):
                 inert_definition=(
                     name != "__all__" and not mutators.get(name) and _is_literal(value)
                 ),
+                builtin_container=_container_kind(scope, value),
             )
             if self._add_symbol(symbol):
                 scope.variables[name] = symbol_id
