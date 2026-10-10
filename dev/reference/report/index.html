@@ -1218,7 +1218,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>lifecycle_changed</code></td>
 <td></td>
-<td>What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to <code>pytest_plugins</code>, for example).</td>
+<td>What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to <code>pytest_plugins</code>, for example). With a recording, compared with what ran around it when it was recorded.</td>
 </tr>
 <tr>
 <td><code>entry_docstring_changed</code></td>
@@ -1290,7 +1290,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>executed_reader</code></td>
 <td></td>
-<td>The test ran code that reads a changed value or definition.</td>
+<td>The test ran code that reads a changed value or definition, or reads a module-level cache that code able to run changed code fills (an earlier test may have filled it, so the test never ran that code).</td>
 </tr>
 <tr>
 <td><code>touched_file</code></td>
@@ -1345,7 +1345,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>pytest_hook_changed</code></td>
 <td>yes</td>
-<td>A pytest hook or what decides what pytest loads changed.</td>
+<td>A pytest hook or what decides what pytest loads changed, or code that a hook (or collection) ran in the recording changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test.</td>
 </tr>
 <tr>
 <td><code>unobserved_file_changed</code></td>

@@ -883,7 +883,15 @@ A name taken from a dict, list or set written in the code
 the table's name) is bounded by it only while nothing can change it: once
 the table, or the module holding it, is modified, passed to other code,
 or reached through <code>globals()</code>, <code>vars()</code>, <code>sys.modules</code> or <code>exec</code>, the
-lookup counts as dynamic. A lookup on a standard-library or third-party
+lookup counts as dynamic. A module your code gets by a name it computes
+counts as any module, so passing it on or writing to it makes every such
+table dynamic, unless the name starts with fixed text
+(<code>f"plugins.{name}"</code> is one of the <code>plugins.</code> modules) or the module is
+a new one (<code>types.ModuleType(name)</code>) that isn't installed in
+<code>sys.modules</code> under a name of yours. Code that passes a module to other
+code (<code>read(ops, name)</code>) depends on everything in that module, as it
+does on every member of a class whose instances it passes on.
+A lookup on a standard-library or third-party
 module (<code>getattr(logging, name)</code>) is bounded unless your code may store
 something on that module, directly or by handing the module to other
 code; then any change can affect it.</dd>
