@@ -486,8 +486,15 @@ nothing done to it counts, unless it is installed in `sys.modules`
 (`sys.modules[k] = m`, `setdefault`, `update`, `monkeypatch.setitem`,
 `mock.patch.dict`) under a name one of yours may have, which it then is
 (any module, for a name nothing bounds). `importlib.util.module_from_spec`
-is not such a module: once its loader runs it is a copy of the module its
-spec names, so it stays outside the model as before. Each table that
+makes no such module: once its loader runs it is a copy of the module its
+spec's file is, whose code is that module's (one symbol for both), so what
+is written to the copy changes what that module's code reads (audit round
+3, W18). The copy is that module when `find_spec` names it or the file is
+this module's own directory joined with literal relative names
+(`Path(__file__).parent / "x.py"`, `os.path.join(os.path.dirname(__file__),
+name)`), and any module otherwise; `spec.loader.exec_module(copy)` runs the
+module's own code there, nothing else, unless the file is unbounded: then
+it runs code read at run time, as `runpy.run_path` does (any module). Each table that
 unbinds keeps the symbols whose uses unbound it (`ModuleScope.
 literal_writers`; a use computed from another table is attributed to that
 table's writers), and a dynamic import whose name such a table would
@@ -498,9 +505,80 @@ followed rather than counted as handing the module on (`mod =
 import_module(name)` then `getattr(mod, attr)`). Where a module name was
 itself read out of a literal table (the lazy-export `__getattr__`), the
 table changing makes it any module. Of a module handed on, its
-submodules are handed on too, and an attribute read off it by a name
+submodules are handed on too, and so is everything reachable as an
+attribute chain off one of them (audit round 3, W16): what their imports
+bind (`from pkg import core` hands on `pkg.core`, `import pkg.core` the
+whole `pkg` package, `from pkg.core import TABLE` that table), what a star
+import brings (its module's tables), transitively, and names outside the
+source roots as external writes. An attribute read off it by a name
 nothing bounds (`x = getattr(core, name)`, `vars(core).items()`) may be any
-of its tables.
+of its tables, or anything its imports bind.
+
+Other run-time ways to a module or a table count too (audit round 3, W17,
+W18):
+
+- *An object installed in `sys.modules`* (`sys.modules[k] = v`,
+  `setdefault`, `__setitem__`, `update`, `|=`, `monkeypatch.setitem`,
+  `mock.patch.dict` with `sys.modules` or `"sys.modules"`; `None`, which
+  blocks the import, is nothing) is what a later import of that name gets,
+  while the module's own code keeps its own namespace. A lookup on an
+  external module of that name may find the project's objects (an
+  external write); an in-scope module of that name counts as handed on, as
+  a `types.ModuleType` installed there does; installed for good (not by
+  `monkeypatch` or `patch.dict`, which last one test), the module depends
+  on the installing code (an edge from it, `installed in sys.modules`: its
+  importers get what that code put there; the module runs none of it, so
+  the edge is no call for import-time effects or for evidence mode's view of
+  what code can run). Under a name nothing bounds, only the external write
+  counts: the install changes no module's own tables, and no in-scope
+  module is singled out as depending on the installer (static planning
+  does not see an import of such a name get it). `sys.modules.update` with
+  a dict display installs the names it gives, and any module handed on
+  otherwise; `sys.modules = ...` is any module. A module handle installed
+  under names literals give (`sys.modules["_nb_ser"] = copy`) is that
+  module for whatever names it: records about `_nb_ser` count for it, and
+  the install hands nothing on itself.
+- *A namespace*: `f.__globals__` is that of the module `f` is defined in
+  (re-exports followed; this module's for a function it defines by `def`),
+  and a frame's `f_globals` or `f_locals` (its globals at module level), or
+  `__globals__` of an object nothing tells, is any module's. It counts as
+  `m.__dict__` does: an item read by a literal key is that attribute where
+  it stands, a store rebinds it, and handing it on or changing it is the
+  module written to.
+- *Objects from anywhere*: an unpickler's result (`pickle.loads`/`load`,
+  `Unpickler(...).load()`, `cloudpickle`, `dill`, `joblib.load`: its
+  `find_class` returns any module's attribute the data names) and
+  `pkgutil.resolve_name`/`pydoc.locate` by a name nothing bounds are an
+  attribute of any module, a table included: changed in place, handed on
+  or written, any table may change (with a literal name, that attribute).
+  A `gc` list (`get_objects`, `get_referrers`, `get_referents`, `garbage`)
+  is only read by `len` and a test; an element read, or the variable of a
+  loop over it (followed like a local alias), is such an object; anything
+  else hands every element on.
+
+A handle need not be counted where only its own module's code holds it
+(audit round 3, W18; strata's notebook harness): a module-level name bound
+once to a handle and bound nowhere else, or a private module-level function
+used here only by calls whose returns are handles (its calls are then the
+handle, and its returns hand nothing on), is followed like a local alias.
+A `held` record keeps what it holds: it counts as handed on when other
+code can reach the holder (a record or import naming it or anything under
+it, its module star imported, handed on, or any attribute of it handed on,
+or its namespace reached here). A parameter of a private module-level
+function that every use of it in its module calls with a literal is bounded
+by those literals (a file name, a module name), with a `loader` record:
+when other code can reach that function (the same test, plus a `call`
+record: a private function called through a module or an import), the
+bound is any module.
+
+Names resolve in the scope they stand in (audit round 3, W19): an import in
+one function binds the name there only, a parameter or local of the same
+name shadows a module-level import (`from __future__ import annotations`
+and a parameter `annotations`), a class body is seen only by code directly
+in it, `global`/`nonlocal` declarations are followed, and a builtin is a
+name nothing in scope binds (a class attribute named `len` elsewhere no
+longer makes `len(T)` a use that may change `T`). A name bound both ways in
+one scope is followed both ways.
 
 Any other store of a name holding such strings makes it unbounded:
 `+=`, a walrus (also one inside a
@@ -1480,7 +1558,13 @@ a value gains an edge to each of its members (`attribute of a module passed
 to other code`): the code that refers to it depends on everything in it.
 The edges start at the referrer, not at the module, since impact on a
 module reaches all its importers. A module only read from (`ops.add(1, 2)`)
-does not count.
+does not count. What the module's imports bind is as reachable through it
+(`read(api, ["ops", "other"])` with `from pkg import ops` in `api`; audit
+round 3, W16): each such reference also gains an edge to every symbol its
+imports, star imports and those of its submodules bind, transitively
+(the members of a module bound, the function or class bound and its
+members), added by the indexer (`Indexer._module_reach_edges`) since the
+planner sees no import bindings.
 
 An object also reaches such code out of a factory, and nothing at that
 call site names its class: `obj = make(); invoke(obj, name)`. So a

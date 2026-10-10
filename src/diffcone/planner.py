@@ -87,6 +87,7 @@ from diffcone.model import (
     EXTERNAL_WRITTEN,
     IMPORTS,
     IMPORTS_NAME,
+    INSTALLED,
     LIFECYCLE,
     METHOD,
     MODULE,
@@ -683,7 +684,11 @@ def _import_call_effects(
         if node in module_nodes and parent[node] is not None:
             continue
         for target, edge, revs in graph.forward.get(node, ()):
-            if edge.kind in _CALL_KINDS and edge.detail != MUTATED_BY and target not in parent:
+            if (
+                edge.kind in _CALL_KINDS
+                and edge.detail not in (MUTATED_BY, INSTALLED)
+                and target not in parent
+            ):
                 parent[target] = (node, edge, revs)
                 queue.append(target)
     return effects
@@ -712,7 +717,7 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
     added: list[tuple[Edge, tuple[str, ...]]] = []
     for source, adj in list(graph.forward.items()):
         for target, edge, revs in adj:
-            if edge.kind not in _CALL_KINDS or edge.detail == MUTATED_BY:
+            if edge.kind not in _CALL_KINDS or edge.detail in (MUTATED_BY, INSTALLED):
                 continue
             if target in module_nodes:
                 continue
@@ -950,6 +955,15 @@ def plan_from_indexes(
     # edges go from each referrer, not from the module, whose importers an
     # impact on it would reach.
     escaped_modules = base.escaped_modules | head.escaped_modules
+    # What such a module's imports bind is as reachable off it (``api.core``,
+    # ``api.TABLE``; audit round 3, W16): referrers reach it through one node
+    # per module (``<module>.<imports>``), which depends on every reached
+    # symbol and module member, so the edges stay one per referrer.
+    module_reach: dict[str, set[str]] = defaultdict(set)
+    for index in (base, head):
+        for module, found in index.module_reach.items():
+            module_reach[module].update(found)
+    reached: set[str] = set()
     for edge, revs in sorted(union.items()):
         if edge.kind == REFERENCES and edge.target in escaped_modules:
             for member in class_members.get(edge.target, ()):
@@ -963,6 +977,23 @@ def plan_from_indexes(
                         ),
                         revs,
                     )
+            if module_reach.get(edge.target):
+                node = f"{edge.target}.<imports>"
+                graph.add(
+                    Edge(
+                        edge.source, node, REFERENCES, "attribute of a module passed to other code"
+                    ),
+                    revs,
+                )
+                reached.add(edge.target)
+    for module in sorted(reached):
+        node = f"{module}.<imports>"
+        for target in sorted(module_reach[module]):
+            for symbol in [target, *class_members.get(target, ())]:
+                graph.add(
+                    Edge(node, symbol, REFERENCES, f"what {module} imports binds"),
+                    ("base", "head"),
+                )
 
     # Dependencies the project declares (diffcone.toml): the analysis cannot
     # see them, and they only add edges, so they widen selection and never

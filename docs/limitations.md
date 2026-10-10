@@ -50,13 +50,20 @@ everything.
     table dynamic, unless the name starts with fixed text
     (`f"plugins.{name}"` is one of the `plugins.` modules) or the module is
     a new one (`types.ModuleType(name)`) that isn't installed in
-    `sys.modules` under a name of yours. Code that passes a module to other
-    code (`read(ops, name)`) depends on everything in that module, as it
-    does on every member of a class whose instances it passes on.
+    `sys.modules` under a name of yours. The same goes for a function's
+    `__globals__`, a frame's `f_globals`, what `pickle.loads`,
+    `pkgutil.resolve_name` or `gc.get_objects()` hand back, and a copy made
+    with `importlib.util.module_from_spec` (which is the module whose file it
+    loads). Passing a module on also passes on whatever its imports bind
+    (`api.core.TABLE`). Code that passes a module to other
+    code (`read(ops, name)`) depends on everything in that module and on
+    what its imports bind, as it does on every member of a class whose
+    instances it passes on.
     A lookup on a standard-library or third-party
     module (`getattr(logging, name)`) is bounded unless your code may store
-    something on that module, directly or by handing the module to other
-    code; then any change can affect it.
+    something on that module, directly, by handing the module to other
+    code, or by putting an object in `sys.modules` under its name; then any
+    change can affect it.
 
 **Python programs a test starts.**
 :   A test that runs a script or module of your project in a new process

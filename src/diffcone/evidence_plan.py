@@ -151,6 +151,7 @@ from diffcone.model import (
     GRAPH_HANDLE,
     IMPORTS,
     IMPORTS_NAME,
+    INSTALLED,
     METHOD,
     MODULE,
     OPAQUE_ATTRIBUTE,
@@ -443,6 +444,8 @@ class _Observers:
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         for index in (c_index, other):
             for edge in index.edges:
+                if edge.detail == INSTALLED:
+                    continue  # static planning's: the record holds what ran
                 if edge.kind in (REFERENCES, DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     written_only[edge.target][edge.source].add(

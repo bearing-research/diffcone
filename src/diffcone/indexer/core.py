@@ -8,7 +8,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import defaultdict
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from diffcone.indexer.dynamics import DynamicBounds
 from diffcone.indexer.facts import (
@@ -23,12 +23,26 @@ from diffcone.indexer.references import SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import _digest, decode_source
-from diffcone.indexer.uses import ANY, DYN, MUT, STORE, USE, UseRecord
+from diffcone.indexer.uses import (
+    ANY,
+    AS,
+    CALL,
+    DYN,
+    HELD,
+    INSTALL,
+    LOADER,
+    MUT,
+    STORE,
+    SWAP,
+    USE,
+    UseRecord,
+)
 from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
     GRAPH_MODULES,
+    INSTALLED,
     METHOD,
     REFERENCES,
     UNRESOLVED_DYNAMIC,
@@ -39,6 +53,20 @@ from diffcone.model import (
     UnresolvedReference,
 )
 from diffcone.snapshot import Snapshot, child_modules, module_name_for
+
+
+@dataclass
+class _Reach:
+    """What is reachable as an attribute of a module (and its submodules)
+    beyond them, through what their imports bind (``Indexer._attribute_reach``):
+    modules, modules whose names a star import brings (their tables), literal
+    tables of other modules, symbols, and names outside the source roots."""
+
+    modules: set[str] = field(default_factory=set)
+    stars: set[str] = field(default_factory=set)
+    tables: set[tuple[str, str]] = field(default_factory=set)
+    symbols: set[str] = field(default_factory=set)
+    outside: set[str] = field(default_factory=set)
 
 
 class Indexer(DynamicBounds):
@@ -151,6 +179,8 @@ class Indexer(DynamicBounds):
         apply_scripts(self)  # after the script parameters are bound
         self._registrations()
         self._write_only_references()
+        self._module_reach()
+        self._install_edges()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -398,8 +428,11 @@ class Indexer(DynamicBounds):
         whose values were taken from it; a module that may be written to
         has none of its tables bounded. A record whose target was computed
         from a literal table that turns out to change is about any module.
-        Records about modules outside the source roots are kept for
-        ``_external_lookups``."""
+        A module handed on hands on what its imports reach
+        (``_attribute_reach``); what is installed in ``sys.modules``, held
+        only by its own module, or bounded by its own module's calls counts
+        as the record kinds say (``uses.py``). Records about modules outside
+        the source roots are kept for ``_external_lookups``."""
         # Each fact keeps the writers (the symbols whose uses gave it): a
         # name that unbinds is attributed to the code that may change it.
         poison: dict[str, dict[str, set[str]]] = defaultdict(
@@ -435,7 +468,30 @@ class Indexer(DynamicBounds):
             return found
 
         def under(module: str) -> list[str]:
-            return [m for m in self.scopes if m == module or m.startswith(module + ".")]
+            return self._under(module)
+
+        def hand_on(place: str, writer: str, *, dyn: bool = False, escape: bool = True) -> None:
+            """A module handed on (``dyn``: any attribute of it handed on):
+            it (``dyn``: its tables) and its submodules may be written, and so
+            may everything reachable as an attribute of one of them: what
+            their imports bind and star imports bring, transitively."""
+            if dyn:
+                tables[place].add(writer)
+            for m in under(place):
+                if dyn and m == place:
+                    continue
+                whole[m].add(writer)
+                if escape:
+                    self.index.escaped_modules.add(m)
+            reach = self._attribute_reach(place)
+            for m in reach.modules:
+                whole[m].add(writer)
+            for m in reach.stars:
+                tables[m].add(writer)
+            for m, name in reach.tables:
+                poison[m][name].add(writer)
+            for outside in reach.outside:
+                external.add(("escape", outside, writer))
 
         def size() -> tuple[int, ...]:
             def count(facts: dict[str, set[str]]) -> int:
@@ -448,6 +504,21 @@ class Indexer(DynamicBounds):
         def concrete(module: str, kind: str, target: str, writer: str) -> None:
             """A record about a dotted name (no pattern)."""
             parts = target.split(".")
+            if "__globals__" in parts:
+                # ``f.__globals__``: the namespace of the module ``f`` is
+                # defined in (re-exports followed), or, outside the source
+                # roots, of the module it is read off.
+                at = parts.index("__globals__")
+                after = parts[at + 1 :]
+                found = self._locate_target(module, parts[:at])
+                owners = (
+                    [place for place, _ in found]
+                    if found is not None
+                    else [".".join(parts[: max(at - 1, 1)])]
+                )
+                for owner in owners:
+                    concrete(module, kind, ".".join([owner, *after]), writer)
+                return
             if kind == STORE:
                 parent, name = parts[:-1], parts[-1]
                 places = self._locate_target(module, parent)
@@ -466,26 +537,80 @@ class Indexer(DynamicBounds):
                 return
             for place, rest in places:
                 if not rest:
-                    if kind == USE:
-                        for m in under(place):
-                            whole[m].add(writer)
-                            self.index.escaped_modules.add(m)
-                    elif kind == DYN:
-                        tables[place].add(writer)
-                        for m in under(place):
-                            if m != place:
-                                whole[m].add(writer)
-                                self.index.escaped_modules.add(m)
+                    if kind in (USE, DYN):
+                        hand_on(place, writer, dyn=kind == DYN)
                 elif len(rest) == 1 and rest[0] in self.scopes[place].containers:
                     poison[place][rest[0]].add(writer)
 
+        self._reach_cache = {}
+        installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
         records = [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
+        # A handle installed under a name literals give (an AS record): what
+        # names that module names the handle's module too.
+        installed_as: dict[str, set[str]] = defaultdict(set)
+        for _, r in records:
+            if r.kind == AS:
+                installed_as[r.target].update(n[1:] for n in r.sources if n.startswith(">"))
+        if installed_as:
+            redirected: list[tuple[str, UseRecord]] = []
+            for m, r in records:
+                if r.kind in (AS, INSTALL, SWAP):  # about the name itself
+                    continue
+                for name, modules in installed_as.items():
+                    if r.target == name or r.target.startswith(name + "."):
+                        rest = r.target[len(name) :]
+                        redirected += [
+                            (m, UseRecord(r.kind, t + rest, r.sources, r.writer))
+                            for t in sorted(modules)
+                        ]
+            records += redirected
+        # Private functions other code calls or holds (by a CALL record, an
+        # import of the name, a use of it as a value, a star import of its
+        # module): a bound taken from the calls in its own module (a LOADER
+        # record) does not hold for them.
+        reached: set[str] = {r.target for _, r in records if r.kind in (CALL, USE, DYN, MUT, STORE)}
+        for scope in self.scopes.values():
+            for binding in [
+                *scope.imports.values(),
+                *(b for bs in scope.alt_imports.values() for b in bs),
+            ]:
+                if binding.attr is not None:
+                    reached.add(f"{binding.module}.{binding.attr}")
+        starred = {star for scope in self.scopes.values() for star in scope.star_imports}
+        # Every dotted prefix of what other code names (``mod._ser.x`` names
+        # ``mod._ser``).
+        named_prefixes = {
+            ".".join(parts[:i])
+            for target in reached
+            for parts in [target.split(".")]
+            for i in range(1, len(parts) + 1)
+        }
+
+        def held_elsewhere(module: str, holder: str) -> bool:
+            # A module-level name or private function other code can reach:
+            # named through the module or imported, or the module itself
+            # held (handed on, any attribute of it handed on, star imported).
+            return (
+                f"{module}.{holder}" in named_prefixes
+                or module in starred
+                or module in whole
+                or module in tables
+            )
+
         while True:
             before = size()
             for module, record in records:
-                kind, target = record.kind, record.target
+                kind, target, sources = record.kind, record.target, record.sources
                 writer = self._writer_symbol(module, record.writer)
-                lost = [n for n in record.sources if changed(module, n)]
+                if kind == HELD:
+                    # Held where only its module's code reads it, unless other
+                    # code can reach the holder: then handed on.
+                    holders = [n[1:] for n in sources if n.startswith("=")]
+                    if not any(held_elsewhere(module, h) for h in holders):
+                        continue
+                    kind = USE
+                    sources = tuple(n for n in sources if not n.startswith("="))
+                lost = [n for n in sources if changed(module, n)]
                 if lost:
                     # Computed from a table that may change: about any module,
                     # once the table's own writers ran (they are what it is
@@ -494,8 +619,42 @@ class Indexer(DynamicBounds):
                     for name in lost:
                         anything.update(writers_of(module, name))
                     external.add(("escape", ANY, writer))
+                if kind in (CALL, AS):
+                    continue
+                if kind == LOADER:
+                    owner = target.rpartition(".")[0]
+                    if held_elsewhere(owner, target.rpartition(".")[2]):
+                        # Called elsewhere, or its module held by other code:
+                        # what it loads may be any module.
+                        anything.add(writer)
+                        external.add(("escape", ANY, writer))
+                    continue
+                if kind in (INSTALL, SWAP):
+                    # An object installed in ``sys.modules``: a later import
+                    # of that name gets it, while the module's own code keeps
+                    # its own namespace. A lookup on an external module of
+                    # that name may find the project's objects; an in-scope
+                    # module of that name counts as handed on (as a module
+                    # made with ``types.ModuleType`` and installed there
+                    # does); installed for good, its importers get what the
+                    # installing code put there (``_install_edges``).
+                    if target.endswith(ANY):
+                        external.add(("escape", target, writer))
+                        prefix = target[: -len(ANY)]
+                        for m in sorted(self.scopes) if prefix else ():
+                            if m.startswith(prefix):
+                                concrete(module, USE, m, writer)
+                        continue
+                    concrete(module, USE, target, writer)
+                    found = self._locate_target(module, target.split("."))
+                    if kind == INSTALL and found:
+                        installs.update((place, writer) for place, rest in found if not rest)
+                    continue
                 if target == ANY:
-                    if kind in (USE, DYN):
+                    # A module found at run time handed on, or an object from
+                    # anywhere (an unpickled one, a ``gc`` list's element)
+                    # changed in place: it may be any module or table.
+                    if kind in (USE, DYN, MUT):
                         anything.add(writer)
                         external.add(("escape", ANY, writer))
                     continue
@@ -514,14 +673,7 @@ class Indexer(DynamicBounds):
                         named_tables[chain[-1]].add(writer)
                         for m in self.scopes:
                             if ("." + m).endswith(suffix):
-                                if kind == USE:
-                                    for u in under(m):
-                                        whole[u].add(writer)
-                                else:
-                                    tables[m].add(writer)
-                                    for u in under(m):
-                                        if u != m:
-                                            whole[u].add(writer)
+                                hand_on(m, writer, dyn=kind != USE, escape=False)
                         external.add(("suffix", suffix, writer))
                     continue
                 if ANY in target:
@@ -540,6 +692,7 @@ class Indexer(DynamicBounds):
             if size() == before:
                 break
         self._use_external = external
+        self._installed = installs
         for module, scope in self.scopes.items():
             scope.literal_pristine = dict(scope.literal_names)
             present = {literal_base(k) for k in scope.literal_names}
@@ -561,6 +714,101 @@ class Indexer(DynamicBounds):
                         if scope.literal_names[key] is not None:
                             scope.literal_writers[key] = frozenset(by)
                         scope.literal_names[key] = None
+
+    def _under(self, module: str) -> list[str]:
+        """``module`` and its submodules that are in scope."""
+        if not hasattr(self, "_under_map"):
+            found: dict[str, list[str]] = defaultdict(list)
+            for m in sorted(self.scopes):
+                parts = m.split(".")
+                for i in range(1, len(parts) + 1):
+                    found[".".join(parts[:i])].append(m)
+            self._under_map = found
+        return self._under_map.get(module, [])
+
+    def _attribute_reach(self, place: str) -> _Reach:
+        """What code holding module ``place`` can reach as an attribute chain
+        off it beyond ``place`` and its submodules (audit round 3, W16): what
+        the imports of each module on the way bind (``import pkg.core`` binds
+        ``pkg``, every imported submodule with it), a star import's names,
+        transitively."""
+        cached = self._reach_cache.get(place)
+        if cached is not None:
+            return cached
+        reach = _Reach()
+        own = set(self._under(place))
+        seen: set[str] = set()
+        stack = sorted(own)
+        while stack:
+            module = stack.pop()
+            if module in seen:
+                continue
+            seen.add(module)
+            scope = self.scopes[module]
+            origins: list[str] = []
+            for name in sorted(set(scope.imports) | set(scope.alt_imports)):
+                bindings = [scope.imports[name]] if name in scope.imports else []
+                for binding in [*bindings, *scope.alt_imports.get(name, ())]:
+                    origin = binding.module
+                    if binding.attr is not None:
+                        origin = f"{binding.module}.{binding.attr}"
+                    origins.append(origin)
+            for origin in origins:
+                found = self._locate_target(module, origin.split("."))
+                if found is None:
+                    # A namespace package holds its imported submodules.
+                    found = [(m, ()) for m in self._under(origin) if m != origin]
+                    if not found:
+                        reach.outside.add(origin)
+                        continue
+                for target, rest in found:
+                    if not rest:
+                        for m in self._under(target):
+                            if m not in own:
+                                reach.modules.add(m)
+                                stack.append(m)
+                        continue
+                    symbol = ".".join([target, *rest])
+                    if symbol in self.index.symbols:
+                        reach.symbols.add(symbol)
+                    if len(rest) == 1 and rest[0] in self.scopes[target].containers:
+                        reach.tables.add((target, rest[0]))
+            for star in scope.star_imports:
+                if star in self.scopes:
+                    if star not in own:
+                        reach.stars.add(star)
+                    stack.append(star)
+                else:
+                    reach.outside.add(star)
+        self._reach_cache[place] = reach
+        return reach
+
+    def _install_edges(self) -> None:
+        """An object installed in ``sys.modules`` for good under an in-scope
+        module's name (``sys.modules["pkg.core"] = fake``): a later import of
+        it gets what the installing code put there, so the module depends on
+        that code (an edge from the module: impact on it reaches its
+        importers). Under a name nothing bounds no module is singled out
+        (internal/design.md)."""
+        for module, writer in sorted(self._installed):
+            if writer != module:
+                self.index.edges.add(Edge(module, writer, REFERENCES, INSTALLED))
+
+    def _module_reach(self) -> None:
+        """For each module referenced as a value, what is reachable as an
+        attribute chain off it beyond its own members (audit round 3, W16):
+        the modules and symbols its imports bind (``SourceIndex.
+        module_reach``; the planner adds them to what the referrers of an
+        escaped module depend on, as W9 does its members)."""
+        for edge in self.index.edges:
+            if edge.kind != REFERENCES or edge.target not in self.scopes:
+                continue
+            if edge.target in self.index.module_reach:
+                continue
+            reach = self._attribute_reach(edge.target)
+            found = reach.modules | reach.stars | reach.symbols
+            if found:
+                self.index.module_reach[edge.target] = tuple(sorted(found))
 
     def _locate_target(
         self, module: str, parts: list[str]

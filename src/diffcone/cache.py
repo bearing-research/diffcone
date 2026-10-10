@@ -45,6 +45,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 37: module_reach, sys.modules installs, scoped names in the use scan;
 # 36: process writes, `writes`/`rebinds` edges, builtin containers,
 # main-guarded code; 35: third-party values of project factories (external_returns); 34:
 # writes through parameters and receivers, scripts named in strings;
@@ -54,7 +55,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 36
+INDEX_FORMAT = 37
 
 
 def _indexer_fingerprint() -> str:
@@ -109,6 +110,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "failed_modules": sorted(index.failed_modules),
         "escaped_classes": sorted(index.escaped_classes),
         "escaped_modules": sorted(index.escaped_modules),
+        "module_reach": {m: list(r) for m, r in sorted(index.module_reach.items())},
         "escaped_values": sorted(index.escaped_values),
         "other_files": dict(sorted(index.other_files.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
@@ -166,6 +168,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         failed_modules=set(data["failed_modules"]),
         escaped_classes=set(data["escaped_classes"]),
         escaped_modules=set(data["escaped_modules"]),
+        module_reach={m: tuple(r) for m, r in data["module_reach"].items()},
         escaped_values=set(data["escaped_values"]),
         other_files=dict(data["other_files"]),
         reflection={(s, d) for s, d in data["reflection"]},

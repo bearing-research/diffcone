@@ -69,6 +69,10 @@ GRAPH_INERT = frozenset(
 )
 # SourceIndex.reflection detail of code that hands such a module on, or looks
 # a name up on it by a name nothing bounds: it may walk the object graph.
+# Edge detail from a module to code that installs something in
+# sys.modules under its name for good: importers depend on that code,
+# but the module does not run it (indexer.core._install_edges).
+INSTALLED = "installed in sys.modules"
 GRAPH_HANDLE = ".<object graph module>"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
@@ -210,6 +214,12 @@ class SourceIndex:
     # Modules handed to someone else as a value (passed, bound to a name,
     # returned, stored; indexer.uses), with their submodules: the same holds.
     escaped_modules: set[str] = field(default_factory=set)
+    # Module referenced as a value -> what is reachable as an attribute chain
+    # off it beyond its own members, through what its imports (and its
+    # submodules') bind, transitively: modules (their members count) and
+    # symbols (audit round 3, W16). The planner adds what an escaped one
+    # reaches to what its referrers depend on.
+    module_reach: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Functions, methods and classes used as a value somewhere (passed,
     # stored, returned): code the analysis cannot see may call them. Static
     # planning uses this through the indexer; evidence mode asks whether only
