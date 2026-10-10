@@ -1150,7 +1150,24 @@ the report's <code>discovery</code> section lists what it read (<code>run_argume
   <code>conftest.py</code> pytest loads (including the one in a <code>test*</code> directory of a
   path pytest starts from, which it loads even when that directory is
   ignored) and in your plugins;</li>
-<li>your plugins' modules, which load for the whole session.</li>
+<li>your plugins' modules, which load for the whole session;</li>
+<li>the <code>pytest_*</code> methods of any class in your source roots, since pytest
+  calls them for every test once the class is registered as a plugin
+  (<code>config.pluginmanager.register(MyPlugin())</code>), and the hooks of a
+  module registered by name (<code>config.pluginmanager.import_plugin(
+  "tests.plugin")</code>);</li>
+<li>code pytest runs while it collects, before any test, that changes the
+  process for every test after it: a <code>conftest.py</code>, a test module or a
+  module they import that sets an environment variable or extends
+  <code>sys.path</code> when imported, or a <code>pytest_generate_tests</code> in a
+  sub-directory's <code>conftest.py</code> that does. Diffcone recognises writes to
+  <code>os.environ</code>, <code>sys.path</code> and <code>sys.modules</code>, attributes set on
+  third-party modules, and common configuration calls such as
+  <code>warnings.filterwarnings</code>, <code>logging.basicConfig</code>, <code>locale.setlocale</code>,
+  <code>numpy.random.seed</code> and hypothesis's <code>settings.load_profile</code>. State a
+  library keeps behind its own configuration function is not recognised;
+  declare such a dependency in <a href="../declarations/"><code>diffcone.toml</code></a> if a
+  test relies on it.</li>
 </ul>
 <p>A test is also selected when what runs around it changes although its own
 code did not: for example, a test module adds a plugin to
