@@ -112,7 +112,12 @@ def test_rec1_a_child_started_in_a_hook_selects_everything_for_what_it_ran(repo)
     files = {**BASE, "pkg/gen.py": GEN, "tests/conftest.py": conftest, "tests/test_reads.py": READS}
     handled, other = _plans(repo, files, HANDLED, OTHER_CHANGED)
     assert selected(handled) == {READS_ID, OTHER_ID}
-    assert [f.rule for f in handled.fallbacks] == ["unobserved_file_changed"]
+    # What the child ran is the hook's, so its change also selects everything
+    # as hook code (audit round 3, W5).
+    assert [f.rule for f in handled.fallbacks] == [
+        "pytest_hook_changed",
+        "unobserved_file_changed",
+    ]
     assert selected(other) == {OTHER_ID}
 
 

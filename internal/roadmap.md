@@ -865,7 +865,10 @@ global, or held by a thread that outlives its test. That is the evidence
 argument's isolation assumption (evidence_design.md, "test isolation"),
 and the reverse-order collection (`--reverse-check`) is its detector: the
 later test's record then depends on order, so it is flagged unstable and
-always selected. Unpickling a fake from a file is the same case. The rule
+always selected. A test that runs between two fillers in both orders is
+not flagged; when the store is a module variable written in place by code
+that can run the builder, its readers are selected (audit round 3, W7:
+evidence_design.md, "What a test stored for later tests"). Unpickling a fake from a file is the same case. The rule
 is not applied to fakes in helper modules that hold no tests
 (`tests/helpers.py` is not test code by `_TestCode`'s definition); that is
 a later widening once this one is measured.

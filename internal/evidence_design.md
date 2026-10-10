@@ -170,14 +170,20 @@ static selection.
 |---|---|---|---|
 | same environment | a different numpy, a missing optional dependency, another Python | the environment fingerprint must match the run; if it doesn't, fall back to static | — |
 | determinism | hash-seed-dependent ordering, time, randomness | `PYTHONHASHSEED` pinned to the recorded value in `run`; `TZ` in the fingerprint | optional second collection in reverse order: tests whose `X(T)` differs are **unstable** and always selected |
-| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures) | the reverse-order collection also catches order dependence between two tests |
+| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures); a hand-made module cache (`_CACHE[k] = compute(k)`) is planned as a value that changes: its readers are selected whenever code that can run a member of E writes it (audit round 3, W7) | the reverse-order collection also catches order dependence between two tests, but not a test that runs between the cache's first filler in both orders |
 | complete observation | subprocesses, threads outliving their test, code run from strings | a child's record joins `X(T)` when its entry is indexed code (a script or `-m` module of the index, or not the project's), else (`-c`, standard input, a script outside the index that ran project code), or when it could not record, `P(T)` → always selected; strings run by project code's `exec` belong to the function that ran them, which is in `X(T)` and is a lookup site; strings a library runs for the test (a doctest, `timeit`) → text code, always selected. Outside every test, a process no record follows, or text code, flags its phase: any change escalates the module being imported, or with none selects everything | — |
 | fresh evidence | evidence from an old C | changes are always C → head, so older evidence selects more, never less | age reported |
 
 What remains is stated in the report and in AGENTS.md: a lazily computed
 value on an object shared by three or more tests (pandas'
 `cache_readonly`, 171 uses, on an object shared across tests), time- or
-network-dependent paths, and state kept in module-level dictionaries.
+network-dependent paths, and state kept in module-level dictionaries that
+the planner cannot connect to the change: a cache whose writer reaches the
+changed code only through a call the index does not resolve (a name match
+more than one call away, a lookup by a name nothing bounds), or that is
+written through an argument or a receiver (`store.put(k, v)`, W4). A cache
+whose writer reaches it through resolved calls, or calls the changed
+function itself by name, is planned (W7, "Refinements").
 These can make a test's recorded path shorter than its real one. A
 periodic full run under collection (nightly in CI) detects them after the
 fact. Every test that fails there but went unselected in the runs since is
@@ -362,6 +368,43 @@ selection or states something the tables left implicit; none narrows it.
   outside every function (in a Cython file, or as a Python variable) is
   treated as changed. A write through an argument or a receiver is not
   modelled, as in static planning.
+* **What a test stored for later tests** (audit round 3, W7). A module
+  cache filled by the first test that asks (`get` storing `compute`'s
+  result in `_CACHE`) hides `compute` from every later test's record, in
+  every order, so the reverse-order check does not flag a test in the
+  middle. So, once E is built, every function or method in E is followed
+  back to the code that can run it, and every variable that code writes in
+  place (`mutated_by`) is a changed value: its readers and the sites that
+  can see it join E. "Can run" follows resolved references (a call, or a
+  read of the function as a value, through a variable or class holding
+  it), declared edges, the code naming a class for its special methods and
+  constructors, and, for the changed function itself, calls by its name on
+  objects of unknown type. A name match further back, or a lookup by a name
+  nothing bounds, is not followed: on strata either makes every module
+  writer one of every change (6 175 of 6 231 tests on `1241020210` against
+  1 275 without). What a test stores is read only while tests run, so these
+  readers are observed, not followed into imports and hooks. A module
+  imported inside a test that reads it is in that test's record.
+* **Code that ran outside every test** (W5). Code that ran at C in a hook or
+  during collection (`hook_phase`), changed or reading a change, selects
+  every test (`pytest_hook_changed`): a hook runs once per session, before
+  or between the tests, and what it leaves (an environment variable, a mark
+  on an item, another library's state) reaches tests that run none of its
+  code, while static escalation finds only those it has a path to (none for
+  a registered plugin object's method, only the tests under it for a
+  path-scoped hook such as `pytest_generate_tests`). The exception is a
+  test's or fixture's own code that pytest runs to collect it (`ids=`
+  callables), which reaches only that test or fixture's users. A lookup or
+  reflection site that joins E is a reader too: one that ran at import (a
+  module-level `dir(pkg.reg)`) or in a hook is followed as readers are,
+  since no test's record holds it.
+* **Lifecycle changes since the recording** (W5). A test whose fixtures,
+  hooks or plugins (its lifecycle dependencies, as discovery reads them)
+  differ between C and the base or the head is selected
+  (`lifecycle_changed`), as static planning selects one whose dependencies
+  differ between base and head: what was set up around it at C is not what
+  runs now. Discovery runs at C for this (from the discovery cache when it
+  can).
 * **Definition changes reach dynamic callers.** A call through `getattr`
   with an unbounded name fails to bind at C before the callee starts, so
   the callee is not in the caller's record. A changed signature, default,

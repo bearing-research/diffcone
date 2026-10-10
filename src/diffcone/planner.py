@@ -823,7 +823,7 @@ def plan_from_indexes(
     roots (_runner_files_outside_roots), which selects every target.
     ``lifecycle_changes``: (runner, runner_id) -> (added, removed) lifecycle
     dependencies of a discovered target between the snapshots
-    (_lifecycle_changes), which selects it."""
+    (diff_lifecycles), which selects it."""
     discovered = list(discovered or []) + _manifest_notes(manifest, discovered or [])
     discovered_ids = {t.runner_id for result in discovered for t in result.targets}
     declared = list(declarations or [])
@@ -1240,24 +1240,7 @@ def plan_from_indexes(
             )
         moved = (lifecycle_changes or {}).get((target.runner, target.runner_id))
         if moved is not None and target.runner_id in discovered_ids:
-            added, removed = moved
-            parts = [
-                f"{label} {', '.join(deps[:LIFECYCLE_SHOWN])}"
-                + (
-                    f" and {len(deps) - LIFECYCLE_SHOWN} more"
-                    if len(deps) > LIFECYCLE_SHOWN
-                    else ""
-                )
-                for label, deps in (("now runs", added), ("no longer runs", removed))
-                if deps
-            ]
-            reasons.append(
-                Reason(
-                    RULE_LIFECYCLE_CHANGED,
-                    f"what the runner sets up around {target.runner_id} changed between the "
-                    f"snapshots: it {'; it '.join(parts)}",
-                )
-            )
+            reasons.append(lifecycle_reason(target.runner_id, *moved, "between the snapshots"))
         entry_change = change_by_id.get(target.entry_symbol)
         if entry_change is not None and DOCSTRING_CHANGED in entry_change.changes:
             # For a doctest the docstring is the test; for anything else
@@ -1578,6 +1561,57 @@ def without_cyclic_gc(func):
     return inner
 
 
+def _discovery_at(
+    repo: Path,
+    commit: str,
+    index: SourceIndex,
+    roots: list[str],
+    runner: str,
+    options: DiscoveryOptions,
+    cache: IndexCache | None,
+) -> DiscoveryResult:
+    """Static discovery at a commit, through the discovery cache."""
+    found = cache.discovery.load(commit, roots, runner, options) if cache is not None else None
+    if found is None:
+        snapshot = read_snapshot(repo, commit, roots, with_config=True)
+        found = discover(runner, snapshot, index, options)
+        if cache is not None:
+            cache.discovery.store(found, commit, roots, options)
+    return found
+
+
+def _since_recording(
+    repo: Path,
+    evidence: Evidence,
+    evidence_index: SourceIndex,
+    base: SourceIndex,
+    base_lifecycle: Lifecycles,
+    head_lifecycle: Lifecycles,
+    roots: list[str],
+    options: DiscoveryOptions,
+    cache: IndexCache | None,
+) -> LifecycleChanges:
+    """The pytest targets whose lifecycle dependencies differ between the
+    recording at C and the head, or the base (evidence plans C -> base and
+    C -> head): what the recorded run set up around them is not what runs
+    now, and a fixture, hook or plugin it never ran has no record to meet a
+    change. Added and removed are merged over both sides."""
+    at_c = _lifecycles(
+        [_discovery_at(repo, evidence.commit, evidence_index, roots, "pytest", options, cache)]
+    )
+    sides = [head_lifecycle]
+    if not (base.snapshot.committed and base.snapshot.commit == evidence.commit):
+        sides.append(base_lifecycle)
+    merged: dict[tuple[str, str], tuple[set[str], set[str]]] = {}
+    for side in sides:
+        pytest_side = {key: deps for key, deps in side.items() if key[0] == "pytest"}
+        for key, (added, removed) in diff_lifecycles(at_c, pytest_side).items():
+            into = merged.setdefault(key, (set(), set()))
+            into[0].update(added)
+            into[1].update(removed)
+    return {key: (tuple(sorted(a)), tuple(sorted(r))) for key, (a, r) in merged.items()}
+
+
 def _settle_discovery(
     repo: Path,
     head: str,
@@ -1597,16 +1631,7 @@ def _settle_discovery(
     target is a gap the recording proves, noted as incomplete itself."""
     if evidence.collected is None or not any(d.runner == "pytest" for d in discovered):
         return discovered
-    at_c = (
-        cache.discovery.load(evidence.commit, roots, "pytest", options)
-        if cache is not None
-        else None
-    )
-    if at_c is None:
-        snapshot = read_snapshot(repo, evidence.commit, roots, with_config=True)
-        at_c = discover("pytest", snapshot, evidence_index, options)
-        if cache is not None:
-            cache.discovery.store(at_c, evidence.commit, roots, options)
+    at_c = _discovery_at(repo, evidence.commit, evidence_index, roots, "pytest", options, cache)
     targets_at_c = {t.runner_id for t in at_c.targets}
     extra = sorted(evidence.collected - targets_at_c)
     notes_at_c = {(n.kind, n.detail) for n in at_c.notes}
@@ -1699,25 +1724,49 @@ def _manifest_notes(
 # Lifecycle dependencies named in a ``lifecycle_changed`` reason.
 LIFECYCLE_SHOWN = 5
 
+# (runner, runner_id) -> its lifecycle dependencies; and -> (added, removed).
+Lifecycles = dict[tuple[str, str], tuple[str, ...]]
+LifecycleChanges = dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]]
 
-def _lifecycle_changes(
-    discovered: list[DiscoveryResult], base_lifecycle: dict[tuple[str, str], tuple[str, ...]]
-) -> dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]]:
-    """(runner, runner_id) -> (added, removed) for each head target the base
-    also had, with other lifecycle dependencies: a fixture, hook or plugin
-    that now applies to it (an autouse fixture of a plugin another test
-    module now registers), or no longer does, decides what it runs although
-    neither the target nor that dependency changed."""
-    changes: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...]]] = {}
-    for result in discovered:
-        for target in result.targets:
-            key = (target.runner, target.runner_id)
-            if key not in base_lifecycle:
-                continue
-            before = set(base_lifecycle[key])
-            after = set(target.lifecycle_dependencies)
-            if before != after:
-                changes[key] = (tuple(sorted(after - before)), tuple(sorted(before - after)))
+
+def lifecycle_reason(
+    runner_id: str, added: tuple[str, ...], removed: tuple[str, ...], between: str
+) -> Reason:
+    """The ``lifecycle_changed`` reason for a target whose lifecycle
+    dependencies moved ``between`` two snapshots."""
+    parts = [
+        f"{label} {', '.join(deps[:LIFECYCLE_SHOWN])}"
+        + (f" and {len(deps) - LIFECYCLE_SHOWN} more" if len(deps) > LIFECYCLE_SHOWN else "")
+        for label, deps in (("now runs", added), ("no longer runs", removed))
+        if deps
+    ]
+    return Reason(
+        RULE_LIFECYCLE_CHANGED,
+        f"what the runner sets up around {runner_id} changed {between}: it {'; it '.join(parts)}",
+    )
+
+
+def _lifecycles(discovered: list[DiscoveryResult]) -> Lifecycles:
+    return {
+        (target.runner, target.runner_id): target.lifecycle_dependencies
+        for result in discovered
+        for target in result.targets
+    }
+
+
+def diff_lifecycles(before: Lifecycles, after: Lifecycles) -> LifecycleChanges:
+    """(runner, runner_id) -> (added, removed) for each target both snapshots
+    have, with other lifecycle dependencies: a fixture, hook or plugin that
+    now applies to it (an autouse fixture of a plugin another test module
+    now registers), or no longer does, decides what it runs although neither
+    the target nor that dependency changed."""
+    changes: LifecycleChanges = {}
+    for key, deps in after.items():
+        if key not in before:
+            continue
+        old, new = set(before[key]), set(deps)
+        if old != new:
+            changes[key] = (tuple(sorted(new - old)), tuple(sorted(old - new)))
     return changes
 
 
@@ -1834,7 +1883,8 @@ def plan(
         if head_commit is not None and discovery_cache is not None:
             for result in discovered:
                 discovery_cache.store(result, head_commit, roots, options)
-    lifecycle_changes = _lifecycle_changes(discovered, base_lifecycle)
+    head_lifecycle = _lifecycles(discovered)
+    lifecycle_changes = diff_lifecycles(base_lifecycle, head_lifecycle)
     discovered = _with_base_lifecycle(discovered, base_lifecycle)
     _check_always_run_runners(always_from, manifest, discovered)
     if evidence is not None:
@@ -1857,6 +1907,19 @@ def plan(
         discovered = _settle_discovery(
             repo_path, head, evidence, evidence_index, discovered, roots, options, cache
         )
+        since_c: LifecycleChanges = {}
+        if "pytest" in runners:
+            since_c = _since_recording(
+                repo_path,
+                evidence,
+                evidence_index,
+                base_index,
+                base_lifecycle,
+                head_lifecycle,
+                roots,
+                options,
+                cache,
+            )
         planned = plan_with_evidence(
             base_index,
             head_index,
@@ -1868,6 +1931,8 @@ def plan(
             discovered=discovered,
             declarations=declared,
             base_target_ids=base_target_ids,
+            lifecycle_changes=lifecycle_changes,
+            lifecycle_since_recording=since_c,
         )
     else:
         planned = plan_from_indexes(

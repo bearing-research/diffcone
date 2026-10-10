@@ -85,7 +85,7 @@ selected the target to be safe.
 |---|---|---|
 | `dependency` | | A chain of calls, references or imports connects the target to a change (the target's own code included), shown in `dependency_explanations`. |
 | `new_target` | | The target is new. |
-| `lifecycle_changed` | | What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to `pytest_plugins`, for example). |
+| `lifecycle_changed` | | What runs around the target changed though its own code didn't: a fixture, hook or plugin now applies to it, or no longer does (another test module adds a plugin to `pytest_plugins`, for example). With a recording, compared with what ran around it when it was recorded. |
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
 | `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
@@ -102,7 +102,7 @@ With execution evidence, the rules name what the recorded run observed:
 | Rule | Fallback | Meaning |
 |---|---|---|
 | `executed_changed` | | The test ran a changed function. |
-| `executed_reader` | | The test ran code that reads a changed value or definition. |
+| `executed_reader` | | The test ran code that reads a changed value or definition, or reads a module-level cache that code able to run changed code fills (an earlier test may have filled it, so the test never ran that code). |
 | `touched_file` | | The test read a file that changed. |
 | `changed_target` | | The test's own code, or its class or module, changed. |
 | `test_scope` | | Test code it shares a scope with changed (a mark, fixture or parameter). |
@@ -113,7 +113,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `unstable` | yes | The test's recordings differed between runs. |
 | `subprocess` | yes | The test started a process the recording can't follow: not a Python process started with `subprocess` on Linux or macOS, one that couldn't record itself, one running your code from a `-c` snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a `multiprocessing` pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook). |
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |
-| `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed. |
+| `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook (or collection) ran in the recording changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
 | `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build. |
 | `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported. |
 

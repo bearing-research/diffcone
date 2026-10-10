@@ -60,6 +60,17 @@ observed by"), and a test is selected when its record meets E:
   a static reader. ``pytest_plugins`` in any module selects everything:
   the plugins it names serve the whole session.
 
+Code that ran at C in a hook or during collection, changed or reading a
+change, selects everything: what a hook leaves behind (an environment
+variable) reaches tests no static path leads to; a test's or fixture's own
+``ids=`` callable is the exception (``_collects_itself``). A lookup site in E
+is a reader too, followed into the import or hook that ran it. Once E is
+built, the variables written in place by code that can run a member of E
+(a cache an earlier test filled) are changed values for the code reading
+them inside tests (``_stored_results``). A target whose lifecycle
+dependencies differ between C and either snapshot is selected
+(``lifecycle_changed``).
+
 Something that ran outside every test and that no record shows (a process
 nothing followed, text code: ``Evidence.import_flagged``) makes any change
 escalate the module whose import ran it, or, outside every import, select
@@ -90,7 +101,7 @@ decision. A pytest target with no record (new, or never run) is selected.
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -174,6 +185,7 @@ from diffcone.planner import (
     RULE_UNSTABLE,
     Decision,
     Fallback,
+    LifecycleChanges,
     Plan,
     Reason,
     Seeds,
@@ -185,6 +197,7 @@ from diffcone.planner import (
     _members_by_container,
     _runner_dependency_fallbacks,
     build_input,
+    lifecycle_reason,
     merge_targets,
     plan_from_indexes,
 )
@@ -552,6 +565,15 @@ class _Observers:
         self._ran_at_import: set[str] = set()  # what ``_import_writes`` followed
         self._variables_by_name: dict[str, set[str]] | None = None
         self._import_code_followed: set[str] = set()
+        # Lookup and reflection sites in E, to be followed as readers.
+        self._sites_followed: set[tuple[str, bool]] = set()
+        self._pending_sites: deque[tuple[str, SymbolChange | None, str, bool]] = deque()
+        # ``_stored_results``: code known to be able to run a member of E ->
+        # that member; who calls what, backwards; lookup sites by namespace.
+        self._runs_e: dict[str, str] = {}
+        self._called_by: dict[str, set[str]] | None = None
+        self._change_by_id = {c.id: c for c in self.changes}
+        self.declarations = declarations
         # Cython name -> the Cython functions at C that mention it (lazily).
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
         # The lookups on an external module that a change to code running at
@@ -751,6 +773,107 @@ class _Observers:
                 )
             else:
                 self._file(path, what, names=what != "edited")
+        self._settle()
+
+    def _settle(self) -> None:
+        """Follow what the rules left pending until E stops growing: lookup
+        and reflection sites as readers, and the module state that code able
+        to run a member of E may hold a result of (``_stored_results``)."""
+        while True:
+            while self._pending_sites:
+                site, change, label, in_tests = self._pending_sites.popleft()
+                self._reader(site, change, label, in_tests=in_tests)
+            if not self._stored_results():
+                break
+
+    def _stored_results(self) -> bool:
+        """A cache an earlier test filled hides what filled it from a later
+        test's record (audit round 3, W7): ``get`` stores ``compute``'s result
+        in ``_CACHE`` during the first test that asks, and every later test
+        reads it there without running ``compute``, in every order. So for
+        each function or method in E, the code that can run it (``_callers_of``,
+        transitively) may have stored what it returned into the variables it
+        writes in place (``mutated_by``); each of those holds a changed value
+        for the tests after, so its readers, and the sites that can see it,
+        join E. A test stores there only while tests run, so only code running
+        inside a test can have read it: no import or hook is followed
+        (``in_tests``). ``functools`` caches need none of this: the recorder
+        clears them before every test. True when a variable was found, since
+        its readers may in turn be stored."""
+        changed = self._change_by_id
+        queue: deque[str] = deque()
+        for s in sorted({*self.E, *self.guarded}):
+            symbol = self.symbols.get(s)
+            if symbol is not None and symbol.kind in (FUNCTION, METHOD) and s not in self._runs_e:
+                self._runs_e[s] = s
+                queue.append(s)
+        found: list[tuple[str, str, str]] = []  # (variable, writer, what it can run)
+        while queue:
+            node = queue.popleft()
+            symbol = self.symbols[node]
+            if symbol.kind in (FUNCTION, METHOD):
+                for variable in sorted(self.writes.get(node, ())):
+                    if variable not in self._followed and variable in self.symbols:
+                        found.append((variable, node, self._runs_e[node]))
+            by_name = node in changed and self._runs_e[node] == node
+            for caller in sorted(self._callers_of(symbol, by_name=by_name)):
+                if caller not in self._runs_e and caller in self.symbols:
+                    self._runs_e[caller] = self._runs_e[node]
+                    queue.append(caller)
+        for variable, writer, ran in found:
+            if variable in self._followed:
+                continue
+            self._followed.add(variable)
+            why = self.E.get(ran) or self.guarded[ran][0][2]
+            change = changed.get(why.changed_symbol or "")
+            label = (
+                f"{writer} can run {ran} and stores into {variable}, where a later test may "
+                f"read what an earlier one stored ({why.detail})"
+            )
+            self._observe(variable, RULE_EXECUTED_READER, label, change)
+            self._readers(variable, change, label, in_tests=True)
+            self._sites(self.symbols[variable], change, label, in_tests=True)
+        return bool(found)
+
+    def _callers_of(self, symbol: Symbol, *, by_name: bool) -> set[str]:
+        """The code that can run ``symbol`` (``_stored_results``), one step
+        back: what references it (a call, or a read of the function as a
+        value, which reaches the readers of a variable or class holding it),
+        what the project declares, and for a special method (a constructor
+        among them), the code naming its class or a subclass, which stands in
+        for whoever holds an instance. With ``by_name`` (the changed function
+        itself), also the calls by its name on objects of unknown type. A
+        name match further back, or a lookup by a name nothing bounds, is not
+        followed: on strata either ties every writer to every change
+        (internal/evidence_design.md, the isolation assumption). A module's
+        top-level code ends a chain: it runs at import, which
+        ``_import_effect`` follows."""
+        if symbol.kind == MODULE:
+            return set()
+        if self._called_by is None:
+            self._called_by = defaultdict(set)
+            for source, targets in self.calls.items():
+                for target in targets:
+                    self._called_by[target].add(source)
+            for decl in self.declarations:
+                self._called_by[decl.target].add(decl.source)
+        out = set(self._called_by.get(symbol.id, ()))
+        container = self.symbols.get(symbol.container or "")
+        if symbol.kind in (FUNCTION, METHOD) and _is_dunder(symbol.name):
+            if container is not None and container.kind == CLASS:
+                family = {container.id}
+                stack = [container.id]
+                while stack:
+                    for sub_ in self.subclasses.get(stack.pop(), ()):
+                        if sub_ not in family:
+                            family.add(sub_)
+                            stack.append(sub_)
+                for cls in family:
+                    out |= self._called_by.get(cls, set())
+        elif symbol.kind in (FUNCTION, METHOD) and by_name:
+            out |= self.by_name.get(symbol.name, set())
+        out.discard(symbol.id)
+        return out
 
     def _docstring_readers(self) -> None:
         """A docstring-only change runs no different code, but code reading
@@ -1313,7 +1436,13 @@ class _Observers:
             if c != cls and c in self.subclasses.get(cls, set()):
                 self._readers(c, change, label)
 
-    def _readers(self, target: str, change: SymbolChange | None, label: str) -> None:
+    def _readers(
+        self, target: str, change: SymbolChange | None, label: str, *, in_tests: bool = False
+    ) -> None:
+        """``in_tests``: what changed is what code running inside the tests
+        stored (``_stored_results``), which no import or hook that ran before
+        them can have read: function readers are observed, not followed into
+        what imports and hooks they ran in."""
         readers = set(self.readers_of.get(target, ()))
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
@@ -1329,7 +1458,9 @@ class _Observers:
         readers.discard(target)
         for reader in sorted(readers):
             own = change is not None and target == change.id
-            self._reader(reader, change, label if own else f"{label} via {target}")
+            self._reader(
+                reader, change, label if own else f"{label} via {target}", in_tests=in_tests
+            )
 
     def _guard(
         self, matched: set[str], cls: str, change: SymbolChange | None, label: str
@@ -1419,20 +1550,33 @@ class _Observers:
         self._holders_of[cls] = (frozenset(builders), frozenset(members))
         return self._holders_of[cls]
 
-    def _reader(self, reader: str, change: SymbolChange | None, label: str) -> None:
+    def _reader(
+        self, reader: str, change: SymbolChange | None, label: str, *, in_tests: bool = False
+    ) -> None:
         symbol = self.symbols.get(reader)
         if symbol is None:
             return
         if symbol.kind in (FUNCTION, METHOD):
             self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
-            self._import_effect(reader, change, f"{label}, read by {reader}")
+            if not in_tests:
+                self._import_effect(reader, change, f"{label}, read by {reader}")
         elif symbol.kind == VARIABLE:
             # Its initialiser captured the value: it changed too.
             if reader not in self._followed:
                 self._followed.add(reader)
                 self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
-                self._readers(reader, change, label)
-                self._sites(symbol, change, f"{label}, captured by {reader}", at_import=True)
+                self._readers(reader, change, label, in_tests=in_tests)
+                self._sites(
+                    symbol,
+                    change,
+                    f"{label}, captured by {reader}",
+                    at_import=not in_tests,
+                    in_tests=in_tests,
+                )
+        elif in_tests:
+            # Module or class top-level code reads what a test stored only
+            # when the module is imported inside a test, whose record holds it.
+            self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
         else:
             # Module or class top-level code: import-time state.
             self._escalate_module(symbol.module, f"top-level code of {reader} reads {label}")
@@ -1471,11 +1615,41 @@ class _Observers:
                     module, f"{symbol_id} ran while {module} was imported; {label}"
                 )
         if symbol_id in self.evidence.hook_phase:
+            if not self._collects_itself(symbol_id):
+                # A hook (or code it reaches without a static path: a plugin
+                # object's method, a callback) runs once per session, before
+                # or between the tests, and what it leaves behind (an
+                # environment variable, a mark on an item, another library's
+                # state) reaches tests that run none of its code.
+                self._select_all(
+                    RULE_PYTEST_HOOK,
+                    f"{label}: {symbol_id} ran outside every test at C (in a pytest hook or "
+                    "during collection), and what it does there can reach any later test",
+                )
+                return
             reason = f"{symbol_id} ran outside every test (a hook or collection); {label}"
             if change is not None and symbol_id == change.id:
                 self._escalate_change(change, reason)
             elif symbol_id not in self.seed_nodes:
                 self.seed_nodes[symbol_id] = reason
+
+    def _collects_itself(self, symbol_id: str) -> bool:
+        """Whether code of ``symbol_id`` that ran outside every test is code
+        pytest runs to collect the tests using it: a test's or fixture's
+        ``ids``/``params`` callables, which land in that test or fixture. A
+        change there reaches those tests (``changed_target``, the fixture's
+        scope) and what static planning reaches from it. Not a hook, nor a
+        helper a hook calls."""
+        symbol = self.symbols.get(symbol_id)
+        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            return False
+        if symbol_id in self.test_code.entries:
+            return True
+        return (
+            symbol_id in self.test_code.users
+            and not symbol.name.startswith("pytest_")
+            and self.test_code.is_test_code(symbol.module)
+        )
 
     def _escalate_change(self, change: SymbolChange, why: str) -> None:
         """Plan the change statically (it runs at import). What it built is
@@ -1615,7 +1789,10 @@ class _Observers:
         imports: bool = False,
         at_import: bool = False,
         runs: Iterable[str] | None = None,
+        in_tests: bool = False,
     ) -> None:
+        """The lookup and reflection sites that can see ``symbol``'s namespace
+        join E, and are followed as readers (``_reader``, with ``in_tests``)."""
         handed: list[str] = []
         guarded: list[tuple[str, frozenset[str], str]] = []
         for site, detail in self._seeing_sites(
@@ -1627,6 +1804,17 @@ class _Observers:
             guarded=guarded,
         ):
             self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
+            followed = (site, in_tests) in self._sites_followed or (
+                site,
+                False,
+            ) in self._sites_followed
+            if not followed:
+                # A site is a reader: one that runs at import (module or class
+                # top-level code, a variable's initialiser, a function an
+                # import or a hook ran) built state no test's record shows it
+                # reading. Followed from ``run`` (``_settle``).
+                self._sites_followed.add((site, in_tests))
+                self._pending_sites.append((site, change, f"{label}, seen by {site}", in_tests))
         for site, writers, detail in guarded:
             self.guarded[site].append(
                 (
@@ -1897,7 +2085,16 @@ def plan_with_evidence(
     discovered: list[DiscoveryResult] | None = None,
     declarations: list[Declaration] | None = None,
     base_target_ids: set[str] | None = None,
+    lifecycle_changes: LifecycleChanges | None = None,
+    lifecycle_since_recording: LifecycleChanges | None = None,
 ) -> Plan:
+    """``lifecycle_changes``: the discovered targets' lifecycle dependencies
+    that moved between base and head, for targets of other runners, which
+    keep their static decision; ``lifecycle_since_recording``: those of the
+    pytest targets that moved between the recording and the base or the
+    head (planner._since_recording). A fixture, hook or plugin a test now
+    runs, and did not at C, is in no record to meet a change, so the test is
+    selected (``lifecycle_changed``)."""
     discovered = list(discovered or [])
     declared = list(declarations or [])
     targets = merge_targets(manifest, discovered)
@@ -1978,6 +2175,7 @@ def plan_with_evidence(
             discovered=discovered,
             declarations=declared,
             base_target_ids=base_target_ids,
+            lifecycle_changes=lifecycle_changes,
         )
         static_other = {d.target.node_id: d for d in full.decisions if d.target.runner != "pytest"}
 
@@ -1993,6 +2191,7 @@ def plan_with_evidence(
             docstring_ids,
             base_target_ids,
             static_other,
+            lifecycle_since_recording or {},
         )
         for target in targets
     ]
@@ -2029,6 +2228,7 @@ def _evidence_decision(
     docstring_ids: set[str],
     base_target_ids: set[str] | None,
     static_other: dict[str, Decision],
+    lifecycle_since_recording: LifecycleChanges,
 ) -> Decision:
     if target.runner != "pytest":
         return static_other[target.node_id]
@@ -2143,6 +2343,13 @@ def _evidence_decision(
                 RULE_NEW_TARGET,
                 f"{target.runner_id} is not in the base snapshot: a new target is selected "
                 "whatever its entry symbol did",
+            )
+        )
+    moved = lifecycle_since_recording.get((target.runner, target.runner_id))
+    if moved is not None:
+        reasons.append(
+            lifecycle_reason(
+                target.runner_id, *moved, f"since the recording at {evidence.commit[:12]}"
             )
         )
     if target.entry_symbol in docstring_ids:

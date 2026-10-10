@@ -722,6 +722,9 @@ Unknown is never treated as unaffected:
   other module's tests (audit round 3, EVP-5); removing the line takes it
   away. Where the difference comes from a changed symbol the search already
   selects the target; the rule adds only the cases no symbol carries.
+  Evidence mode applies it between the recording and each snapshot it
+  plans (evidence_design.md, "Lifecycle changes since the recording"),
+  and to targets of other runners between base and head.
 * **Entry symbol or lifecycle dependency not found in either revision**: the
   target is selected (`entry_symbol_unresolved`,
   `lifecycle_dependency_unresolved`).
