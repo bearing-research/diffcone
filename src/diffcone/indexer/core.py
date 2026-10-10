@@ -18,12 +18,13 @@ from diffcone.indexer.facts import (
     _output_from_dict,
     _output_to_dict,
     _tuples,
+    symbol_from_dict,
 )
 from diffcone.indexer.literals import literal_base, literal_keys
 from diffcone.indexer.references import SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
-from diffcone.indexer.syntax import _digest, decode_source
+from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
 from diffcone.indexer.uses import (
     ANY,
     AS,
@@ -54,7 +55,6 @@ from diffcone.model import (
     WRITES,
     Edge,
     SourceIndex,
-    Symbol,
     UnresolvedReference,
 )
 from diffcone.snapshot import Snapshot, child_modules, module_name_for
@@ -113,10 +113,6 @@ class Indexer(DynamicBounds):
             facts[module] = record
         new_facts: dict[str, dict] = {}
         new_resolved: dict[str, dict] = {}
-        for module in self.index.modules:
-            parts = module.split(".")
-            for i in range(1, len(parts) + 1):
-                self._module_prefixes.add(".".join(parts[:i]))
         for module in sorted(self.scopes):
             scope = self.scopes[module]
             record = facts[module]
@@ -139,6 +135,11 @@ class Indexer(DynamicBounds):
             self.out = _Output()
             try:
                 self._index_module(scope)
+            except RecursionError:
+                # Too deeply nested for the recursive AST walks: the module is
+                # left out as an unparsable one is, which degrades the plan.
+                self._drop_module(scope)
+                continue
             finally:
                 captured, self.out = self.out, self._global
             self._global.merge(captured)
@@ -149,6 +150,10 @@ class Indexer(DynamicBounds):
                 scope.env_digest = record["env"]
                 if not self._collided and scope.cache_key is not None:
                     new_facts[scope.cache_key] = record
+        for module in self.index.modules:
+            parts = module.split(".")
+            for i in range(1, len(parts) + 1):
+                self._module_prefixes.add(".".join(parts[:i]))
         self._apply_uses()
         for class_id in sorted(self.class_scopes):
             self._ensure_bases(class_id)
@@ -172,20 +177,29 @@ class Indexer(DynamicBounds):
                 self.out = _Output()
                 try:
                     self._resolve_module(scope)
+                except RecursionError:
+                    # Its symbols stay, with nothing known of what they use:
+                    # the error degrades the plan, and nothing is cached.
+                    self._too_deep(scope.path, scope.name)
+                    continue
                 finally:
                     out, self.out = self.out, self._global
                 if key is not None:
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
-        apply_writes(self)
-        self._external_lookups()
-        self._table_imports()
-        self._resolve_param_dynamics()
-        apply_scripts(self)  # after the script parameters are bound
-        self._registrations()
-        self._write_only_references()
-        self._module_reach()
-        self._install_edges()
+        try:
+            apply_writes(self)
+            self._external_lookups()
+            self._table_imports()
+            self._resolve_param_dynamics()
+            apply_scripts(self)  # after the script parameters are bound
+            self._registrations()
+            self._write_only_references()
+            self._module_reach()
+            self._install_edges()
+        except RecursionError:
+            self.out = self._global
+            self._too_deep("", "")
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -358,6 +372,29 @@ class Indexer(DynamicBounds):
             self._error(path, f"cannot parse: {exc}")
             self.index.failed_modules.add(module)
             return None
+        except RecursionError:
+            self._too_deep(path, module)
+            return None
+
+    def _too_deep(self, path: str, module: str) -> None:
+        """Record that a module (or, with no path, the analysis across
+        modules) nests too deeply for the recursive walks of its syntax tree:
+        an analysis error, so the plan selects every target."""
+        self._error(path, f"{TOO_DEEP}: {path or 'the analysis across modules'}")
+        if module:
+            self.index.failed_modules.add(module)
+
+    def _drop_module(self, scope: ModuleScope) -> None:
+        """Undo what pass 1 recorded of a module it could not finish, and
+        leave the module out as an unparsable one is."""
+        for symbol in self._added_symbols:
+            if self.index.symbols.get(symbol.id) is symbol:
+                del self.index.symbols[symbol.id]
+        for cscope in self._added_classes:
+            self.class_scopes.pop(cscope.id, None)
+        del self.scopes[scope.name]
+        self.index.modules.discard(scope.name)
+        self._too_deep(scope.path, scope.name)
 
     def _load_tree(self, scope: ModuleScope) -> None:
         """Parse a module whose facts came from the cache but which must be
@@ -386,13 +423,7 @@ class Indexer(DynamicBounds):
         containers = frozenset(record["containers"])
         literal_sources = {k: tuple(v) for k, v in record["literal_sources"].items()}
         env_digest = str(record["env"])
-        symbols: list[Symbol] = []
-        for data in record["symbols"]:
-            data = dict(data)
-            data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
-            data["imports"] = tuple(data["imports"])
-            data["import_layout"] = tuple(data["import_layout"])
-            symbols.append(Symbol(**data))
+        symbols = [symbol_from_dict(data) for data in record["symbols"]]
         classes: dict[str, ClassScope] = {}
         for data in record["classes"]:
             enclosing = classes[data["enclosing"]] if data["enclosing"] else None
@@ -472,9 +503,6 @@ class Indexer(DynamicBounds):
                 found |= tables.get(module, set()) | named_tables.get(name, set())
             return found
 
-        def under(module: str) -> list[str]:
-            return self._under(module)
-
         def hand_on(place: str, writer: str, *, dyn: bool = False, escape: bool = True) -> None:
             """A module handed on (``dyn``: any attribute of it handed on):
             it (``dyn``: its tables) and its submodules may be written, and so
@@ -482,7 +510,7 @@ class Indexer(DynamicBounds):
             their imports bind and star imports bring, transitively."""
             if dyn:
                 tables[place].add(writer)
-            for m in under(place):
+            for m in self._under(place):
                 if dyn and m == place:
                     continue
                 whole[m].add(writer)
@@ -554,49 +582,11 @@ class Indexer(DynamicBounds):
         self._reach_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
         installs_anywhere: set[tuple[str, str]] = set()
-        records = [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
-        # A handle installed under a name literals give (an AS record): what
-        # names that module names the handle's module too.
-        installed_as: dict[str, set[str]] = defaultdict(set)
-        for _, r in records:
-            if r.kind == AS:
-                installed_as[r.target].update(n[1:] for n in r.sources if n.startswith(">"))
-        if installed_as:
-            redirected: list[tuple[str, UseRecord]] = []
-            for m, r in records:
-                if r.kind in (AS, INSTALL, SWAP):  # about the name itself
-                    continue
-                for name, modules in installed_as.items():
-                    if r.target == name or r.target.startswith(name + "."):
-                        rest = r.target[len(name) :]
-                        redirected += [
-                            (m, UseRecord(r.kind, t + rest, r.sources, r.writer))
-                            for t in sorted(modules)
-                        ]
-            records += redirected
-        # Private functions other code calls or holds (by a CALL record, an
-        # import of the name, a use of it as a value, a star import of its
-        # module): a bound taken from the calls in its own module (a LOADER
-        # record) does not hold for them.
-        reached: set[str] = {
-            r.target for _, r in records if r.kind in (CALL, USE, DYN, MUT, STORE, SCOPED)
-        }
-        for scope in self.scopes.values():
-            for binding in [
-                *scope.imports.values(),
-                *(b for bs in scope.alt_imports.values() for b in bs),
-            ]:
-                if binding.attr is not None:
-                    reached.add(f"{binding.module}.{binding.attr}")
+        records = self._redirect_installed(
+            [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
+        )
+        named_prefixes = self._named_prefixes(records)
         starred = {star for scope in self.scopes.values() for star in scope.star_imports}
-        # Every dotted prefix of what other code names (``mod._ser.x`` names
-        # ``mod._ser``).
-        named_prefixes = {
-            ".".join(parts[:i])
-            for target in reached
-            for parts in [target.split(".")]
-            for i in range(1, len(parts) + 1)
-        }
 
         def held_elsewhere(module: str, holder: str) -> bool:
             # A module-level name or private function other code can reach:
@@ -718,6 +708,62 @@ class Indexer(DynamicBounds):
         self._installed_anywhere = installs_anywhere - installs
         self._attribute_modules(records, changed)
         self._module_writers(records, anything)
+        self._unbind_literals(changed, writers_of)
+
+    @staticmethod
+    def _redirect_installed(records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
+        """The records, and for a handle installed under a name literals
+        give (an AS record), each record about that name again about every
+        module the name may stand for."""
+        installed_as: dict[str, set[str]] = defaultdict(set)
+        for _, r in records:
+            if r.kind == AS:
+                installed_as[r.target].update(n[1:] for n in r.sources if n.startswith(">"))
+        if not installed_as:
+            return records
+        redirected: list[tuple[str, UseRecord]] = []
+        for m, r in records:
+            if r.kind in (AS, INSTALL, SWAP):  # about the name itself
+                continue
+            for name, modules in installed_as.items():
+                if r.target == name or r.target.startswith(name + "."):
+                    rest = r.target[len(name) :]
+                    redirected += [
+                        (m, UseRecord(r.kind, t + rest, r.sources, r.writer))
+                        for t in sorted(modules)
+                    ]
+        return records + redirected
+
+    def _named_prefixes(self, records: list[tuple[str, UseRecord]]) -> set[str]:
+        """Every dotted prefix of what code names in another module (``mod.
+        _ser.x`` names ``mod._ser``): by a CALL record, an import of the
+        name, a use of it as a value. A private function so reached is
+        called or held by other code: a bound taken from the calls in its own
+        module (a LOADER record) does not hold for it."""
+        reached: set[str] = {
+            r.target for _, r in records if r.kind in (CALL, USE, DYN, MUT, STORE, SCOPED)
+        }
+        for scope in self.scopes.values():
+            for name, binding in scope.imports.items():
+                for b in (binding, *scope.alt_imports.get(name, ())):
+                    if b.attr is not None:
+                        reached.add(b.dotted)
+        return {
+            ".".join(parts[:i])
+            for target in reached
+            for parts in [target.split(".")]
+            for i in range(1, len(parts) + 1)
+        }
+
+    def _unbind_literals(
+        self,
+        changed: Callable[[str, str], bool],
+        writers_of: Callable[[str, str], set[str]],
+    ) -> None:
+        """Unbind every literal name some use may change, and every name
+        whose values were read out of one (literal_sources), keeping what
+        the module's own code left (literal_pristine) and the code that
+        unbound each (literal_writers)."""
         for module, scope in self.scopes.items():
             scope.literal_pristine = dict(scope.literal_names)
             present = {literal_base(k) for k in scope.literal_names}
@@ -818,7 +864,7 @@ class Indexer(DynamicBounds):
 
     def _under(self, module: str) -> list[str]:
         """``module`` and its submodules that are in scope."""
-        if not hasattr(self, "_under_map"):
+        if self._under_map is None:
             found: dict[str, list[str]] = defaultdict(list)
             for m in sorted(self.scopes):
                 parts = m.split(".")
@@ -847,13 +893,10 @@ class Indexer(DynamicBounds):
             seen.add(module)
             scope = self.scopes[module]
             origins: list[str] = []
-            for name in sorted(set(scope.imports) | set(scope.alt_imports)):
-                bindings = [scope.imports[name]] if name in scope.imports else []
-                for binding in [*bindings, *scope.alt_imports.get(name, ())]:
-                    origin = binding.module
-                    if binding.attr is not None:
-                        origin = f"{binding.module}.{binding.attr}"
-                    origins.append(origin)
+            # ``alt_imports`` holds the other bindings of names ``imports`` has.
+            for name in sorted(scope.imports):
+                for binding in [scope.imports[name], *scope.alt_imports.get(name, ())]:
+                    origins.append(binding.dotted)
             for origin in origins:
                 found = self._locate_target(module, origin.split("."))
                 if found is None:
@@ -953,10 +996,7 @@ class Indexer(DynamicBounds):
             found += self._locate(f"{module}.{name}", rest[1:], seen)
         if name in scope.imports:
             for binding in [scope.imports[name], *scope.alt_imports.get(name, ())]:
-                origin = binding.module
-                if binding.attr is not None:
-                    origin = f"{binding.module}.{binding.attr}"
-                parts = [*origin.split("."), *rest[1:]]
+                parts = [*binding.dotted.split("."), *rest[1:]]
                 for i in range(len(parts), 0, -1):
                     prefix = ".".join(parts[:i])
                     if prefix in self.scopes:

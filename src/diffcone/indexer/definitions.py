@@ -5,10 +5,17 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from collections.abc import Callable, Collection, Iterable
 
 from diffcone.indexer.literals import COMPREHENSIONS, _collect_store_names
 from diffcone.indexer.scopes import ModuleScope, VariableStatement, _absolute_module
-from diffcone.indexer.syntax import DEF_NODES, _digest, iter_scope_statements
+from diffcone.indexer.syntax import (
+    BUILTIN_NAMES,
+    DEF_NODES,
+    FUNC_NODES,
+    _digest,
+    iter_scope_statements,
+)
 from diffcone.model import CLASS_STATEMENT, OPAQUE_ATTRIBUTE
 
 
@@ -17,14 +24,8 @@ def _canonical_imports(scope: ModuleScope) -> set[str]:
     order: adding a name to ``from m import (a, b)`` adds one entry."""
     out: set[str] = set()
     for node in scope.import_nodes:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                out.add(f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else ""))
-        elif isinstance(node, ast.ImportFrom):
-            base = _absolute_module(scope, node.module, node.level)
-            for alias in node.names:
-                entry = f"from {base} import {alias.name}"
-                out.add(entry + (f" as {alias.asname}" if alias.asname else ""))
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            out.update(_import_entries(scope, node))
     return out
 
 
@@ -212,17 +213,17 @@ _INERT_DECORATORS = frozenset(
 )
 
 
-def _is_inert_decorator(node: ast.expr, scope: ModuleScope) -> bool:
+def _is_inert_decorator(
+    node: ast.expr,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+    stars: StarBases | None = None,
+) -> bool:
     """Only the ``typing``/``typing_extensions`` decorators, resolved through
-    the module's imports: a project decorator named ``final`` may do anything."""
-    parts = _flatten_chain(node)
-    if parts is None:
-        return False
-    binding = scope.imports.get(parts[0])
-    if binding is None:
-        return False
-    base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
-    return ".".join([base, *parts[1:]]) in _INERT_DECORATORS
+    the module's imports: a project decorator named ``final`` may do anything,
+    and so may a name also bound some other way (see _canonical_names)."""
+    names = _canonical_names(node, scope, shadowed, stars)
+    return names is not None and names <= _INERT_DECORATORS
 
 
 def _is_literal(node: ast.expr) -> bool:
@@ -239,11 +240,15 @@ def _is_literal(node: ast.expr) -> bool:
     return False
 
 
-def _inert_def(node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope) -> bool:
+def _inert_def(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+) -> bool:
     """Whether executing the ``def`` runs no code beyond binding the name:
     inert decorators and literal defaults (annotations are checked apart)."""
     defaults = [*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)]
-    return all(_is_inert_decorator(d, scope) for d in node.decorator_list) and all(
+    return all(_is_inert_decorator(d, scope, shadowed) for d in node.decorator_list) and all(
         _is_literal(d) for d in defaults
     )
 
@@ -271,24 +276,72 @@ _QUIET_BUILTINS = frozenset({"property", "staticmethod", "classmethod"})
 # Calls a quiet decorator's arguments may make: they build a value and call
 # nothing back (``pytest.param(1, id="one")``).
 _QUIET_CALLS = frozenset({"pytest.param"})
+# Class decorators that read the class's namespace and add methods to it,
+# calling none of its code (what a class attribute's descriptor runs when
+# read is the class body's dependency already).
+_PASSIVE_CLASS_DECORATORS = frozenset({"dataclasses.dataclass", "functools.total_ordering"})
 
 
-def _canonical(node: ast.expr, scope: ModuleScope) -> str | None:
+# What a module's star imports may bind a name to, as dotted names
+# (Resolver._star_bases); by default each star module's name of it.
+StarBases = Callable[[str], Iterable[str]]
+
+
+def _canonical_names(
+    node: ast.expr,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+    stars: StarBases | None = None,
+) -> frozenset[str] | None:
+    """Every dotted name a name chain may stand for at module level, through
+    the module's imports: the import binding of its head and each other one
+    (``try: from typing import final`` / ``except ImportError: from
+    typing_extensions import final``), and what each star import may bind
+    it to (``stars``; by default the star module's name of it, which is not
+    known in pass 1), whatever the order. A builtin nothing imports stands
+    for itself. None when the head is also bound some other way (a
+    definition or an assignment in the module, or a name ``shadowed`` by the
+    class body the chain is evaluated in), or not at all: what it holds is
+    not known then."""
     parts = _flatten_chain(node)
-    if parts is None:
-        return None
-    binding = scope.imports.get(parts[0])
-    if binding is None:
-        if len(parts) == 1 and parts[0] in _QUIET_BUILTINS and parts[0] not in scope.bindings:
-            return parts[0]
-        return None
-    base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
-    return ".".join([base, *parts[1:]])
+    return None if parts is None else _chain_names(parts, scope, shadowed, stars)
 
 
-def _quiet_name(name: str | None) -> bool:
-    return name is not None and (
+def _chain_names(
+    parts: list[str],
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+    stars: StarBases | None = None,
+) -> frozenset[str] | None:
+    """_canonical_names of a chain given as its names."""
+    head, rest = parts[0], parts[1:]
+    if head in shadowed or head in scope.members or head in scope.bindings:
+        return None
+    binding = scope.imports.get(head)
+    if binding is not None:
+        bases = {binding.dotted, *(b.dotted for b in scope.alt_imports.get(head, ()))}
+    elif head in BUILTIN_NAMES:
+        bases = {head}
+    else:
+        return None
+    if stars is not None:
+        bases.update(stars(head))
+    else:
+        bases.update(f"{star}.{head}" for star in scope.star_imports)
+    return frozenset(".".join([base, *rest]) for base in bases)
+
+
+def _canonical(node: ast.expr, scope: ModuleScope, shadowed: Collection[str] = ()) -> str | None:
+    """The one dotted name a name chain stands for (_canonical_names), or
+    None when it may stand for several or is not known."""
+    names = _canonical_names(node, scope, shadowed)
+    return next(iter(names)) if names is not None and len(names) == 1 else None
+
+
+def _quiet_names(names: frozenset[str] | None) -> bool:
+    return names is not None and all(
         name in _QUIET_DECORATORS or name in _QUIET_BUILTINS or name.startswith(_QUIET_PREFIXES)
+        for name in names
     )
 
 
@@ -298,21 +351,265 @@ def _calls_nothing(node: ast.AST, scope: ModuleScope) -> bool:
     an await or yield cannot appear here)."""
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
-            if _canonical(sub.func, scope) not in _QUIET_CALLS:
+            names = _canonical_names(sub.func, scope)
+            if names is None or not names <= _QUIET_CALLS:
                 return False
         elif isinstance(sub, (ast.Lambda, *COMPREHENSIONS, ast.NamedExpr)):
             return False
     return True
 
 
-def _quiet_def(node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope) -> bool:
+def _passive_decorator(
+    node: ast.expr,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+    stars: StarBases | None = None,
+) -> bool:
+    """A decorator known to keep and call nothing of what it decorates while
+    the ``def`` or ``class`` statement runs: a quiet one (it returns the
+    function or a wrapper), or one of ``_PASSIVE_CLASS_DECORATORS``. Any
+    other may call it then, as the explicit ``deco(f)`` may (see
+    Resolver._decorated_at_import)."""
+    func = node.func if isinstance(node, ast.Call) else node
+    names = _canonical_names(func, scope, shadowed, stars)
+    return _quiet_names(names) or (names is not None and names <= _PASSIVE_CLASS_DECORATORS)
+
+
+# Callees that may be handed the decorated function (or a wrapper of it)
+# without calling it.
+_PASSIVE_CALLEES = frozenset(
+    {
+        "functools.wraps",
+        "functools.update_wrapper",
+        "typing.cast",
+        "typing_extensions.cast",
+        "setattr",
+        "getattr",
+        "hasattr",
+        "isinstance",
+        "callable",
+    }
+)
+# Attributes of a function whose value is a string: a method called on one
+# (``f.__doc__.format(...)``) runs nothing of the function.
+_STRING_ATTRIBUTES = frozenset({"__doc__", "__name__", "__qualname__", "__module__"})
+
+
+def _own_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef):
+    """(node, parent) for the code a call of ``node`` runs right away: its
+    body, nested definitions' decorators, defaults and annotations, not
+    their bodies. A lambda or class inside is yielded whole, unwalked."""
+    stack: list[tuple[ast.AST, ast.AST]] = [(stmt, node) for stmt in node.body]
+    while stack:
+        current, parent = stack.pop()
+        yield current, parent
+        if isinstance(current, (ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(current, FUNC_NODES):
+            children: list[ast.AST] = [*current.decorator_list, *current.args.defaults]
+            children += [d for d in current.args.kw_defaults if d is not None]
+            children += [a.annotation for a in _annotated_args(current.args) if a.annotation]
+            if current.returns is not None:
+                children.append(current.returns)
+        else:
+            children = list(ast.iter_child_nodes(current))
+        stack.extend((child, current) for child in children)
+
+
+# How a decorator treats what it decorates (Symbol.passive_decorator):
+# calls nothing of it and returns it itself (SAME), or may return something
+# else, a wrapper calling it with arguments of its own (WRAPPER).
+SAME = "same"
+WRAPPER = "wrapper"
+
+
+def _passive_decorator_def(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope, shadowed: Collection[str]
+) -> str:
+    """SAME or WRAPPER when calling the function with a function as its
+    first argument calls nothing of that function and hands it to nothing
+    that might, else "": its own code (nested functions' bodies run later)
+    only returns it, reads or sets its attributes, compares it by identity,
+    or passes it to ``_PASSIVE_CALLEES``; the same holds for every nested
+    function, which it may return (a wrapper). ``set_module`` setting
+    ``__module__`` is SAME, a decorator returning a ``functools.wraps``
+    wrapper WRAPPER; one that calls it, registers it, or hands it to other
+    code is neither."""
+    if isinstance(node, ast.AsyncFunctionDef):
+        return ""
+    params = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
+    if not params:
+        return ""
+    nodes = list(_own_nodes(node))
+    tracked = {params[0]}
+    for current, _ in nodes:
+        if isinstance(current, ast.ClassDef):
+            return ""  # a class body runs now
+        if isinstance(current, FUNC_NODES):
+            tracked.add(current.name)
+    local = {*shadowed, *_rebound_names(node), *params}
+    parents = {id(current): parent for current, parent in nodes}
+    for current, parent in nodes:
+        if isinstance(current, ast.Lambda):
+            if any(isinstance(n, ast.Name) and n.id in tracked for n in ast.walk(current)):
+                return ""
+            continue
+        if not (isinstance(current, ast.Name) and current.id in tracked):
+            continue
+        if not isinstance(current.ctx, ast.Load):
+            continue
+        if not _passive_use(current, parent, parents.get(id(parent)), scope, local):
+            return ""
+    returns = [current for current, _ in nodes if isinstance(current, ast.Return)]
+    rebound = any(
+        isinstance(current, ast.Name)
+        and current.id == params[0]
+        and not isinstance(current.ctx, ast.Load)
+        for current, _ in nodes
+    )
+    same = (
+        bool(returns)
+        and not rebound
+        and all(isinstance(r.value, ast.Name) and r.value.id == params[0] for r in returns)
+    )
+    return SAME if same else WRAPPER
+
+
+def _passive_use(
+    name: ast.Name,
+    parent: ast.AST,
+    grandparent: ast.AST | None,
+    scope: ModuleScope,
+    local: Collection[str],
+) -> bool:
+    if isinstance(parent, ast.Return):
+        return True
+    if isinstance(parent, ast.Attribute):
+        # ``f.attr`` read or set, not called: a further step only on a string.
+        if isinstance(grandparent, ast.Call) and grandparent.func is parent:
+            return False
+        return not isinstance(grandparent, (ast.Attribute, ast.Subscript)) or (
+            parent.attr in _STRING_ATTRIBUTES
+        )
+    if isinstance(parent, ast.Compare):
+        return all(isinstance(op, (ast.Is, ast.IsNot)) for op in parent.ops)
+    if isinstance(parent, ast.keyword):
+        parent = grandparent if isinstance(grandparent, ast.Call) else parent
+    if isinstance(parent, ast.Call) and parent.func is not name:
+        callee = parent.func
+        if isinstance(callee, ast.Call):  # ``functools.wraps(f)(wrapper)``
+            callee = callee.func
+        names = _canonical_names(callee, scope, local)
+        return names is not None and names <= _PASSIVE_CALLEES
+    return False
+
+
+def _passive_factory_def(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope, shadowed: Collection[str]
+) -> str:
+    """_passive_decorator_def of what calling the function returns, when
+    every value it returns is a decorator its own body defines
+    (``set_module(...)`` returning ``decorator``), else "": the least
+    passive of them. Its own code runs with the arguments of the decorator
+    expression, which the module refers to anyway."""
+    if isinstance(node, ast.AsyncFunctionDef):
+        return ""
+    nested: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = defaultdict(list)
+    returns: list[ast.Return] = []
+    for current, _ in _own_nodes(node):
+        if isinstance(current, FUNC_NODES):
+            nested[current.name].append(current)
+        elif isinstance(current, ast.Return):
+            returns.append(current)
+    local = {*shadowed, *_rebound_names(node)}
+    if not returns:
+        return ""
+    found: set[str] = set()
+    for r in returns:
+        if not (isinstance(r.value, ast.Name) and r.value.id in nested):
+            return ""
+        found.update(_passive_decorator_def(d, scope, local) for d in nested[r.value.id])
+    return _least_passive(found)
+
+
+def _least_passive(kinds: Collection[str]) -> str:
+    """Of several _passive_decorator_def results: "" if any is, else
+    WRAPPER if any is, else SAME ("" for none)."""
+    if not kinds or "" in kinds:
+        return ""
+    return WRAPPER if WRAPPER in kinds else SAME
+
+
+_DISPATCHERS = frozenset({"functools.singledispatch", "functools.singledispatchmethod"})
+
+
+def _dispatcher_def(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, scope: ModuleScope, shadowed: Collection[str]
+) -> bool:
+    """Whether the outermost decorator makes the function a
+    ``functools.singledispatch`` (or ``singledispatchmethod``) dispatcher."""
+    if not node.decorator_list:
+        return False
+    names = _canonical_names(node.decorator_list[0], scope, shadowed)
+    return names is not None and names <= _DISPATCHERS
+
+
+_PROPERTY_ACCESSORS = frozenset({"setter", "getter", "deleter"})
+
+
+def _property_accessors(
+    body: list[ast.stmt],
+    scope: ModuleScope,
+    shadowed: Collection[str],
+    bound: Collection[str],
+    stars: StarBases | None = None,
+) -> frozenset[int]:
+    """The decorators ``@x.setter`` (``.getter``, ``.deleter``) of a class
+    body, by ``id``, whose ``x`` is the property the body's previous ``def x``
+    made (``@property``, or such an accessor in turn) and that nothing else
+    in the body binds (``bound``): the accessor returns a copy of the
+    property holding the function and calls nothing."""
+    properties: set[str] = set()
+    found: set[int] = set()
+    for stmt in iter_scope_statements(body):
+        if not isinstance(stmt, FUNC_NODES):
+            continue
+        for dec in stmt.decorator_list:
+            parts = _flatten_chain(dec)
+            if (
+                parts is not None
+                and len(parts) == 2
+                and parts[0] in properties
+                and parts[1] in _PROPERTY_ACCESSORS
+            ):
+                found.add(id(dec))
+        outermost = stmt.decorator_list[0] if stmt.decorator_list else None
+        if (
+            outermost is not None
+            and stmt.name not in bound
+            and (
+                id(outermost) in found
+                or _canonical_names(outermost, scope, shadowed, stars) == {"property"}
+            )
+        ):
+            properties.add(stmt.name)
+        else:
+            properties.discard(stmt.name)
+    return frozenset(found)
+
+
+def _quiet_def(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+) -> bool:
     """Whether executing the ``def`` runs no code of the project: every
     decorator a quiet one (with arguments that call nothing), literal
     defaults, annotations that call nothing. The function's body does not
     run then, so nothing it calls runs at import."""
     for decorator in node.decorator_list:
         func = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if not _quiet_name(_canonical(func, scope)):
+        if not _quiet_names(_canonical_names(func, scope, shadowed)):
             return False
         if isinstance(decorator, ast.Call) and not all(
             _calls_nothing(a, scope) for a in (*decorator.args, *decorator.keywords)
@@ -388,27 +685,17 @@ _CONTAINER_NODES: tuple[tuple[type, str], ...] = (
 def _container_kind(scope: ModuleScope, value: ast.expr) -> str:
     """``dict``, ``list``, ``set`` or ``deque`` when ``value`` builds a builtin
     container of that kind (``{}``, ``set()``, ``collections.defaultdict(
-    list)``), else "". A name the module binds itself is not the builtin."""
+    list)``), else "". A name the module binds itself is not the builtin,
+    and one bound several ways must build the same kind each way
+    (_canonical_names)."""
     for node_type, kind in _CONTAINER_NODES:
         if isinstance(value, node_type):
             return kind
     if not isinstance(value, ast.Call):
         return ""
-    parts = _flatten_chain(value.func)
-    if parts is None:
-        return ""
-    head = parts[0]
-    binding = scope.imports.get(head)
-    if head in scope.alt_imports:
-        return ""
-    if binding is not None:
-        base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
-        name = ".".join([base, *parts[1:]])
-    elif len(parts) == 1 and head not in scope.bindings and head not in scope.members:
-        name = head  # the builtin
-    else:
-        return ""
-    return _CONTAINER_CALLS.get(name, "")
+    names = _canonical_names(value.func, scope)
+    kinds = {_CONTAINER_CALLS.get(name, "") for name in names or ()}
+    return kinds.pop() if len(kinds) == 1 else ""
 
 
 def _flatten_chain(node: ast.expr) -> list[str] | None:

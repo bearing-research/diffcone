@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from dataclasses import replace
 
 from diffcone.indexer.definitions import (
     _EXPLICIT_SPECIAL_METHODS,
     _STRUCTURAL_BASES,
+    SAME,
+    WRAPPER,
+    StarBases,
+    _chain_names,
     _class_attributes,
     _flatten_chain,
     _future_annotations,
@@ -16,11 +21,14 @@ from diffcone.indexer.definitions import (
     _is_inert_decorator,
     _is_special_method,
     _is_staticmethod,
+    _least_passive,
+    _passive_decorator,
+    _property_accessors,
     _rebound_names,
 )
 from diffcone.indexer.facts import _FuncParams, _Output
 from diffcone.indexer.literals import NESTED_SCOPES, _LocalBindings
-from diffcone.indexer.references import _ReferenceCollector
+from diffcone.indexer.references import PICKLING_HOOKS, _ReferenceCollector
 from diffcone.indexer.scopes import (
     ClassScope,
     External,
@@ -66,34 +74,31 @@ from diffcone.model import (
 
 
 def _with_alternatives(bindings: list[Node]) -> Node:
-    """The node for a name bound several ways at module level: the first
-    binding (a definition, else the last import), carrying the in-scope
-    symbols and modules of the others as alternatives. When the first one
-    names nothing in scope (an external fallback tried first) an in-scope
-    alternative takes its place, so the reference is not merely external."""
+    """The node for a name bound several ways: the first binding (a
+    definition, else the last import), carrying the in-scope symbols and
+    modules of the others (and their own alternatives) as alternatives. When
+    the first one names nothing in scope (an external fallback tried first)
+    an in-scope alternative takes its place, so the reference is not merely
+    external."""
     in_scope: list[str] = []
     for node in bindings:
         if isinstance(node, Resolved):
             in_scope.append(node.symbol)
         elif isinstance(node, ModuleNode):
             in_scope.append(node.module)
+        if isinstance(node, (Resolved, ModuleNode)):
+            in_scope.extend(node.alternatives)
     primary = bindings[0]
     if not isinstance(primary, (Resolved, ModuleNode)):
-        primary = next((b for b in bindings if isinstance(b, Resolved)), primary)
-    if not isinstance(primary, Resolved):
+        primary = next((b for b in bindings if isinstance(b, (Resolved, ModuleNode))), primary)
+    if isinstance(primary, Resolved):
+        own = primary.symbol
+    elif isinstance(primary, ModuleNode):
+        own = primary.module
+    else:
         return primary
-    others = tuple(dict.fromkeys(i for i in in_scope if i != primary.symbol))
-    if not others:
-        return primary
-    return Resolved(
-        primary.symbol,
-        primary.detail,
-        primary.uncertain_attr,
-        primary.receiver,
-        primary.overrides,
-        primary.also,
-        others,
-    )
+    others = tuple(dict.fromkeys(i for i in in_scope if i != own))
+    return replace(primary, alternatives=others) if others != primary.alternatives else primary
 
 
 def _definition_scope(scope: ModuleScope, class_scope: ClassScope | None) -> Scope:
@@ -112,6 +117,13 @@ def _definition_scope(scope: ModuleScope, class_scope: ClassScope | None) -> Sco
             else frozenset()
         ),
     )
+
+
+def _header_names(where: Scope) -> set[str]:
+    """The names a class body binds that a header evaluated in it (see
+    _definition_scope) finds before the module's: its own bindings and
+    members."""
+    return where.locals | where.class_members.keys()
 
 
 def _outermost_calls(expr: ast.expr) -> list[ast.Call]:
@@ -253,16 +265,46 @@ class Resolver(FirstPass):
         node = self._resolve_base_expr(name, cscope)
         if isinstance(node, Resolved) and not node.detail and node.symbol in self.class_scopes:
             return False
-        head = name[0]
-        binding = cscope.module.imports.get(head)
-        if binding is None:
-            if node is None and head in BUILTIN_NAMES and len(name) == 1:
-                return False
-            canonical = ".".join(name)
-        else:
-            base = binding.module if binding.attr is None else f"{binding.module}.{binding.attr}"
-            canonical = ".".join([base, *name[1:]])
-        return canonical not in _STRUCTURAL_BASES
+        # A base is evaluated in the enclosing class body, if any, first.
+        enclosing = cscope.enclosing
+        shadowed = enclosing.members.keys() | enclosing.bindings if enclosing is not None else ()
+        # Every binding the name may have must be a builtin or structural.
+        names = _chain_names(name, cscope.module, shadowed, self._star_bases(cscope.module))
+        if names is None:
+            return True
+        if node is None and names == {name[0]}:
+            return False  # the builtin (``object``, ``Exception``)
+        return not names <= _STRUCTURAL_BASES
+
+    def _star_bases(self, module: ModuleScope) -> StarBases:
+        """What ``module``'s star imports may bind a name to, as dotted names
+        (definitions._canonical_names): each binding an in-scope star module
+        imports the name by, and through its own star imports; a star
+        module's name of it when that module defines or assigns it, or is
+        outside the source roots. ``from .common import *`` of a module that
+        does ``import pytest`` binds ``pytest`` to ``pytest``."""
+
+        def bases(head: str) -> list[str]:
+            found: list[str] = []
+            stack, seen = list(module.star_imports), {module.name}
+            while stack:
+                star = stack.pop()
+                if star in seen:
+                    continue
+                seen.add(star)
+                scope = self.scopes.get(star)
+                if scope is None:
+                    found.append(f"{star}.{head}")
+                    continue
+                if head in scope.imports:
+                    binding = scope.imports[head]
+                    found += [b.dotted for b in (binding, *scope.alt_imports.get(head, ()))]
+                if head in scope.members or head in scope.variables or head in scope.bindings:
+                    found.append(f"{star}.{head}")
+                stack.extend(scope.star_imports)
+            return found
+
+        return bases
 
     def _resolve_base_expr(self, parts: list[str] | None, cscope: ClassScope) -> Node:
         """A base name is looked up in the enclosing class body (for nested
@@ -313,8 +355,6 @@ class Resolver(FirstPass):
         """Every in-scope method pickling runs without naming it
         (references.PICKLING_HOOKS)."""
         if self._pickling_hooks is None:
-            from diffcone.indexer.references import PICKLING_HOOKS
-
             self._pickling_hooks = sorted(
                 symbol
                 for cscope in self.class_scopes.values()
@@ -498,6 +538,18 @@ class Resolver(FirstPass):
         members: dict[str, str],
         class_scope: ClassScope | None,
     ) -> None:
+        header = _definition_scope(scope, class_scope)
+        accessors = (
+            _property_accessors(
+                body,
+                scope,
+                _header_names(header),
+                class_scope.bindings,
+                self._star_bases(scope),
+            )
+            if class_scope is not None
+            else frozenset()
+        )
         for stmt in iter_scope_statements(body):
             if isinstance(stmt, ast.ClassDef):
                 symbol_id = members.get(stmt.name)
@@ -556,6 +608,9 @@ class Resolver(FirstPass):
                     creators, scope, Scope(module=scope)
                 ):
                     self.out.doc_decorated.add(symbol_id)
+                self._decorated_at_import(
+                    symbol_id, stmt.decorator_list, scope, header, class_scope, accessors
+                )
                 self.out.class_bases[symbol_id] = tuple(sorted(set(cscope.bases)))
                 # Open: decorators or keywords, or a base outside the index
                 # that may consume the body (``Enum``, a framework model); not
@@ -567,7 +622,72 @@ class Resolver(FirstPass):
                 symbol_id = members.get(stmt.name)
                 if symbol_id is None:
                     continue
-                self._resolve_function(scope, stmt, symbol_id, class_scope)
+                self._resolve_function(scope, stmt, symbol_id, class_scope, header, accessors)
+
+    def _decorated_at_import(
+        self,
+        symbol_id: str,
+        decorators: list[ast.expr],
+        module: ModuleScope,
+        where: Scope,
+        class_scope: ClassScope | None,
+        accessors: frozenset[int],
+    ) -> None:
+        """``@deco`` over a ``def`` or ``class`` statement is the call
+        ``deco(f)`` when the statement runs, at import. Unless every
+        decorator is known to call nothing of what it decorates then
+        (_passive_decorator, a property's ``.setter``), it may call it, as
+        an explicit ``deco(f)`` may: the code running the statement (the
+        module, and the class whose body it stands in) depends on the
+        decorated symbol, which is used as a value (it may be called later
+        with arguments no call site shows)."""
+        shadowed = _header_names(where)
+        stars = self._star_bases(module)
+        kinds = {
+            SAME
+            if id(d) in accessors or _passive_decorator(d, module, shadowed, stars)
+            else self._passive_in_scope(d, where)
+            for d in decorators
+        }
+        passive = _least_passive(kinds) if decorators else SAME
+        if passive == SAME:
+            return
+        # A wrapper may call the function with arguments of its own.
+        self.escape(Resolved(symbol_id))
+        if passive == WRAPPER:
+            return
+        runners = [module.name] + ([class_scope.id] if class_scope is not None else [])
+        for runner in runners:
+            if runner != symbol_id:
+                self.out.edges.add(Edge(runner, symbol_id, REFERENCES, "decorated"))
+
+    def _passive_in_scope(self, decorator: ast.expr, where: Scope) -> str:
+        """How a decorator that is in-scope code treats what it decorates
+        (_passive_decorator_def): a module-level function ``@f`` as
+        ``f.passive_decorator`` says, ``@f(...)`` as ``f.passive_factory``
+        does (pass 1 decides both); the ``register`` of a
+        ``functools.singledispatch`` function (``@show.register(int)``)
+        keeps it and returns it. "" for anything else."""
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        parts = _flatten_chain(target)
+        if parts is None:
+            return ""
+        register = len(parts) > 1 and parts[-1] == "register"
+        node, rest = self.resolve_chain_names(parts[:-1] if register else parts, where)
+        if rest or not isinstance(node, Resolved) or node.detail or node.uncertain_attr:
+            return ""
+        if node.overrides or node.also or node.alternatives:
+            return ""
+        symbol = self.index.symbols.get(node.symbol)
+        if symbol is None:
+            return ""
+        if register:
+            return SAME if symbol.dispatcher else ""
+        if symbol.kind != FUNCTION:
+            return ""
+        if isinstance(decorator, ast.Call):
+            return symbol.passive_factory
+        return symbol.passive_decorator
 
     def _record_decorations(
         self, symbol_id: str, decorators: list[ast.expr], module: ModuleScope, where: Scope
@@ -576,8 +696,9 @@ class Resolver(FirstPass):
         resolves to and the in-scope object it is an attribute of
         (``show`` in ``@show.register(int)``, ``app`` in ``@app.command``).
         A decorator may keep the function it decorates there."""
+        stars = self._star_bases(module)
         for dec in decorators:
-            if _is_inert_decorator(dec, module):
+            if _is_inert_decorator(dec, module, _header_names(where), stars):
                 continue
             target = dec.func if isinstance(dec, ast.Call) else dec
             parts = _flatten_chain(target)
@@ -601,8 +722,9 @@ class Resolver(FirstPass):
         unresolved, a value), or in-scope code that reads ``__doc__`` (the
         decorator itself, a factory whose wrapper does, a class's
         ``__init__``/``__new__``/``__call__``). Known inert ones never do."""
+        stars = self._star_bases(module)
         for dec in decorators:
-            if _is_inert_decorator(dec, module):
+            if _is_inert_decorator(dec, module, _header_names(where), stars):
                 continue
             target = dec.func if isinstance(dec, ast.Call) else dec
             parts = _flatten_chain(target)
@@ -631,6 +753,8 @@ class Resolver(FirstPass):
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         symbol_id: str,
         class_scope: ClassScope | None,
+        header: Scope,
+        accessors: frozenset[int],
     ) -> None:
         fscope = Scope(module=scope, locals=_LocalBindings().collect(node), literal_node=node)
         bound_method = class_scope is not None and not _is_staticmethod(node)
@@ -645,9 +769,8 @@ class Resolver(FirstPass):
         positional = [a.arg for a in node.args.posonlyargs + node.args.args]
         fscope.params = {name: i for i, name in enumerate(positional)}
         fscope.params.update({a.arg: None for a in node.args.kwonlyargs})
-        # Defaults are evaluated where the ``def`` statement runs: in
-        # ``def f(NAMES=NAMES)`` the default is the module's ``NAMES``.
-        header = _definition_scope(scope, class_scope)
+        # Defaults are evaluated where the ``def`` statement runs (``header``):
+        # in ``def f(NAMES=NAMES)`` the default is the module's ``NAMES``.
         defaults: dict[str, tuple[str, ...] | None] = {}
         n_defaults = len(node.args.defaults)
         for name, default in zip(
@@ -661,7 +784,6 @@ class Resolver(FirstPass):
             positional=positional,
             bound=bound_method,
             defaults=defaults,
-            has_varargs=node.args.vararg is not None or node.args.kwarg is not None,
         )
         returned = self._returned_class(node, fscope)
         if returned is not None:
@@ -672,12 +794,14 @@ class Resolver(FirstPass):
         for inner in ast.walk(node):
             if isinstance(inner, (ast.Import, ast.ImportFrom)):
                 stars: list[str] = []
-                self._register_imports(scope, inner, fscope.local_imports, stars)
+                self._register_imports(
+                    scope, inner, fscope.local_imports, stars, fscope.local_alt_imports
+                )
                 self._import_edges(symbol_id, scope, inner, local=True)
         # Decorators, defaults and annotations evaluate where the ``def``
         # statement runs, so the function's own parameters must not shadow
         # them (``def f(info=info)`` refers to the module-level ``info``).
-        outer_scope = _definition_scope(scope, class_scope)
+        outer_scope = header
         outer = _ReferenceCollector(self, symbol_id, outer_scope, skip_defs=True)
         # Type parameters' bounds and defaults are evaluated lazily (when
         # ``__bound__`` is read): the function's references, not import-time.
@@ -705,6 +829,9 @@ class Resolver(FirstPass):
         if self._decorators_may_read_docs(node.decorator_list, scope, outer_scope):
             self.out.doc_decorated.add(symbol_id)
         self._record_decorations(symbol_id, node.decorator_list, scope, outer_scope)
+        self._decorated_at_import(
+            symbol_id, node.decorator_list, scope, outer_scope, class_scope, accessors
+        )
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
             if arg.annotation is not None:
@@ -843,7 +970,8 @@ class Resolver(FirstPass):
         if scope.self_name is not None and name == scope.self_name and scope.self_class:
             return Resolved(scope.self_class, receiver=True)
         if name in scope.local_imports:
-            return self._import_binding_node(scope.local_imports[name])
+            bindings = [scope.local_imports[name], *scope.local_alt_imports.get(name, ())]
+            return _with_alternatives([self._import_binding_node(b) for b in bindings])
         if name in scope.class_members:
             # The member when it is defined above the use; the module's name
             # when it is defined below (order is not tracked): both.
@@ -949,7 +1077,14 @@ class Resolver(FirstPass):
         return node
 
     def _step(self, node: Node, attr: str) -> Node:
-        """Resolve one attribute access on a resolved node."""
+        """Resolve one attribute access on a resolved node: on a name bound
+        several ways, the attribute of each binding."""
+        if isinstance(node, (Resolved, ModuleNode)) and node.alternatives:
+            found = [self._step(replace(node, alternatives=()), attr)]
+            for other in node.alternatives:
+                bound = ModuleNode(other) if other in self.scopes else Resolved(other)
+                found.append(self._step(bound, attr))
+            return _with_alternatives(found)
         if isinstance(node, ModuleNode):
             sub = f"{node.module}.{attr}"
             target = self.scopes.get(node.module)
@@ -957,20 +1092,19 @@ class Resolver(FirstPass):
                 # A package binding of the same name wins at runtime once the
                 # package has run (it binds after importing the submodule);
                 # either may be meant, so the attribute denotes both.
-                shadow: Resolved | None = None
-                if target is not None:
-                    symbol_id = target.members.get(attr) or target.variables.get(attr)
-                    if symbol_id is not None:
-                        shadow = Resolved(symbol_id)
-                    elif attr in target.imports:
-                        # ``from .main import main``: the re-exported name.
-                        bound = self._import_binding_node(target.imports[attr])
-                        if isinstance(bound, Resolved) and bound.symbol != sub:
-                            shadow = Resolved(bound.symbol, bound.detail)
-                    elif attr in target.bindings:
-                        shadow = Resolved(target.name, detail=f"attribute:{attr}")
-                if shadow is not None and sub in self.scopes:
-                    return Resolved(shadow.symbol, shadow.detail, also=(sub,))
+                # The binding is looked up as any module-level name is, so
+                # each way it may be bound counts (``from .main import main``
+                # in a ``try``, its ``except`` importing another one).
+                bound: Node = None
+                if target is not None and (
+                    attr in target.members
+                    or attr in target.variables
+                    or attr in target.imports
+                    or attr in target.bindings
+                ):
+                    bound = self._lookup_in_module(target, attr, set())
+                if isinstance(bound, Resolved) and bound.symbol != sub and sub in self.scopes:
+                    return replace(bound, also=(*bound.also, sub))
                 return ModuleNode(sub)
             if target is None:
                 return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, attr)
@@ -1154,9 +1288,9 @@ class Resolver(FirstPass):
                     and lazy.name == "__getattr__"
                     and lazy.container == lazy.module
                 )
-                kind = UNRESOLVED_MODULE_ATTRIBUTE if on_module else UNRESOLVED_ATTRIBUTE
+                missing = UNRESOLVED_MODULE_ATTRIBUTE if on_module else UNRESOLVED_ATTRIBUTE
                 self.out.unresolved.add(
-                    UnresolvedReference(source, kind, node.uncertain_attr, chain)
+                    UnresolvedReference(source, missing, node.uncertain_attr, chain)
                 )
             for symbol_id, detail in node.overrides:
                 if symbol_id != source:
@@ -1177,6 +1311,9 @@ class Resolver(FirstPass):
         elif isinstance(node, ModuleNode):
             if node.module in self.scopes and node.module != source:
                 self.out.edges.add(Edge(source, node.module, kind, "module"))
+            for other in node.alternatives:
+                if other != source:
+                    self.out.edges.add(Edge(source, other, kind, "alternative binding"))
         elif isinstance(node, External):
             self.out.external.add(ExternalReference(source, node.module))
         elif isinstance(node, Unresolved):

@@ -137,6 +137,18 @@ class Symbol:
     # annotations that call nothing): the body is not code that runs at
     # import, so neither is anything it calls.
     quiet_header: bool = False
+    # Module-level functions: called as a decorator (``@f``), or called and
+    # what that returns called as one (``@f(...)``, ``passive_factory``), it
+    # calls nothing of the function or class it decorates and hands it to
+    # nothing that might: "same" when it returns it itself, "wrapper" when it
+    # may return a wrapper, "" otherwise (indexer/definitions.py,
+    # _passive_decorator_def).
+    passive_decorator: str = ""
+    passive_factory: str = ""
+    # Functions and methods under ``functools.singledispatch`` (or
+    # ``singledispatchmethod``): ``@f.register(...)`` keeps what it decorates
+    # in ``f``'s registry and calls nothing of it.
+    dispatcher: bool = False
     # The symbol's own code reads a docstring (``obj.__doc__``, ``__doc__``,
     # ``getdoc(obj)``): a docstring change of what it references, or of its
     # module, reaches it.

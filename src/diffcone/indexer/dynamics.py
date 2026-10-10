@@ -1,6 +1,7 @@
 """After pass 2: dynamic references whose name or receiver comes from a
-parameter or an instance attribute, bounded by what every call site or
-``__init__`` passes."""
+parameter or an instance attribute (``getattr(x, p)``, ``import_module(p)``,
+a script path a subprocess runs), bounded by what every call site or
+``__init__`` passes, when every call site is known (_known_callers)."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
-from diffcone.indexer.facts import _AttrWrite, _ParamDynamic
+from diffcone.indexer.facts import _AttrWrite, _CallSite, _FuncParams, _ParamDynamic
 from diffcone.indexer.resolver import Resolver
 from diffcone.indexer.scopes import Node, Resolved, Unresolved
 from diffcone.indexer.scripts import script_value
@@ -27,12 +28,14 @@ class DynamicBounds(Resolver):
     """Bounds on dynamic references, after pass 2."""
 
     def _resolve_param_dynamics(self) -> None:
-        """Expand ``getattr(x, p)`` / ``import_module(p)`` where ``p`` is a
-        parameter or an instance attribute, using the literal strings every
-        resolved call site passes (for an attribute: what ``__init__`` binds
-        it to, see _attribute_writes). A function that escapes (used as a
-        value, or whose name occurs as an unresolved reference so callers may
-        be unknown) or has an unbounded call site stays dynamic.
+        """Expand ``getattr(x, p)``, ``import_module(p)`` and a script run
+        by path (diffcone.indexer.scripts) where ``p`` is a parameter or an
+        instance attribute, using the literal strings every resolved call
+        site passes (for an attribute: what ``__init__`` binds it to, see
+        _attribute_writes). An import or a script is attributed to each
+        caller (_import_per_caller, _scripts_per_caller). A function whose
+        callers may be unknown (_known_callers) or that has an unbounded
+        call site stays dynamic.
 
         Expanding a ``getattr`` can itself make a function escape (its value
         is used) or record a new name-bounded reference (a name that cannot
@@ -85,16 +88,20 @@ class DynamicBounds(Resolver):
             if self.out.escapes == escapes and unresolved_names == names:
                 break
         for pd, values in planned:
-            if pd.kind == "import" and self._import_per_caller(pd):
+            if pd.kind == "import" and self._import_per_caller(pd, unresolved_names):
                 continue
-            if pd.kind == "script" and self._scripts_per_caller(pd):
+            if pd.kind == "script" and self._scripts_per_caller(pd, unresolved_names):
                 continue
             if values is None:
                 # The name is unbounded. If the *receiver* is one the call
                 # sites name, the read is still bounded: it can only be an
                 # attribute of those classes, so depend on their members
                 # rather than on everything (see _receiver_classes).
-                classes = self._receiver_classes(pd, writes) if pd.kind == "getattr" else None
+                classes = (
+                    self._receiver_classes(pd, writes, unresolved_names)
+                    if pd.kind == "getattr"
+                    else None
+                )
                 if classes:
                     for member in sorted(self._class_members(classes)):
                         self.out.edges.add(
@@ -145,7 +152,32 @@ class DynamicBounds(Resolver):
                 else:
                     self._record(ref.source, node, chain=ref.chain)
 
-    def _import_per_caller(self, pd: _ParamDynamic) -> bool:
+    def _known_callers(
+        self, function: str, unresolved_names: set[str]
+    ) -> tuple[_FuncParams, list[_CallSite]] | None:
+        """The parameters of ``function`` and its call sites, when those are
+        all the calls there are; None when it may be called from somewhere
+        unseen: it is used as a value (escapes), its name occurs as an
+        unresolved reference (a call through a receiver of unknown type), an
+        unresolved ``super()`` call may reach it, or it is an ``__init__``
+        a class may run unseen (_constructor_escapes). Every rule that bounds
+        a parameter by what the call sites pass asks this first."""
+        info = self.out.func_params.get(function)
+        symbol = self.index.symbols.get(function)
+        sites = self.out.call_sites.get(function, [])
+        if (
+            info is None
+            or symbol is None
+            or not sites
+            or function in self.out.escapes
+            or symbol.name in unresolved_names
+            or self._super_may_reach(symbol)
+            or self._constructor_escapes(symbol, unresolved_names)
+        ):
+            return None
+        return info, sites
+
+    def _import_per_caller(self, pd: _ParamDynamic, unresolved_names: set[str]) -> bool:
         """``import_optional_dependency(name)``: resolve the parameter per call
         site rather than once for the function.
 
@@ -158,7 +190,7 @@ class DynamicBounds(Resolver):
         that module. Returns False when the callers are not known, which
         leaves the all-or-nothing treatment in place.
         """
-        attributed = self._attributed_imports(pd.function, pd.param, set())
+        attributed = self._attributed_imports(pd.function, pd.param, unresolved_names, set())
         if attributed is None:
             return False
         for caller, names in attributed:
@@ -171,12 +203,12 @@ class DynamicBounds(Resolver):
                 self._module_import_edge(caller, name)
         return True
 
-    def _scripts_per_caller(self, pd: _ParamDynamic) -> bool:
+    def _scripts_per_caller(self, pd: _ParamDynamic, unresolved_names: set[str]) -> bool:
         """``run_python(script)`` starting ``[sys.executable, script]``: the
         script path each call site passes, attributed to that caller as
         ``_import_per_caller`` attributes module names (diffcone.indexer.
         scripts). False when the callers are not known."""
-        attributed = self._attributed_imports(pd.function, pd.param, set())
+        attributed = self._attributed_imports(pd.function, pd.param, unresolved_names, set())
         if attributed is None:
             return False
         for caller, values in attributed:
@@ -190,27 +222,28 @@ class DynamicBounds(Resolver):
         return True
 
     def _attributed_imports(
-        self, function: str, param: str, seen: set[tuple[str, str]], depth: int = 0
+        self,
+        function: str,
+        param: str,
+        unresolved_names: set[str],
+        seen: set[tuple[str, str]],
+        depth: int = 0,
     ) -> list[tuple[str, tuple[str, ...] | None]] | None:
-        """Per call site of ``function``, who imports what through ``param``.
+        """Per call site of ``function``, who imports (or runs as a script)
+        what through ``param``.
 
         A site that passes its own parameter answers one level further out --
         pandas' ``skip_if_no(name)`` hands its parameter to the importer, and
         its own callers name the module -- so the search follows it, with a
         depth cap and a guard against a cycle. None when the callers cannot
-        be known at all."""
+        be known at all (_known_callers)."""
         if (function, param) in seen or depth > IMPORT_ATTRIBUTION_DEPTH:
             return None
         seen.add((function, param))
-        info = self.out.func_params.get(function)
-        symbol = self.index.symbols.get(function)
-        sites = self.out.call_sites.get(function, [])
-        if info is None or symbol is None or not sites:
+        known = self._known_callers(function, unresolved_names)
+        if known is None:
             return None
-        if function in self.out.escapes or self._super_may_reach(symbol):
-            return None  # it may be called from somewhere unseen
-        if not all(site.caller for site in sites):
-            return None  # an older cache entry, without the caller recorded
+        info, sites = known
         found: list[tuple[str, tuple[str, ...] | None]] = []
         for site in sites:
             names = site.value_for(param, info)
@@ -219,7 +252,7 @@ class DynamicBounds(Resolver):
                 continue
             outer = site.param_for(param, info) if names is None else None
             deeper = (
-                self._attributed_imports(site.caller, outer, seen, depth + 1)
+                self._attributed_imports(site.caller, outer, unresolved_names, seen, depth + 1)
                 if outer is not None
                 else None
             )
@@ -229,18 +262,23 @@ class DynamicBounds(Resolver):
     def _class_members(self, classes: set[str]) -> set[str]:
         """Every symbol inside those classes and their in-scope subclasses: an
         instance of one may be an instance of the other."""
-        family = set(classes)
+        found: set[str] = set()
+        stack = list(classes)
         for cls in classes:
-            family.update(self._descendants.get(cls, ()))
-        return {
-            symbol
-            for symbol in self.index.symbols
-            for cls in family
-            if symbol.startswith(cls + ".")
-        }
+            stack.extend(self._descendants.get(cls, ()))
+        while stack:
+            cscope = self.class_scopes.get(stack.pop())
+            for member in cscope.members.values() if cscope is not None else ():
+                if member not in found:
+                    found.add(member)
+                    stack.append(member)  # a nested class's members are inside too
+        return found
 
     def _receiver_classes(
-        self, pd: _ParamDynamic, writes: dict[tuple[str, str], list[_AttrWrite]]
+        self,
+        pd: _ParamDynamic,
+        writes: dict[tuple[str, str], list[_AttrWrite]],
+        unresolved_names: set[str],
     ) -> set[str] | None:
         """The classes the receiver of ``getattr(receiver, <unbounded>)`` may
         be an instance of, or None when nothing says.
@@ -256,31 +294,28 @@ class DynamicBounds(Resolver):
         if info is None:
             return None
         if len(pd.base) == 1 and pd.base[0] in info.positional:
-            return self._passed_classes(pd.function, pd.base[0])
+            return self._passed_classes(pd.function, pd.base[0], unresolved_names)
         if (
             len(pd.base) == 2
             and pd.scope.self_class
             and pd.base[0] == pd.scope.self_name
             and not pd.scope.self_is_class
         ):
-            return self._attribute_classes(pd.scope.self_class, pd.base[1], writes)
+            return self._attribute_classes(
+                pd.scope.self_class, pd.base[1], writes, unresolved_names
+            )
         return None
 
-    def _passed_classes(self, function: str, param: str) -> set[str] | None:
+    def _passed_classes(
+        self, function: str, param: str, unresolved_names: set[str]
+    ) -> set[str] | None:
         """The classes every resolved call site passes for ``param``; None
-        when the function may be called from somewhere unseen or a site says
-        nothing about what it passes."""
-        info = self.out.func_params.get(function)
-        symbol = self.index.symbols.get(function)
-        sites = self.out.call_sites.get(function, [])
-        if (
-            info is None
-            or symbol is None
-            or not sites
-            or function in self.out.escapes
-            or self._super_may_reach(symbol)
-        ):
+        when the function may be called from somewhere unseen
+        (_known_callers) or a site says nothing about what it passes."""
+        known = self._known_callers(function, unresolved_names)
+        if known is None:
             return None
+        info, sites = known
         found: set[str] = set()
         for site in sites:
             cls = site.class_for(param, info)
@@ -290,7 +325,11 @@ class DynamicBounds(Resolver):
         return found or None
 
     def _attribute_classes(
-        self, class_id: str, attr: str, writes: dict[tuple[str, str], list[_AttrWrite]]
+        self,
+        class_id: str,
+        attr: str,
+        writes: dict[tuple[str, str], list[_AttrWrite]],
+        unresolved_names: set[str],
     ) -> set[str] | None:
         """What ``self.<attr>`` holds, as classes: every write must assign a
         class, or a parameter whose constructions all pass one.
@@ -303,26 +342,8 @@ class DynamicBounds(Resolver):
         such code puts in the attribute comes from there too. A construction
         we *can* see whose argument says nothing still gives up (below), which
         is the case that matters -- a factory inside the project."""
-        unbound = self.out.attr_unbound
-        if ("", "*") in unbound or ("", attr) in unbound:
-            return None
-        family: set[str] = set()
-        for cid in (class_id, *self._descendants.get(class_id, ())):
-            family.update(self._mro(cid))
-        bound: list[tuple[_AttrWrite, list[Any]]] = []
-        for cid in sorted(family):
-            cscope = self.class_scopes.get(cid)
-            if cscope is None or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
-                return None
-            if attr in cscope.members or attr in cscope.bindings:
-                return None
-            if _ATTRIBUTE_HOOKS & cscope.members.keys():
-                return None
-            for w in writes.get((cid, attr), ()):
-                if w.binding is None:
-                    return None
-                bound.append((w, w.binding))
-        if not bound:
+        bound = self._family_writes(class_id, attr, writes, None)
+        if bound is None:
             return None
         found: set[str] = set()
         for w, (kind, value) in bound:
@@ -332,7 +353,7 @@ class DynamicBounds(Resolver):
                     return None
                 found.add(value)
             elif kind == "param":
-                passed = self._passed_classes(w.method, value)
+                passed = self._passed_classes(w.method, value, unresolved_names)
                 if passed is None:
                     return None
                 found |= passed
@@ -344,20 +365,12 @@ class DynamicBounds(Resolver):
         self, function: str, param: str, unresolved_names: set[str]
     ) -> list[str] | None:
         """The literal strings every call site of ``function`` passes for
-        ``param``, or None when some caller may be unseen or unbounded."""
-        info = self.out.func_params.get(function)
-        symbol = self.index.symbols.get(function)
-        sites = self.out.call_sites.get(function, [])
-        if (
-            info is None
-            or symbol is None
-            or function in self.out.escapes
-            or symbol.name in unresolved_names
-            or self._super_may_reach(symbol)
-            or not sites
-            or self._constructor_escapes(symbol, unresolved_names)
-        ):
+        ``param``, or None when some caller may be unseen (_known_callers)
+        or unbounded."""
+        known = self._known_callers(function, unresolved_names)
+        if known is None:
             return None
+        info, sites = known
         values: list[str] = []
         for site in sites:
             found = site.value_for(param, info)
@@ -378,11 +391,31 @@ class DynamicBounds(Resolver):
         instance may belong to any in-scope subclass, so every class in the
         MRO of the class or of a subclass counts; each must be plain and
         fully in scope, none may define the attribute at class level or
-        customise attribute access, and every write must be a bounded
-        ``__init__`` assignment. A class that escapes, or whose name occurs
+        customise attribute access, and every write must bind something
+        known (_AttrWrite: a parameter, strings or a symbol in ``__init__``;
+        an instance, a third-party value or a factory's result in any
+        method, diffcone.indexer.writes). A class that escapes, or whose name occurs
         as an unresolved reference, may have subclasses the index cannot
         see (``class S(Base)`` with ``Base = Foo if X else Bar``), whose
         writes are unknown."""
+        return self._family_writes(class_id, attr, writes, unresolved_names)
+
+    def _family_writes(
+        self,
+        class_id: str,
+        attr: str,
+        writes: dict[tuple[str, str], list[_AttrWrite]],
+        unresolved_names: set[str] | None,
+    ) -> list[tuple[_AttrWrite, list[Any]]] | None:
+        """The writes of ``self.<attr>`` with their bindings over every class
+        an instance of ``class_id`` may be (the MRO of it and of each in-scope
+        subclass), or None when one cannot be bounded: a write through a
+        receiver of unknown type, a class outside the analysis or with an
+        unknown base, a class-level binding of the name, a class customising
+        attribute access, a write that binds nothing known. With
+        ``unresolved_names`` (_attribute_writes), every class must also be
+        plain and seen whole: neither escaping nor named by an unresolved
+        reference."""
         unbound = self.out.attr_unbound
         if ("", "*") in unbound or ("", attr) in unbound:
             return None
@@ -391,10 +424,14 @@ class DynamicBounds(Resolver):
             family.update(self._mro(cid))
         bound: list[tuple[_AttrWrite, list[Any]]] = []
         for cid in sorted(family):
-            cscope = self.class_scopes[cid]
-            if not cscope.plain or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
+            cscope = self.class_scopes.get(cid)
+            if cscope is None or cscope.opaque or (cid, "*") in unbound or (cid, attr) in unbound:
                 return None
-            if cid in self.out.escapes or self.index.symbols[cid].name in unresolved_names:
+            if unresolved_names is not None and (
+                not cscope.plain
+                or cid in self.out.escapes
+                or self.index.symbols[cid].name in unresolved_names
+            ):
                 return None
             if attr in cscope.members or attr in cscope.bindings:
                 return None

@@ -12,6 +12,17 @@ everything.
     most tests. [Execution evidence](guides/evidence.md) narrows this to the
     tests that actually used the changed code.
 
+**A function under a decorator diffcone can't read runs on import.**
+:   `@deco` over a function is a call `deco(f)` when the module is imported,
+    and the decorator may call the function then. Unless the decorator is
+    one diffcone knows calls nothing of it (`property`, `staticmethod`,
+    `functools.cache`, `pytest.fixture`, `dataclasses.dataclass` and the
+    like, or a decorator of your own that only sets attributes and returns
+    the function or a `functools.wraps` wrapper), a change to the
+    function's body counts as a change to code that runs on import. A
+    decorator from an installed package (a compiled `cache_readonly`, say)
+    is one diffcone can't read.
+
 **Class-level changes affect every method.**
 :   A change to a class's body (its bases, decorators or class attributes)
     affects all of its methods. Removing or redirecting an import affects
@@ -123,7 +134,9 @@ everything.
 :   Any file under your source roots that isn't valid Python 3, or can't be
     decoded in its declared encoding (UTF-8 unless the file says
     otherwise), is an analysis error, even a test data file nothing
-    imports. Choose source roots that leave such files out.
+    imports. So is one that nests an expression hundreds of levels deep,
+    as generated code may (a sum of a thousand terms). Choose source roots
+    that leave such files out.
 
 **Discovery reads the source, so it can't see what plugins do.**
 :   A pytest plugin that collects tests by its own rules, or a test base

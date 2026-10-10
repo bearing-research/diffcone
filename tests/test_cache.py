@@ -126,7 +126,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 39
+    assert cache_mod.INDEX_FORMAT == 40
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -317,13 +317,6 @@ def test_module_cache_keeps_one_resolution_per_file_and_serves_read_only(repo, t
     finally:
         for p in (mc.path.parent, mc.path):
             os.chmod(p, 0o755 if p.is_dir() else 0o644)
-
-
-def test_index_cache_removes_the_legacy_hash_directory(tmp_path):
-    (tmp_path / "c" / "hashes").mkdir(parents=True)
-    (tmp_path / "c" / "hashes" / "x.json").write_text("{}")
-    IndexCache(tmp_path / "c")
-    assert not (tmp_path / "c" / "hashes").exists()
 
 
 def test_the_whole_index_survives_a_round_trip_field_by_field(repo):

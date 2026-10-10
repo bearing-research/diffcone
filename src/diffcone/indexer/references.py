@@ -163,6 +163,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.scope = Scope(
             module=outer.module,
             local_imports=outer.local_imports,
+            local_alt_imports=outer.local_alt_imports,
             # A class body's names are not visible in scopes nested in it.
             locals=(set() if outer.class_level else outer.locals) | bound,
             self_name=None if outer.self_name in bound else outer.self_name,
