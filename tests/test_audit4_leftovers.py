@@ -7,6 +7,7 @@ Each test names the finding it guards, and each failed before its fix.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -318,3 +319,158 @@ def test_l4_a_builtin_a_star_import_may_rebind_is_not_a_read(repo):
     plan = repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
     assert "tests/test_b.py::test_b" in selected(plan)
     assert "bench.time_noop" not in selected(plan)
+
+
+# ---------------------------------------------------------------------- L6
+# A change to a module-level variable's object made through a module object
+# other than a name pass 2 resolves (``import_module("pkg.reg").TABLE["x"]
+# = f``, ``sys.modules[...]``, ``__import__``, a function-local import, a
+# module passed in or returned, ``getattr`` on a package, a star import) was
+# no ``mutated_by`` dependency: the code reading the variable did not see the
+# writer, so a change to what it stored there selected nothing. The use
+# records (indexer/uses.py) now give one, for every write form (an item
+# assigned or deleted, an augmented assignment, a mutator, an attribute of
+# what it holds, an item changed on the way, the variable handed to code
+# that may change it), and for a module found at run time or an object from
+# anywhere, every variable it may be (by name, or any).
+
+REG = (
+    "def a():\n    return 1\n\n\ndef b():\n    return {0}\n\n\nTABLE = {{'a': a}}\n"
+    "LIST = [a]\nNEST = {{'k': [a]}}\n\n\nclass O:\n    x = a\n\n\nOBJ = O()\n"
+)
+READERS = {
+    "TABLE": "def read():\n    return TABLE['x']()\n",
+    "LIST": "def read():\n    return LIST[-1]()\n",
+    "NEST": "def read():\n    return NEST['k'][-1]()\n",
+    "OBJ": "def read():\n    return OBJ.x()\n",
+}
+GETS = {
+    "import_module": ("import importlib", "importlib.import_module('pkg.reg')"),
+    "sys_modules": ("import sys", "sys.modules['pkg.reg']"),
+    "sys_modules_get": ("import sys", "sys.modules.get('pkg.reg')"),
+    "dunder_import": ("", "__import__('pkg.reg', fromlist=['x'])"),
+    "getattr_package": ("import pkg", "getattr(pkg, 'reg')"),
+    "star_import_module": ("from importlib import *", "import_module('pkg.reg')"),
+    "unpickled": ("import pickle", "pickle.loads(DATA)"),
+    "import_any_name": ("import importlib", "importlib.import_module(NAME)"),
+    "gc_object": ("import gc", "gc.get_objects()[0]"),
+}
+WRITES = {
+    "item": ("TABLE", "{m}.TABLE['x'] = pkg.reg.b"),
+    "update": ("TABLE", "{m}.TABLE.update(x=pkg.reg.b)"),
+    "dunder_setitem": ("TABLE", "{m}.TABLE.__setitem__('x', pkg.reg.b)"),
+    "augassign": ("TABLE", "{m}.TABLE |= {{'x': pkg.reg.b}}"),
+    "append": ("LIST", "{m}.LIST.append(pkg.reg.b)"),
+    "iadd": ("LIST", "{m}.LIST += [pkg.reg.b]"),
+    "slice": ("LIST", "{m}.LIST[0:0] = [pkg.reg.b]"),
+    "item_on_the_way": ("NEST", "{m}.NEST['k'].append(pkg.reg.b)"),
+    "item_iadd": ("NEST", "{m}.NEST['k'] += [pkg.reg.b]"),
+    "attribute": ("OBJ", "{m}.OBJ.x = pkg.reg.b"),
+    "setattr": ("OBJ", "setattr({m}.OBJ, 'x', pkg.reg.b)"),
+    "handed_on": ("TABLE", "_put({m}.TABLE)"),
+}
+
+
+def _l6_writer(imports: str, body: str) -> str:
+    return (
+        f"{imports}\n\nimport pkg.reg\n\n\ndef _put(t):\n    t['x'] = pkg.reg.b\n\n\n"
+        f"def go(DATA=b'', NAME='x'):\n{body}"
+    )
+
+
+def _l6_plan(repo, variable: str, writer: str):
+    files = {
+        **BENCH,
+        "pkg/__init__.py": "",
+        "pkg/reg.py": REG.format("1"),
+        "pkg/use.py": f"from pkg.reg import {variable}\n\n\n{READERS[variable]}",
+        "pkg/w.py": writer,
+        "tests/__init__.py": "",
+        "tests/test_a.py": "import pkg.w\n\n\ndef test_a():\n    pkg.w.go()\n",
+        "tests/test_b.py": "from pkg.use import read\n\n\ndef test_b():\n    assert read() == 2\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/reg.py": REG.format("2")})
+    return repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
+
+
+BOTH = {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+
+
+@pytest.mark.parametrize("get", sorted(GETS))
+def test_l6_an_item_stored_through_any_module_object_reaches_the_readers(repo, get):
+    imports, expr = GETS[get]
+    variable, write = WRITES["item"]
+    plan = _l6_plan(repo, variable, _l6_writer(imports, f"    {write.format(m=expr)}\n"))
+    assert selected(plan) == BOTH
+
+
+@pytest.mark.parametrize("write", sorted(WRITES))
+def test_l6_every_write_form_through_a_handle_reaches_the_readers(repo, write):
+    variable, text = WRITES[write]
+    imports, expr = GETS["import_module"]
+    plan = _l6_plan(repo, variable, _l6_writer(imports, f"    {text.format(m=expr)}\n"))
+    assert selected(plan) == BOTH
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    import pkg.reg as m\n    m.TABLE['x'] = pkg.reg.b\n",
+        "    m = importlib.import_module('pkg.reg')\n    m.TABLE['x'] = pkg.reg.b\n",
+        "    _store(pkg.reg)\n\n\ndef _store(m):\n    m.TABLE['x'] = pkg.reg.b\n",
+        "    _store(sys.modules['pkg.reg'])\n\n\ndef _store(m):\n    m.TABLE['x'] = pkg.reg.b\n",
+        "    _get().TABLE['x'] = pkg.reg.b\n\n\ndef _get():\n"
+        "    return importlib.import_module('pkg.reg')\n",
+    ],
+    ids=["local_import", "local_handle", "module_passed", "handle_passed", "handle_returned"],
+)
+def test_l6_a_module_object_however_held_reaches_the_readers(repo, body):
+    plan = _l6_plan(repo, "TABLE", _l6_writer("import importlib\nimport sys", body))
+    assert selected(plan) == BOTH
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "    gc.get_objects()[0]['x'] = pkg.reg.b\n",
+        "    pickle.loads(DATA)['x'] = pkg.reg.b\n",
+        "    for o in gc.get_objects():\n        o['x'] = pkg.reg.b\n",
+    ],
+    ids=["gc_item", "unpickled_item", "gc_loop"],
+)
+def test_l6_an_object_from_anywhere_changed_may_be_any_variable(repo, body):
+    """An object nothing names (a ``gc`` list's element, an unpickled one)
+    may be any module's variable: changing it reaches every variable's
+    readers (the unbounded case)."""
+    plan = _l6_plan(repo, "TABLE", _l6_writer("import gc\nimport pickle", body))
+    assert selected(plan) == BOTH
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_l6_evidence_a_changed_writer_through_a_handle_selects_the_readers(repo):
+    """The recorded run of ``test_b`` executed ``read`` only; ``go`` (run by
+    ``test_a`` first) put ``b`` in the table through a handle. Changing
+    ``go`` to put ``c`` there changes ``test_b``'s outcome."""
+    reg = REG.format("2") + "\n\ndef c():\n    return 3\n"
+    writer = (
+        "import importlib\n\nimport pkg.reg\n\n\ndef go():\n"
+        "    importlib.import_module('pkg.reg').TABLE['x'] = pkg.reg.{0}\n"
+    )
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "pkg/__init__.py": "",
+        "pkg/reg.py": reg,
+        "pkg/use.py": "from pkg.reg import TABLE\n\n\n" + READERS["TABLE"],
+        "pkg/w.py": writer.format("b"),
+        "tests/__init__.py": "",
+        "tests/test_a.py": "import pkg.w\n\n\ndef test_a():\n    pkg.w.go()\n",
+        "tests/test_b.py": (
+            "from pkg.use import read\n\n\ndef test_b():\n    assert read() in (2, 3)\n"
+        ),
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/w.py": writer.format("c")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=evidence)
+    assert selected(plan) == BOTH

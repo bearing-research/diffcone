@@ -4076,7 +4076,11 @@ def test_a_name_passed_on_is_followed_to_the_caller_that_knows_it(repo):
     plot = repo.commit({"pkg/plot.py": "STAMP = len('plot!')\n"})
     assert selected(repo.plan(base, plot, targets)) == {"bench_plot.P.time_plot"}
     arrow = repo.commit({"pkg/arrow.py": "STAMP = len('arrow!')\n"})
-    assert selected(repo.plan(plot, arrow, targets)) == {"t::arrow"}
+    # ``need`` hands back a module found at run time, which whoever gets it
+    # may change in place: every module's variables are ``mutated_by`` it
+    # (audit round 4, L6), and its caller ``test_arrow`` now behaves
+    # differently, so ``pkg.plot.STAMP``'s reader is selected too.
+    assert selected(repo.plan(plot, arrow, targets)) == {"t::arrow", "bench_plot.P.time_plot"}
 
 
 def _runner_only_tree(test_x: str, extra: dict[str, str] | None = None) -> dict[str, str]:

@@ -54,6 +54,7 @@ from diffcone.model import (
     REFERENCES,
     REGISTERS,
     UNRESOLVED_DYNAMIC,
+    VARIABLE,
     WRITES,
     Edge,
     SourceIndex,
@@ -195,6 +196,7 @@ class Indexer(DynamicBounds):
             self._table_imports()
             self._resolve_param_dynamics()
             apply_scripts(self)  # after the script parameters are bound
+            self._use_mutation_edges()
             self._registrations()
             self._write_only_references()
             self._module_reach()
@@ -489,6 +491,17 @@ class Indexer(DynamicBounds):
         named_tables: dict[str, set[str]] = defaultdict(set)
         anything: set[str] = set()  # the writers that may change any module
         external: set[tuple[str, str, str]] = set()  # (mode, module, writer)
+        # Variable -> the code that may change the object it holds in place
+        # or rebind it, through a name the variable has in another module or
+        # a module object however obtained (``_use_mutations``).
+        mutated: dict[str, set[str]] = defaultdict(set)
+        # Module -> the code handing it on (whoever gets it may change any
+        # of its variables).
+        handed: dict[str, set[str]] = defaultdict(set)
+
+        def variable(place: str, name: str) -> str | None:
+            found = self.index.symbols.get(f"{place}.{name}")
+            return found.id if found is not None and found.kind == VARIABLE else None
 
         def changed(module: str, name: str) -> bool:
             return bool(
@@ -509,26 +522,45 @@ class Indexer(DynamicBounds):
                 found |= tables.get(module, set()) | named_tables.get(name, set())
             return found
 
-        def hand_on(place: str, writer: str, *, dyn: bool = False, escape: bool = True) -> None:
+        def hand_on(
+            place: str,
+            writer: str,
+            *,
+            dyn: bool = False,
+            escape: bool = True,
+            install: bool = False,
+        ) -> None:
             """A module handed on (``dyn``: any attribute of it handed on):
             it (``dyn``: its tables) and its submodules may be written, and so
             may everything reachable as an attribute of one of them: what
-            their imports bind and star imports bring, transitively."""
+            their imports bind and star imports bring, transitively. An
+            object ``install``ed under its name counts for its tables only:
+            the module's own objects are not handed to anyone."""
+            places: list[str] = []
             if dyn:
                 tables[place].add(writer)
+                places.append(place)
             for m in self._under(place):
                 if dyn and m == place:
                     continue
                 whole[m].add(writer)
+                places.append(m)
                 if escape:
                     self.index.escaped_modules.add(m)
             reach = self._attribute_reach(place)
             for m in reach.modules:
                 whole[m].add(writer)
+                places.append(m)
             for m in reach.stars:
                 tables[m].add(writer)
+                places.append(m)
             for m, name in reach.tables:
                 poison[m][name].add(writer)
+                if not install and (var := variable(m, name)) is not None:
+                    mutated[var].add(writer)
+            if not install:
+                for m in places:
+                    handed[m].add(writer)
             for outside in reach.outside:
                 external.add(("escape", outside, writer))
 
@@ -540,8 +572,17 @@ class Indexer(DynamicBounds):
             held = sum(count(v) for v in poison.values())
             return (len(anything), *sizes, held)
 
-        def concrete(module: str, kind: str, target: str, writer: str) -> None:
-            """A record about a dotted name (no pattern)."""
+        def concrete(
+            module: str,
+            kind: str,
+            target: str,
+            writer: str,
+            direct: bool = False,
+            install: bool = False,
+        ) -> None:
+            """A record about a dotted name (no pattern); ``direct`` for one
+            through a module-level import (UseRecord.direct), ``install`` for
+            an object installed in ``sys.modules`` under the name."""
             parts = target.split(".")
             if "__globals__" in parts:
                 # ``f.__globals__``: the namespace of the module ``f`` is
@@ -556,7 +597,7 @@ class Indexer(DynamicBounds):
                     else [".".join(parts[: max(at - 1, 1)])]
                 )
                 for owner in owners:
-                    concrete(module, kind, ".".join([owner, *after]), writer)
+                    concrete(module, kind, ".".join([owner, *after]), writer, direct)
                 return
             if kind in (STORE, SCOPED):
                 # A store undone after the test (SCOPED) is seen only during
@@ -570,6 +611,12 @@ class Indexer(DynamicBounds):
                 for place, rest in places or ():
                     if not rest:
                         poison[place][name].add(writer)
+                    # The variable rebound, or an attribute of what it holds
+                    # (not for a store undone after the test: later code
+                    # does not see it, W26).
+                    var = variable(place, (*rest, name)[0])
+                    if var is not None and kind == STORE:
+                        mutated[var].add(writer)
                 return
             places = self._locate_target(module, parts)
             if places is None:
@@ -581,9 +628,15 @@ class Indexer(DynamicBounds):
             for place, rest in places:
                 if not rest:
                     if kind in (USE, DYN):
-                        hand_on(place, writer, dyn=kind == DYN)
-                elif len(rest) == 1 and rest[0] in self.scopes[place].containers:
+                        hand_on(place, writer, dyn=kind == DYN, install=install)
+                    continue
+                if len(rest) == 1 and rest[0] in self.scopes[place].containers:
                     poison[place][rest[0]].add(writer)
+                # What a variable holds changed in place (an item, a mutator,
+                # an attribute of an item), or handed on to code that may.
+                var = variable(place, rest[0])
+                if var is not None and (kind == MUT or (kind in (USE, DYN) and not direct)):
+                    mutated[var].add(writer)
 
         self._reach_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
@@ -653,7 +706,7 @@ class Indexer(DynamicBounds):
                         prefix = target[: -len(ANY)]
                         for m in sorted(self.scopes) if prefix else ():
                             if m.startswith(prefix):
-                                concrete(module, USE, m, writer)
+                                concrete(module, USE, m, writer, install=True)
                         if kind == INSTALL:
                             # Installed for good under a name nothing bounds
                             # (or only by a prefix): an import of any module
@@ -662,7 +715,7 @@ class Indexer(DynamicBounds):
                                 (m, writer) for m in self.scopes if m.startswith(prefix)
                             )
                         continue
-                    concrete(module, USE, target, writer)
+                    concrete(module, USE, target, writer, install=True)
                     found = self._locate_target(module, target.split("."))
                     if kind == INSTALL and found:
                         installs.update((place, writer) for place, rest in found if not rest)
@@ -680,6 +733,10 @@ class Indexer(DynamicBounds):
                     # module's literal of that name (rebound or changed in
                     # place), or a submodule of that name handed on.
                     chain = target.split(".")[1:]
+                    # Whichever module's variable of the first name holds
+                    # what changed (``obj.OBJ.x = v`` changes ``OBJ``).
+                    if kind != SCOPED:
+                        mutated[ANY + "." + chain[0]].add(writer)
                     if kind in (STORE, SCOPED):
                         named[chain[-1]].add(writer)
                         if kind == STORE:
@@ -701,20 +758,60 @@ class Indexer(DynamicBounds):
                     prefix, _, rest = target.partition(ANY)
                     for m in sorted(self.scopes):
                         if m.startswith(prefix):
-                            concrete(module, kind, m + rest, writer)
+                            concrete(module, kind, m + rest, writer, record.direct)
                     mode = {USE: "escape", DYN: "escape", STORE: "write"}.get(kind)
                     if mode is not None:
                         external.add((mode, prefix + ANY, writer))
                     continue
-                concrete(module, kind, target, writer)
+                concrete(module, kind, target, writer, record.direct)
             if size() == before:
                 break
         self._use_external = external
+        self._use_mutations = self._mutations(mutated, anything, handed, named, named_tables)
         self._installed = installs
         self._installed_anywhere = installs_anywhere - installs
         self._attribute_modules(records, changed)
         self._module_writers(records, anything)
         self._unbind_literals(changed, writers_of)
+
+    def _mutations(
+        self,
+        mutated: dict[str, set[str]],
+        anything: set[str],
+        handed: dict[str, set[str]],
+        named: dict[str, set[str]],
+        named_tables: dict[str, set[str]],
+    ) -> dict[str, set[str]]:
+        """For each module-level variable, the code the use records say may
+        change what it holds, other than through its own module's names
+        (pass 2 sees those): a store or in-place change through a module
+        object however obtained (``import_module("pkg.reg").TABLE[k] = v``,
+        a handle, a module passed in), the variable or its module handed on
+        (whoever gets it may change it), any attribute of its module handed
+        on, a store or change of an attribute of that name on a module found
+        at run time, and code that may change any module's objects (an
+        unpickled object, a ``gc`` list's element changed in place)."""
+        found: dict[str, set[str]] = {}
+        for symbol in self.index.symbols.values():
+            if symbol.kind != VARIABLE:
+                continue
+            module, name = symbol.module, symbol.name
+            by = set(mutated.get(symbol.id, ())) | mutated.get(f"{ANY}.{name}", set())
+            by |= named.get(name, set()) | named_tables.get(name, set())
+            by |= handed.get(module, set())
+            by |= anything
+            by.discard(symbol.id)
+            if by:
+                found[symbol.id] = by
+        return found
+
+    def _use_mutation_edges(self) -> None:
+        """A ``mutated_by`` edge from each variable to the code the use
+        records say may change it (``_mutations``), as pass 2 records one
+        for a change through a name it resolves."""
+        for var, writers in sorted(self._use_mutations.items()):
+            for writer in sorted(writers):
+                self.index.edges.add(Edge(var, writer, REFERENCES, MUTATED_BY))
 
     def _outside_stars(self, records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
         """The records, and each about a name a star import may bind
@@ -729,7 +826,9 @@ class Indexer(DynamicBounds):
             rest = r.target[1:]
             for star in self.scopes[m].star_imports:
                 if star not in self.scopes:
-                    more.append((m, UseRecord(r.kind, f"{star}.{rest}", r.sources, r.writer)))
+                    more.append(
+                        (m, UseRecord(r.kind, f"{star}.{rest}", r.sources, r.writer, r.direct))
+                    )
         return records + more if more else records
 
     @staticmethod
@@ -751,7 +850,7 @@ class Indexer(DynamicBounds):
                 if r.target == name or r.target.startswith(name + "."):
                     rest = r.target[len(name) :]
                     redirected += [
-                        (m, UseRecord(r.kind, t + rest, r.sources, r.writer))
+                        (m, UseRecord(r.kind, t + rest, r.sources, r.writer, r.direct))
                         for t in sorted(modules)
                     ]
         return records + redirected

@@ -304,6 +304,30 @@ Further rules (pre-release audit, round 2):
   variable, as an in-place mutation does; so does a write through the
   module and an item of the variable (`store._CACHE["k"].append(x)`, `del
   store._CACHE["k"]`, `store._CACHE["k"] += [x]`).
+* The same changes made through a module object pass 2 does not resolve to
+  the variable's module are `mutated_by` dependencies too, taken from the
+  use scan (`indexer/uses.py`, resolved between the passes:
+  `Indexer._mutations`): a handle (`import_module("pkg.reg").TABLE["x"] =
+  f`, `sys.modules["pkg.reg"]`, `__import__`, `getattr(pkg, "reg")`, a
+  local bound to one, a private function returning one), a function-local
+  import, a star import. Every write form counts: an item or attribute
+  assigned, augmented or deleted, a container mutator, an item changed on
+  the way, `setattr` on what the variable holds, and the variable handed
+  on through such a module object (any use that is not a read: an argument
+  of a function, bound to another name, returned; a variable named through
+  a module-level import is followed into the callee's parameters instead,
+  below). A module handed on (passed
+  to a function, `vars(m)`, any attribute of it read by a name nothing
+  bounds) may have any of its variables changed by whoever gets it, so each
+  of them depends on the code handing it on. A change through a module
+  found at run time (`import_module(name)`, an unpickled object's or a `gc`
+  list element's attributes: `obj.TABLE["x"] = f`) is a dependency of every
+  module's variable of that name; one through an object nothing names
+  (`gc.get_objects()[0]["x"] = f`, `pickle.loads(data)["x"] = f`) of every
+  variable. A store undone after the test (`monkeypatch.setattr(m, "T",
+  x)`) is none: later code does not see it (W26); nor is an object
+  installed in `sys.modules` under a module's name, which hands none of
+  the module's own objects to anyone.
 * Writes through a parameter or a receiver (`indexer/writes.py`). A
   function that changes a parameter in place (an item or attribute
   assigned, augmented or deleted, `p += [x]`, a container mutator on it or

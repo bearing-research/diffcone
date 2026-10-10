@@ -71,6 +71,12 @@ counts as a possible change:
   namespace of its own (``exec(code, m.__dict__)``), it reaches that one,
   which counts where it stands. A literal code string is read as the code
   it is.
+* an item of an object read on the way to a change (``m.T["k"].append(x)``,
+  ``m.T["k"].x = v``) changes the object (``mut``). The records also give
+  the ``mutated_by`` dependencies of variables changed through a module
+  object pass 2 does not resolve (``Indexer._mutations``); ``direct`` marks
+  a record about a name a module-level import binds, which pass 2 follows
+  itself.
 
 Names resolve in the scope they stand in: an import binds a name in its own
 scope, a parameter or local shadows a module-level import, and a builtin is
@@ -335,20 +341,23 @@ class UseRecord:
     bounded target was computed from: if one of them is not the literal it
     was, the target is any module (``=NAME`` is a HELD record's holder,
     ``>MODULE`` an AS record's module). ``writer`` is the def path the use
-    is in."""
+    is in. ``direct``: the object was named through a module-level import
+    (pass 2 resolves what code hands such a name to; see
+    ``Indexer._mutations``)."""
 
     kind: str
     target: str
     sources: tuple[str, ...] = ()
     writer: tuple[str, ...] = ()
+    direct: bool = False
 
     def to_list(self) -> list:
-        return [self.kind, self.target, list(self.sources), list(self.writer)]
+        return [self.kind, self.target, list(self.sources), list(self.writer), self.direct]
 
     @staticmethod
     def from_list(data: list) -> UseRecord:
-        kind, target, sources, writer = data
-        return UseRecord(str(kind), str(target), tuple(sources), tuple(writer))
+        kind, target, sources, writer, direct = data
+        return UseRecord(str(kind), str(target), tuple(sources), tuple(writer), bool(direct))
 
 
 @dataclass
@@ -528,6 +537,9 @@ class _Scanner:
         )
         self.stars = bool(self.star_modules)
         self.prefix = prefix
+        # Set while following a name a module-level import binds (UseRecord.
+        # direct).
+        self._direct = False
         self.out = Uses()
         self.aliases: dict[tuple[int, str], tuple[set[str], tuple[str, ...]]] = {}
         self.aliased_values: set[int] = set()
@@ -1440,7 +1452,11 @@ class _Scanner:
         names = self._binding(node.id, node)
         imported = names.imports.get(node.id) if names is not None else None
         if imported and self.want_records:
-            self._climb(node, set(imported), (), ())
+            self._direct = names is self.scope_names.get(id(self.root))
+            try:
+                self._climb(node, set(imported), (), ())
+            finally:
+                self._direct = False
         if names is None or node.id in names.other:
             # Not (only) an import here: this module's own name, a local, a
             # builtin (a name bound both ways is followed both ways).
@@ -1836,6 +1852,8 @@ class _Scanner:
                         if classify(p, self.parents, self._builtin) != READ:
                             self._emit(node, targets, sources, chain, DYN)
                         return
+                    # Pass 2 does not follow a chain through ``getattr``.
+                    self._direct = False
                     for name in names:
                         if name in GLOBALS_ATTRIBUTES:
                             self._globals(p, node, targets, sources + more, chain, name)
@@ -1905,10 +1923,41 @@ class _Scanner:
                 return
             if isinstance(p, ast.Return) and id(p) in self.followed_returns:
                 return  # followed to the calls of its function
+            if self._item_changed(node):
+                # An item changed on the way (``m.T["k"].append(x)``): what
+                # the object holds changed in place.
+                self._emit(node, targets, sources, chain, MUT)
+                return
             kind = classify(node, self.parents, self._builtin)
             if kind != READ:
                 self._emit(node, targets, sources, chain, kind)
             return
+
+    def _item_changed(self, node: ast.AST) -> bool:
+        """Whether an item of ``node`` (``node[k]``, its items and their
+        attributes, read on the way) is changed where the chain ends: an
+        item or attribute assigned or deleted (an augmented assignment
+        included), a container mutator reached, or ``setattr``/``delattr``
+        on it (as pass 2 counts items on the way, audit round 2, W15)."""
+        p = self.parents.get(id(node))
+        if not (isinstance(p, ast.Subscript) and p.value is node and isinstance(p.ctx, ast.Load)):
+            return False
+        cur: ast.AST = p
+        while True:
+            up = self.parents.get(id(cur))
+            if isinstance(up, (ast.Subscript, ast.Attribute)) and up.value is cur:
+                if not isinstance(up.ctx, ast.Load):
+                    return True
+                if isinstance(up, ast.Attribute) and up.attr in CONTAINER_MUTATORS:
+                    return True
+                cur = up
+                continue
+            return (
+                isinstance(up, ast.Call)
+                and bool(up.args)
+                and up.args[0] is cur
+                and self._maybe_builtin(up.func) in ("setattr", "delattr")
+            )
 
     def _globals(
         self,
@@ -2059,7 +2108,11 @@ class _Scanner:
             imported = names.imports.get(node.id) if names is not None else None
             if names is not None and imported:
                 if self.want_records:
-                    self._emit(node, set(imported), (), chain, kind)
+                    self._direct = names is self.scope_names.get(id(self.root))
+                    try:
+                        self._emit(node, set(imported), (), chain, kind)
+                    finally:
+                        self._direct = False
                 if node.id not in names.other:
                     return
         self._emit(node, None, (), chain, kind)
@@ -2103,7 +2156,9 @@ class _Scanner:
             kind, target = USE, ANY  # a table of modules of its own: any import
         if target == ANY and kind != HELD:
             sources = ()  # already any module
-        self.out.records.add(UseRecord(kind, target, tuple(sorted(set(sources))), writer))
+        self.out.records.add(
+            UseRecord(kind, target, tuple(sorted(set(sources))), writer, self._direct)
+        )
 
 
 def _own_nodes(scope: ast.AST) -> list[ast.AST]:
