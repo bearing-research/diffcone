@@ -9,10 +9,10 @@ from dataclasses import dataclass, field
 from diffcone.indexer.literals import (
     INDEXED,
     NESTED,
-    _collect_literal_bindings,
     _literal_strings,
     _string_candidates,
     literal_base,
+    own_literal_bindings,
 )
 from diffcone.indexer.uses import UseRecord
 
@@ -143,10 +143,14 @@ class Scope:
                 names = {
                     k: v for k, v in parent.items() if literal_base(k) not in self.literal_bound
                 }
-            if self.literal_node is not None:
-                names.update(
-                    _collect_literal_bindings(self.literal_node, self.module.literal_names)
+            # A name this scope binds is not the module's literal of that
+            # name, whatever it holds (``def f(NAMES)``, ``lambda NAMES:``,
+            # ``for NAMES, _ in ...``): see own_literal_bindings.
+            names.update(
+                own_literal_bindings(
+                    self.literal_node, self.literal_bound, self.module.literal_names
                 )
+            )
             names.update(self.literal_extra)
             names.update({k + INDEXED: None for k in self.literal_extra})
             names.update({k + NESTED: None for k in self.literal_extra})

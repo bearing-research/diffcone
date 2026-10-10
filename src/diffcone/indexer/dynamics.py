@@ -120,6 +120,7 @@ class DynamicBounds(Resolver):
                     chain = ".".join(pd.base + [name])
                     node, rest = self.resolve_chain_names(pd.base + [name], pd.scope)
                     self._record(pd.function, node, chain=chain)
+                    self.class_object_read(pd.function, pd.base + [name], pd.scope)
                     for extra in rest:
                         self.out.unresolved.add(
                             UnresolvedReference(pd.function, UNRESOLVED_ATTRIBUTE, extra, chain)

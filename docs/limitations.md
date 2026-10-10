@@ -41,7 +41,8 @@ everything.
     (`importlib.import_module(name)`) can be affected by any change at all.
     A name taken from a dict, list or set written in the code
     (`getattr(handlers, NAMES[key])`, the export table of a lazy
-    `__getattr__`) is bounded by it only while nothing can change it: once
+    `__getattr__`; not a parameter or local variable that happens to share
+    the table's name) is bounded by it only while nothing can change it: once
     the table, or the module holding it, is modified, passed to other code,
     or reached through `globals()`, `vars()`, `sys.modules` or `exec`, the
     lookup counts as dynamic. A lookup on a standard-library or third-party

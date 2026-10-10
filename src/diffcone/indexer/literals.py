@@ -476,6 +476,44 @@ class _LocalBindings(ast.NodeVisitor):
         self.names.add(node.name)
 
 
+def parameter_names(node: ast.AST | None) -> set[str]:
+    """The parameters of a function or lambda (none for anything else)."""
+    if not isinstance(node, FUNC_NODES + (ast.Lambda,)):
+        return set()
+    args = node.args
+    every = args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]
+    return {a.arg for a in every if a is not None}
+
+
+def own_literal_bindings(
+    node: ast.AST | None,
+    bound: set[str] | frozenset[str],
+    module_literals: dict[str, tuple[str, ...] | None],
+) -> dict[str, tuple[str, ...] | None]:
+    """The literal table of the scope ``node`` opens (a function or lambda;
+    None for a scope without a body of its own to read, such as a class body
+    or a comprehension), whose own bindings are ``bound``.
+
+    Every name the scope binds shadows the module's literal of that name,
+    so it is unbounded unless an assignment in the scope says what it holds.
+    A parameter stays unbounded whatever the body assigns it: the caller
+    passes anything, and a literal assigned on one branch says nothing about
+    the other."""
+    table: dict[str, tuple[str, ...] | None] = {}
+    names = set(bound)
+    if isinstance(node, FUNC_NODES + (ast.Lambda,)):
+        names |= _LocalBindings().collect(node)
+    for name in names:
+        for key in literal_keys(name):
+            table[key] = None
+    if node is not None:
+        params = parameter_names(node)
+        for key, values in _collect_literal_bindings(node, module_literals).items():
+            if literal_base(key) not in params:
+                table[key] = values
+    return table
+
+
 def make_evaluator(
     module_literals: dict[str, tuple[str, ...] | None],
 ) -> Callable[[ast.expr, ast.AST, frozenset[str]], tuple[tuple[str, ...] | None, tuple[str, ...]]]:
@@ -491,10 +529,9 @@ def make_evaluator(
         if id(scope) not in tables:
             local: dict[str, tuple[str, ...] | None] = {}
             if not isinstance(scope, ast.Module):
-                for name in _LocalBindings().collect(scope):
-                    for key in literal_keys(name):
-                        local[key] = None
-                local.update(_collect_literal_bindings(scope, module_literals))
+                local = own_literal_bindings(
+                    scope, _LocalBindings().collect(scope), module_literals
+                )
             # A function's locals may be taken from any module-level literal
             # it reads; at module level only the expression's own names count.
             tables[id(scope)] = (local, () if isinstance(scope, ast.Module) else _reads(scope))

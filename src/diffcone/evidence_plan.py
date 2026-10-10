@@ -45,6 +45,9 @@ observed by"), and a test is selected when its record meets E:
   creation runs code) escalates too;
 * module-level code: escalates the module, and so does a change to
   ``__all__`` (what star imports bind);
+* a docstring only: the code reading docstrings (``reads_docstrings``)
+  that refers to the symbol or sits in its module, as in static planning;
+  such a reader running at import escalates its module;
 * a non-Python file, or any file outside the source roots (read from a
   git diff, since the index holds only the roots): the tests that touched
   it or a directory above it; everything when it is compiled source, build
@@ -121,6 +124,7 @@ from diffcone.model import (
     CLASS,
     CLASS_STATEMENT,
     DECLARED,
+    DEFINED_IN,
     EXTERNAL_WRITTEN,
     FUNCTION,
     IMPORTS,
@@ -625,6 +629,7 @@ class _Observers:
                 self._escalate_change(
                     change, f"{change.id} docstring_changed: its decorator reads it at import"
                 )
+        self._docstring_readers()
         cython = self._cython()
         for path in _changed_unanalysed_files(self.c, self.other):
             if path in cython:
@@ -654,6 +659,35 @@ class _Observers:
                 )
             else:
                 self._file(path, what, names=what != "edited")
+
+    def _docstring_readers(self) -> None:
+        """A docstring-only change runs no different code, but code reading
+        docstrings (``C.__doc__``, ``inspect.getdoc(f)``, its module's
+        ``__doc__``) sees it without running the documented code, so no
+        record shows the read. As in static planning, such a reader notices
+        the change of what it refers to (or of its own module): the tests
+        that ran it, or, for code that runs at import, its module's."""
+        documented = {
+            c.id: c for c in self.changes if not c.carries_impact and DOCSTRING_CHANGED in c.changes
+        }
+        if not documented:
+            return
+        for index in (self.c, self.other):
+            readers = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
+            for edge in index.edges:
+                if edge.source in readers and edge.kind != DEFINED_IN:
+                    readers[edge.source].add(edge.target)
+            for reader, referenced in sorted(readers.items()):
+                hits = sorted(referenced & documented.keys())
+                if not hits:
+                    continue
+                change = documented[hits[0]]
+                why = f"{reader} reads docstrings and refers to {hits[0]}, whose docstring changed"
+                symbol = self.symbols[reader]
+                if symbol.kind in (FUNCTION, METHOD):
+                    self._observe(reader, RULE_EXECUTED_READER, why, change)
+                else:
+                    self._escalate_module(symbol.module, why)
 
     def _unrecorded_phases(self) -> None:
         """Outside every test, something ran that no record shows (a process

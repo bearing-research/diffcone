@@ -217,6 +217,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         node, rest = self.indexer.resolve_chain_names(parts, self.scope)
         chain = ".".join(parts)
         self.indexer._record(self.source, node, kind=kind, chain=chain)
+        self.indexer.class_object_read(self.source, parts, self.scope)
         for name in rest:
             self.indexer.out.unresolved.add(
                 UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, chain)
@@ -263,7 +264,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if node.attr == "get" and isinstance(call, ast.Call) and call.func is node:
                 key = call.args[0] if call.args else None
             if node.attr not in ("keys", "__contains__", "__len__"):
-                if self._is_module(inner.value):
+                if self._is_module(inner.value) or self._is_class_object(inner.value):
                     self._member_read(inner.value, key)
         parts = _flatten_chain(node)
         if parts is not None:
@@ -300,9 +301,10 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _namespace_read(self, node: ast.Attribute) -> None:
         """``m.__dict__[k]``, ``m.__dict__.get(k)`` or any other read of a
-        module's namespace: the attribute ``k`` names, read as
-        ``getattr(m, k)`` is; anything else reads any attribute."""
-        if not self._is_module(node.value):
+        module's or a class's namespace (``C.__dict__``, ``cls.__dict__``):
+        the attribute ``k`` names, read as ``getattr(m, k)`` is; anything
+        else reads any attribute."""
+        if not (self._is_module(node.value) or self._is_class_object(node.value)):
             return
         parent = self._parent(node)
         key: ast.expr | None = None
@@ -959,6 +961,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # found this way may be called from here with anything.
                 self._resolve(base + [name])
                 self._escape(self.indexer.resolve_chain(base + [name], self.scope))
+
+    def _is_class_object(self, expr: ast.expr) -> bool:
+        """Whether ``expr`` is a class itself (a name or chain resolving to
+        one, or ``cls`` in a classmethod), not an instance."""
+        if isinstance(expr, ast.Name) and expr.id == self.scope.self_name:
+            return self.scope.self_is_class and self.scope.self_class is not None
+        return self._is_class(expr)
 
     def _is_class(self, expr: ast.expr) -> bool:
         chain = _flatten_chain(expr)

@@ -18,7 +18,10 @@ Supported subset (see internal/design.md):
   and with instance attributes that ``__init__`` binds to such values
   (``getattr(x, self.name)``);
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an
-  inherited ``m``, ``Sub.m``, ``super().m``).
+  inherited ``m``, ``Sub.m``, ``super().m``); an attribute the class does
+  not define (``C.__doc__``, ``C.__type_params__``) is a read of the class
+  object, and ``C.__mro__``/``__bases__``/``__subclasses__()`` reach the
+  classes they hand out (``Resolver.class_object_read``).
 
 Deliberately unsupported: type inference, dynamic dispatch on unknown
 receivers, instance attributes written outside ``__init__`` or reflectively,

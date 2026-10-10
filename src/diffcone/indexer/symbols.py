@@ -63,8 +63,8 @@ from diffcone.snapshot import member_symbol_id
 
 
 def _doc_reads(body: list[ast.stmt]):
-    """``__doc__`` names and attributes, and ``getdoc(...)`` calls, in a
-    scope's own statements (not in nested definitions, which are symbols
+    """``__doc__`` names, attributes and strings, and ``getdoc(...)`` calls,
+    in a scope's own statements (not in nested definitions, which are symbols
     of their own)."""
     stack: list[ast.AST] = list(body)
     while stack:
@@ -89,6 +89,9 @@ def _doc_reads(body: list[ast.stmt]):
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name == "getdoc":
                 yield node
+        elif isinstance(node, ast.Constant) and node.value == "__doc__":
+            # ``getattr(C, "__doc__")``, ``C.__dict__["__doc__"]``.
+            yield node
         stack.extend(ast.iter_child_nodes(node))
 
 
@@ -103,6 +106,8 @@ def _reads_docstrings_deep(node: ast.AST) -> bool:
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name == "getdoc":
                 return True
+        if isinstance(inner, ast.Constant) and inner.value == "__doc__":
+            return True
     return False
 
 

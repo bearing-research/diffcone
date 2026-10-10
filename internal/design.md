@@ -139,7 +139,8 @@ receives it at import (pandas' `@doc` formats it, and a bad placeholder
 breaks every importer). A module whose own code names `__doc__`
 (`ArgumentParser(description=__doc__)`) has its docstring in its body hash.
 A symbol whose code reads a docstring (`obj.__doc__`, `__doc__`,
-`getdoc(obj)`) is marked `reads_docstrings`, and the planner seeds it when
+`getdoc(obj)`, the string `"__doc__"` as in `getattr(obj, "__doc__")`) is
+marked `reads_docstrings`, and the planner seeds it when
 something it references, or its module, has a docstring-only change.
 Doctests are targets of their own (see Discovery). Consequences: adding or
 removing a method is a class definition change; removing or redirecting an
@@ -175,7 +176,8 @@ A name or dotted chain `a.b.c` is resolved from its base:
    aliases that variable for reads and in-place mutations
    (`def build(registry=REGISTRY): registry[k] = v`). Decorators, defaults
    and annotations are resolved in the enclosing scope, where the
-   function's own parameters do not exist yet;
+   function's own parameters do not exist yet (so are the string values a
+   default bounds a parameter to: `def f(NAMES=NAMES)` takes the module's);
    `local.attr` becomes an unresolved attribute reference bounded by `attr`.
    Nested functions, lambdas and comprehensions are separate scopes: a
    comprehension variable or an inner function's parameter never shadows a
@@ -289,6 +291,25 @@ chain (`Foo().run`, `items[0].run`, `make().run`) records an unresolved
 attribute reference for `run` and the base expression is analysed on its
 own, so `Foo` still gets a reference edge.
 
+An attribute the class does not define, read off a resolved class
+(`C.__type_params__`, `C.__doc__`, `C.__mro__`, `C.handler` set by a
+decorator, a metaclass or `__init_subclass__`), lives on the class object:
+besides the name-bounded reference (a metaclass may define it) the reader
+gets a `references` edge to the class (detail `class object`), as reading
+the name `C` gives, so whatever reaches the class (a lazily evaluated type
+parameter bound or annotation, a docstring, what its decorators, metaclass
+and bases left on it) reaches the reader. An attribute the class defines
+keeps its precise edge. On `self`/`cls` (and `self.__class__`) only
+dunder names count, since any other name is an instance attribute bounded
+by the class's writes, and the edge goes to the class and every in-scope
+subclass. `C.__mro__`, `C.__bases__` and `C.__base__` hand out the class's
+in-scope ancestors and `C.__subclasses__()` its descendants, classes the
+reader never names: it refers to each as a value (constructor edges
+included, escaped) and to every member each holds through its MRO
+(detail `via __mro__`, ...). `C.__dict__[k]`, `C.__dict__.get(k)` and
+`cls.__dict__[k]` read the class's namespace as `getattr(C, k)` does, as
+for a module below.
+
 Creating a class runs code of its bases and metaclass, so a class
 statement depends on the `__init_subclass__` that each in-scope base
 finds through its MRO (their union covers the one the new class's MRO
@@ -351,7 +372,13 @@ every string of every tuple is a candidate), a variable assigned
 only such values (in the function or at module level), or a
 `for` variable iterating over one
 (`for attr in ("body", "orelse"): getattr(stmt, attr)`; a sequence whose
-elements are lists, sets or dicts is not iterated for strings).
+elements are lists, sets or dicts is not iterated for strings). A name a
+scope binds (a parameter, a lambda's or nested function's parameter, a
+class-body name, a comprehension's tuple target, a `with`/`except`/`for`
+target, a nested `def`) is never the module-level literal of the same
+name: it is unbounded unless the scope assigns it only such values, and a
+parameter stays unbounded whatever its body assigns (the caller passes
+anything).
 
 A dict, list or set literal stays bounded only while every use of it is a
 read the analysis recognises (`indexer/uses.py`): an item read (`T[k]`,

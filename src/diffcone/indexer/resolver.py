@@ -103,6 +103,12 @@ def _definition_scope(scope: ModuleScope, class_scope: ClassScope | None) -> Sco
         locals=set(class_scope.bindings) if class_scope is not None else set(),
         class_members=dict(class_scope.members) if class_scope is not None else {},
         class_level=class_scope is not None,
+        # A class-level name shadows the module's literal of that name.
+        literal_bound=(
+            frozenset(class_scope.bindings) | frozenset(class_scope.members)
+            if class_scope is not None
+            else frozenset()
+        ),
     )
 
 
@@ -565,15 +571,18 @@ class Resolver(FirstPass):
         positional = [a.arg for a in node.args.posonlyargs + node.args.args]
         fscope.params = {name: i for i, name in enumerate(positional)}
         fscope.params.update({a.arg: None for a in node.args.kwonlyargs})
+        # Defaults are evaluated where the ``def`` statement runs: in
+        # ``def f(NAMES=NAMES)`` the default is the module's ``NAMES``.
+        header = _definition_scope(scope, class_scope)
         defaults: dict[str, tuple[str, ...] | None] = {}
         n_defaults = len(node.args.defaults)
         for name, default in zip(
             positional[len(positional) - n_defaults :], node.args.defaults, strict=True
         ):
-            defaults[name] = fscope.string_candidates(default)
+            defaults[name] = header.string_candidates(default)
         for a, default in zip(node.args.kwonlyargs, node.args.kw_defaults, strict=True):
             if default is not None:
-                defaults[a.arg] = fscope.string_candidates(default)
+                defaults[a.arg] = header.string_candidates(default)
         self.out.func_params[symbol_id] = _FuncParams(
             positional=positional,
             bound=bound_method,
@@ -985,6 +994,65 @@ class Resolver(FirstPass):
         """The class of an instance of ``class_id``: any in-scope subclass."""
         self.out.escapes.add(class_id)
         self.out.escapes.update(self._descendants.get(class_id, ()))
+
+    def class_object_read(self, source: str, parts: list[str], scope: Scope) -> None:
+        """An attribute chain that reads, off a resolved class, an attribute
+        the class does not define (``C.__type_params__``, ``C.__doc__``,
+        ``C.__mro__``, ``C.registered`` set by a decorator): what it finds
+        lives on the class object, so the reader depends on the class as a
+        reader of the name ``C`` does, and whatever reaches the class
+        (lazily evaluated type parameters and annotations, a docstring,
+        what its decorators, metaclass and bases left on it) reaches the
+        reader. The name-bounded reference resolve_chain_names reports stays
+        beside the edge (a metaclass may define the attribute).
+
+        On ``self``/``cls`` only dunder names count -- anything else is an
+        instance attribute, bounded by the class's writes (attr_refs) -- and
+        the class may be any in-scope subclass. ``__class__`` is left to
+        ``escape_class_family`` and ``__dict__`` to the member read.
+
+        ``__mro__``, ``__bases__`` and ``__base__`` hand out the class's
+        ancestors, and ``__subclasses__`` its descendants: classes nothing
+        names, which the reader can construct, call or read any attribute
+        of. It refers to each, and to every member each holds."""
+        if len(parts) < 2:
+            return
+        receiver = parts[0] == scope.self_name and scope.self_class is not None
+        node = self._lookup_base(parts[0], scope)
+        if receiver and parts[1] == "__class__" and len(parts) > 2:
+            node, parts = Resolved(scope.self_class or ""), [parts[0], *parts[2:]]
+        for i, attr in enumerate(parts[1:], 1):
+            if not (
+                isinstance(node, Resolved) and not node.detail and node.symbol in self.class_scopes
+            ):
+                return
+            found = self._step(node, attr)
+            if not isinstance(found, Unresolved):
+                node = found
+                continue
+            on_self = receiver and i == 1
+            dunder = attr.startswith("__") and attr.endswith("__")
+            if on_self and (not dunder or attr in ("__class__", "__dict__")):
+                return
+            family = [node.symbol]
+            if on_self:
+                family += self._descendants.get(node.symbol, ())
+            for cls in family:
+                if cls != source:
+                    self.out.edges.add(Edge(source, cls, REFERENCES, "class object"))
+            handed: set[str] = set()
+            if attr in ("__mro__", "__bases__", "__base__"):
+                handed = {a for cls in family for a in self._mro(cls)[1:]}
+            elif attr == "__subclasses__":
+                handed = {d for cls in family for d in self._descendants.get(cls, ())}
+            for cls in sorted(handed):
+                self._record(source, Resolved(cls), chain=".".join(parts[: i + 1]))
+                self.escape(Resolved(cls))
+                for holder in self._mro(cls):
+                    for member in sorted(self.class_scopes[holder].members.values()):
+                        if member != source:
+                            self.out.edges.add(Edge(source, member, REFERENCES, f"via {attr}"))
+            return
 
     def _record(self, source: str, node: Node, kind: str = REFERENCES, chain: str = "") -> None:
         if node is None:
