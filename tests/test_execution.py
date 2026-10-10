@@ -7,6 +7,8 @@ import os
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1131,3 +1133,28 @@ def test_run_warns_about_selected_targets_pytest_did_not_collect(repo, capsys):
     err = capsys.readouterr().err
     assert "pytest did not collect 1 selected target(s)" in err
     assert "tests/test_ops.py::test_gone" in err
+
+
+def test_the_reverse_run_removes_its_plugin_directory_not_the_users_pythonpath(
+    tmp_path, monkeypatch
+):
+    # plugin_environment puts its directory first on PYTHONPATH; the reverse
+    # run of `run --collect` removed the last entry, the user's own.
+    user_dir = tmp_path / "src"
+    user_dir.mkdir()
+    (user_dir / "keep.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(user_dir))
+    seen: list[str] = []
+
+    def fake_run(plan, runner, *, cwd, command, extra, env):
+        seen.append(env["PYTHONPATH"].split(os.pathsep)[0])
+        return execution.RunResult("pytest", [], [], 0, 0)
+
+    monkeypatch.setattr(execution, "run_selected", fake_run)
+
+    plan: Any = SimpleNamespace(evidence=None)
+    out = tmp_path / "out"
+    out.mkdir()
+    assert execution._reverse_run(plan, tmp_path, None, None, out, {}) == 0
+    assert (user_dir / "keep.py").exists()
+    assert seen and not Path(seen[0]).exists()

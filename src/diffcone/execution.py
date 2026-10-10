@@ -1801,7 +1801,7 @@ def _reverse_run(
             env=reverse_env,
         )
     finally:
-        shutil.rmtree(Path(reverse_env["PYTHONPATH"].split(os.pathsep)[-1]), ignore_errors=True)
+        remove_plugin_dir(reverse_env)
     return again.returncode
 
 
