@@ -888,13 +888,20 @@ counts as any module, so passing it on or writing to it makes every such
 table dynamic, unless the name starts with fixed text
 (<code>f"plugins.{name}"</code> is one of the <code>plugins.</code> modules) or the module is
 a new one (<code>types.ModuleType(name)</code>) that isn't installed in
-<code>sys.modules</code> under a name of yours. Code that passes a module to other
-code (<code>read(ops, name)</code>) depends on everything in that module, as it
-does on every member of a class whose instances it passes on.
+<code>sys.modules</code> under a name of yours. The same goes for a function's
+<code>__globals__</code>, a frame's <code>f_globals</code>, what <code>pickle.loads</code>,
+<code>pkgutil.resolve_name</code> or <code>gc.get_objects()</code> hand back, and a copy made
+with <code>importlib.util.module_from_spec</code> (which is the module whose file it
+loads). Passing a module on also passes on whatever its imports bind
+(<code>api.core.TABLE</code>). Code that passes a module to other
+code (<code>read(ops, name)</code>) depends on everything in that module and on
+what its imports bind, as it does on every member of a class whose
+instances it passes on.
 A lookup on a standard-library or third-party
 module (<code>getattr(logging, name)</code>) is bounded unless your code may store
-something on that module, directly or by handing the module to other
-code; then any change can affect it.</dd>
+something on that module, directly, by handing the module to other
+code, or by putting an object in <code>sys.modules</code> under its name; then any
+change can affect it.</dd>
 <dt><strong>Python programs a test starts.</strong></dt>
 <dd>A test that runs a script or module of your project in a new process
 (<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
