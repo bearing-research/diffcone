@@ -92,8 +92,8 @@ everything.
     `python -c "import mypkg"`) depends on that script or module, and on
     what it imports, when the code names it in a string. When the program
     is built at run time (a path from a variable or the environment, `-c`
-    code assembled from pieces, `*args`), the test is affected by any
-    change. So is a test that runs a `.py` file no module name maps to
+    code assembled from pieces or code that changes `sys.path`, `*args`),
+    the test is affected by any change. So is a test that runs a `.py` file no module name maps to
     (`scripts/gen-data.py`), which isn't analysed. Console scripts your
     project installs and files outside your source roots aren't seen;
     [execution evidence](guides/evidence.md) follows the processes a test

@@ -7,10 +7,18 @@ import ast
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.definitions import _flatten_chain
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
-from diffcone.indexer.patches import suspends
+from diffcone.indexer.patches import (
+    DICT,
+    MULTIPLE,
+    OBJECT,
+    SETATTR,
+    callee_parts,
+    patch_target_form,
+    patched_names,
+    suspends,
+)
 from diffcone.indexer.process import (
     LOGGER_GETTERS,
     LOGGER_MUTATORS,
@@ -34,10 +42,14 @@ from diffcone.indexer.syntax import (
     REFLECTIVE_ATTRIBUTES,
     REFLECTIVE_BUILTINS,
     REFLECTIVE_CALLS,
+    _flatten_chain,
+    own_directory_join,
+    reads_files,
 )
 from diffcone.indexer.uses import (
     CONTAINER_MUTATORS,
     FILE_LOADERS,
+    PICKLER_DUMPS,
     UNPICKLER_CALLS,
     UNPICKLER_CLASSES,
 )
@@ -94,23 +106,6 @@ _READ = "read"
 MEMBER_LISTINGS = frozenset({"inspect.getmembers", "inspect.getmembers_static"})
 
 
-# Calls that read a file's text or bytes: code built from them is not the
-# program's own.
-FILE_READS = frozenset(
-    {"open", "read", "read_text", "read_bytes", "get_data", "read_binary", "files", "readlines"}
-)
-
-
-def _reads_files(node: ast.AST) -> bool:
-    for inner in ast.walk(node):
-        if isinstance(inner, ast.Call):
-            func = inner.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in FILE_READS:
-                return True
-    return False
-
-
 class _ReferenceCollector(ast.NodeVisitor):
     """Walk a symbol's code and record edges / unresolved references.
 
@@ -139,6 +134,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         # Nodes naming a variable only to change it (``X`` in ``X.clear()``
         # or ``X[k] = v``) -> the edge detail their reference gets.
         self._write_only: dict[int, str] = {}
+        # Function body -> what ``_name_bindings`` found in it.
+        self._binding_maps: dict[
+            int, tuple[ast.AST, dict[str, list[ast.Name]], dict[int, ast.expr | None]]
+        ] = {}
 
     def visit(self, node: ast.AST) -> None:
         self._stack.append(node)
@@ -468,10 +467,6 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         return
 
-    # Methods that mutate a container in place: a call of one on a variable
-    # makes the caller a writer of that variable.
-    MUTATING_METHODS = CONTAINER_MUTATORS
-
     def _mutation_target(self, expr: ast.expr) -> None:
         """Record ``source`` as a writer when ``expr`` (an assignment target or
         a receiver of a mutating call) is a subscript/attribute of a variable
@@ -689,7 +684,6 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._process_store(target)
             if isinstance(target, ast.Subscript):
                 self._mark_write_only(target.value, SETITEM)
-            if isinstance(target, ast.Subscript):
                 self._dict_write(target)
             for sub in ast.walk(target):
                 if isinstance(sub, (ast.Subscript, ast.Attribute)):
@@ -741,7 +735,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._write_only[id(node.func)] = WRITES
         if (
             isinstance(node.func, ast.Attribute)
-            and node.func.attr in self.MUTATING_METHODS
+            and node.func.attr in CONTAINER_MUTATORS
             and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute, ast.Call))
         ):
             self._mutation_target(node.func.value)
@@ -789,9 +783,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     parts[0] in ("exec", "eval")
                     and code is not None
                     and not literal
-                    and (
-                        _reads_files(code) or (scope_node is not None and _reads_files(scope_node))
-                    )
+                    and (reads_files(code) or (scope_node is not None and reads_files(scope_node)))
                 ):
                     # Code read from a file at run time (``exec(open("plugin.py")
                     # .read())``) can import anything; code generated from the
@@ -821,7 +813,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             if builtin and parts[0] == "type" and len(node.args) == 1:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.escape_class_family(cls)
-            if parts[-1] in ("setattr", "delattr") or parts[-2:] == ["patch", "object"]:
+            if parts[-1] in ("setattr", "delattr") or patch_target_form(parts) in (
+                OBJECT,
+                MULTIPLE,
+            ):
                 self._setattr_call(node, parts)
             self._string_targets(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
@@ -839,6 +834,11 @@ class _ReferenceCollector(ast.NodeVisitor):
         ):
             target = self.indexer.lookup_super(self.scope.self_class, node.func.attr)
             self._add_call_site(node, target, receiver_bound=True)
+        elif (form := patch_target_form(tail := callee_parts(node.func))) is not None:
+            # A patcher on a value: ``pytest.MonkeyPatch().setattr(...)``.
+            if form in (SETATTR, OBJECT, MULTIPLE):
+                self._setattr_call(node, tail)
+            self._string_targets(node, tail)
         self._call_func = node.func
         self.generic_visit(node)
 
@@ -866,46 +866,90 @@ class _ReferenceCollector(ast.NodeVisitor):
                     return
                 self.visit(expr)
             return
-        patching = (
-            (last in ("setattr", "delattr") and len(parts) > 1)
-            or last == "patch"
-            or parts[-2:] in (["patch", "object"], ["patch", "dict"])
-        )
-        if not patching or not args:
+        form = patch_target_form(parts)
+        if form is None or not args:
             return
         first = args[0]
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             chain = first.value.split(".")
-            if len(chain) > 1 and all(c.isidentifier() for c in chain):
-                node_ = self.indexer.resolve_dotted(chain)
-                if node_ is not None:
-                    self.indexer._record(self.source, node_, chain=first.value)
-                elif not self._undone(node):
-                    # A third-party target: whichever prefix is the module,
-                    # something may now be stored on it (unless the store is
-                    # undone after the test: then only that test sees it,
-                    # and it depends on what it stores; audit round 3, W26).
-                    for i in range(1, len(chain)):
-                        self.indexer.out.external_writes.add((".".join(chain[:i]), self.source))
+            if (len(chain) > 1 or form == MULTIPLE) and all(c.isidentifier() for c in chain):
+                self._dotted_target(node, form, chain)
+            return
+        if form == MULTIPLE:
+            receiver = _flatten_chain(first)
+            if receiver is not None:
+                for name in patched_names(node):
+                    self._resolve([*receiver, name])
             return
         if len(args) > 1 and isinstance(args[1], ast.Constant) and isinstance(args[1].value, str):
             receiver = _flatten_chain(first)
             if receiver is not None and args[1].value.isidentifier():
                 self._resolve([*receiver, args[1].value])
 
+    def _dotted_target(self, node: ast.Call, form: str, chain: list[str]) -> None:
+        """A patcher's target named by a dotted string: each name it patches
+        (``patch.multiple``: the object and each attribute its keywords
+        name; ``patch.dict`` of ``"pkg.mod.__dict__"``: the module), which
+        must exist. A third-party one, unless the store is undone after the
+        test (then only that test sees it, and it depends on what it stores;
+        audit round 3, W26), puts something on whichever prefix is the
+        module, and writes process-global state (indexer/process.py)."""
+        if form == MULTIPLE:
+            names = patched_names(node)
+            if any(k.arg is None for k in node.keywords):
+                names.append("*")  # ``**names``: any attribute
+            written = [[*chain, name] for name in names]
+            targets = [chain, *(w for w in written if w[-1] != "*")]
+        elif form == DICT and chain[-1] == "__dict__":
+            written, targets = [chain], [chain[:-1]]
+        else:
+            written, targets = [chain], [chain]
+        third_party = False
+        for target in targets:
+            found = self.indexer.resolve_dotted(target)
+            if found is None:
+                third_party = True
+                continue
+            self.indexer._record(self.source, found, chain=".".join(target))
+            # Patching imports the module the name is in (``mock`` and
+            # ``monkeypatch`` resolve a dotted name by importing it).
+            for i in range(len(target), 0, -1):
+                if (module := ".".join(target[:i])) in self.indexer.scopes:
+                    self.indexer._module_import_edge(self.source, module)
+                    break
+        if not third_party or self._undone(node):
+            return
+        for attribute in written:
+            for i in range(1, len(attribute)):
+                self.indexer.out.external_writes.add((".".join(attribute[:i]), self.source))
+            what = ".".join(attribute)
+            self._process_write(state_object(what) or what)
+
     def _setattr_call(self, node: ast.Call, parts: list[str]) -> None:
-        """``setattr``/``delattr``, ``monkeypatch.setattr`` and
-        ``patch.object``: the receiver is the first argument and the name the
-        second (``monkeypatch.setattr("pkg.mod.name", value)`` names it in a
-        dotted string instead)."""
+        """``setattr``/``delattr``, ``monkeypatch.setattr``, ``patch.object``
+        and ``patch.multiple``: the receiver is the first argument and the
+        name the second (``patch.multiple``: each keyword's), or a dotted
+        string names both (``monkeypatch.setattr("pkg.mod.name", value)``,
+        ``patch.multiple("pkg.mod", name=value)``)."""
         args = list(node.args)
         keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        names: list[ast.expr | None]
+        multiple = patch_target_form(parts) == MULTIPLE
+        if multiple:
+            names = [ast.Constant(value=n) for n in patched_names(node)]
+            if any(k.arg is None for k in node.keywords):
+                names.append(None)  # ``**names``: any attribute
+        else:
+            names = [args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))]
         if len(parts) > 1 and args and isinstance(args[0], ast.Constant):
-            self._reflective_write(None, args[0])
+            # A dotted string: ``"pkg.mod.NAME"``, or ``"pkg.mod"`` and names.
+            for name in names if multiple else [args[0]]:
+                self._reflective_write(None, name)
             return
         receiver = args[0] if args else keywords.get("target")
-        name = args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))
-        self._reflective_write(receiver, name, undone=len(parts) > 1 and self._undone(node))
+        undone = len(parts) > 1 and self._undone(node)
+        for name in names:
+            self._reflective_write(receiver, name, undone=undone)
 
     def _undone(self, node: ast.Call) -> bool:
         """Whether what ``node`` stores is undone after the test that made
@@ -1025,21 +1069,34 @@ class _ReferenceCollector(ast.NodeVisitor):
         body = self.scope.literal_node
         if body is None or name in self.scope.params:
             return None
-        bindings = [
-            inner
-            for inner in ast.walk(body)
-            if isinstance(inner, ast.Name)
-            and inner.id == name
-            and not isinstance(inner.ctx, ast.Load)
-        ]
+        names, values = self._name_bindings(body)
+        bindings = names.get(name, ())
         if len(bindings) != 1:
             return None
-        for inner in ast.walk(body):
-            if isinstance(inner, ast.Assign) and any(t is bindings[0] for t in inner.targets):
-                return inner.value
-            if isinstance(inner, ast.AnnAssign) and inner.target is bindings[0]:
-                return inner.value
-        return None
+        return values.get(id(bindings[0]))
+
+    def _name_bindings(
+        self, body: ast.AST
+    ) -> tuple[dict[str, list[ast.Name]], dict[int, ast.expr | None]]:
+        """Every name ``body`` binds (nested scopes included) -> the nodes
+        binding it, and each binding node that is an assignment's whole
+        target -> the value assigned. Computed once per body: a function's
+        call sites ask for many arguments."""
+        found = self._binding_maps.get(id(body))
+        if found is None or found[0] is not body:
+            names: dict[str, list[ast.Name]] = {}
+            values: dict[int, ast.expr | None] = {}
+            for inner in ast.walk(body):
+                if isinstance(inner, ast.Name) and not isinstance(inner.ctx, ast.Load):
+                    names.setdefault(inner.id, []).append(inner)
+                elif isinstance(inner, ast.Assign):
+                    for target in inner.targets:
+                        values.setdefault(id(target), inner.value)
+                elif isinstance(inner, ast.AnnAssign):
+                    values.setdefault(id(inner.target), inner.value)
+            found = (body, names, values)
+            self._binding_maps[id(body)] = found
+        return found[1], found[2]
 
     def _mark_escape(self, node: ast.expr, parts: list[str]) -> None:
         """A function referenced other than as the callee of a call may be
@@ -1141,13 +1198,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                     (self.source, module, "dynamic", "getattr(<non-literal>)")
                 )
                 return
-            elif not self._param_dynamic(
-                node.args[1], "getattr", base, self._getattr_detail(node.args[0], base)
-            ):
-                # The name is not a parameter either: nothing bounds it.
-                self._dynamic(self._getattr_detail(node.args[0], base))
-                return
             else:
+                detail = self._getattr_detail(node.args[0], base)
+                if not self._param_dynamic(node.args[1], "getattr", base, detail):
+                    # The name is not a parameter either: nothing bounds it.
+                    self._dynamic(detail)
                 return
         for name in names:
             if base is None:
@@ -1162,13 +1217,6 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # found this way may be called from here with anything.
                 self._resolve(base + [name])
                 self._escape(self.indexer.resolve_chain(base + [name], self.scope))
-
-    def _is_class_object(self, expr: ast.expr) -> bool:
-        """Whether ``expr`` is a class itself (a name or chain resolving to
-        one, or ``cls`` in a classmethod), not an instance."""
-        if isinstance(expr, ast.Name) and expr.id == self.scope.self_name:
-            return self.scope.self_is_class and self.scope.self_class is not None
-        return self._is_class(expr)
 
     def _is_class(self, expr: ast.expr) -> bool:
         chain = _flatten_chain(expr)
@@ -1243,32 +1291,91 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def _restored(self, what: str) -> bool:
         """Whether an enclosing ``with`` puts ``what`` back on exit:
-        ``warnings.catch_warnings()`` for the warning filters,
-        ``mock.patch.dict(os.environ, ...)`` for the dict it patches."""
+        ``warnings.catch_warnings()`` for the warning filters (unless its
+        body yields: it stays changed while suspended), and a
+        ``mock.patch.dict(os.environ, ...)`` undone after the test
+        (indexer/patches.py) for the dict it patches."""
+        undone = self.scope.module.undone()
         for node in self._stack:
-            if not isinstance(node, (ast.With, ast.AsyncWith)) or suspends(node.body):
-                # A body that yields stays patched while it is suspended.
+            if not isinstance(node, (ast.With, ast.AsyncWith)):
                 continue
             for item in node.items:
                 call = item.context_expr
                 if not isinstance(call, ast.Call):
                     continue
                 parts = _flatten_chain(call.func)
-                name = self._canonical_name(parts) if parts else None
-                if name is None:
+                if parts is None:
                     continue
-                if name.endswith("catch_warnings") and what.startswith("warnings."):
-                    return True
-                if parts and parts[-2:] == ["patch", "dict"] and call.args:
-                    target = call.args[0]
-                    if isinstance(target, ast.Constant) and isinstance(target.value, str):
-                        patched = target.value
-                    else:
-                        chain = _flatten_chain(target)
-                        patched = self._canonical_name(chain) if chain else None
-                    if patched is not None and state_object(patched) == what:
+                if patch_target_form(parts) == DICT:
+                    if call.args and id(call) in undone and self._state_dict(call.args[0]) == what:
                         return True
+                    continue
+                name = self._canonical_name(parts)
+                if (
+                    name is not None
+                    and name.endswith("catch_warnings")
+                    and what.startswith("warnings.")
+                    and not suspends(node.body)
+                ):
+                    return True
         return False
+
+    def _state_dict(self, target: ast.expr) -> str | None:
+        """The process-wide object (indexer/process.py) a ``patch.dict``
+        target is: a dotted string, or a name through the scope's imports."""
+        if isinstance(target, ast.Constant) and isinstance(target.value, str):
+            return state_object(target.value)
+        chain = _flatten_chain(target)
+        return state_object(self._canonical_name(chain) if chain else None)
+
+    def _patched_state(self, node: ast.Call) -> None:
+        """A store into process-global state through a patcher or a
+        ``MonkeyPatch`` method that is not undone after the test
+        (indexer/patches.py): ``patch.dict(os.environ, ...).start()``,
+        ``patch.object(sys, "argv", ...)``, ``MonkeyPatch().setenv(...)``,
+        ``setitem(os.environ, ...)``, ``syspath_prepend``, ``chdir``. A
+        dotted string target is a patch target like any other
+        (``_dotted_target``)."""
+        parts = callee_parts(node.func)
+        if len(parts) < 2:
+            return
+        written = self._patched_objects(node, parts)
+        if written and not self._undone(node):
+            for what in written:
+                self._process_write(what)
+
+    def _patched_objects(self, node: ast.Call, parts: list[str]) -> list[str]:
+        """The process-wide state a patcher or ``MonkeyPatch`` call (by its
+        callee ``parts``) stores into (``_patched_state``)."""
+        last = parts[-1]
+        if last in ("setenv", "delenv"):
+            return ["os.environ"]
+        if last == "syspath_prepend":
+            return ["sys.path"]
+        if last == "chdir":
+            return ["os.chdir"]
+        form = patch_target_form(parts)
+        first = node.args[0] if node.args else None
+        if first is None or isinstance(first, ast.Constant):
+            return []
+        if last in ("setitem", "delitem") or form == DICT:
+            obj = self._state_dict(first)
+            return [obj] if obj is not None else []
+        if form not in (SETATTR, OBJECT, MULTIPLE):
+            return []
+        module = self._written_module(first)
+        if module is None:
+            return []
+        if form == MULTIPLE:
+            names: tuple[str, ...] | None = tuple(patched_names(node))
+            if any(k.arg is None for k in node.keywords):
+                names = None
+        else:
+            names = self.scope.string_candidates(node.args[1]) if len(node.args) > 1 else None
+        return [
+            state_object(what) or what
+            for what in (f"{module}.{n}" for n in (names if names is not None else ("*",)))
+        ]
 
     def _process_store(self, target: ast.expr) -> None:
         """A store, ``del`` or augmented assignment that writes process-global
@@ -1300,6 +1407,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _process_call(self, node: ast.Call, parts: list[str] | None) -> None:
         """A call that writes process-global state outside the source roots
         (indexer/process.py)."""
+        self._patched_state(node)
         func = node.func
         if parts is None:
             if (
@@ -1345,11 +1453,17 @@ class _ReferenceCollector(ast.NodeVisitor):
         """What ``__name__`` is here: the module's name, unless the program
         rebinds it or the source roots give the module another name than
         Python does (a ``DIR=PREFIX`` root)."""
+        if not self._named_as_python_does() or self._is_shadowed("__name__"):
+            return None
+        return self.scope.module.name
+
+    def _named_as_python_does(self) -> bool:
+        """Whether the indexed name of this module is the one Python gives
+        it at run time: not under a ``DIR=PREFIX`` root, whose prefix is
+        diffcone's own."""
         module = self.scope.module
         roots = [split_root(r)[0] for r in self.indexer.snapshot.source_roots]
-        if module_name_for(module.path, roots) != module.name or self._is_shadowed("__name__"):
-            return None
-        return module.name
+        return module_name_for(module.path, roots) == module.name
 
     def _import_package(self, node: ast.Call) -> str | None:
         """``import_module``'s ``package`` argument when it is known: a
@@ -1363,10 +1477,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
             return arg.value
         module = self.scope.module
-        # Under a ``DIR=PREFIX`` root the indexed name is diffcone's own, not
-        # the one Python gives the module at runtime.
-        roots = [split_root(r)[0] for r in self.indexer.snapshot.source_roots]
-        if module_name_for(module.path, roots) != module.name:
+        if not self._named_as_python_does():
             return None
         if isinstance(arg, ast.Name) and not self._is_shadowed(arg.id):
             if arg.id == "__name__":
@@ -1553,7 +1664,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         prefix = _string_prefix(location)
         files = self.indexer.snapshot.files
         if prefix and not prefix.startswith(("/", ".")):
-            under = [p for p in files if p.startswith(prefix) or f"/{prefix}" in f"/{p}"]
+            under = {p for p in files if p.startswith(prefix) or f"/{prefix}" in f"/{p}"}
             modules = {
                 scope.path: module
                 for module, scope in self.indexer.scopes.items()
@@ -1607,40 +1718,16 @@ class _ReferenceCollector(ast.NodeVisitor):
 
 def _own_directory_relative(path: ast.expr) -> ast.expr | None:
     """``name`` of ``Path(__file__).parent / name`` or
-    ``os.path.join(os.path.dirname(__file__), name)`` (``resolve()``,
-    ``absolute()``, ``abspath``, ``realpath`` on the way): the part of a
-    path relative to the module's own directory."""
-
-    def own_file(node: ast.expr) -> bool:
-        while True:
-            func = node.func if isinstance(node, ast.Call) else None
-            if isinstance(node, ast.Call) and not node.args and isinstance(func, ast.Attribute):
-                if func.attr not in ("resolve", "absolute"):
-                    return False
-                node = func.value
-            elif isinstance(node, ast.Call) and len(node.args) == 1:
-                parts = _flatten_chain(node.func) or []
-                if parts[-1:] not in (["Path"], ["abspath"], ["realpath"], ["PurePath"]):
-                    return False
-                node = node.args[0]
-            else:
-                return isinstance(node, ast.Name) and node.id == "__file__"
-
-    def own_directory(node: ast.expr) -> bool:
-        if isinstance(node, ast.Attribute) and node.attr == "parent":
-            return own_file(node.value)
-        if isinstance(node, ast.Call) and len(node.args) == 1:
-            parts = _flatten_chain(node.func) or []
-            return parts[-1:] == ["dirname"] and own_file(node.args[0])
-        return False
-
-    if isinstance(path, ast.BinOp) and isinstance(path.op, ast.Div) and own_directory(path.left):
-        return path.right
-    if isinstance(path, ast.Call) and len(path.args) == 2 and not path.keywords:
-        parts = _flatten_chain(path.func) or []
-        if parts[-1:] == ["join"] and own_directory(path.args[0]):
-            return path.args[1]
-    return None
+    ``os.path.join(os.path.dirname(__file__), name)`` (``own_directory_join``):
+    the part of a path relative to the module's own directory. A function
+    is matched by its last name and any ``__file__`` counts: what the part
+    names is matched by path suffix under every root, wherever the
+    directory is (``script_value``)."""
+    return own_directory_join(
+        path,
+        lambda func, names: (_flatten_chain(func) or [""])[-1] in names,
+        lambda node: isinstance(node, ast.Name) and node.id == "__file__",
+    )
 
 
 # Methods pickling runs on an object without naming them.
@@ -1662,7 +1749,6 @@ PICKLER_DUMP = frozenset(f"{m}.dump" for m in ("pickle", "_pickle", "cloudpickle
 FRESH_FILES = frozenset(
     {"tempfile.TemporaryFile", "tempfile.NamedTemporaryFile", "tempfile.SpooledTemporaryFile"}
 )
-PICKLER_DUMPS = frozenset(f"{m}.dumps" for m in ("pickle", "_pickle", "cloudpickle", "dill"))
 
 
 def _pickled_globals(data: bytes | None) -> list[tuple[str, str]] | None:
@@ -1703,6 +1789,6 @@ def _pickled_globals(data: bytes | None) -> list[tuple[str, str]] | None:
                 strings.append(memo.get(int(str(arg))))
                 continue
             strings.append(None)
-    except Exception:  # noqa: BLE001 - any malformed data is unbounded
+    except Exception:  # any malformed data is unbounded
         return None
     return found

@@ -19,12 +19,24 @@ What is recognised, by canonical dotted name through the scope's imports:
   ``tempfile.tempdir = ...``), and ``setattr``/``delattr`` on one;
 * a call of ``STATE_CALLS`` (``os.putenv``, ``warnings.filterwarnings``,
   ``locale.setlocale``, ``numpy.random.seed``, ...), and of a configuring
-  method on a logger ``logging.getLogger(...)`` returns.
+  method on a logger ``logging.getLogger(...)`` returns;
+* the same stores made through a patcher or a ``MonkeyPatch`` method:
+  ``patch.dict(os.environ, ...)``, ``patch.object(sys, "argv", ...)``,
+  ``patch.multiple(os, ...)``, ``patch("os.sep", ...)`` and other dotted
+  targets outside the source roots, ``setattr(module, ...)``,
+  ``setitem(os.environ, ...)``, ``setenv``/``delenv``, ``syspath_prepend``
+  and ``chdir`` on any receiver, unless the store is undone when the test
+  that made it ends (indexer/patches.py: a ``with`` in a test, the
+  ``monkeypatch`` fixture). A store inside a ``with`` that puts the state
+  back is no write: ``warnings.catch_warnings()`` for the warning filters,
+  a ``patch.dict`` undone after the test for the dict it patches.
 
 Not recognised: another library's configuration function missing from the
-tables, and state a library keeps on objects it hands out. Writes to module
-state inside the source roots are not recorded here: those are variables
-with ``mutated_by`` edges.
+tables, state a library keeps on objects it hands out, and a process-wide
+object reached through a name bound to it (``env = os.environ``, then
+``env["MODE"] = ...`` or ``patch.dict(env, ...)``). Writes to module state
+inside the source roots are not recorded here: those are variables with
+``mutated_by`` edges.
 """
 
 from __future__ import annotations

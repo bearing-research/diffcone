@@ -24,7 +24,10 @@ records (cacheable per module):
   package);
 * ``-c CODE`` whose code is written out (a literal, a local bound once to
   one, ``textwrap.dedent`` of one): the modules it imports and the names it
-  reaches through them.
+  reaches through them, unless it imports or runs code by a name or path
+  it computes or changes where its imports look (``sys.path``,
+  ``sys.meta_path``, ``sys.modules`` stored into, extended or reassigned;
+  ``site.addsitedir``, ``os.chdir``): then it can run anything.
 
 A command whose first item is the interpreter (a list starting with
 ``sys.executable`` or a ``python``/``python3`` literal, an f-string starting
@@ -37,11 +40,15 @@ literal names the call sites pass, as an ``import_module`` of one is. ``-m``
 of a code runner (``coverage``, ``pytest``, ``runpy``, ...) runs what
 follows it in turn; a directory given to one runs whatever it holds.
 
+A module loaded from a file by path (``spec_from_file_location``,
+``SourceFileLoader``) is matched the same way, by the reference walker
+(``_ReferenceCollector._file_loader``).
+
 Not modelled: a console script the project installs (``["tool", ...]``), a
 file outside the source roots, a command handed over whole from elsewhere
-with no interpreter in sight, a file loaded by a path built at run time
-(``spec_from_file_location(name, path)``), ``sys.path`` changes, a test
-reading a source file as text.
+with no interpreter in sight, the environment a program is started with
+(``PYTHONPATH`` sending its imports elsewhere), a test reading a source file
+as text.
 """
 
 from __future__ import annotations
@@ -51,9 +58,9 @@ import re
 import shlex
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.definitions import _flatten_chain
+from diffcone.indexer.process import STATE_MUTATORS
 from diffcone.indexer.scopes import ModuleNode, Resolved
-from diffcone.indexer.syntax import _digest
+from diffcone.indexer.syntax import _digest, _flatten_chain
 from diffcone.model import IMPORTS, MODULE, UNRESOLVED_DYNAMIC, Edge, UnresolvedReference
 from diffcone.snapshot import module_name_for
 
@@ -353,7 +360,8 @@ def _run_code(collector: _ReferenceCollector, code: str) -> bool:
 
 
 # Calls in a program that import or run code by a name or path the program
-# computes, and the ``sys.path`` changes that redirect an import.
+# computes, or that redirect where an import looks (``site.addsitedir``,
+# ``os.chdir``: ``-c`` code imports from the working directory).
 _DYNAMIC_IN_CODE = frozenset(
     {
         "import_module",
@@ -364,12 +372,84 @@ _DYNAMIC_IN_CODE = frozenset(
         "run_module",
         "spec_from_file_location",
         "SourceFileLoader",
-        "insert",
-        "append",
-        "extend",
         "addsitedir",
+        "chdir",
     }
 )
+# The import system's state: changed, it redirects what an import finds.
+_IMPORT_STATE = frozenset(
+    {"sys.path", "sys.meta_path", "sys.path_hooks", "sys.path_importer_cache", "sys.modules"}
+)
+
+
+class _ImportState:
+    """What in a program is the import system's state (``_IMPORT_STATE``):
+    a dotted name through the program's own imports (``import sys as s``,
+    ``from sys import path``), a name bound to one (``p = sys.path``), and
+    any ``<x>.path``; with ``loose``, a bare ``path`` too (an item of it
+    stored, a mutating method on it), as it may be ``sys.path`` bound
+    otherwise."""
+
+    def __init__(self, tree: ast.AST, aliases: dict[str, str]) -> None:
+        self.aliases = aliases
+        self.held = {n for n, full in aliases.items() if full in _IMPORT_STATE}
+        while True:
+            more = {
+                t.id
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                and node.value is not None
+                and not isinstance(node.value, ast.Subscript)  # an item, or a copy
+                and self.names(node.value, loose=False)
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+                for t in ast.walk(target)
+                if isinstance(t, ast.Name)
+            } - self.held
+            if not more:
+                break
+            self.held |= more
+
+    def names(self, expr: ast.expr, *, loose: bool) -> bool:
+        while isinstance(expr, ast.Subscript):
+            expr = expr.value
+        parts = _flatten_chain(expr)
+        if parts is None:
+            return False
+        if len(parts) == 1:
+            return parts[0] in self.held or (loose and parts[0] == "path")
+        if parts[-1] == "path":
+            return True
+        head = self.aliases.get(parts[0], parts[0])
+        return ".".join([head, *parts[1:]]) in _IMPORT_STATE
+
+    def changed_by(self, node: ast.AST) -> bool:
+        """A statement or call that changes the import system's state: an
+        item or attribute stored or deleted (``sys.path[:0] = [...]``,
+        ``sys.path = [...]``, ``del sys.modules["m"]``), an augmented
+        assignment (``sys.path += [...]``), a mutating method
+        (``sys.path.insert``, ``sys.meta_path.append``), ``setattr(sys,
+        ...)``. Binding a bare name (``path = ...``) changes only the
+        name."""
+        targets: list[ast.expr] = []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        elif isinstance(node, ast.AugAssign):
+            return self.names(node.target, loose=isinstance(node.target, ast.Subscript))
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in STATE_MUTATORS:
+                return self.names(func.value, loose=True)
+            if isinstance(func, ast.Name) and func.id in ("setattr", "delattr") and node.args:
+                parts = _flatten_chain(node.args[0])
+                return parts is not None and self.aliases.get(parts[0], parts[0]) == "sys"
+            return False
+        return any(
+            isinstance(sub, (ast.Subscript, ast.Attribute)) and self.names(sub, loose=True)
+            for target in targets
+            for sub in ast.walk(target)
+        )
 
 
 def _code_edges(indexer: Resolver, source: str, code: str) -> bool:
@@ -378,7 +458,8 @@ def _code_edges(indexer: Resolver, source: str, code: str) -> bool:
     each name it reaches through those imports (``from pkg.core import
     value``; ``value()``). False when the program does not parse, or may
     import or run something by a name or path it computes (``import_module``,
-    ``exec``, ``sys.path`` changes, ``runpy``): then it can run anything."""
+    ``exec``, ``runpy``) or change where its imports look (``sys.path``,
+    ``sys.modules``, ``os.chdir``): then it can run anything."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -386,17 +467,6 @@ def _code_edges(indexer: Resolver, source: str, code: str) -> bool:
     aliases: dict[str, str] = {}
     stars: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and _flatten_chain(node) == ["sys", "executable"]:
-            return False  # it starts a Python program of its own
-        if isinstance(node, ast.Call):
-            func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
-            if name in _DYNAMIC_IN_CODE:
-                if name in ("insert", "append", "extend"):
-                    parts = _flatten_chain(func.value) if isinstance(func, ast.Attribute) else None
-                    if parts is None or parts[-1:] != ["path"]:
-                        continue  # a list's own method, not ``sys.path``'s
-                return False
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _module_run(indexer, source, alias.name)
@@ -414,6 +484,17 @@ def _code_edges(indexer: Resolver, source: str, code: str) -> bool:
                 full = f"{node.module}.{alias.name}"
                 _module_run(indexer, source, full)
                 aliases[alias.asname or alias.name] = full
+    state = _ImportState(tree, aliases)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _flatten_chain(node) == ["sys", "executable"]:
+            return False  # it starts a Python program of its own
+        if state.changed_by(node):
+            return False
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in _DYNAMIC_IN_CODE:
+                return False
     for node in ast.walk(tree):
         if isinstance(node, (ast.Name, ast.Attribute)) and isinstance(node.ctx, ast.Load):
             parts = _flatten_chain(node)

@@ -244,9 +244,14 @@ Further rules (pre-release audit, round 2):
   a module definition change.
 * Names reached through strings are dependencies: the dotted target of
   `monkeypatch.setattr`/`delattr`, `mock.patch`, `patch.dict` (resolved
-  from the longest in-scope module prefix), the `(obj, "NAME")` pair of
-  `setattr`-style calls and `patch.object`, and the code of a string
-  `skipif`/`xfail` condition.
+  from the longest in-scope module prefix; `"pkg.mod.__dict__"` is the
+  module), `patch.multiple` (the object and each keyword's name), the
+  `(obj, "NAME")` pair of `setattr`-style calls and `patch.object`, the
+  `(obj, NAME=...)` names of `patch.multiple`, and the code of a string
+  `skipif`/`xfail` condition. A dotted target is also an `imports` edge to
+  its module: the patcher imports it to resolve the name. One recogniser
+  (`patches.patch_target_form`) decides the patcher forms for the walker,
+  the use scan and the undone rule.
 * Assigning another module's variable through the module (`settings.DEBUG
   = True` in a conftest) makes the writer a `mutated_by` dependency of the
   variable, as an in-place mutation does; so does a write through the
@@ -298,7 +303,12 @@ Further rules (pre-release audit, round 2):
   command list) naming an in-scope module is an `imports` edge to it and to
   `NAME.__main__`; `-c CODE` whose code is written out (a literal, a local
   bound once to one, `textwrap.dedent` of one) imports what the code
-  imports and references what it reaches through those imports. A command
+  imports and references what it reaches through those imports, unless it
+  imports by a computed name or changes where its imports look (stores,
+  augmented assignments, deletes and mutating calls on `sys.path`,
+  `sys.meta_path`, `sys.path_hooks`, `sys.modules`, also through `from sys
+  import path` or a name bound to one; `site.addsitedir`, `os.chdir`):
+  then it is unbounded, as code built at run time is. A command
   whose first item is the interpreter (a list starting with
   `sys.executable` or a `python` literal, an f-string starting with
   `sys.executable`, a string a shell-running call is given that starts
@@ -958,9 +968,11 @@ Unknown is never treated as unaffected:
   name or attribute, a `MonkeyPatch()` of its own, `MonkeyPatch.context()`
   entered other than by `with`, a helper's `monkeypatch` parameter,
   `module_mocker` and the other wider pytest-mock fixtures, any other
-  receiver, and the builtins. The same no-`yield` condition applies to a
-  `with` that puts process state back (`mock.patch.dict(os.environ)`,
-  `warnings.catch_warnings()`, `indexer/process.py`). Concurrency is the
+  receiver, and the builtins. A `with mock.patch.dict(os.environ)` puts
+  process state back for the stores in its body by the same rule (undone
+  after the test; at module level it is not), and `with
+  warnings.catch_warnings()` when its body does not yield
+  (`indexer/process.py`). Concurrency is the
   isolation assumption's: a thread or task started elsewhere that runs
   while a test's patch is active sees it.
   A dynamic *import* (`__import__`,
@@ -1400,11 +1412,16 @@ Further rules (pre-release audit, round 2):
   `sys.path`, `sys.modules`, ...; attribute stores and `setattr` on an
   external module; a catalogue of configuring calls such as `os.putenv`,
   `warnings.filterwarnings`, `locale.setlocale`, `numpy.random.seed`,
-  `hypothesis.settings.load_profile`; not inside `with
-  warnings.catch_warnings()` or `with mock.patch.dict(os.environ)`, which
-  put the state back). Such code counts when it writes, or can run code
-  that writes: backwards from the writers through `references` (not
-  `mutated_by` or `registers`), declared edges, name matches of unresolved
+  `hypothesis.settings.load_profile`; the same stores through a patcher
+  or a `MonkeyPatch` method not undone after the test,
+  `patch.dict(os.environ, ...).start()`, `MonkeyPatch().setenv(...)`,
+  `setitem(os.environ, ...)`, `syspath_prepend`, `patch.object(sys,
+  "argv", ...)`, a dotted patch target outside the roots; not inside `with
+  warnings.catch_warnings()` or a `with mock.patch.dict(os.environ)` undone
+  after the test, which put the state back). Such code counts when it
+  writes, or can run code that writes: backwards from the writers through
+  `references` (not `mutated_by` or `registers`), declared edges, name
+  matches of unresolved
   calls, and dynamic references (an unbounded import, a lookup on an
   external module in-scope code writes to, or one whose module's import
   closure holds a writer). A class's body counts for its module; a class

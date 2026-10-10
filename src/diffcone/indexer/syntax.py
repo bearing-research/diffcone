@@ -9,6 +9,7 @@ import copy
 import hashlib
 import io
 import tokenize
+from collections.abc import Callable
 
 BUILTIN_NAMES = frozenset(dir(builtins))
 
@@ -65,6 +66,98 @@ DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 FUNC_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+# Nodes whose body is a scope of its own (comprehensions aside).
+SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _flatten_chain(node: ast.AST) -> list[str] | None:
+    """``a.b.c`` as ``["a", "b", "c"]``; None for anything but a dotted name."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return list(reversed(parts))
+    return None
+
+
+def own_directory_join(
+    path: ast.expr,
+    calls: Callable[[ast.expr, tuple[str, ...]], bool],
+    own_file: Callable[[ast.expr], bool],
+    value: Callable[[ast.Name], ast.expr | None] = lambda name: None,
+) -> ast.expr | None:
+    """``rest`` of a path joining this module's own directory with it:
+    ``<dir> / rest`` or ``os.path.join(<dir>, rest)``, with ``<dir>``
+    ``Path(__file__).parent`` or ``os.path.dirname(__file__)``
+    (``resolve()``, ``absolute()``, ``abspath``, ``realpath``, ``Path`` on the
+    way); None for any other path. The caller decides which function a
+    callee is (``calls(func, names)``: one of ``Path``, ``PurePath``,
+    ``abspath``, ``realpath``, ``dirname``, ``join`` in ``names``), what is
+    this module's ``__file__`` (``own_file``) and what a name holds
+    (``value``: what it is bound to once, or None)."""
+    seen = 0
+    while isinstance(path, ast.Name) and seen < 4 and (held := value(path)) is not None:
+        path, seen = held, seen + 1
+
+    def file(node: ast.expr) -> bool:
+        while isinstance(node, ast.Call):
+            func = node.func
+            if not node.args and isinstance(func, ast.Attribute):
+                if func.attr not in ("resolve", "absolute"):
+                    return False
+                node = func.value
+            elif len(node.args) == 1 and calls(func, ("Path", "PurePath", "abspath", "realpath")):
+                node = node.args[0]
+            else:
+                return False
+        return own_file(node)
+
+    def directory(node: ast.expr, depth: int = 0) -> bool:
+        if isinstance(node, ast.Name) and depth < 4 and (held := value(node)) is not None:
+            return directory(held, depth + 1)
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            return file(node.value)
+        if isinstance(node, ast.Call) and len(node.args) == 1:
+            return calls(node.func, ("dirname",)) and file(node.args[0])
+        return False
+
+    if isinstance(path, ast.BinOp) and isinstance(path.op, ast.Div) and directory(path.left):
+        return path.right
+    if isinstance(path, ast.Call) and len(path.args) == 2 and not path.keywords:
+        if calls(path.func, ("join",)) and directory(path.args[0]):
+            return path.args[1]
+    return None
+
+
+def parent_map(nodes: list[ast.AST]) -> dict[int, ast.AST]:
+    """``id`` of each child of ``nodes`` -> its parent."""
+    parents: dict[int, ast.AST] = {}
+    for node in nodes:
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return parents
+
+
+# Calls that read a file's text or bytes: code built from them is not the
+# program's own.
+FILE_READS = frozenset(
+    {"open", "read", "read_text", "read_bytes", "get_data", "read_binary", "files", "readlines"}
+)
+
+
+def reads_files(node: ast.AST) -> bool:
+    """Whether code under ``node`` calls one of ``FILE_READS``."""
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in FILE_READS:
+                return True
+    return False
 
 
 def decode_source(data: bytes) -> str:
