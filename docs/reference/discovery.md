@@ -41,10 +41,11 @@ Among those options:
 - tests inherited from base classes, including base classes in other
   modules;
 - tests imported into a test module, by name or with `from module import *`,
-  including tests the other module imported itself;
-- tests bound to another name (`test_alias = test_orig`), `runTest` in a
-  `unittest.TestCase` without `test*` methods, and functions marked
-  `__test__ = True`;
+  including tests the other module imported itself or defines inside an
+  `if` or `try` block;
+- tests bound to another name (`test_alias = test_orig`, also inside an
+  `if` block), `runTest` in a `unittest.TestCase` without `test*` methods,
+  and functions marked `__test__ = True`;
 - doctests: text files matching `--doctest-glob` (by default
   `test*.txt`), and the docstrings in your modules when
   `--doctest-modules` is set.
@@ -57,8 +58,10 @@ Among those options:
   those use, resolved the way pytest does: class (including the fixtures
   it inherits from base classes in other modules), then module, then each
   `conftest.py` outward, then plugins listed in `pytest_plugins` (in any
-  conftest or test module, and the plugins those list) and the pytest
-  plugins of your project and of other packages in the repository. A
+  conftest or test module, and the plugins those list; the list may be
+  built with `+`, `+=`, `.append` or `.extend`, or imported from another
+  module) and the pytest plugins of your project and of other packages in
+  the repository. A
   fixture is found under every name a module
   binds it to, as in pytest: an alias (`box2 = box`), an import (`from
   tests.helpers import engine`, `from tests.helpers import *`, through
@@ -66,10 +69,13 @@ Among those options:
   tests.helpers.engine`), unless the fixture sets its own `name=`. When two
   plugins define a fixture of the same name, both count.
   A name the test parametrizes is a parameter, not a fixture, for the test
-  and for every fixture it uses;
+  and for every fixture it uses, unless `indirect` hands it to the fixture
+  (when `indirect` is a variable rather than `True`, `False` or a list of
+  names, every name that has a fixture counts as handed over);
 - marks such as `usefixtures` and `parametrize` on its class and the
   class's base classes, including marks stored in a variable and applied
-  by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`);
+  by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`),
+  and `pytestmark` lists built with `+`, `+=`, `.append` or `.extend`;
 - autouse fixtures that apply to it, including ones whose `autouse=` is a
   variable and ones a `conftest.py`, test module or plugin imports;
 - xunit-style `setup_*` and `teardown_*` functions, and unittest's
@@ -113,7 +119,10 @@ A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
 contains it. The same goes for a plugin in your repository that your source
 roots don't hold (`pytest_plugins = ["support.plugin"]` with `support/`
-outside them): every test is always selected.
+outside them): every test is always selected. And when diffcone can't read
+which plugins `pytest_plugins` names (it is built by a function call or a
+comprehension, or imported from outside your source roots), every test is
+always selected too; write the list out as strings to avoid that.
 
 Some files can change what any test does, so a change to one selects every
 target. Outside your source roots, these are:
@@ -163,20 +172,23 @@ parameter cases together.
 
 `benchmark_dir` is read from `asv.conf.json` or `asv.conf.jsonc` (the one
 nearest the root of the repository, up to three levels down; comments and
-trailing commas are allowed), relative to the directory that holds it; it
-defaults to `benchmarks`. Benchmarks are the
+trailing commas are allowed), relative to the directory that holds it
+(`"."` is that directory itself); it defaults to `benchmarks`. Benchmarks
+are the
 functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
 `peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`, `PeakMem`, `Track`
 followed by a capital or an underscore), including inherited ones and ones imported into a
 benchmark module, in every module under `benchmark_dir` as ASV walks it,
-named as ASV names them (a `benchmark_name` you set is used). Each depends
+named as ASV names them (a `benchmark_name` you set is used, also for
+the function imported elsewhere or inherited by a subclass). Each depends
 on its class's and module's `setup`, `setup_cache` and `teardown` (also
 when imported from another module; `setup` and `teardown` in any case, such
 as `setUp`, as ASV finds them), on the `__init__`, `__new__`, `__getattr__` and `__getattribute__` of its
 class, which ASV runs for every benchmark (also when inherited), and on its
-module. Class attributes such as `params` count as part of the class. A `timeraw_` benchmark also
-depends on the modules its code imports; if its code isn't a plain string,
-it is always selected.
+module. Class attributes such as `params` count as part of the class. A `timeraw_` benchmark
+(by the name ASV matches: `timeraw_import = _impl` is one) also depends on
+the modules its code imports; if its code isn't a plain string, it is
+always selected.
 
 ## When the target list may be short
 
@@ -185,8 +197,11 @@ Some things can't be known by reading the source:
 - a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;
 - a test base class, or an imported test, from outside your source roots;
+- an imported test that its module binds to something discovery can't
+  follow (`test_x = factory.make`);
 - a test file, benchmark file or doctest module outside your source roots
-  (with `--source-root src`, add `--source-root .` for tests in `tests/`);
+  (with `--source-root src`, add `--source-root .` for tests in `tests/`),
+  or a `benchmark_dir` outside the repository;
 - options that change what pytest collects in ways discovery doesn't
   follow (`-c`/`--config-file`, `--rootdir`, `--pyargs`);
 - a `--command` discovery can't find pytest's arguments in (it looks for
@@ -196,7 +211,9 @@ Some things can't be known by reading the source:
 - a plugin with a `pytest_ignore_collect` hook that can return `False`;
 - a `conftest.py` or plugin that turns files or objects into tests itself
   (`pytest_collect_file`, `pytest_collect_directory`,
-  `pytest_pycollect_makeitem`);
+  `pytest_pycollect_makeitem`), whether it defines the hook or imports it,
+  and one that star-imports (`from module import *`) from outside your
+  source roots, since that may bring such a hook in;
 - a `--doctest-glob` that matches files other than `.txt`, `.rst` or
   `.md`;
 - a test given by node id after `--` (`tests/test_x.py::test_one`), or a
