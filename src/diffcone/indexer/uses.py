@@ -74,7 +74,15 @@ counts as a possible change:
 
 Names resolve in the scope they stand in: an import binds a name in its own
 scope, a parameter or local shadows a module-level import, and a builtin is
-a name nothing in scope binds.
+a name nothing in scope binds. What a star import binds is not known here (a
+module of the project may re-export a library's name): a name it may bind is
+the star module's name of it, and may be any library name ending the same
+way (``modules`` may be ``sys.modules``) where recognising it adds what the
+name implies, and is not known to be one where that leaves something out (a
+builtin that only reads its argument, a fresh module, a path function). A
+record about such a name is about it in each star-imported module
+(``@NAME``: those in the roots between the passes, those outside as their
+own names).
 
 The records name what they reach by absolute dotted name, as far as the
 module's own imports say; the indexer resolves them over every module
@@ -86,7 +94,7 @@ imports reach) and after pass 2 for external modules
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 
 from diffcone.indexer.patches import (
@@ -241,6 +249,19 @@ _PATH_FUNCTIONS = {
 # names (modules, their namespaces and tables among them).
 _OBJECT_LISTS = frozenset({"gc.get_objects", "gc.get_referrers", "gc.get_referents"})
 _OBJECT_LIST_ATTRIBUTES = frozenset({"gc.garbage"})
+_OBJECT_LIST_NAMES = frozenset(n.rpartition(".")[2] for n in _OBJECT_LIST_ATTRIBUTES)
+_MODULES_TABLE = frozenset({"sys.modules"})
+_RUN_PATH = frozenset({"runpy.run_path"})
+# Every call ``_handle`` recognises by name.
+_HANDLE_CALLS = (
+    _IMPORT_CALLS
+    | {"__import__", "inspect.getmodule", "runpy.run_path", "runpy.run_module"}
+    | _FRESH_MODULES
+    | _MODULE_COPIES
+    | UNPICKLER_CALLS
+    | _RESOLVERS
+    | _OBJECT_LISTS
+)
 
 # Builtins that only look at a list of objects, never hand an element on.
 _LIST_READERS = frozenset(
@@ -284,6 +305,9 @@ HANDLE = "handle"
 # W24) and writes no external module (W26).
 SCOPED = "scoped"
 ANY = "*"
+# Stands for a star import's binding in a canonical name (uses._Scanner.
+# _canonical): ``?.environ`` may be any library's ``environ``.
+STAR_NAME = "?"
 # A module created here (``types.ModuleType(name)``): no module any other
 # code holds, so nothing done to it is recorded, unless it is installed in
 # ``sys.modules`` (then it is the modules its name there may be).
@@ -466,6 +490,7 @@ class _Scanner:
         bound: set[str] | None = None,
         prefix: tuple[str, ...] = (),
         outer: _ScopeNames | None = None,
+        star_modules: tuple[str, ...] = (),
     ) -> None:
         self.root = root
         self.module = module
@@ -487,10 +512,21 @@ class _Scanner:
         self.scope_names: dict[int, _ScopeNames] = self._scope_names(root, self.nodes)
         self._chains: dict[int, list[ast.AST]] = {}
         self.outer = outer
-        self.stars = any(
-            isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
-            for n in self.nodes
+        # The modules this code star-imports (and, for code ``exec`` runs,
+        # those of the module around it): what they bind is not known here.
+        self.star_modules = tuple(
+            sorted(
+                {
+                    *star_modules,
+                    *(
+                        self._star_source(n)
+                        for n in self.nodes
+                        if isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names)
+                    ),
+                }
+            )
         )
+        self.stars = bool(self.star_modules)
         self.prefix = prefix
         self.out = Uses()
         self.aliases: dict[tuple[int, str], tuple[set[str], tuple[str, ...]]] = {}
@@ -515,6 +551,12 @@ class _Scanner:
                 for name, target in self._import_bindings(node):
                     found.setdefault(name, set()).add(target)
         return found
+
+    def _star_source(self, node: ast.ImportFrom) -> str:
+        """The absolute module a star import imports from."""
+        from diffcone.indexer.scopes import resolve_relative_module
+
+        return resolve_relative_module(self.module, self.is_package, node.module, node.level)
 
     def _import_bindings(self, node: ast.Import | ast.ImportFrom) -> list[tuple[str, str]]:
         """(name, absolute dotted name) for each name an import binds."""
@@ -672,24 +714,75 @@ class _Scanner:
         return self._binding(name, node) is None
 
     def _builtin(self, func: ast.AST) -> str | None:
-        """The builtin a callee names: a name nothing in scope binds there."""
+        """The builtin a callee names: a name nothing in scope binds there,
+        and no star import may (``from numpy import *`` binds ``sum``). For
+        the uses that only read what they are given: whatever else the name
+        may be counts as any other callee."""
+        if isinstance(func, ast.Name) and self._unbound(func.id, func) and not self.stars:
+            return func.id
+        return None
+
+    def _maybe_builtin(self, func: ast.AST) -> str | None:
+        """The builtin a callee may name: a name nothing in scope binds
+        there, whatever a star import may bind (for uses that add what the
+        builtin implies)."""
         if isinstance(func, ast.Name) and self._unbound(func.id, func):
             return func.id
         return None
 
+    def _star_bound(self, name: str, node: ast.AST) -> bool:
+        """Whether a star import may bind ``name`` where ``node`` stands: one
+        binds at module level, where nothing in a function or class around
+        ``node`` binds the name instead (whatever the module itself binds,
+        whose order against the star import is not followed)."""
+        if not self.stars:
+            return False
+        names = self._binding(name, node)
+        return names is None or names is self.scope_names.get(id(self.root)) or names is self.outer
+
     def _canonical(self, expr: ast.AST) -> set[str]:
         """The dotted names a callee or value chain may be: through the
-        imports in scope where it stands, or a builtin's own name."""
+        imports in scope where it stands (each of them), or a builtin's own
+        name; and, for a name a star import may bind, the star module's name
+        of it and ``STAR_NAME`` and the chain (``?.environ``): pass 1 does not
+        know what a star import binds (a module of the project may re-export
+        a library's name), so it may be any library name ending that way
+        (``_matching``)."""
         parts = _flatten_chain(expr)
         if parts is None:
             return set()
         head, rest = parts[0], parts[1:]
-        imported = self._imported(head, expr)
-        if imported:
-            return {".".join([t, *rest]) for t in imported}
-        if self._unbound(head, expr):
-            return {".".join(parts)}
-        return set()
+        found = {".".join([t, *rest]) for t in self._imported(head, expr)}
+        if not found and self._unbound(head, expr):
+            found.add(".".join(parts))
+        if self._star_bound(head, expr):
+            found.update(".".join([star, *parts]) for star in self.star_modules)
+            found.add(".".join([STAR_NAME, *parts]))
+        return found
+
+    @staticmethod
+    def _matching(names: set[str], wanted: Collection[str]) -> set[str]:
+        """The names among ``wanted`` a chain whose canonical names are
+        ``names`` may be: those it names, and every one ending as a chain a
+        star import may bind does (for the uses that add what the name
+        implies)."""
+        found = {w for w in wanted if w in names}
+        for name in names:
+            if name.startswith(STAR_NAME + "."):
+                tail = name[len(STAR_NAME) :]
+                found.update(w for w in wanted if ("." + w).endswith(tail))
+        return found
+
+    def _may_be(self, expr: ast.AST, wanted: Collection[str]) -> bool:
+        """Whether ``expr`` may be one of ``wanted`` (_matching)."""
+        return bool(self._matching(self._canonical(expr), wanted))
+
+    def _only(self, expr: ast.AST, wanted: Collection[str]) -> bool:
+        """Whether ``expr`` is one of ``wanted`` whatever it is bound to (for
+        the uses that leave something out): a name a star import may bind is
+        not known to be."""
+        names = self._canonical(expr)
+        return bool(names) and all(name in wanted for name in names)
 
     def _scope_of(self, node: ast.AST) -> ast.AST:
         p = self.parents.get(id(node))
@@ -804,13 +897,15 @@ class _Scanner:
         names it); a list of objects from anywhere (``gc.get_objects()``:
         OBJECTS)."""
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
-            if "sys.modules" in self._canonical(node.value) and not isinstance(
-                node.slice, ast.Slice
-            ):
+            if self._may_be(node.value, _MODULES_TABLE) and not isinstance(node.slice, ast.Slice):
                 return self._module_name(node.slice)
             return None
-        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-            if self._canonical(node) & _OBJECT_LIST_ATTRIBUTES:
+        if isinstance(node, (ast.Attribute, ast.Name)) and isinstance(node.ctx, ast.Load):
+            # Only a name or attribute of the right name (``gc.garbage``,
+            # ``garbage`` imported or star-imported): every attribute of a
+            # long chain asking would walk the chain once each.
+            last = node.attr if isinstance(node, ast.Attribute) else node.id
+            if last in _OBJECT_LIST_NAMES and self._may_be(node, _OBJECT_LIST_ATTRIBUTES):
                 return {OBJECTS}, ()
             return None
         if not isinstance(node, ast.Call):
@@ -826,10 +921,11 @@ class _Scanner:
         if (
             isinstance(func, ast.Attribute)
             and func.attr in ("get", "pop", "setdefault")
-            and "sys.modules" in self._canonical(func.value)
+            and self._may_be(func.value, _MODULES_TABLE)
         ):
             return self._module_name(first)
-        names = self._canonical(func)
+        canonical = self._canonical(func)
+        names = self._matching(canonical, _HANDLE_CALLS)
         if names & _IMPORT_CALLS:
             package = node.args[1] if len(node.args) > 1 else None
             for k in node.keywords:
@@ -859,7 +955,9 @@ class _Scanner:
             return found, sources
         if names & {"inspect.getmodule", "runpy.run_path", "runpy.run_module"}:
             return {ANY}, ()
-        if names & _FRESH_MODULES:
+        if canonical and canonical <= _FRESH_MODULES:
+            # Nothing done to a new module is recorded: only when the callee
+            # is certainly the one making it.
             return {FRESH}, ()
         if names & _MODULE_COPIES:
             return self._spec_module(first)
@@ -867,12 +965,13 @@ class _Scanner:
             isinstance(func, ast.Attribute)
             and func.attr == "load"
             and isinstance(func.value, ast.Call)
-            and self._canonical(func.value.func) & UNPICKLER_CLASSES
+            and self._may_be(func.value.func, UNPICKLER_CLASSES)
         ):
             if (
                 isinstance(first, ast.Call)
-                and self._canonical(first.func) & PICKLER_DUMPS
-                and names & UNPICKLER_CALLS
+                and self._only(first.func, PICKLER_DUMPS)
+                and canonical
+                and canonical <= UNPICKLER_CALLS
             ):
                 return None  # a round trip: a copy of what the code holds
             return {ANY}, ()
@@ -919,10 +1018,11 @@ class _Scanner:
             spec = self._single_value(spec)
         if not isinstance(spec, ast.Call):
             return {ANY}, ()
-        names = self._canonical(spec.func)
-        if names & _FIND_SPEC and len(spec.args) == 1 and not spec.keywords:
+        # Each bounds the module to what its argument names: only when the
+        # callee is certainly the one.
+        if self._only(spec.func, _FIND_SPEC) and len(spec.args) == 1 and not spec.keywords:
             return self._module_name(spec.args[0])
-        if names & _SPEC_FROM_FILE:
+        if self._only(spec.func, _SPEC_FROM_FILE):
             location = spec.args[1] if len(spec.args) > 1 else None
             for k in spec.keywords:
                 if k.arg == "location":
@@ -964,7 +1064,7 @@ class _Scanner:
     def _calls_path(self, func: ast.expr, names: tuple[str, ...]) -> bool:
         """Whether ``func`` is one of the path functions ``names`` gives by
         their last name, through the imports in scope (``own_directory_join``)."""
-        return bool(self._canonical(func) & {f for n in names for f in _PATH_FUNCTIONS[n]})
+        return self._only(func, {f for n in names for f in _PATH_FUNCTIONS[n]})
 
     def _own_file(self, node: ast.expr) -> bool:
         """``__file__``, when nothing in scope binds it."""
@@ -1208,7 +1308,7 @@ class _Scanner:
         return True
 
     def _is_sys_modules(self, expr: ast.expr) -> bool:
-        return "sys.modules" in self._canonical(expr)
+        return self._may_be(expr, _MODULES_TABLE)
 
     # ------------------------------------------------------------ the walk
 
@@ -1220,7 +1320,8 @@ class _Scanner:
             if isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load):
                     self._name(node)
-                continue
+                if node.id not in _OBJECT_LIST_NAMES or not self.want_records:
+                    continue  # else a handle (``garbage`` from ``gc``), below
             if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
                 # ``T += [...]`` extends a list (or set, or dict) in place.
                 self._emit_root(node.target, MUT, ())
@@ -1346,7 +1447,7 @@ class _Scanner:
             self._climb(node, None, (), ())
 
     def _call(self, node: ast.Call) -> None:
-        builtin = self._builtin(node.func)
+        builtin = self._maybe_builtin(node.func)
         if builtin in ("globals", "vars", "locals") and not node.args:
             # ``vars()``/``locals()`` in a function or class body is a copy of
             # its own locals; at module level, and ``globals()`` anywhere, it
@@ -1364,8 +1465,7 @@ class _Scanner:
             target = _constant(node.args[0])
             if target is not None and all(p.isidentifier() for p in target.split(".")):
                 self._string_patch(node, form, target)
-        canonical = self._canonical(node.func)
-        if canonical & {"runpy.run_path"}:
+        if self._may_be(node.func, _RUN_PATH):
             self._record(USE, ANY, (), self._writer(node))
 
     def _string_patch(self, node: ast.Call, form: str, target: str) -> None:
@@ -1426,6 +1526,7 @@ class _Scanner:
                     bound=self.bound | _bound_names(list(ast.walk(tree))),
                     prefix=self._writer(node),
                     outer=self._visible(node),
+                    star_modules=self.star_modules,
                 ).scan()
                 self.out.names |= inner.names
                 self.out.records |= inner.records

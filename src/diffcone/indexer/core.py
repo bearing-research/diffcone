@@ -292,11 +292,16 @@ class Indexer(DynamicBounds):
                     or module.startswith(w + ".")
                 }
                 # A module handed on may be written by whoever gets it, and so
-                # may every module reachable from it as an attribute.
+                # may every module reachable from it as an attribute; one
+                # below counts as a write below does (a lookup on ``os`` is
+                # also what ``getattr(os.path, n)`` records).
                 | {
                     w
                     for e, w in escaped
-                    if e == module or matches(e, module) or module.startswith(e + ".")
+                    if e == module
+                    or matches(e, module)
+                    or module.startswith(e + ".")
+                    or e.startswith(module + ".")
                 }
                 | {w for e, w in below if matches(e, module) or module.startswith(e + ".")}
                 | {w for e, w in suffixes if e + "." in "." + module + "."}
@@ -584,7 +589,7 @@ class Indexer(DynamicBounds):
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
         installs_anywhere: set[tuple[str, str]] = set()
         records = self._redirect_installed(
-            [(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses]
+            self._outside_stars([(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses])
         )
         named_prefixes = self._named_prefixes(records)
         starred = {star for scope in self.scopes.values() for star in scope.star_imports}
@@ -710,6 +715,22 @@ class Indexer(DynamicBounds):
         self._attribute_modules(records, changed)
         self._module_writers(records, anything)
         self._unbind_literals(changed, writers_of)
+
+    def _outside_stars(self, records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
+        """The records, and each about a name a star import may bind
+        (``@NAME``) again about that name of every star-imported module
+        outside the source roots (``from os import *`` then ``path.x = 1``
+        stores onto ``os.path``); ``_locate_target`` follows the stars in
+        the roots."""
+        more: list[tuple[str, UseRecord]] = []
+        for m, r in records:
+            if not r.target.startswith("@"):
+                continue
+            rest = r.target[1:]
+            for star in self.scopes[m].star_imports:
+                if star not in self.scopes:
+                    more.append((m, UseRecord(r.kind, f"{star}.{rest}", r.sources, r.writer)))
+        return records + more if more else records
 
     @staticmethod
     def _redirect_installed(records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:

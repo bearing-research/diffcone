@@ -211,7 +211,12 @@ A name or dotted chain `a.b.c` is resolved from its base:
    name a chain may stand for, star imports included: a rule that adds a
    dependency applies when any of them is the name, one that leaves
    something out only when all of them are; a module's `__file__` run as a
-   script is each module the name may be. A relative import climbing above the top-level package
+   script is each module the name may be. The use scan of pass 1
+   (`indexer/uses.py`) cannot see what a star import binds, so there a name
+   one may bind may be any library name ending the same way (`modules` may
+   be `sys.modules`) for a rule that adds, and is not known for one that
+   leaves out (a builtin that only reads its argument, a fresh module, a
+   path function). A relative import climbing above the top-level package
    (often a source root that names the module differently from runtime,
    `tests/__init__.py` under the root `tests`) is recorded as an unbounded
    dynamic import, not an external one.
@@ -1009,7 +1014,10 @@ Unknown is never treated as unaffected:
   `vars(logging)` or `logging.__dict__` used other than to read an item,
   `mock.patch.dict(logging.__dict__, ...)`, `globals()["logging"]`); or
   its importer's namespace reached by `exec` of code that is not a
-  literal. Handing on a module counts for lookups on it and below it. A
+  literal. Handing on a module counts for lookups on it and below it, and
+  on a module above it, as a store does (a lookup through `os.path` is
+  recorded on `os`); a name a star import from outside the roots may bind
+  counts as that module's name (`from os import *` then `register(path)`). A
   store through, or the handing on of, a module found at run time
   (`sys.modules[name]`, `import_module(name)`, also through a local name
   bound to one, or returned by a helper) counts for every external module;

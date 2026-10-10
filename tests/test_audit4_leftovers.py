@@ -213,3 +213,108 @@ def test_l3_a_module_file_run_by_name_counts_every_binding(files, expr):
     edges = build_index(snapshot).edges
     imported = {e.target for e in edges if e.source == "tests.test_a.test_a" and e.kind == IMPORTS}
     assert "pkg.fast" in imported
+
+
+# ---------------------------------------------------------------------- L4
+# Pass 1 (indexer/uses.py) recognised library names through the imports in
+# scope only: a name a star import binds (``from sys import *`` then
+# ``modules[...]``) kept its bare name, so a module handle, an install in
+# ``sys.modules``, an unpickled object or a ``gc`` list was not seen, and a
+# store through one did not unbind the literal table it changed. Pass 1
+# cannot see what a star import binds, so such a name may be any library
+# name ending the same way where that adds what the name implies, and is
+# not known to be one where it leaves something out. A record about a name
+# a star import from outside the roots binds is about that module's name;
+# and handing on a module below one looked up dynamically counts (as a
+# write below it did), with or without a star import.
+
+NAMES = {
+    "pkg/__init__.py": "",
+    "pkg/impl.py": "def f():\n    return 1\n\n\ndef g():\n    return {0}\n",
+    "pkg/core.py": (
+        "import pkg.impl\n\nNAMES = ('f',)\n\n\ndef run(i):\n"
+        "    return getattr(pkg.impl, NAMES[i])()\n"
+    ),
+    "tests/__init__.py": "",
+    "tests/test_a.py": "import pkg.w\n\n\ndef test_a():\n    pkg.w.go()\n",
+    "tests/test_b.py": "import pkg.core\n\n\ndef test_b():\n    assert pkg.core.run(0)\n",
+}
+LOOKUP = {
+    "pkg/__init__.py": "",
+    "pkg/core.py": "import os\n\n\ndef run(name):\n    return getattr(os.path, name)()\n",
+    "pkg/impl.py": "def g():\n    return {0}\n",
+    "tests/__init__.py": "",
+    "tests/test_a.py": "import pkg.w\n\n\ndef test_a():\n    pkg.w.go()\n",
+    "tests/test_b.py": "import pkg.core\n\n\ndef test_b():\n    assert pkg.core.run('custom')\n",
+}
+PUT = "import pkg.impl\n\n\ndef put(m):\n    m.custom = pkg.impl.g\n\n\n"
+
+
+@pytest.mark.parametrize(
+    ("files", "writer"),
+    [
+        (
+            NAMES,
+            "from importlib import *\n\n\n"
+            "def go():\n    import_module('pkg.core').NAMES = ('g',)\n",
+        ),
+        (NAMES, "from sys import *\n\n\ndef go():\n    modules['pkg.core'].NAMES = ('g',)\n"),
+        (NAMES, "from pickle import *\n\n\ndef go(data):\n    loads(data).NAMES = ('g',)\n"),
+        (NAMES, "from gc import *\n\n\ndef go():\n    get_objects()[0].NAMES = ('g',)\n"),
+        (NAMES, "from gc import *\n\n\ndef go():\n    garbage[0].NAMES = ('g',)\n"),
+        (NAMES, "from pkgutil import *\n\n\ndef go(n):\n    resolve_name(n).NAMES = ('g',)\n"),
+        (NAMES, "from runpy import *\n\n\ndef go(p):\n    run_path(p)\n"),
+        (
+            {
+                **NAMES,
+                "pkg/impl.py": (
+                    "class Fake:\n    @staticmethod\n    def run(i):\n        return {0}\n"
+                ),
+            },
+            "from sys import *\n\nfrom pkg.impl import Fake\n\n\n"
+            "def go():\n    modules['pkg.core'] = Fake()\n",
+        ),
+        (LOOKUP, f"import os\n\n{PUT}def go():\n    put(os.path)\n"),
+        (LOOKUP, f"from os import *\n\n{PUT}def go():\n    put(path)\n"),
+    ],
+    ids=[
+        "import_module",
+        "sys_modules",
+        "unpickled",
+        "gc_objects",
+        "gc_garbage_name",
+        "resolve_name",
+        "run_path",
+        "install",
+        "escape_below_lookup",
+        "escape_through_star",
+    ],
+)
+def test_l4_what_a_star_imported_name_does_is_seen(repo, files, writer):
+    files = {**BENCH, **files, "pkg/w.py": writer}
+    base = repo.commit({k: v.replace("{0}", "1") for k, v in files.items()})
+    head = repo.commit({"pkg/impl.py": files["pkg/impl.py"].replace("{0}", "2")})
+    plan = repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
+    assert "tests/test_b.py::test_b" in selected(plan)
+    assert "bench.time_noop" not in selected(plan)
+
+
+def test_l4_a_builtin_a_star_import_may_rebind_is_not_a_read(repo):
+    """``len``/``sorted`` of a table only read it, unless a star import
+    binds the name to something else: then the table may change."""
+    core = (
+        "from pkg.helpers import *\n\nimport pkg.impl\n\nNAMES = ['f']\n\n\ndef run(i):\n"
+        "    sorted(NAMES)\n    return getattr(pkg.impl, NAMES[i])()\n"
+    )
+    files = {
+        **BENCH,
+        **NAMES,
+        "pkg/helpers.py": "def sorted(x):\n    x.append('g')\n    return x\n",
+        "pkg/core.py": core,
+        "pkg/w.py": "",
+    }
+    base = repo.commit({k: v.replace("{0}", "1") for k, v in files.items()})
+    head = repo.commit({"pkg/impl.py": files["pkg/impl.py"].replace("{0}", "2")})
+    plan = repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
+    assert "tests/test_b.py::test_b" in selected(plan)
+    assert "bench.time_noop" not in selected(plan)
