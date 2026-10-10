@@ -817,7 +817,15 @@ dynamic import. A module-level variable bound to a literal (constants,
 and tuples, lists, sets or dicts of literals) with no module-level
 mutation runs no code when the module is imported, so it does not seed
 its module and only its readers are reached; `__all__` is never inert,
-since it decides what `from m import *` binds. A `def` statement runs code at import only through its
+since it decides what `from m import *` binds, and neither is one whose
+annotation is evaluated at import and may run project code (`X:
+Registry["k"] = 1` runs `Registry.__class_getitem__`; such an annotation's
+references are the module's too). An annotation, a default or a
+decorator's argument runs no project code only when it calls nothing and
+subscripts or reads attributes of builtins and `typing`,
+`typing_extensions`, `collections`, `types` and `abc` names only (a class
+of the project may define `__class_getitem__` or have a metaclass, a
+module `__getattr__`); `X | Y` on classes is taken to call nothing. A `def` statement runs code at import only through its
 decorators, its defaults and its annotations when they are evaluated
 eagerly: a function whose decorators are inert (`overload`, `override`
 or `final` imported from `typing` or `typing_extensions`; a project

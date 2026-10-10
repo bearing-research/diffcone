@@ -345,14 +345,41 @@ def _quiet_names(names: frozenset[str] | None) -> bool:
     )
 
 
+# Modules whose classes and attributes run no code of the project when
+# subscripted or read (``typing.Optional[X]``, ``collections.abc.Callable``).
+_INERT_TYPE_MODULES = frozenset(
+    {"typing", "typing_extensions", "collections", "types", "abc", "builtins"}
+)
+
+
+def _reads_only_builtins(node: ast.Subscript | ast.Attribute, scope: ModuleScope) -> bool:
+    """Whether subscripting (``X[...]``) or reading an attribute of
+    (``X.attr``) what ``node`` reads off runs no code of the project: a
+    builtin (``list[int]``) or a name of ``_INERT_TYPE_MODULES``. A class of
+    the project may define ``__class_getitem__`` or have a metaclass with
+    ``__getitem__``, a module ``__getattr__``, an attribute a descriptor."""
+    names = _canonical_names(node.value, scope)
+    return names is not None and all(
+        name.split(".")[0] in _INERT_TYPE_MODULES or ("." not in name and name in BUILTIN_NAMES)
+        for name in names
+    )
+
+
 def _calls_nothing(node: ast.AST, scope: ModuleScope) -> bool:
     """No call anywhere in ``node`` but the value-building ``_QUIET_CALLS``,
-    and nothing that defers code (a lambda or comprehension builds a function;
-    an await or yield cannot appear here)."""
+    no subscript or attribute read that may run project code
+    (_reads_only_builtins: ``Registry["k"]`` runs a ``__class_getitem__``),
+    and nothing that defers code (a lambda or comprehension builds a
+    function; an await or yield cannot appear here)."""
+    callees: set[int] = set()  # a callee's chain is judged as the call
     for sub in ast.walk(node):
         if isinstance(sub, ast.Call):
             names = _canonical_names(sub.func, scope)
             if names is None or not names <= _QUIET_CALLS:
+                return False
+            callees.update(id(n) for n in ast.walk(sub.func))
+        elif isinstance(sub, (ast.Subscript, ast.Attribute)) and id(sub) not in callees:
+            if not _reads_only_builtins(sub, scope):
                 return False
         elif isinstance(sub, (ast.Lambda, *COMPREHENSIONS, ast.NamedExpr)):
             return False

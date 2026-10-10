@@ -491,6 +491,10 @@ class Resolver(FirstPass):
                 # function ``X = set_mode("slow")`` calls reaches its importers.
                 # (``ib = attrib`` runs nothing: the alias's users depend on it.)
                 _ReferenceCollector(self, owner, module_scope, skip_defs=True).visit(stmt)
+                # An annotation evaluated at import (``X: Registry["k"] = 1``
+                # runs ``__class_getitem__``) is the module's code too.
+                if isinstance(stmt, ast.AnnAssign) and not _future_annotations(scope):
+                    collector.visit(stmt.annotation)
                 value = getattr(stmt, "value", None)
                 if isinstance(value, ast.expr):
                     for call in _outermost_calls(value):

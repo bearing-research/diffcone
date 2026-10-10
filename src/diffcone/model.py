@@ -134,8 +134,10 @@ class Symbol:
     inert_header: bool = False
     # Functions: executing the ``def`` runs no code of the project (quiet
     # decorators such as ``pytest.fixture``, arguments, defaults and
-    # annotations that call nothing): the body is not code that runs at
-    # import, so neither is anything it calls.
+    # annotations that call nothing and subscript or read attributes only of
+    # builtins and ``typing``: ``Registry["k"]`` runs a ``__class_getitem__``):
+    # the body is not code that runs at import, so neither is anything it
+    # calls.
     quiet_header: bool = False
     # Module-level functions: called as a decorator (``@f``), or called and
     # what that returns called as one (``@f(...)``, ``passive_factory``), it

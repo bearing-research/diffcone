@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from diffcone.indexer.definitions import (
     _annotated_args,
+    _calls_nothing,
     _canonical_imports,
     _container_kind,
     _dispatcher_def,
@@ -225,7 +226,14 @@ class FirstPass(IndexerState):
                 # only readers of the value can observe the change. ``__all__``
                 # is not inert: it decides what ``from m import *`` binds.
                 inert_definition=(
-                    name != "__all__" and not mutators.get(name) and _is_literal(value)
+                    name != "__all__"
+                    and not mutators.get(name)
+                    and _is_literal(value)
+                    and (
+                        not isinstance(stmt, ast.AnnAssign)
+                        or _future_annotations(scope)
+                        or _calls_nothing(stmt.annotation, scope)
+                    )
                 ),
                 builtin_container=_container_kind(scope, value),
             )

@@ -384,6 +384,65 @@ def test_q13_project_decorators_that_may_call_what_they_decorate(repo):
         assert selected(plan) == {"tests/test_m.py::test_env"}, decorator
 
 
+# Q22: a subscript or attribute read in an annotation evaluated at import
+# (or in a decorator's argument) may run project code: ``Registry["k"]``
+# runs ``Registry.__class_getitem__``.
+
+REGISTRY = (
+    "import os\n\n\nclass Registry:\n    def __class_getitem__(cls, key):\n"
+    "        os.environ['DC_Q'] = key\n        return cls\n"
+)
+TEST_Q = "import os\nimport pkg.m\n\n\ndef test_q():\n    assert os.environ['DC_Q'] == '1'\n"
+
+
+def test_q22_annotation_of_a_module_variable_runs_at_import(repo):
+    m = "from pkg.reg import Registry\n\nX: Registry['1'] = 1\n"
+    plan = _plan(
+        repo,
+        {"pkg/reg.py": REGISTRY, "pkg/m.py": m, "tests/test_m.py": TEST_Q},
+        {"pkg/reg.py": REGISTRY.replace("= key", "= key + '!'")},
+        "tests/test_m.py::test_q",
+    )
+    assert selected(plan) == {"tests/test_m.py::test_q"}
+
+
+def test_q22_added_variable_whose_annotation_runs_project_code(repo):
+    m = "from pkg.reg import Registry\n\nX: Registry['1'] = 1\n"
+    plan = _plan(
+        repo,
+        {"pkg/reg.py": REGISTRY, "pkg/m.py": m, "tests/test_m.py": TEST_Q},
+        {"pkg/m.py": m + "Y: Registry['2'] = 2\n"},
+        "tests/test_m.py::test_q",
+    )
+    assert selected(plan) == {"tests/test_m.py::test_q"}
+
+
+def test_q22_which_headers_and_annotations_run_no_project_code():
+    m = (
+        "import typing\nfrom typing import Optional\n\nfrom pkg import reg\n"
+        "from pkg.reg import Registry\n\n\n"
+        "def builtin(x: list[int]) -> dict[str, int]:\n    pass\n\n\n"
+        "def typed(x: Optional[int], y: typing.Literal['a']):\n    pass\n\n\n"
+        "def subscript(x: Registry['k']):\n    pass\n\n\n"
+        "def module_attribute(x: reg.Thing):\n    pass\n\n\n"
+        "A: list[int] = []\nB: Registry['k'] = 1\nC: int = 1\n"
+    )
+    snapshot = Snapshot(
+        info=SnapshotInfo(revision="x", commit="x"),
+        source_roots=["."],
+        files={
+            k: v.encode()
+            for k, v in {"pkg/__init__.py": "", "pkg/reg.py": REGISTRY, "pkg/m.py": m}.items()
+        },
+    )
+    symbols = build_index(snapshot).symbols
+    quiet = {n for n in ("builtin", "typed", "subscript", "module_attribute")
+             if symbols[f"pkg.m.{n}"].quiet_header}  # fmt: skip
+    assert quiet == {"builtin", "typed"}
+    inert = {n for n in "ABC" if symbols[f"pkg.m.{n}"].inert_definition}
+    assert inert == {"A", "C"}
+
+
 # Q14: a module too deeply nested for the recursive walks of its syntax tree
 # is an analysis error (select everything), not an exception out of planning.
 
