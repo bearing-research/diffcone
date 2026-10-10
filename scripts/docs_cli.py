@@ -56,9 +56,12 @@ repository, and with `3` when discovery may be incomplete (unless
 `validate` and `corpus` exit `0` when every outcome change was selected,
 `1` when some were missed, `2` on errors. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
-when an input cannot be read. `collect`, `prune` and `evidence` exit `0`
-on success (`collect` records whatever the suite's own results) and `2` on
-errors.
+when an input cannot be read. `report` exits `0` when the runs it read
+show no problem, `1` when they show one (a miss, a check that reached no
+verdict, a selected test pytest did not collect, an artifact it could not
+read), `2` on errors. `collect`, `prune` and
+`evidence` exit `0` on success (`collect` records whatever the suite's own
+results) and `2` on errors. An internal error exits `2` in every command.
 """
 
 

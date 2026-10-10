@@ -85,7 +85,9 @@ jobs:
           path: diffcone-results
 ```
 
-The job fails when a selected test fails, like any test job. The plan and
+The job fails when a selected test fails, like any test job. It also fails
+when a selected test wasn't collected by pytest, and when discovery may be
+incomplete (unless you set `allow-incomplete-discovery: true`). The plan and
 the run's JUnit XML are written to `diffcone-results/`; upload them with
 `if: always()` so they're kept when tests fail.
 
@@ -95,7 +97,8 @@ the run's JUnit XML are written to `diffcone-results/`; upload them with
     environment must match: the same Python version and installed packages.
     Installing from a lock file makes this automatic. When the environment
     differs, diffcone runs a plan from the code instead of from the
-    recording; when the pull request changes the lock file or another
+    recording (or every test, if that plan's discovery may be incomplete);
+    when the pull request changes the lock file or another
     dependency, build or CI file diffcone recognises (see
     [discovery](reference/discovery.md)), it runs every test.
 
@@ -127,7 +130,8 @@ write JUnit XML (`--junitxml=full.xml`) and upload it, then add:
 The check writes its result to the job summary. A miss is a new failure
 of the full run that the plan didn't select, or that diffcone's own run
 didn't execute. It doesn't fail the workflow unless you set
-`fail-on-miss: true`. Tests that already failed in
+`fail-on-miss: true`, but an error in the check itself (an input it can't
+read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses.
 
 ## Or: record on every push to the default branch
@@ -179,14 +183,16 @@ On a push, `record` with `check: true`:
 3. compares the plan with the full run. A new failure the plan didn't
    select is run again, with the same pytest options. If it fails again,
    it is a miss, and the job fails. If it passes the second time, it is
-   reported as flaky. Failures the recorded run already had are not
-   misses;
+   reported as flaky. Only a test can be run again: a file that failed to
+   collect, or a failure that matches no target, is a miss straight away.
+   Failures the recorded run already had are not misses;
 4. saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.
 
 The check is skipped, with a note, when there is nothing to compare with:
 no recording yet, a recording diffcone can't use (made with other source
-roots, for example), or a commit with no parent. The recording is still
+roots, or for a commit that can't be fetched or isn't from before the
+pushed commit, for example), or a commit with no parent. The recording is still
 made and saved.
 
 With `fail-on-test-failure: true` a failing test fails the job too, as a
@@ -233,7 +239,8 @@ The report reads the artifacts whose names start with `diffcone-`, so
 upload the results of `run` and `record` (as in the workflows above) under
 a name that starts with `diffcone-` and differs per job, and per cell of a
 matrix: `diffcone-${{ matrix.os }}-py${{ matrix.python-version }}`, for
-example. The report has one row per name.
+example. The report has one row per name; when a job was re-run, it reads
+the latest upload.
 
 Each report covers the runs that completed since the last successful
 report that posted started, so a run still going when one report starts is
@@ -289,12 +296,12 @@ diffcone report --dir runs
 ## How the cache is shared
 
 Each recording is saved with `actions/cache` under its own key,
-`<key-prefix>--<commit>-<run id>-<attempt>`, and pull requests restore the newest one
-with their prefix (`diffcone-ubuntu` never restores a recording of
-`diffcone-ubuntu-py312`). If a recording's commit is no longer on the
-branch (after a force push), the run plans without it and says so. A
-shallow checkout is deepened until the base revision is there. GitHub lets pull requests,
-including those from forks, read caches saved on the default branch but
+`<key-prefix>--<commit>-<run id>-<attempt>`, and pull requests restore the
+newest one with their prefix (`diffcone-ubuntu` never restores a recording of
+`diffcone-ubuntu-py312`). If a recording's commit can no longer be fetched
+(after a force push), the run plans without it and says so. A shallow
+checkout is deepened until the base revision is there. GitHub lets pull
+requests, including those from forks, read caches saved on the default branch but
 never write them, so a pull request can't change the recording. The
 `cache-mode` settings above give each job only the access it needs.
 
@@ -326,4 +333,12 @@ target branch of the pull request's merge commit) and
 
 `check` takes `full` (required: the full run's JUnit XML), `results` (the
 directory `run` wrote; default `diffcone-results`), `others` (more
-selective runs to compare, as `NAME=JUNIT` pairs), and `fail-on-miss`.
+selective runs to compare, as `NAME=JUNIT` pairs), `fail-on-miss` (default
+`false`) and `diffcone-ref`. `report` also takes `github-token` (default
+the workflow's token, which reads the runs and posts the issues) and
+`diffcone-ref`.
+
+Outputs: `run` sets `selected` (how many tests the plan selected);
+`record` sets `results` (the directory to upload) and, with `check`,
+`misses`; `report` sets `ok` and `report` (the directory holding
+`report.md` and `report.json`).

@@ -224,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --evidence: record the selected tests too and advance the recording to head "
         "(their new records, the old ones for every other test); needs a clean checkout of "
-        "head and the pytest arguments the recording was made with",
+        "head and the command, pytest arguments and source roots the recording was made with",
     )
     r.add_argument("runner_args", nargs="*", help="extra runner arguments (after --)")
 
@@ -433,7 +433,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         dest="source_roots",
         metavar="DIR[=PREFIX]",
-        help="as for plan (repeatable; default: .)",
+        help="the roots you plan with (repeatable; default: .); entries for other roots are "
+        "deleted",
     )
     pr.add_argument("--cache-dir", help="the cache (default: <repo>/.diffcone/cache)")
 

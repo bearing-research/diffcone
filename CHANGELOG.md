@@ -42,11 +42,12 @@ selection rules.
   object can be: modules passed around, obtained by name or named in a
   string, and test modules and conftests, which pytest hands out. Methods
   still match whatever the receiver.
-- A method called on an instance attribute (`self._client.get()`) is
-  resolved to one class's method when every assignment of the attribute
-  creates an instance of that class or of a third-party class; a
-  module-level object made by a third-party call is changed only by
-  methods of classes deriving from a third-party class.
+- Deciding which code may change an object in place: a method called on an
+  instance attribute (`self._client.get()`) counts only as that class's
+  method when every assignment of the attribute creates an instance of
+  one class (or of a third-party class), and a module-level object made by
+  a third-party call is changed only by methods of classes deriving from a
+  third-party class. Calls on such attributes are still matched by name.
 - A patch that ends with its test (`monkeypatch.setattr` on pytest's
   fixture, `mocker.patch`, a `with mock.patch(...)` block, a
   `@mock.patch(...)` decorator) no longer makes a lookup on a library

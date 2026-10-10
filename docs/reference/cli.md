@@ -36,9 +36,12 @@ repository, and with `3` when discovery may be incomplete (unless
 `validate` and `corpus` exit `0` when every outcome change was selected,
 `1` when some were missed, `2` on errors. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
-when an input cannot be read. `collect`, `prune` and `evidence` exit `0`
-on success (`collect` records whatever the suite's own results) and `2` on
-errors.
+when an input cannot be read. `report` exits `0` when the runs it read
+show no problem, `1` when they show one (a miss, a check that reached no
+verdict, a selected test pytest did not collect, an artifact it could not
+read), `2` on errors. `collect`, `prune` and
+`evidence` exit `0` on success (`collect` records whatever the suite's own
+results) and `2` on errors. An internal error exits `2` in every command.
 
 ## `diffcone plan`
 
@@ -97,7 +100,7 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 | `--no-cache` |  | Do not read or write the cache (&lt;repo&gt;/.diffcone/cache): whole indexes of committed snapshots and per-module results, which also serve WORKTREE and INDEX. |
 | `--cache-dir` `CACHE_DIR` |  | Where to keep the cache (default: &lt;repo&gt;/.diffcone/cache). |
 | `--evidence` <code>auto&#124;PATH</code> |  | Opt-in execution evidence (see `diffcone collect`): select pytest targets on what each test executed when recorded. auto picks the recording at the nearest ancestor commit; other runners' targets are planned statically. |
-| `--collect` |  | With --evidence: record the selected tests too and advance the recording to head (their new records, the old ones for every other test); needs a clean checkout of head and the pytest arguments the recording was made with. |
+| `--collect` |  | With --evidence: record the selected tests too and advance the recording to head (their new records, the old ones for every other test); needs a clean checkout of head and the command, pytest arguments and source roots the recording was made with. |
 | `runner_args ...` (after `--`) |  | Extra runner arguments (after --). |
 
 ## `diffcone validate`
@@ -232,7 +235,7 @@ diffcone prune [-h] [--repo REPO] --keep REV [--source-root DIR[=PREFIX]] [--cac
 |---|---|---|
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--keep` `REV` |  | **Required.** Commit to keep (repeatable). |
-| `--source-root` `DIR[=PREFIX]` |  | As for plan (repeatable; default: .). |
+| `--source-root` `DIR[=PREFIX]` |  | The roots you plan with (repeatable; default: .); entries for other roots are deleted. |
 | `--cache-dir` `CACHE_DIR` |  | The cache (default: &lt;repo&gt;/.diffcone/cache). |
 
 ## `diffcone evidence`

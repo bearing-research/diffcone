@@ -46,6 +46,7 @@ started in, so the recorded tests changed it).
 | `commit` | The commit it resolved to (for `INDEX` and `WORKTREE`, the commit they sit on). |
 | `kind` | `commit`, `index` or `worktree`. |
 | `uncommitted` | `true` for `INDEX` and `WORKTREE`. |
+| `description` | A readable summary, as the text report prints it. |
 
 ## Changed symbols
 
@@ -60,8 +61,11 @@ started in, so the recorded tests changed it).
 ```
 
 `changes` lists one or more of `added`, `deleted`, `body_changed`,
-`definition_changed` and `dependencies_changed`
-([what they mean](../concepts.md#symbols-and-changes)).
+`definition_changed`, `annotations_changed`, `dependencies_changed`,
+`dependencies_added`, `imports_added` and `docstring_changed`
+([what they mean](../concepts.md#symbols-and-changes)). `imports_added`
+and `docstring_changed` are listed for completeness: they select tests
+only where the new names or the docstring are used.
 
 ## Selected targets
 
@@ -89,11 +93,11 @@ selected the target to be safe.
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
 | `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
-| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), and a change could be among them. |
-| `unresolved_name_match` | yes | It reaches a call diffcone couldn't resolve, whose name matches a changed function or method. |
+| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), and a change could be among them; or it runs with a module's globals (a doctest) and that module's imports changed. |
+| `unresolved_name_match` | yes | It reaches a reference diffcone couldn't resolve (a call, a name or an attribute) whose name matches something that changed. |
 | `entry_symbol_unresolved` | yes | Its own code wasn't found in either snapshot. |
 | `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots, a benchmark's code it couldn't read. |
-| `analysis_error` | yes | A file couldn't be analysed, so every target is selected. |
+| `analysis_error` | yes | A file, or `diffcone.toml`, couldn't be analysed, so every target is selected. |
 | `runner_dependency` | yes | Code the test runner itself imports changed. |
 | `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration, build script, dependencies or lock file changed outside them. |
 
@@ -108,13 +112,13 @@ With execution evidence, the rules name what the recorded run observed:
 | `test_scope` | | Test code it shares a scope with changed (a mark, fixture or parameter). |
 | `escalated` | | The change can't be judged from a recording (code that runs on import, for example), so it was planned from the code. |
 | `cython_caller` | | The test ran Cython code that calls a changed function the recording can't see. |
-| `lookup_site` | yes | The test looked a name up dynamically where a name was added or removed. |
+| `lookup_site` | yes | The test looked a name up dynamically where something the lookup can see changed: a name added or removed, a definition or a value. |
 | `no_evidence` | yes | The test has no recording (a new test, for example). |
 | `unstable` | yes | The test's recordings differed between runs. |
-| `subprocess` | yes | The test started a process the recording can't follow: not a Python process started with `subprocess` on Linux or macOS, one that couldn't record itself, one running your code from a `-c` snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a `multiprocessing` pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook). |
+| `subprocess` | yes | The test started a process the recording can't follow: not a Python process started with `subprocess` on Linux or macOS, one that couldn't record itself, one running your code from a `-c` snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a `multiprocessing` pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook, during collection, or while a file outside the source roots was imported). |
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |
 | `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook (or collection) ran in the recording changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
-| `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build. |
+| `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files. |
 | `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported. |
 
 ## Exit codes

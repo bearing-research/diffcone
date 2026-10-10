@@ -17,11 +17,14 @@ changed symbols (1):
 selected targets (2):
   pytest: tests/test_calc.py::test_mul
     - dependency: calc.ops.mul body_changed
+      target:pytest:tests/test_calc.py::test_mul -[entry]-> tests.test_calc.test_mul -[references]-> calc.ops.mul
   pytest: tests/test_calc.py::test_square
     - dependency: calc.ops.mul body_changed
+      target:pytest:tests/test_calc.py::test_square -[entry]-> tests.test_calc.test_square -[references]-> calc.ops.square -[references]-> calc.ops.mul
 
 unselected targets (1):
   pytest: tests/test_calc.py::test_add
+...
 ```
 
 ## Why diffcone

@@ -8,9 +8,8 @@ each one understands.
 
 **Configuration** is read from `pytest.toml`, `.pytest.toml`,
 `pytest.ini`, `.pytest.ini`, `pyproject.toml` (`[tool.pytest.ini_options]`
-or `[tool.pytest]`), `tox.ini` or `setup.cfg`, in pytest's order:
-`testpaths`,
-`python_files`, `python_classes`, `python_functions`, `norecursedirs`,
+or `[tool.pytest]`), `tox.ini` or `setup.cfg` at the root of the
+repository, in pytest's order: `testpaths`, `python_files`, `python_classes`, `python_functions`, `norecursedirs`,
 `usefixtures`, and the options in `addopts`. pytest reads options from
 three more places, and so does discovery, in pytest's order: the
 `PYTEST_ADDOPTS` environment variable, the pytest arguments written into
@@ -46,7 +45,9 @@ Among those options:
 - tests bound to another name (`test_alias = test_orig`), `runTest` in a
   `unittest.TestCase` without `test*` methods, and functions marked
   `__test__ = True`;
-- doctests, when `--doctest-modules` or `--doctest-glob` is set.
+- doctests: text files matching `--doctest-glob` (by default
+  `test*.txt`), and the docstrings in your modules when
+  `--doctest-modules` is set.
 
 **What each test depends on**, besides its own code:
 
@@ -90,7 +91,7 @@ Among those options:
   process for every test after it: a `conftest.py`, a test module or a
   module they import that sets an environment variable or extends
   `sys.path` when imported, or a `pytest_generate_tests` in a
-  sub-directory's `conftest.py` that does. Diffcone recognises writes to
+  sub-directory's `conftest.py` that does. diffcone recognises writes to
   `os.environ`, `sys.path` and `sys.modules`, attributes set on
   third-party modules, and common configuration calls such as
   `warnings.filterwarnings`, `logging.basicConfig`, `locale.setlocale`,
@@ -112,21 +113,29 @@ A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
 contains it. The same goes for a plugin in your repository that your source
 roots don't hold (`pytest_plugins = ["support.plugin"]` with `support/`
-outside them): every test is always selected. A change outside your source roots to your runner
-configuration or build script (`pyproject.toml`, `tox.ini`, `setup.cfg`,
-`setup.py`, `noxfile.py`, `hatch.toml`, a `conftest.py`, `asv.conf.json`),
-to your dependencies (a lock file such as `uv.lock`, any file or directory
-named for requirements, constraints or deps, such as
-`dev-requirements.txt` or `ci/deps/py311.yaml`, a conda
-`environment*.yml`), to your CI configuration (`.github/workflows/`,
-`ci/`), to a `.env` or `.pth` file, `sitecustomize.py`, a type checker or
-linter configuration that a pytest plugin may run (`mypy.ini`,
-`ruff.toml`), or to a compiled source selects every target. Inside your
-source roots, a change to any file diffcone doesn't read as Python
-selects every target, and so does a change to a build script or
-`sitecustomize.py` there, wherever it sits. Other files outside the roots
-are assumed not to affect the tests: if your tests read one, put it under
-a source root.
+outside them): every test is always selected.
+
+Some files can change what any test does, so a change to one selects every
+target. Outside your source roots, these are:
+
+- your runner configuration or build script: `pyproject.toml`, `tox.ini`,
+  `setup.cfg`, `setup.py`, `noxfile.py`, `hatch.toml`, a `conftest.py`,
+  `asv.conf.json`;
+- your dependencies: a lock file such as `uv.lock`, any file or directory
+  named for requirements, constraints or deps (`dev-requirements.txt`,
+  `ci/deps/py311.yaml`), a conda `environment*.yml`, and installed package
+  metadata (a `*.dist-info` or `*.egg-info` directory);
+- your CI configuration (`.github/workflows/`, `ci/`);
+- a `.env` or `.pth` file, or `sitecustomize.py`;
+- a type checker or linter configuration that a pytest plugin may run
+  (`mypy.ini`, `ruff.toml`);
+- compiled sources.
+
+Inside your source roots, a change to any file diffcone doesn't read as
+Python selects every target, and so does a change to a build script or
+`sitecustomize.py`, wherever it sits. `diffcone.toml` and `.diffcone/` are
+the exceptions. Other files outside the roots are assumed not to affect the
+tests: if your tests read one, put it under a source root.
 
 ### Fixtures from installed plugins
 
@@ -152,17 +161,19 @@ parameter cases together.
 
 ## ASV
 
-`benchmark_dir` is read from `asv.conf.json`. Benchmarks are the
+`benchmark_dir` is read from `asv.conf.json` (the one nearest the root of
+the repository, up to three levels down), relative to the directory that
+holds it; it defaults to `benchmarks`. Benchmarks are the
 functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
 `peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`, `PeakMem`, `Track`
-followed by a capital), including inherited ones and ones imported into a
+followed by a capital or an underscore), including inherited ones and ones imported into a
 benchmark module, in every module under `benchmark_dir` as ASV walks it,
 named as ASV names them (a `benchmark_name` you set is used). Each depends
 on its class's and module's `setup`, `setup_cache` and `teardown` (also
 when imported from another module; `setup` and `teardown` in any case, such
-as `setUp`, as ASV finds them), on the `__init__` of its class, which ASV
-runs for every benchmark (also when inherited), and on its module. Class attributes
-such as `params` count as part of the class. A `timeraw_` benchmark also
+as `setUp`, as ASV finds them), on the `__init__`, `__new__`, `__getattr__` and `__getattribute__` of its
+class, which ASV runs for every benchmark (also when inherited), and on its
+module. Class attributes such as `params` count as part of the class. A `timeraw_` benchmark also
 depends on the modules its code imports; if its code isn't a plain string,
 it is always selected.
 
@@ -176,10 +187,17 @@ Some things can't be known by reading the source:
 - a test file, benchmark file or doctest module outside your source roots
   (with `--source-root src`, add `--source-root .` for tests in `tests/`);
 - options that change what pytest collects in ways discovery doesn't
-  follow (`-c`, `--rootdir`, `--pyargs`);
+  follow (`-c`/`--config-file`, `--rootdir`, `--pyargs`);
 - a `--command` discovery can't find pytest's arguments in (it looks for
-  `-m pytest` or a `pytest` program);
+  `-m pytest` or a `pytest` program), or one that names pytest more than
+  once;
+- a path given to pytest that doesn't exist in the repository;
 - a plugin with a `pytest_ignore_collect` hook that can return `False`;
+- a `conftest.py` or plugin that turns files or objects into tests itself
+  (`pytest_collect_file`, `pytest_collect_directory`,
+  `pytest_pycollect_makeitem`);
+- a `--doctest-glob` that matches files other than `.txt`, `.rst` or
+  `.md`;
 - a test given by node id after `--` (`tests/test_x.py::test_one`), or a
   path right after an option that may take it as its value (`--cov src`);
 - a test bound to something discovery can't follow

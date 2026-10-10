@@ -29,21 +29,26 @@ change to any of these can affect the target.
 
 diffcone reads every Python module under your
 [source roots](guides/planning.md#source-roots) and records its
-**symbols**: modules, classes, functions and methods, each named the way
-it is imported (`calc.ops.mul`). It compares the two snapshots symbol by
-symbol, and classifies each difference:
+**symbols**: modules, classes, functions, methods and module-level
+variables, each named the way it is imported (`calc.ops.mul`). It compares
+the two snapshots symbol by symbol, and classifies each difference (the
+report's names in brackets):
 
 | Change | Example |
 |---|---|
-| added or deleted | A new helper function, a removed method. |
-| body changed | The code inside a function changed. |
-| definition changed | Its signature, defaults, decorators or class bases changed. |
-| dependencies changed | It now calls or imports something different, or a name it uses now resolves (a missing import was added). |
+| added or deleted (`added`, `deleted`) | A new helper function, a removed method. |
+| body changed (`body_changed`) | The code inside a function changed. |
+| definition changed (`definition_changed`) | Its parameters, defaults, decorators or class bases changed. |
+| annotations changed (`annotations_changed`) | Only a function's type annotations changed. |
+| dependencies changed (`dependencies_changed`) | It now calls or imports something different, or no longer uses something it did. |
+| dependencies added (`dependencies_added`) | A name it uses now resolves to something (a missing import was added). |
+| imports added (`imports_added`) | A module gained imports and nothing else. This selects nothing by itself; the code that uses the new names has changed too. |
+| docstring changed (`docstring_changed`) | Only its docstring changed. |
 
 Formatting and comments are not changes: moving a function down the file or
-adding blank lines selects nothing. Neither is a docstring edit, unless code
-uses the docstring: a decorator that rewrites it, or code that reads
-`__doc__`.
+adding blank lines selects nothing. A docstring edit counts only where the
+docstring is used: a doctest, a decorator that rewrites it, or code that
+reads `__doc__`.
 
 ## From a change to a test
 
@@ -72,14 +77,15 @@ selects the tests that used it.
 
 Python is dynamic, and not every relationship can be read from the source:
 `getattr` with a computed name, a module imported by a name built at run
-time, a plugin registered through entry points. diffcone does not guess.
+time, an object loaded with `pickle`. diffcone does not guess.
 When it cannot bound what a change reaches, it selects more tests and
 records why in the report's `fallback_decisions`. If an error stops the
 analysis altogether (a file that doesn't parse, for example), it selects
 every target.
 
-You can also tell diffcone about dependencies it cannot see in
-[`diffcone.toml`](reference/declarations.md).
+Some dependencies leave no trace in the code at all, such as a plugin
+registered through entry points or a handler named in a configuration
+file. Tell diffcone about them in [`diffcone.toml`](reference/declarations.md).
 
 ## Execution evidence
 

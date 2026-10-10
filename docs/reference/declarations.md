@@ -22,7 +22,7 @@ selection with your `why`.
 
 | Key | Description |
 |---|---|
-| `from` | Required. The code that depends on something: a function, method, class or module, by its import path. A class or module includes everything defined in it. |
+| `from` | Required. The code that depends on something: a function, method, class or module, by its import path. A class or module includes everything defined in it, and a package its submodules. |
 | `to` | Required. What it depends on, named the same way. |
 | `why` | Optional. A short explanation, shown in the report. |
 
@@ -74,6 +74,6 @@ unknown key, or a file that doesn't parse is reported as an analysis
 error: the plan then selects every target, so these typos can't silently
 remove tests from a plan. The one typo diffcone can't catch is an
 `always_run` pattern that matches nothing (see above): the plan stands, and
-only the count shows it. A declaration between two very large modules (more than 5,000
-pairs of symbols) is also an error; declare the specific functions
-instead.
+only the count shows it. A declaration between two very large modules
+(more than 5,000 pairs of symbols) is also an error; declare the specific
+functions instead.

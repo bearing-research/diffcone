@@ -17,7 +17,14 @@ diffcone run --base main --head WORKTREE --discover pytest \
 `run` builds the same plan as `diffcone plan`, then runs only the selected
 tests. Everything after `--` is passed to pytest. pytest collects your
 suite as usual and a small plugin keeps the selected tests, so conftests
-and plugins load exactly as in a full run.
+and plugins load exactly as in a full run. Tests pytest collects that the
+plan doesn't know about (from a plugin's own collection, for example) are
+kept too.
+
+`run` exits with pytest's exit code. If a selected test wasn't collected,
+it exits `3`, since the run may have skipped tests; if nothing ran because
+nothing was selected, it exits `0` (see
+[exit codes](../reference/cli.md#exit-codes)).
 
 Discovery reads the same pytest options the run will use: those after
 `--`, those written into `--command` (`uv run pytest -p tests.plugin`),
@@ -60,7 +67,9 @@ It lists every test that failed or errored in the full run but wasn't
 selected, and exits with `1` if there is one. Options:
 
 - `--baseline base.xml` takes a run from before the change. Tests that
-  failed there too are reported as already failing, not as misses.
+  failed there too are reported as already failing, not as misses. Each
+  parametrized case counts on its own: a case that failed at the baseline
+  doesn't excuse a new failure of another case.
 - `--run NAME=JUNIT` adds a selective run to compare on the same failures:
   diffcone's own run of the plan, or another test-selection tool's. Name
   diffcone's own run `diffcone` (`--run diffcone=diffcone.xml`): a new
@@ -85,8 +94,10 @@ such test that wasn't selected.
 
 `diffcone corpus --range A..B` validates every commit in a range and
 summarises the results: how many failures were missed and what share of
-tests each plan would have skipped. Use `--jobs N` to validate several
-commits in parallel.
+tests each plan would have skipped. It skips commits that change no `.py`
+file unless you pass `--all-commits`. Use `--jobs N` to validate several
+commits in parallel. Both commands take `--evidence` to validate plans made
+from a recording.
 
 Tips for both commands:
 

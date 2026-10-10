@@ -20,11 +20,14 @@ changed symbols (1):
 selected targets (2):
   pytest: tests/test_calc.py::test_mul
     - dependency: calc.ops.mul body_changed
+      target:pytest:tests/test_calc.py::test_mul -[entry]-> tests.test_calc.test_mul -[references]-> calc.ops.mul
   pytest: tests/test_calc.py::test_square
     - dependency: calc.ops.mul body_changed
+      target:pytest:tests/test_calc.py::test_square -[entry]-> tests.test_calc.test_square -[references]-> calc.ops.square -[references]-> calc.ops.mul
 
 unselected targets (1):
   pytest: tests/test_calc.py::test_add
+...
 ```
 
 - **Every selection is explained:** the report shows the chain of calls and
@@ -83,7 +86,7 @@ Read the documentation at
 ## Status
 
 diffcone is alpha software. Its selections have been checked against the
-full test suites of 34 open-source projects. See the
+full test suites of more than 40 open-source projects. See the
 [changelog](https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md)
 for what each release contains.
 

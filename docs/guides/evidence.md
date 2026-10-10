@@ -35,6 +35,13 @@ recordings:
 diffcone evidence
 ```
 
+`collect` refuses to record a commit with a file it can't analyse, since
+the code in it couldn't be matched to what the tests ran. If pytest stops
+early (an interrupt, an internal error, a usage error), nothing is
+written. A recording made by an earlier version of diffcone may not be
+readable by a later one; `diffcone evidence` then leaves it out, and you
+need to record again.
+
 Some tests behave differently depending on what ran before them. Add
 `--reverse-check` to run the suite a second time in reverse order; tests
 whose recordings differ are marked unstable and always selected.
@@ -45,8 +52,8 @@ whose recordings differ are marked unstable and always selected.
 diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
 ```
 
-`--evidence auto` uses the recording from the closest earlier commit (or
-pass a recording's path). The recording doesn't need to be at your base:
+`--evidence auto` uses the recording, made with the same source roots, from
+the nearest ancestor of the head (or pass a recording's path). The recording doesn't need to be at your base:
 diffcone also accounts for the changes made since it was recorded.
 
 `plan` doesn't run anything, so it can't check that your test environment
@@ -59,8 +66,14 @@ A test is selected when, in its recorded run, it:
 
 - ran a function that changed;
 - read a value or definition that changed;
-- looked up a name dynamically where a name was added or removed; or
+- looked up a name dynamically where something the lookup can see
+  changed; or
 - read a file that changed.
+
+It is also selected when its own code, class or module changed, when the
+fixtures, hooks or plugins around it changed, and when an
+[`[[always_run]]`](../reference/declarations.md#tests-to-run-on-every-change)
+entry names it.
 
 Some changes can't be judged from a recording, and diffcone says so in the
 report:
@@ -69,8 +82,8 @@ report:
   evidence.
 - Tests with no recording (new tests, for example) and tests whose
   recording was unstable are always selected.
-- A Python process a test starts with `subprocess` (directly, or through
-  `uv run`) records itself on Linux and macOS, and the test is credited
+- A Python process a test starts with `subprocess` (directly, through
+  `asyncio`, or through `uv run`) records itself on Linux and macOS, and the test is credited
   with what it ran, as is every test that runs while it is still running.
   A test that starts a process any other way (`os.system`, a shell,
   `multiprocessing`, or anything on Windows), or whose child can't record
@@ -90,7 +103,11 @@ report:
   always selected: that code can use any name of your code.
 - Code that background threads are running while a test runs is credited
   to that test.
-- Changes to compiled sources, build files and configuration select every
+- Code that ran outside every test, in a pytest hook or while pytest
+  collected, can affect any test: a change to it, or to what it reads,
+  selects every test, and so does a change to `pytest_plugins`.
+- Changes to compiled sources (except [Cython](#cython) with a profiled
+  recording), build files, dependencies and configuration select every
   test.
 - On a file system that ignores case (macOS and Windows by default), a file
   a test opened under another spelling (`Data/Expected.TXT`) still counts
@@ -107,10 +124,12 @@ diffcone run --base main --head HEAD --discover pytest \
 
 A recording is only valid in the environment it was made in. Before any
 test runs, even when the plan selects nothing, `run` checks that the Python
-version and its `-O` setting, the installed packages, your `PYTHONPATH`
-and a few environment variables (`PYTHONHASHSEED`, `TZ`, `LANG`, `LC_ALL`,
-`PYTHONWARNINGS`) match the recording. If they don't, it falls back to a
-plan from the code and tells you what differed. A package installed in
+implementation and version and its `-O` setting, the platform and machine,
+the installed packages, your `PYTHONPATH` and a few environment variables
+(`TZ`, `LANG`, `LC_ALL`, `PYTHONWARNINGS`) match the recording; it sets
+`PYTHONHASHSEED` to the recorded value itself. If they don't match, it
+falls back to a plan from the code and tells you what differed. If that
+plan's discovery may be incomplete, it runs the whole suite instead. A package installed in
 editable mode from outside your repository (`pip install -e ../lib`)
 counts as installed: diffcone doesn't see edits to its code, as with any
 other installed package. If your tests also depend on your own
@@ -140,11 +159,11 @@ diffcone run --base main --head HEAD --discover pytest \
     --command "uv run pytest" --evidence auto --collect -- -n 8
 ```
 
-This needs a clean checkout of the head and the same pytest arguments the
-recording was made with. If the recording was made with `--reverse-check`,
-`run --collect` runs the selected tests a second time in reverse order, so
-the new records are checked the same way. If the environment differs or pytest stops early,
-no recording is written.
+This needs a clean checkout of the head, and the same `--command`, pytest
+arguments and source roots the recording was made with. If the recording
+was made with `--reverse-check`, `run --collect` runs the selected tests a
+second time in reverse order, so the new records are checked the same way.
+If the environment differs or pytest stops early, no recording is written.
 
 In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See [CI](../ci.md).

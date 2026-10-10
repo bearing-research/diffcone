@@ -27,14 +27,20 @@ targets.json` reads one.
 
 | Field | Description |
 |---|---|
-| `source_roots` | Optional. The [source roots](../guides/planning.md#source-roots) the names below use. `--source-root` overrides it. |
+| `source_roots` | Optional. The [source roots](../guides/planning.md#source-roots) the names below use, `DIR=PREFIX` included. `--source-root` overrides it. |
 | `runner` | Which runner runs the target. `diffcone run` supports `pytest` and `asv`; other runners can be planned but not run. |
 | `runner_id` | The name the runner uses for the target: a pytest node ID (without parameters) or an ASV benchmark name. |
 | `entry_symbol` | The test or benchmark function, as an import path: module, then classes, then function. |
 | `lifecycle_dependencies` | Code the runner runs for this target outside its own function: pytest fixtures, ASV `setup` and `setup_cache`, or a module (so module-level code such as `pytestmark` counts). |
 
 A manifest may also be just the list of targets, without the surrounding
-object.
+object. An unknown key, a missing field or the same target listed twice is
+an error, and the plan exits with code `2`.
+
+A manifest written by `diffcone discover` also has a `discovery` key with
+the notes discovery reported. Keep it: a manifest whose notes say the
+target list may be short makes the plan exit with code `3`, as discovery
+itself would.
 
 When you combine a manifest with `--discover`, a manifest entry replaces a
 discovered target with the same `runner` and `runner_id`.

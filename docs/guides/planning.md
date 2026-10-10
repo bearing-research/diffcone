@@ -120,4 +120,5 @@ the files you changed. Cached and uncached plans are identical.
 - `--no-cache` turns the cache off; `--cache-dir` moves it.
 - `diffcone prune --keep HEAD` removes everything the cache doesn't need
   for planning from a commit, which keeps a cache saved between CI runs
-  small.
+  small. Pass it the same `--source-root` options you plan with: it keeps
+  only the entries for those roots.
