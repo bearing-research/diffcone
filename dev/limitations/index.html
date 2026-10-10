@@ -862,10 +862,16 @@ the importing module did not run before.</dd>
 <dt><strong>Calls through objects of unknown type are matched by name.</strong></dt>
 <dd>diffcone doesn't infer types. <code>self.method()</code> and <code>cls.method()</code> are
 resolved through the class hierarchy, but a call like <code>obj.run()</code> on an
-object of unknown type is matched against every function and method
-named <code>run</code>, so it's selected whenever any of them changes. Instance
-attributes are resolved only when every assignment is a simple one in
-<code>__init__</code>.</dd>
+object of unknown type is matched against every method named <code>run</code>,
+and against every module-level function, class or variable named <code>run</code>
+in a module such an object can be: one your code passes around as a
+value, gets by name (<code>importlib.import_module</code>, <code>sys.modules</code>, a string
+naming it), or one pytest hands out (test modules, conftests). So it's
+selected whenever any of those changes. Instance attributes are
+resolved only when every assignment is a simple one in <code>__init__</code>; a
+method called on one (<code>self.client.get()</code>) is known to be the method
+of a class only when every assignment of the attribute creates an
+instance of that class (or of a third-party one).</dd>
 <dt><strong>Plugins that collect files of their own.</strong></dt>
 <dd>diffcone reports the collecting plugins it recognises from your
 configuration. A plugin that collects files just by being installed is
@@ -875,8 +881,12 @@ captures what pytest really collected.</dd>
 <dt><strong>Dynamic code is bounded by imports, if at all.</strong></dt>
 <dd>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
 with a computed name is treated as affected by any change in the
-modules its module imports. A module imported by a computed name
-(<code>importlib.import_module(name)</code>) can be affected by any change at all.
+modules its module imports, and in the modules of code that stores
+objects on one of those modules. A module imported by a computed name
+(<code>importlib.import_module(name)</code>), an object unpickled with
+<code>pickle.loads</code>, and a module loaded from a file whose path is computed
+(<code>importlib.util.spec_from_file_location</code>) can be affected by any
+change at all.
 A name taken from a dict, list or set written in the code
 (<code>getattr(handlers, NAMES[key])</code>, the export table of a lazy
 <code>__getattr__</code>; not a parameter or local variable that happens to share
@@ -901,7 +911,9 @@ A lookup on a standard-library or third-party
 module (<code>getattr(logging, name)</code>) is bounded unless your code may store
 something on that module, directly, by handing the module to other
 code, or by putting an object in <code>sys.modules</code> under its name; then any
-change can affect it.</dd>
+change can affect it. Code that puts an object in <code>sys.modules</code> for
+good under a computed name may replace any of your modules, so without
+a recording every test that imports one of them depends on that code.</dd>
 <dt><strong>Python programs a test starts.</strong></dt>
 <dd>A test that runs a script or module of your project in a new process
 (<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
