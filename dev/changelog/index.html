@@ -1404,6 +1404,27 @@ selection rules.</p>
   whose pattern matches nothing in a plan is flagged in the text report.</li>
 <li><code>plan --evidence</code> says the environment was not checked
   (<code>environment_checked: false</code>): only <code>run</code> can check it.</li>
+<li>A module imported by a name that starts with fixed text
+  (<code>import_module(f"plugins.{name}")</code>) is one of the modules with that
+  prefix, not any module. A new <code>types.ModuleType</code> is no project module
+  unless it is installed in <code>sys.modules</code> under one's name,
+  <code>exec(code, namespace)</code> no longer reaches the calling module, and
+  <code>m.__dict__["X"] = v</code> changes only <code>X</code>.</li>
+<li>A fixture or function that only empties or fills a module-level dict,
+  list or set (<code>REG.clear()</code>), or resets another module's variable
+  (<code>mod.X = None</code>), no longer counts as reading it: an autouse reset
+  fixture no longer selects every test when the code filling the registry
+  changes.</li>
+<li>An attribute read on an object of unknown type is matched to
+  module-level functions, classes and variables only in modules such an
+  object can be: modules passed around, obtained by name or named in a
+  string, and test modules and conftests, which pytest hands out. Methods
+  still match whatever the receiver.</li>
+<li>A method called on an instance attribute (<code>self._client.get()</code>) is
+  resolved to one class's method when every assignment of the attribute
+  creates an instance of that class or of a third-party class; a
+  module-level object made by a third-party call is changed only by
+  methods of classes deriving from a third-party class.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1494,10 +1515,56 @@ selection rules.</p>
   skip-worktree, and neither did <code>run</code>'s check that the working tree
   matches the plan; an edited <code>.py</code> file with a non-ASCII name also passed
   that check.</li>
-<li>A submodule under the source roots made every <code>WORKTREE</code> plan select
+<li>
+<p>A submodule under the source roots made every <code>WORKTREE</code> plan select
   everything; one checked out at another commit, or with uncommitted
   edits, still counts as a change. A path containing a line break no
-  longer fails the plan.</li>
+  longer fails the plan.</p>
+</li>
+<li>
+<p>A test that runs project code in a new process (a script path, <code>-m
+  module</code> or <code>-c</code> code named in the code) did not depend on it; a script
+  no module name maps to is now read too, and a Python command whose
+  program is built at run time is affected by any change.</p>
+</li>
+<li>State changed through an argument or a receiver (<code>register(REGISTRY)</code>,
+  <code>registry.add(x)</code>) did not reach its readers, in either mode; nor did a
+  change to code that may call such a writer differently, or a write
+  through a module attribute and an item (<code>store._CACHE["k"].append(x)</code>,
+  <code>del store._CACHE[k]</code>). A function a module-level variable's
+  initialiser calls runs at import, so a change to it reaches the
+  module's importers.</li>
+<li>Reading an attribute a class does not define (<code>C.__doc__</code>,
+  <code>C.__type_params__</code>, an attribute a decorator sets) did not depend on
+  the class. <code>C.__subclasses__()</code>, <code>C.__mro__</code> and <code>C.__bases__</code> reach the
+  classes they return, <code>C.__dict__[name]</code> and <code>obj.__dict__[name]</code> read
+  members as <code>getattr</code> does, and <code>getattr(obj, "__doc__")</code> reads a
+  docstring.</li>
+<li>A parameter or class-body name that shares its name with a module-level
+  string table was bounded by that table, though the caller can pass
+  anything.</li>
+<li>Code that passes a module to other code (<code>read(ops, name)</code>) did not
+  depend on that module's functions, nor on what the module's imports
+  bind (<code>api.core.TABLE</code>).</li>
+<li>An object put in <code>sys.modules</code> (assignment, <code>setdefault</code>, <code>update</code>,
+  <code>monkeypatch.setitem</code>, <code>mock.patch.dict</code>) was ignored. It is now the
+  module of that name: lookups on that module see it, and while it stays
+  installed, the module's importers depend on the code that installed it.
+  Without a recording, code that installs an object under a name computed
+  at run time makes every test importing a project module depend on it.</li>
+<li>A function's <code>__globals__</code>, a frame's <code>f_globals</code>, <code>pickle.loads</code>,
+  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code>, <code>gc.get_objects()</code> and
+  <code>importlib.util.module_from_spec</code> copies are recognised as ways to
+  change a module's tables. A lookup by a computed name on a module sees
+  objects other code puts on that module.</li>
+<li>Functions obtained from <code>pickle.load</code>/<code>loads</code> (and cloudpickle, dill,
+  joblib) or from a module loaded by a computed file path were invisible
+  to planning without a recording; such code is now affected by any
+  change. A round trip (<code>loads(dumps(x))</code>, a temporary file), pickle
+  bytes written in the code and a path in the module's own directory are
+  bounded by what they load.</li>
+<li>A local name, parameter or function-local import was taken for a
+  module-level import or builtin of the same name.</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1522,6 +1589,13 @@ selection rules.</p>
   in <code>addopts</code>.</li>
 <li>ASV: <code>setUp</code> and <code>TearDown</code> in any case, and the benchmark class's
   <code>__init__</code>, are dependencies of its benchmarks.</li>
+<li>The <code>pytest_*</code> methods of an object registered as a plugin
+  (<code>config.pluginmanager.register(...)</code>), and plugins registered with
+  <code>import_plugin("name")</code>, apply to every test.</li>
+<li>Code pytest runs while collecting that changes the process (a conftest,
+  test module or module they import that sets an environment variable or
+  extends <code>sys.path</code> at import, a <code>pytest_generate_tests</code> that does) is a
+  dependency of every test.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1589,6 +1663,19 @@ selection rules.</p>
   non-literal <code>getattr</code> on such a module now sees changes anywhere in the
   project, not only in its own imports, and a test module's import-time
   change now reaches lookups in library code.</li>
+<li>A test whose fixtures, hooks or plugins change though its own code did
+  not is selected under a recording too (<code>lifecycle_changed</code>), and code a
+  hook ran that changed, or that reads a change, selects every test.</li>
+<li>A module-level cache filled by an earlier test hid the function that
+  filled it from later tests' records, in every order: a change to that
+  function now reaches the tests reading the cache.</li>
+<li>A docstring-only change selects the tests that read that docstring.</li>
+<li>A lazy-export <code>__getattr__</code> whose table only test-time code can change
+  no longer counts as importing test modules; <code>gc.get_stats()</code>,
+  <code>gc.collect()</code> and <code>gc.callbacks</code> no longer count as walking the object
+  graph; <code>hasattr(obj, "name")</code> notices only <code>name</code>.</li>
+<li>Unpicklers and loaders of a computed path count as code that can obtain
+  a test module.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1604,6 +1691,9 @@ selection rules.</p>
 <li><code>run -o</code> adds <code>evidence_not_used</code> (why the recording was not used, and
   what differed) to the plan it writes, and <code>diffcone report</code> shows those
   differences per job.</li>
+<li>The <code>report</code> action failed whenever a job of a reported run had been
+  re-run, since the run then holds two artifacts of the same name; it now
+  reads the latest attempt's.</li>
 </ul>
 <h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
 <h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>
