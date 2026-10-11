@@ -105,6 +105,15 @@ code whose decorator keeps its result (``SourceIndex.memoized``:
 dependencies differ between C and either snapshot is selected
 (``lifecycle_changed``).
 
+A module a change newly imports, or no longer imports (an import a
+module's top-level code or a function's body gains or loses, with the
+imported module's import closure, less what the importing module's
+closure ran already: ``planner._newly_run_modules``, audit round 5, R24)
+ran at C for no test, or will run for none: what its
+import-time code writes into is a changed value for its readers, and code
+reading the module or its members that its own imports never reach now
+finds, or no longer finds, it (``_newly_run``).
+
 The modules imported before the recorder started (``Evidence.preloaded``)
 ran their import-time code where no record shows it: any change in one
 is escalated, with the module (``_preloaded``).

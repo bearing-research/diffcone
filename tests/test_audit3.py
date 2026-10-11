@@ -54,10 +54,14 @@ def _junit(failing: list[str], passing: tuple[str, ...] | list[str] = ()) -> str
     return f"<testsuites><testsuite>{''.join(cases)}</testsuite></testsuites>"
 
 
-def _check_step(tmp_path, rerun_junit: str | None, *, pytest_args="", diffcone=None):
-    """Run the check step with ``test_x`` a new failure the plan did not
-    select; the re-run (a fake pytest) writes ``rerun_junit``. Returns the
-    step's outputs and the arguments the re-run got."""
+def _check_step(
+    tmp_path, rerun_junit: str | None, *, pytest_args="", diffcone=None, failing=("test_x",),
+    fake_pytest: str | None = None,
+):  # fmt: skip
+    """Run the check step with ``failing`` (``test_x``) new failures the
+    plan did not select; the re-run (a fake pytest) writes ``rerun_junit``,
+    or is ``fake_pytest`` when given. Returns the step's outputs and the
+    arguments the re-run got."""
     work, results, bin_dir = tmp_path / "repo", tmp_path / "results", tmp_path / "bin"
     for d in (work / ".diffcone", work / "tests", results, bin_dir):
         d.mkdir(parents=True)
@@ -68,13 +72,22 @@ def _check_step(tmp_path, rerun_junit: str | None, *, pytest_args="", diffcone=N
         cwd=work, check=True,
     )  # fmt: skip
     (work / "tests" / "test_a.py").write_text("")
-    (results / "plan.json").write_text(json.dumps(PLAN))
-    (results / "previous.xml").write_text(_junit([], ["test_x", "test_other"]))
-    (work / "full.xml").write_text(_junit(["test_x"], ["test_other"]))
+    names = ["test_x", "test_other", *(n for n in failing if n not in ("test_x", "test_other"))]
+    plan = {
+        **PLAN,
+        "unselected_targets": [
+            {"runner": "pytest", "runner_id": f"tests/test_a.py::{n}"} for n in names
+        ],
+    }
+    (results / "plan.json").write_text(json.dumps(plan))
+    (results / "previous.xml").write_text(_junit([], names))
+    (work / "full.xml").write_text(_junit(list(failing), [n for n in names if n not in failing]))
     (results / "rerun.junit").write_text(rerun_junit or "")
     fake = bin_dir / "fakepytest"
     fake.write_text(
-        "#!/bin/bash\n"
+        fake_pytest.replace("RESULTS", str(results))
+        if fake_pytest is not None
+        else "#!/bin/bash\n"
         f'printf "%s\\n" "$@" > {results}/rerun-args\n'
         + (
             ""
@@ -147,6 +160,54 @@ def test_ci7_only_the_rerun_tests_count_and_a_path_after_a_flag_is_dropped(tmp_p
     )
     assert "tests" not in args and "tests/test_a.py::test_x" in args
     assert (got["misses"], got["flaky"]) == ("0", "1")
+
+
+# A fake pytest that runs the tests it is named in order, every one failing,
+# and stops as -x / --maxfail (the last one given) says: an unreached test
+# has no case in the JUnit.
+STOPPING_PYTEST = f"""#!{sys.executable}
+import sys
+args = sys.argv[1:]
+open("RESULTS/rerun-args", "w").write("\\n".join(args))
+maxfail, out, ids = 0, None, []
+for a in args:
+    if a == "-x":
+        maxfail = 1
+    elif a.startswith("--maxfail="):
+        maxfail = int(a.split("=", 1)[1])
+    elif a.startswith("--junitxml="):
+        out = a.split("=", 1)[1]
+    elif "::" in a:
+        ids.append(a.split("::", 1)[1])
+if maxfail:
+    ids = ids[:maxfail]
+case = '<testcase classname="tests.test_a" name="{{}}"><failure/></testcase>'
+cases = "".join(case.format(n) for n in ids)
+open(out, "w").write(f"<testsuites><testsuite>{{cases}}</testsuite></testsuites>")
+sys.exit(1)
+"""
+
+
+@posix_only
+def test_r1_a_rerun_runs_every_miss_despite_an_early_stop(tmp_path):
+    # -x in the run's options stopped the re-run at its first failure: the
+    # second miss was never run, so it was absent from the re-run's JUnit and
+    # counted as passed (a real miss reported as flaky).
+    got, _, args = _check_step(
+        tmp_path, None, pytest_args="-x", failing=("test_x", "test_y"),
+        fake_pytest=STOPPING_PYTEST,
+    )  # fmt: skip
+    assert args.index("--maxfail=0") > args.index("-x")
+    assert (got["misses"], got["flaky"], got["check-error"]) == ("2", "0", "false")
+
+
+@posix_only
+def test_r1_a_miss_the_rerun_did_not_run_still_stands(tmp_path):
+    # A re-run that leaves a named test out (here: it stops after one
+    # failure whatever the command line says) does not make it flaky.
+    stops = STOPPING_PYTEST.replace("if maxfail:", "if True:").replace("ids[:maxfail]", "ids[:1]")
+    got, _, _ = _check_step(tmp_path, None, failing=("test_x", "test_y"), fake_pytest=stops)
+    assert (got["misses"], got["flaky"], got["check-error"]) == ("2", "0", "false")
 
 
 def test_ci5_a_rerun_restores_its_own_commits_recording_first():

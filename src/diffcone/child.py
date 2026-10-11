@@ -1,7 +1,12 @@
 """Records Python processes a recorded test run starts (roadmap item 15).
 
 Linked beside the recorder plugin as ``diffcone_child``, with a
-``sitecustomize.py`` that calls ``start()``: like ``collect.py`` it imports
+``sitecustomize.py`` that calls ``start()`` in a child (and that, in the
+recorded pytest process itself, imports the plugin ``diffcone_collect``
+instead, so recording starts before any plugin or project import:
+``DIFFCONE_COLLECT_MAIN``, which the plugin removes from the environment
+as it starts, so no child inherits it; audit round 5, R28; the
+``SITECUSTOMIZE`` text in ``execution.py``): like ``collect.py`` it imports
 nothing of diffcone and needs nothing but the standard library, since a
 child may run in another environment (a notebook's virtual environment)
 without pytest. diffcone imports it as ``diffcone.child`` to read what the

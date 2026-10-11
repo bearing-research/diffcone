@@ -87,7 +87,7 @@ folds parameter cases:
 | `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` (a `file:` URI parsed to its path) and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.fstat`, `os.access`, `os.readlink`; each path also under its real path when a symlink is on the way (`child.RealPaths`: a linked directory, a link to a file; directories memoised, the memo dropped after `os.symlink`/`rename`/`remove`/`rmdir`/`link`), so the file really read matches; a path relative to a directory descriptor (`dir_fd=`, `os.listdir(fd)`, `os.scandir(fd)`, `os.fstat`) resolved through the descriptors `os.open` returned (kept through `dup`, dropped at `close`, checked with `samestat` against the file they name), and the test flagged (`FLAG_SUBPROCESS`) when one cannot be resolved; a directory listed with `os.scandir` (`os.walk`, `glob`, `pathlib`) also recorded with the `child.SCANNED` suffix, since `DirEntry.stat()`/`is_file()` raise no event: an edit to a direct entry then selects the test (audit round 5, R29); paths with `/` on every platform, respelled as the index spells them when the recording's file system folds case (`tests/Data/X.TXT` is `tests/data/x.txt`; a path the index does not know matches a changed one in any spelling). A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
 | children | what the Python processes T started through `subprocess.Popen` ran, and those still running when T's window opened (POSIX; roadmap item 15); a process started outside every window (at import, in a hook) is folded into that phase instead: what it ran is the import's, or a hook's | `Popen._execute_child` wrapped; the child records itself from a `sitecustomize` beside the plugin (`child.py`; the plugin's directory comes first on `PYTHONPATH`, and a project's own `sitecustomize` is chained) into `children/<ppid>/<pid>-<start>.jsonl`, and the fold resolves each spawn to its records (the process itself, or a launcher's Python child that ran its command), recursively; liveness by `os.kill(pid, 0)` over the spawn's tree at each window open. A spawn of a pytest process of the same recording (an xdist worker) resolves to its own process record |
 | `P(T)` | T started a process no record follows, or a subinterpreter, or ran while such a process (a pool's worker, a forkserver's child, a fork) was running | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork`; wrappers of `multiprocessing.util.spawnv_passfds` and `_interpreters.create`, which raise no event. An inert interpreter probe (an interpreter by name, nothing but `-c CODE` where the code imports only built-in modules and names nothing that loads code, no `PYTHONPATH`-like environment: roadmap item 10) is accounted like any `Popen` child and judged by its own record; the rule vouches only for one that cannot record (`python -I`), and on Windows. `multiprocessing`'s processes, forks and direct `posix_spawn` children (any flagged child on Windows) are followed by pid: every window opening while one runs is flagged (`waitid` with `WNOWAIT`: a zombie has ended) |
-| text code | T ran code compiled from text no file of the checkout holds (a doctest's examples, a `timeit` statement; not a string `skipif` condition naming nothing of the project, nor `unittest.mock`'s `autospec` wrappers: R15), a notebook cell, a `skipif` string), which may read any project name | the `exec` audit event: code whose file is not the checkout's, run for something other than project code (project code's own `exec` is a lookup site), naming anything, not run under an import (a library generating its own code) and not by `collections`, `dataclasses`, `annotationlib`, `typing` or attrs (methods generated from a definition); `FLAG_TEXT`, always selected (rule `text_code`). In a child, a flag line |
+| text code | T ran code compiled from text no file of the checkout holds (a doctest's examples, a `timeit` statement, a notebook cell, a string `skipif`/`xfail` condition that may read the project), which may read any project name; not a string condition naming nothing of the project, nor `unittest.mock`'s `autospec` wrappers (R15) | the `exec` audit event: code whose file is not the checkout's, run for something other than project code (project code's own `exec` is a lookup site), naming anything, not run under an import (a library generating its own code) and not by `collections`, `dataclasses`, `annotationlib`, `typing`, attrs, `unittest.mock` (methods generated from a definition) or `_pytest.mark` (`-m`/`-k` expressions); `FLAG_TEXT`, always selected (rule `text_code`). In a child, a flag line |
 | threads | the project code other threads are in the middle of when T's window (or a shared fixture's) opens | `sys._current_frames()`: a long-lived thread looping in one frame raises no event in later windows, yet runs beside their tests |
 | environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside each test process at the end of the run, which keys the store; also at its start, and a run that changed it is named (`collect` warns, the store keeps the start environment, `run` says when it meets it: roadmap item 12) |
 
@@ -197,20 +197,25 @@ static selection.
 |---|---|---|---|
 | same environment | a different numpy, a missing optional dependency, another Python | the environment fingerprint must match the run; if it doesn't, fall back to static | — |
 | determinism | hash-seed-dependent ordering, time, randomness | `PYTHONHASHSEED` pinned to the recorded value in `run`; `TZ` in the fingerprint | optional second collection in reverse order: tests whose `X(T)` differs are **unstable** and always selected |
-| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation; a test's own code (the test, a function-scoped fixture, a helper only tests call: `planner.isolated_test_code`) leaves module state behind that a later test reads, which the plan does not follow (the assumption itself: such a store is a writer for no other test when the recording saw the writer run only inside tests, `_only_in_tests`) | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures); a hand-made module cache (`_CACHE[k] = compute(k)`) is planned as a value that changes: its readers are selected whenever code that can run a member of E writes it (audit round 3, W7) | the reverse-order collection also catches order dependence between two tests, but not a test that runs between the cache's first filler in both orders |
+| test isolation | a value one test computes and caches is served to a later test, which then never executes the computation; a test's own code (the test, a function-scoped fixture, a helper only tests call: `planner.isolated_test_code`) leaves module state behind that a later test reads, which the plan does not follow (the assumption itself: such a store is a writer for no other test when the recording saw the writer run only inside tests, `_only_in_tests`) | `functools.cache`/`lru_cache` caches (23 in pandas) cleared before every test during collection, including those created after collection by lazy imports (`lru_cache` is wrapped at plugin load to register each cache it makes; only decoration goes through the wrapper, never a call); shared fixture instances credited to every user (8 of pandas' 1 051 fixtures); a hand-made module cache (`_CACHE[k] = compute(k)`) is planned as a value that changes: its readers are selected whenever code that can run a member of E writes it (audit round 3, W7); so is a cache held elsewhere, on a receiver, class, function or parameter container or in a closure (`SourceIndex.stores`, `handed`), and a result a known memoiser keeps (`cached_property` and the like: `SourceIndex.memoized`; audit round 5, R22) | the reverse-order collection also catches order dependence between two tests, but not a test that runs between the cache's first filler in both orders |
 | complete observation | subprocesses, threads outliving their test, code run from strings | a child's record joins `X(T)` when its entry is indexed code (a script or `-m` module of the index, or not the project's), else (`-c`, standard input, a script outside the index that ran project code), or when it could not record, `P(T)` → always selected; strings run by project code's `exec` belong to the function that ran them, which is in `X(T)` and is a lookup site; strings a library runs for the test (a doctest, `timeit`) → text code, always selected. Outside every test, a process no record follows, or text code, flags its phase: any change escalates the module being imported, or with none selects everything | — |
 | fresh evidence | evidence from an old C | changes are always C → head, so older evidence selects more, never less | age reported |
 
-What remains is stated in the report and in AGENTS.md: a lazily computed
-value on an object shared by three or more tests (pandas'
-`cache_readonly`, 171 uses, on an object shared across tests), time- or
-network-dependent paths, and state kept in module-level dictionaries that
-the planner cannot connect to the change: a cache whose writer reaches the
-changed code only through a call the index does not resolve (a name match
-more than one call away, a lookup by a name nothing bounds), or that is
-written through an argument or a receiver (`store.put(k, v)`, W4). A cache
-whose writer reaches it through resolved calls, or calls the changed
-function itself by name, is planned (W7, "Refinements").
+What remains is stated in the report: a value kept by a memoising
+decorator the analysis does not know (pandas' `cache_readonly`, 171 uses,
+a Cython class: a decorator of a package the index cannot read counts
+only when its name is on the list in `indexer/definitions.py` or ends in
+`cached_property`, `cached`, `memoize`, `memoized` or `cachedmethod`),
+time- or network-dependent paths, and a cache the planner cannot connect
+to the change: one whose writer reaches the changed code only through a
+call the index does not resolve (a name match more than one call away, a
+lookup by a name nothing bounds), or one filled through a method of an
+object whose type the analysis cannot tell (`store.put(k, v)` with
+`store` of unknown type). A cache whose writer reaches it through
+resolved calls, or calls the changed function itself by name, is planned
+(W7, "Refinements"), and so is one held on a receiver, a parameter, a
+class, a function or in a closure (`SourceIndex.stores`, `handed`: audit
+round 5, R22) or by a known memoiser (`SourceIndex.memoized`).
 These can make a test's recorded path shorter than its real one. A
 periodic full run under collection (nightly in CI) detects them after the
 fact. Every test that fails there but went unselected in the runs since is
@@ -219,10 +224,17 @@ reported as a miss.
 ## Storage and lifecycle
 
 `.diffcone/evidence/<commit>-<environment hash>.sqlite`:
-`meta` (commit, environment, the environment at the start when the run changed it, command, diffcone version, time), `symbols`
-(index to symbol id), `sets` (deduplicated compressed bitmaps over the
-symbol table: parametrized tests share sets), `tests` (target id, set id,
-flags: subprocess, unstable), `files`, `import_phase`, `import_by`. Expected
+`meta` (JSON values: the store `format`, 3; commit, source roots,
+environment and its hash, the environment at the start when the run
+changed it, command, time; the import and hook phases, the files and
+directories imports read, the phases flagged, the `preloaded` modules,
+whether the file system folds case, the reverse check, the commit it was
+advanced from and the last full one, the tests collected), `symbols`
+(index to symbol id), `paths` (index to repository path), `sets`
+(deduplicated compressed bitmaps over those tables: parametrized tests
+share sets), `tests` (`target`, and the set ids of its `symbols`, `paths`
+and `dirs`, and `flags`: subprocess, unstable, text code), `import_by`
+(symbol, the module whose import ran it). Expected
 size for pandas: about 26 000 targets over about 37 000 symbols, which is
 tens of megabytes before deduplication. That has to be measured (spike).
 
@@ -237,7 +249,7 @@ did not produce, process-wide data and refusals are in roadmap item 6.
 
 ## Interface and architecture
 
-* `diffcone collect --command CMD [--reverse-order]`: runs the whole suite
+* `diffcone collect --command CMD [--reverse-check]`: runs the whole suite
   under the plugin at a clean checkout of HEAD and writes a store.
 * `diffcone plan ... --evidence auto|PATH`: uses the store at the nearest
   ancestor of head (the newest on a tie), whatever its environment. `plan`
@@ -261,8 +273,13 @@ evidence like a manifest: data that a runner integration produced. `plan`
 still never runs project code.
 
 **Report** (`schema_version` 3): `analysis.evidence` gives the store's
-commit, environment, age, and C → head changes that came from commits
-outside base..head. New reason rules each carry what was observed, never
+path, commit, environment (its hash, Python, `PYTHONHASHSEED` and the
+variables recorded), when it was made, how many tests it holds, whether
+it was reverse-checked, the pairs planned, C → head changes that came
+from commits outside base..head, the modules escalated to static
+planning, and the `preloaded_modules` (imported before the recorder
+started, whose changes are always planned from the code). New reason
+rules each carry what was observed, never
 an inferred path:
 
 * `executed_changed`: "T executed `f` in the evidence run at C; `f` changed".
