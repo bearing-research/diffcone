@@ -11,6 +11,11 @@ Supported subset (see internal/design.md):
 * bare names and dotted attribute chains rooted at a module-level definition,
   an import alias, ``self``/``cls`` inside a method, or a star import;
 * ``import``/``from ... import`` (absolute and relative) within source roots;
+* a name every binding of which in its scope is a module (``m = ops``,
+  ``m = pkg.ops``, a walrus, a literal unpacking or loop, ``global``/
+  ``nonlocal`` rebindings: ``aliases.py``) reads off the module; a name
+  that may hold something else as well reads off it and stays bounded by
+  the attribute name;
 * ``importlib.import_module`` / ``getattr`` with literal arguments (a
   literal table's keys, values or elements included: ``D[k]``, ``D.values()``,
   ``for k, v in D.items()``) while every use of the table is a read (see

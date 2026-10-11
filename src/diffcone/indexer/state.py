@@ -3,6 +3,7 @@ the scopes, and where pass-2 writes go."""
 
 from __future__ import annotations
 
+import ast
 from collections import defaultdict
 from typing import Any
 
@@ -70,6 +71,9 @@ class IndexerState:
         # Import bindings being resolved (guards self-referential imports).
         self._resolving_bindings: set[tuple[str, str]] = set()
         self._pickling_hooks: list[str] | None = None
+        # Scope node -> (the node, aliases.scope_aliases of it), built on
+        # first use (Resolver.module_alias).
+        self._alias_tables: dict[int, tuple[ast.AST, dict[str, tuple[tuple[str, ...], ...]]]] = {}
         # Top-level import name -> the analysed package it most likely means
         # under another root (see Resolver._misrooted); built on first use.
         self._misrooted_names: dict[str, str] | None = None

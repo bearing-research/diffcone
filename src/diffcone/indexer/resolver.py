@@ -7,6 +7,7 @@ import ast
 from collections import defaultdict
 from dataclasses import replace
 
+from diffcone.indexer.aliases import IMPORTED, OPAQUE, scope_aliases
 from diffcone.indexer.definitions import (
     _EXPLICIT_SPECIAL_METHODS,
     _STRUCTURAL_BASES,
@@ -1197,6 +1198,10 @@ class Resolver(FirstPass):
         if isinstance(node, Local):
             # ``obj.method`` on a local: the method name bounds what it may be.
             return Unresolved(UNRESOLVED_ATTRIBUTE, parts[1]) if len(parts) > 1 else None
+        return self.chain_from(node, parts)
+
+    def chain_from(self, node: Node, parts: list[str]) -> Node:
+        """``parts[1:]`` stepped off ``node`` (what ``parts[0]`` is)."""
         for attr in parts[1:]:
             if node is None:
                 return None
@@ -1204,6 +1209,96 @@ class Resolver(FirstPass):
                 return node
             node = self._step(node, attr)
         return node
+
+    def module_alias(self, name: str, scope: Scope) -> tuple[tuple[str, ...], bool] | None:
+        """The in-scope modules a name bound to a module by an assignment
+        (``m = ops``, ``m = pkg.ops``, another such name; aliases.py lists
+        the forms) may hold where ``scope`` reads it, and whether it may
+        hold something else as well (another binding of the name in its
+        scope is not a module, or not one the analysis can see). None when
+        no binding of it is a module, and for an import's own name, ``self``
+        and a class-level name, which resolve as they always do. An
+        attribute read off the name is a read off each module
+        (references._resolve)."""
+        found = self._alias(name, scope, frozenset())
+        if found is None or not found[0]:
+            return None
+        return tuple(dict.fromkeys(found[0])), found[1]
+
+    def _alias_table(self, node: ast.AST) -> dict[str, tuple[tuple[str, ...], ...]]:
+        cached = self._alias_tables.get(id(node))
+        if cached is None or cached[0] is not node:
+            cached = (node, scope_aliases(node))
+            self._alias_tables[id(node)] = cached
+        return cached[1]
+
+    def _alias(
+        self, name: str, scope: Scope, seen: frozenset[tuple[int, str]]
+    ) -> tuple[list[str], bool] | None:
+        if name == scope.self_name or name in scope.class_members or name in scope.local_imports:
+            return None
+        module = scope.module
+        owner: Scope | None = scope
+        if name in scope.locals:
+            # The function scope binding it: this one or one enclosing it.
+            while owner is not None:
+                own = owner.locals if owner.literal_parent is None else owner.literal_bound
+                if name in own:
+                    break
+                owner = owner.literal_parent
+            if (
+                owner is None
+                or owner.class_level
+                or name in owner.param_aliases
+                or not isinstance(owner.literal_node, FUNC_NODES + (ast.Lambda,))
+            ):
+                return None
+            table_node: ast.AST = owner.literal_node
+        else:
+            if module.tree is None:
+                return None
+            owner, table_node = Scope(module=module), module.tree
+        values = self._alias_table(table_node).get(name)
+        if values is None:
+            return None
+        key = (id(table_node), name)
+        if key in seen:
+            return [], True  # bound to itself, through other names
+        seen = seen | {key}
+        modules: list[str] = []
+        # At module level a star import may bind the name too.
+        partial = owner.literal_node is None and bool(
+            module.star_imports and any(self._star_hits(module, name, set()))
+        )
+        for value in values:
+            if value == OPAQUE or value == IMPORTED and name not in module.imports:
+                partial = True
+                continue
+            nodes: list[Node]
+            if value == IMPORTED:
+                # At module level (a function's own imports never get here).
+                bindings = [module.imports[name], *module.alt_imports.get(name, ())]
+                nodes = [self._import_binding_node(b) for b in bindings]
+            else:
+                head = self._alias(value[0], owner, seen)
+                if head is None:
+                    nodes = [self._lookup_base(value[0], owner)]
+                else:
+                    nodes = [ModuleNode(m) for m in head[0]] + ([None] if head[1] else [])
+                nodes = [self.chain_from(n, list(value)) for n in nodes]
+            for node in nodes:
+                if isinstance(node, ModuleNode) and node.module in self.scopes:
+                    modules.append(node.module)
+                    for other in node.alternatives:
+                        if other in self.scopes:
+                            modules.append(other)
+                        else:
+                            partial = True
+                    continue
+                if isinstance(node, Resolved):
+                    modules += [m for m in node.also if m in self.scopes]
+                partial = True
+        return modules, partial
 
     def resolve_chain_names(self, parts: list[str], scope: Scope) -> tuple[Node, tuple[str, ...]]:
         """Like resolve_chain, plus the attribute names after the point where
@@ -1215,6 +1310,10 @@ class Resolver(FirstPass):
             if len(parts) < 2:
                 return None, ()
             return Unresolved(UNRESOLVED_ATTRIBUTE, parts[1]), tuple(parts[2:])
+        return self.chain_names_from(node, parts)
+
+    def chain_names_from(self, node: Node, parts: list[str]) -> tuple[Node, tuple[str, ...]]:
+        """resolve_chain_names with ``node`` for what ``parts[0]`` is."""
         for i, attr in enumerate(parts[1:], 1):
             if node is None or isinstance(node, External):
                 return node, ()

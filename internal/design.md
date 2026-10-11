@@ -543,7 +543,17 @@ dispatched call's site and escape status for literal propagation. Explicit
 class (`Foo(...)`, subclassing) also adds edges to the `__init__` and
 `__new__` found through its MRO, so constructor changes reach callers. A step that cannot
 be taken yields an unresolved attribute reference bounded by the attribute
-name. Once a chain reaches a value of unknown type (a local, a failed
+name. A name every binding of which in its scope is a module (`m = ops`,
+`m = pkg.ops`, `m: T = ops`, `(m := ops)`, `m, n = ops, x`, `for m in
+(ops, other)`, another such name, a rebinding through `global` or
+`nonlocal`; `indexer/aliases.py`) is read as the module: `m.value()` gets
+a `references` edge to `pkg.ops.value` beside the reader's reference to
+the name itself (a module variable `m`, or the module's `attribute:m`).
+When the name may also hold something else (another binding that is not
+a module, or not one the analysis sees), the reads off each module are
+added and the name-bounded reads below stay. Only the reading scope's own
+module is consulted: `helpers.m.value()` is a read off a value of
+unknown type, matched by name. Once a chain reaches a value of unknown type (a local, a failed
 step, a variable, a function, a class-level binding) it stops there, and
 every attribute name after that point is recorded as a name-bounded
 reference too: `client.session.send()` on an unknown `client` records
@@ -1099,7 +1109,13 @@ Unknown is never treated as unaffected:
   nested classes) whatever the receiver, and a module-level function,
   class or variable only when its module is one such a value may be
   (`SourceIndex.attribute_modules`): a module handed on (W9's escaped
-  modules) and what its imports bind (W16's reach); a module a handle
+  modules) and what its imports bind (W16's reach); a module bound to a
+  name other than its import's (`m = ops`, module-level or local, a
+  walrus, an unpacking, a loop over a tuple of modules, a private
+  function's return), even where the use scan follows the name instead of
+  counting the module handed on, since a read through the name the
+  resolver cannot follow (`helpers.m.value()` from another module) is a
+  read off a value of unknown type; a module a handle
   names (`import_module("m")`, `sys.modules[...]`, `__import__`,
   `pytest.importorskip`, a `module_from_spec` copy), read in place or
   held, with its submodules and reach; a module a string names

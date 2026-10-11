@@ -65,8 +65,11 @@ everything.
     calling code is selected when any of those changes.
 
     A module "such an object could be" is one your code passes around as a
-    value, gets by name (`importlib.import_module`, `sys.modules`, a
-    string naming it), or one pytest hands out (test modules, conftests).
+    value or binds to another name (`m = ops`), gets by name
+    (`importlib.import_module`, `sys.modules`, a string naming it), or one
+    pytest hands out (test modules, conftests). A name bound only to
+    modules (`m = ops`, then `m.value()`) is followed like the import
+    itself.
 
     An instance attribute is followed only when every assignment of it is
     in `__init__` and assigns a parameter, a string, or one of your
