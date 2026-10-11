@@ -20,7 +20,12 @@ recorded:
   ``entry`` being what ``__main__`` runs (``entry()``);
 * ``["c", path, line, qualname]``: a code object of the checkout, first run;
 * ``["p", path]`` and ``["d", path]``: a checkout path opened (or
-  ``stat``ed) and listed, as in a test window;
+  ``stat``ed, ``readlink``ed, named by a ``sqlite3`` ``file:`` URI) and
+  listed, as in a test window, each beside its real path when a symlink
+  is on the way (``RealPaths``), a scanned directory also with the
+  ``SCANNED`` suffix, a listing or a stat relative to a directory
+  descriptor resolved through the descriptors ``os.open`` returned
+  (``install_fd_tracking``), and a flag when one cannot be;
 * ``["spawn", spawner, pid, start, argv]``: a child started through
   ``subprocess.Popen`` (accounted: its own record, or a launcher's, says
   what it ran);
@@ -43,10 +48,12 @@ no child records itself.
 
 from __future__ import annotations
 
+import dis
 import functools
 import json
 import os
 import re
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -56,6 +63,11 @@ from pathlib import Path
 from typing import Any
 
 ENV_PARENT = "DIFFCONE_COLLECT_PARENT"
+# Set by diffcone on the test process it records (execution.plugin_environment)
+# and removed by the plugin as it starts: the ``sitecustomize`` beside the
+# plugin starts the recorder in that process before anything else runs, and
+# in no process it starts.
+ENV_MAIN = "DIFFCONE_COLLECT_MAIN"
 TOOL = 3  # the plugin's sys.monitoring tool id: one recorder per process
 CHILDREN = "children"
 # A record whose write failed is renamed to this suffix: the fold no longer
@@ -435,6 +447,146 @@ SUBPROCESS_EVENTS = frozenset(
 # argument is the path.
 C_OPEN_EVENTS = frozenset({"sqlite3.connect", "ctypes.dlopen"})
 LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
+# A directory listed with ``os.scandir`` (``os.walk``, ``glob``, ``pathlib``
+# use it) is recorded twice: as listed, and with this suffix, since the
+# entries' ``stat()``, ``is_file()`` and ``is_dir()`` raise no event: an
+# edit to any direct entry may have been read. The fold and the planner
+# read the suffix (evidence_plan._file).
+SCANNED = "/*"
+# Events after which a path may resolve through other links: the memo of
+# real paths is dropped.
+LINK_EVENTS = frozenset({"os.symlink", "os.rename", "os.remove", "os.rmdir", "os.link"})
+# Names that load or run code, or reach it by a computed name: text that
+# names one of them (or a module that is not built in) may run project code.
+LOADING_NAMES = frozenset(
+    {
+        "exec",
+        "eval",
+        "compile",
+        "open",
+        "__import__",
+        "__builtins__",
+        "builtins",
+        "__loader__",
+        "__spec__",
+        "breakpoint",
+        "_imp",
+        "execfile",
+        "system",
+        "popen",
+        "spawnl",
+        "spawnv",
+        "execv",
+        "execl",
+        "fork",
+        "startfile",
+        "modules",
+        "path",
+        "meta_path",
+        "path_hooks",
+        "setprofile",
+        "settrace",
+        "addaudithook",
+        # Other ways to start a process (``posix`` is built in).
+        "posix_spawn",
+        "posix_spawnp",
+        "spawnle",
+        "spawnlp",
+        "spawnlpe",
+        "spawnve",
+        "spawnvp",
+        "spawnvpe",
+        "execle",
+        "execlp",
+        "execlpe",
+        "execve",
+        "execvp",
+        "execvpe",
+        "forkpty",
+        "fork_exec",
+        # Reaching any of the above by a computed name.
+        "getattr",
+        "globals",
+        "locals",
+        "vars",
+        "__dict__",
+        "__getattribute__",
+        "__globals__",
+        "__subclasses__",
+    }
+)
+
+
+class _Quiet(threading.local):
+    """Positive while a recorder resolves paths itself: its own ``lstat``
+    and ``readlink`` calls, which go through the wrappers, touch nothing."""
+
+    depth = 0
+
+
+quiet = _Quiet()
+
+
+class RealPaths:
+    """A path with symlinks resolved (a tracked symlinked directory, a link
+    to a file): the file a read through it reads, recorded beside the path
+    as given. Directories are memoised (one ``realpath`` each), and the memo
+    is dropped whenever a link may have changed (``LINK_EVENTS``); the last
+    component is checked every time (one ``lstat``)."""
+
+    def __init__(self) -> None:
+        self.dirs: dict[str, str] = {}
+        self.lstat = os.lstat  # before any wrapper
+        self.readlink = os.readlink
+
+    def clear(self) -> None:
+        self.dirs.clear()
+
+    def __call__(self, absolute: str) -> str:
+        quiet.depth += 1
+        try:
+            directory, name = os.path.split(absolute)
+            real_dir = self.dirs.get(directory)
+            if real_dir is None:
+                try:
+                    real_dir = os.path.realpath(directory)
+                except (OSError, ValueError):
+                    real_dir = directory
+                self.dirs[directory] = real_dir
+            joined = os.path.join(real_dir, name) if name else real_dir
+            try:
+                if stat_module.S_ISLNK(self.lstat(joined).st_mode):
+                    return os.path.realpath(joined)
+            except (OSError, ValueError):
+                pass
+            return joined
+        finally:
+            quiet.depth -= 1
+
+
+def sqlite_path(database: Any) -> str | None:
+    """The file a ``sqlite3.connect`` argument names: a path, or a ``file:``
+    URI (``file:data/x.db?mode=ro``, ``file:///abs/x.db``; the query and
+    fragment dropped, escapes decoded); None for an in-memory database."""
+    try:
+        database = os.fsdecode(os.fspath(database))
+    except TypeError:
+        return None
+    if not database or database == ":memory:":
+        return None
+    if not database.startswith("file:"):
+        return database
+    rest = database[len("file:") :].split("?", 1)[0].split("#", 1)[0]
+    if rest.startswith("//"):
+        rest = rest[2:]
+        slash = rest.find("/")
+        rest = rest[slash:] if slash >= 0 else ""
+    from urllib.parse import unquote
+
+    path = unquote(rest)
+    return None if not path or path == ":memory:" else path
+
+
 # Loader methods that read a package's data for its caller
 # (``pkgutil.get_data``, ``importlib.resources``), not to import a module.
 DATA_READERS = frozenset({"get_data", "open_resource", "read_binary", "read_text"})
@@ -641,9 +793,19 @@ def _metadata_scan(path: str) -> bool:
     return False
 
 
-def _touch(path: Any, listing: bool = False) -> None:
-    if isinstance(path, int) or path is None:
+_real = RealPaths()
+
+
+def _touch(path: Any, listing: bool = False, scanned: bool = False) -> None:
+    if path is None or quiet.depth:
         return
+    if isinstance(path, int):
+        path = fd_path(path)
+        if path is None:
+            # A directory listed by a descriptor nothing resolves.
+            if listing:
+                _flag("listed a directory by a file descriptor nothing resolves")
+            return
     try:
         path = os.fsdecode(os.fspath(path))
     except TypeError:
@@ -652,10 +814,14 @@ def _touch(path: Any, listing: bool = False) -> None:
     rel = _relative(absolute)
     if rel is None or _metadata_scan(absolute) or _actor() == "import":
         return
-    key = ("d" if listing else "p", rel)
-    if key not in _seen_paths:
-        _seen_paths.add(key)
-        _write(list(key))
+    kind = "d" if listing else "p"
+    for found in {rel, _relative(_real(absolute))}:
+        if found is None:
+            continue
+        for key in ((kind, found), (kind, found + SCANNED)) if scanned else ((kind, found),):
+            if key not in _seen_paths:
+                _seen_paths.add(key)
+                _write(list(key))
 
 
 def _audit(event: str, args: Any) -> None:
@@ -666,10 +832,19 @@ def _audit(event: str, args: Any) -> None:
             if args:
                 _touch(args[0])
         elif event in LISTING_EVENTS:
-            _touch(args[0] if args and args[0] is not None else ".", listing=True)
+            _touch(
+                args[0] if args and args[0] is not None else ".",
+                listing=True,
+                scanned=event == "os.scandir",
+            )
+        elif event == "sqlite3.connect":
+            if args:
+                _touch(sqlite_path(args[0]))
         elif event in C_OPEN_EVENTS:
             if args and isinstance(args[0], (str, bytes, os.PathLike)):
                 _touch(args[0])
+        elif event in LINK_EVENTS:
+            _real.clear()
         elif event in SUBPROCESS_EVENTS:
             # A fork goes on recording here (_forked); an exec after it flags.
             if event not in ("os.fork", "os.forkpty") and not in_popen(event, args):
@@ -687,7 +862,8 @@ def _audit(event: str, args: Any) -> None:
 _text_seen: set[str] = set()
 # Modules that run text they generate themselves from a definition, reading
 # only names they put in its namespace (``collections.namedtuple``,
-# dataclasses, annotations, attrs' generated methods), or text from pytest's
+# dataclasses, annotations, attrs' generated methods, ``unittest.mock``'s
+# signature-checking wrappers for ``autospec``), or text from pytest's
 # command line (``-m``/``-k`` expressions, matched against marks and names).
 TEXT_GENERATORS = (
     "collections",
@@ -695,8 +871,13 @@ TEXT_GENERATORS = (
     "annotationlib",
     "typing",
     "attr",
+    "unittest.mock",
     "_pytest.mark",
 )
+# pytest evaluates a string ``skipif``/``xfail`` condition in the test
+# module's globals (``evaluate_condition``): text code only when it may read
+# the project (``_condition_reads_project``).
+CONDITION_EVALUATOR = "_pytest.skipping"
 # Modules that run modules, whose code comes from a file (or is frozen into
 # the interpreter): the import system, ``runpy``, pytest's assertion
 # rewriting of test modules and plugins.
@@ -745,6 +926,8 @@ def text_code(code: Any, caller: Any, code_path: Any) -> bool:
         if frame.f_code.co_filename.startswith("<frozen importlib"):
             return False
         frame = frame.f_back
+    if module == CONDITION_EVALUATOR:
+        return _condition_reads_project(code, caller, code_path)
     return True
 
 
@@ -754,16 +937,98 @@ def _names_something(code: types.CodeType) -> bool:
     )
 
 
+def _all_names(code: types.CodeType) -> set[str]:
+    found = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            found |= _all_names(const)
+    return found
+
+
+def _loaded_names(code: types.CodeType) -> set[str]:
+    """The names ``code`` (and the code it holds) loads from its globals or
+    builtins, as distinct from attribute names, which ``co_names`` also
+    holds."""
+    found: set[str] = set()
+    for instruction in dis.get_instructions(code):
+        if instruction.opname in ("LOAD_NAME", "LOAD_GLOBAL", "LOAD_FROM_DICT_OR_GLOBALS"):
+            found.add(str(instruction.argval))
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            found |= _loaded_names(const)
+    return found
+
+
+def _project_value(value: Any, code_path: Any) -> bool:
+    """Whether ``value`` is code of the checkout, or an object of a class
+    defined there: a module, a function, a class, or an instance. A lazy
+    module is read without loading it."""
+    if isinstance(value, types.ModuleType):
+        try:
+            namespace = object.__getattribute__(value, "__dict__")
+        except Exception:
+            return True
+        file = namespace.get("__file__") if isinstance(namespace, dict) else None
+        return isinstance(file, str) and code_path(file) is not None
+    code = getattr(value, "__code__", None)
+    if isinstance(code, types.CodeType):
+        return code_path(code.co_filename) is not None
+    cls = value if isinstance(value, type) else type(value)
+    module = sys.modules.get(getattr(cls, "__module__", None) or "")
+    return module is not None and _project_value(module, code_path)
+
+
+def _condition_reads_project(code: types.CodeType, caller: Any, code_path: Any) -> bool:
+    """A string ``skipif`` condition (``'sys.platform == "win32"'``) names
+    only what cannot reach the project: every name it loads is bound in
+    the globals pytest evaluates it in (``globals_``: ``os``, ``sys``,
+    ``platform``, ``config`` and the test module's own) to nothing of the
+    checkout's, or is a builtin, and nothing it names loads code or reaches
+    it by a computed name (``LOADING_NAMES``). Anything else, a namespace
+    this cannot read included, is text code."""
+    try:
+        namespace = caller.f_locals.get("globals_")
+    except Exception:
+        return True
+    if not isinstance(namespace, dict):
+        return True
+    if _all_names(code) & LOADING_NAMES:
+        return True
+    for name in _loaded_names(code):
+        if name in namespace and _project_value(namespace[name], code_path):
+            return True
+    return False
+
+
+def _flag_dir_fd() -> None:
+    _flag("a path relative to a directory file descriptor nothing resolves")
+
+
 def _wrap_stat(original):
     @functools.wraps(original)
     def stat(path, *args, **kwargs):
         if recording:
             try:
-                _touch(path)
+                dir_fd = kwargs.get("dir_fd")
+                if dir_fd is not None:
+                    full = joined(path, dir_fd)
+                    if full is None:
+                        _flag_dir_fd()
+                    else:
+                        _touch(full)
+                else:
+                    _touch(path)
             except Exception as exc:
                 _flag(f"recorder: stat: {type(exc).__name__}: {exc}")
         return original(path, *args, **kwargs)
 
+    register_supports(original, stat)
+    return stat
+
+
+def register_supports(original: Any, wrapper: Any) -> None:
+    """Keep a wrapped ``os`` function in the sets ``shutil`` and others
+    consult (``os.open in os.supports_dir_fd``) to choose code paths."""
     for supported in (
         os.supports_dir_fd,
         os.supports_fd,
@@ -771,8 +1036,134 @@ def _wrap_stat(original):
         os.supports_effective_ids,
     ):
         if original in supported:
-            supported.add(stat)
-    return stat
+            supported.add(wrapper)
+
+
+# --------------------------------------------------------------------------- descriptors
+
+# File descriptor ``os.open`` returned -> the absolute path it names (kept
+# through ``dup``, dropped at ``close``): how a listing of a descriptor, an
+# ``os.fstat`` or a path relative to a directory descriptor (``dir_fd=``:
+# ``shutil.rmtree``, ``os.fwalk``) is resolved to a path, in both recorders
+# (``install_fd_tracking``). Checked against the file it names when read
+# (``fd_path``): a number is reused once closed.
+fds: dict[int, str] = {}
+_raw_stat = os.stat
+_raw_fstat = os.fstat
+# What the recorder installing the tracking wants told: a path touched by
+# an ``os.open`` with ``dir_fd``, a descriptor nothing resolves (``flag``),
+# an error inside the wrappers (``error(where, exc)``).
+fd_hooks: dict[str, Any] = {"touch": None, "flag": None, "error": None}
+
+
+def fd_path(fd: int) -> str | None:
+    """The path an open descriptor names, when ``os.open`` returned it for
+    one and it still names that file; None otherwise: a descriptor of the
+    builtin ``open`` (whose path the ``open`` event recorded), an inherited
+    one, or a stale entry."""
+    path = fds.get(fd)
+    if path is None:
+        return None
+    try:
+        if os.path.samestat(_raw_fstat(fd), _raw_stat(path)):
+            return path
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def joined(path: Any, dir_fd: int) -> str | None:
+    """``path`` relative to the directory ``dir_fd`` names, or None when
+    that is not known (an absolute path needs no directory)."""
+    try:
+        text = os.fsdecode(os.fspath(path))
+    except TypeError:
+        return None
+    if os.path.isabs(text):
+        return text
+    base = fd_path(dir_fd)
+    return None if base is None else os.path.join(base, text)
+
+
+def _wrap_os_open(original):
+    @functools.wraps(original)
+    def open_(path, flags, mode=0o777, *, dir_fd=None):
+        full = None
+        touch = fd_hooks["touch"]
+        if touch is not None:
+            try:
+                if dir_fd is not None:
+                    full = joined(path, dir_fd)
+                    if full is None:
+                        fd_hooks["flag"]()
+                    else:
+                        touch(full)
+                else:
+                    full = os.path.abspath(os.fsdecode(os.fspath(path)))
+            except Exception as exc:
+                fd_hooks["error"]("open", exc)
+        if dir_fd is not None:
+            quiet.depth += 1  # the ``open`` event carries the bare name
+        try:
+            fd = original(path, flags, mode, dir_fd=dir_fd)
+        finally:
+            if dir_fd is not None:
+                quiet.depth -= 1
+        if full is not None:
+            fds[fd] = full
+        return fd
+
+    setattr(open_, "__diffcone_fd__", True)  # noqa: B010
+    register_supports(original, open_)
+    return open_
+
+
+def _wrap_os_close(original):
+    @functools.wraps(original)
+    def close(fd):
+        if isinstance(fd, int):
+            fds.pop(fd, None)
+        return original(fd)
+
+    setattr(close, "__diffcone_fd__", True)  # noqa: B010
+    return close
+
+
+def _wrap_os_dup(original, both: bool):
+    """``os.dup`` and ``os.dup2``: the copy names what the original does."""
+
+    @functools.wraps(original)
+    def dup(fd, *args, **kwargs):
+        result = original(fd, *args, **kwargs)
+        try:
+            copy = result if not both else (args[0] if args else kwargs.get("fd2"))
+            path = fds.get(fd)
+            if isinstance(copy, int):
+                if path is not None:
+                    fds[copy] = path
+                else:
+                    fds.pop(copy, None)
+        except Exception as exc:
+            error = fd_hooks["error"]
+            if error is not None:
+                error("dup", exc)
+        return result
+
+    setattr(dup, "__diffcone_fd__", True)  # noqa: B010
+    return dup
+
+
+def install_fd_tracking(touch: Any, flag: Any, error: Any) -> None:
+    """Follow the descriptors ``os.open`` returns for the recorder calling
+    (the last caller's hooks stand: an xdist worker records itself as a
+    child first, then as a test process)."""
+    fd_hooks.update(touch=touch, flag=flag, error=error)
+    if getattr(os.open, "__diffcone_fd__", False):
+        return
+    os.open = _wrap_os_open(os.open)
+    os.close = _wrap_os_close(os.close)
+    os.dup = _wrap_os_dup(os.dup, both=False)
+    os.dup2 = _wrap_os_dup(os.dup2, both=True)
 
 
 def entry() -> list:
@@ -886,6 +1277,8 @@ def start() -> None:
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
     os.access = _wrap_stat(os.access)
+    os.readlink = _wrap_stat(os.readlink)
+    install_fd_tracking(_touch, _flag_dir_fd, lambda where, exc: _flag(f"recorder: {where}: {exc}"))
     on_spawn = _spawned
     install_popen()
     os.register_at_fork(after_in_child=_forked)

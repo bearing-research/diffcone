@@ -174,6 +174,19 @@ class _Output:
     # (function, parameter) written in place, and what calls are handed.
     param_writes: set[tuple[str, str]] = field(default_factory=set)
     passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
+    # Caches outside module variables (diffcone.indexer.writes, audit round
+    # 5, R22): stores of computed values into state outliving the call
+    # (SourceIndex.stores), the method calls on such state handed a computed
+    # value, resolved after pass 2 (``computed_passes``: (caller, where,
+    # callee, name, derived)), a parameter's attribute handed to a callee
+    # (``held_passes``: (caller, callee, name, slot, attribute, bound);
+    # resolved into SourceIndex.handed), and the functions whose decorator
+    # may keep a result (SourceIndex.memoized).
+    stores: set[tuple[str, str, str]] = field(default_factory=set)
+    computed_passes: set[tuple[str, str, str, str, str]] = field(default_factory=set)
+    held_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
+    handed: set[tuple[str, str, str]] = field(default_factory=set)
+    memoized: set[str] = field(default_factory=set)
     # (symbol, path suffix) of each ``.py`` file a string names
     # (diffcone.indexer.scripts), matched against the files after pass 2.
     script_paths: set[tuple[str, str]] = field(default_factory=set)
@@ -212,6 +225,11 @@ class _Output:
         self.table_imports |= other.table_imports
         self.param_writes |= other.param_writes
         self.passes |= other.passes
+        self.stores |= other.stores
+        self.computed_passes |= other.computed_passes
+        self.held_passes |= other.held_passes
+        self.handed |= other.handed
+        self.memoized |= other.memoized
         self.script_paths |= other.script_paths
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
@@ -311,6 +329,10 @@ def _output_to_dict(out: _Output) -> dict:
         "attr_refs": [[r.source, r.cls, r.attr, r.rest, r.chain] for r in out.attr_refs],
         "param_writes": sorted(list(w) for w in out.param_writes),
         "passes": sorted(list(p) for p in out.passes),
+        "stores": sorted(list(s) for s in out.stores),
+        "computed_passes": sorted(list(c) for c in out.computed_passes),
+        "held_passes": sorted(list(h) for h in out.held_passes),
+        "memoized": sorted(out.memoized),
         "script_paths": sorted(list(p) for p in out.script_paths),
     }
 
@@ -383,6 +405,10 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.attr_refs = [_AttrRef(*r) for r in data["attr_refs"]]
     out.param_writes = {(f, p) for f, p in data["param_writes"]}
     out.passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["passes"]}
+    out.stores = {(a, b, c) for a, b, c in data["stores"]}
+    out.computed_passes = {(a, b, c, d, e) for a, b, c, d, e in data["computed_passes"]}
+    out.held_passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["held_passes"]}
+    out.memoized = set(data["memoized"])
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     return out
 

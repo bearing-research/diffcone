@@ -97,9 +97,17 @@ variable) reaches tests no static path leads to; a test's or fixture's own
 is a reader too, followed into the import or hook that ran it. Once E is
 built, the variables written in place by code that can run a member of E
 (a cache an earlier test filled) are changed values for the code reading
-them inside tests (``_stored_results``). A target whose lifecycle
+them inside tests (``_stored_results``); code in that chain storing
+through a receiver, a closure or a function's or class's attribute
+(``SourceIndex.stores``) is read by every test that executed it, and
+code whose decorator keeps its result (``SourceIndex.memoized``:
+``cached_property``) by its readers. A target whose lifecycle
 dependencies differ between C and either snapshot is selected
 (``lifecycle_changed``).
+
+The modules imported before the recorder started (``Evidence.preloaded``)
+ran their import-time code where no record shows it: any change in one
+is escalated, with the module (``_preloaded``).
 
 Something that ran outside every test and that no record shows (a process
 nothing followed, text code: ``Evidence.import_flagged``) makes any change
@@ -136,6 +144,7 @@ from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from diffcone.child import SCANNED
 from diffcone.classify import (
     ADDED,
     ANNOTATIONS_CHANGED,
@@ -178,6 +187,8 @@ from diffcone.model import (
     CLASS,
     CLASS_STATEMENT,
     DECLARED,
+    DERIVED_ANY,
+    DERIVED_NAME,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
     FUNCTION,
@@ -196,6 +207,9 @@ from diffcone.model import (
     RUN_PATH,
     RUNS_PROGRAM,
     RUNS_SCRIPT,
+    STORE_CLOSURE,
+    STORE_PARAM,
+    STORE_SELF,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     WRITES,
@@ -369,6 +383,13 @@ def _ancestors(path: str) -> list[str]:
         out.append(path)
     out.append("")
     return out
+
+
+def _scanned(path: str) -> str:
+    """The listing record of the directory holding ``path`` scanned with
+    ``os.scandir`` (``child.SCANNED``): its entries' metadata may have been
+    read without an event, so an edit to ``path`` was seen there."""
+    return (path.rsplit("/", 1)[0] if "/" in path else "") + SCANNED
 
 
 class _TestCode:
@@ -741,6 +762,25 @@ class _Observers:
         # that member; who calls what, backwards; lookup sites by namespace.
         self._runs_e: dict[str, str] = {}
         self._called_by: dict[str, set[str]] | None = None
+        # Caches outside module variables (audit round 5, R22): per function,
+        # where it stores computed values and what they derive from
+        # (``SourceIndex.stores``); per callee, the attributes handed to it
+        # in a parameter it writes (``handed``); the functions whose
+        # decorator keeps a result (``memoized``); and the decorator
+        # functions whose wrapper may run what they decorate.
+        self.stores: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        self.handed_to: dict[str, set[str]] = defaultdict(set)
+        for index in (c_index, other):
+            for function, where, derived in index.stores:
+                self.stores[function].add((where, derived))
+            for _caller, callee, attr in index.handed:
+                self.handed_to[callee].add(attr)
+        self.memoized = c_index.memoized | other.memoized
+        self._decorated_by: dict[str, set[str]] = defaultdict(set)
+        for index in (c_index, other):
+            for decorated, decorator in index.decorations:
+                self._decorated_by[decorated].add(decorator)
+        self._stored_seen: set[str] = set()
         self._change_by_id = {c.id: c for c in self.changes}
         self.declarations = declarations
         # Cython name -> the Cython functions at C that mention it (lazily).
@@ -1001,6 +1041,7 @@ class _Observers:
     def run(self) -> None:
         if self.changes or self.unanalysed or self.outside:
             self._unrecorded_phases()
+            self._preloaded()
         decorated = self.c.doc_decorated | self.other.doc_decorated
         for change in self.changes:
             if is_build_script(change.symbol.path, self.project_dirs):
@@ -1071,7 +1112,29 @@ class _Observers:
         inside a test can have read it: no import or hook is followed
         (``in_tests``). ``functools`` caches need none of this: the recorder
         clears them before every test. True when a variable was found, since
-        its readers may in turn be stored."""
+        its readers may in turn be stored.
+
+        A cache held elsewhere than a module variable (audit round 5, R22) is
+        found the same way, by what the code stores rather than where: code
+        in the chain that stores a value derived from code that can run a
+        member of E (``SourceIndex.stores``: ``self._cache[k] =
+        compute(k)``, ``cls._cache[k] = ...``, a memoising decorator's
+        ``cache[k] = f(k)``) holds the result on an object or in a closure
+        that a later test reads without reaching the change. What reads it
+        is whoever reads that state: the code reading the attribute by name
+        (for a store through ``self``, ``cls``, a parameter, a function or a
+        class), every member of the class for a method writing its receiver
+        through another method (``self.put(k, compute(k))``), the storing
+        code itself for a closure, and the readers of the attribute a caller
+        handed for a parameter container (``fill(self._cache, k)``:
+        ``handed``); each is observed, and the storing code too, so every
+        test that executed one of them joins. Code whose decorator keeps a
+        result without running it again (``SourceIndex.memoized``:
+        ``functools.cached_property``) serves it to readers that run nothing
+        of it, so its readers (resolved and by name, guarded by who can hand
+        them an instance) and sites are followed as for a changed value. The
+        isolation assumption holds for both: a store by a test's own code is
+        seen by that test alone."""
         changed = self._change_by_id
         queue: deque[str] = deque()
         for s in sorted({*self.E, *self.guarded}):
@@ -1109,13 +1172,108 @@ class _Observers:
             self._observe(variable, RULE_EXECUTED_READER, label, change)
             self._readers(variable, change, label, in_tests=True, content_only=True)
             self._sites(self.symbols[variable], change, label, in_tests=True)
-        return bool(found)
+        # Storing or memoised code anywhere in the chain, every round: what a
+        # store derives from may have joined the chain only now.
+        keepers = [
+            (node, ran)
+            for node, ran in sorted(self._runs_e.items())
+            if (node in self.stores or node in self.memoized) and node not in self._stored_seen
+        ]
+        kept = False
+        chain_names: set[str] | None = None
+        for keeper, ran in keepers:
+            if keeper in self.test_code.isolated and self._only_in_tests({keeper}):
+                self._stored_seen.add(keeper)
+                continue  # the isolation assumption, as above
+            why = self.E.get(ran) or self.guarded[ran][0][2]
+            change = changed.get(why.changed_symbol or "")
+            if keeper in self.memoized:
+                self._stored_seen.add(keeper)
+                kept = True
+                label = (
+                    f"{keeper} can run {ran}, and its decorator may keep the result for "
+                    f"later readers ({why.detail})"
+                )
+                self._observe(keeper, RULE_EXECUTED_READER, label, change)
+                self._readers(keeper, change, label, in_tests=True, content_only=True)
+                self._sites(self.symbols[keeper], change, label, in_tests=True)
+            wheres: set[str] = set()
+            for where, derived in sorted(self.stores.get(keeper, ())):
+                if chain_names is None:
+                    chain_names = {self.symbols[s].name for s in self._runs_e if s in self.symbols}
+                if self._derives_from_chain(derived, chain_names):
+                    wheres.add(where)
+            if not wheres:
+                continue  # the chain's result is not what it stores, as far as E goes
+            self._stored_seen.add(keeper)
+            kept = True
+            label = (
+                f"{keeper} can run {ran} and stores what that computes, where a later test "
+                f"may read what an earlier one stored ({why.detail})"
+            )
+            self._observe(keeper, RULE_EXECUTED_READER, label, change)
+            for reader in sorted(self._state_readers(keeper, wheres, change, label)):
+                self._reader(reader, change, label, in_tests=True)
+        return bool(found) or kept
+
+    def _derives_from_chain(self, derived: str, chain_names: set[str]) -> bool:
+        """Whether a stored value (``SourceIndex.stores``) may come from code
+        that can run a member of E: a symbol in the chain (a class through
+        its constructors), a name some member of the chain bears, or
+        anything (a call through a parameter, a local bound twice)."""
+        if derived == DERIVED_ANY:
+            return True
+        if derived.startswith(DERIVED_NAME):
+            return derived[len(DERIVED_NAME) :] in chain_names
+        if derived in self._runs_e:
+            return True
+        symbol = self.symbols.get(derived)
+        if symbol is not None and symbol.kind == CLASS:
+            return any(c in self._runs_e for c in self._constructors(derived))
+        return False
+
+    def _state_readers(
+        self, keeper: str, wheres: set[str], change: SymbolChange | None, label: str
+    ) -> set[str]:
+        """The code that reads the state ``keeper`` stores into (``wheres``,
+        as ``SourceIndex.stores`` spells them): the readers of an attribute
+        by name (guarded, for a member of a test-code class, by who can
+        hand them an instance), every member of the class's family for the
+        receiver itself, nothing beyond the keeper for a closure, and the
+        readers of each attribute a caller handed for a parameter container."""
+        readers: set[str] = set()
+        symbol = self.symbols[keeper]
+        container = self.symbols.get(symbol.container or "")
+        cls = container.id if container is not None and container.kind == CLASS else None
+        attrs: set[str] = set()
+        for where in wheres:
+            if where == STORE_SELF:
+                if cls is not None:
+                    for c in sorted(self._related(cls, BASES) | self._related(cls, SUBCLASSES)):
+                        readers |= {
+                            m
+                            for m in self.members.get(c, ())
+                            if self.symbols[m].kind in (FUNCTION, METHOD)
+                        }
+            elif where == STORE_PARAM:
+                attrs |= self.handed_to.get(keeper, set())
+            elif where != STORE_CLOSURE:
+                attrs.add(where)
+        for attr in sorted(attrs):
+            readers |= self.attribute_readers.get(attr, set())
+            matched = set(self.by_name.get(attr, ()))
+            if cls is not None:
+                matched = self._guard(matched, cls, change, f"{label} (attribute {attr})")
+            readers |= matched
+        readers.discard(keeper)
+        return readers
 
     def _callers_of(self, symbol: Symbol, *, by_name: bool) -> set[str]:
         """The code that can run ``symbol`` (``_stored_results``), one step
         back: what references it (a call, or a read of the function as a
         value, which reaches the readers of a variable or class holding it),
-        what the project declares, and for a special method (a constructor
+        what the project declares, the decorator function wrapping it
+        (``SourceIndex.decorations``), and for a special method (a constructor
         among them), the code naming its class or a subclass, which stands in
         for whoever holds an instance. With ``by_name`` (the changed function
         itself), also the calls by its name on objects of unknown type. A
@@ -1133,6 +1291,9 @@ class _Observers:
                     self._called_by[target].add(source)
             for decl in self.declarations:
                 self._called_by[decl.target].add(decl.source)
+            # A decorator function's wrapper may run what it decorates.
+            for decorated, decorators in self._decorated_by.items():
+                self._called_by[decorated] |= decorators
         out = set(self._called_by.get(symbol.id, ()))
         container = self.symbols.get(symbol.container or "")
         if symbol.kind in (FUNCTION, METHOD) and _is_dunder(symbol.name):
@@ -1242,6 +1403,37 @@ class _Observers:
                 )
             else:
                 self._escalate_module(module, f"{why} ran while {module} was imported")
+
+    def _preloaded(self) -> None:
+        """The modules imported before the recorder started
+        (``Evidence.preloaded``: a ``.pth`` file, a ``-p`` plugin loaded
+        before it when ``sitecustomize`` could not run): their import-time
+        code ran where no record shows it, and a function of theirs may
+        have run then too (a decorated function whose result is kept at
+        import). Any change in one is planned from the code: the change
+        escalated, and the module with it, as for a change that ran during
+        an import. A changed file outside the source roots among them
+        selects everything: nothing static says who observes what it did."""
+        preloaded = self.evidence.preloaded
+        if not preloaded:
+            return
+        for change in self.changes:
+            module = change.symbol.module
+            if not change.carries_impact or module not in preloaded:
+                continue
+            why = (
+                f"{change.id} {'/'.join(change.changes)}: {module} was imported before the "
+                "recorder started, so what its code did then no record shows"
+            )
+            self._escalate_change(change, why)
+            self._escalate_module(module, why)
+        for path, what in sorted(self.outside.items()):
+            if UNINDEXED_MODULE + path in preloaded:
+                self._select_all(
+                    RULE_UNINDEXED_IMPORT,
+                    f"{path} {what}: a file outside the source roots, imported before the "
+                    "recorder started",
+                )
 
     def _cython(self) -> set[str]:
         """Cython sources (roadmap items 7 and 8): the paths this rule
@@ -2334,7 +2526,9 @@ class _Observers:
                 "read where no test's record sees it",
             )
             return
-        observed = [(path, self.evidence.import_paths)]
+        # The content: opened or stat'ed, or an entry of a directory scanned
+        # with ``os.scandir`` (the entries' metadata is read without an event).
+        observed = [(path, self.evidence.import_paths), (_scanned(path), self.evidence.import_dirs)]
         if names:
             # A name seen: a directory above it listed, or the path itself
             # stat'ed (a source file's stat is recorded as a name seen).
@@ -2627,6 +2821,8 @@ def _evidence_decision(
                 how = None
                 if evidence.has(touched, path):
                     how = f"opened or stat'ed {path}"
+                elif evidence.has(listed, _scanned(path)):
+                    how = f"scanned {_scanned(path)[: -len(SCANNED)] or 'the checkout root'}"
                 elif names:
                     dirs = [d for d in _ancestors(path) if evidence.has(listed, d)]
                     if dirs and dirs[0] == path:
@@ -2725,4 +2921,5 @@ def _summary(
         "planned": [f"{evidence.commit[:12]} -> {side}" for side, _ in pairs],
         "changes_outside_range": outside,
         "escalated_modules": sorted({m for obs in observed for m in obs.escalated_modules}),
+        "preloaded_modules": sorted(evidence.preloaded),
     }

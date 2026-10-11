@@ -36,10 +36,14 @@ from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
-# 2: spawns outside every test window are folded into the phase that made
-# them, and what no record shows there is kept (``import_flagged``); inert
-# probes are accounted; text code is flagged.
-STORE_FORMAT = 2
+# 3: the modules imported before the recorder started (``preloaded``), and
+# scanned directories (``child.SCANNED``) among the listed ones. A store of
+# an earlier format is refused: its recorder did not note what ran before
+# it, so a change there could go unplanned. 2: spawns outside every test
+# window are folded into the phase that made them, and what no record
+# shows there is kept (``import_flagged``); inert probes are accounted;
+# text code is flagged.
+STORE_FORMAT = 3
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -100,6 +104,12 @@ class Evidence:
     # for code outside every import (a hook, collection): any change may
     # reach what that phase built.
     import_flagged: frozenset[str] = frozenset()
+    # The modules imported before the recorder started (a ``.pth`` file, a
+    # ``-p`` plugin when its ``sitecustomize`` could not run), whose
+    # import-time code no record shows, ``path:<file>`` for one outside the
+    # index: any change in one is planned from the code (audit round 5,
+    # R28).
+    preloaded: frozenset[str] = frozenset()
     # The recording's file system folds case (macOS, Windows): a recorded
     # path matches a changed one in any spelling.
     case_insensitive: bool = False
@@ -253,6 +263,7 @@ class _Raw:
     environment_hash: str
     collected: set[str] | None = None
     import_flagged: set[str] = field(default_factory=set)
+    preloaded: set[str] = field(default_factory=set)
     case_insensitive: bool = False
     # The environment a process started in, when its run changed it.
     environment_at_start: dict | None = None
@@ -410,6 +421,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 for module_path in modules:
                     seen[canonical(path)].add(module_of(module_path))
         raw.import_flagged.update(module_of(m) for m in data.get("import_flagged", ()))
+        raw.preloaded.update(module_of(m) for m in data.get("preloaded", ()))
         for key, modules in data["import_by"].items():
             symbol = symbol_of[int(key)]
             if symbol is None:
@@ -729,6 +741,7 @@ def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
         "import_paths": _merged(s.import_paths for s in sources),
         "import_dirs": _merged(s.import_dirs for s in sources),
         "import_flagged": frozenset().union(*(s.import_flagged for s in sources)),
+        "preloaded": frozenset().union(*(s.preloaded for s in sources)),
         "case_insensitive": any(s.case_insensitive for s in sources),
     }
 
@@ -794,6 +807,7 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
                 "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
                 "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
                 "import_flagged": sorted(evidence.import_flagged),
+                "preloaded": sorted(evidence.preloaded),
                 "case_insensitive": evidence.case_insensitive,
                 "reverse_checked": evidence.reverse_checked,
                 "advanced_from": evidence.advanced_from,
@@ -880,6 +894,7 @@ def load_store(path: Path) -> Evidence:
             import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
             import_flagged=frozenset(meta["import_flagged"]),
+            preloaded=frozenset(meta["preloaded"]),
             case_insensitive=bool(meta["case_insensitive"]),
             reverse_checked=meta["reverse_checked"],
             advanced_from=meta.get("advanced_from"),

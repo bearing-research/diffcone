@@ -78,8 +78,24 @@ entry names it.
 Some changes can't be judged from a recording, and diffcone says so in the
 report:
 
-- Code that runs on import is planned from the code instead, as without
-  evidence.
+- Code that ran while a module was imported is planned from the code for
+  that module, as without evidence: a change to it reaches every test
+  that imports the module. The recorder starts before pytest loads any
+  plugin (`-p` in `addopts`, `PYTEST_ADDOPTS` or your command) and before
+  your own `sitecustomize.py`, so what those import is recorded. Modules
+  of your checkout that were imported before it could start (a `.pth`
+  file; `python -S`, which runs no `sitecustomize`) are listed by
+  `collect`, which warns, and in the report (`preloaded_modules`): any
+  change in one of them is planned from the code.
+- A value one test computes and later tests read from a cache your code
+  keeps, in a module variable, on an object (`self._cache[k] =
+  compute(k)`), a class, a closure or a function attribute, or in a
+  `functools.cached_property`, counts for every test that reads the
+  cache, not only the one that filled it. `functools.cache` and
+  `lru_cache` caches are cleared before every test instead. A cache kept
+  by a memoising decorator from a package diffcone doesn't know, or
+  filled through a method of an object whose type it can't tell, isn't
+  seen (see [limitations](../limitations.md)).
 - Tests with no recording (new tests, for example) and tests whose
   recording was unstable are always selected.
 - A Python process a test starts with `subprocess` (directly, through
@@ -111,7 +127,15 @@ report:
   test.
 - On a file system that ignores case (macOS and Windows by default), a file
   a test opened under another spelling (`Data/Expected.TXT`) still counts
-  as the file it is.
+  as the file it is. A file read through a symlink, or a symlinked
+  directory, counts as the file it really is as well as under the name it
+  was opened by; a link a test reads with `os.readlink` is the link.
+- Files are recorded however a test reaches them: opened, stat'ed, listed,
+  through a `sqlite3` `file:` URI, through a directory descriptor
+  (`os.listdir(fd)`, `dir_fd=`, `os.fstat`) or as entries of a directory
+  it scanned with `os.scandir` (`os.walk`, `glob`, `pathlib`): an edit to
+  any file of a scanned directory selects the test. A descriptor the
+  recorder cannot trace to a path makes the test always selected.
 
 ASV benchmarks are always planned from the code.
 

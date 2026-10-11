@@ -603,6 +603,20 @@ def _collect(args: argparse.Namespace) -> int:
             ),
             file=sys.stderr,
         )
+    if ev.preloaded:
+        names = sorted(
+            m[len(UNINDEXED_MODULE) :] if m.startswith(UNINDEXED_MODULE) else m
+            for m in ev.preloaded
+        )
+        more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+        print(
+            f"diffcone: warning: {len(names)} module(s) of the checkout were imported before "
+            f"the recorder started ({', '.join(names[:5])}{more}): what they did at import "
+            "is not recorded, so any change to them is planned from the code. A .pth file "
+            "or a -p plugin (addopts, PYTEST_ADDOPTS, --command) importing the project "
+            "before pytest starts does this when sitecustomize cannot run (python -S)",
+            file=sys.stderr,
+        )
     if ev.environment_at_start is not None:
         print(
             "diffcone: warning: the test run changed its own environment, and the "

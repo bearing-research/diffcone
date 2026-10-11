@@ -45,6 +45,7 @@ from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
     ANY_MODULE,
     EXTERNAL_WRITTEN,
+    FUNCTION,
     GRAPH_HANDLE,
     GRAPH_MODULES,
     INSTALLED,
@@ -378,6 +379,10 @@ class Indexer(DynamicBounds):
             decorator for _, decorator, _ in self._global.decorations if decorator
         }
         for decorated, decorator, receiver in sorted(self._global.decorations):
+            if decorator:
+                symbol = self.index.symbols.get(decorator)
+                if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                    self.index.decorations.add((decorated, decorator))
             if receiver:
                 self.index.edges.add(Edge(receiver, decorated, REFERENCES, REGISTERS))
             for variable in sorted(writers.get(decorator, ())):

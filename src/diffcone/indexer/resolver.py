@@ -13,6 +13,7 @@ from diffcone.indexer.definitions import (
     SAME,
     WRAPPER,
     StarBases,
+    _canonical_names,
     _chain_names,
     _class_attributes,
     _flatten_chain,
@@ -22,6 +23,7 @@ from diffcone.indexer.definitions import (
     _is_special_method,
     _is_staticmethod,
     _least_passive,
+    _memoizing_decorator,
     _passive_decorator,
     _property_accessors,
     _rebound_names,
@@ -720,6 +722,33 @@ class Resolver(FirstPass):
             if decorator_id or receiver_id:
                 self.out.decorations.add((symbol_id, decorator_id, receiver_id))
 
+    def _memoizing(self, decorators: list[ast.expr], module: ModuleScope, where: Scope) -> bool:
+        """Whether a decorator is known to serve a kept result without
+        running the function again (SourceIndex.memoized):
+        ``functools.cached_property`` or another memoiser the analysis knows
+        by name (``_memoizing_decorator``), or a class of the index (a
+        descriptor, which may keep what its ``__get__`` computed). A
+        function of the index runs recorded code when it wraps; a decorator
+        from outside the index that is not known to memoise is taken to
+        keep nothing (docs/limitations.md: the sound default, every unknown
+        decorator a memoiser, selects every test of a project whose routes
+        or commands are decorated)."""
+        stars = self._star_bases(module)
+        for dec in decorators:
+            if _is_inert_decorator(dec, module, _header_names(where), stars):
+                continue
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            names = _canonical_names(target, module, _header_names(where), stars)
+            if names and any(_memoizing_decorator(n) for n in names):
+                return True
+            parts = _flatten_chain(target)
+            node = self.resolve_chain(parts, where) if parts else None
+            if isinstance(node, Resolved) and not node.detail:
+                symbol = self.index.symbols.get(node.symbol)
+                if symbol is not None and symbol.kind == CLASS:
+                    return True
+        return False
+
     def _decorators_may_read_docs(
         self, decorators: list[ast.expr], module: ModuleScope, where: Scope
     ) -> bool:
@@ -835,6 +864,8 @@ class Resolver(FirstPass):
         if self._decorators_may_read_docs(node.decorator_list, scope, outer_scope):
             self.out.doc_decorated.add(symbol_id)
         self._record_decorations(symbol_id, node.decorator_list, scope, outer_scope)
+        if self._memoizing(node.decorator_list, scope, outer_scope):
+            self.out.memoized.add(symbol_id)
         self._decorated_at_import(
             symbol_id, node.decorator_list, scope, outer_scope, class_scope, accessors
         )
