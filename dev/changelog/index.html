@@ -1563,9 +1563,18 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   changes.</li>
 <li>An attribute read on an object of unknown type is matched to
   module-level functions, classes and variables only in modules such an
-  object can be: modules passed around, obtained by name or named in a
-  string, and test modules and conftests, which pytest hands out. Methods
-  still match whatever the receiver.</li>
+  object can be: modules passed around or bound to another name, obtained
+  by name or named in a string, and test modules and conftests, which
+  pytest hands out. A name bound only to modules (<code>m = ops</code>, then
+  <code>m.value()</code>) is followed like the import itself. Methods still match
+  whatever the receiver.</li>
+<li>A text a test writes or runs (<code>pytester.makepyfile</code>, <code>exec</code>, <code>-c</code> code)
+  whose template field the test's own parameter fills, when
+  <code>@pytest.mark.parametrize</code> on the test gives that parameter literal
+  values, is read once per value instead of counting as text built at run
+  time, which any change reached. A value that is not a literal, an
+  <code>indirect</code> parameter, another decorator on the test, or a parametrize
+  on its class or in <code>pytestmark</code> keeps the old rule.</li>
 <li>Indexing a very long function is no longer quadratic in its calls.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
@@ -1759,6 +1768,15 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 </ul>
 <h4 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h4>
 <ul>
+<li>A fixture defined with a decorator whose name ends in <code>fixture</code>
+  (pytest-twisted's <code>async_fixture</code> and <code>async_yield_fixture</code>,
+  pytest-trio's <code>trio_fixture</code>) was not seen; when its name was also a
+  well-known plugin's (pytest-django's <code>client</code>), it was taken for that
+  plugin's fixture and what it requested reached nothing. Such decorators
+  now make fixtures, and a plugin's fixture name is no longer assumed when
+  the test's class, module, conftests or plugins define it in a way
+  diffcone can't read: the name is an unknown fixture, selected on every
+  change.</li>
 <li>An autouse fixture imported into a conftest, a test module or a plugin
   (by name, through star imports at any depth, or as a module attribute)
   was not a dependency of the tests it applies to; nor was a fixture with
@@ -1870,6 +1888,14 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 </ul>
 <h4 id="running-check-and-validate">Running, check and validate<a class="headerlink" href="#running-check-and-validate" title="Permanent link">&para;</a></h4>
 <ul>
+<li><code>validate</code> and <code>corpus</code> reported tests outside the target list as
+  misses even when the plan said discovery was incomplete (it exits 3,
+  and <code>run</code> refuses it). They are now listed as "outside the target list"
+  and don't fail the check, and coverage recall is measured over the
+  targets. When discovery claims to be complete, such a test is still a
+  miss, labelled <code>MISSED (not a target)</code>. The JSON gains
+  <code>discovery_incomplete</code>, <code>outside_targets</code> and a <code>target</code> flag on each
+  record; <code>counts.targets</code> now counts targets only.</li>
 <li><code>diffcone check</code> decided "already failing at the baseline" per test
   function, so a parametrized case that failed at the baseline excused a
   new failure of another case: a miss reported as clean. Cases are now

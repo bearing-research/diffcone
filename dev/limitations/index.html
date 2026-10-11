@@ -1110,8 +1110,11 @@ object of unknown type is matched against every method named <code>run</code>,
 and against module-level <code>run</code> in modules such an object could be. The
 calling code is selected when any of those changes.</p>
 <p>A module "such an object could be" is one your code passes around as a
-value, gets by name (<code>importlib.import_module</code>, <code>sys.modules</code>, a
-string naming it), or one pytest hands out (test modules, conftests).</p>
+value or binds to another name (<code>m = ops</code>), gets by name
+(<code>importlib.import_module</code>, <code>sys.modules</code>, a string naming it), or one
+pytest hands out (test modules, conftests). A name bound only to
+modules (<code>m = ops</code>, then <code>m.value()</code>) is followed like the import
+itself.</p>
 <p>An instance attribute is followed only when every assignment of it is
 in <code>__init__</code> and assigns a parameter, a string, or one of your
 functions or classes by name. An attribute that holds an object
@@ -1205,7 +1208,11 @@ Text written in the code (a string, a constant, a template filled with
 literals) is read as code: what it imports and calls counts. Text
 built at run time or read from a file can import anything, so the test
 is selected for any change. Text passed in as a helper's argument is
-read at each call site.</dd>
+read at each call site. A template filled by the test's own argument
+is read once per value when <code>@pytest.mark.parametrize</code> on the test
+function lists literal values for it (and the test has no decorator
+other than pytest marks); values from a fixture, <code>indirect=True</code>, or a
+parametrize on the class or in <code>pytestmark</code> count as built at run time.</dd>
 <dt><strong>Tests that use <code>pytester</code>.</strong></dt>
 <dd>A test using <code>pytester</code> or <code>testdir</code> runs a pytest session of its own,
 with your project's registered plugins loaded. It depends on every

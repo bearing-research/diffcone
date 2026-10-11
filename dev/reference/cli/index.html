@@ -1223,7 +1223,9 @@ working tree differs from the snapshot the plan analysed (unless
 repository, and with <code>3</code> when discovery may be incomplete (unless
 <code>--allow-incomplete-discovery</code>).</p>
 <p><code>validate</code> and <code>corpus</code> exit <code>0</code> when every outcome change was selected,
-<code>1</code> when some were missed, <code>2</code> on errors. <code>check</code> exits <code>0</code> when every new
+<code>1</code> when some were missed, <code>2</code> on errors. A test that is not a target is
+not a miss when the plan said its discovery is incomplete (the plan's
+<code>3</code>); it is reported apart. <code>check</code> exits <code>0</code> when every new
 failure of the full run was selected, <code>1</code> when the plan missed one, <code>2</code>
 when an input cannot be read. <code>report</code> exits <code>0</code> when the runs it read
 show no problem, <code>1</code> when they show one (a miss, a check that reached no
@@ -1435,7 +1437,7 @@ results) and <code>2</code> on errors. An internal error exits <code>2</code> in
 </table>
 <h2 id="diffcone-validate"><code>diffcone validate</code><a class="headerlink" href="#diffcone-validate" title="Permanent link">&para;</a></h2>
 <p>Run the full pytest suite at both snapshots and check the plan against it.</p>
-<p>Outcome-based validation: runs the whole pytest suite at base and head (commits in temporary git worktrees, WORKTREE in place), then reports every test whose pass/fail outcome changed but was not selected. Behaviour changes that keep the same outcome are invisible to this check.</p>
+<p>Outcome-based validation: runs the whole pytest suite at base and head (commits in temporary git worktrees, WORKTREE in place), then reports every test whose pass/fail outcome changed but was not selected. A test that is not a target is reported apart, not as a miss, when the plan says its discovery is incomplete. Behaviour changes that keep the same outcome are invisible to this check.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAND] [--coverage] [--setup-command SETUP_COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
 </code></pre></div>
 <table>

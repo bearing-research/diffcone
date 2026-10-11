@@ -1196,6 +1196,26 @@ test whose result changed but wasn't selected:</p>
 place. With <code>--coverage</code> (which needs pytest-cov installed where your tests
 run), it also records which tests executed changed code, and reports any
 such test that wasn't selected.</p>
+<p>A miss comes in two kinds:</p>
+<ul>
+<li><code>MISSED</code>: a target whose result changed (or that executed changed code)
+  and that the plan did not select.</li>
+<li>A test that is not a target at all, because discovery did not find it.
+  If the plan says its discovery is incomplete (it exits <code>3</code>, and
+  <code>diffcone run</code> refuses it without <code>--allow-incomplete-discovery</code>), such
+  tests are a gap the plan already reported, not a selection miss:
+  <code>validate</code> lists them as "outside the target list (discovery
+  incomplete: the plan exits 3)" and they do not fail the check. Coverage
+  recall is then measured over the targets, with the other tests counted
+  apart (<code>recall 100% of targets; 1589 test(s) outside the target list</code>).
+  If the plan claims its discovery is complete, such a test is a discovery
+  miss and is reported as <code>MISSED (not a target)</code>.</li>
+</ul>
+<p><code>validate</code> exits <code>0</code> when nothing was missed and <code>1</code> when something was. In
+<code>--format json</code>, <code>missed</code> lists every miss (each with <code>"target": true</code> or
+<code>false</code>), <code>outside_targets</code> lists the changed tests that are not targets,
+and <code>discovery_incomplete</code> says whether those count as misses; <code>counts</code> and
+<code>coverage.counts</code> carry <code>missed_targets</code> and <code>outside_targets</code> as well.</p>
 <p>The whole suite must run on both sides for the comparison to mean
 anything, so <code>validate</code>, <code>corpus</code> and <code>collect</code> add <code>--maxfail=0</code> after
 your arguments, which overrides an <code>-x</code> or <code>--maxfail</code> in <code>addopts</code> or in
@@ -1205,7 +1225,9 @@ tests than it collected; <code>validate</code> then refuses with exit code <code
 instead of comparing.</p>
 <p><code>diffcone corpus --range A..B</code> validates every commit in a range and
 summarises the results: how many failures were missed and what share of
-tests each plan would have skipped. It skips commits that change no <code>.py</code>
+tests each plan would have skipped, with tests outside an incomplete target
+list counted apart, as <code>validate</code> does; it exits <code>1</code> when a plan missed something or a commit
+could not be validated. It skips commits that change no <code>.py</code>
 file unless you pass <code>--all-commits</code>. Use <code>--jobs N</code> to validate several
 commits in parallel. Both commands take <code>--evidence</code> to validate plans made
 from a recording.</p>
