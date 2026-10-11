@@ -36,6 +36,28 @@ Supported subset (see internal/design.md):
   (``scripts.py``); a module loaded from a file by path
   (``spec_from_file_location``, ``SourceFileLoader``) and what an unpickler
   loads (a round trip, or bytes written in the code);
+* text run as code in the process (``exec``/``eval``, ``timeit``'s
+  statements, ``code.InteractiveInterpreter().runsource``, ``pytester``'s
+  texts) when the text is written out (a literal, a constant, a template
+  literals fill): read as the program it is (``scripts.code_edges``); text
+  built at run time or read from a file is unbounded;
+* a test file given to a test runner (``-m pytest tests/x.py``, a node id,
+  ``unittest.main(module=...)``, ``pytester.copy_example``): the file and,
+  for pytest, its conftests, each whole (``scripts.py``);
+* names read off an object by the standard library from a string written
+  out: ``operator.attrgetter``/``methodcaller``, the attribute fields of a
+  ``str.format`` template, and the attributes a ``match`` class pattern
+  reads (keywords, ``__match_args__``);
+* an instance handed to code the analysis does not follow into (a
+  library's function, a builtin reading more than dunders, a receiver of
+  unknown type): its class escapes, and referring to it depends on every
+  member (``references._handed_instances``); likewise a module handed on,
+  a literal ``import_module("m")`` result included;
+* the ``__init__``/``__new__`` a class's creation runs (an ``enum`` base,
+  an in-scope metaclass), and the ``__init_subclass__`` and metaclass hooks
+  every class statement runs;
+* the order of a module's or class's top-level statements (a reorder is a
+  definition change; two adjacent plain ``def``s trading places is none);
 * writes of process-global state outside the source roots (``process.py``),
   and the stores a test makes that are undone when it ends (``patches.py``).
 

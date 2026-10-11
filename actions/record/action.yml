@@ -299,27 +299,38 @@ runs:
             printf '%s\n' "${ids[@]}" > "$RESULTS/rerun-ids.txt"
             rc=0
             # The command as diffcone collect splits it: quotes kept.
+            # --maxfail=0 after the run's own options (and so after addopts):
+            # an -x or --maxfail there would stop the re-run at its first
+            # failure, before the other tests it names.
             eval "cmd=($COMMAND)"
-            "${cmd[@]}" "${rerun[@]}" -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${ids[@]}" \
+            "${cmd[@]}" "${rerun[@]}" --maxfail=0 -p no:cacheprovider "--junitxml=$RESULTS/rerun.xml" "${ids[@]}" \
               > "$RESULTS/rerun.log" 2>&1 || rc=$?
             # Only the re-run tests count: anything else the re-run ran is
             # not a miss of this check. A re-run that cannot be read leaves
-            # the misses standing.
+            # the misses standing, and so does a test the re-run did not run
+            # (the second check: the new failures of the full run the re-run
+            # has no case of).
             again=${#ids[@]}
             if [ -f "$RESULTS/rerun.xml" ] && [ "$rc" -lt 2 ]; then
               rs=0
               diffcone check --plan "$RESULTS/plan.json" --full "$RESULTS/rerun.xml" \
                 --baseline "$RESULTS/previous.xml" --format json -o "$RESULTS/rerun-verdict.json" \
                 || rs=$?
-              if [ "$rs" -eq 0 ]; then
-                again=0
-              elif [ "$rs" -eq 1 ]; then
+              ra=0
+              diffcone check --plan "$RESULTS/plan.json" --full "$JUNIT" \
+                --baseline "$RESULTS/previous.xml" --run "rerun=$RESULTS/rerun.xml" \
+                --format json -o "$RESULTS/rerun-ran.json" || ra=$?
+              if [ "$rs" -lt 2 ] && [ "$ra" -lt 2 ]; then
                 again=$("$py" -c "
         import json, sys
         misses = set(json.load(open(sys.argv[1]))['misses'])
-        ids = set(open(sys.argv[2]).read().splitlines())
-        print(len(misses & ids))" "$RESULTS/rerun-verdict.json" "$RESULTS/rerun-ids.txt" | tr -d '\r') \
-                  || again=${#ids[@]}
+        runs = json.load(open(sys.argv[2]))['runs']
+        not_run = {t for r in runs if r['name'] == 'rerun' for t in r['misses']}
+        if len(runs) != 1:
+            sys.exit(1)
+        ids = set(open(sys.argv[3]).read().splitlines())
+        print(len((misses | not_run) & ids))" "$RESULTS/rerun-verdict.json" "$RESULTS/rerun-ran.json" \
+                  "$RESULTS/rerun-ids.txt" | tr -d '\r') || again=${#ids[@]}
                 [ -n "$again" ] || again=${#ids[@]}
               fi
             fi

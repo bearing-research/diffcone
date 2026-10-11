@@ -39,8 +39,10 @@ per module):
   tests, fixtures and conftests run, so the symbol depends on the module
   as a whole (every symbol in it, and for pytest on each ``conftest.py``
   from its directory outward, whole too: ``whole_module``), not only on
-  its import-time code. A directory, a bare word the runner would collect
-  from, ``unittest discover`` or a non-literal is unbounded.
+  its import-time code. A directory given to ``pytester.copy_example``
+  runs every ``.py`` file under it, each so; any other directory, a bare
+  word the runner would collect from, ``unittest discover`` or a
+  non-literal is unbounded.
 
 A command whose interpreter the analysis finds (``_interpreter_index``: the
 first item that is ``sys.executable`` or a ``python``/``python3`` literal,

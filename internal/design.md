@@ -294,8 +294,10 @@ Further rules (pre-release audit, round 2):
   not a third-party one.
 * `exec`/`eval` of code read from a file at run time (the argument, or the
   scope it is in, calls `open`, `read_text`, `get_data`, ...) is an
-  unbounded dynamic import; code generated from the program's own strings
-  stays bounded by the import closure.
+  unbounded dynamic import. Text the program writes out (a literal, a
+  constant, a template literals fill) is read as the code it is, and text
+  built otherwise at run time is unbounded too (`runs text built at run
+  time`; see "Pass 2 reads the text too" below).
 * Registration: a decorator not known inert records the function it
   decorates; after resolution, the decorator's receiver (`show` in
   `@show.register(int)`, `app` in `@app.command`), each variable a decorator
@@ -493,9 +495,10 @@ Further rules (pre-release audit, round 2):
   edge (`run as tests`) to every symbol in it, and for pytest to every
   symbol of each `conftest.py` from its directory outward, since the
   file's tests, fixtures and conftests run, not only its import-time code
-  (R14); a directory, `unittest discover`, `pytest.main()` reading
-  `sys.argv`, `doctest.testfile` or a bare word the runner would collect
-  from is unbounded; `coverage`'s other subcommands run nothing. A `-m`
+  (R14); a directory given to `pytester.copy_example` runs every `.py`
+  file under it, each whole as above; any other directory, `unittest
+  discover`, `pytest.main()` reading `sys.argv`, `doctest.testfile` or a
+  bare word the runner would collect from is unbounded; `coverage`'s other subcommands run nothing. A `-m`
   name that is a parameter is bounded by the call sites' literals, as
   `import_module` of one is. A `.py` file under the roots that no module
   name maps to
@@ -1216,8 +1219,12 @@ Unknown is never treated as unaffected:
   (`mock.patch` patches while the call runs; on a generator function only
   while the call makes the generator); a method of the `monkeypatch`
   fixture or a patcher of pytest-mock's `mocker`, a parameter of that name
-  of the test (`test*`) or fixture (`@fixture`) the call stands in and not
-  rebound there (both fixtures are function-scoped); a method of what `with
+  of the test (`test*`) or function-scoped fixture (`@fixture` with no
+  `scope` or `scope="function"`) the call stands in and not rebound there,
+  when the module defines no fixture of that name itself (both fixtures
+  are function-scoped; a wider-scoped fixture gets them only through an
+  override, whose lifetime is unknown: R27; an override in another module,
+  such as a parent conftest, is not seen and is assumed undone); a method of what `with
   MonkeyPatch.context() as mp:` binds in a body that does not yield.
   Everything else stays a write: `patch(...).start()`, a patcher kept in a
   name or attribute, a `MonkeyPatch()` of its own, `MonkeyPatch.context()`
@@ -2046,8 +2053,10 @@ does not count. What the module's imports bind is as reachable through it
 round 3, W16): each such reference also gains an edge to every symbol its
 imports, star imports and those of its submodules bind, transitively
 (the members of a module bound, the function or class bound and its
-members), added by the indexer (`Indexer._module_reach_edges`) since the
-planner sees no import bindings.
+members). The indexer records what each referenced module reaches
+(`SourceIndex.module_reach`, filled by `Indexer._module_reach`), since the
+planner sees no import bindings; the planner adds the edges, through one
+`<module>.<imports>` node per escaped module.
 
 An object also reaches such code out of a factory, and nothing at that
 call site names its class: `obj = make(); invoke(obj, name)`. So a
@@ -2146,7 +2155,8 @@ nothing, since nothing would run; `--allow-mismatched-worktree` says to go
 ahead.
 
 `diffcone/execution.py` is the only module that runs project code, and only
-from the `run` and `validate` commands after a plan exists.
+from the `run`, `validate`, `corpus` and `collect` commands: the first
+three after a plan exists, `collect` to record execution evidence.
 
 * `run` builds the runner command for the selected targets. For pytest it
   does not name them on the command line: pytest imports the conftests of
@@ -2290,20 +2300,31 @@ is implemented. In short:
   Values are followed through variables that captured them, and names
   through unbounded lookup and reflection sites. What ran at import
   escalates the importing module to static planning (`plan_from_indexes`
-  with explicit `Seeds`, without dynamic pseudo-seeds).
+  with explicit `Seeds`, without dynamic pseudo-seeds), and so does any
+  change in a module imported before the recorder started
+  (`preloaded_modules`: a `.pth` file, `python -S`; a changed file outside
+  the source roots among them selects everything).
 * A pytest target is always selected, whatever E says, when:
-  - it has no record, or its record is unstable or started a subprocess
-    (`no_evidence`, `unstable`, `subprocess`);
+  - it has no record, or its record is unstable, started a subprocess or
+    ran code compiled from text no file holds, such as a doctest
+    (`no_evidence`, `unstable`, `subprocess`, `text_code`);
   - its entry or a container of it changed (`changed_target`);
   - a conftest or fixture change puts it in scope (`test_scope`);
   - a hook, compiled source or configuration file changed
     (`pytest_hook_changed`, `unobserved_file_changed`).
 * ASV targets, which have no evidence, keep their static decision.
 
-The index carries two fields only evidence mode reads: `reflection`
-(sites that observe names or signatures without naming them) and
-`class_attributes` (per-attribute hashes of class bodies). Static planning
-ignores both, so static plans are unchanged.
+The index carries fields only evidence mode reads (`model.SourceIndex`
+documents each): `cython` (Cython sources at function level),
+`class_attributes` (per-attribute hashes of class bodies), `open_classes`,
+`table_imports`, `stores` and `handed` (stores into state outliving a
+call), `memoized` and `decorations`. Static planning ignores them, so
+static plans do not depend on them. Two more are read by both: of
+`reflection` (sites that observe names or signatures without naming them)
+static planning uses only a listing of an external module in-scope code
+writes to (R11) and `dir()` of an in-scope module (R21), and of
+`external_sites` the writers that tell whether only isolated test code
+writes there; evidence mode reads every site.
 
 ## Known gaps (by design)
 
@@ -2344,6 +2365,9 @@ ignores both, so static plans are unchanged.
   code, `pickle`, `copy`) does not connect its user to the class's
   special methods.
 * External code calling methods by protocol without inheritance: an
-  object with no base outside the source roots but handed to external
-  code (a file-like object passed to `json.load`, a callback object)
-  has the methods that code calls reached only through name matches.
+  object handed to external code (a file-like object passed to
+  `json.load`, a callback object) makes its class escaped when the site
+  names the class (`C()`, `C`, a local bound once to one, a factory's
+  result; R19 above). One whose class the site does not name (a
+  parameter or an attribute handed on, an object from a container) has
+  the methods that code calls reached only through name matches.
