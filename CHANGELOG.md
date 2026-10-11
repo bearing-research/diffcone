@@ -10,6 +10,15 @@ selection rules.
 
 ### Planning
 
+- diffcone assumes a test does not depend on what an earlier test left
+  behind: a change a test, a function-scoped fixture or a test-module
+  helper makes to module state counts for that test only, not for the
+  other tests and benchmarks reading the same state. A test module's
+  top-level code, wider-scoped fixtures, hooks and project code (a cache
+  a test fills) still count for every reader. Declare a dependency on an
+  earlier test's state in `diffcone.toml` if a test relies on one.
+- A test or fixture that saves a module attribute and puts it back before
+  the test ends counts like `monkeypatch`.
 - `diffcone.toml` takes `[[always_run]]` entries: tests (or benchmarks)
   matching a pattern on their id are selected in every plan, with or
   without a recording, and the report gives the entry as the reason and
@@ -52,6 +61,10 @@ selection rules.
   fixture, `mocker.patch`, a `with mock.patch(...)` block, a
   `@mock.patch(...)` decorator) no longer makes a lookup on a library
   module see every change.
+- Indexing a very long function is no longer quadratic in its calls.
+- Editing an ordinary module named `build.py` (not at the repository root
+  or beside `pyproject.toml`/`setup.cfg`) selects, with a recording, the
+  tests that ran it, as static planning does, instead of every test.
 
 ### Fixed
 
@@ -190,6 +203,67 @@ selection rules.
   `sys.modules` that way, it counts as installed for good. A `with
   mock.patch.dict(os.environ)` or `warnings.catch_warnings()` block whose
   body yields no longer counts as putting the process state back.
+- A call of an unresolved function whose name happens to be `rebinds`,
+  `registers` or `mutated_by` was taken for one of diffcone's own kinds of
+  dependency, and a test could be missed (a module that calls
+  `registers()` at import). It is planned as the call it is.
+- `runpy.run_module(name)`, `runpy.run_path(path)` and `python -m <name>`
+  with a name nothing bounds count as an import of any module, as
+  `importlib.import_module(name)` does; they were bounded by their
+  module's imports.
+- A decorator diffcone can't show leaves the function alone (one from an
+  installed package, or a project decorator that calls or registers it)
+  makes the decorated function count as code that runs on import, and its
+  parameters are no longer bounded by its call sites.
+- A name imported in a `try`/`except` or `if`/`else`, rebound by a star
+  import, or redefined in the module is no longer taken for
+  `typing.final`, a quiet decorator or a structural base; attribute uses
+  of a name bound several ways depend on every binding.
+- A dynamic import, script path or `getattr` receiver bounded by its call
+  sites is unbounded when a caller may be unseen (a call through an object
+  of unknown type, an unseen construction).
+- A subscript in an evaluated annotation (`X: Registry["k"] = 1`) counts as
+  code that runs on import.
+- A test that patches a module by a dotted string with
+  `mock.patch.multiple("pkg.mod", NAME=...)` depends on those names and on
+  the module; any dotted patch target counts as an import of its module,
+  and so does a patcher called on a value
+  (`pytest.MonkeyPatch().setattr("pkg.mod.NAME", ...)`).
+- `python -c` code that changes `sys.path`, `sys.meta_path` or
+  `sys.modules` by assignment, deletion or augmented assignment, or calls
+  `os.chdir`, can import anything; only `insert`/`append`/`extend` counted.
+- A file nested too deeply to analyse is an analysis error that selects
+  everything, instead of a crash.
+- A write to process-global state (`os.environ`, warning filters,
+  `sys.path`) is recognised whichever import binds the name: `from os
+  import *`, an import in `try` with another in `except`, or a
+  function-local one; a test running after it could be missed. A `with`
+  statement counts as putting state back only when every binding of its
+  name is the restoring one.
+- A module handle, an install in `sys.modules`, an unpickled object or a
+  `gc` list reached through a star-imported name (`from sys import *`,
+  then `modules[...]`) is seen, so a test reading what it changes is
+  selected; handing a submodule of a library on (`register(os.path)`)
+  counts for dynamic lookups through it.
+- A change to a module-level variable made through a module object the
+  analysis did not resolve to the variable's module is a dependency of
+  the variable's readers: `importlib.import_module("pkg.reg").TABLE["x"]
+  = f`, `sys.modules[...]`, a function-local import, a star import, or a
+  module passed to a helper that writes into it. Handing a library object
+  such as `datetime.timezone.utc` to a call no longer makes every dynamic
+  lookup on that library depend on the caller.
+- A `diffcone.toml` that is present but can't be read (left unmerged by a
+  conflicted merge) is an analysis error that selects every target; it was
+  read as no file. A manifest that is not valid JSON says so.
+- `collect` and `run --collect` no longer refuse a clean checkout because
+  untracked bytecode or ASV output has a non-ASCII name; a renamed file
+  counts as both names.
+- `run --dry-run --evidence` prints a command you can run, without
+  diffcone's internal recorder plugin.
+- `discover` honours `--no-cache` and `--cache-dir`: it uses the same cache
+  as `plan`, and its output is unchanged.
+- A relative `--command` written with forward slashes
+  (`.venv/Scripts/python.exe`) is resolved on Windows too.
 
 ### Discovery
 
@@ -228,6 +302,33 @@ selection rules.
   test module or module they import that sets an environment variable or
   extends `sys.path` at import, a `pytest_generate_tests` that does) is a
   dependency of every test.
+- `pytest_plugins` is read however it is built (`+`, `+=`, `.append`,
+  `.extend`, a comma-separated string, a variable) or imported from
+  another module; when it can't be read, every test is selected and the
+  report says why.
+- `pytestmark` lists built with `+`, `+=`, `.append` or `.extend`, or
+  imported, apply their `usefixtures`.
+- `indirect=` given as a variable, as the third positional argument or
+  through `**kwargs` no longer drops the fixture from the test's
+  dependencies.
+- Tests defined, aliased or marked `__test__ = True` inside `if`/`try`
+  blocks, and tests imported from such modules, are found; an imported
+  test discovery can't follow is reported, not dropped.
+- A collection hook imported into a conftest (by a star import, or from
+  outside the source roots), or a star import from outside the roots in a
+  conftest or plugin, makes discovery possibly incomplete.
+- Code run while collecting that writes the environment or the import path
+  through a patch nothing undoes (`mock.patch.dict(os.environ,
+  ...).start()`, `pytest.MonkeyPatch().setenv(...)`,
+  `syspath_prepend`) is a dependency of every test.
+- ASV: a `timeraw_` benchmark bound under another name, or renamed with
+  `benchmark_name`, depends on what its code imports; `benchmark_name`
+  applies wherever the function is bound, inherited methods included;
+  `benchmark_dir: "."` finds benchmarks, and a `benchmark_dir` outside the
+  repository makes discovery incomplete.
+- A test, conftest or benchmark module nested too deeply to analyse is
+  reported as a file that did not parse, which makes discovery
+  incomplete, instead of stopping discovery with an internal error.
 
 ### Execution evidence
 
@@ -310,6 +411,13 @@ selection rules.
   graph; `hasattr(obj, "name")` notices only `name`.
 - Unpicklers and loaders of a computed path count as code that can obtain
   a test module.
+- A function added, deleted or redefined with an annotation that calls
+  code (`def f(x: set_mode("fast"))`), or a module-level variable whose
+  annotation does, reaches what that code writes: before Python 3.14
+  annotations run with the definition, so tests reading that state were
+  missed.
+- A recording stored under a path containing `#`, `?` or `%` can be
+  opened; it was skipped as if there were none.
 
 ### CI
 
@@ -328,6 +436,9 @@ selection rules.
 - The `report` action failed whenever a job of a reported run had been
   re-run, since the run then holds two artifacts of the same name; it now
   reads the latest attempt's.
+- The `record` action's re-run of a missed test runs a `command` with
+  quotes or spaces as written.
+- The report's job table escapes `|` in "not checked" reasons.
 
 ## [0.3.0] - 2026-10-08
 

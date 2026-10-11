@@ -1441,6 +1441,40 @@ the like in the autouse reset fixture are no longer reads; the fixture
 still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
 W13 and W15: 939 of 6 231 with and without these rules.
 
+## After the code-quality pass (audit round 4, Q1-Q25; 2026-10-10)
+
+Six quality reviews found misses where duplicated rules had drifted
+(internal/audit.md, round 4); W27-W29 came from the docs pass before it.
+The machine rebooted mid-round and wiped the scratch setup, so the corpus
+repositories, their environments and the strata recording were rebuilt
+(same commits, fresh environments). The checks:
+
+* Plan-only census (42 repositories, fresh clones, 334 plans), main vs
+  round 4 before Q25: 312 312 of 327 524 selected either way, mean
+  92.8 %; Q13's rule for unreadable decorators moved nothing.
+* `fixture_check.py` over the 42 census repositories and pandas: no test
+  uses a fixture its dependencies miss. `collection_check.py`: identical
+  to round 3, except one new `plugin_collects_files` note in alembic,
+  whose conftest star-imports SQLAlchemy's pytest plugin (it collects
+  `<Name>Test` classes; alembic was already incomplete).
+* `diffcone corpus` over the last 15 commits of flask, rich, pluggy,
+  more-itertools and marshmallow on the final code: no outcome misses.
+  On round 4 before Q25, marshmallow's `024d8d358a` selected 646 of 646
+  (main: 1): Q24's "a module handed on below a looked-up one" took
+  `value.replace(tzinfo=dt.timezone.utc)` for handing on a module below
+  `datetime`; fixed (1 of 646). flask's three errors are commits whose
+  suite does not run in today's environment, on main too.
+* Q25 as first written (an unbounded module handle handed on writes every
+  variable) measured: strata evidence 955 -> 6231 of 6231, boltons and
+  packaging static to all tests, pandas `mutated_by` edges 157 -> 45 343;
+  the user chose the precise rule. With it, strata went to 6174: about 130
+  tests store `strata.server._state` through a function-local import and
+  the autouse reset reads it in every teardown; the user chose the
+  isolation assumption for stores by test code (L7). Final: strata 955 of
+  6231 on the rebuilt recording (main 955 on it; the lost recording gave
+  958), 12-repo census identical to round 4 but marshmallow (646 -> 1),
+  pandas `mutated_by` edges 164 -> 197.
+
 ## Before 0.4.0: the known items fixed (audit W1-W26; 2026-10-10)
 
 Every item round 3 left known (internal/audit.md, W1-W26) is fixed. The
