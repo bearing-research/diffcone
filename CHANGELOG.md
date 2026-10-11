@@ -432,6 +432,12 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   Its window starts at the last report that posted, so a run with only a
   job summary (a manual run with posting off) no longer hides the runs
   before it.
+- The `record` action's re-run of a new unselected failure stopped at the
+  first failure when `pytest-args` or `addopts` had `-x` or `--maxfail`,
+  and the misses it never reached were reported as flaky. It now re-runs
+  with `--maxfail=0`, and a missed test the re-run did not run still
+  counts as a miss.
+
 
 ### Discovery
 
