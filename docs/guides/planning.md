@@ -21,6 +21,15 @@ diffcone plan --base main --head HEAD --discover pytest \
 | A pull request in CI | `--base origin/main --head HEAD` |
 | Only what you have staged | `--base HEAD --head INDEX` |
 
+Git-ignored files deserve a word. A plan of a commit sees only what git
+recorded, so a `.py` file git ignores (a generated `_version.py` or
+`_pb2.py`, a `local_settings.py`) is invisible to it, and so is any change
+you make to one. A `WORKTREE` plan reads such files when they sit in a
+directory git doesn't ignore as a whole, and treats them as new modules on
+top of the base commit; ignored directories (a virtualenv, a build tree)
+and ignored data files are still not seen. If your tests depend on
+generated Python, plan against `WORKTREE`, or commit what they import.
+
 ## Source roots
 
 A source root is a directory that diffcone treats as an import root, the

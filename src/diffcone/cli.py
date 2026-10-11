@@ -396,6 +396,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=JUNIT",
         help="JUnit XML of a selective run to compare (repeatable)",
     )
+    k.add_argument(
+        "--rootdir",
+        metavar="DIR",
+        help="pytest's rootdir, relative to the repository, which the JUnit names are relative "
+        "to (default: the one the plan's discovery determined)",
+    )
+    k.add_argument(
+        "--junit-prefix",
+        metavar="PREFIX",
+        help="the --junit-prefix the runs were made with (default: the one in the plan's "
+        "pytest arguments)",
+    )
     k.add_argument("--format", choices=("text", "markdown", "json"), default="text")
     k.add_argument("--output", "-o", help="write the result to this file instead of stdout")
 
@@ -512,6 +524,8 @@ def _check(args: argparse.Namespace) -> int:
             cases(args.full),
             baseline=cases(args.baseline) if args.baseline else None,
             runs=runs,
+            rootdir=args.rootdir,
+            junit_prefix=args.junit_prefix,
         )
     except checking.CheckError as exc:
         print(f"diffcone: error: {exc}", file=sys.stderr)
@@ -637,6 +651,61 @@ def _report(args: argparse.Namespace) -> int:
         text = ci_report.to_markdown(report)
     code = _write(text, args.output)
     return code if code else (0 if report.ok else 1)
+
+
+# pytest options that keep tests out of a run by what the cache or a name
+# says, not by what the code is: the likely reason a selected test was not
+# collected. The cache ones drop whole files while collecting (``--lf``) or
+# deselect after collection.
+CACHE_OPTIONS = {
+    "--lf": "last-failed",
+    "--last-failed": "last-failed",
+    "--ff": "failed-first",
+    "--failed-first": "failed-first",
+    "--nf": "new-first",
+    "--new-first": "new-first",
+    "--sw": "stepwise",
+    "--stepwise": "stepwise",
+    "--sw-skip": "stepwise",
+    "--stepwise-skip": "stepwise",
+}
+NAME_OPTIONS = ("-k", "-m", "--deselect")
+
+
+def _deselecting_options(plan) -> list[str]:
+    """Lines naming the deselecting pytest options among the run's effective
+    arguments (the configured ``addopts``, ``PYTEST_ADDOPTS``, the command's
+    own, those after ``--``), each with where it was written and how to run
+    without it."""
+    found: dict[str, str] = {}
+    for result in getattr(plan, "discovery", ()):
+        if result.runner != "pytest":
+            continue
+        config = result.config
+        sourced = [(t, f"{config.get('source')}: addopts") for t in config.get("ini_addopts", ())]
+        for where, tokens in (config.get("run_arguments") or {}).items():
+            sourced += [(t, where) for t in tokens]
+        for token, where in sourced:
+            name = token.split("=", 1)[0]
+            if name in CACHE_OPTIONS or name in NAME_OPTIONS:
+                found.setdefault(name, where)
+            elif name[:2] in ("-k", "-m") and len(name) > 2 and not name.startswith("--"):
+                found.setdefault(name[:2], where)
+    lines = []
+    for name, where in found.items():
+        if name in CACHE_OPTIONS:
+            lines.append(
+                f"the pytest arguments carry {name} ({where}), which keeps tests out of the run "
+                f"by the {CACHE_OPTIONS[name]} cache, not by the code; run without it (an "
+                "addopts entry is removed with -o addopts=, which drops the configured options; "
+                "the cache plugin is disabled with -p no:cacheprovider when nothing names it)"
+            )
+        else:
+            lines.append(
+                f"the pytest arguments carry {name} ({where}), which deselects tests by name; "
+                "run without it (an addopts entry is removed with -o addopts=)"
+            )
+    return lines
 
 
 def _run_exit_code(returncode: int, missing: bool) -> int:
@@ -924,6 +993,8 @@ def _main(argv: list[str] | None) -> int:
                     "and collection disagree",
                     file=sys.stderr,
                 )
+                for line in _deselecting_options(ran_plan):
+                    print(f"diffcone: {line}", file=sys.stderr)
             status = "degraded" if result.degraded else "complete"
             print(
                 f"diffcone: {len(outcome.selected)} of {outcome.total} {args.runner} target(s) "

@@ -76,7 +76,15 @@ Collected:
   path; ``-c``, ``--rootdir`` and ``--pyargs``, a node id, a path after an
   option that may take it as its value, a path that names nothing in the
   tree and a command whose pytest arguments cannot be found are reported
-  (``unmodelled_runner_option``);
+  (``unmodelled_runner_option``); pytest's rootdir and configuration file
+  are determined as pytest does (pytest_rootdir: ``--rootdir``, ``-c``,
+  else the configuration file nearest above the arguments' common
+  ancestor, then ``setup.py``, then each argument's own ancestors, then a
+  bare ``pyproject.toml``, else the repository) and recorded with the
+  ``--junit-prefix`` in the config the plan carries (``rootdir``,
+  ``configfile``, ``junit_prefix``: ``check`` maps JUnit names through
+  them); a configuration file below the repository root is one discovery
+  did not read, so it is reported (``unmodelled_runner_option``);
 * only the conftests pytest loads: at startup, those of the initial paths,
   of every directory above one and of the ``test*`` directories directly in
   one, whatever ignores say; while collecting, those of the directories its
@@ -244,7 +252,7 @@ from diffcone.discovery.session_state import (
 from diffcone.indexer import DEF_NODES, iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import DYNAMIC_DEPENDENCY, IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
-from diffcone.snapshot import Snapshot
+from diffcone.snapshot import PYTEST_CONFIGS, Snapshot
 
 RUNNER = "pytest"
 
@@ -2598,18 +2606,139 @@ def _base_source(parts: list[str], scope: _Scope) -> str:
     return f"{source}.{'.'.join(parts[1:-1])}" if len(parts) > 2 else source
 
 
+def _is_pytest_config(path: str, config_files: dict[str, bytes]) -> bool:
+    """Whether pytest takes the file at ``path`` (one of PYTEST_CONFIGS by
+    name) as its configuration file: ``pytest.ini``, ``.pytest.ini``,
+    ``pytest.toml`` and ``.pytest.toml`` always; ``pyproject.toml`` with a
+    ``[tool.pytest]`` table, ``tox.ini`` with ``[pytest]``, ``setup.cfg``
+    with ``[tool:pytest]``. One whose content the snapshot did not read
+    (deeper than the snapshot lists nested configuration) is taken to be
+    one."""
+    name = path.rpartition("/")[2]
+    if name in ("pytest.ini", ".pytest.ini", "pytest.toml", ".pytest.toml"):
+        return True
+    raw = config_files.get(path)
+    if raw is None:
+        return True
+    if name == "pyproject.toml":
+        return _toml_table(_parse_toml(raw)[0], "tool", "pytest") is not None
+    section = "pytest" if name == "tox.ini" else "tool:pytest"
+    return _parse_ini_section(raw, section)[0] is not None
+
+
+def _parents(directory: str) -> list[str]:
+    """``directory`` and every directory above it, the repository (``""``)
+    last."""
+    found = []
+    while True:
+        found.append(directory)
+        if not directory:
+            return found
+        directory = directory.rpartition("/")[0]
+
+
+def pytest_rootdir(
+    tokens: tuple[str, ...],
+    arg_paths: list[str],
+    present: set[str],
+    config_files: dict[str, bytes],
+) -> tuple[str, str | None]:
+    """(rootdir, configuration file) as pytest determines them
+    (``_pytest.config.findpaths.determine_setup``), repository-relative
+    (``""`` is the repository, which the run starts in): ``--rootdir``
+    wins; ``-c``/``--config-file`` names the file and its directory;
+    otherwise the common ancestor of the paths among the arguments (the
+    repository when there are none) and its parents are searched for a
+    configuration file (_is_pytest_config, in PYTEST_CONFIGS' order per
+    directory), then for a ``setup.py``, then each argument's own
+    directory and parents; a ``pyproject.toml`` without a pytest table
+    found on the way is the fallback, and failing all that the rootdir is
+    the repository. ``present`` is every path the snapshot lists."""
+    rootdir_arg = (_option_values(tokens, "--rootdir") or [None])[-1]
+    inifile = (_option_values(tokens, "-c") + _option_values(tokens, "--config-file") or [None])[-1]
+    rootdir: str | None = None
+    configfile: str | None = None
+    directories = []
+    for path in arg_paths:
+        path = _normalise_testpath(path)
+        if path in ("", "."):
+            directories.append("")
+        elif path in present:  # a file: its directory
+            directories.append(path.rpartition("/")[0])
+        else:
+            directories.append(path)
+    directories = list(dict.fromkeys(directories))
+
+    def locate(starts: list[str]) -> tuple[str | None, str | None]:
+        bare_pyproject: str | None = None
+        for start in starts:
+            for base in _parents(start):
+                for name in PYTEST_CONFIGS:
+                    candidate = f"{base}/{name}" if base else name
+                    if candidate not in present:
+                        continue
+                    if _is_pytest_config(candidate, config_files):
+                        return base, candidate
+                    if name == "pyproject.toml" and bare_pyproject is None:
+                        bare_pyproject = candidate
+        if bare_pyproject is not None:
+            return bare_pyproject.rpartition("/")[0], bare_pyproject
+        return None, None
+
+    if inifile is not None:
+        configfile = _normalise_testpath(inifile.replace("\\", "/"))
+        if rootdir_arg is None:
+            rootdir = configfile.rpartition("/")[0]
+    else:
+        ancestor = _common_ancestor(directories) if directories else ""
+        rootdir, configfile = locate([ancestor])
+        if rootdir is None and rootdir_arg is None:
+            for base in _parents(ancestor):
+                if (f"{base}/setup.py" if base else "setup.py") in present:
+                    rootdir = base
+                    break
+            else:
+                if directories != [ancestor]:
+                    rootdir, configfile = locate(directories)
+                if rootdir is None:
+                    rootdir = ""  # the common ancestor of the run's directory and ``ancestor``
+    if rootdir_arg is not None:
+        rootdir = _normalise_testpath(rootdir_arg.replace("\\", "/"))
+        rootdir = "" if rootdir == "." else rootdir
+    return rootdir or "", configfile
+
+
+def _common_ancestor(directories: list[str]) -> str:
+    """The deepest directory holding every one of ``directories``."""
+    parts = [d.split("/") if d else [] for d in directories]
+    common: list[str] = []
+    for segment in zip(*parts, strict=False):
+        if all(s == segment[0] for s in segment):
+            common.append(segment[0])
+        else:
+            break
+    return "/".join(common)
+
+
 def _runner_arguments(
     config: dict[str, Any],
     options: DiscoveryOptions,
     every_path: set[str],
     result: DiscoveryResult,
+    config_files: dict[str, bytes] | None = None,
 ) -> tuple[tuple[str, ...], list[str], list[str]]:
     """Every argument pytest reads, in its order (the configured addopts,
     PYTEST_ADDOPTS, the command's own, then those after ``--``), the paths
     among them pytest collects from, and the tokens that may name a path but
     cannot be told apart (_argument_paths). What discovery cannot model in
     the configuration or the arguments is reported; what the run reads
-    besides the configuration file goes into ``config["run_arguments"]``."""
+    besides the configuration file goes into ``config["run_arguments"]``,
+    pytest's rootdir and configuration file (pytest_rootdir) into
+    ``config["rootdir"]`` and ``config["configfile"]``, and the
+    ``--junit-prefix`` into ``config["junit_prefix"]``: ``check`` maps JUnit
+    names back to targets through them. A configuration file below the
+    repository root is one discovery did not read (it reads the root's),
+    so what it sets is unknown: reported (``unmodelled_runner_option``)."""
     if "error" in config:
         result.notes.append(
             DiscoveryNote(
@@ -2659,6 +2788,30 @@ def _runner_arguments(
                 )
             )
     arg_paths, ambiguous, unknown = _argument_paths(tokens, every_path)
+    # Where pytest's rootdir is: from the paths it was given (a node id's
+    # file among them), the configuration files present and the arguments.
+    present = every_path | set(config_files or ())
+    given = [*arg_paths, *(a.split("::", 1)[0] for a in ambiguous if "::" in a)]
+    rootdir, configfile = pytest_rootdir(tokens, given, present, config_files or {})
+    config["rootdir"] = rootdir
+    config["configfile"] = configfile
+    prefixes = _option_values(tokens, "--junit-prefix")
+    config["junit_prefix"] = prefixes[-1] if prefixes else ""
+    if (
+        configfile is not None
+        and "/" in configfile
+        and _is_pytest_config(configfile, config_files or {})
+        and not (_option_values(tokens, "-c") or _option_values(tokens, "--config-file"))
+    ):
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unmodelled_runner_option",
+                f"pytest's configuration file is {configfile} (its rootdir {rootdir!r}), below "
+                "the repository root; discovery reads only the configuration at the root, so "
+                "what it sets (testpaths, python_files, addopts, ...) is not known",
+            )
+        )
     if unknown:
         # A path the tree does not hold as written (absolute, another
         # spelling): what it collects is unknown, so ``testpaths`` stays.
@@ -2808,7 +2961,9 @@ def discover_pytest(
     config = read_pytest_config(snapshot, options.pytest_args)
     every_path = {*snapshot.python_paths, *snapshot.files, *snapshot.other_files}
     directories = _directories(every_path)
-    tokens, arg_paths, ambiguous = _runner_arguments(config, options, every_path, result)
+    tokens, arg_paths, ambiguous = _runner_arguments(
+        config, options, every_path, result, snapshot.config_files
+    )
     result.config = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config.items()}
     python_files = tuple(config["python_files"])
     # Where pytest starts collecting: the paths among its arguments, else

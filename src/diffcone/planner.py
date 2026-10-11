@@ -395,16 +395,20 @@ def is_build_script(path: str, project_dirs: set[str] | frozenset[str] = frozens
 
 def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]:
     """Non-Python files under the source roots whose content differs between
-    the snapshots (added, deleted or edited). The index reads none of them,
-    so it cannot say who depends on one: a data file the code opens, a
-    compiled extension's source, a configuration file."""
+    the snapshots (added, deleted or edited), and files under the roots
+    whose git mode differs (a script made executable, a file turned into a
+    symlink: ``file_modes``). The index reads none of that, so it cannot say
+    who depends on it: a data file the code opens, a compiled extension's
+    source, a configuration file, a script a test runs by path."""
     paths = base.other_files.keys() | head.other_files.keys()
+    modes = base.file_modes.keys() | head.file_modes.keys()
     return sorted(
         p
-        for p in paths
-        if base.other_files.get(p) != head.other_files.get(p)
-        and p not in OWN_FILES
-        and not p.startswith(OWN_DIRS)
+        for p in {
+            *(p for p in paths if base.other_files.get(p) != head.other_files.get(p)),
+            *(p for p in modes if base.file_modes.get(p) != head.file_modes.get(p)),
+        }
+        if p not in OWN_FILES and not p.startswith(OWN_DIRS)
     )
 
 

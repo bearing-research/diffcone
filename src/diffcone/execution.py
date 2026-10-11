@@ -40,7 +40,7 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from diffcone.cache import IndexCache
 from diffcone.discovery.asv_static import strip_json_comments
@@ -54,15 +54,21 @@ from diffcone.evidence import (
 )
 from diffcone.manifest import Target
 from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
-from diffcone.planner import Plan, _index_snapshot
+from diffcone.planner import OWN_DIRS, OWN_FILES, Plan, _index_snapshot, build_input
 from diffcone.snapshot import (
     ASV_CONFIGS,
+    CONFIG_FILES,
+    GITLINK_MODE,
     INDEX,
     WORKTREE,
     GitError,
     _flagged_paths,
     _git,
+    _listed,
+    _ls_files_staged_ids,
+    _submodule_id,
     file_id,
+    ignored_python_files,
     is_bytecode,
     resolve_commit,
     split_root,
@@ -173,13 +179,55 @@ class RunResult:
     unknown: list[str] = field(default_factory=list)
 
 
+def _mismatch_matters(path: str, roots: list[str]) -> bool:
+    """Whether a working-tree difference at ``path`` is one the plan would
+    have selected on, by the planner's own rules: any file under the source
+    roots (a data file, a ``.pyx``, a configuration file, not only Python),
+    the declarations file, the runners' configuration at the repository
+    root, a ``conftest.py`` or ASV configuration anywhere, and anything
+    ``build_input`` names (dependency declarations, lock files, compiled
+    sources, CI files). Bytecode and diffcone's own directory never
+    matter."""
+    if is_bytecode(path) or path.startswith(OWN_DIRS):
+        return False
+    if any(root in ("", ".") or path.startswith(root + "/") for root in roots):
+        return True
+    return (
+        path in OWN_FILES
+        or path in CONFIG_FILES
+        or build_input(path)
+        or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS)
+    )
+
+
+def _dirty_submodules(repo: Path, analysed_rev: str) -> list[str]:
+    """Submodules whose checked-out commit, or content, differs from what
+    the analysed snapshot recorded for the gitlink: ``git diff`` does not
+    report edits or untracked files inside one."""
+    staged = _ls_files_staged_ids(repo, [])
+    found = []
+    for path, (mode, oid) in sorted(staged.items()):
+        if mode != GITLINK_MODE:
+            continue
+        recorded = oid if analysed_rev == INDEX else (file_id(repo, analysed_rev, path) or "")
+        if _submodule_id(repo, path, oid) != recorded:
+            found.append(path)
+    return found
+
+
 def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     """Why the working tree is not what the plan analysed, if it is not.
 
     ``run`` executes the checkout, so a plan made from a commit only
     describes what will run while the checkout *is* that commit, unmodified.
     Running a different tree turns the plan's guarantee into a guess about
-    code that was never analysed.
+    code that was never analysed. Every difference the planner would have
+    selected on counts (_mismatch_matters): tracked files that differ in
+    content or mode, untracked files, git-ignored Python files outside
+    ignored directories (the working tree snapshot reads those), files
+    flagged assume-unchanged or skip-worktree that differ on disk, and
+    submodules whose commit or content differs. ASV's output directories
+    beside its configuration are left out: nothing runs them.
     """
     if plan.head.kind == KIND_WORKTREE:
         return None
@@ -188,44 +236,49 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     # uncommitted edit to a source file does not.
     # ``-z``: without it git quotes a name with non-ASCII characters
     # (``"pkg/\303\251.py"``), which then does not end in ``.py``.
+    analysed_rev = plan.head.commit if plan.head.kind == KIND_COMMIT else INDEX
     against = ["diff", "--name-only", "-z"] + (
         [plan.head.commit] if plan.head.kind == KIND_COMMIT else []
     )
     try:
-        differing = _git(repo, against).decode("utf-8", "surrogateescape").split("\0")
-        untracked = (
-            _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
-            .decode("utf-8", "surrogateescape")
-            .split("\0")
-        )
+        differing = _listed(_git(repo, against))
+        untracked = _listed(_git(repo, ["ls-files", "-z", "--others", "--exclude-standard"]))
+        ignored = ignored_python_files(repo, [])
         # git diff does not look at files flagged assume-unchanged or
         # skip-worktree; what is on disk is what runs.
-        analysed_rev = plan.head.commit if plan.head.kind == KIND_COMMIT else INDEX
-        differing += [
+        flagged = [
             path
             for path in _flagged_paths(repo, [])
-            if path.endswith(".py")
-            and (repo / path).is_file()
+            if (repo / path).is_file()
             and file_id(repo, WORKTREE, path) != file_id(repo, analysed_rev, path)
         ]
+        submodules = _dirty_submodules(repo, analysed_rev)
+        outputs = _asv_output_dirs(repo)
     except GitError as exc:
         return f"cannot tell what the working tree holds: {exc}"
     roots = [split_root(r)[0] for r in plan.source_roots]
     in_scope = sorted(
         path
-        for path in {p for p in differing + untracked if p}
-        if path.endswith(".py")
-        and any(root in ("", ".") or path.startswith(root + "/") for root in roots)
+        for path in {*differing, *untracked, *ignored, *flagged, *submodules}
+        if path
+        and _mismatch_matters(path, roots)
+        and not any(path.startswith(d + "/") for d in outputs)
     )
     if not in_scope:
         return None
     analysed = (
         f"commit {plan.head.commit[:12]}" if plan.head.kind == KIND_COMMIT else "the staged index"
     )
+    shown = ", ".join(in_scope[:MISMATCHES_SHOWN])
+    if len(in_scope) > MISMATCHES_SHOWN:
+        shown += f" and {len(in_scope) - MISMATCHES_SHOWN} more"
     return (
-        f"the plan analysed {analysed}, and the working tree it would run has "
-        f"{len(in_scope)} differing Python file(s) under the source roots (e.g. {in_scope[0]})"
+        f"the plan analysed {analysed}, and the working tree it would run differs in "
+        f"{len(in_scope)} file(s) the plan would select on: {shown}"
     )
+
+
+MISMATCHES_SHOWN = 5
 
 
 def run_selected(
@@ -479,8 +532,18 @@ def _run_full_pytest(
     """Run the whole suite once (the outcomes come from the selection
     plugin); with ``coverage`` the same run also records per-test coverage
     contexts into a temporary database that lives for the duration of the
-    context."""
-    argv = pytest_argv(command, "-p", "no:cacheprovider", "-p", SELECT_PLUGIN, "--no-header", "-rN")
+    context.
+
+    The whole suite must run: ``--maxfail=0`` last on the command line
+    overrides an ``-x``/``--maxfail`` the project's ``addopts`` or the
+    command carry (a suite that stops at its first failure at both
+    snapshots reports no outcome change for the tests it never reached),
+    and a run that reported outcomes for fewer tests than it collected (a
+    conftest that sets ``maxfail``, a plugin that stops the session, an
+    interrupt) is refused rather than compared."""
+    argv = pytest_argv(
+        command, "-p", "no:cacheprovider", "-p", SELECT_PLUGIN, "--no-header", "-rN", NO_MAXFAIL
+    )
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
         # Outcomes come from the selection plugin, not the console: a project
         # whose addopts carry ``-q`` prints no per-test lines at all.
@@ -559,7 +622,40 @@ def _run_full_pytest(
                 "outcomes: diffcone's outcome plugin did not load, so there is nothing to "
                 f"compare\n{log[-2000:]}"
             )
+        stopped = suite_stopped_early(outcomes_dir, lines)
+        if stopped:
+            raise GitError(
+                f"the suite stopped early: {stopped}; comparing its outcomes would miss "
+                f"the tests that never ran\n{log[-2000:]}"
+            )
         yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db, argv)
+
+
+# Last on the suite's command line: no stop at a failure.
+NO_MAXFAIL = "--maxfail=0"
+
+
+def suite_stopped_early(outcomes_dir: Path, lines: list[str]) -> str | None:
+    """Why the run's outcomes are not the whole suite's, if they are not:
+    the selection plugin writes ``collected-<pid>`` with the number of tests
+    each process collected (after deselection; under xdist the controller
+    counts them all) and ``lines`` hold one outcome per test that ran.
+    Fewer reported than collected means the session stopped (a ``maxfail``
+    set from a conftest, ``pytest.exit``, a plugin that ends the session,
+    an interrupt)."""
+    counts = []
+    for f in outcomes_dir.glob("collected-*"):
+        try:
+            counts.append(int(f.read_text("utf-8").strip() or 0))
+        except ValueError:
+            continue
+    if not counts:
+        return None
+    collected = max(counts)
+    reported = len({line.rpartition("\t")[0] for line in lines if "\t" in line})
+    if reported < collected:
+        return f"pytest collected {collected} test(s) but reported outcomes for {reported}"
+    return None
 
 
 # --------------------------------------------------------------------------- coverage
@@ -1394,8 +1490,11 @@ def _packages(modules: set[str]) -> str:
 
 
 def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
-    """The suite under the recorder, as a store's ``command`` records it."""
-    return pytest_argv(command, "-p", PLUGIN, "-p", "no:cacheprovider", *(extra or []))
+    """The suite under the recorder, as a store's ``command`` records it.
+    ``--maxfail=0`` comes after the user's arguments: a recording must
+    cover the whole suite, whatever ``-x`` the project's ``addopts`` or the
+    command carry."""
+    return pytest_argv(command, "-p", PLUGIN, "-p", "no:cacheprovider", *(extra or []), NO_MAXFAIL)
 
 
 def advance_refusal(

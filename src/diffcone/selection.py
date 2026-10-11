@@ -27,8 +27,15 @@ the environment:
   one ``nodeid<TAB>OUTCOME`` line per report (``PASSED``, ``FAILED``,
   ``SKIPPED``, ``XFAIL``, ``XPASS``, ``ERROR``), as ``validate`` reads them:
   pytest's console output depends on the project's verbosity options. The
-  file stays open, line-buffered, so every line is written as its report
-  comes in: a process that crashes later keeps what it wrote.
+  node id is written relative to the repository, as the plan names tests
+  (pytest's own is relative to its rootdir, which lies below the
+  repository in a monorepo); the parameter case is kept. The file stays
+  open, line-buffered, so every line is written as its report comes in: a
+  process that crashes later keeps what it wrote. When the session ends
+  the process also writes ``collected-<pid>``, the number of tests it
+  collected (``session.testscollected``, after deselection), so a run
+  that stopped before reporting them all can be told apart from a whole
+  one.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ ROOTS = tuple(dict.fromkeys([os.path.realpath(_ROOT), os.path.abspath(_ROOT)]))
 skipped: list[str] = []  # repository-relative paths of collectors that skipped
 _outcomes = None  # this process's outcomes file, once a report came in
 _outcomes_pid = 0  # the process that opened it (a fork must open its own)
+_rootpath = os.getcwd()  # pytest's rootdir, which its node ids are relative to
 
 
 def fold_nodeid(nodeid: str) -> str:
@@ -60,6 +68,20 @@ def _relative(where) -> str:
         if path.startswith(root + os.sep):
             return os.path.relpath(path, root).replace(os.sep, "/")
     return os.path.relpath(os.path.realpath(path), ROOTS[0]).replace(os.sep, "/")
+
+
+def _repository_nodeid(nodeid: str) -> str:
+    """A node id with its file made relative to the repository instead of
+    pytest's rootdir; the rest (classes, function, parameters) as is."""
+    path, sep, rest = nodeid.partition("::")
+    return _relative(os.path.join(_rootpath, path)) + sep + rest
+
+
+def pytest_configure(config):
+    global _rootpath
+    rootpath = getattr(config, "rootpath", None) or getattr(config, "rootdir", None)
+    if rootpath is not None:
+        _rootpath = str(rootpath)
 
 
 def _key(item) -> str:
@@ -142,7 +164,7 @@ def pytest_runtest_logreport(report):
             path = os.path.join(OUTCOMES, f"outcomes-{os.getpid()}")
             _outcomes = open(path, "a", encoding="utf-8", buffering=1)
             _outcomes_pid = os.getpid()
-        _outcomes.write(f"{report.nodeid}\t{outcome}\n")
+        _outcomes.write(f"{_repository_nodeid(report.nodeid)}\t{outcome}\n")
 
 
 def pytest_sessionfinish(session):
@@ -150,3 +172,9 @@ def pytest_sessionfinish(session):
     if _outcomes is not None and _outcomes_pid == os.getpid():
         _outcomes.close()
     _outcomes = None
+    if OUTCOMES:
+        collected = getattr(session, "testscollected", None)
+        if isinstance(collected, int):
+            path = os.path.join(OUTCOMES, f"collected-{os.getpid()}")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"{collected}\n")

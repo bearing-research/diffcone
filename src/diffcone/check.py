@@ -15,11 +15,20 @@ on the same failures.
 pytest's junitxml names a test by ``classname`` and ``name``, built from the
 node ID (``_pytest.junitxml.mangle_test_address``): the file path with ``/``
 as ``.`` and ``.py`` dropped, then the classes, joined by ``.``; ``name`` is
-the function with its parameters. A collection error is a case whose
-``classname`` is empty and whose ``name`` is the dotted file. This module
-inverts that against the plan's targets (functions, parameters folded); a
-case matching no target is reported as unmatched, and a failing one is a
-miss (the plan did not know the test).
+the function with its parameters. The path is relative to pytest's rootdir,
+which lies below the repository when the configuration file does (the
+monorepo shape, ``python/pytest.ini``), while the plan names tests relative
+to the repository: the rootdir the plan's discovery determined (or
+``--rootdir``) is put back in front. ``--junit-prefix`` (from the plan's
+pytest arguments, or given) is taken off the front of every ``classname``.
+A collection error is a case whose ``classname`` is empty (the prefix
+alone, with one) and whose ``name`` is the dotted file, or the dotted
+directory when a directory failed to collect (its ``conftest.py`` does not
+import): it stands for every target of that file or under that directory,
+caught when any of them is selected. This module inverts all that against
+the plan's targets (functions, parameters folded); a case matching no
+target is reported as unmatched, and a failing one is a miss (the plan did
+not know the test).
 """
 
 from __future__ import annotations
@@ -76,14 +85,34 @@ def read_junit(path: str | Path) -> list[Case]:
     return cases
 
 
-def _mangle(runner_id: str) -> tuple[str, str, str]:
-    """(classname, name, dotted file) pytest's junitxml gives a node ID."""
+def _mangle(runner_id: str, rootdir: str) -> tuple[str, str, str, list[str]]:
+    """(classname, name, dotted file, dotted directories above the file)
+    pytest's junitxml gives a node ID when its rootdir is ``rootdir``
+    (repository-relative, ``""`` for the repository): the file relative to
+    the rootdir, ``/`` as ``.``, ``.py`` dropped. A file outside the rootdir
+    keeps its repository path (pytest names it with ``..`` segments, which
+    no target carries; such a case stays unmatched)."""
     path, _, _params = runner_id.partition("[")
     names = path.split("::")
-    dotted = names[0].replace("/", ".")
+    file = names[0]
+    if rootdir and file.startswith(rootdir + "/"):
+        file = file[len(rootdir) + 1 :]
+    dotted = file.replace("/", ".")
     if dotted.endswith(".py"):
         dotted = dotted[: -len(".py")]
-    return ".".join([dotted, *names[1:-1]]), names[-1], dotted
+    parts = dotted.split(".")
+    directories = [".".join(parts[:i]) for i in range(1, len(parts))]
+    return ".".join([dotted, *names[1:-1]]), names[-1], dotted, directories
+
+
+def _normalise_rootdir(rootdir: str | None) -> str:
+    """A rootdir as a repository-relative path without a trailing slash;
+    ``""`` for the repository itself."""
+    value = (rootdir or "").strip().replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    value = value.strip("/")
+    return "" if value == "." else value
 
 
 @dataclass
@@ -94,32 +123,65 @@ class _Targets:
     all: set[str]
     by_case: dict[tuple[str, str], list[str]]
     by_file: dict[str, list[str]]
+    by_directory: dict[str, list[str]]
+    rootdir: str = ""
+    prefix: str = ""
 
     @classmethod
-    def from_plan(cls, plan: dict) -> _Targets:
+    def from_plan(cls, plan: dict, rootdir: str = "", prefix: str = "") -> _Targets:
         selected: set[str] = set()
         every: set[str] = set()
         by_case: dict[tuple[str, str], list[str]] = defaultdict(list)
         by_file: dict[str, list[str]] = defaultdict(list)
+        by_directory: dict[str, list[str]] = defaultdict(list)
         for key, chosen in (("selected_targets", True), ("unselected_targets", False)):
             for target in plan.get(key, ()):
                 if target.get("runner") != "pytest":
                     continue
                 runner_id = target["runner_id"]
-                classname, name, dotted = _mangle(runner_id)
+                classname, name, dotted, directories = _mangle(runner_id, rootdir)
                 by_case[(classname, name)].append(runner_id)
                 by_file[dotted].append(runner_id)
+                for directory in directories:
+                    by_directory[directory].append(runner_id)
                 every.add(runner_id)
                 if chosen:
                     selected.add(runner_id)
-        return cls(selected, every, dict(by_case), dict(by_file))
+        return cls(
+            selected, every, dict(by_case), dict(by_file), dict(by_directory), rootdir, prefix
+        )
+
+    def collection_error(self, case: Case) -> bool:
+        """Whether a case is a collector's failure (no class name, or only
+        the prefix) rather than a test's."""
+        return case.classname == self.prefix
+
+    def collected(self, name: str) -> list[str]:
+        """The targets a collection error of ``name`` (a dotted file or
+        directory) stands for."""
+        return self.by_file.get(name) or self.by_directory.get(name) or []
 
     def match(self, case: Case) -> list[str]:
         """The targets a case is a run of; for a collection error, every
-        target of its file."""
-        if not case.classname:
-            return self.by_file.get(case.name, [])
-        return self.by_case.get((case.classname, case.name.partition("[")[0]), [])
+        target of its file or under its directory."""
+        if self.collection_error(case):
+            return self.collected(case.name)
+        classname = case.classname
+        if self.prefix:
+            if not classname.startswith(self.prefix + "."):
+                return []
+            classname = classname[len(self.prefix) + 1 :]
+        return self.by_case.get((classname, case.name.partition("[")[0]), [])
+
+
+def plan_mapping(plan: dict) -> tuple[str, str]:
+    """(rootdir, junit prefix) the plan's pytest discovery recorded, as
+    pytest will name the cases: ``""`` when it recorded none."""
+    for found in plan.get("discovery", ()):
+        if found.get("runner") == "pytest":
+            config = found.get("config") or {}
+            return _normalise_rootdir(config.get("rootdir")), str(config.get("junit_prefix") or "")
+    return "", ""
 
 
 @dataclass(frozen=True)
@@ -157,10 +219,30 @@ class CheckReport:
     unmatched: int  # full-run cases matching no target
     failures: list[Failure]
     runs: list[RunReport]
+    # How the cases were mapped to targets: pytest's rootdir relative to
+    # the repository ("" for the repository) and the --junit-prefix.
+    rootdir: str = ""
+    junit_prefix: str = ""
 
     @property
     def misses(self) -> list[Failure]:
         return [f for f in self.failures if not f.selected and not f.already]
+
+    @property
+    def mapping_doubtful(self) -> bool:
+        """Every case of a full run that has cases matched no target: the
+        rootdir or prefix the cases were mapped with is likely wrong."""
+        return self.full_cases > 0 and self.unmatched == self.full_cases and self.targets > 0
+
+    @property
+    def mapping_note(self) -> str:
+        where = f"rootdir {self.rootdir!r}" if self.rootdir else "the repository as rootdir"
+        prefix = f" and junit prefix {self.junit_prefix!r}" if self.junit_prefix else ""
+        return (
+            f"no case matches a target when mapped with {where}{prefix}: if pytest's rootdir "
+            "or --junit-prefix differ from what the plan recorded, pass --rootdir / "
+            "--junit-prefix"
+        )
 
     @property
     def not_run(self) -> list[str]:
@@ -184,9 +266,9 @@ def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, s
         if case.outcome not in BROKEN:
             continue
         matched = targets.match(case)
-        if not case.classname and matched:
-            # A file that failed to collect: one failure for the file, caught
-            # when any of its targets is selected.
+        if targets.collection_error(case) and matched:
+            # A file or directory that failed to collect: one failure for
+            # it, caught when any of its targets is selected.
             tests, kind = [case.name], "collection"
         elif matched:
             tests, kind = matched, "test"
@@ -204,7 +286,7 @@ def _ran(cases: list[Case], targets: _Targets) -> set[str]:
         matched = targets.match(case)
         if not matched:
             ran.add(case.key)
-        elif case.classname:
+        elif not targets.collection_error(case):
             ran.update(matched)
     return ran
 
@@ -215,8 +297,15 @@ def check(
     *,
     baseline: list[Case] | None = None,
     runs: dict[str, list[Case]] | None = None,
+    rootdir: str | None = None,
+    junit_prefix: str | None = None,
 ) -> CheckReport:
-    targets = _Targets.from_plan(plan)
+    """``rootdir`` (pytest's, relative to the repository) and
+    ``junit_prefix`` default to what the plan's discovery recorded."""
+    plan_rootdir, plan_prefix = plan_mapping(plan)
+    rootdir = _normalise_rootdir(rootdir) if rootdir is not None else plan_rootdir
+    prefix = junit_prefix if junit_prefix is not None else plan_prefix
+    targets = _Targets.from_plan(plan, rootdir, prefix)
     broken = _broken(full, targets)
     before = _broken(baseline, targets) if baseline is not None else {}
     # Already failing: every case that broke also broke at the baseline.
@@ -226,7 +315,7 @@ def check(
 
     def selected(test: str, kind: str) -> bool:
         if kind == "collection":
-            return any(t in targets.selected for t in targets.by_file.get(test, ()))
+            return any(t in targets.selected for t in targets.collected(test))
         return test in targets.selected
 
     failures = [
@@ -238,11 +327,16 @@ def check(
     for name, cases in (runs or {}).items():
         ran = _ran(cases, targets)
         run_broken = _broken(cases, targets)
-        files_ran = {f for f, ts in targets.by_file.items() if ran.intersection(ts)}
+        # A collection failure was run when any target it stands for was.
         missed = sorted(
             f.test
             for f in failures
-            if f.test in new and f.test not in (files_ran if f.kind == "collection" else ran)
+            if f.test in new
+            and not (
+                ran.intersection(targets.collected(f.test))
+                if f.kind == "collection"
+                else f.test in ran
+            )
         )
         # A test both runs ran that broke in only one: flaky, or dependent on
         # what ran before it.
@@ -260,7 +354,9 @@ def check(
             )
         )
     selected_time = sum(
-        c.time for c in full if c.classname and any(t in targets.selected for t in targets.match(c))
+        c.time
+        for c in full
+        if not targets.collection_error(c) and any(t in targets.selected for t in targets.match(c))
     )
     return CheckReport(
         plan_status=plan.get("status", "complete"),
@@ -273,6 +369,8 @@ def check(
         unmatched=sum(1 for c in full if not targets.match(c)),
         failures=failures,
         runs=run_reports,
+        rootdir=rootdir,
+        junit_prefix=prefix,
     )
 
 
@@ -304,6 +402,11 @@ def to_dict(report: CheckReport) -> dict:
             "test_time": round(report.full_time, 2),
             "selected_test_time": round(report.selected_time, 2),
             "unmatched_cases": report.unmatched,
+        },
+        "mapping": {
+            "rootdir": report.rootdir,
+            "junit_prefix": report.junit_prefix,
+            "note": report.mapping_note if report.mapping_doubtful else None,
         },
         "failures": [
             {
@@ -345,6 +448,8 @@ def to_text(report: CheckReport) -> str:
     ]
     if report.unmatched:
         lines.append(f"  {report.unmatched} cases match no target of the plan")
+    if report.mapping_doubtful:
+        lines.append(f"  {report.mapping_note}")
     new = [f for f in report.failures if not f.already]
     lines.append(
         f"failures: {len(new)} new, {len(report.failures) - len(new)} already failing at "
@@ -397,6 +502,8 @@ def to_markdown(report: CheckReport) -> str:
             f"Plan status: {report.plan_status}"
             + ("; discovery may be incomplete." if report.discovery_incomplete else ".")
         )
+    if report.mapping_doubtful:
+        lines += ["", report.mapping_note + "."]
     if report.misses:
         lines += ["", "Missed by the plan:", ""]
         lines += [f"- `{f.test}` ({f.outcome}, {f.kind})" for f in report.misses]

@@ -50,6 +50,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 44: SourceIndex.file_modes (git modes of the entries under the roots);
 # 43: Symbol.fixture_scope (the isolation assumption: planner.isolated_test_code);
 # 42: writes only (not handing on) give use-scan ``mutated_by`` edges, modules
 # handed to written parameters, stores put back before the test ends, lookups
@@ -72,7 +73,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 43
+INDEX_FORMAT = 44
 
 
 def _indexer_fingerprint() -> str:
@@ -151,6 +152,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "any_module_readers": sorted(index.any_module_readers),
         "module_writers": {m: list(w) for m, w in sorted(index.module_writers.items())},
         "other_files": dict(sorted(index.other_files.items())),
+        "file_modes": dict(sorted(index.file_modes.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
         "edges": [asdict(e) for e in sorted(index.edges)],
         "unresolved": [asdict(u) for u in sorted(index.unresolved)],
@@ -204,6 +206,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         any_module_readers=set(data["any_module_readers"]),
         module_writers={m: tuple(w) for m, w in data["module_writers"].items()},
         other_files=dict(data["other_files"]),
+        file_modes=dict(data["file_modes"]),
         reflection={(s, d) for s, d in data["reflection"]},
         external_sites={(s, d): tuple(w) for s, d, w in data["external_sites"]},
         table_imports={(s, d): (tuple(c), tuple(w)) for s, d, c, w in data["table_imports"]},

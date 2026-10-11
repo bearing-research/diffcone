@@ -193,7 +193,7 @@ Check a plan against a full run's JUnit XML: was every failing test selected?
 Read a plan (diffcone plan --format json) and the JUnit XML of a full pytest run, and report every test that failed or errored there but was not selected. A failure the --baseline run also had is reported as already failing. Each --run is a selective run (diffcone's own, or another selector's such as pytest-testmon) compared on the same failures. Runs nothing.
 
 ```text
-diffcone check [-h] --plan PLAN --full JUNIT [--baseline JUNIT] [--run NAME=JUNIT] [--format {text,markdown,json}] [--output OUTPUT]
+diffcone check [-h] --plan PLAN --full JUNIT [--baseline JUNIT] [--run NAME=JUNIT] [--rootdir DIR] [--junit-prefix PREFIX] [--format {text,markdown,json}] [--output OUTPUT]
 ```
 
 | Option | Default | Description |
@@ -202,6 +202,8 @@ diffcone check [-h] --plan PLAN --full JUNIT [--baseline JUNIT] [--run NAME=JUNI
 | `--full` `JUNIT` |  | **Required.** JUnit XML of the full run (repeatable: several files are one run). |
 | `--baseline` `JUNIT` |  | JUnit XML of a run without the change (e.g. the nightly run at the evidence commit): its failures are not misses. Repeatable. |
 | `--run` `NAME=JUNIT` |  | JUnit XML of a selective run to compare (repeatable). |
+| `--rootdir` `DIR` |  | Pytest's rootdir, relative to the repository, which the JUnit names are relative to (default: the one the plan's discovery determined). |
+| `--junit-prefix` `PREFIX` |  | The --junit-prefix the runs were made with (default: the one in the plan's pytest arguments). |
 | `--format` `FORMAT` | `text` | One of `text`, `markdown`, `json`. |
 | `--output`, `-o` `OUTPUT` |  | Write the result to this file instead of stdout. |
 

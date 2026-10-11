@@ -43,6 +43,9 @@ def dirty_repo(repo):
         "from pkg.ops import mul\n\n\ndef test_new():\n    assert mul(1, 1) == 1\n"
     )
     (repo.path / "pkg/ignored_scratch.py").write_bytes(b"def scratch():\n    pass\n")
+    # An ignored directory (a build tree, a virtualenv) is skipped whole.
+    (repo.path / "build/lib").mkdir(parents=True)
+    (repo.path / "build/lib/built.py").write_bytes(b"def built():\n    pass\n")
     (repo.path / "pkg/gone.py").unlink()
     (repo.path / "pytest.ini").write_bytes(b"[pytest]\npython_files = test_*.py\n")
     return base
@@ -59,7 +62,9 @@ def test_worktree_snapshot_contents(repo):
         "tests/test_ops.py",
         "tests/test_gone.py",
         "tests/test_new.py",  # untracked, not ignored
+        "pkg/ignored_scratch.py",  # ignored, but beside tracked code: what runs imports it
     }
+    assert "build/lib/built.py" not in snap.python_paths  # under an ignored directory
     assert b"b + a" in snap.files["pkg/ops.py"]
     assert b"return 3" in snap.files["pkg/staged.py"]  # disk content, not the index
     assert snap.config_files["pytest.ini"] == b"[pytest]\npython_files = test_*.py\n"
@@ -106,6 +111,8 @@ def test_plan_against_worktree_and_index(repo):
         "pkg.staged.staged": ("body_changed",),
         "pkg.gone": ("deleted",),
         "pkg.gone.gone": ("deleted",),
+        "pkg.ignored_scratch": ("added",),
+        "pkg.ignored_scratch.scratch": ("added",),
         "tests.test_gone": ("dependencies_changed",),
         "tests.test_gone.test_gone": ("dependencies_changed",),
         "tests.test_new": ("added",),
