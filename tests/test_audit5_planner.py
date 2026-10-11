@@ -521,6 +521,27 @@ def test_r26_setup_called_by_module_level_code_is_no_isolated_writer(repo):
     assert "tests/test_r.py::test_r" in selected(plan)
 
 
+def test_r26_an_uncalled_setup_stays_isolated(repo):
+    """Guard (precision): the class's own edge to ``setUp`` saying unittest
+    may call it is the runner's per-test call, not a referrer; a ``setUp``
+    nothing else calls stays isolated."""
+    base = repo.commit(
+        {
+            **BASE,
+            **ISOLATION,
+            "tests/test_a.py": (
+                "import unittest\n\nimport pkg.impl\nimport pkg.reg\n\n\n"
+                "class TestA(unittest.TestCase):\n    def setUp(self):\n"
+                "        pkg.reg.REG['k'] = pkg.impl.make()\n\n"
+                "    def test_a(self):\n        pass\n"
+            ),
+        }
+    )
+    head = repo.commit(IMPL2)
+    plan = _plan(repo, base, head)
+    assert selected(plan) == {"tests/test_a.py::TestA::test_a"}
+
+
 def test_r26_an_uncalled_test_stays_isolated(repo):
     """Guard (precision): a test nothing else refers to is isolated; what
     it stores is its own."""
