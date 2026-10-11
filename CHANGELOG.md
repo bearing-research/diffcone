@@ -201,8 +201,9 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 - Code a test runs in a new process: a test running a script path, `-m
   module` or `-c` code named in the code did not depend on it. A module's
   file is an import of it; a `.py` file no module name maps to
-  (`scripts/gen-data.py`) is not analysed, so the test may import anything
-  and a change to the file reaches it; a Python command whose program is
+  (`scripts/gen-data.py`) is read as `-c` code is (what it imports counts,
+  and a change to the file reaches the test; if it imports by a name it
+  computes, any change does); a Python command whose program is
   built at run time is affected by any change. A child whose interpreter
   is not the first word (`env X=1 python -m ...`, `uv run python ...`,
   `timeout 30 python ...`, `asyncio.create_subprocess_exec(sys.executable,
