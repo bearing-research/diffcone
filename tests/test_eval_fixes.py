@@ -1,274 +1,249 @@
-"""Regression scenarios for misses found by evaluating discovery on real
-repositories (scripts/fixture_check.py and the corpus).
+"""Regression scenarios for misses found by evaluation after audit round 5.
 
-Each test failed before its fix. Every scenario plans with a benchmark
-target beside the discovered tests, to keep the engine runner-independent.
+* A module bound to another name (``m = ops``, module-level or local,
+  ``m = pkg.ops`` after ``import pkg.ops``) and read through it
+  (``m.value()``): a body change to ``pkg.ops.value`` selected nothing
+  since audit round 3's W20, which name-matches an attribute read off a
+  value of unknown type only to the module-level names of modules such a
+  value can be, and did not count a module followed through a name. Two
+  independent fixes: the resolver reads an attribute off a name every
+  binding of which is a module as off the module (a ``references`` edge;
+  a name that may hold something else keeps the name-matched read beside
+  it), and a module bound to any name other than its import's is a module
+  a value of unknown type can be.
+
+Every scenario's change makes the test fail at the head commit, and an ASV
+target beside it is selected or not by the same rules.
 """
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from diffcone.discovery import DiscoveryOptions, discover
+from diffcone.cache import ModuleCache, index_to_dict
 from diffcone.indexer import build_index
-from diffcone.snapshot import read_snapshot
-from diffcone.testing import asv_target, selected
+from diffcone.model import UNRESOLVED_ATTRIBUTE, SnapshotInfo
+from diffcone.snapshot import Snapshot
+from diffcone.testing import asv_target, py_target, reason, rules, selected
 
-BENCH = {
-    "asv.conf.json": '{"version": 1, "benchmark_dir": "benchmarks"}',
+OPS = "def value():\n    return 1\n\n\ndef other():\n    return 10\n"
+OPS_VALUE = OPS.replace("return 1\n", "return 2\n")
+OPS_OTHER = OPS.replace("return 10\n", "return 11\n")
+BASE = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "pkg/__init__.py": "",
+    "pkg/ops.py": OPS,
+    "tests/__init__.py": "",
+    "tests/helpers.py": "from pkg import ops\n\nm = ops\n",
     "benchmarks/__init__.py": "",
-    "benchmarks/bench.py": "def time_noop():\n    pass\n",
+    "benchmarks/bench_ops.py": (
+        "from pkg import ops\n\n\ndef time_value():\n    m = ops\n    m.value()\n"
+    ),
+    "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
 }
-BENCH_TARGET = asv_target("bench.time_noop", "benchmarks.bench.time_noop")
+BENCH = asv_target("bench_ops.time_value", "benchmarks.bench_ops.time_value")
+NOOP = asv_target("bench_noop.time_noop", "benchmarks.bench_noop.time_noop")
+H = "from pkg import ops\n\n\n"
+
+# Read off the module through a name the resolver follows: a real edge.
+FOLLOWED = {
+    "local": H + "def test_p():\n    m = ops\n    assert m.value() == 1\n",
+    "module_level": H + "m = ops\n\n\ndef test_p():\n    assert m.value() == 1\n",
+    "dotted_local": (
+        "import pkg.ops\n\n\ndef test_p():\n    m = pkg.ops\n    assert m.value() == 1\n"
+    ),
+    "dotted_module_level": (
+        "import pkg.ops\n\nm = pkg.ops\n\n\ndef test_p():\n    assert m.value() == 1\n"
+    ),
+    "import_as": "import pkg.ops as o\n\n\ndef test_p():\n    m = o\n    assert m.value() == 1\n",
+    "package": (
+        "import pkg\nimport pkg.ops\n\n\n"
+        "def test_p():\n    m = pkg\n    assert m.ops.value() == 1\n"
+    ),
+    "bound_method": H + "def test_p():\n    m = ops\n    f = m.value\n    assert f() == 1\n",
+    "alias_of_alias": H + "def test_p():\n    a = ops\n    b = a\n    assert b.value() == 1\n",
+    "annotated": (
+        "import types\n\n" + H + "def test_p():\n    m: types.ModuleType = ops\n"
+        "    assert m.value() == 1\n"
+    ),
+    "walrus": H + "def test_p():\n    if (m := ops):\n        assert m.value() == 1\n",
+    "unpacking": H + "def test_p():\n    m, n = ops, 1\n    assert m.value() == n\n",
+    "for_literal": H + "def test_p():\n    for m in (ops,):\n        assert m.value() == 1\n",
+    "global": (
+        H + "def _bind():\n    global m\n    m = ops\n\n\n"
+        "def test_p():\n    _bind()\n    assert m.value() == 1\n"
+    ),
+    "enclosing": (
+        H + "def test_p():\n    m = ops\n\n    def inner():\n        return m.value()\n\n"
+        "    assert inner() == 1\n"
+    ),
+}
+# The name may hold something else too: the edge, and the name-matched read.
+MIXED = {
+    "rebound": (
+        H + "def make():\n    return object()\n\n\n"
+        "def test_p():\n    m = make()\n    m = ops\n    assert m.value() == 1\n"
+    ),
+    "global_and_none": (
+        H + "m = None\n\n\ndef _bind():\n    global m\n    m = ops\n\n\n"
+        "def test_p():\n    _bind()\n    assert m.value() == 1\n"
+    ),
+    "nonlocal": (
+        H
+        + "def test_p():\n    m = None\n\n    def bind():\n        nonlocal m\n        m = ops\n\n"
+        "    bind()\n    assert m.value() == 1\n"
+    ),
+}
+# Forms the resolver does not follow: the read is name-matched, and the
+# module is one a value of unknown type can be.
+MATCHED = {
+    "other_module": (
+        "from tests import helpers\n\n\ndef test_p():\n    assert helpers.m.value() == 1\n"
+    ),
+    "imported_alias": "from tests.helpers import m\n\n\ndef test_p():\n    assert m.value() == 1\n",
+    "with_as": (
+        "import contextlib\n\n" + H + "def test_p():\n"
+        "    with contextlib.nullcontext(ops) as m:\n        assert m.value() == 1\n"
+    ),
+    "parameter": H
+    + "def check(p):\n    assert p.value() == 1\n\n\ndef test_p():\n    check(ops)\n",
+    "private_parameter": (
+        H + "def _check(p):\n    assert p.value() == 1\n\n\ndef test_p():\n    _check(ops)\n"
+    ),
+    "returned": (
+        H
+        + "def get():\n    return ops\n\n\n"
+        + "def test_p():\n    m = get()\n    assert m.value() == 1\n"
+    ),
+    "private_returned": (
+        H
+        + "def _get():\n    return ops\n\n\n"
+        + "def test_p():\n    m = _get()\n    assert m.value() == 1\n"
+    ),
+    "comprehension": H + "def test_p():\n    assert [m.value() for m in (ops,)] == [1]\n",
+    "getattr": (
+        "import pkg\nimport pkg.ops\n\n\ndef test_p():\n    m = getattr(pkg, 'ops')\n"
+        "    assert m.value() == 1\n"
+    ),
+    "class_body": H
+    + "class Holder:\n    mod = ops\n\n\ndef test_p():\n    assert Holder.mod.value() == 1\n",
+    "default": H + "def test_p(m=ops):\n    assert m.value() == 1\n",
+    "lambda_default": H + "def test_p():\n    f = lambda m=ops: m.value()\n    assert f() == 1\n",
+    "list": H + "def test_p():\n    mods = [ops]\n    assert mods[0].value() == 1\n",
+}
+T_P = py_target("tests/test_p.py::test_p", "tests.test_p.test_p")
 
 
-def _plan(repo, base, head):
-    return repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
-
-
-def _discovered(repo, rev):
-    snap = read_snapshot(repo.path, rev, ["."], with_config=True)
-    return discover("pytest", snap, build_index(snap), DiscoveryOptions())
-
-
-def _deps(result, nodeid: str) -> tuple[str, ...]:
-    return next(t for t in result.targets if t.runner_id == nodeid).lifecycle_dependencies
-
-
-# ------------------------------------------- fixtures under a plugin's decorator
-
-# scrapy's tests/test_http2_client_protocol.py: pytest-twisted's
-# ``async_yield_fixture`` was not recognised as a fixture decorator, so the
-# fixtures ``client`` requested (``site``) were no dependency; and since
-# ``client`` is also pytest-django's, the name was assumed to be that
-# plugin's fixture.
-
-
-def _twisted(site_value: str, name: str) -> dict[str, str]:
-    return {
-        **BENCH,
-        "tests/test_h2.py": (
-            "import pytest\n"
-            "from pytest_twisted import async_yield_fixture\n\n\n"
-            "class TestH2:\n"
-            "    @pytest.fixture\n"
-            "    def site(self):\n"
-            f"        return {site_value}\n\n"
-            "    @async_yield_fixture\n"
-            f"    async def {name}(self, site):\n"
-            "        yield site\n\n"
-            f"    def test_uses(self, {name}):\n"
-            f"        assert {name}\n\n"
-            "    def test_other(self):\n"
-            "        pass\n"
-        ),
-    }
-
-
-@pytest.mark.parametrize("name", ["client", "conn"])
-def test_async_yield_fixture_requests_are_dependencies(repo, name):
-    base = repo.commit(_twisted("1", name))
-    head = repo.commit(_twisted("2", name))  # only TestH2.site's body changes
-    plan = _plan(repo, base, head)
-    assert selected(plan) == {"tests/test_h2.py::TestH2::test_uses"}
-    deps = _deps(_discovered(repo, head), "tests/test_h2.py::TestH2::test_uses")
-    assert f"tests.test_h2.TestH2.{name}" in deps
-    assert "tests.test_h2.TestH2.site" in deps
+def _plan(repo, test: str, change: str):
+    base = repo.commit({**BASE, "tests/test_p.py": test})
+    head = repo.commit({"pkg/ops.py": change})
+    return repo.plan(base, head, [T_P, BENCH, NOOP], source_roots=["."])
 
 
 @pytest.mark.parametrize(
-    "decorator",
-    [
-        "pytest_asyncio.fixture",
-        "pytest_asyncio.fixture(scope='module')",
-        "async_fixture",
-        "pytest_twisted.async_fixture()",
-        "pytest_trio.trio_fixture",
-    ],
+    "test",
+    [*FOLLOWED.values(), *MIXED.values(), *MATCHED.values()],
+    ids=[*FOLLOWED, *MIXED, *MATCHED],
 )
-def test_fixture_decorators_ending_in_fixture(repo, decorator):
-    """Any decorator whose name ends in ``fixture`` makes a fixture, and its
-    ``name=`` and ``autouse=`` keywords are pytest's."""
+def test_alias_a_module_read_through_another_name_is_selected(repo, test):
+    """Before the fix, the ``MISSED`` forms and ``other_module`` selected
+    nothing (the others selected the test through a module handed on)."""
+    plan = _plan(repo, test, OPS_VALUE)
+    assert selected(plan) == {T_P.runner_id, BENCH.runner_id}
 
-    def files(value: str) -> dict[str, str]:
-        named = f"{decorator.split('(')[0]}(name='client')"
-        auto = f"{decorator.split('(')[0]}(autouse=True)"
-        return {
-            **BENCH,
-            "tests/conftest.py": (
-                "import pytest\n"
-                "import pytest_asyncio\n"
-                "import pytest_trio\n"
-                "import pytest_twisted\n"
-                "from pytest_twisted import async_fixture\n\n\n"
-                "@pytest.fixture\n"
-                f"def site():\n    return {value}\n\n\n"
-                "@pytest.fixture\n"
-                "def other_site():\n    return 1\n\n\n"
-                f"@{decorator}\n"
-                "async def conn(site):\n    return site\n\n\n"
-                f"@{named}\n"
-                "async def _client(site):\n    return site\n\n\n"
-                f"@{auto}\n"
-                "async def everywhere(other_site):\n    return other_site\n"
-            ),
-            "tests/test_x.py": (
-                "def test_conn(conn):\n    pass\n\n\n"
-                "def test_client(client):\n    pass\n\n\n"
-                "def test_plain():\n    pass\n"
-            ),
-        }
 
-    base = repo.commit(files("1"))
-    head = repo.commit(files("2"))  # only site's body changes
-    assert selected(_plan(repo, base, head)) == {
-        "tests/test_x.py::test_conn",
-        "tests/test_x.py::test_client",
+@pytest.mark.parametrize("test", list(FOLLOWED.values()), ids=list(FOLLOWED))
+def test_alias_a_followed_name_is_a_dependency_edge(repo, test):
+    plan = _plan(repo, test, OPS_VALUE)
+    assert rules(plan, T_P.runner_id) == {"dependency"}
+    assert rules(plan, BENCH.runner_id) == {"dependency"}
+    step = reason(plan, BENCH.runner_id).path[-1]
+    assert (step.target, step.kind, step.detail) == ("pkg.ops.value", "references", "")
+
+
+# The forms that missed: the use scan follows the name instead of counting
+# the module as handed on (the other forms hand it on, so every member of
+# it is a dependency of the reader).
+MISSED = [
+    "local",
+    "module_level",
+    "dotted_local",
+    "dotted_module_level",
+    "import_as",
+    "package",
+    "bound_method",
+]
+
+
+@pytest.mark.parametrize("form", MISSED)
+def test_alias_another_function_of_the_module_selects_nothing(repo, form):
+    plan = _plan(repo, FOLLOWED[form], OPS_OTHER)
+    assert selected(plan) == set()
+
+
+# ------------------------------------------------------------- the index
+
+
+def _index(test: str, **files: str):
+    """The index of BASE with ``test`` as the test module (and ``files``,
+    by module name, in place of BASE's: "" drops one), the same whether
+    computed, stored in the module cache or loaded back."""
+    sources = {k: v for k, v in BASE.items() if k.endswith(".py")}
+    sources["tests/test_p.py"] = test
+    for module, text in files.items():
+        path = module.replace(".", "/") + ".py"
+        if text:
+            sources[path] = text
+        else:
+            sources.pop(path)
+    snap = Snapshot(
+        info=SnapshotInfo(revision="x", commit="x"),
+        source_roots=["."],
+        files={k: v.encode() for k, v in sources.items()},
+    )
+    result = build_index(snap)
+    with tempfile.TemporaryDirectory() as tmp:
+        cache = ModuleCache(Path(tmp))
+        assert index_to_dict(build_index(snap, module_cache=cache)) == index_to_dict(result)
+        assert index_to_dict(build_index(snap, module_cache=cache)) == index_to_dict(result)
+    return result
+
+
+def _reads(idx) -> tuple[set[str], set[str]]:
+    """What ``tests.test_p.test_p`` references, and the attribute names it
+    reads off values of unknown type."""
+    source = "tests.test_p.test_p"
+    targets = {e.target for e in idx.edges if e.source == source and e.kind == "references"}
+    names = {
+        u.name for u in idx.unresolved if u.symbol == source and u.kind == UNRESOLVED_ATTRIBUTE
     }
-    plain = _deps(_discovered(repo, head), "tests/test_x.py::test_plain")
-    assert {"tests.conftest.everywhere", "tests.conftest.other_site"} <= set(plain)
+    return targets, names
 
 
-# ------------------------------- a well-known name bound to what cannot be read
-
-UNREAD = {
-    "class method": (
-        "tests/test_h2.py",
-        "class TestH2:\n"
-        "    @some_lib.thing\n"
-        "    def client(self, site):\n"
-        "        return site\n\n"
-        "    def test_uses(self, client):\n"
-        "        pass\n\n"
-        "    def test_other(self):\n"
-        "        pass\n",
-    ),
-    "module function": (
-        "tests/test_h2.py",
-        "@some_lib.thing(scope='module')\n"
-        "def client(site):\n"
-        "    return site\n\n\n"
-        "class TestH2:\n"
-        "    def test_uses(self, client):\n"
-        "        pass\n\n"
-        "    def test_other(self):\n"
-        "        pass\n",
-    ),
-    "module call": (
-        "tests/test_h2.py",
-        "client = some_lib.make(lambda site: site)\n\n\n"
-        "class TestH2:\n"
-        "    def test_uses(self, client):\n"
-        "        pass\n\n"
-        "    def test_other(self):\n"
-        "        pass\n",
-    ),
-    "class attribute": (
-        "tests/test_h2.py",
-        "class TestH2:\n"
-        "    client = some_lib.make(lambda self, site: site)\n\n"
-        "    def test_uses(self, client):\n"
-        "        pass\n\n"
-        "    def test_other(self):\n"
-        "        pass\n",
-    ),
-    "conftest import": (
-        "tests/conftest.py",
-        "from tests.helpers import client  # noqa: F401\n",
-    ),
-}
+@pytest.mark.parametrize("test", list(FOLLOWED.values()), ids=list(FOLLOWED))
+def test_alias_every_binding_a_module_reads_off_the_module(test):
+    targets, names = _reads(_index(test))
+    assert "pkg.ops.value" in targets
+    assert "value" not in names
 
 
-@pytest.mark.parametrize("case", sorted(UNREAD))
-def test_well_known_name_bound_in_scope_is_unknown(repo, case):
-    """``client`` is pytest-django's, but a definition in scope discovery
-    cannot read (an unknown decorator, a call's result) may be the fixture
-    pytest finds, requesting what nobody can see: it is ``fixture:client``,
-    whose users are selected on every change, and not the plugin's."""
-    path, text = UNREAD[case]
-
-    def files(value: str) -> dict[str, str]:
-        out = {
-            **BENCH,
-            "tests/__init__.py": "",
-            "tests/conftest.py": (
-                f"import pytest\n\n\n@pytest.fixture\ndef site():\n    return {value}\n"
-            ),
-            "tests/helpers.py": (
-                "import some_lib\n\n\n@some_lib.thing\ndef client(site):\n    return site\n"
-            ),
-            "tests/test_h2.py": (
-                "class TestH2:\n"
-                "    def test_uses(self, client):\n"
-                "        pass\n\n"
-                "    def test_other(self):\n"
-                "        pass\n"
-            ),
-        }
-        prefix = "import some_lib\n\n\n" if path == "tests/test_h2.py" else ""
-        out[path] = prefix + text + (out[path] if path == "tests/conftest.py" else "")
-        return out
-
-    base = repo.commit(files("1"))
-    head = repo.commit(files("2"))  # only the conftest's site changes
-    assert selected(_plan(repo, base, head)) == {"tests/test_h2.py::TestH2::test_uses"}
-    result = _discovered(repo, head)
-    assert "fixture:client" in _deps(result, "tests/test_h2.py::TestH2::test_uses")
-    notes = {(n.kind, n.detail.split("'")[1]) for n in result.notes if "'" in n.detail}
-    assert ("unresolved_fixture", "client") in notes
-    assert not any(n.kind == "external_fixture" for n in result.notes)
+@pytest.mark.parametrize("test", list(MIXED.values()), ids=list(MIXED))
+def test_alias_a_name_that_may_hold_something_else_keeps_the_name_matched_read(test):
+    targets, names = _reads(_index(test))
+    assert "pkg.ops.value" in targets
+    assert "value" in names
 
 
-def test_well_known_name_nothing_in_scope_binds_stays_the_plugins(repo):
-    """The table still holds for a name nothing in scope binds, or binds to
-    data or to an import from outside the source roots (outside code, as
-    the plugin's fixture is)."""
-
-    def files(value: str) -> dict[str, str]:
-        return {
-            **BENCH,
-            "tests/conftest.py": (
-                "import pytest\n"
-                "from django.conf import settings  # noqa: F401\n\n"
-                "client = None\n\n\n"
-                f"@pytest.fixture\ndef site():\n    return {value}\n"
-            ),
-            "tests/test_x.py": (
-                "def test_django(client, settings, mocker):\n    pass\n\n\n"
-                "def test_site(site):\n    pass\n"
-            ),
-        }
-
-    base = repo.commit(files("1"))
-    head = repo.commit(files("2"))
-    assert selected(_plan(repo, base, head)) == {"tests/test_x.py::test_site"}
-    result = _discovered(repo, head)
-    assumed = {n.detail.split("'")[1] for n in result.notes if n.kind == "external_fixture"}
-    assert assumed == {"client", "settings", "mocker"}
-    assert not any(n.kind == "unresolved_fixture" for n in result.notes)
-
-
-def test_maybe_indirect_argname_bound_in_scope_is_unknown(repo):
-    """An argname maybe handed to a fixture (``indirect=FLAG``) that names
-    no fixture discovery reads is a parameter, unless something in scope
-    binds it to what may be one."""
-
-    def files(value: str) -> dict[str, str]:
-        return {
-            **BENCH,
-            "tests/conftest.py": (
-                f"import pytest\n\n\n@pytest.fixture\ndef site():\n    return {value}\n"
-            ),
-            "tests/test_x.py": (
-                "import pytest\nimport some_lib\n\nFLAG = True\n\n\n"
-                "@some_lib.thing\ndef engine(request, site):\n    return site\n\n\n"
-                "@pytest.mark.parametrize('engine', [1], indirect=FLAG)\n"
-                "def test_engine(engine):\n    pass\n\n\n"
-                "@pytest.mark.parametrize('other', [1], indirect=FLAG)\n"
-                "def test_other(other):\n    pass\n"
-            ),
-        }
-
-    base = repo.commit(files("1"))
-    head = repo.commit(files("2"))
-    assert selected(_plan(repo, base, head)) == {"tests/test_x.py::test_engine"}
+@pytest.mark.parametrize("form", ["local", "module_level"])
+def test_alias_a_module_bound_to_a_name_is_one_an_unknown_value_can_be(form):
+    plain = {
+        "tests.helpers": "",
+        "benchmarks.bench_ops": H + "def time_value():\n    ops.value()\n",
+    }
+    assert "pkg.ops" in _index(FOLLOWED[form], **plain).attribute_modules
+    # Read through its import alone, it is not.
+    direct = H + "def test_p():\n    assert ops.value() == 1\n"
+    assert "pkg.ops" not in _index(direct, **plain).attribute_modules

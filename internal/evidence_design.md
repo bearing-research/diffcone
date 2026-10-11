@@ -527,10 +527,10 @@ selection or states something the tables left implicit; none narrows it.
   fixture `real` of a test module only if `value` can be that module. As in
   static planning, a name match on a module-level function, class or
   variable counts only for a module such a value may be
-  (`SourceIndex.attribute_modules`: handed on, held through a handle, named
-  by a string, what those reach), for a bare name, for a name looked up on
-  a module, and for the reads of a module holding a module named at run
-  time; the reads that call (`_forward`, `_callers_of`) follow the same
+  (`SourceIndex.attribute_modules`: handed on, bound to another name,
+  held through a handle, named by a string, what those reach), for a bare
+  name, for a name looked up on a module, and for the reads of a module
+  holding a module named at run time; the reads that call (`_forward`, `_callers_of`) follow the same
   matches. A module the test runner holds (a test module, a conftest, one
   defining a fixture) can still be handed out by pytest (`request.module`,
   a collector's `obj`), so a name-matched reader of one of its names is

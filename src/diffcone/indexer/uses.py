@@ -55,8 +55,10 @@ counts as a possible change:
 * every handle is recorded as well, however it is used (``HANDLE``), with
   every string naming a module (``"pkg.mod"``, ``"pkg.mod:attr"``; not a
   patch target, a logger's name, a comparison or a docstring), which code
-  the analysis cannot see may import and hand back: a value of unknown
-  type may be such a module (audit round 3, W20).
+  the analysis cannot see may import and hand back, and every module bound
+  to a name the scan follows (a function-local or module-level name, a
+  private function's return): a value of unknown type may be such a
+  module (audit round 3, W20).
 * a store undone after the test that made it (``indexer/patches.py``:
   ``monkeypatch.setattr`` on the fixture, ``with mock.patch(...)``,
   ``@patch.object(...)``) is a SCOPED record in place of a STORE: the
@@ -1905,12 +1907,17 @@ class _Scanner:
                 if targets is None or any(t.endswith(ANY) for t in targets):
                     self._record(USE, ANY, (), self._writer(node))
                 return
-            if id(node) in self.aliased_values:
-                return  # followed through the name it is bound to
+            if id(node) in self.aliased_values or (
+                isinstance(p, ast.Return) and id(p) in self.followed_returns
+            ):
+                # Followed through the name it is bound to (or to the calls
+                # of its function), so nothing is handed on; but a value of
+                # unknown type may now be this module, whatever the
+                # resolver makes of the name (HANDLE, W20).
+                self._emit(node, targets, sources, chain, HANDLE)
+                return
             if targets is not None and self._installed_as(node, targets, sources):
                 return
-            if isinstance(p, ast.Return) and id(p) in self.followed_returns:
-                return  # followed to the calls of its function
             if self._item_changed(node):
                 # An item changed on the way (``m.T["k"].append(x)``): what
                 # the object holds changed in place.

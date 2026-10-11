@@ -286,11 +286,33 @@ class _ReferenceCollector(ast.NodeVisitor):
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
     def _resolve(self, parts: list[str], kind: str = REFERENCES, mark: str = "") -> None:
-        node, rest = self.indexer.resolve_chain_names(parts, self.scope)
+        alias = self.indexer.module_alias(parts[0], self.scope) if len(parts) > 1 else None
+        if alias is None:
+            node, rest = self.indexer.resolve_chain_names(parts, self.scope)
+            self._resolved(parts, node, rest, kind, mark)
+            self.indexer.class_object_read(self.source, parts, self.scope)
+            return
+        # A name bound to a module (``m = ops``): ``m.value`` is a read of
+        # each module's ``value``, as through the import. The name's own
+        # binding (a module variable) is read too; when the name may hold
+        # something else as well, the read off a value of unknown type
+        # stays beside them.
+        modules, partial = alias
+        head = parts if partial else parts[:1]
+        node, rest = self.indexer.resolve_chain_names(head, self.scope)
+        self._resolved(head, node, rest, kind, mark if partial else "")
+        for module in modules:
+            node, rest = self.indexer.chain_names_from(ModuleNode(module), parts)
+            self._resolved(parts, node, rest, kind, mark)
+
+    def _resolved(
+        self, parts: list[str], node: Node, rest: Sequence[str], kind: str, mark: str
+    ) -> None:
+        """Record what ``parts`` resolved to (``node``, and the names read
+        off a value of unknown type after it)."""
         chain = ".".join(parts)
         if not (mark and self._write_reference(node, rest, mark)):
             self.indexer._record(self.source, node, kind=kind, chain=chain)
-        self.indexer.class_object_read(self.source, parts, self.scope)
         if isinstance(node, External) and node.module.split(".")[0] in GRAPH_MODULES:
             # ``gc.get_objects``: a member that hands out objects nothing
             # names (the bare module is its import, or a value the use scan
@@ -1712,6 +1734,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         type_position = id(node) in self._type_nodes
         self._escape(self.indexer.resolve_chain(parts, self.scope), classes=not type_position)
+        alias = self.indexer.module_alias(parts[0], self.scope) if len(parts) > 1 else None
+        for module in alias[0] if alias is not None else ():
+            target = self.indexer.chain_from(ModuleNode(module), parts)
+            self._escape(target, classes=not type_position)
 
     def _escape(self, target: Node, *, classes: bool = True) -> None:
         if isinstance(target, Resolved) and not target.detail:

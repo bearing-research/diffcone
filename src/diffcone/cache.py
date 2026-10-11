@@ -50,6 +50,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 47: a name bound to modules reads off them (indexer/aliases.py), and a
+# module followed through a name is one a value of unknown type may be;
 # 46: batch B of round 5 (text run as code, test runs, handed instances,
 # match_args); 45: batches A, C and D of round 5 merged (each had numbered its index 44):
 # SourceIndex.file_modes (git modes of the entries under the roots), the
@@ -80,7 +82,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 46
+INDEX_FORMAT = 47
 
 
 def _indexer_fingerprint() -> str:
