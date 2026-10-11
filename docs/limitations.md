@@ -126,7 +126,10 @@ everything.
 :   A test, a function-scoped fixture, or a helper in a test module or
     `conftest.py` that only tests call may change module state (`server._state
     = make()`): diffcone counts that change for the test running it only, not
-    for the other tests and benchmarks that read the same state. If a test
+    for the other tests and benchmarks that read the same state. A test or
+    `setUp` that other code calls (a test module's top-level code, a
+    session fixture), a doctest's function, and a `monkeypatch` your own
+    conftest overrides with a wider scope are not such code. If a test
     relies on state an earlier test set up, declare that dependency in
     [`diffcone.toml`](reference/declarations.md) (an `[[edges]]` entry from
     the reader to the code setting it up) or run the whole suite. Code that

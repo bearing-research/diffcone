@@ -60,6 +60,9 @@ class IndexerState:
         self._collided = False
         # Transitive in-scope descendants per class, built once bases are final.
         self._descendants: dict[str, tuple[str, ...]] = {}
+        # Class -> whether creating it makes instances of it
+        # (Resolver._instantiates_at_creation), memoised.
+        self._creation_instantiates: dict[str, bool] = {}
         # Import bindings being resolved (guards self-referential imports).
         self._resolving_bindings: set[tuple[str, str]] = set()
         self._pickling_hooks: list[str] | None = None

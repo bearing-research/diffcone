@@ -574,7 +574,9 @@ class Resolver(FirstPass):
                     for source in (symbol_id, scope.name)
                 ]
                 for creator in (symbol_id, scope.name):
-                    self.class_creation(creator, cscope.bases, stmt.keywords, Scope(module=scope))
+                    self.class_creation(
+                        creator, cscope.bases, stmt.keywords, Scope(module=scope), symbol_id
+                    )
                 # Name-chain bases were resolved (and recorded) by _ensure_bases;
                 # only dynamic base expressions still need their references collected.
                 dynamic_bases = [b for b in stmt.bases if _flatten_chain(b) is None]
@@ -1181,15 +1183,27 @@ class Resolver(FirstPass):
         return node, ()
 
     def class_creation(
-        self, source: str, bases: list[str], keywords: list[ast.keyword], scope: Scope
+        self,
+        source: str,
+        bases: list[str],
+        keywords: list[ast.keyword],
+        scope: Scope,
+        class_id: str | None = None,
     ) -> None:
         """Creating a class runs code of its bases and metaclass: the
         ``__init_subclass__`` that the new class's MRO finds after itself
         (the union of what each in-scope base finds covers it), and an
-        in-scope metaclass's ``__new__`` and ``__init__``."""
+        in-scope metaclass's ``__new__`` and ``__init__``. When the
+        metaclass constructs instances as it creates the class (``class_id``
+        is a symbol: the Enum family, which makes each member by calling
+        ``__new__`` and ``__init__``; an in-scope metaclass, which may call
+        ``cls(...)``; _instantiates_at_creation), the class's own
+        ``__init__`` and ``__new__`` run at import too, read through
+        ``Color.RED.code`` (audit round 5, R20)."""
         hooks: list[tuple[str, str]] = []
         for base in bases:
             hooks.append((base, "__init_subclass__"))
+        in_scope_meta = False
         for kw in keywords:
             parts = _flatten_chain(kw.value) if kw.arg == "metaclass" else None
             if parts is None:
@@ -1197,10 +1211,42 @@ class Resolver(FirstPass):
             meta = self.resolve_chain(parts, scope)
             if isinstance(meta, Resolved) and not meta.detail and meta.symbol in self.class_scopes:
                 hooks += [(meta.symbol, "__new__"), (meta.symbol, "__init__")]
+                in_scope_meta = True
+        if class_id is not None and (in_scope_meta or self._instantiates_at_creation(class_id)):
+            hooks += [(class_id, "__init__"), (class_id, "__new__")]
         for class_id, name in hooks:
             hit = self.lookup_in_class(class_id, name)
             if isinstance(hit, Resolved) and not hit.detail and hit.symbol != source:
                 self.out.edges.add(Edge(source, hit.symbol, REFERENCES, name))
+
+    def _instantiates_at_creation(self, class_id: str) -> bool:
+        """Whether creating the class makes instances of it: a base, as
+        written, is the Enum family (``enum.Enum``, ``IntFlag``, ... from
+        the ``enum`` module: its metaclass calls ``__new__`` and
+        ``__init__`` for each member), or an in-scope base is such a class
+        (through its own bases). An in-scope metaclass is the caller's
+        business (class_creation)."""
+        if class_id in self._creation_instantiates:
+            return self._creation_instantiates[class_id]
+        self._creation_instantiates[class_id] = False  # a cycle stops here
+        cscope = self.class_scopes[class_id]
+        found = False
+        for chain in cscope.base_chains:
+            node = self._resolve_base_expr(chain, cscope)
+            if isinstance(node, External) and node.module == "enum":
+                found = True
+            elif (
+                isinstance(node, Resolved)
+                and not node.detail
+                and node.symbol in self.class_scopes
+                and node.symbol != class_id
+                and self._instantiates_at_creation(node.symbol)
+            ):
+                found = True
+            if found:
+                break
+        self._creation_instantiates[class_id] = found
+        return found
 
     def escape(self, target: Resolved, *, classes: bool = True) -> None:
         """Record that ``target`` is used as a value (see _mark_escape)."""

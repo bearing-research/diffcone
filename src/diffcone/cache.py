@@ -50,6 +50,10 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 44: Symbol.statement_layout (the order of a module's or class's statements,
+# audit round 5 R6), Symbol.reads_any_docstring (R7), classes with Enum-family
+# bases or in-scope metaclasses depend on their ``__init__``/``__new__`` (R20),
+# stores through a wider-scoped fixture's ``monkeypatch`` are not undone (R27);
 # 43: Symbol.fixture_scope (the isolation assumption: planner.isolated_test_code);
 # 42: writes only (not handing on) give use-scan ``mutated_by`` edges, modules
 # handed to written parameters, stores put back before the test ends, lookups
@@ -72,7 +76,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 43
+INDEX_FORMAT = 44
 
 
 def _indexer_fingerprint() -> str:
