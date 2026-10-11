@@ -54,7 +54,9 @@ repository, and with `3` when discovery may be incomplete (unless
 `--allow-incomplete-discovery`).
 
 `validate` and `corpus` exit `0` when every outcome change was selected,
-`1` when some were missed, `2` on errors. `check` exits `0` when every new
+`1` when some were missed, `2` on errors. A test that is not a target is
+not a miss when the plan said its discovery is incomplete (the plan's
+`3`); it is reported apart. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
 when an input cannot be read. `report` exits `0` when the runs it read
 show no problem, `1` when they show one (a miss, a check that reached no

@@ -359,12 +359,19 @@ class TargetOutcome:
         """Ran at base, gone at head: nothing to select, so never a miss."""
         return self.head is None and not self.known_at_head
 
+    @property
+    def outside_targets(self) -> bool:
+        """A test the runner ran at head that is not a target of the plan:
+        discovery did not see it, so selection could not have chosen it."""
+        return not self.known_at_head and not self.removed
+
 
 @dataclass(frozen=True)
 class CoverageHit:
     runner_id: str
     selected: bool
     executed_changed: tuple[str, ...]  # changed symbols whose lines the test ran
+    is_target: bool = True  # a target of the plan, not a test discovery did not see
 
 
 @dataclass
@@ -372,6 +379,10 @@ class CoverageValidation:
     hits: list[CoverageHit] = field(default_factory=list)  # one per test seen under coverage
     changed_symbols: tuple[str, ...] = ()
     log: str = ""
+    # The plan said its pytest discovery may be short of what pytest collects
+    # (it exits 3): a test outside the target list is that known gap, not a
+    # selection miss, and recall is measured over the targets.
+    discovery_incomplete: bool = False
 
     @property
     def affected(self) -> list[CoverageHit]:
@@ -382,12 +393,33 @@ class CoverageValidation:
         return [h for h in self.affected if h.selected]
 
     @property
+    def missed_targets(self) -> list[CoverageHit]:
+        return [h for h in self.affected if h.is_target and not h.selected]
+
+    @property
+    def outside_targets(self) -> list[CoverageHit]:
+        """Tests that executed a changed symbol but are not targets."""
+        return [h for h in self.affected if not h.is_target]
+
+    @property
     def missed(self) -> list[CoverageHit]:
+        """Every hit that fails the check: missed targets, and tests outside
+        the target list unless the plan said its discovery is incomplete."""
+        if self.discovery_incomplete:
+            return self.missed_targets
         return [h for h in self.affected if not h.selected]
 
     @property
+    def counted(self) -> list[CoverageHit]:
+        """Recall's denominator: the affected targets when discovery is
+        incomplete (the rest is reported apart), else every affected test."""
+        if self.discovery_incomplete:
+            return [h for h in self.affected if h.is_target]
+        return self.affected
+
+    @property
     def recall(self) -> float | None:
-        return len(self.caught) / len(self.affected) if self.affected else None
+        return len(self.caught) / len(self.counted) if self.counted else None
 
     @property
     def precision(self) -> float | None:
@@ -403,13 +435,30 @@ class Validation:
     base_log: str = ""
     head_log: str = ""
     coverage: CoverageValidation | None = None
+    # See CoverageValidation.discovery_incomplete.
+    discovery_incomplete: bool = False
 
     @property
     def caught(self) -> list[TargetOutcome]:
         return [o for o in self.outcomes if o.changed and o.selected]
 
     @property
+    def missed_targets(self) -> list[TargetOutcome]:
+        """Targets whose outcome changed and that the plan did not select."""
+        return [o for o in self.outcomes if o.changed and not o.selected and o.known_at_head]
+
+    @property
+    def outside_targets(self) -> list[TargetOutcome]:
+        """Tests whose outcome changed that are not targets at all."""
+        return [o for o in self.outcomes if o.changed and o.outside_targets]
+
+    @property
     def missed(self) -> list[TargetOutcome]:
+        """Every outcome change that fails the check: missed targets, and
+        tests outside the target list unless the plan said its discovery is
+        incomplete (then they are reported apart, not as misses)."""
+        if self.discovery_incomplete:
+            return self.missed_targets
         return [o for o in self.outcomes if o.changed and not o.selected and not o.removed]
 
     @property
@@ -798,11 +847,24 @@ def shadowed_files(plan: Plan, outside: set[str]) -> list[tuple[str, str]]:
     return found
 
 
+def pytest_discovery_incomplete(plan: Plan) -> bool:
+    """The plan's pytest discovery says pytest may collect tests that are not
+    targets (the plan exits 3 and ``run`` refuses it): validation then
+    reports such tests apart instead of as selection misses."""
+    return any(n.runner == "pytest" for n in plan.incomplete_discovery)
+
+
 def coverage_validation(
-    plan: Plan, run: _SuiteRun, checkout: Path, selected: set[str], side: str = "head"
+    plan: Plan,
+    run: _SuiteRun,
+    checkout: Path,
+    selected: set[str],
+    side: str = "head",
+    targets: set[str] | None = None,
 ) -> CoverageValidation:
     """Attribute one suite run's per-test coverage to the changed symbols as
-    they are at ``side`` of the plan."""
+    they are at ``side`` of the plan. ``targets`` are the plan's pytest
+    targets (None: every test counts as one)."""
     assert run.coverage_db is not None
     outside: set[str] = set()
     contexts = read_coverage_contexts(run.coverage_db, checkout, outside)
@@ -830,8 +892,17 @@ def coverage_validation(
             if by_line:
                 for line in lines:
                     executed.update(by_line.get(line, ()))
-        hits.append(CoverageHit(nodeid, nodeid in selected, tuple(sorted(executed))))
-    return CoverageValidation(hits, changed_ids, run.log)
+        hits.append(
+            CoverageHit(
+                nodeid,
+                nodeid in selected,
+                tuple(sorted(executed)),
+                is_target=targets is None or nodeid in targets,
+            )
+        )
+    return CoverageValidation(
+        hits, changed_ids, run.log, discovery_incomplete=pytest_discovery_incomplete(plan)
+    )
 
 
 def merge_coverage(
@@ -853,11 +924,13 @@ def merge_coverage(
             hit.runner_id,
             existing.selected if existing else hit.selected,
             tuple(sorted(executed)),
+            is_target=existing.is_target if existing else hit.is_target,
         )
     return CoverageValidation(
         [hits[k] for k in sorted(hits)],
         tuple(sorted(set(head.changed_symbols) | set(base.changed_symbols))),
         head.log,
+        discovery_incomplete=head.discovery_incomplete,
     )
 
 
@@ -948,9 +1021,12 @@ def validate_pytest(
     selected = {
         d.target.runner_id for d in plan.decisions if d.selected and d.target.runner == "pytest"
     }
+    targets = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
     cache = outcome_cache if outcome_cache is not None else OutcomeCache()
     try:
-        return _validate_pytest(plan, repo, command, coverage, cache, setup_command, selected)
+        return _validate_pytest(
+            plan, repo, command, coverage, cache, setup_command, selected, targets
+        )
     finally:
         if outcome_cache is None:
             cache.close()
@@ -964,6 +1040,7 @@ def _validate_pytest(
     cache: OutcomeCache,
     setup_command: str | None,
     selected: set[str],
+    targets: set[str],
 ) -> Validation:
     seed = (plan.evidence or {}).get("hash_seed")
     base_key = (plan.base.commit, coverage, seed)
@@ -1005,7 +1082,7 @@ def _validate_pytest(
             head_outcomes, head_log = head_run.outcomes, head_run.log
             head_argv = head_run.argv
             if coverage:
-                cov = coverage_validation(plan, head_run, head_dir, selected)
+                cov = coverage_validation(plan, head_run, head_dir, selected, targets=targets)
                 if head_run.coverage_db is not None and plan.head.kind == KIND_COMMIT:
                     cache.keep_coverage(
                         (plan.head.commit, coverage, seed), head_run.coverage_db, head_dir
@@ -1018,10 +1095,12 @@ def _validate_pytest(
         if kept is not None:
             db, base_checkout = kept
             base_run = _SuiteRun(base_outcomes, base_log, 0, db)
-            base_cov = coverage_validation(plan, base_run, base_checkout, selected, side="base")
+            base_cov = coverage_validation(
+                plan, base_run, base_checkout, selected, side="base", targets=targets
+            )
         head_tests = {fold_nodeid(n) for n in head_outcomes}
         cov = merge_coverage(cov, base_cov, head_tests)
-    known = {d.target.runner_id for d in plan.decisions if d.target.runner == "pytest"}
+    known = targets
     ids = sorted(known | set(base_outcomes) | set(head_outcomes))
     validation = Validation(
         "pytest",
@@ -1029,6 +1108,7 @@ def _validate_pytest(
         base_log=base_log,
         head_log=head_log,
         coverage=cov,
+        discovery_incomplete=pytest_discovery_incomplete(plan),
     )
     for runner_id in ids:
         validation.outcomes.append(
@@ -1043,45 +1123,76 @@ def _validate_pytest(
     return validation
 
 
+def _outcome_record(o: TargetOutcome) -> dict:
+    return {"runner_id": o.runner_id, "base": o.base, "head": o.head, "target": o.known_at_head}
+
+
 def validation_to_dict(v: Validation) -> dict:
     return {
         "runner": v.runner,
         "ok": v.ok,
+        # True: the plan's pytest discovery may be short of what pytest
+        # collects (it exits 3), so tests outside the target list are
+        # reported in "outside_targets" and are not misses.
+        "discovery_incomplete": v.discovery_incomplete,
         "counts": {
-            "targets": len(v.outcomes),
+            "targets": sum(1 for o in v.outcomes if o.known_at_head),
             "selected": v.selected_count,
             "outcome_changed": sum(1 for o in v.outcomes if o.changed),
             "caught": len(v.caught),
             "missed": len(v.missed),
+            "missed_targets": len(v.missed_targets),
+            "outside_targets": len(v.outside_targets),
         },
-        "missed": [{"runner_id": o.runner_id, "base": o.base, "head": o.head} for o in v.missed],
+        # Every miss: missed targets, and, unless discovery is incomplete,
+        # tests outside the target list ("target": false).
+        "missed": [_outcome_record(o) for o in v.missed],
+        "outside_targets": [_outcome_record(o) for o in v.outside_targets],
         "removed": [o.runner_id for o in v.removed],
-        "caught": [{"runner_id": o.runner_id, "base": o.base, "head": o.head} for o in v.caught],
+        "caught": [_outcome_record(o) for o in v.caught],
         "outcomes": [
-            {"runner_id": o.runner_id, "base": o.base, "head": o.head, "selected": o.selected}
+            {
+                "runner_id": o.runner_id,
+                "base": o.base,
+                "head": o.head,
+                "selected": o.selected,
+                "target": o.known_at_head,
+            }
             for o in v.outcomes
         ],
         "coverage": None
         if v.coverage is None
         else {
             "changed_symbols": list(v.coverage.changed_symbols),
+            "discovery_incomplete": v.coverage.discovery_incomplete,
             "counts": {
                 "tests": len(v.coverage.hits),
                 "executed_a_changed_symbol": len(v.coverage.affected),
                 "caught": len(v.coverage.caught),
                 "missed": len(v.coverage.missed),
+                "missed_targets": len(v.coverage.missed_targets),
+                "outside_targets": len(v.coverage.outside_targets),
             },
             "recall": v.coverage.recall,
             "precision": v.coverage.precision,
             "missed": [
-                {"runner_id": h.runner_id, "executed": list(h.executed_changed)}
+                {
+                    "runner_id": h.runner_id,
+                    "executed": list(h.executed_changed),
+                    "target": h.is_target,
+                }
                 for h in v.coverage.missed
+            ],
+            "outside_targets": [
+                {"runner_id": h.runner_id, "executed": list(h.executed_changed)}
+                for h in v.coverage.outside_targets
             ],
             "hits": [
                 {
                     "runner_id": h.runner_id,
                     "selected": h.selected,
                     "executed": list(h.executed_changed),
+                    "target": h.is_target,
                 }
                 for h in v.coverage.hits
             ],
@@ -1100,15 +1211,32 @@ def _status_label(v: Validation) -> str:
     return f"MISSED ({', '.join(reasons)})"
 
 
+# How tests outside the target list read when the plan's discovery is incomplete.
+OUTSIDE_INCOMPLETE = "outside the target list (discovery incomplete: the plan exits 3)"
+
+
+def _miss_label(is_target: bool) -> str:
+    """A target the plan did not select is MISSED; a test that is no target
+    at all, while discovery claims to be complete, is a discovery miss."""
+    return "MISSED" if is_target else "MISSED (not a target)"
+
+
 def validation_to_text(v: Validation) -> str:
+    targets = sum(1 for o in v.outcomes if o.known_at_head)
     lines = [
         f"validation ({v.runner}): {_status_label(v)}",
-        f"  targets: {len(v.outcomes)}, selected: {v.selected_count}, "
+        f"  targets: {targets}, selected: {v.selected_count}, "
         f"outcome changed: {sum(1 for o in v.outcomes if o.changed)} "
         f"(caught {len(v.caught)}, missed {len(v.missed)})",
     ]
     for o in v.missed:
-        lines.append(f"  MISSED {o.runner_id}: {o.base} -> {o.head}")
+        lines.append(f"  {_miss_label(o.known_at_head)} {o.runner_id}: {o.base} -> {o.head}")
+    if v.discovery_incomplete and v.outside_targets:
+        lines.append(f"  {len(v.outside_targets)} outcome change(s) {OUTSIDE_INCOMPLETE}:")
+        for o in v.outside_targets[:20]:
+            lines.append(f"    {o.runner_id}: {o.base} -> {o.head}")
+        if len(v.outside_targets) > 20:
+            lines.append(f"    ... and {len(v.outside_targets) - 20} more")
     if v.removed:
         lines.append(f"  removed at head (not misses): {len(v.removed)}")
     for o in v.caught:
@@ -1121,13 +1249,25 @@ def validation_to_text(v: Validation) -> str:
     else:
         c = v.coverage
         fmt = lambda x: "n/a" if x is None else f"{x:.0%}"  # noqa: E731
+        if c.discovery_incomplete:
+            recall = (
+                f"recall {fmt(c.recall)} of targets (caught {len(c.caught)}, "
+                f"missed {len(c.missed)}); {len(c.outside_targets)} test(s) outside the "
+                "target list"
+            )
+        else:
+            recall = f"recall {fmt(c.recall)} (caught {len(c.caught)}, missed {len(c.missed)})"
         lines.append(
             f"coverage: {len(c.affected)} of {len(c.hits)} test(s) executed a changed symbol; "
-            f"recall {fmt(c.recall)} (caught {len(c.caught)}, missed {len(c.missed)}), "
-            f"precision {fmt(c.precision)}"
+            f"{recall}, precision {fmt(c.precision)}"
         )
         for h in c.missed:
-            lines.append(f"  MISSED {h.runner_id}: executed {', '.join(h.executed_changed)}")
+            lines.append(
+                f"  {_miss_label(h.is_target)} {h.runner_id}: "
+                f"executed {', '.join(h.executed_changed)}"
+            )
+        if c.discovery_incomplete and c.outside_targets:
+            lines.append(f"  {len(c.outside_targets)} test(s) {OUTSIDE_INCOMPLETE}")
     return "\n".join(lines) + "\n"
 
 
@@ -1175,8 +1315,25 @@ class CorpusReport:
         return self._sum(lambda v: len(v.missed))
 
     @property
+    def outcome_outside_targets(self) -> int:
+        """Outcome changes of tests outside the target list of a plan whose
+        discovery is incomplete: reported, not misses."""
+        return self._sum(lambda v: len(v.outside_targets) if v.discovery_incomplete else 0)
+
+    @property
     def coverage_affected(self) -> int:
-        return self._sum(lambda v: len(v.coverage.affected) if v.coverage else 0)
+        """Recall's denominator (see CoverageValidation.counted)."""
+        return self._sum(lambda v: len(v.coverage.counted) if v.coverage else 0)
+
+    @property
+    def coverage_outside_targets(self) -> int:
+        return self._sum(
+            lambda v: (
+                len(v.coverage.outside_targets)
+                if v.coverage and v.coverage.discovery_incomplete
+                else 0
+            )
+        )
 
     @property
     def coverage_caught(self) -> int:
@@ -1341,6 +1498,8 @@ def corpus_to_dict(report: CorpusReport) -> dict:
                 k: v["coverage"][k] for k in ("counts", "recall", "precision", "missed")
             }
             d["missed"] = v["missed"]
+            d["discovery_incomplete"] = v["discovery_incomplete"]
+            d["outside_targets"] = v["outside_targets"]
         return d
 
     return {
@@ -1355,8 +1514,10 @@ def corpus_to_dict(report: CorpusReport) -> dict:
             "errors": sum(1 for e in report.entries if e.error),
             "outcome_changed": report.outcome_changed,
             "outcome_missed": report.outcome_missed,
+            "outcome_outside_targets": report.outcome_outside_targets,
             "coverage_affected": report.coverage_affected,
             "coverage_caught": report.coverage_caught,
+            "coverage_outside_targets": report.coverage_outside_targets,
             "recall": report.recall,
             "precision": report.precision,
             "mean_savings": report.mean_savings,
@@ -1381,18 +1542,23 @@ def corpus_to_text(report: CorpusReport) -> str:
     def pct(x: float | None) -> str:
         return "n/a" if x is None else f"{x:.0%}"
 
+    def outside(n: int) -> str:
+        return f"; {n} outside the target list, discovery incomplete" if n else ""
+
     lines = [
         f"corpus {report.revision_range}: {len(report.validated)} validated, "
         f"{sum(1 for e in report.entries if e.skipped)} skipped, "
         f"{sum(1 for e in report.entries if e.error)} error(s); "
         f"{_corpus_verdict(report)}",
-        f"  outcome changes: {report.outcome_changed} (missed {report.outcome_missed}); "
+        f"  outcome changes: {report.outcome_changed} (missed {report.outcome_missed}"
+        f"{outside(report.outcome_outside_targets)}); "
         f"mean savings {pct(report.mean_savings)}",
     ]
     if report.coverage:
         lines.append(
             f"  coverage: recall {pct(report.recall)} ({report.coverage_caught} of "
-            f"{report.coverage_affected}), precision {pct(report.precision)}"
+            f"{report.coverage_affected}"
+            f"{outside(report.coverage_outside_targets)}), precision {pct(report.precision)}"
         )
     for e in report.entries:
         short = e.commit[:10]
@@ -1405,19 +1571,33 @@ def corpus_to_text(report: CorpusReport) -> str:
             assert v is not None
             status = "ok" if v.ok else "MISSED"
             cov = ""
-            if v.coverage is not None:
-                cov = f", recall {pct(v.coverage.recall)}, precision {pct(v.coverage.precision)}"
+            c = v.coverage
+            if c is not None:
+                of = " of targets" if c.discovery_incomplete else ""
+                cov = f", recall {pct(c.recall)}{of}, precision {pct(c.precision)}"
+            gap = ""
+            if v.discovery_incomplete:
+                n = len(v.outside_targets)
+                n_cov = len(c.outside_targets) if c is not None else 0
+                if n or n_cov:
+                    counts = f"{n} outcome change(s)"
+                    if c is not None:
+                        counts += f", {n_cov} coverage hit(s)"
+                    gap = f"; {counts} {OUTSIDE_INCOMPLETE}"
             lines.append(
                 f"  {short} {status}: {e.selected}/{e.targets} selected "
-                f"(savings {pct(e.savings)}), outcome misses {len(v.missed)}{cov}"
+                f"(savings {pct(e.savings)}), outcome misses {len(v.missed)}{cov}{gap}"
                 f"{' [degraded]' if e.degraded else ''}  {e.subject}"
             )
             for o in v.missed:
-                lines.append(f"      MISSED outcome {o.runner_id}: {o.base} -> {o.head}")
-            if v.coverage is not None:
-                for h in v.coverage.missed:
+                lines.append(
+                    f"      {_miss_label(o.known_at_head)} outcome {o.runner_id}: "
+                    f"{o.base} -> {o.head}"
+                )
+            if c is not None:
+                for h in c.missed:
                     lines.append(
-                        f"      MISSED coverage {h.runner_id}: executed "
+                        f"      {_miss_label(h.is_target)} coverage {h.runner_id}: executed "
                         f"{', '.join(h.executed_changed)}"
                     )
     return "\n".join(lines) + "\n"

@@ -34,7 +34,9 @@ repository, and with `3` when discovery may be incomplete (unless
 `--allow-incomplete-discovery`).
 
 `validate` and `corpus` exit `0` when every outcome change was selected,
-`1` when some were missed, `2` on errors. `check` exits `0` when every new
+`1` when some were missed, `2` on errors. A test that is not a target is
+not a miss when the plan said its discovery is incomplete (the plan's
+`3`); it is reported apart. `check` exits `0` when every new
 failure of the full run was selected, `1` when the plan missed one, `2`
 when an input cannot be read. `report` exits `0` when the runs it read
 show no problem, `1` when they show one (a miss, a check that reached no
@@ -107,7 +109,7 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 
 Run the full pytest suite at both snapshots and check the plan against it.
 
-Outcome-based validation: runs the whole pytest suite at base and head (commits in temporary git worktrees, WORKTREE in place), then reports every test whose pass/fail outcome changed but was not selected. Behaviour changes that keep the same outcome are invisible to this check.
+Outcome-based validation: runs the whole pytest suite at base and head (commits in temporary git worktrees, WORKTREE in place), then reports every test whose pass/fail outcome changed but was not selected. A test that is not a target is reported apart, not as a miss, when the plan says its discovery is incomplete. Behaviour changes that keep the same outcome are invisible to this check.
 
 ```text
 diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAND] [--coverage] [--setup-command SETUP_COMMAND] [--repo REPO] [--source-root DIR[=PREFIX]] [--discover RUNNER] [--assume-external-fixture NAME] [--no-well-known-fixtures] [--output OUTPUT] [--no-cache] [--cache-dir CACHE_DIR] [--evidence auto|PATH] [--format {json,text}]
