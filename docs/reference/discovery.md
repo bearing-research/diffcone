@@ -181,6 +181,15 @@ other plugins with `--assume-external-fixture NAME`. A fixture diffcone
 can't find otherwise is reported, and the tests that use it are selected
 on every change, since diffcone can't tell what the fixture depends on.
 
+A fixture is a function under a decorator whose name ends in `fixture`:
+`pytest.fixture`, pytest-asyncio's `fixture`, pytest-twisted's
+`async_fixture` and `async_yield_fixture`, pytest-trio's `trio_fixture`.
+A plugin's fixture name is assumed only when nothing your tests can see
+defines it. If a test class, test module, conftest or plugin module defines
+that name under some other decorator, or binds it to something diffcone
+can't read (`client = make_fixture(...)`), diffcone treats it as an unknown
+fixture instead, and selects the tests that use it on every change.
+
 Some fixtures are requested by pytest or a plugin itself rather than by
 your tests: pytest's `tmp_path` uses `tmp_path_factory`, and anyio's plugin
 uses `anyio_backend`. If your project overrides one, diffcone counts the
