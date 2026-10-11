@@ -1443,6 +1443,9 @@ selection rules.</p>
 <li>Editing an ordinary module named <code>build.py</code> (not at the repository root
   or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects, with a recording, the
   tests that ran it, as static planning does, instead of every test.</li>
+<li>A test module's <code>pytester</code>/<code>testdir</code> test depends on the project's
+  registered plugins (<code>pytest11</code> entry points, <code>pytest_plugins</code>, <code>-p</code>) and
+  on what its inline files import.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1651,6 +1654,71 @@ selection rules.</p>
   as <code>plan</code>, and its output is unchanged.</li>
 <li>A relative <code>--command</code> written with forward slashes
   (<code>.venv/Scripts/python.exe</code>) is resolved on Windows too.</li>
+<li>Moving a module's or a class's statements around (a constant moved
+  below the decorator that reads it, two <code>@register</code> functions swapped, a
+  <code>def</code> moved below a <code>try</code>/<code>except</code> import of the same name) was no
+  change at all: the order of statements both sides have is now part of
+  the definition, so a reorder reaches importers; appending or swapping
+  plain <code>def</code>s still selects nothing.</li>
+<li>Text a test writes out and runs (<code>exec</code>, <code>eval</code>, <code>compile</code>, <code>timeit</code>,
+  <code>pytester.makepyfile</code>) is read as the code it is: its imports and calls
+  count. Text built at run time from pieces that are not written out can
+  import anything.</li>
+<li>A test file given to a test runner (<code>python -m pytest path</code>,
+  <code>pytest.main([...])</code>, <code>python -m unittest module</code>, <code>unittest</code>'s
+  loaders, <code>doctest.testfile</code>) runs whole, conftests and fixtures
+  included; it counted as an import.</li>
+<li>A Python child whose interpreter is not the first word (<code>env X=1
+  python -m ...</code>, <code>uv run python ...</code>, <code>timeout 30 python ...</code>,
+  <code>asyncio.create_subprocess_exec(sys.executable, ...)</code>, <code>os.execl</code>) is
+  followed.</li>
+<li><code>match</code> class patterns, <code>operator.attrgetter</code>/<code>methodcaller</code>, and
+  <code>str.format</code> template fields (<code>'{0.attr}'</code>) read attributes by name; a
+  non-literal name is a dynamic reference.</li>
+<li>An instance handed to code outside the project (<code>json.dump(x, w)</code>,
+  <code>print(file=w)</code>, <code>dict(obj)</code>, <code>csv.writer(w)</code>, <code>contextlib.closing(r)</code>)
+  depends on every method of its class, as it does when handed to project
+  code; only dunder methods were reached.</li>
+<li>An import added to or removed from a module that starts or stops
+  running another module's import-time code reaches the readers of what
+  that code writes (a registry filled at import), in both modes; added
+  imports stay non-structural otherwise.</li>
+<li>A module obtained from a literal <code>import_module("pkg.sub")</code> or
+  <code>__import__</code> and handed on counts as handed on.</li>
+<li>A docstring read through a parameter (<code>inspect.getdoc(fn)</code> in a
+  helper) and a module's <code>__doc__</code> see docstring-only changes.</li>
+<li>A class with an <code>enum.Enum</code>-family base or an in-scope metaclass
+  depends on its <code>__init__</code>/<code>__new__</code>, which run when the class is
+  created (<code>Color.RED.code</code> reaches <code>Color.__init__</code>); <code>dir(mod)</code> depends
+  on <code>mod.__dir__</code>; <code>dir</code>, <code>hasattr</code> and <code>vars</code> of a library module your
+  code writes to are lookup sites.</li>
+<li>A doctest's entry and a manifest entry on project code are no longer
+  "isolated test code", nor is a test or <code>setUp</code> that module-level code
+  calls, nor a store through a <code>monkeypatch</code> a wider-scoped fixture
+  requests or that the module overrides.</li>
+<li><code>WORKTREE</code> plans read git-ignored <code>.py</code> files in directories git does
+  not ignore as a whole (a generated <code>_version.py</code>, <code>local_settings.py</code>);
+  ignored directories are still skipped. <code>run</code> refuses a working tree
+  that differs from the planned snapshot in any file the plan would have
+  selected on (data and configuration files under the roots,
+  <code>diffcone.toml</code>, runner configuration, build inputs, conftests, ignored
+  <code>.py</code> files, modes, dirty submodules) and names them.</li>
+<li>File mode changes (<code>chmod +x</code>) under the source roots are changes, in
+  commits and the working tree; a tracked file replaced by a directory no
+  longer crashes <code>WORKTREE</code> plans.</li>
+<li><code>validate</code>, <code>corpus</code> and <code>collect</code> run the whole suite whatever <code>-x</code> or
+  <code>--maxfail</code> is configured, and <code>validate</code> refuses a suite that reported
+  fewer outcomes than it collected: a miss can no longer hide behind an
+  early stop.</li>
+<li><code>check</code> and <code>validate</code> work when pytest's rootdir lies below the
+  repository (an ini file in a subdirectory): the plan records pytest's
+  rootdir, configuration file and <code>--junit-prefix</code>, <code>check --rootdir</code> and
+  <code>--junit-prefix</code> override them, and a directory that fails to collect
+  counts as a collection failure of every test under it. Before, every
+  failure was an unknown miss and the record action confirmed it.</li>
+<li><code>run</code>'s "did not collect" message names <code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>,
+  <code>-m</code> or <code>--deselect</code> among the effective pytest arguments and where
+  they are set.</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1805,6 +1873,21 @@ selection rules.</p>
   missed.</li>
 <li>A recording stored under a path containing <code>#</code>, <code>?</code> or <code>%</code> can be
   opened; it was skipped as if there were none.</li>
+<li>Recordings must be made again: store format 3.</li>
+<li>The recorder starts before pytest loads any <code>-p</code> plugin (<code>addopts</code>,
+  <code>PYTEST_ADDOPTS</code>, the command) and before a project <code>sitecustomize.py</code>,
+  so what they import is recorded; modules imported before it could start
+  are noted, <code>collect</code> warns, and any change in them is planned from the
+  code.</li>
+<li>A cache kept on an object, a class, a closure, a function attribute or
+  in <code>functools.cached_property</code> reaches every test that reads it, not
+  only the test that filled it.</li>
+<li>Files reached through a directory descriptor (<code>dir_fd=</code>,
+  <code>os.listdir(fd)</code>, <code>os.fstat</code>), entries of an <code>os.scandir</code> listing,
+  <code>os.readlink</code>, <code>sqlite3</code> <code>file:</code> URIs and symlinked paths are recorded;
+  a descriptor the recorder cannot trace flags the test.</li>
+<li>A string <code>skipif</code> condition naming nothing of the project and
+  <code>autospec=True</code> mocks no longer mark a test as text code.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>

@@ -892,6 +892,17 @@ with a computed name is treated as affected by any change in the
 modules its module imports, and in the modules of code that stores
 objects on one of those modules. Some code widens that bound:</p>
 <ul>
+<li><strong>Text run as code.</strong> <code>exec</code>, <code>eval</code>, <code>timeit</code> and pytest's
+  <code>pytester.makepyfile</code> run text. Text written in the code (a string,
+  a constant, <code>textwrap.dedent</code> of one, a template filled with
+  literals) is read as the code it is: what it imports and calls
+  counts. Text built at run time or read from a file can import
+  anything, so the test is affected by any change; a text a helper's
+  parameter supplies is bounded by what the callers pass.</li>
+<li><strong>pytester.</strong> A test using <code>pytester</code> or <code>testdir</code> runs a pytest
+  session of its own with your project's registered plugins loaded,
+  so it depends on every fixture those plugins define and on what its
+  inline test code imports.</li>
 <li><strong>Lookups on a library module.</strong> <code>getattr(logging, name)</code> is bounded
   unless your code may store something on that module: directly, by
   handing the module to other code, or by putting an object in
@@ -930,9 +941,23 @@ objects on one of those modules. Some code widens that bound:</p>
   <code>importlib.util.module_from_spec</code> counts as the module whose file it
   loads.</li>
 <li><strong>Passing a module on.</strong> Code that passes a module to other code
-  (<code>read(ops, name)</code>) depends on everything in that module and on what
-  its imports bind (<code>api.core.TABLE</code>), as it depends on every member of
-  a class whose instances it passes on.</li>
+  (<code>read(ops, name)</code>), whether named by an import or obtained with
+  <code>importlib.import_module("pkg.sub")</code>, depends on everything in that
+  module and on what its imports bind (<code>api.core.TABLE</code>), as it depends
+  on every member of a class whose instances it passes on.</li>
+<li><strong>Passing an object on.</strong> Code that hands an instance of one of your
+  classes to a library (<code>json.dump(x, w)</code>, <code>csv.writer(w)</code>,
+  <code>print(file=w)</code>, <code>dict(obj)</code>, <code>handler.stream = w</code>), to a method on
+  an object of unknown type (<code>items.append(w)</code>) or to one of your own
+  functions depends on every method of that class: the receiving code
+  may call any of them by name. Builtins that only use dunder methods
+  (<code>len</code>, <code>str</code>, <code>iter</code>, <code>sorted</code>) don't count.</li>
+<li><strong>Names in strings.</strong> <code>operator.attrgetter("a.b")</code>,
+  <code>methodcaller("m")</code>, a format template's fields (<code>"{0.name}"</code>) and a
+  <code>match</code> class pattern (<code>case C(x=1)</code>, <code>case C(1)</code> through
+  <code>__match_args__</code>) read attributes by name, and are matched like
+  <code>getattr(x, "a")</code>. A name or template that isn't written out is
+  bounded by what callers pass, else counts as dynamic.</li>
 <li><strong>Replacing modules.</strong> Code that puts an object in <code>sys.modules</code> for
   good under a computed name may replace any of your modules, so
   without a recording every test that imports one of them depends on
@@ -942,11 +967,17 @@ objects on one of those modules. Some code widens that bound:</p>
 <dt><strong>Python programs a test starts.</strong></dt>
 <dd>A test that runs a script or module of your project in a new process
 (<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
-<code>python -c "import mypkg"</code>) depends on that script or module, and on
-what it imports, when the code names it in a string. When the program
-is built at run time (a path from a variable or the environment, <code>-c</code>
-code assembled from pieces or code that changes <code>sys.path</code>, <code>*args</code>),
-the test is affected by any change. So is a test that runs a <code>.py</code> file no module name maps to
+<code>python -c "import mypkg"</code>, also after <code>env X=1</code>, <code>uv run</code> or
+<code>timeout 30</code>, or through <code>asyncio.create_subprocess_exec</code>) depends on
+that script or module, and on what it imports, when the code names it
+in a string. A test file given to a test runner (<code>python -m pytest
+tests/test_x.py</code>, <code>pytest.main([...])</code>, <code>python -m unittest
+tests.cases</code>) runs whole: the test depends on everything in that file
+and its <code>conftest.py</code> files. When the program is built at run time (a
+path from a variable or the environment, <code>-c</code> code assembled from
+pieces or code that changes <code>sys.path</code>, <code>*args</code>, a directory or
+<code>unittest discover</code>), the test is affected by any change. So is a test
+that runs a <code>.py</code> file no module name maps to
 (<code>scripts/gen-data.py</code>), which isn't analysed. Console scripts your
 project installs and files outside your source roots aren't seen;
 <a href="../guides/evidence/">execution evidence</a> follows the processes a test
@@ -965,14 +996,26 @@ included (a library writing into a module you hand it).</dd>
 <dd>A test, a function-scoped fixture, or a helper in a test module or
 <code>conftest.py</code> that only tests call may change module state (<code>server._state
 = make()</code>): diffcone counts that change for the test running it only, not
-for the other tests and benchmarks that read the same state. If a test
+for the other tests and benchmarks that read the same state. A test or
+<code>setUp</code> that other code calls (a test module's top-level code, a
+session fixture), a doctest's function, and a <code>monkeypatch</code> your own
+conftest overrides with a wider scope are not such code. If a test
 relies on state an earlier test set up, declare that dependency in
 <a href="../reference/declarations/"><code>diffcone.toml</code></a> (an <code>[[edges]]</code> entry from
 the reader to the code setting it up) or run the whole suite. Code that
 runs once for many tests is still a dependency of every reader: a test
 module's top-level code, a fixture with a wider scope (or a scope it
 computes), a hook, and any code of your project, a cache a test fills
-included.</dd>
+included. With a <a href="../guides/evidence/">recording</a>, such a cache is
+followed when your code keeps it in a module variable, on an object, a
+class, a closure or a function attribute, or in a
+<code>functools.cached_property</code>, and fills it with a value your code
+computes. Not followed: a cache kept by a memoising decorator from a
+package diffcone doesn't know (it knows <code>functools</code>, <code>cachetools</code>,
+<code>cached_property</code>, Django's and Werkzeug's), and one filled through a
+method of an object whose type diffcone can't tell
+(<code>self._cache.set(k, compute(k))</code> where <code>_cache</code> is set in several
+ways).</dd>
 <dt><strong>Code that changes the process while pytest collects reaches every test.</strong></dt>
 <dd>A <code>conftest.py</code>, a test module or a module they import that sets an
 environment variable, extends <code>sys.path</code> or configures a library
@@ -1002,6 +1045,13 @@ a whole.</dd>
 <dt><strong>Uncommitted analysis is only as stable as your working tree.</strong></dt>
 <dd>A plan of <code>WORKTREE</code> or <code>INDEX</code> describes the files at the moment you
 planned. The report always marks such plans as uncommitted.</dd>
+<dt><strong>Git-ignored files are seen only by <code>WORKTREE</code> plans, and only Python ones.</strong></dt>
+<dd>A plan of a commit or of <code>INDEX</code> reads what git recorded: a <code>.py</code> file
+git ignores (a generated <code>_version.py</code>, a <code>local_settings.py</code>) and any
+edit to it are invisible, and <code>run</code> refuses to run such a plan while
+one is on disk. A <code>WORKTREE</code> plan reads ignored <code>.py</code> files that sit in
+a directory git doesn't ignore as a whole; it skips ignored directories
+(a virtualenv, a build tree) and ignored data files.</dd>
 </dl>
 
 

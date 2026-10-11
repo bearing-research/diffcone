@@ -1042,16 +1042,27 @@ and arguments, in the same environment. If discovery can't find pytest's
 arguments in <code>--command</code> (it looks for <code>-m pytest</code> or a <code>pytest</code>
 program, so a wrapper script is not recognised), the plan says so and
 exits <code>3</code>.</p>
+<p>If pytest didn't collect a selected test, the message also names any
+option among the effective pytest arguments that keeps tests out of a run
+by the cache or by name (<code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>, <code>-m</code>,
+<code>--deselect</code>) and where it is set, since that is the usual reason.</p>
 <p>For ASV, <code>--runner asv</code> builds the matching <code>asv run --bench</code> pattern. Add
-<code>--dry-run</code> to print the command instead of running it:</p>
+<code>--dry-run</code> to print the command instead of running it; for pytest the
+printed command names the selected tests as node ids, which is the
+equivalent of what the plugin keeps:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>run<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>asv<span class="w"> </span>--runner<span class="w"> </span>asv<span class="w"> </span>--dry-run
 </code></pre></div>
 <p><code>run</code> refuses to start in two situations, each with an option to override:</p>
 <ul>
-<li><strong>The checkout differs from what was planned.</strong> If you plan a commit but
-  have uncommitted changes to Python files, the plan doesn't describe the
-  code that would run. Plan with <code>--head WORKTREE</code>, or pass
-  <code>--allow-mismatched-worktree</code>.</li>
+<li><strong>The checkout differs from what was planned.</strong> If you plan a commit
+  (or <code>INDEX</code>) but the working tree differs in any file the plan would
+  have selected on, the plan doesn't describe what would run: a file
+  under your source roots (Python or not: a data file, a <code>.pyx</code>, a
+  configuration file), a git-ignored <code>.py</code> file beside tracked code, a
+  <code>conftest.py</code>, pytest's or ASV's configuration, <code>diffcone.toml</code>, a
+  dependency or lock file, or a submodule with a different commit or
+  edits inside. The message names the files. Plan with <code>--head WORKTREE</code>,
+  or pass <code>--allow-mismatched-worktree</code>.</li>
 <li><strong>Discovery may be incomplete</strong> (exit code <code>3</code>). Pass
   <code>--allow-incomplete-discovery</code> to run the selection anyway.</li>
 </ul>
@@ -1077,6 +1088,16 @@ selected, and exits with <code>1</code> if there is one. Options:</p>
 <li><code>--format markdown</code> writes a summary table for a CI job summary, and
   <code>--format json</code> a report for scripts.</li>
 </ul>
+<p>JUnit names tests relative to pytest's rootdir and may carry a
+<code>--junit-prefix</code>; the plan records both from the configuration and the
+pytest arguments it was made with (so plan with the same <code>--command</code> and
+arguments as the run), and <code>check</code> maps the names through them. When the
+runs were made differently, pass <code>--rootdir DIR</code> (relative to the
+repository) or <code>--junit-prefix PREFIX</code>. If no case matches a target at
+all, the report says so and points at these options rather than reporting
+every failure as a miss. A directory that fails to collect (its
+<code>conftest.py</code> doesn't import) counts as a collection failure of every test
+under it, caught when any of them was selected.</p>
 <h2 id="validate-a-plan-by-running-everything">Validate a plan by running everything<a class="headerlink" href="#validate-a-plan-by-running-everything" title="Permanent link">&para;</a></h2>
 <p><code>diffcone validate</code> runs your whole suite on both snapshots and reports any
 test whose result changed but wasn't selected:</p>
@@ -1087,6 +1108,13 @@ test whose result changed but wasn't selected:</p>
 place. With <code>--coverage</code> (which needs pytest-cov installed where your tests
 run), it also records which tests executed changed code, and reports any
 such test that wasn't selected.</p>
+<p>The whole suite must run on both sides for the comparison to mean
+anything, so <code>validate</code>, <code>corpus</code> and <code>collect</code> add <code>--maxfail=0</code> after
+your arguments, which overrides an <code>-x</code> or <code>--maxfail</code> in <code>addopts</code> or in
+the command. A suite that still stops early (a <code>conftest.py</code> that sets
+<code>maxfail</code>, a plugin that ends the session) reports outcomes for fewer
+tests than it collected; <code>validate</code> then refuses with exit code <code>2</code>
+instead of comparing.</p>
 <p><code>diffcone corpus --range A..B</code> validates every commit in a range and
 summarises the results: how many failures were missed and what share of
 tests each plan would have skipped. It skips commits that change no <code>.py</code>

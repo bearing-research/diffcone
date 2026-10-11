@@ -1150,6 +1150,14 @@ doesn't check anything out, import your code, or run tests.</p>
 </tr>
 </tbody>
 </table>
+<p>Git-ignored files deserve a word. A plan of a commit sees only what git
+recorded, so a <code>.py</code> file git ignores (a generated <code>_version.py</code> or
+<code>_pb2.py</code>, a <code>local_settings.py</code>) is invisible to it, and so is any change
+you make to one. A <code>WORKTREE</code> plan reads such files when they sit in a
+directory git doesn't ignore as a whole, and treats them as new modules on
+top of the base commit; ignored directories (a virtualenv, a build tree)
+and ignored data files are still not seen. If your tests depend on
+generated Python, plan against <code>WORKTREE</code>, or commit what they import.</p>
 <h2 id="source-roots">Source roots<a class="headerlink" href="#source-roots" title="Permanent link">&para;</a></h2>
 <p>A source root is a directory that diffcone treats as an import root, the
 way Python's <code>sys.path</code> does. Module names come from the closest root that

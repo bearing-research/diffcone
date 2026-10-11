@@ -1264,7 +1264,11 @@ always selected.</p>
   (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>),
   or a <code>benchmark_dir</code> outside the repository;</li>
 <li>options that change what pytest collects in ways discovery doesn't
-  follow (<code>-c</code>/<code>--config-file</code>, <code>--rootdir</code>, <code>--pyargs</code>);</li>
+  follow (<code>-c</code>/<code>--config-file</code>, <code>--rootdir</code>, <code>--pyargs</code>), or a
+  configuration file below the repository root that pytest will use (its
+  rootdir is then that directory, the monorepo shape): discovery reads
+  only the configuration at the root, so what the nested file sets is not
+  known;</li>
 <li>a <code>--command</code> discovery can't find pytest's arguments in (it looks for
   <code>-m pytest</code> or a <code>pytest</code> program), or one that names pytest more than
   once;</li>
