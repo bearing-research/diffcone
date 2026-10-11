@@ -27,7 +27,9 @@ per module):
 * ``-c CODE`` whose code is written out (``code_texts``: a literal, a local
   bound once to one, a module-level constant, ``textwrap.dedent`` of one,
   ``compile()`` of one, a literal template filled by ``.format``, ``%`` or
-  an f-string with literal values): the modules it imports and the names it
+  an f-string with literal values, or with the test's own parameter that
+  ``@pytest.mark.parametrize`` gives literal values, one text per value):
+  the modules it imports and the names it
   reaches through them, unless it imports or runs code by a name or path
   it computes or changes where its imports look (``sys.path``,
   ``sys.meta_path``, ``sys.modules`` stored into, extended or reassigned;
@@ -580,15 +582,17 @@ def _single(values: tuple[str, ...] | None) -> str | None:
     return values[0] if values is not None and len(values) == 1 else None
 
 
-def _convert(value: str, conversion: str | None) -> str:
+def _convert(value: object, conversion: str | None) -> str:
     if conversion == "r":
         return repr(value)
     if conversion == "a":
         return ascii(value)
-    return value
+    return str(value)
 
 
 _PERCENT = re.compile(r"%(?:\((\w+)\))?([-#0 +]*\d*(?:\.\d+)?)([a-zA-Z%])")
+# How many texts a template's parametrized fields may make (code_texts).
+_MAX_PARAMETRIZED_TEXTS = 64
 
 
 def code_texts(
@@ -600,42 +604,135 @@ def code_texts(
     a literal template's ``.format``/``%`` whose fields literal values fill
     (``HOLE_NAME`` stands in for a field nothing literal fills, and the
     expression behind it is appended to ``holes``: the code that runs is
-    not known there). None when the text is not written out."""
+    not known there). None when the text is not written out.
+
+    A field the test's own parameter fills, which ``@pytest.mark.parametrize``
+    on the test gives literal values (``Scope.param_values``), is no hole:
+    the text is each one the values make, filled in as Python would format
+    them (``str``, ``repr`` for ``!r`` and ``%r``, a literal format spec);
+    likewise a text such a parameter is, or that it is a piece of
+    (``"import " + mod``). Any field left a hole leaves the template as it
+    was."""
+    own: list[ast.expr] = []
+    texts = _code_texts(collector, expr, own, {})
+    values = collector.scope.param_values
+    if values:
+        filled = _parametrized_texts(collector, expr, texts, own, values)
+        if filled is not None:
+            return filled
+    if holes is not None:
+        holes.extend(own)
+    return texts
+
+
+def _parametrized_texts(
+    collector: _ReferenceCollector,
+    expr: ast.expr,
+    texts: tuple[str, ...] | None,
+    holes: list[ast.expr],
+    values: dict[str, tuple[object, ...]],
+) -> tuple[str, ...] | None:
+    """``code_texts`` with each hole a parametrized parameter fills filled
+    by each of its values; None when some hole is anything else."""
+    if texts is None:
+        # Not written out without the values (the parameter is the text, or
+        # a piece of a concatenation): try the parameters it names.
+        written = ast.walk(unwrap_text(collector, expr))
+        names = list(dict.fromkeys(n.id for n in written if isinstance(n, ast.Name)))
+        names = [name for name in names if name in values]
+    else:
+        names = list(dict.fromkeys(h.id if isinstance(h, ast.Name) else "" for h in holes))
+    if not names or any(name not in values or name in collector.scope.rebound for name in names):
+        return None
+    combinations: list[dict[str, object]] = [{}]
+    for name in names:
+        combinations = [{**c, name: v} for c in combinations for v in values[name]]
+        if len(combinations) > _MAX_PARAMETRIZED_TEXTS:
+            return None
+    out: list[str] = []
+    for bound in combinations:
+        left: list[ast.expr] = []
+        found = _code_texts(collector, expr, left, bound)
+        if found is None or left or any(HOLE_NAME in text for text in found):
+            return None
+        out.extend(found)
+    return tuple(dict.fromkeys(out))
+
+
+def _code_texts(
+    collector: _ReferenceCollector,
+    expr: ast.expr,
+    holes: list[ast.expr],
+    bound: dict[str, object],
+) -> tuple[str, ...] | None:
+    """code_texts, with the parameters ``bound`` names standing for the
+    value it gives each."""
     expr = unwrap_text(collector, expr)
+    if isinstance(expr, ast.Name) and expr.id in bound:
+        value = bound[expr.id]
+        return (value,) if isinstance(value, str) else None
     direct = collector.scope.string_candidates(expr)
     if direct is not None:
         return direct
-    holes = [] if holes is None else holes
 
-    def piece(value: ast.expr | None, conversion: str | None = None) -> str:
-        found = _single(code_texts(collector, value, holes)) if value is not None else None
-        if found is None:
-            if value is not None:
-                holes.append(value)
+    def piece(
+        value: ast.expr | None, conversion: str | None = None, spec: str | None = None
+    ) -> str:
+        found: object
+        if isinstance(value, ast.Name) and value.id in bound:
+            found = bound[value.id]
+        else:
+            found = (
+                _single(_code_texts(collector, value, holes, bound)) if value is not None else None
+            )
+            if found is None:
+                if value is not None:
+                    holes.append(value)
+                return HOLE_NAME
+        text = _convert(found, conversion)
+        if not spec:
+            return text
+        try:
+            return format(text if conversion else found, spec)
+        except (ValueError, TypeError):
             return HOLE_NAME
-        return _convert(found, conversion)
 
     if isinstance(expr, ast.JoinedStr):
         pieces: list[str] = []
         for value in expr.values:
             if isinstance(value, ast.Constant):
                 pieces.append(str(value.value))
-            elif isinstance(value, ast.FormattedValue) and value.format_spec is None:
+            elif isinstance(value, ast.FormattedValue):
                 conversion = chr(value.conversion) if value.conversion != -1 else None
-                pieces.append(piece(value.value, conversion))
+                spec = value.format_spec
+                if spec is None:
+                    pieces.append(piece(value.value, conversion))
+                elif isinstance(spec, ast.JoinedStr) and all(
+                    isinstance(v, ast.Constant) for v in spec.values
+                ):
+                    written = "".join(
+                        str(v.value) for v in spec.values if isinstance(v, ast.Constant)
+                    )
+                    pieces.append(piece(value.value, conversion, written))
+                elif isinstance(value.value, ast.Name) and value.value.id in bound:
+                    pieces.append(HOLE_NAME)  # a computed spec: not known how it formats
+                else:
+                    pieces.append(piece(value.value))
             else:
-                pieces.append(piece(value.value if isinstance(value, ast.FormattedValue) else None))
+                pieces.append(piece(None))
         return ("".join(pieces),)
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
-        left = _single(code_texts(collector, expr.left, holes))
-        right = _single(code_texts(collector, expr.right, holes))
+        left = _single(_code_texts(collector, expr.left, holes, bound))
+        right = _single(_code_texts(collector, expr.right, holes, bound))
         if left is None or right is None:
             return None
         return (left + right,)
     if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Mod):
-        template = _single(code_texts(collector, expr.left, holes))
+        template = _single(_code_texts(collector, expr.left, holes, bound))
         if template is None:
             return None
+        if isinstance(expr.right, ast.Name) and not isinstance(bound.get(expr.right.id, ""), str):
+            return None  # ``"%s" % values``: a tuple is the arguments, not one
         values: list[ast.expr] = (
             list(expr.right.elts) if isinstance(expr.right, ast.Tuple) else [expr.right]
         )
@@ -667,7 +764,7 @@ def code_texts(
         and isinstance(expr.func, ast.Attribute)
         and expr.func.attr == "format"
     ):
-        template = _single(code_texts(collector, expr.func.value, holes))
+        template = _single(_code_texts(collector, expr.func.value, holes, bound))
         if template is None:
             return None
         return (_fill_template(template, expr, piece),)

@@ -27,6 +27,7 @@ from diffcone.indexer.definitions import (
     _passive_decorator,
     _property_accessors,
     _rebound_names,
+    parametrized_values,
 )
 from diffcone.indexer.facts import _FuncParams, _Output
 from diffcone.indexer.literals import NESTED_SCOPES, _LocalBindings
@@ -816,6 +817,8 @@ class Resolver(FirstPass):
                 fscope.method = symbol_id
                 fscope.self_is_class = _has_decorator(node, "classmethod")
         fscope.rebound = frozenset(_rebound_names(node))
+        if node.decorator_list:
+            fscope.param_values = parametrized_values(node, scope, header.literal_bound)
         positional = [a.arg for a in node.args.posonlyargs + node.args.args]
         fscope.params = {name: i for i, name in enumerate(positional)}
         fscope.params.update({a.arg: None for a in node.args.kwonlyargs})

@@ -157,6 +157,11 @@ class Scope:
     # Names the function body rebinds: a rebound parameter no longer holds
     # what the call sites passed. Only in the function's own scope.
     rebound: frozenset[str] = frozenset()
+    # The literal values ``@pytest.mark.parametrize`` on the function gives
+    # its parameters (definitions.parametrized_values); only in the
+    # function's own scope. A template field one fills is read once per
+    # value (scripts.code_texts).
+    param_values: dict[str, tuple[object, ...]] = field(default_factory=dict)
     # The bound method whose own scope this is (not a nested scope's).
     method: str = ""
     # ``self_name`` names the class (``cls`` of a classmethod), not an instance.
