@@ -699,8 +699,24 @@ module's globals (no namespace argument, `globals()`, a `__dict__`) it
 also keeps the dynamic reference bounded by the module's import closure,
 while a dict display of its own reaches only what the text imports. A
 template field one parameter fills is read per call site with the literal
-the site passes (`exec(f"def fn():\n    {body}")`); text a parameter
-gives is bounded by what the call sites pass; text read from a file or
+the site passes (`exec(f"def fn():\n    {body}")`). A field (or the whole
+text) the test's own parameter fills is read once per value when
+`@pytest.mark.parametrize` on the function gives it literal values
+(`definitions.parametrized_values`, read in pass 2 from the decorator AST
+of the function being resolved; `Scope.param_values`): strings, numbers,
+`None`, bytes and tuples/lists of them, as the cell of a list/tuple
+display row or of `pytest.param(...)`, formatted as Python would (`str`,
+`!r`/`%r`, a literal format spec), at most 64 texts. It applies only when
+every decorator of the function is a pytest mark (another may wrap it and
+call it with other arguments), the parameter is not rebound and not
+`indirect`, and every row is read; marks on the class or in a module's
+`pytestmark` are not read, since they do not travel with the function (a
+test imported into another module is collected under that module's
+`pytestmark`, and before pytest 7.2 a subclass's `pytestmark` replaced
+its base's). A direct parametrization overrides a fixture of the same name
+and a second one of the name is a collection error, so the test receives
+one of the values read. Anything else keeps the field a hole. Text a
+parameter gives is bounded by what the call sites pass; text read from a file or
 built otherwise at run time is unbounded (`runs text built at run time`:
 static planning bounds nothing, evidence mode treats the site as an
 `exec()` of text written out, since the record holds what the text ran

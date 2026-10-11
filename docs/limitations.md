@@ -158,7 +158,11 @@ everything.
     literals) is read as code: what it imports and calls counts. Text
     built at run time or read from a file can import anything, so the test
     is selected for any change. Text passed in as a helper's argument is
-    read at each call site.
+    read at each call site. A template filled by the test's own argument
+    is read once per value when `@pytest.mark.parametrize` on the test
+    function lists literal values for it (and the test has no decorator
+    other than pytest marks); values from a fixture, `indirect=True`, or a
+    parametrize on the class or in `pytestmark` count as built at run time.
 
 **Tests that use `pytester`.**
 :   A test using `pytester` or `testdir` runs a pytest session of its own,

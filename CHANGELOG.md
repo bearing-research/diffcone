@@ -67,6 +67,13 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   object can be: modules passed around, obtained by name or named in a
   string, and test modules and conftests, which pytest hands out. Methods
   still match whatever the receiver.
+- A text a test writes or runs (`pytester.makepyfile`, `exec`, `-c` code)
+  whose template field the test's own parameter fills, when
+  `@pytest.mark.parametrize` on the test gives that parameter literal
+  values, is read once per value instead of counting as text built at run
+  time, which any change reached. A value that is not a literal, an
+  `indirect` parameter, another decorator on the test, or a parametrize
+  on its class or in `pytestmark` keeps the old rule.
 - Indexing a very long function is no longer quadratic in its calls.
 
 ### Fixed

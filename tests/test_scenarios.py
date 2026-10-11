@@ -4332,3 +4332,167 @@ def test_a_lazy_table_that_can_change_stays_unbounded(repo, entry, mutation):
     )
     plan = repo.plan(base, head, [], discover_runners=["pytest"])
     assert "tests/test_t.py::test_thing" in selected(plan)
+
+
+# A text a test writes or runs whose template field the test's own
+# parameter fills, which ``@pytest.mark.parametrize`` on the test gives
+# literal values: the text is read once per value rather than counted as
+# built at run time (pytest-asyncio's ``pytester.makepyfile(f"...")``).
+PARAM_BASE = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def value():\n    return 1\n\n\ndef other():\n    return 10\n",
+    "pkg/unrelated.py": "def u():\n    return 0\n",
+    "tests/__init__.py": "",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+}
+PARAM_OPS_VALUE = "def value():\n    return 2\n\n\ndef other():\n    return 10\n"
+PARAM_OPS_OTHER = "def value():\n    return 1\n\n\ndef other():\n    return 11\n"
+PARAM_UNRELATED = {"pkg/unrelated.py": "def u():\n    return 1\n"}
+PARAM_T = py_target("tests/test_p.py::test_p", "tests.test_p.test_p")
+PARAM_NOOP = asv_target("bench_noop.time_noop", "benchmarks.bench_noop.time_noop")
+PARAM_TESTS = {
+    # The census case: the hole is a mark's argument in the inline module.
+    "pytester-mark-argument": (
+        "import pytest\nfrom textwrap import dedent\n\n\n"
+        '@pytest.mark.parametrize("loop_scope", ("function", "module"))\n'
+        "def test_p(pytester, loop_scope):\n"
+        "    pytester.makepyfile(dedent(f'''\n"
+        "        import pytest\n        from pkg import ops\n\n"
+        '        @pytest.mark.foo(scope="{loop_scope}")\n'
+        "        def test_inner():\n            assert ops.value() == 1\n"
+        "        '''))\n"
+        "    pytester.runpytest().assert_outcomes(passed=1)\n"
+    ),
+    # The hole names the function the text calls; ``other`` is no value.
+    "exec-names-the-function": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('fn', ['value'])\n"
+        "def test_p(fn):\n    ns = {}\n"
+        "    exec(f'from pkg import ops\\nres = ops.{fn}()', ns)\n"
+    ),
+    # Several names, ``pytest.param`` rows, ``!r`` and another mark.
+    "multi-name-rows": (
+        "import pytest\n\n\n"
+        "@pytest.mark.slow\n"
+        "@pytest.mark.parametrize(('mod', 'n'), [pytest.param('pkg.ops', 1, id='a'), "
+        "('pkg.ops', 2)])\n"
+        "def test_p(mod, n):\n    ns = {}\n"
+        "    exec(f'res = __import__({mod!r}).ops.value() + {n}', ns)\n"
+    ),
+    # The parameter is the whole text.
+    "whole-text": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('src', ['from pkg import ops\\nres = ops.value()'])\n"
+        "def test_p(src):\n    exec(src, {})\n"
+    ),
+    # A piece of a concatenation.
+    "concatenated": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('fn', ['value'])\n"
+        "def test_p(fn):\n    exec('from pkg import ops\\nres = ops.' + fn + '()', {})\n"
+    ),
+    # A value holding ``__import__(...)``: the import it makes counts.
+    "value-holds-an-import": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('expr', ['__import__(\"pkg.ops\").ops.value()'])\n"
+        "def test_p(expr):\n    assert eval(f'{expr} + 0') == 1\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("text", list(PARAM_TESTS.values()), ids=list(PARAM_TESTS))
+def test_a_parametrized_field_is_read_once_per_value(repo, text):
+    base = repo.commit({**PARAM_BASE, "tests/test_p.py": text})
+    targets = [PARAM_T, PARAM_NOOP]
+    # A change the substituted text cannot reach selects nothing ...
+    plan = repo.plan(base, repo.commit(PARAM_UNRELATED), targets)
+    assert selected(plan) == set()
+    assert unselected(plan) == {PARAM_T.runner_id, PARAM_NOOP.runner_id}
+    # ... nor does one to a function no value names ...
+    plan = repo.plan(base, repo.commit({"pkg/ops.py": PARAM_OPS_OTHER}), targets)
+    assert selected(plan) == set()
+    # ... and one to what each text calls reaches the test, by its edge.
+    plan = repo.plan(base, repo.commit({"pkg/ops.py": PARAM_OPS_VALUE}), targets)
+    assert selected(plan) == {PARAM_T.runner_id}
+    assert rules(plan, PARAM_T.runner_id) == {"dependency"}
+
+
+def test_every_parametrized_value_makes_a_text(repo):
+    """Two values make two texts: a change to what either calls reaches
+    the test."""
+    text = (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('fn', ('value', 'other'))\n"
+        "def test_p(fn):\n    ns = {}\n"
+        "    exec(f'from pkg import ops\\nres = ops.{fn}()', ns)\n"
+    )
+    base = repo.commit({**PARAM_BASE, "tests/test_p.py": text})
+    targets = [PARAM_T, PARAM_NOOP]
+    for change in (PARAM_OPS_VALUE, PARAM_OPS_OTHER):
+        plan = repo.plan(base, repo.commit({"pkg/ops.py": change}), targets)
+        assert selected(plan) == {PARAM_T.runner_id}
+        assert rules(plan, PARAM_T.runner_id) == {"dependency"}
+
+
+EXEC_SCOPE = "    exec(f'import pkg.ops\\nx = \"{scope}\"')\n"
+PARAM_UNBOUNDED = {
+    "value-not-literal": (
+        "import pytest\n\nSCOPES = tuple(s for s in ('function', 'module'))\n\n\n"
+        f"@pytest.mark.parametrize('scope', SCOPES)\ndef test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "one-value-a-call": (
+        "import pytest\n\n\n"
+        f"@pytest.mark.parametrize('scope', ['function', str(1)])\ndef test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "a-set-whose-order-varies": (
+        "import pytest\n\n\n"
+        f"@pytest.mark.parametrize('scope', [{{'a', 'b'}}])\ndef test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "indirect": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('scope', ['function'], indirect=True)\n"
+        f"def test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "indirect-by-name": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('scope', ['function'], indirect=['scope'])\n"
+        f"def test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "another-decorator-wraps-it": (
+        "import functools\nimport pytest\n\n\n"
+        "def swap(f):\n    @functools.wraps(f)\n"
+        "    def run(*a, **k):\n        return f(scope='anything')\n    return run\n\n\n"
+        "@swap\n@pytest.mark.parametrize('scope', ['function'])\n"
+        f"def test_p(scope):\n{EXEC_SCOPE}"
+    ),
+    "rebound-in-the-body": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('scope', ['function'])\n"
+        f"def test_p(scope):\n    scope = input()\n{EXEC_SCOPE}"
+    ),
+    "class-mark-only": (
+        "import pytest\n\n\n"
+        "@pytest.mark.parametrize('scope', ['function'])\n"
+        "class TestP:\n"
+        "    def test_p(self, scope):\n    " + EXEC_SCOPE
+    ),
+    "module-pytestmark-only": (
+        "import pytest\n\npytestmark = pytest.mark.parametrize('scope', ['function'])\n\n\n"
+        f"def test_p(scope):\n{EXEC_SCOPE}"
+    ),
+}
+
+
+@pytest.mark.parametrize("text", list(PARAM_UNBOUNDED.values()), ids=list(PARAM_UNBOUNDED))
+def test_a_field_parametrize_does_not_bound_stays_built_at_run_time(repo, text):
+    """A value that is not a literal, an ``indirect`` argument, a decorator
+    that may call the test with something else, a rebound parameter, or a
+    mark not on the function itself (a class's or a module's ``pytestmark``
+    does not travel with the function): the text can import anything."""
+    base = repo.commit({**PARAM_BASE, "tests/test_p.py": text})
+    entry = "tests.test_p.TestP.test_p" if "class TestP" in text else "tests.test_p.test_p"
+    target = py_target("tests/test_p.py::test_p", entry)
+    plan = repo.plan(base, repo.commit(PARAM_UNRELATED), [target, PARAM_NOOP])
+    assert selected(plan) == {target.runner_id}
+    assert rules(plan, target.runner_id) == {"dynamic_reference"}

@@ -436,6 +436,142 @@ def _fixture_scope(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return found
 
 
+_PARAMETRIZE = "pytest.mark.parametrize"
+
+
+def parametrized_values(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+) -> dict[str, tuple[object, ...]]:
+    """The values ``@pytest.mark.parametrize`` written on the function
+    itself gives each of its parameters, when every value is a literal
+    (``_plain_literal``): parameter -> the values, in order. pytest hands the
+    test exactly one of them (a direct parametrization overrides a fixture
+    of the same name; a second parametrization of the name, from a mark or
+    ``pytest_generate_tests``, is a collection error).
+
+    Read only when every decorator of the function is a pytest mark (any
+    other may wrap the function and call it with something else), and only
+    for a parameter whose every row is read: ``argnames`` a literal (a
+    comma-separated string or a list/tuple of strings), ``argvalues`` a
+    list/tuple display of rows (a value, a list/tuple display of one value
+    per name, or ``pytest.param(...)``), not ``indirect`` (where the value
+    goes to a fixture). Marks of a class or of ``pytestmark`` are not read:
+    they do not travel with the function (a test imported into another
+    module is collected under that module's ``pytestmark``; a subclass's
+    ``pytestmark`` replaced its base's before pytest 7.2)."""
+    found: dict[str, list[object]] = {}
+    unread: set[str] = set()
+    for decorator in node.decorator_list:
+        func = decorator.func if isinstance(decorator, ast.Call) else decorator
+        names = _canonical_names(func, scope, shadowed)
+        if not names or not all(name.startswith("pytest.mark.") for name in names):
+            return {}
+        if names != {_PARAMETRIZE} or not isinstance(decorator, ast.Call):
+            continue
+        columns = _parametrize_columns(decorator, scope, shadowed)
+        if columns is None:
+            return {}  # which parameters it names is not known
+        for name, values in columns.items():
+            if values is None:
+                unread.add(name)
+            else:
+                found.setdefault(name, []).extend(values)
+    return {name: tuple(values) for name, values in found.items() if name not in unread}
+
+
+def _parametrize_columns(
+    call: ast.Call, scope: ModuleScope, shadowed: Collection[str]
+) -> dict[str, list[object] | None] | None:
+    """Each name a ``parametrize(argnames, argvalues, ...)`` call names ->
+    the literal values it gives that name, or None for a name whose values
+    are not all read; None when the names themselves are not known."""
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(
+        k.arg is None for k in call.keywords
+    ):
+        return None
+    keywords = {k.arg: k.value for k in call.keywords}
+    args = list(call.args)
+    argnames = args[0] if args else keywords.get("argnames")
+    argvalues = args[1] if len(args) > 1 else keywords.get("argvalues")
+    indirect = args[2] if len(args) > 2 else keywords.get("indirect")
+    if isinstance(argnames, ast.Constant) and isinstance(argnames.value, str):
+        names = [n.strip() for n in argnames.value.split(",") if n.strip()]
+        single = len(names) == 1  # each row is the value itself
+    elif (listed := _display_strings(argnames)) is not None:
+        names = listed
+        single = False
+    else:
+        return None
+    columns: dict[str, list[object] | None] = {name: [] for name in names}
+    rows = argvalues.elts if isinstance(argvalues, (ast.List, ast.Tuple)) else None
+    if rows is None or not rows:
+        return dict.fromkeys(names)
+    if indirect is not None and not (
+        isinstance(indirect, ast.Constant) and indirect.value is False
+    ):
+        fixtures = _display_strings(indirect)
+        if fixtures is None:
+            return dict.fromkeys(names)  # ``indirect=True``, or not known which
+        for name in fixtures:
+            if name in columns:
+                columns[name] = None  # handed to a fixture of that name
+    for row in rows:
+        cells: list[ast.expr] | None
+        if isinstance(row, ast.Call) and _canonical_names(row.func, scope, shadowed) == {
+            "pytest.param"
+        }:
+            cells = list(row.args)
+        elif single:
+            cells = [row]
+        elif isinstance(row, (ast.List, ast.Tuple)):
+            cells = list(row.elts)
+        else:
+            cells = None
+        if (
+            cells is None
+            or len(cells) != len(names)
+            or any(isinstance(c, ast.Starred) for c in cells)
+        ):
+            return dict.fromkeys(names)
+        for name, cell in zip(names, cells, strict=True):
+            column = columns[name]
+            if column is None:
+                continue
+            try:
+                value = ast.literal_eval(cell)
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+                columns[name] = None
+                continue
+            if _plain_literal(value):
+                column.append(value)
+            else:
+                columns[name] = None
+    return columns
+
+
+def _display_strings(node: ast.expr | None) -> list[str] | None:
+    """The strings of a list or tuple display of string literals."""
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return None
+    out: list[str] = []
+    for e in node.elts:
+        if not (isinstance(e, ast.Constant) and isinstance(e.value, str)):
+            return None
+        out.append(e.value)
+    return out
+
+
+def _plain_literal(value: object) -> bool:
+    """A string, bytes, number, bool or None, or a tuple or list of them:
+    a value whose ``str`` and ``repr`` are the same in every process (not a
+    set, whose order follows the hash seed)."""
+    if isinstance(value, (tuple, list)):
+        return all(_plain_literal(v) for v in value)
+    return value is None or isinstance(value, (str, bytes, int, float, complex))
+
+
 def _canonical_names(
     node: ast.expr,
     scope: ModuleScope,
