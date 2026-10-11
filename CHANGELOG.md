@@ -390,6 +390,14 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Running, check and validate
 
+- `validate` and `corpus` reported tests outside the target list as
+  misses even when the plan said discovery was incomplete (it exits 3,
+  and `run` refuses it). They are now listed as "outside the target list"
+  and don't fail the check, and coverage recall is measured over the
+  targets. When discovery claims to be complete, such a test is still a
+  miss, labelled `MISSED (not a target)`. The JSON gains
+  `discovery_incomplete`, `outside_targets` and a `target` flag on each
+  record; `counts.targets` now counts targets only.
 - `diffcone check` decided "already failing at the baseline" per test
   function, so a parametrized case that failed at the baseline excused a
   new failure of another case: a miss reported as clean. Cases are now
