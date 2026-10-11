@@ -472,15 +472,33 @@ Further rules (pre-release audit, round 2):
   `sys.meta_path`, `sys.path_hooks`, `sys.modules`, also through `from sys
   import path` or a name bound to one; `site.addsitedir`, `os.chdir`):
   then it is unbounded, as code built at run time is. A command
-  whose first item is the interpreter (a list starting with
-  `sys.executable` or a `python` literal, an f-string starting with
-  `sys.executable`, a string a shell-running call is given that starts
-  with `python`) whose program the analysis cannot name (a path or module
-  from elsewhere, `-c` code built at run time, standard input, `*args`, a
-  directory given to `pytest`/`coverage`) is an unbounded dynamic reference
-  (`starts a Python program it builds at run time`). A `-m` name that is a
-  parameter is bounded by the call sites' literals, as `import_module` of
-  one is. A `.py` file under the roots that no module name maps to
+  with the interpreter in it is one: the interpreter is the first item that
+  is `sys.executable` or a `python` literal after launcher words (`env`,
+  `VAR=x`, `uv run`, `poetry run`, `timeout 30`, their options, `--`), or a
+  name or call that is no literal when `-m`, `-c` or a `.py` path follows
+  it (`os.environ.get("PYTHON", sys.executable)`, a launcher held in a
+  name; audit round 5, R8); the positional arguments of
+  `asyncio.create_subprocess_exec`, `os.execl*`/`os.spawnl*` and
+  `pytester.run` are a command too, and so is an f-string or a `+` chain of
+  strings holding `sys.executable`, or a string a shell-running call is
+  given that holds `python`, each after such prefixes. One whose program
+  the analysis cannot name (a path or module from elsewhere, `-c` code
+  built at run time, standard input, `*args`, a directory given to
+  `pytest`/`coverage`) is an unbounded dynamic reference (`starts a Python
+  program it builds at run time`). A test file a test runner is given
+  (`-m pytest tests/x.py`, a node id, `-m unittest tests.cases`,
+  `pytest.main([...])` with a list written out, `unittest.main(module=
+  ...)`, `loadTestsFromName(s)`, `coverage run -m pytest ...`, a shell
+  line) runs whole: an `imports` edge to the module and a `references`
+  edge (`run as tests`) to every symbol in it, and for pytest to every
+  symbol of each `conftest.py` from its directory outward, since the
+  file's tests, fixtures and conftests run, not only its import-time code
+  (R14); a directory, `unittest discover`, `pytest.main()` reading
+  `sys.argv`, `doctest.testfile` or a bare word the runner would collect
+  from is unbounded; `coverage`'s other subcommands run nothing. A `-m`
+  name that is a parameter is bounded by the call sites' literals, as
+  `import_module` of one is. A `.py` file under the roots that no module
+  name maps to
   (`scripts/gen-data.py`) is not read; a symbol naming one is an unbounded
   dynamic reference and is seeded when the file changes
   (`SourceIndex.scripts`, `script_refs`), so a changed script nothing names
@@ -664,7 +682,28 @@ name). A literal code string is read as the code it is. `exec`/`eval`
 given a namespace of its own (`exec(code, m.__dict__)`, `exec(code, {})`)
 runs there instead: that argument counts where it stands (a module's
 `__dict__` handed on is the module written to, `globals()` this one's
-namespace), and this module's namespace is not reached. A store into a
+namespace), and this module's namespace is not reached.
+
+Pass 2 reads the text too (audit round 5, R12). Text written out -- a
+literal, a local bound once to one, a module-level constant,
+`textwrap.dedent`/`strip`/`compile()` of one, a concatenation, an
+f-string or a literal template's `.format`/`%` whose fields literal values
+fill -- is read as the program it is (`scripts.code_edges`, as `-c` code
+is): an import of each in-scope module it imports and a reference to each
+name it reaches through those imports, unbounded when it imports or runs
+by a name it computes or changes where imports look; run with this
+module's globals (no namespace argument, `globals()`, a `__dict__`) it
+also keeps the dynamic reference bounded by the module's import closure,
+while a dict display of its own reaches only what the text imports. A
+template field one parameter fills is read per call site with the literal
+the site passes (`exec(f"def fn():\n    {body}")`); text a parameter
+gives is bounded by what the call sites pass; text read from a file or
+built otherwise at run time is unbounded (`runs text built at run time`:
+static planning bounds nothing, evidence mode treats the site as an
+`exec()` of text written out, since the record holds what the text ran
+and the recorder flags a test that ran text no file holds). `timeit`'s
+statements and setup, `code.InteractiveInterpreter().runsource` and
+`pytester`'s texts are read the same way. A store into a
 module's namespace by a literal key (`m.__dict__["T"] = v`,
 `vars(m)["T"] = v`) rebinds that name, as `m.T = v` does. A module named
 at run time by a name nothing bounds (`sys.modules[name]`,
@@ -1708,6 +1747,16 @@ Further rules (pre-release audit, round 2):
   the subclass.
 * `request.getfixturevalue` with a non-literal argument requests every
   fixture visible from the test (`*`).
+* A test (or a fixture it uses) requesting `pytester` or `testdir` runs a
+  pytest session of its own with the project's registered plugins loaded
+  (`pytest11` entry points, `-p` in addopts, `PYTEST_PLUGINS`,
+  `pytest_plugins`), and its inline test code requests their fixtures by
+  names only the text holds: every fixture of those plugin modules is a
+  lifecycle dependency of the test (`PYTESTER_FIXTURES`; the plugin
+  modules and hooks are dependencies of every test already). What the
+  inline texts import, the `-p NAME` they pass and the `pytest_plugins`
+  they write are the indexer's (audit round 5, R13; `_pytester_call` in
+  indexer/references.py).
 * Paths among the run's arguments (after `--`; since round 3 among all of
   pytest's arguments, below) are pytest's initial paths
   and replace `testpaths`. A token counts as one only when it names a file
@@ -1946,12 +1995,50 @@ gains an edge to each of its members: whoever holds one may read any
 attribute off it by a name nothing resolves, so *referring to that class
 depends on its members*, not only on its structure.
 
+The same holds for an instance handed to code the analysis does not
+follow into (audit round 5, R19): a library's function (`json.dump(x,
+w)`, `csv.writer(w)`, `logging.StreamHandler(w)`, `shutil.copyfileobj(r,
+...)`, `contextlib.closing(r)`), a builtin that reads more than dunders
+(`dict(x)` and `**x` call `keys`, `vars(x)`; any keyword argument, as
+`print(file=w)` writes to it), a method on a receiver of unknown type
+(`items.append(C())`), a class with no in-scope constructor, an
+attribute store on an object other than `self` (`handler.stream = W()`).
+Such code calls plain-named methods on what it is handed, so the class
+(of `C()`, `C` itself, a local bound once to one, or a factory's result)
+joins `escaped_classes` as a call site's argument does
+(`references._handed_instances`; `SourceIndex.escaped_classes` is the
+union). A builtin reading only dunders (`len`, `str`, `iter`, `sorted`,
+`isinstance`) and a class in a type position (`cast(C, x)`,
+`TypeVar(bound=C)`) hand nothing on.
+
+Names in strings the standard library reads off an object are read by
+name (R18): `operator.attrgetter("a.b")` and `methodcaller("m")` record a
+name-bounded reference to each name, as `getattr(x, "a")` on an unknown
+receiver does; a `str.format`/`format_map`/`string.Formatter().format`
+template written out records each attribute its fields read (`{0.v}`,
+`{x.a.b}`); a template or name that is not written out is bounded by the
+literals the call sites pass for a parameter (or what `__init__` binds an
+attribute to), else it is a dynamic reference, unless the arguments are
+all literals (nothing whose attributes matter) or the receiver is known
+not to be a string (`self.formatter` bound to an instance or a factory's
+result). A `match` class pattern (R17) is an `isinstance` check that reads
+the subject's attributes by name: each keyword pattern's, and for
+positional patterns the names `__match_args__` lists in the class or an
+in-scope base (`ClassScope.match_args`, part of the module facts); when
+it is not written out there (a dataclass, a base outside the roots), every
+member of the class is read; on a class not in scope the names are
+bounded like any unresolved attribute.
+
 A module handed to other code is such an object too (`read(ops, names)`
 reading `getattr(obj, names[0])`; audit round 3, W9). The modules a use
 hands on (`indexer/uses.py`: passed, bound to a name, returned, stored),
 with their submodules, are `escaped_modules`, and each reference to one as
 a value gains an edge to each of its members (`attribute of a module passed
 to other code`): the code that refers to it depends on everything in it.
+A module obtained by a literal name and held (`import_module("pkg.sub")`
+used as a value, `__import__("pkg.sub")` yielding `pkg`, an attribute
+chain off either, a local bound once to one) is referred to as a value
+too, so handing it on works as handing on an import name does (R25).
 The edges start at the referrer, not at the module, since impact on a
 module reaches all its importers. A module only read from (`ops.add(1, 2)`)
 does not count. What the module's imports bind is as reachable through it

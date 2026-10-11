@@ -89,7 +89,11 @@ class _CallSite:
 class _ParamDynamic:
     function: str
     param: str  # a parameter name, or an instance attribute name with self_class
-    kind: str  # "getattr" | "import" | "script"
+    # "getattr" | "import" | "script" | "code" (text run as code) | "format"
+    # (a str.format template) | "runner" (a pytester session's arguments) |
+    # "template" (code text with one field the parameter fills; ``base``
+    # holds the text, scripts.HOLE_NAME standing for the field)
+    kind: str
     base: list[str] | None  # receiver chain for getattr, when it is a name chain
     scope: Scope
     detail: str
@@ -190,6 +194,13 @@ class _Output:
     # (symbol, path suffix) of each ``.py`` file a string names
     # (diffcone.indexer.scripts), matched against the files after pass 2.
     script_paths: set[tuple[str, str]] = field(default_factory=set)
+    # (symbol, path suffix or directory, runner) of each test file a test
+    # runner is given (``scripts.test_file``): run whole after pass 2.
+    test_runs: set[tuple[str, str, str]] = field(default_factory=set)
+    # (kind, id): a class whose instance or a function whose result is
+    # handed to code the analysis does not follow (``references.py``,
+    # ``_handed_on``); the classes join ``SourceIndex.escaped_classes``.
+    handed: set[tuple[str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -231,6 +242,8 @@ class _Output:
         self.handed |= other.handed
         self.memoized |= other.memoized
         self.script_paths |= other.script_paths
+        self.test_runs |= other.test_runs
+        self.handed |= other.handed
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -334,6 +347,8 @@ def _output_to_dict(out: _Output) -> dict:
         "held_passes": sorted(list(h) for h in out.held_passes),
         "memoized": sorted(out.memoized),
         "script_paths": sorted(list(p) for p in out.script_paths),
+        "test_runs": sorted(list(t) for t in out.test_runs),
+        "handed": sorted(list(h) for h in out.handed),
     }
 
 
@@ -410,6 +425,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.held_passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["held_passes"]}
     out.memoized = set(data["memoized"])
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
+    out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
+    out.handed = {(a, b) for a, b in data["handed"]}
     return out
 
 
@@ -456,6 +473,7 @@ def _facts_to_dict(
                 "base_chains": c.base_chains,
                 "base_names": c.base_names,
                 "plain": c.plain,
+                "match_args": list(c.match_args) if c.match_args is not None else None,
             }
             for c in classes
         ],
@@ -483,7 +501,10 @@ def _facts_to_dict(
             ]
             for s in symbols
         ],
-        [[c["id"], c["enclosing"], c["members"], c["bindings"]] for c in record["classes"]],
+        [
+            [c["id"], c["enclosing"], c["members"], c["bindings"], c["match_args"]]
+            for c in record["classes"]
+        ],
     ]
     record["env"] = _digest(json.dumps(env, sort_keys=True))
     return record

@@ -416,7 +416,12 @@ def test_rec5_text_run_in_the_test_process_flags(repo, body):
     files = {**BASE, "pkg/const.py": CONST, "docs/usage.txt": DOC_CONST, "tests/test_docs.py": test}
     changed, other = _plans(repo, files, {"pkg/const.py": "CONST = 2\n"}, OTHER_CHANGED)
     assert selected(changed) == {"tests/test_docs.py::test_docs"}
-    assert rules(changed, "tests/test_docs.py::test_docs") == {"text_code"}
+    # ``timeit``'s text is also read statically since audit round 5 (R12):
+    # the test is a reader of ``CONST`` beside running text no file holds.
+    assert rules(changed, "tests/test_docs.py::test_docs") in (
+        {"text_code"},
+        {"text_code", "executed_reader"},
+    )
     # Always: the text may read any name.
     assert selected(other) == {"tests/test_docs.py::test_docs", OTHER_ID}
 

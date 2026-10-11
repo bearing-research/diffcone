@@ -324,6 +324,21 @@ class Resolver(FirstPass):
             return Resolved(enclosing.id, detail=f"attribute:{parts[0]}")
         return self.resolve_chain(parts, Scope(module=cscope.module))
 
+    def _class_members(self, classes: set[str]) -> set[str]:
+        """Every symbol inside those classes and their in-scope subclasses: an
+        instance of one may be an instance of the other."""
+        found: set[str] = set()
+        stack = list(classes)
+        for cls in classes:
+            stack.extend(self._descendants.get(cls, ()))
+        while stack:
+            cscope = self.class_scopes.get(stack.pop())
+            for member in cscope.members.values() if cscope is not None else ():
+                if member not in found:
+                    found.add(member)
+                    stack.append(member)  # a nested class's members are inside too
+        return found
+
     def _mro(self, class_id: str) -> list[str]:
         """Linearisation over in-scope classes: the class, then its bases
         depth-first left to right keeping the last occurrence of a repeated

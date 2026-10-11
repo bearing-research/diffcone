@@ -223,6 +223,13 @@ class Indexer(DynamicBounds):
             ]
             if cls is not None
         }
+        # Handed to code the analysis does not follow into (a library, a
+        # receiver of unknown type, ``**x``: references._handed_instances).
+        for kind, held in self._global.handed:
+            if kind == "class":
+                self.index.escaped_classes.add(held)
+            else:
+                self.index.escaped_classes.update(returns.get(held, ()))
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
@@ -470,6 +477,7 @@ class Indexer(DynamicBounds):
                 base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
                 base_names=[list(c) if c is not None else None for c in data["base_names"]],
                 plain=bool(data["plain"]),
+                match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
             )
         edges = {Edge(*e) for e in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):

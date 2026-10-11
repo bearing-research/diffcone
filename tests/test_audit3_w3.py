@@ -160,7 +160,11 @@ def test_w3_a_script_no_module_name_maps_to(repo, script):
 DYNAMIC = {
     "a script path from elsewhere": "subprocess.run([sys.executable, os.environ['SCRIPT']])",
     "a module from elsewhere": "subprocess.run([sys.executable, '-m', os.environ['MOD']])",
-    "code built at run time": "subprocess.run([sys.executable, '-c', 'import ' + NAME])",
+    # ``'import ' + NAME`` is read as the program it is since audit round 5
+    # (R12), so the name must come from elsewhere to be built at run time.
+    "code built at run time": (
+        "subprocess.run([sys.executable, '-c', 'import ' + os.environ['MOD']])"
+    ),
     "standard input": "subprocess.run([sys.executable, '-'], input=CODE)",
     "starred arguments": "subprocess.run([sys.executable, *ARGS])",
     "pytest on a directory": "subprocess.run([sys.executable, '-m', 'pytest', 'tests/sub'])",

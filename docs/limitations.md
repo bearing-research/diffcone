@@ -52,6 +52,17 @@ everything.
     modules its module imports, and in the modules of code that stores
     objects on one of those modules. Some code widens that bound:
 
+    - **Text run as code.** `exec`, `eval`, `timeit` and pytest's
+      `pytester.makepyfile` run text. Text written in the code (a string,
+      a constant, `textwrap.dedent` of one, a template filled with
+      literals) is read as the code it is: what it imports and calls
+      counts. Text built at run time or read from a file can import
+      anything, so the test is affected by any change; a text a helper's
+      parameter supplies is bounded by what the callers pass.
+    - **pytester.** A test using `pytester` or `testdir` runs a pytest
+      session of its own with your project's registered plugins loaded,
+      so it depends on every fixture those plugins define and on what its
+      inline test code imports.
     - **Lookups on a library module.** `getattr(logging, name)` is bounded
       unless your code may store something on that module: directly, by
       handing the module to other code, or by putting an object in
@@ -90,9 +101,23 @@ everything.
       `importlib.util.module_from_spec` counts as the module whose file it
       loads.
     - **Passing a module on.** Code that passes a module to other code
-      (`read(ops, name)`) depends on everything in that module and on what
-      its imports bind (`api.core.TABLE`), as it depends on every member of
-      a class whose instances it passes on.
+      (`read(ops, name)`), whether named by an import or obtained with
+      `importlib.import_module("pkg.sub")`, depends on everything in that
+      module and on what its imports bind (`api.core.TABLE`), as it depends
+      on every member of a class whose instances it passes on.
+    - **Passing an object on.** Code that hands an instance of one of your
+      classes to a library (`json.dump(x, w)`, `csv.writer(w)`,
+      `print(file=w)`, `dict(obj)`, `handler.stream = w`), to a method on
+      an object of unknown type (`items.append(w)`) or to one of your own
+      functions depends on every method of that class: the receiving code
+      may call any of them by name. Builtins that only use dunder methods
+      (`len`, `str`, `iter`, `sorted`) don't count.
+    - **Names in strings.** `operator.attrgetter("a.b")`,
+      `methodcaller("m")`, a format template's fields (`"{0.name}"`) and a
+      `match` class pattern (`case C(x=1)`, `case C(1)` through
+      `__match_args__`) read attributes by name, and are matched like
+      `getattr(x, "a")`. A name or template that isn't written out is
+      bounded by what callers pass, else counts as dynamic.
     - **Replacing modules.** Code that puts an object in `sys.modules` for
       good under a computed name may replace any of your modules, so
       without a recording every test that imports one of them depends on
@@ -101,11 +126,17 @@ everything.
 **Python programs a test starts.**
 :   A test that runs a script or module of your project in a new process
     (`[sys.executable, "scripts/gen.py"]`, `python -m mypkg.tool`,
-    `python -c "import mypkg"`) depends on that script or module, and on
-    what it imports, when the code names it in a string. When the program
-    is built at run time (a path from a variable or the environment, `-c`
-    code assembled from pieces or code that changes `sys.path`, `*args`),
-    the test is affected by any change. So is a test that runs a `.py` file no module name maps to
+    `python -c "import mypkg"`, also after `env X=1`, `uv run` or
+    `timeout 30`, or through `asyncio.create_subprocess_exec`) depends on
+    that script or module, and on what it imports, when the code names it
+    in a string. A test file given to a test runner (`python -m pytest
+    tests/test_x.py`, `pytest.main([...])`, `python -m unittest
+    tests.cases`) runs whole: the test depends on everything in that file
+    and its `conftest.py` files. When the program is built at run time (a
+    path from a variable or the environment, `-c` code assembled from
+    pieces or code that changes `sys.path`, `*args`, a directory or
+    `unittest discover`), the test is affected by any change. So is a test
+    that runs a `.py` file no module name maps to
     (`scripts/gen-data.py`), which isn't analysed. Console scripts your
     project installs and files outside your source roots aren't seen;
     [execution evidence](guides/evidence.md) follows the processes a test
