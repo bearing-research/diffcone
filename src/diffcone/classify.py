@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
+from diffcone.indexer.definitions import INERT_DEF
 from diffcone.model import CLASS, DEFINED_IN, IMPORTS, IMPORTS_NAME, MODULE, SourceIndex, Symbol
 
 ADDED = "added"
@@ -101,6 +102,60 @@ def _is_subsequence(before: tuple[str, ...], after: tuple[str, ...]) -> bool:
     kept its block and its order relative to the others."""
     remaining = iter(after)
     return all(entry in remaining for entry in before)
+
+
+def reordered(before: tuple[str, ...], after: tuple[str, ...]) -> bool:
+    """Whether statements both layouts have (``Symbol.statement_layout``)
+    stand in another order: a reorder of a module's or class's body, a
+    definition change (audit round 5, R6). The statements of ``before`` that
+    an order-preserving matching with ``after`` cannot pair (a longest
+    common subsequence) are deletions, and the unpaired ones of ``after``
+    insertions, carried by their own symbols (or by the body hash, which
+    keeps the order of plain statements among themselves): a reorder is
+    when fewer can be paired than the two have in common. Adjacent inert
+    ``def`` statements (``INERT_DEF``) bind a name each and run nothing:
+    swapping them is no reorder."""
+    if before == after:
+        return False
+    a = _inert_runs_sorted(before)
+    b = _inert_runs_sorted(after)
+    # The common prefix and suffix pair up as they stand.
+    start = 0
+    while start < len(a) and start < len(b) and a[start] == b[start]:
+        start += 1
+    end = 0
+    while end < len(a) - start and end < len(b) - start and a[-1 - end] == b[-1 - end]:
+        end += 1
+    a = a[start : len(a) - end]
+    b = b[start : len(b) - end]
+    common = sum((Counter(a) & Counter(b)).values())
+    return common > 0 and _lcs_length(a, b) < common
+
+
+def _lcs_length(a: list[str], b: list[str]) -> int:
+    if not a or not b:
+        return 0
+    previous = [0] * (len(b) + 1)
+    for x in a:
+        current = [0]
+        for j, y in enumerate(b, 1):
+            current.append(previous[j - 1] + 1 if x == y else max(previous[j], current[j - 1]))
+        previous = current
+    return previous[-1]
+
+
+def _inert_runs_sorted(entries: tuple[str, ...]) -> list[str]:
+    """``entries`` with each run of consecutive inert defs sorted."""
+    out: list[str] = []
+    run: list[str] = []
+    for entry in entries:
+        if entry.startswith(INERT_DEF):
+            run.append(entry)
+            continue
+        out += sorted(run)
+        run = []
+        out.append(entry)
+    return out + sorted(run)
 
 
 def _runtime_imports(symbol: Symbol, modules: set[str]) -> set[str]:
@@ -219,6 +274,14 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
                 kinds.append(IMPORTS_ADDED)
             else:
                 kinds.append(DEFINITION_CHANGED)
+        if (
+            b.kind in (MODULE, CLASS)
+            and DEFINITION_CHANGED not in kinds
+            and reordered(b.statement_layout, h.statement_layout)
+        ):
+            # The statements both have run in another order: what each
+            # sees when it runs differs (R6).
+            kinds.append(DEFINITION_CHANGED)
         if b.annotation_hash != h.annotation_hash and DEFINITION_CHANGED not in kinds:
             deferred = b.deferred_annotations and h.deferred_annotations
             kinds.append(ANNOTATIONS_CHANGED if deferred else DEFINITION_CHANGED)

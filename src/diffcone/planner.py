@@ -50,17 +50,31 @@ Seeds besides the changed symbols themselves:
   (``_store(m + "!")``, ``_store(compute())``), so a variable written in
   place depends on ``calls:`` of its writers, a pseudo-node that every
   caller reaches (_add_caller_effects; ``called_by`` steps).
+* A module a changed symbol newly imports, or no longer imports, runs
+  its import-time code anew, or not at all (_newly_run_modules: an import
+  added to a module, outside its base import closure, or to a function
+  body; the closure of the imported module): what that code or its
+  callees mutate in place or install is seeded as for changed import-time
+  code, and so is a reader of the module or its members whose own imports
+  never reach it (``pkg.sub.f()`` under ``import pkg``: the import binds
+  the submodule on its package). R24.
 * A docstring-only change of a symbol whose decorator may read it
-  (``SourceIndex.doc_decorated``) seeds the symbol and its module; any
-  docstring-only change seeds the symbols that read docstrings of what
-  they reference (``Symbol.reads_docstrings``).
+  (``SourceIndex.doc_decorated``) seeds the symbol and its module, and
+  what the decorator's callees mutate in place; any docstring-only change
+  seeds the symbols that read docstrings of what they reference
+  (``Symbol.reads_docstrings``, docstring_readers), and those reading a
+  docstring off a value they do not name (``getdoc(fn)`` in a helper;
+  ``Symbol.reads_any_docstring``) unless they are decorators (R7).
 * A symbol that runs a changed ``.py`` file no module name maps to
   (``SourceIndex.script_refs``) is seeded.
 * A symbol with a dynamic reference is a pseudo-seed when a change lies in
   its module's import closure, or whatever changed when the reference
   imports or runs code named at run time (model.imports_anything), runs a
-  script that does, or looks a name up on an external module in-scope code
+  script that does, or looks a name up on, or lists (``dir``, ``hasattr``,
+  ``vars``: a reflection site, R11), an external module in-scope code
   writes to.
+* ``dir(mod)`` of an in-scope module depends on its ``__dir__`` (an edge
+  from the listing symbol, detail ``dir()``; R21).
 * After the search, a target whose manifest does not list its entry's
   module reaches that module, which the runner imports.
 
@@ -86,6 +100,8 @@ from diffcone.classify import (
     DELETED,
     DOCSTRING_CHANGED,
     SymbolChange,
+    _import_closures,
+    _runtime_imports,
     classify,
 )
 from diffcone.declarations import FILENAME as DECLARATION_FILE
@@ -126,6 +142,7 @@ from diffcone.model import (
     RUNS_SCRIPT,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
+    UNRESOLVED_MODULE_ATTRIBUTE,
     UNRESOLVED_NAME_MATCH,
     VARIABLE,
     WRITES,
@@ -669,15 +686,59 @@ def _runs_at_import(change: SymbolChange) -> bool:
     return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
 
 
+# docstring_readers: the reader may read any symbol's docstring.
+ANY_DOCSTRING = "*"
+
+
 def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
     """Each symbol whose code reads docstrings (``reads_docstrings``:
     ``f.__doc__``, ``getdoc(cls)``) -> what it may read one of: its own
-    module (``__doc__``) and whatever it refers to. Static and evidence
+    module (``__doc__``), whatever it refers to, and the module of a
+    ``mod.__doc__`` read the resolver could not bind (an unresolved
+    ``module_attribute``); ``ANY_DOCSTRING`` when it reads a docstring off a
+    value its references do not bound (``Symbol.reads_any_docstring``: a
+    parameter, a local, a call's result; R7), unless it is applied as a
+    decorator (``SourceIndex.decorator_symbols``, or the ``__init__``,
+    ``__new__`` or ``__call__`` of a class that is), whose parameter is what
+    it decorates: ``doc_decorated`` covers that read. Static and evidence
     planning both reach such a reader from a docstring-only change."""
     read = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
     for edge in index.edges:
         if edge.source in read and edge.kind != DEFINED_IN:
             read[edge.source].add(edge.target)
+
+    def decorator(reader: str) -> bool:
+        symbol = index.symbols.get(reader)
+        return symbol is not None and (
+            symbol.id in index.decorator_symbols
+            or (
+                symbol.kind == METHOD
+                and symbol.name in ("__init__", "__new__", "__call__")
+                and symbol.container in index.decorator_symbols
+            )
+        )
+
+    imported: dict[str, set[str]] = defaultdict(set)
+    for edge in index.edges:
+        if edge.kind == IMPORTS:
+            imported[edge.source].add(edge.target)
+    for ref in index.unresolved:
+        if ref.symbol in read and ref.name == "__doc__" and ref.kind == UNRESOLVED_MODULE_ATTRIBUTE:
+            # ``pkg.mod.__doc__`` as written, or through an alias (``from pkg
+            # import mod``): one of the modules the reader or its module
+            # imports.
+            chain = ref.detail.removesuffix(".__doc__")
+            if chain in index.modules:
+                read[ref.symbol].add(chain)
+                continue
+            symbol = index.symbols.get(ref.symbol)
+            candidates = imported[ref.symbol] | (
+                imported[symbol.module] if symbol is not None else set()
+            )
+            read[ref.symbol] |= candidates or {ANY_DOCSTRING}
+    for symbol in index.symbols.values():
+        if symbol.reads_any_docstring and symbol.id in read and not decorator(symbol.id):
+            read[symbol.id].add(ANY_DOCSTRING)
     return read
 
 
@@ -710,35 +771,40 @@ def _is_call(edge: Edge) -> bool:
 
 
 def _import_call_effects(
-    graph: _Graph, changes: list[SymbolChange], module_nodes: set[str]
-) -> dict[str, tuple[tuple[Step, ...], str]]:
-    """The state a changed piece of import-time code can now leave
-    different: every variable mutated in place (a ``mutated_by`` edge) by a
-    function the changed code calls, directly or through what that calls.
-    ``X = set_mode("faster")`` leaves ``MODE`` holding something else
-    although ``set_mode`` did not change. Each variable comes with the steps
-    from it to the change and the rule they amount to (a name match on the
-    way makes it ``unresolved_name_match``, a declared edge
-    ``declared_dependency``).
+    graph: _Graph, roots: Iterable[str], module_nodes: set[str]
+) -> dict[str, tuple[tuple[Step, ...], str, int]]:
+    """The state a piece of import-time code that now runs differently (a
+    changed one, or a module newly run or no longer run: ``roots``) can
+    leave different: every variable mutated in place (a ``mutated_by``
+    edge) by a function it calls, directly or through what that calls, and
+    every module something it calls installs an object under (an
+    ``installed`` edge). ``X = set_mode("faster")`` leaves ``MODE`` holding
+    something else although ``set_mode`` did not change. Each comes with
+    the steps from it to the root, the rule they amount to (a name match on
+    the way makes it ``unresolved_name_match``, a declared edge
+    ``declared_dependency``) and the impact mode (CONTENT for a mutated
+    variable, BEHAVIOR for an installed module).
 
-    The changed code's references stand for what it calls: nothing tells a
-    call from a read, and a function's decorators, defaults and body share
-    one symbol, so this over-approximates. A module the code refers to is
-    not entered: referring to it runs none of its code."""
+    The code's references stand for what it calls: nothing tells a call
+    from a read, and a function's decorators, defaults and body share one
+    symbol, so this over-approximates. A module the code refers to is not
+    entered: referring to it runs none of its code."""
     parent: dict[str, tuple[str, Edge, tuple[str, ...]] | None] = {}
     queue: deque[str] = deque()
-    for change in sorted(changes, key=lambda c: c.id):
-        if change.id not in parent:
-            parent[change.id] = None
-            queue.append(change.id)
-    effects: dict[str, tuple[tuple[Step, ...], str]] = {}
+    for root in roots:
+        if root not in parent:
+            parent[root] = None
+            queue.append(root)
+    effects: dict[str, tuple[tuple[Step, ...], str, int]] = {}
     while queue:
         node = queue.popleft()
         if not _is_name_node(node):
             for source, edge, revs in graph.reverse.get(node, ()):
-                if edge_mark(edge) == MUTATED_BY and source not in effects:
+                mark = edge_mark(edge)
+                if mark in _WRITER_MARKS and source not in effects:
                     first = Step(source, node, edge.kind, edge.detail, revs)
-                    effects[source] = _effect_path(first, parent)
+                    steps, rule = _effect_path(first, parent)
+                    effects[source] = (steps, rule, CONTENT if mark == MUTATED_BY else BEHAVIOR)
         if node in module_nodes and parent[node] is not None:
             continue
         for target, edge, revs in graph.forward.get(node, ()):
@@ -746,6 +812,61 @@ def _import_call_effects(
                 parent[target] = (node, edge, revs)
                 queue.append(target)
     return effects
+
+
+# Explanation step from a module to the changed symbol whose import of it
+# runs it anew, or no longer (R24: _newly_run_modules).
+NEWLY_IMPORTED = "newly_imported_by"
+NO_LONGER_IMPORTED = "no_longer_imported_by"
+# From a reader of ``pkg.sub`` to the module ``pkg.sub`` that an import
+# somewhere binds on its package, or no longer does.
+BOUND_ON_PACKAGE = "bound_on_package"
+
+
+def _newly_run_modules(
+    base: SourceIndex, head: SourceIndex, changes: list[SymbolChange]
+) -> dict[str, Step]:
+    """The in-scope modules whose import-time code a changed symbol newly
+    runs, or no longer runs, by importing them (R24): for a module, the
+    import closure of each module its own top-level code imports at head
+    but not at base (``_runtime_imports``: not in function bodies or under
+    ``if TYPE_CHECKING:``), less what its base import closure already ran;
+    for a function or method, the same for each module it imports in its
+    body (an ``imports`` edge) at head only; and the reverse for imports at
+    base only. A symbol in one revision only is its own change and reaches
+    what it imports through it (as ``classify._module_additions_matter``
+    has it). Module -> the step from it to the changed importer. Whatever
+    such a module's import-time code mutates, installs or binds is seen by
+    readers that never import it; ``_import_call_effects`` finds those."""
+    closures = {"base": _import_closures(base), "head": _import_closures(head)}
+    found: dict[str, Step] = {}
+    for change in sorted(changes, key=lambda c: c.id):
+        if change.base is None or change.head is None:
+            continue
+        symbol = change.symbol
+        runs: dict[str, set[str]] = {"base": set(), "head": set()}
+        if symbol.kind == MODULE:
+            runs["base"] = _runtime_imports(change.base, base.modules)
+            runs["head"] = _runtime_imports(change.head, head.modules)
+            own = {label: {symbol.id} for label in runs}
+        else:
+            for label, index in (("base", base), ("head", head)):
+                for edge in index.edges:
+                    if edge.source == change.id and edge.kind == IMPORTS:
+                        runs[label].add(edge.target)
+            own = {label: {symbol.module} for label in runs}
+        for label, other, kind in (
+            ("head", "base", NEWLY_IMPORTED),
+            ("base", "head", NO_LONGER_IMPORTED),
+        ):
+            already: set[str] = set()
+            for module in own[other]:
+                already |= closures[other].get(module, {module})
+            for imported in sorted(runs[label] - runs[other]):
+                for module in sorted(closures[label].get(imported, set()) - already):
+                    if module not in found:
+                        found[module] = Step(module, change.id, kind, "", (label,))
+    return found
 
 
 # ``calls:Y``: Y may now be called differently (see _add_caller_effects).
@@ -1124,6 +1245,9 @@ def plan_from_indexes(
     # symbol of that name: ``name:<n>``.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
     attribute_by_name: dict[str, list[str]] = defaultdict(list)
+    module_nodes = {
+        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
+    }
     runner_only = _runner_only_classes(base, head, discovered, union)
     reachable = _attribute_modules(base, head, targets, known_symbols)
     for symbol_id in sorted(known_symbols):
@@ -1183,6 +1307,29 @@ def plan_from_indexes(
             graph.add(Edge(ref.symbol, node, UNRESOLVED_NAME_MATCH, ref.detail), revs)
         pending_unresolved.append((ref, revs))
 
+    # A listing of an external module in-scope code writes to (``name in
+    # dir(builtins)``, ``hasattr(builtins, name)``, ``vars(builtins)``) finds
+    # what a writer put there as a lookup by name does (R11).
+    for (symbol, detail), revs in sorted(_union(base.reflection, head.reflection).items()):
+        if not detail.endswith(EXTERNAL_WRITTEN):
+            continue
+        key = (symbol, detail)
+        writers = {*base.external_sites.get(key, ()), *head.external_sites.get(key, ())}
+        if writers and writers <= isolated:
+            continue
+        dynamic_symbols.setdefault(symbol, revs)
+        unbounded_dynamic.setdefault(symbol, "written")
+    # ``dir(mod)`` of an in-scope module runs its ``__dir__`` (R21): the
+    # listing depends on it as a lookup depends on ``__getattr__``.
+    listing = {
+        symbol for (symbol, detail) in base.reflection | head.reflection if detail == "dir()"
+    }
+    for edge, revs in sorted(union.items()):
+        if edge.source in listing and edge.kind == REFERENCES and edge.detail == "module":
+            hook = f"{edge.target}.__dir__"
+            if edge.target in module_nodes and hook in known_symbols:
+                graph.add(Edge(edge.source, hook, REFERENCES, "dir()"), revs)
+
     # Targets join the graph as nodes with explicit dependency edges.
     dynamic_deps: dict[str, list[str]] = defaultdict(list)
     # Target -> its entry's module, when the manifest does not list it.
@@ -1218,9 +1365,6 @@ def plan_from_indexes(
                         target=target.node_id,
                     )
                 )
-    module_nodes = {
-        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
-    }
     _add_caller_effects(graph, module_nodes)
     graph.freeze()
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]
@@ -1292,20 +1436,56 @@ def plan_from_indexes(
     # place (``mutated_by`` edges) holds something else, and every reader of
     # it is affected, however it reaches that state; code that only empties
     # or adds to it is not (CONTENT).
-    for node, (steps, rule) in sorted(_import_call_effects(graph, at_import, module_nodes).items()):
-        if node not in mode:
-            mode[node] = CONTENT
+    # A docstring a decorator reads (below) is handed to the decorator at
+    # import as well: what the decorator writes may hold it.
+    documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
+    decorated = documented & (base.doc_decorated | head.doc_decorated)
+    roots = [c.id for c in at_import] + sorted(decorated - {c.id for c in at_import})
+    for node, (steps, rule, effect) in sorted(
+        _import_call_effects(graph, roots, module_nodes).items()
+    ):
+        if effect > mode.get(node, 0):
+            mode[node] = effect
             via[node] = None
             seed_paths[node] = (steps, rule)
             queue.append(node)
+    # A module a changed symbol newly imports (or no longer imports) runs
+    # its import-time code anew (or not at all) for whoever reads what it
+    # leaves behind, importing it or not (R24): what it or its callees
+    # mutate or install, and the name it binds on its package.
+    newly_run = _newly_run_modules(base, head, seeded) if seeds is None else {}
+    for node, (steps, rule, effect) in sorted(
+        _import_call_effects(graph, sorted(newly_run), module_nodes).items()
+    ):
+        if node in newly_run or effect <= mode.get(node, 0):
+            continue
+        mode[node] = effect
+        via[node] = None
+        seed_paths[node] = ((*steps, newly_run[steps[-1].target]), rule)
+        queue.append(node)
+    if newly_run:
+        # ``pkg.sub.f()`` under ``import pkg`` alone finds the submodule only
+        # once something imports it: a reader of such a module, or of its
+        # members, whose own module's imports never reach it depends on
+        # that import.
+        symbol_module = {s.id: s.module for index in (base, head) for s in index.symbols.values()}
+        for edge, revs in sorted(union.items()):
+            if edge.kind != REFERENCES or edge.source in mode:
+                continue
+            module = edge.target if edge.target in module_nodes else symbol_module.get(edge.target)
+            if module is None or module not in newly_run or module in reach.closure_of(edge.source):
+                continue
+            mode[edge.source] = BEHAVIOR
+            via[edge.source] = None
+            first = Step(edge.source, module, BOUND_ON_PACKAGE, edge.detail, revs)
+            seed_paths[edge.source] = ((first, newly_run[module]), RULE_DEPENDENCY)
+            queue.append(edge.source)
     # Whatever else may now call a writer differently reaches what it
     # writes through the ``calls:`` pseudo-nodes (_add_caller_effects).
     # A symbol reading docstrings (``f.__doc__``, ``getdoc(cls)``, its
     # module's ``__doc__``) sees a docstring-only change of what it references.
-    documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
     # A docstring its decorator reads (pandas' ``@doc`` formats it) changes
     # what the decorator does when the module is imported.
-    decorated = documented & (base.doc_decorated | head.doc_decorated)
     for change in seeded:
         if change.id in decorated:
             for node in (change.id, change.symbol.module):
@@ -1320,6 +1500,8 @@ def plan_from_indexes(
     if documented:
         for index in (base, head):
             for reader, referenced in sorted(docstring_readers(index).items()):
+                if ANY_DOCSTRING in referenced:
+                    referenced = referenced | documented
                 if reader not in mode and referenced & documented:
                     mode[reader] = BEHAVIOR
                     via[reader] = None
@@ -1584,16 +1766,24 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     """The isolation assumption (internal/design.md): a test does not depend
     on what an earlier test left behind, so a store into module state made
     by code that runs only inside one test is seen by that test alone. That
-    code, from the targets alone (runner-independent): each target's entry
-    symbol when it is a function or a method (a test, a benchmark: each
-    benchmark runs in a fresh process); each lifecycle dependency that is a
-    function-scoped fixture (``Symbol.fixture_scope``); and, in the target
-    modules and the conftest modules among the lifecycle dependencies, every
-    function or method that is no fixture of a wider scope, has a caller,
-    and is referred to only by such code (to a fixed point). Not isolated:
-    module-level and class-level code (it runs at collection and persists),
-    wider-scoped fixtures, hooks, any symbol defined differently in some
-    revision, and all project code."""
+    code, from the targets alone (runner-independent). The test modules are
+    the modules among the targets' lifecycle dependencies (a discovered
+    target lists its own module, and the conftests that apply to it; a
+    benchmark module). Isolated: each lifecycle dependency that is a
+    function-scoped fixture (``Symbol.fixture_scope``); and, in the test
+    modules, each target's entry symbol when it is a function or a method
+    defined there (a test, a benchmark: each benchmark runs in a fresh
+    process), unittest's per-test ``setUp``/``tearDown``, and every function
+    or method that is no fixture of a wider scope and has a caller, when
+    only isolated code refers to it (to a fixed point; a writer edge is no
+    reference; for an entry or a per-test hook, which the runner calls, a
+    caller is not required). Not isolated: an entry outside the test
+    modules (a doctest's project function, a manifest entry pointing at
+    project code: R23), an entry or hook that module-level code, a
+    wider-scoped fixture or a hook refers to (R26), module-level and
+    class-level code (it runs at collection and persists), wider-scoped
+    fixtures, hooks, any symbol defined differently in some revision, and
+    all project code."""
     indexes = list(indexes)
     defined: dict[str, list[Symbol]] = defaultdict(list)
     for index in indexes:
@@ -1606,27 +1796,25 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
 
     isolated: set[str] = set()
     test_modules: set[str] = set()
+    # Code the runner itself calls per test: isolated without a caller.
+    called_by_runner: set[str] = set()
     for target in targets:
-        # An entry in a module the target names (a lifecycle dependency, or
-        # the file its id starts with): a test or benchmark, not project
-        # code a manifest points at.
-        file = target.runner_id.split("::", 1)[0]
+        modules = {
+            dep
+            for dep in target.lifecycle_dependencies
+            if dep in defined and all(s.kind == MODULE for s in defined[dep])
+        }
+        test_modules |= modules
         if callable_code(target.entry_symbol) and all(
-            s.module in target.lifecycle_dependencies or s.path == file
-            for s in defined[target.entry_symbol]
+            s.module in modules for s in defined[target.entry_symbol]
         ):
-            isolated.add(target.entry_symbol)
-            test_modules.update(s.module for s in defined[target.entry_symbol])
+            called_by_runner.add(target.entry_symbol)
         for dep in target.lifecycle_dependencies:
             found = defined.get(dep, [])
             if found and all(
                 s.kind in (FUNCTION, METHOD) and s.fixture_scope == "function" for s in found
             ):
                 isolated.add(dep)
-            elif found and all(
-                s.kind == MODULE and PurePosixPath(s.path).name == "conftest.py" for s in found
-            ):
-                test_modules.add(dep)
     referrers: dict[str, set[str]] = defaultdict(set)
     for index in indexes:
         for edge in index.edges:
@@ -1645,14 +1833,16 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
             isolated.add(sid)
         elif all(s.fixture_scope == "" for s in found):
             if all(s.name in _PER_TEST_HOOKS and s.kind == METHOD for s in found):
-                isolated.add(sid)
-            else:
-                candidates.append(sid)
+                called_by_runner.add(sid)
+            candidates.append(sid)
     changed = True
     while changed:
         changed = False
         for sid in candidates:
-            if sid not in isolated and referrers.get(sid) and referrers[sid] <= isolated:
+            if sid in isolated:
+                continue
+            callers = referrers.get(sid, set())
+            if (callers or sid in called_by_runner) and callers <= isolated:
                 isolated.add(sid)
                 changed = True
     return frozenset(isolated)

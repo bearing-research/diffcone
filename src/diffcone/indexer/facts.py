@@ -411,6 +411,7 @@ def symbol_from_dict(data: dict) -> Symbol:
     data["line_ranges"] = tuple(tuple(r) for r in data["line_ranges"])
     data["imports"] = tuple(data["imports"])
     data["import_layout"] = tuple(data["import_layout"])
+    data["statement_layout"] = tuple(data["statement_layout"])
     return Symbol(**data)
 
 

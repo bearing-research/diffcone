@@ -143,6 +143,16 @@ class Symbol:
     # or reordering imports changes what runs at import, though the set of
     # bindings is the same: only pure insertions are ``imports_added``.
     import_layout: tuple[str, ...] = ()
+    # Modules and classes: the body's statements in source order, each as
+    # its kind and the names it binds (``assign:X``, ``def:f``, ``import:m``,
+    # ``expr``, ``if``), numbered per repeat (indexer/definitions.py,
+    # statement_layout). No hash holds the order of definitions relative to
+    # the other statements, so the classifier compares these: a reorder of
+    # the statements both revisions have is a definition change (audit
+    # round 5, R6); insertions and deletions are the inserted or deleted
+    # symbol's own change. Consecutive inert ``def`` statements (nothing but
+    # a name bound) are order-free among themselves.
+    statement_layout: tuple[str, ...] = ()
     # Hash of the docstring alone; body_hash excludes it. A docstring-only edit
     # is reported as docstring_changed and carries no impact, except where
     # code runs it: under a non-inert decorator (or a class decorator or
@@ -186,6 +196,14 @@ class Symbol:
     # ``getdoc(obj)``): a docstring change of what it references, or of its
     # module, reaches it.
     reads_docstrings: bool = False
+    # The symbol reads a docstring off a value it does not name at module
+    # level (a parameter, a local, what a call returns: ``getdoc(fn)`` in a
+    # helper, ``obj.__doc__``): any docstring may be what it reads (audit
+    # round 5, R7). False when every read is of its module (``__doc__``), of
+    # a module-level name or an attribute chain off one (``C.__doc__``,
+    # ``pkg.mod.__doc__``), or off ``self``/``cls``, which its references
+    # bound.
+    reads_any_docstring: bool = False
     # Variables: the builtin container kind the initializer builds (``dict``,
     # ``list``, ``set``, ``deque``; "" for anything else). Methods such as
     # ``clear`` on one do the same whatever it holds, so a site that only
@@ -386,6 +404,12 @@ class SourceIndex:
     # ``__doc__`` (pandas' ``@doc``). A docstring-only change of one runs at
     # import; of any other symbol it runs nothing.
     doc_decorated: set[str] = field(default_factory=set)
+    # Functions and classes applied as decorators (``@deco``, ``@deco(...)``,
+    # ``@Deco(...)``) somewhere in the index. A docstring such a one reads
+    # off its parameter is the decorated symbol's, which ``doc_decorated``
+    # covers; the planner does not treat it as reading any docstring (audit
+    # round 5, R7).
+    decorator_symbols: set[str] = field(default_factory=set)
     # The ``.py`` files under the source roots that no module name maps to
     # (``scripts/gen-data.py``): path -> digest of the content. The index
     # does not read them; a symbol naming one (``script_refs``: (symbol,

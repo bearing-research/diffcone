@@ -126,9 +126,34 @@ whitespace, comments and positions never matter.
 | Kind | `body_hash` | `definition_hash` |
 |---|---|---|
 | function/method | body statements | arguments (names, defaults, annotations), decorators, PEP 695/696 type parameters (names, bounds, constraints, defaults), return annotation, sync/async |
-| class | class-level statements excluding member definitions | bases, keywords, decorators, type parameters, **sorted member names** |
+| class | class-level statements excluding member definitions | bases, keywords, decorators, type parameters, **sorted member names**; and, compared apart (`Symbol.statement_layout`, below), the order of the body's statements |
 | variable | the right-hand side plus every module-level statement that mentions the name (it may mutate the value in place: `REGISTRY[k] = v`, `NAMES.append(x)`); those statements' lines are the variable's for coverage | the annotation, hashed apart: a change to it is `definition_changed` and runs at import unless the module defers annotations |
-| module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping, plus their layout: each binding with the blocks it sits in, in order. Only a pure insertion is `imports_added`; moving an import (under `if TYPE_CHECKING:`, into an `except`) or reordering imports is a definition change |
+| module | top-level statements excluding definitions, imports and variable symbols (an assignment rebinding a `def` or `class` name, `helper = 3`, is not a variable symbol and stays in) | the set of import bindings (`import a as b`, `from m import n`), independent of grouping, plus their layout: each binding with the blocks it sits in, in order. Only a pure insertion is `imports_added`; moving an import (under `if TYPE_CHECKING:`, into an `except`) or reordering imports is a definition change; and, compared apart, the order of the body's statements |
+
+No hash holds the order of definitions relative to the other statements
+(variables are symbols of their own, the module body hash strips defs and
+imports, class attributes hash per name), so each module and class also
+carries its body as a sequence of statement entries (kind and bound names:
+`assign:A`, `def:f`, `import pkg.plug`, `expr`, `if`, blocks descended
+into; docstrings, bare strings, `pass` and the body of `if TYPE_CHECKING:`
+left out; `Symbol.statement_layout`, `indexer/definitions.statement_layout`).
+The classifier pairs the two sequences by a longest common subsequence after
+stripping the common prefix and suffix: unpaired entries are insertions or
+deletions (the inserted or deleted symbol's own change, or a body change),
+and when fewer pair than the two have in common the statements both have run
+in another order: `definition_changed` (audit round 5, R6). `A = 1; A = 2;
+B = A` -> `A = 1; B = A; A = 2`, `X = 1` moved below `@deco(X) def f`, `def
+f` moved below a `try: from pkg.fast import f` fallback, two `@register`
+defs swapped, `m = staticmethod(m)` moved above `def m` in a class: all
+reorders. A `def` that only binds a name (inert decorators, literal
+defaults, no annotation evaluated at import; in a class, only when the class
+has no decorator or keyword) is an inert entry, and adjacent inert entries
+are compared as a set: two plain defs trading places is no change, a
+function appended at the end is its own `added` change. The cost is a
+module's or class's structural invalidation on a reorder of its body, which
+real commits rarely do (none in the census repositories' last eight
+commits); the alternative, a module `body_changed`, would miss nothing
+reached through imports but is not what a reorder is.
 
 The docstring is excluded from every body hash and hashed on its own:
 a docstring-only edit is reported as `docstring_changed` and carries no
@@ -141,7 +166,20 @@ breaks every importer). A module whose own code names `__doc__`
 A symbol whose code reads a docstring (`obj.__doc__`, `__doc__`,
 `getdoc(obj)`, the string `"__doc__"` as in `getattr(obj, "__doc__")`) is
 marked `reads_docstrings`, and the planner seeds it when
-something it references, or its module, has a docstring-only change.
+something it references, or its module, has a docstring-only change
+(`planner.docstring_readers`): a `mod.__doc__` the resolver could not bind
+(an unresolved `module_attribute`) counts for the module its chain names.
+A read off a value the symbol's references do not bound (a parameter, a
+local, a call's result: `inspect.getdoc(fn)` in a helper, `obj.__doc__`;
+`Symbol.reads_any_docstring`), or a `mod.__doc__` whose chain names no
+in-scope module, may be of any symbol: such a reader is seeded by every
+docstring-only change (audit round 5, R7). Not when the reader is applied as
+a decorator somewhere (`SourceIndex.decorator_symbols`, or the `__init__`,
+`__new__` or `__call__` of a class that is): its parameter is what it
+decorates, and `doc_decorated` seeds that symbol and its module. Without
+this exclusion pandas' `@doc` would be seeded by every docstring change
+and reach everything it decorates; the price is a decorator also called by
+hand (`doc(h)`) on a symbol whose docstring changes, which stays unseen.
 Doctests are targets of their own (see Discovery). Consequences: adding or
 removing a method is a class definition change; removing or redirecting an
 import binding is a module definition change, while *adding* one is the
@@ -349,17 +387,28 @@ Further rules (pre-release audit, round 2):
   the writer's own test needs too (Q11: `holder.invoke(Other(), "pong")`
   in a test is reached only through its module's closure), and a per-test
   closure is not modelled. Isolated test code, from
-  the targets alone (runner-independent): each target's entry symbol that
-  is a function or a method (a test; a benchmark, which runs in a fresh
-  process); each lifecycle dependency that is a function-scoped fixture
+  the targets alone (runner-independent): the test modules are the
+  modules among the targets' lifecycle dependencies (a discovered target
+  lists its own module and the conftests that apply to it; a benchmark
+  module). Each lifecycle dependency that is a function-scoped fixture
   (`Symbol.fixture_scope`: a `fixture` decorator with no `scope` or the
-  literal `"function"`); unittest's `setUp`/`tearDown`; and, in the
-  target modules and the conftest modules among the lifecycle
-  dependencies, every function or method with a caller that only such
-  code refers to (to a fixed point; a writer edge is no reference).
-  Module-level and class-level code (it runs at collection and persists),
-  fixtures of a wider or computed scope, hooks, and all project code stay
-  writers for every reader: a cache filled by project code a test calls
+  literal `"function"`) is isolated; and, in the test modules, each
+  target's entry symbol that is a function or a method defined there (a
+  test; a benchmark, which runs in a fresh process), unittest's per-test
+  `setUp`/`tearDown`, and every function or method with a caller that is
+  no fixture of a wider scope, when only isolated code refers to it (to a
+  fixed point; a writer edge is no reference; an entry or a per-test hook,
+  which the runner calls, needs no caller). Not isolated: an entry outside
+  the test modules (a doctest's entry is the project function itself, a
+  manifest may point at project code: audit round 5, R23), an entry or
+  `setUp` that module-level code, a wider-scoped fixture or a hook refers
+  to (`from tests.test_a import test_a; test_a()` at collection: R26),
+  module-level and class-level code (it runs at collection and persists),
+  fixtures of a wider or computed scope, hooks, and all project code: they
+  stay writers for every reader, as does a store through a `monkeypatch`
+  that is an override (a wider-scoped fixture requesting `monkeypatch`, or
+  a fixture of that name in the module: `indexer/patches.py`, R27; an
+  override in another module is not seen). A cache filled by project code a test calls
   is still planned (W7).
 * Writes through a parameter or a receiver (`indexer/writes.py`). A
   function that changes a parameter in place (an item or attribute
@@ -514,14 +563,24 @@ Creating a class runs code of its bases and metaclass, so a class
 statement depends on the `__init_subclass__` that each in-scope base
 finds through its MRO (their union covers the one the new class's MRO
 picks) and on an in-scope `metaclass=`'s `__new__` and `__init__` (edge
-details `__init_subclass__`, `__new__`, `__init__`). The dependency is
-recorded for the class and for what runs the statement: the module for a
-top-level class (it is created on import), the enclosing function for a
-class defined in a function body (a test that subclasses a view).
+details `__init_subclass__`, `__new__`, `__init__`). When the metaclass
+constructs instances as it creates the class, the class's own `__init__`
+and `__new__` run at import too: a base, as written, from the `enum`
+module (`enum.Enum`, `IntFlag`, ...: `EnumMeta` makes each member by
+calling them), an in-scope base that is such a class, or an in-scope
+metaclass (which may call `cls(...)`); the class and the module depend on
+them (`Resolver._instantiates_at_creation`; audit round 5, R20), so
+`Color.RED.code` reaches a changed `__init__` through the class. The
+dependency is recorded for the class and for what runs the statement: the
+module for a top-level class (it is created on import), the enclosing
+function for a class defined in a function body (a test that subclasses a
+view).
 
 Special methods run without being named: `==` runs `__eq__`, `len()`
 runs `__len__`, calling an instance runs `__call__`, `with` runs
-`__enter__`/`__exit__`, a missing attribute runs `__getattr__`. A class
+`__enter__`/`__exit__`, a missing attribute runs `__getattr__` (and
+`dir(mod)` of an in-scope module runs its `__dir__`: the planner gives the
+listing symbol an edge to it, detail `dir()`; audit round 5, R21). A class
 therefore depends on each special method it defines (every
 `__dunder__` method except `__init__`, `__new__` and `__init_subclass__`,
 which are reached explicitly): a `references` edge with detail
@@ -839,9 +898,9 @@ identity and reports:
 |---|---|
 | `added` / `deleted` | present in only one revision |
 | `body_changed` | `body_hash` differs |
-| `definition_changed` | kind or `definition_hash` differs |
+| `definition_changed` | kind or `definition_hash` differs; for a module or class, also when the statements both revisions have run in another order (`statement_layout`, see Hashes) |
 | `dependencies_changed` | an outgoing non-containment edge was removed or redirected (a call was redirected, an alias now points elsewhere, an import stopped resolving) |
-| `dependencies_added` | outgoing edges were only added; non-structural, behaviour-level: a name the symbol uses now resolves (a missing import added, a fallback import that now succeeds). For a module only when its import-time code gained a reference, or an added import reaches an in-scope module outside the module's base import closure, whose import-time code now runs (a registration import) |
+| `dependencies_added` | outgoing edges were only added; non-structural, behaviour-level: a name the symbol uses now resolves (a missing import added, a fallback import that now succeeds). For a module only when its import-time code gained a reference, or an added import reaches an in-scope module outside the module's base import closure, whose import-time code now runs (a registration import). The modules newly run (that closure less the importer's base closure; for a function, the modules an `imports` edge of its body newly reaches; and the reverse for an import removed) are roots of the same effects search as changed import-time code (`planner._newly_run_modules`, `_import_call_effects`): every variable their import-time code or its callees mutate in place, every module something they install under, and every reader of the module or its members whose own imports never reach it (`pkg.sub.f()` under `import pkg`) is seeded, so the registry a newly imported `pkg.plug` fills reaches its readers in tests that never import it (audit round 5, R24). A symbol in one revision only is its own change |
 | `imports_added` | a module gained import bindings and lost none, and nothing new runs at its import; non-structural, no impact |
 | `docstring_changed` | only the docstring differs, and no code runs or reads it as above; non-structural, no impact |
 | `annotations_changed` | only a function's annotations differ and they are never evaluated at import (see Import time); behaviour-level, non-structural |
@@ -1097,7 +1156,11 @@ Unknown is never treated as unaffected:
   module (`getattr(logging, level)`, `dir(builtins)`, `vars(os)`) finds
   what that module defines, outside the analysis, so it is neither a
   dynamic reference nor a reflection site, unless in-scope code may store
-  something on that module (or a module above or below it). The uses that
+  something on that module (or a module above or below it); then a
+  listing of it (`name in dir(builtins)`, `hasattr(builtins, name)`,
+  `vars(builtins)`, recorded as reflection sites with that detail) is a
+  dynamic reference that sees any change as the lookup is (audit round 5,
+  R11). The uses that
   count are those that may write a module wherever it is used
   (`indexer/uses.py`, the same rules as for in-scope tables above): a
   store through a name it resolves (a function-local import included:

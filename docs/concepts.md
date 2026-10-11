@@ -45,10 +45,14 @@ report's names in brackets):
 | imports added (`imports_added`) | A module gained imports and nothing else. This selects nothing by itself; the code that uses the new names has changed too. |
 | docstring changed (`docstring_changed`) | Only its docstring changed. |
 
-Formatting and comments are not changes: moving a function down the file or
-adding blank lines selects nothing. A docstring edit counts only where the
-docstring is used: a doctest, a decorator that rewrites it, or code that
-reads `__doc__`.
+Formatting and comments are not changes: adding blank lines, or moving a
+plain function past another, selects nothing. Moving a statement past code
+that runs at import (a constant below the decorator that reads it, a `def`
+below the import that falls back to it, two registering decorators swapped)
+is a change to the module or class it stands in. A docstring edit counts
+only where the docstring is used: a doctest, a decorator that rewrites it,
+or code that reads `__doc__` (`inspect.getdoc`), including a helper that
+reads it off whatever it is handed.
 
 ## From a change to a test
 
