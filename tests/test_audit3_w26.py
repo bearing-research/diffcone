@@ -221,11 +221,37 @@ def test_w26_a_patch_undone_after_the_test_writes_no_external_module(repo, form)
     assert not selected(plan) & {"tests/test_patch.py::test_patch"}
 
 
+# The forms whose store is made by code that runs only inside the test (the
+# test, a helper only it calls, ``setUp``): under the isolation assumption
+# (audit round 4, L7) what it leaves on ``datetime`` is no later test's.
+IN_THE_TEST = {
+    "builtin-setattr",
+    "closure",
+    "context-entered",
+    "contextmanager",
+    "helper-parameter",
+    "module-mocker",
+    "monkeypatch-object",
+    "monkeypatch-object-dotted",
+    "rebound",
+    "receiver",
+    "start",
+    "start-stop",
+    "store-beside-patch",
+    "stored-attribute",
+}
+
+
 @pytest.mark.parametrize("form", sorted(KEPT))
 def test_w26_a_store_that_outlives_the_test_writes_the_external_module(repo, form):
     """``NEW`` may stay on ``datetime`` for code that runs later: the
-    lookup in ``make`` may find it, so every lookup sees any change."""
+    lookup in ``make`` may find it, so every lookup sees any change. Made
+    by code that runs only inside one test, it is that test's alone (the
+    isolation assumption): the lookup stays bounded for the others."""
     plan = _external_plan(repo, form)
+    if form in IN_THE_TEST:
+        assert _outside_patch_module(plan) == {"tests/test_other.py::test_other"}
+        return
     assert _outside_patch_module(plan) == {
         "tests/test_other.py::test_other",
         "tests/test_fields.py::test_make",

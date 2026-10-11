@@ -14,6 +14,7 @@ from diffcone.indexer.definitions import (
     _container_kind,
     _dispatcher_def,
     _end_line,
+    _fixture_scope,
     _flatten_chain,
     _future_annotations,
     _has_annotations,
@@ -480,6 +481,7 @@ class FirstPass(IndexerState):
                     # Nested functions are not symbols: a decorator factory's
                     # wrapper reading ``f.__doc__`` counts for the factory.
                     reads_docstrings=any(_reads_docstrings([n], deep=True) for n in nodes),
+                    fixture_scope=_least_isolated({_fixture_scope(n) for n in nodes}),
                 )
                 if not self._add_symbol(symbol):
                     continue
@@ -503,3 +505,11 @@ class FirstPass(IndexerState):
         while end < len(names) and names[end].startswith(prefix):
             end += 1
         return tuple(names[start:end])
+
+
+def _least_isolated(scopes: set[str]) -> str:
+    """A symbol defined several ways is a function-scoped fixture only when
+    every definition is one; a fixture otherwise when any is."""
+    if scopes == {"function"}:
+        return "function"
+    return "other" if scopes - {""} else ""

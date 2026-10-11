@@ -186,6 +186,12 @@ class Symbol:
     # ``clear`` on one do the same whatever it holds, so a site that only
     # calls them reads nothing of it (``writes`` edges).
     builtin_container: str = ""
+    # Functions and methods decorated as a pytest fixture (``fixture``,
+    # ``pytest.fixture``, ``yield_fixture``): "function" when every
+    # definition is function-scoped (no ``scope``, or ``scope="function"``),
+    # so pytest sets it up and tears it down around each test; "other" for a
+    # wider or computed scope; "" for anything not a fixture.
+    fixture_scope: str = ""
 
 
 def attribute_reachable(symbol: Symbol, modules: set[str] | frozenset[str]) -> bool:

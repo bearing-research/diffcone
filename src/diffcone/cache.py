@@ -50,6 +50,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 43: Symbol.fixture_scope (the isolation assumption: planner.isolated_test_code);
 # 42: writes only (not handing on) give use-scan ``mutated_by`` edges, modules
 # handed to written parameters, stores put back before the test ends, lookups
 # on the whole chain;
@@ -71,7 +72,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 42
+INDEX_FORMAT = 43
 
 
 def _indexer_fingerprint() -> str:

@@ -24,7 +24,10 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
   changed writer changes what the variable holds (CONTENT), which reaches
   its readers but not a ``writes`` site, code that only empties or adds to
   a builtin container (``REG.clear()``); any other impact on the variable
-  reaches those sites too. ``rebinds`` (``mod.X = v``) carries only a
+  reaches those sites too. A writer that is isolated test code (it runs only
+  inside one test: ``isolated_test_code``, the isolation assumption) is no
+  writer for the other tests, which do not see what it stores: its edge is
+  dropped. ``rebinds`` (``mod.X = v``) carries only a
   structural impact (a deletion, a redefinition). ``registers`` (registry
   -> what it holds) carries any impact as REGISTERED: code that later
   calls the registry is affected, a module (whose import-time code
@@ -108,6 +111,7 @@ from diffcone.model import (
     DYNAMIC_DEPENDENCY,
     ENTRY,
     EXTERNAL_WRITTEN,
+    FUNCTION,
     IMPORTS,
     IMPORTS_NAME,
     INSTALLED,
@@ -129,6 +133,7 @@ from diffcone.model import (
     Edge,
     SnapshotInfo,
     SourceIndex,
+    Symbol,
     UnresolvedReference,
     attribute_reachable,
     edge_mark,
@@ -983,6 +988,15 @@ def plan_from_indexes(
 
     graph = _Graph()
     union = _union(base.edges, head.edges)
+    # The isolation assumption: what isolated test code stores in module
+    # state is seen only by the test running it, which depends on that code
+    # already; it is no writer for the readers in other tests.
+    isolated = isolated_test_code(targets, (base, head))
+    union = {
+        e: r
+        for e, r in union.items()
+        if not (edge_mark(e) in _WRITER_MARKS and e.target in isolated)
+    }
     if seeds is not None:
         # Evidence mode's escalation: the record shows what an object
         # installed under a name nothing bounds ran (W25).
@@ -1143,6 +1157,14 @@ def plan_from_indexes(
     # computes what it imports sees any change.
     script_refs = sorted(base.script_refs | head.script_refs)
     for ref, revs in _union(base.unresolved, head.unresolved).items():
+        if ref.kind == UNRESOLVED_DYNAMIC and ref.detail.endswith(EXTERNAL_WRITTEN):
+            key = (ref.symbol, ref.detail)
+            writers = {*base.external_sites.get(key, ()), *head.external_sites.get(key, ())}
+            if writers and writers <= isolated:
+                # Only isolated test code writes there: another test's lookup
+                # finds what the library defines, as with no writer at all.
+                pending_unresolved.append((ref, revs))
+                continue
         if ref.kind == UNRESOLVED_DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
             if ref.detail.startswith(RUNS_SCRIPT):
@@ -1548,6 +1570,92 @@ def _runner_dependency_fallbacks(
                     Fallback(RULE_RUNNER_DEPENDENCY, "target", detail, target=target.node_id)
                 )
     return fallbacks
+
+
+# Edge marks that make a symbol (the edge's source) depend on code that
+# changes what it holds or installs (the edge's target): writers.
+_WRITER_MARKS = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
+
+# Methods unittest calls around each test of their class.
+_PER_TEST_HOOKS = frozenset({"setUp", "tearDown", "asyncSetUp", "asyncTearDown"})
+
+
+def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]) -> frozenset[str]:
+    """The isolation assumption (internal/design.md): a test does not depend
+    on what an earlier test left behind, so a store into module state made
+    by code that runs only inside one test is seen by that test alone. That
+    code, from the targets alone (runner-independent): each target's entry
+    symbol when it is a function or a method (a test, a benchmark: each
+    benchmark runs in a fresh process); each lifecycle dependency that is a
+    function-scoped fixture (``Symbol.fixture_scope``); and, in the target
+    modules and the conftest modules among the lifecycle dependencies, every
+    function or method that is no fixture of a wider scope, has a caller,
+    and is referred to only by such code (to a fixed point). Not isolated:
+    module-level and class-level code (it runs at collection and persists),
+    wider-scoped fixtures, hooks, any symbol defined differently in some
+    revision, and all project code."""
+    indexes = list(indexes)
+    defined: dict[str, list[Symbol]] = defaultdict(list)
+    for index in indexes:
+        for symbol in index.symbols.values():
+            defined[symbol.id].append(symbol)
+
+    def callable_code(sid: str) -> bool:
+        found = defined.get(sid)
+        return bool(found) and all(s.kind in (FUNCTION, METHOD) for s in found)
+
+    isolated: set[str] = set()
+    test_modules: set[str] = set()
+    for target in targets:
+        # An entry in a module the target names (a lifecycle dependency, or
+        # the file its id starts with): a test or benchmark, not project
+        # code a manifest points at.
+        file = target.runner_id.split("::", 1)[0]
+        if callable_code(target.entry_symbol) and all(
+            s.module in target.lifecycle_dependencies or s.path == file
+            for s in defined[target.entry_symbol]
+        ):
+            isolated.add(target.entry_symbol)
+            test_modules.update(s.module for s in defined[target.entry_symbol])
+        for dep in target.lifecycle_dependencies:
+            found = defined.get(dep, [])
+            if found and all(
+                s.kind in (FUNCTION, METHOD) and s.fixture_scope == "function" for s in found
+            ):
+                isolated.add(dep)
+            elif found and all(
+                s.kind == MODULE and PurePosixPath(s.path).name == "conftest.py" for s in found
+            ):
+                test_modules.add(dep)
+    referrers: dict[str, set[str]] = defaultdict(set)
+    for index in indexes:
+        for edge in index.edges:
+            # A writer edge points at the code writing, which is no use of it.
+            if edge.kind == DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
+                continue
+            if edge.source != edge.target:
+                referrers[edge.target].add(edge.source)
+    candidates: list[str] = []
+    for sid, found in sorted(defined.items()):
+        if sid in isolated or not callable_code(sid):
+            continue
+        if not all(s.module in test_modules for s in found):
+            continue
+        if all(s.fixture_scope == "function" for s in found):
+            isolated.add(sid)
+        elif all(s.fixture_scope == "" for s in found):
+            if all(s.name in _PER_TEST_HOOKS and s.kind == METHOD for s in found):
+                isolated.add(sid)
+            else:
+                candidates.append(sid)
+    changed = True
+    while changed:
+        changed = False
+        for sid in candidates:
+            if sid not in isolated and referrers.get(sid) and referrers[sid] <= isolated:
+                isolated.add(sid)
+                changed = True
+    return frozenset(isolated)
 
 
 class _ImportReach:

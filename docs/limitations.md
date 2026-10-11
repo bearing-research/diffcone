@@ -122,6 +122,19 @@ everything.
     function that changes an argument you pass it, a module of yours
     included (a library writing into a module you hand it).
 
+**Tests are assumed not to depend on what an earlier test left behind.**
+:   A test, a function-scoped fixture, or a helper in a test module or
+    `conftest.py` that only tests call may change module state (`server._state
+    = make()`): diffcone counts that change for the test running it only, not
+    for the other tests and benchmarks that read the same state. If a test
+    relies on state an earlier test set up, declare that dependency in
+    [`diffcone.toml`](reference/declarations.md) (an `[[edges]]` entry from
+    the reader to the code setting it up) or run the whole suite. Code that
+    runs once for many tests is still a dependency of every reader: a test
+    module's top-level code, a fixture with a wider scope (or a scope it
+    computes), a hook, and any code of your project, a cache a test fills
+    included.
+
 **Code that changes the process while pytest collects reaches every test.**
 :   A `conftest.py`, a test module or a module they import that sets an
     environment variable, extends `sys.path` or configures a library

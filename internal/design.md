@@ -338,6 +338,29 @@ Further rules (pre-release audit, round 2):
   of a name or a constant, the restores first in the `finally`. Any other
   shape (no restore, code before it, a wider-scoped fixture, a helper that
   is no test) is a lasting store.
+* The isolation assumption (the user's decision): a test does not depend
+  on what an earlier test left behind. A writer edge (`mutated_by`,
+  `installed`, `installed_anywhere`) whose writer is *isolated test code*
+  is dropped before the search (`planner.isolated_test_code`), and so is a
+  writer of an external module a dynamic lookup reads (`external_sites`):
+  a lookup only such writers write to is bounded. (The writer's own test
+  runs the writer, so it depends on what the writer stores already.) Not
+  `module_writers`: they widen what a lookup on a module can find, which
+  the writer's own test needs too (Q11: `holder.invoke(Other(), "pong")`
+  in a test is reached only through its module's closure), and a per-test
+  closure is not modelled. Isolated test code, from
+  the targets alone (runner-independent): each target's entry symbol that
+  is a function or a method (a test; a benchmark, which runs in a fresh
+  process); each lifecycle dependency that is a function-scoped fixture
+  (`Symbol.fixture_scope`: a `fixture` decorator with no `scope` or the
+  literal `"function"`); unittest's `setUp`/`tearDown`; and, in the
+  target modules and the conftest modules among the lifecycle
+  dependencies, every function or method with a caller that only such
+  code refers to (to a fixed point; a writer edge is no reference).
+  Module-level and class-level code (it runs at collection and persists),
+  fixtures of a wider or computed scope, hooks, and all project code stay
+  writers for every reader: a cache filled by project code a test calls
+  is still planned (W7).
 * Writes through a parameter or a receiver (`indexer/writes.py`). A
   function that changes a parameter in place (an item or attribute
   assigned, augmented or deleted, `p += [x]`, a container mutator on it or

@@ -607,6 +607,109 @@ def test_l6_a_store_put_back_before_the_test_ends_lasts_for_no_later_test(repo, 
         "not_a_test",
     ],
 )
-def test_l6_a_store_not_surely_put_back_lasts(repo, test_a):
+def test_l6_a_store_not_surely_put_back_lasts(repo, test_a, request):
+    """A store not surely put back lasts. Made by code that runs only inside
+    the test (a function-scoped fixture, a helper only the test calls), it
+    lasts for that test alone under the isolation assumption (L7); made by
+    a module-scoped fixture, it lasts for every later test."""
     plan = _restore_plan(repo, test_a)
-    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+    if request.node.callspec.id == "module_scope":
+        assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+    else:
+        assert selected(plan) == {"tests/test_a.py::test_a"}
+
+
+# ---------------------------------------------------------------------- L7
+# The isolation assumption (the user's decision): a store into module state
+# made by code that runs only inside one test (the test, a function-scoped
+# fixture, a helper of the test module only tests call) is seen by that test
+# alone, so it is no dependency of the readers in other tests or benchmarks.
+# Code that runs at collection (a test module's top level), a wider-scoped
+# fixture, and project code (a cache filled from a test) stay writers.
+
+ISO = {
+    "pkg/__init__.py": "",
+    "pkg/server.py": "_state = None\n\n\ndef state():\n    return _state\n",
+    "pkg/impl.py": "def make():\n    return {0}\n",
+    "pkg/cache.py": (
+        "import pkg.impl\n\n_CACHE = {}\n\n\ndef fill():\n    _CACHE['k'] = pkg.impl.make()\n\n\n"
+        "def get():\n    return _CACHE.get('k')\n"
+    ),
+    "tests/__init__.py": "",
+    "tests/test_other.py": (
+        "from pkg.server import state\n\n\ndef test_other():\n    assert state() is None\n"
+    ),
+    "tests/test_reads_cache.py": (
+        "from pkg.cache import get\n\n\ndef test_reads_cache():\n    assert get() is None\n"
+    ),
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench.py": "from pkg.server import state\n\n\ndef time_state():\n    state()\n",
+}
+ISO_BENCH = asv_target("bench.time_state", "benchmarks.bench.time_state")
+ISO_HEAD = "import pytest\n\nimport pkg.cache\nimport pkg.impl\nimport pkg.server\n\n\n"
+OTHERS = {"tests/test_other.py::test_other", "bench.time_state"}
+
+
+def _iso_plan(repo, test_a: str, evidence: bool = False):
+    files = {**ISO, "tests/test_a.py": test_a}
+    if evidence:
+        files[".gitignore"] = "__pycache__/\n.diffcone/\n"
+    base = repo.commit({**files, "pkg/impl.py": ISO["pkg/impl.py"].format("1")})
+    recorded = repo.collect() if evidence else None
+    head = repo.commit({"pkg/impl.py": ISO["pkg/impl.py"].format("2")})
+    return repo.plan(base, head, [ISO_BENCH], discover_runners=["pytest"], evidence=recorded)
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        ISO_HEAD + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
+        "def test_a():\n    _put()\n",
+        ISO_HEAD + "def test_a():\n    pkg.server._state = pkg.impl.make()\n",
+        ISO_HEAD + "@pytest.fixture\ndef put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
+        "def test_a(put):\n    pass\n",
+        ISO_HEAD
+        + "class TestA:\n    def _put(self):\n        pkg.server._state = pkg.impl.make()\n\n"
+        "    def test_a(self):\n        self._put()\n",
+    ],
+    ids=["helper", "test", "function_fixture", "method_helper"],
+)
+def test_l7_a_store_by_isolated_test_code_reaches_only_its_test(repo, test_a):
+    plan = _iso_plan(repo, test_a)
+    selected_ids = selected(plan)
+    assert {t for t in selected_ids if "test_a" in t} and not selected_ids & OTHERS
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        ISO_HEAD + "pkg.server._state = pkg.impl.make()\n\n\ndef test_a():\n    pass\n",
+        ISO_HEAD + "@pytest.fixture(scope='session')\ndef put():\n"
+        "    pkg.server._state = pkg.impl.make()\n\n\ndef test_a(put):\n    pass\n",
+        ISO_HEAD + "SCOPE = 'function'\n\n\n@pytest.fixture(scope=SCOPE)\ndef put():\n"
+        "    pkg.server._state = pkg.impl.make()\n\n\ndef test_a(put):\n    pass\n",
+        ISO_HEAD + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n_put()\n\n\n"
+        "def test_a():\n    _put()\n",
+    ],
+    ids=["module_level", "session_fixture", "computed_scope", "helper_also_at_module_level"],
+)
+def test_l7_a_store_by_code_that_outlives_the_test_reaches_every_reader(repo, test_a):
+    plan = _iso_plan(repo, test_a)
+    assert OTHERS <= selected(plan)
+
+
+def test_l7_a_project_cache_filled_from_a_test_still_reaches_its_readers(repo):
+    plan = _iso_plan(repo, ISO_HEAD + "def test_a():\n    pkg.cache.fill()\n")
+    assert "tests/test_reads_cache.py::test_reads_cache" in selected(plan)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_l7_evidence_a_store_by_a_test_helper_reaches_only_its_test(repo):
+    test_a = (
+        ISO_HEAD
+        + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
+        + ("def test_a():\n    _put()\n    pkg.server._state = None\n")
+    )
+    plan = _iso_plan(repo, test_a, evidence=True)
+    assert "tests/test_a.py::test_a" in selected(plan)
+    assert "tests/test_other.py::test_other" not in selected(plan)

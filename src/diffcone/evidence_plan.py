@@ -240,6 +240,7 @@ from diffcone.planner import (
     build_input,
     docstring_readers,
     is_build_script,
+    isolated_test_code,
     lifecycle_reason,
     merge_targets,
     plan_from_indexes,
@@ -389,6 +390,10 @@ class _TestCode:
             if file in self.module_of_path:
                 self.modules.add(self.module_of_path[file])
         self.conftests = {m for p, m in self.module_of_path.items() if _is_conftest(p)}
+        # Code that runs only inside one test (planner.isolated_test_code):
+        # under the isolation assumption, what it stores is seen by that
+        # test alone.
+        self.isolated: frozenset[str] = frozenset()
 
     def entry_modules(self, symbols: dict[str, Symbol]) -> None:
         for entry in self.entries:
@@ -1080,6 +1085,10 @@ class _Observers:
                     queue.append(caller)
         for variable, writer, ran in found:
             if variable in self._followed:
+                continue
+            if writer in self.test_code.isolated and self._only_in_tests({writer}):
+                # The isolation assumption: what a test's own code stores is
+                # seen by that test alone, which runs the writer itself.
                 continue
             self._followed.add(variable)
             why = self.E.get(ran) or self.guarded[ran][0][2]
@@ -2330,6 +2339,7 @@ def plan_with_evidence(
         pairs.append(("base", base))
     test_code = _TestCode(pytest_targets, (evidence_index, base, head))
     test_code.entry_modules({**evidence_index.symbols, **base.symbols, **head.symbols})
+    test_code.isolated = isolated_test_code(targets, (evidence_index, base, head))
 
     fallbacks: list[Fallback] = []
     if errors:

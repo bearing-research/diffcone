@@ -288,6 +288,28 @@ _PASSIVE_CLASS_DECORATORS = frozenset({"dataclasses.dataclass", "functools.total
 StarBases = Callable[[str], Iterable[str]]
 
 
+def _fixture_scope(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """ "function" for a function-scoped fixture (a ``fixture``/
+    ``yield_fixture`` decorator, called or not, with no ``scope`` or a
+    literal ``scope="function"``), "other" for any other fixture (a wider or
+    computed scope), "" for a function that is no fixture."""
+    found = ""
+    for decorator in node.decorator_list:
+        func = decorator.func if isinstance(decorator, ast.Call) else decorator
+        parts = _flatten_chain(func)
+        if not parts or parts[-1] not in ("fixture", "yield_fixture"):
+            continue
+        found = "function"
+        if isinstance(decorator, ast.Call):
+            for kw in decorator.keywords:
+                if kw.arg is None or (
+                    kw.arg == "scope"
+                    and not (isinstance(kw.value, ast.Constant) and kw.value.value == "function")
+                ):
+                    return "other"
+    return found
+
+
 def _canonical_names(
     node: ast.expr,
     scope: ModuleScope,
