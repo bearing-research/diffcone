@@ -222,6 +222,16 @@ MUTATED_BY = "mutated_by"
 # whose ``__init_subclass__`` runs for the subclass. Code that later calls
 # the registry depends on what it holds; the code that registers does not.
 REGISTERS = "registers"
+# Where a store of a computed value goes (SourceIndex.stores), when not an
+# attribute name: the receiver itself, another parameter itself, a variable
+# of an enclosing function; and what the value derives from, when not a
+# symbol: a name read on a value of unknown type, or anything (a call
+# through a parameter, a local bound in a way that says nothing).
+STORE_SELF = "@self"
+STORE_PARAM = "@param"
+STORE_CLOSURE = "@closure"
+DERIVED_ANY = "*"
+DERIVED_NAME = "name:"
 # A lifecycle dependency ``dynamic:<module>`` says the target runs code with
 # that module's globals (a doctest): it is affected by any impact-carrying
 # change in the module's import closure, as a dynamic reference is.
@@ -399,6 +409,33 @@ class SourceIndex:
     # Static planning treats that block as import-time code like any other;
     # discovery leaves it out of what runs while pytest collects.
     main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
+    # (function, where, derived): a store of a computed value into state
+    # outliving the call that no ``mutated_by`` edge names (diffcone.indexer
+    # .writes: the attribute written through ``self``, ``cls``, a parameter,
+    # a function or a class, or ``@self``, ``@param``, ``@closure``), and
+    # what the value derives from (a symbol, ``name:<n>``, ``*``). Evidence
+    # mode treats one whose value derives from code that can run a change as
+    # a cache the first test fills, read by every test that executed the
+    # code reading that state (audit round 5, R22). Static planning does
+    # not use it. ``handed``: (caller, callee, attribute) for a parameter's
+    # attribute handed to a callee that writes the parameter it lands in,
+    # so a store into a parameter container is read through the attribute.
+    stores: set[tuple[str, str, str]] = field(default_factory=set)
+    handed: set[tuple[str, str, str]] = field(default_factory=set)
+    # Functions and methods under a decorator known to serve a kept result
+    # without running them again (``functools.cached_property``, the
+    # memoisers of a few packages: indexer/definitions.py, or a class of
+    # the index used as a descriptor): their readers see what the first
+    # reader computed. A decorator of the index that is a function runs
+    # recorded code and is not here; ``functools.cache``/``lru_cache`` are
+    # cleared by the recorder before every test; a memoiser the analysis
+    # does not know is not seen (docs/limitations.md). Evidence mode only.
+    memoized: set[str] = field(default_factory=set)
+    # (decorated function, the decorator function of the index): the
+    # decorator's wrapper may run the function it decorates. Evidence mode
+    # follows it as a caller (``_stored_results``); static planning does
+    # not use it.
+    decorations: set[tuple[str, str]] = field(default_factory=set)
 
     @property
     def revision(self) -> str:

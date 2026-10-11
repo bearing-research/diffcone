@@ -274,6 +274,47 @@ _QUIET_DECORATORS = _INERT_DECORATORS | frozenset(
 )
 _QUIET_PREFIXES = ("pytest.mark.",)
 _QUIET_BUILTINS = frozenset({"property", "staticmethod", "classmethod"})
+# Decorators from outside the index known to keep the result of the
+# function they decorate and serve it without running it again
+# (Resolver._memoizing). ``functools.cache`` and ``lru_cache`` keep one too,
+# but the recorder clears them before every test.
+_MEMOIZING_DECORATORS = frozenset(
+    {
+        "functools.cached_property",
+        "cachetools.cached",
+        "cachetools.cachedmethod",
+        "cachetools.func.lru_cache",
+        "cachetools.func.lfu_cache",
+        "cachetools.func.ttl_cache",
+        "cachetools.func.tlru_cache",
+        "cachetools.func.rr_cache",
+        "cachetools.func.fifo_cache",
+        "cachetools.func.mru_cache",
+        "cached_property.cached_property",
+        "cached_property.threaded_cached_property",
+        "backports.cached_property.cached_property",
+        "django.utils.functional.cached_property",
+        "werkzeug.utils.cached_property",
+        "methodtools.lru_cache",
+        "async_lru.alru_cache",
+        "memoization.cached",
+        "asyncstdlib.functools.cached_property",
+        "asyncstdlib.functools.lru_cache",
+        "lazy.lazy",
+        "pydantic.functional_validators.computed_field",
+        "pydantic.computed_field",
+    }
+)
+_MEMOIZING_NAMES = frozenset({"cached_property", "cached", "memoize", "memoized", "cachedmethod"})
+
+
+def _memoizing_decorator(name: str) -> bool:
+    """A canonical decorator name known to memoise: one of the list, or any
+    decorator (of a package the index cannot read) whose last name says so
+    (``joblib``'s ``memory.cache`` is not caught: a value, not a name)."""
+    return name in _MEMOIZING_DECORATORS or name.rsplit(".", 1)[-1] in _MEMOIZING_NAMES
+
+
 # Calls a quiet decorator's arguments may make: they build a value and call
 # nothing back (``pytest.param(1, id="one")``).
 _QUIET_CALLS = frozenset({"pytest.param"})

@@ -48,6 +48,26 @@ Not modelled: an object kept and written through later under another name
 returned to the caller; a module returned by a function other code calls),
 and a third-party function that changes an argument in place, a module
 included (a library handed a module of the project that writes into it).
+
+Caches outside module variables (audit round 5, R22; ``SourceIndex.stores``,
+evidence mode only): a function that stores a *computed* value into state
+outliving the call that no ``mutated_by`` edge names. Recorded per store
+as (function, where, derived): ``where`` is the attribute written through
+a parameter, ``self``/``cls``, a function or a class (``self._cache[k] =
+v``: ``_cache``; ``get.cache[k] = v``: ``cache``), ``@self`` for a method
+call on the receiver itself that writes it (``self.put(k, v)``),
+``@param`` for a parameter container (``d[k] = v``) and ``@closure`` for a
+variable of an enclosing function; ``derived`` is what the stored value
+comes from: a function, method or class the value's expression names (as
+a call or a value), ``name:<n>`` for one named on a value of unknown type,
+``*`` for a call through a parameter or a name bound more than once. A
+value naming nothing of the project (``self.count += 1``, ``len(x)``) is
+not a cache. Stores through a method on an attribute or the receiver
+(``self._cache.set(k, compute(k))``) count when the method writes its
+receiver (``computed_passes``, resolved in ``apply_writes``). ``handed``:
+(caller, callee, attribute) for a parameter's attribute handed to a
+callee, so a store into a parameter container is read through the
+attribute the caller handed.
 """
 
 from __future__ import annotations
@@ -60,7 +80,20 @@ from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.scopes import External, ModuleNode, Resolved, Scope
 from diffcone.indexer.syntax import _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
-from diffcone.model import CLASS, FUNCTION, METHOD, MUTATED_BY, REFERENCES, VARIABLE, Edge
+from diffcone.model import (
+    CLASS,
+    DERIVED_ANY,
+    DERIVED_NAME,
+    FUNCTION,
+    METHOD,
+    MUTATED_BY,
+    REFERENCES,
+    STORE_CLOSURE,
+    STORE_PARAM,
+    STORE_SELF,
+    VARIABLE,
+    Edge,
+)
 
 if TYPE_CHECKING:
     from diffcone.indexer.references import _ReferenceCollector
@@ -257,24 +290,233 @@ def _write(collector: _ReferenceCollector, expr: ast.expr) -> None:
         collector.indexer.out.param_writes.add((collector.source, param))
 
 
-def observe_assign(collector: _ReferenceCollector, targets: list[ast.expr]) -> None:
+def _state_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
+    """Where ``expr``, the target of a store or the receiver of a call,
+    lives when that outlives the call: the attribute written through a
+    parameter (``self`` and ``cls`` included), a function or a class
+    (``self._cache``, ``p.items``, ``get.cache``, ``Store._cache``),
+    ``STORE_SELF`` for the receiver itself, ``STORE_PARAM`` for another
+    parameter itself and ``STORE_CLOSURE`` for a variable of an enclosing
+    function; None for a local, or a module variable (a ``mutated_by``
+    edge covers it)."""
+    attrs: list[str] = []
+    base: ast.expr = expr
+    while isinstance(base, (ast.Subscript, ast.Attribute)):
+        if isinstance(base, ast.Attribute):
+            attrs.append(base.attr)
+        base = base.value
+    if not isinstance(base, ast.Name):
+        return None
+    attr = attrs[-1] if attrs else ""
+    scope = collector.scope
+    if _own_param(collector, base.id) is not None:
+        if attr:
+            return attr
+        return STORE_SELF if base.id == scope.self_name else STORE_PARAM
+    if base.id in scope.locals:
+        if base.id not in scope.literal_bound and scope.literal_parent is not None:
+            return STORE_CLOSURE  # bound by an enclosing function
+        source = collector._local_source(base.id)
+        if source is not None and source is not expr:
+            inner = _root_name(source)
+            if inner is not None and inner is not base and inner.id != base.id:
+                found = _state_of(collector, source)
+                return found if attr == "" or found is None else attr
+        return None
+    if not attr:
+        return None
+    node = collector.indexer.resolve_chain([base.id], scope)
+    if isinstance(node, Resolved) and not node.detail:
+        symbol = collector.indexer.index.symbols.get(node.symbol)
+        if symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS):
+            return attr
+    return None
+
+
+def _derived(collector: _ReferenceCollector, value: ast.expr | None, depth: int = 0) -> set[str]:
+    """What the value of a store derives from: every function, method or
+    class its expression names (called or handed on), ``DERIVED_NAME`` +
+    the name for one read off a value of unknown type or by a name nothing
+    binds, ``DERIVED_ANY`` for a call through a parameter, a local bound
+    more than once, or a call of something unreadable. Empty for a value
+    naming nothing of the kind (a literal, a parameter, ``len(x)``)."""
+    found: set[str] = set()
+    if value is None or depth > 3:
+        return found
+    indexer = collector.indexer
+    scope = collector.scope
+    for node in ast.walk(value):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            parts = _flatten_chain(node)
+            if parts is None:
+                continue
+            head = parts[0]
+            if _own_param(collector, head) is not None:
+                if len(parts) == 1:
+                    if isinstance(node, ast.Name) and _is_called(value, node):
+                        found.add(DERIVED_ANY)
+                elif head != scope.self_name:
+                    found.add(DERIVED_NAME + parts[-1])
+                else:
+                    # ``self.helper(x)``: resolved through the class.
+                    target = indexer.resolve_chain(parts, scope)
+                    if isinstance(target, Resolved) and not target.detail:
+                        found.add(target.symbol)
+                    else:
+                        found.add(DERIVED_NAME + parts[-1])
+                continue
+            if head in scope.locals:
+                if len(parts) > 1:
+                    found.add(DERIVED_NAME + parts[-1])
+                    continue
+                sources = _bound_values(collector, head)
+                if sources is None:
+                    # A closure variable, or bound some way that says nothing.
+                    found.add(DERIVED_ANY)
+                else:
+                    for source in sources:
+                        found |= _derived(collector, source, depth + 1)
+                continue
+            target = indexer.resolve_chain(parts, scope)
+            if isinstance(target, Resolved):
+                if target.detail:
+                    found.add(DERIVED_NAME + parts[-1])
+                    continue
+                symbol = indexer.index.symbols.get(target.symbol)
+                if symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS):
+                    found.add(symbol.id)
+                elif symbol is not None and symbol.kind == VARIABLE and len(parts) > 1:
+                    found.add(DERIVED_NAME + parts[-1])
+            elif isinstance(target, (External, ModuleNode)):
+                continue  # a library's own call, or a module named
+            elif len(parts) > 1 or (isinstance(node, ast.Name) and _is_called(value, node)):
+                if head not in BUILTIN_CALLS or len(parts) > 1 or collector._is_shadowed(head):
+                    found.add(DERIVED_NAME + parts[-1])
+    return found
+
+
+def _bound_values(collector: _ReferenceCollector, name: str) -> list[ast.expr] | None:
+    """What this scope binds ``name`` to: the value of each assignment and
+    the iterable of each loop or comprehension binding it, or None when a
+    binding says nothing (``with ... as``, ``except ... as``, a walrus, a
+    ``del``) or the name is bound by an enclosing function."""
+    scope = collector.scope
+    body = scope.literal_node
+    if body is None or name not in scope.literal_bound:
+        return None
+    names, values = collector._name_bindings(body)
+    bindings = names.get(name, ())
+    if not bindings:
+        return None
+    loops: dict[int, ast.expr] = {}
+    for inner in ast.walk(body):
+        if isinstance(inner, (ast.For, ast.AsyncFor, ast.comprehension)):
+            for sub in ast.walk(inner.target):
+                if isinstance(sub, ast.Name):
+                    loops[id(sub)] = inner.iter
+    found: list[ast.expr] = []
+    for binding in bindings:
+        value = values.get(id(binding))
+        if value is None:
+            value = loops.get(id(binding))
+        if value is None:
+            return None
+        found.append(value)
+    return found
+
+
+# Builtins whose call derives nothing from the project by itself (what
+# they are handed is seen as the names it uses).
+BUILTIN_CALLS = frozenset(
+    {
+        "len",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "frozenset",
+        "sorted",
+        "reversed",
+        "enumerate",
+        "zip",
+        "map",
+        "filter",
+        "range",
+        "min",
+        "max",
+        "sum",
+        "any",
+        "all",
+        "abs",
+        "round",
+        "repr",
+        "format",
+        "isinstance",
+        "hash",
+        "id",
+        "type",
+        "iter",
+        "next",
+        "bytes",
+        "bytearray",
+        "print",
+        "open",
+        "ord",
+        "chr",
+        "divmod",
+        "pow",
+        "slice",
+        "object",
+        "super",
+    }
+)
+
+
+def _is_called(value: ast.expr, name: ast.Name) -> bool:
+    """Whether ``name`` is the callee of a call in ``value``."""
+    for node in ast.walk(value):
+        if isinstance(node, ast.Call) and node.func is name:
+            return True
+    return False
+
+
+def _store(collector: _ReferenceCollector, target: ast.expr, value: ast.expr | None) -> None:
+    """``target`` (an item or attribute, or the receiver of a mutating call)
+    is written with ``value``: a store into state outliving the call, when
+    the value derives from code of the project (``SourceIndex.stores``)."""
+    where = _state_of(collector, target)
+    if where is None:
+        return
+    for derived in _derived(collector, value):
+        collector.indexer.out.stores.add((collector.source, where, derived))
+
+
+def observe_assign(
+    collector: _ReferenceCollector, targets: list[ast.expr], value: ast.expr | None = None
+) -> None:
     """An assignment or ``del``: an item or attribute of a parameter
-    changes it."""
+    changes it; one of state outliving the call stores the value."""
     for target in targets:
         for sub in ast.walk(target):
             if isinstance(sub, (ast.Subscript, ast.Attribute)) and not isinstance(
                 sub.ctx, ast.Load
             ):
                 _write(collector, sub.value)
+                if value is not None:
+                    _store(collector, sub.value, value)
 
 
 def observe_augassign(collector: _ReferenceCollector, node: ast.AugAssign) -> None:
     """``p += [x]`` changes a list or dict parameter in place; so does an
     augmented item or attribute."""
     target = node.target
-    _write(
-        collector, target.value if isinstance(target, (ast.Subscript, ast.Attribute)) else target
-    )
+    receiver = target.value if isinstance(target, (ast.Subscript, ast.Attribute)) else target
+    _write(collector, receiver)
+    _store(collector, receiver, node.value)
 
 
 def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str] | None) -> None:
@@ -300,10 +542,16 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         _dict_receiver(collector, first)
         if not isinstance(first, ast.Starred):
             collector._mutation_target(first)  # a module variable: ``heappush(QUEUE, x)``
+            for arg in node.args[1:]:
+                _store(collector, first, arg)
     if isinstance(func, ast.Attribute):
         if func.attr in CONTAINER_MUTATORS or func.attr in ("__setattr__", "__delattr__"):
             _write(collector, func.value)
             _dict_receiver(collector, func.value)
+            for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+                _store(collector, func.value, arg)
+        else:
+            _computed_pass(collector, node, parts)
     passes: list[tuple[str, ast.expr]] = []  # (slot, argument)
     for i, arg in enumerate(node.args):
         if isinstance(arg, ast.Starred):
@@ -370,6 +618,57 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
     for slot, what in handed:
         for callee in callees or [""]:
             out.add((collector.source, what, callee, name, slot, bound))
+    for slot, expr in passes:
+        held = _held_attr(collector, expr)
+        if held:
+            for callee in callees or [""]:
+                indexer.out.held_passes.add((collector.source, callee, name, slot, held, bound))
+
+
+def _held_attr(collector: _ReferenceCollector, expr: ast.expr) -> str:
+    """The attribute of a parameter (``self`` included) an argument hands on
+    (``self._cache`` of ``fill(self._cache, k)``), "" for anything else."""
+    if _param_of(collector, expr) is None:
+        return ""
+    where = _state_of(collector, expr)
+    return where if where and not where.startswith("@") else ""
+
+
+def _computed_pass(collector: _ReferenceCollector, node: ast.Call, parts: list[str] | None) -> None:
+    """``self._cache.set(k, compute(k))``, ``self.put(k, compute(k))``: a
+    method called on state outliving the call, handed a value derived from
+    the project. Whether the method writes its receiver is known after pass
+    2 (``apply_writes``: ``computed_passes`` -> ``stores``)."""
+    func = node.func
+    if not isinstance(func, ast.Attribute):
+        return
+    derived: set[str] = set()
+    for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+        derived |= _derived(collector, arg)
+    if not derived:
+        return
+    where = _state_of(collector, func.value)
+    if where is None:
+        return
+    indexer = collector.indexer
+    callee = ""
+    if parts is not None:
+        target = indexer.resolve_chain(parts, collector.scope)
+        if isinstance(target, External):
+            return  # a third-party method keeps what no record of ours shows
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = indexer.index.symbols.get(target.symbol)
+            if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                callee = symbol.id
+        if (
+            not callee
+            and len(parts) == 3
+            and parts[0] == collector.scope.self_name
+            and collector.scope.self_class is not None
+        ):
+            callee = f"{HELD_BY}{collector.scope.self_class}.{parts[1]}"
+    for d in sorted(derived):
+        indexer.out.computed_passes.add((collector.source, where, callee, func.attr, d))
 
 
 def _dict_receiver(collector: _ReferenceCollector, expr: ast.expr) -> None:
@@ -602,6 +901,39 @@ def apply_writes(indexer: Resolver) -> None:
             if key not in writes and writes_through(record):
                 writes.add(key)
                 changed = True
+
+    def resolved_callees(record: Pass) -> list[str]:
+        """``callees`` without the name-only fallback: a method of a
+        receiver the index cannot type is not taken for every method of
+        that name (which on a real project makes every write a store).
+        A value of a known class, or a third-party value's project subclass
+        methods, resolve as in ``callees``."""
+        _, _, callee, name, _, _ = record
+        if callee.startswith(HELD_BY):
+            cls, _, attr = callee[len(HELD_BY) :].rpartition(".")
+            return [] if attribute_values(cls, attr) is None else callees(record)
+        return [callee] if callee else []
+
+    # A method called on state with a computed value stores it when it
+    # writes its receiver (``self._cache.set(k, compute(k))``: the ``set``
+    # of what ``_cache`` is known to hold, or ``self.put(...)`` resolved
+    # through the class).
+    for caller, where, callee, name, derived in sorted(out.computed_passes):
+        record = (caller, "param:self", callee, name, RECEIVER, True)
+        for c in resolved_callees(record):
+            param = slot_param(c, RECEIVER, True)
+            if param is not None and (c, param) in writes:
+                out.stores.add((caller, where, derived))
+                break
+    # A parameter's attribute handed to a callee that writes the parameter
+    # it lands in: a store into that container is read through the
+    # attribute (SourceIndex.handed).
+    for caller, callee, name, slot, held, bound in sorted(out.held_passes):
+        record = (caller, "param:self", callee, name, slot, bound)
+        for c in resolved_callees(record):
+            param = slot_param(c, slot, bound)
+            if param is not None and (c, param) in writes:
+                out.handed.add((caller, c, held))
     module_variables: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
         if symbol.kind == VARIABLE:

@@ -2,7 +2,17 @@
 
 Loaded as ``-p diffcone_collect``: ``diffcone`` links this file into a
 directory of its own on ``PYTHONPATH``, so it imports nothing of diffcone and
-needs nothing but the standard library and pytest.
+needs nothing but the standard library and pytest. The ``sitecustomize``
+beside it imports this module as the recorded process starts
+(``DIFFCONE_COLLECT_MAIN``), before any ``-p`` plugin of ``addopts``,
+``PYTEST_ADDOPTS`` or the command line and before a project's own
+``sitecustomize`` (chained after it): what those import is recorded as
+import-time code. pytest then finds it imported (PYTEST_DONT_REWRITE: it
+asserts nothing, so no rewriting is missed). The modules of the checkout
+imported before that all the same (a ``.pth`` file; a ``-p`` plugin when
+``sitecustomize`` could not run: ``python -S``) are recorded as
+``preloaded``: their code ran where nothing saw it, so a change to one is
+planned from the code.
 
 It runs inside the project's own test process, started by ``diffcone
 collect`` or ``diffcone run --evidence`` (execution.py), never by planning.
@@ -21,14 +31,24 @@ What it records, per test (parameter cases folded into their function, as
   ``sys.monitoring`` ``PY_START`` and ``PY_RESUME`` (a generator or
   coroutine resumed in a later test) with DISABLE, re-armed at every window
   boundary, and ``PY_THROW`` (re-entered by ``.throw()``/``.close()``);
-* the repository paths it opened, ``stat``ed, ``access``ed or listed (audit
-  hooks, ``sqlite3.connect`` and ``ctypes.dlopen`` included, and wrappers
-  of ``os.stat``/``os.lstat``/``os.access``, which never warn, so the extra
-  frame cannot move a warning's ``stacklevel``), with ``/`` separators; on
-  a file system that folds case (``case_insensitive``) the fold respells
-  them as the index does. A touch by the import system finding modules is
-  not the test's; one by a library's top-level code that an import ran
-  (matplotlib reading ``./matplotlibrc``) is;
+* the repository paths it opened, ``stat``ed, ``access``ed, ``readlink``ed
+  or listed (audit hooks, ``sqlite3.connect`` (a ``file:`` URI parsed to
+  its path) and ``ctypes.dlopen`` included, and wrappers of
+  ``os.stat``/``os.lstat``/``os.fstat``/``os.access``/``os.readlink``,
+  which never warn, so the extra frame cannot move a warning's
+  ``stacklevel``), with ``/`` separators, and each beside its real path
+  when a symlink is on the way (``child.RealPaths``: a tracked link, or a
+  linked directory, to the file really read); on a file system that folds
+  case (``case_insensitive``) the fold respells them as the index does. A
+  path relative to a directory file descriptor (``dir_fd=``, a listing of
+  an fd, ``os.fstat``) is resolved through the descriptors ``os.open``
+  returned (``child.fds``, checked against the file they name); one the
+  recorder cannot resolve flags the test (``FLAG_SUBPROCESS``: it read
+  what no record names). A directory listed with ``os.scandir`` is also
+  recorded as scanned (``child.SCANNED``), since the entries' ``stat()``
+  and type checks raise no event. A touch by the import system finding
+  modules is not the test's; one by a library's top-level code that an
+  import ran (matplotlib reading ``./matplotlibrc``) is;
 * the processes it started through ``subprocess.Popen`` (POSIX), which
   record themselves (``child.py``, roadmap item 15), inert interpreter
   probes included, and every such process still running when it opens;
@@ -57,6 +77,9 @@ Environment variables:
 
 ``DIFFCONE_COLLECT_OUT``       directory for the raw records; recording is
                                off without it
+``DIFFCONE_COLLECT_MAIN``      set on the recorded process itself: its
+                               ``sitecustomize`` starts the recorder, which
+                               removes the variable so no child inherits it
 ``DIFFCONE_COLLECT_ROOT``      the checkout root (default: the current directory)
 ``DIFFCONE_COLLECT_REPO``      the repository it was made from (``collect --rev``
                                runs a temporary worktree); the project's own
@@ -77,8 +100,9 @@ Environment variables:
                                evidence plan selected nothing to run)
 
 Files written per process: ``process-<pid>.json`` (code table, import-time
-records, environment, errors) and ``tests-<pid>.bin`` (length-prefixed
-zlib-compressed JSON records, one per run of consecutive items of a test).
+records, preloaded modules, environment, errors) and ``tests-<pid>.bin``
+(length-prefixed zlib-compressed JSON records, one per run of consecutive
+items of a test).
 """
 
 from __future__ import annotations
@@ -288,6 +312,9 @@ import_flagged: set[str] = set()
 flags_raised = 0  # how many times _flag ran: did a call flag its window?
 caches: list = []
 recording = False
+# The checkout files of the modules imported before the recorder started.
+preloaded: list[str] = []
+_real = child.RealPaths()
 
 
 # A window's sets; ``flags`` is a bit mask beside them. ``fixtures``: the
@@ -575,15 +602,24 @@ def _metadata_scan(path: str) -> bool:
     return False
 
 
-def _touch(path, listing: bool = False, own_source: bool = False) -> None:
+def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool = False) -> None:
     """``own_source``: a stat of a source file. While a module is being
     imported, its stat of its *own* file (``Path(__file__).resolve()``)
     sees only that the file exists, recorded as a name seen like a listing;
     every other stat of a source file (``os.path.getsize``, ``linecache``
     checking ``inspect.getsource``'s cached copy) can depend on what the
-    file holds and counts as reading it."""
-    if isinstance(path, int) or path is None:
+    file holds and counts as reading it. ``scanned``: an ``os.scandir``
+    listing, whose entries' metadata may be read without an event. A
+    descriptor (an int) names the file ``os.open`` returned it for
+    (``_fd_path``); a listing of one nothing can resolve flags."""
+    if path is None or child.quiet.depth:
         return
+    if isinstance(path, int):
+        path = child.fd_path(path)
+        if path is None:
+            if listing:
+                _flag()
+            return
     try:
         path = os.fsdecode(os.fspath(path))
     except TypeError:
@@ -597,18 +633,25 @@ def _touch(path, listing: bool = False, own_source: bool = False) -> None:
         return
     if own_source and not active and importing and importing[-1] == rel:
         listing = True
+    spellings = {rel}
+    real = _relative(_real(absolute))
+    if real is not None:
+        spellings.add(real)
+    if scanned:
+        spellings |= {s + child.SCANNED for s in spellings}
     if active:
         # Inside a test anything counts: a library or plugin reading a file
         # for the test (a data-directory fixture copying files) included.
         for w in active:
-            w["dirs" if listing else "paths"].add(rel)
+            w["dirs" if listing else "paths"].update(spellings)
     elif actor in ("project", "library"):
         # Outside every test: project code at import (a parametrize list
         # globbed from a directory) or in a hook, or a library's top level
         # run by such an import (or by a plugin's: a hook's), credited to the
         # module being imported ("" for none).
         seen = import_dirs if listing else import_paths
-        seen.setdefault(rel, set()).add(importing[-1] if importing else "")
+        for spelling in spellings:
+            seen.setdefault(spelling, set()).add(importing[-1] if importing else "")
 
 
 _inert_pending = False
@@ -620,10 +663,19 @@ def _audit(event, args):
             if args:
                 _touch(args[0])
         elif event in LISTING_EVENTS:
-            _touch(args[0] if args and args[0] is not None else ".", listing=True)
+            _touch(
+                args[0] if args and args[0] is not None else ".",
+                listing=True,
+                scanned=event == "os.scandir",
+            )
+        elif event == "sqlite3.connect":
+            if args:
+                _touch(child.sqlite_path(args[0]))
         elif event in C_OPEN_EVENTS:
             if args and isinstance(args[0], (str, bytes, os.PathLike)):
                 _touch(args[0])
+        elif event in child.LINK_EVENTS:
+            _real.clear()
         elif event in SUBPROCESS_EVENTS:
             global _inert_pending
             if child.in_popen(event, args):
@@ -662,66 +714,11 @@ _INERT_QUERIES = (
 # A ``-c`` snippet is inert only when everything it imports is built into
 # the interpreter (nothing on ``sys.path``, the working directory or
 # ``PYTHONPATH`` can stand in for it), and it names nothing that loads or
-# runs code by other means. On POSIX an inert probe is accounted anyway and
-# judged by its own record: this list vouches only for one that cannot
-# record (``python -I``), and on Windows, where no child records.
-_LOADING_NAMES = frozenset(
-    {
-        "exec",
-        "eval",
-        "compile",
-        "open",
-        "__import__",
-        "__builtins__",
-        "builtins",
-        "__loader__",
-        "__spec__",
-        "breakpoint",
-        "_imp",
-        "execfile",
-        "system",
-        "popen",
-        "spawnl",
-        "spawnv",
-        "execv",
-        "execl",
-        "fork",
-        "startfile",
-        "modules",
-        "path",
-        "meta_path",
-        "path_hooks",
-        "setprofile",
-        "settrace",
-        "addaudithook",
-        # Other ways to start a process (``posix`` is built in).
-        "posix_spawn",
-        "posix_spawnp",
-        "spawnle",
-        "spawnlp",
-        "spawnlpe",
-        "spawnve",
-        "spawnvp",
-        "spawnvpe",
-        "execle",
-        "execlp",
-        "execlpe",
-        "execve",
-        "execvp",
-        "execvpe",
-        "forkpty",
-        "fork_exec",
-        # Reaching any of the above by a computed name.
-        "getattr",
-        "globals",
-        "locals",
-        "vars",
-        "__dict__",
-        "__getattribute__",
-        "__globals__",
-        "__subclasses__",
-    }
-)
+# runs code by other means (``child.LOADING_NAMES``). On POSIX an inert
+# probe is accounted anyway and judged by its own record: this list vouches
+# only for one that cannot record (``python -I``), and on Windows, where no
+# child records.
+_LOADING_NAMES = child.LOADING_NAMES
 # Environment variables that make an interpreter run or find other code.
 _LOADING_ENV = ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONSAFEPATH")
 _INTERPRETER = child.INTERPRETER
@@ -1012,25 +1009,31 @@ def _is_source(path) -> bool:
 
 
 def _wrap_stat(original):
+    """``os.stat``, ``os.lstat``, ``os.fstat``, ``os.access``,
+    ``os.readlink``: a path (or a descriptor) is touched; one relative to a
+    directory descriptor is resolved through ``_fds``, and flags the window
+    when it cannot be (``_joined``)."""
+
     @functools.wraps(original)
     def stat(path, *args, **kwargs):
         if recording:
             try:
-                _touch(path, own_source=_is_source(path))
+                dir_fd = kwargs.get("dir_fd")
+                if dir_fd is not None:
+                    joined = child.joined(path, dir_fd)
+                    if joined is None:
+                        _flag()
+                    else:
+                        _touch(joined, own_source=_is_source(joined))
+                else:
+                    _touch(path, own_source=_is_source(path))
             except Exception as exc:
                 _error("stat", exc)
         return original(path, *args, **kwargs)
 
     # shutil decides at import whether it can use fd-based functions by
     # checking membership in these sets; keep the answer the same.
-    for supported in (
-        os.supports_dir_fd,
-        os.supports_fd,
-        os.supports_follow_symlinks,
-        os.supports_effective_ids,
-    ):
-        if original in supported:
-            supported.add(stat)
+    child.register_supports(original, stat)
     return stat
 
 
@@ -1108,11 +1111,38 @@ def _spawn_list(spawns) -> list:
 # --------------------------------------------------------------------------- start
 
 
+def _preloaded() -> list[str]:
+    """The checkout files of the modules already imported: their import-time
+    code ran before the recorder (a ``.pth`` file, a ``-p`` plugin loaded
+    before this one when ``sitecustomize`` did not run), where nothing saw
+    it. A lazily loaded module (``importlib.util.LazyLoader``) loads on any
+    ordinary attribute read: its namespace is read directly."""
+    found: set[str] = set()
+    for module in list(sys.modules.values()):
+        try:
+            namespace = object.__getattribute__(module, "__dict__")
+        except Exception:
+            continue
+        if not isinstance(namespace, dict):
+            continue
+        file = namespace.get("__file__")
+        if not isinstance(file, str):
+            continue
+        rel = _relative(os.path.abspath(file))
+        if rel is not None:
+            found.add(rel)
+    return sorted(found)
+
+
 def _start() -> None:
-    """Start at import of this plugin: ``-p`` plugins load before the initial
-    conftests, which usually import the project, so its import-time code is
-    seen."""
-    global recording, environment_at_start
+    """Start at import of this plugin, which the ``sitecustomize`` beside it
+    does as the process starts (``DIFFCONE_COLLECT_MAIN``, removed here so
+    no process this one starts inherits it); failing that, when pytest
+    loads ``-p diffcone_collect``, before the initial conftests. What the
+    checkout had imported by then is ``preloaded``."""
+    global recording, environment_at_start, preloaded
+    os.environ.pop(child.ENV_MAIN, None)
+    preloaded = _preloaded()
     if os.name != "nt":
         # An xdist worker is a process a recorded run started: it records
         # itself here, as a test process.
@@ -1146,7 +1176,10 @@ def _start() -> None:
     sys.addaudithook(_audit)
     os.stat = _wrap_stat(os.stat)
     os.lstat = _wrap_stat(os.lstat)
+    os.fstat = _wrap_stat(os.fstat)
     os.access = _wrap_stat(os.access)
+    os.readlink = _wrap_stat(os.readlink)
+    child.install_fd_tracking(_touch, _flag, _error)
     if os.name == "nt":
         # Python 3.12+ on Windows answers these without os.stat.
         for name in ("exists", "lexists", "isfile", "isdir", "islink"):
@@ -1385,6 +1418,7 @@ def _finish():
         "environments": list(ENVIRONMENTS),
         "import_by": {str(k): sorted(v) for k, v in import_by.items()},
         "hook_phase": sorted(hook_codes),
+        "preloaded": preloaded,
         "outside_modules": sorted(outside),
         # What each shared fixture ran here: a fixture computed once for
         # every worker (a file lock and a cache file) runs its code in one.

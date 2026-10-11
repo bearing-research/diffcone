@@ -84,10 +84,10 @@ folds parameter cases:
 | fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup` records each instance's setup window, re-arming the tracer as it opens (code the test already ran is otherwise disabled and would be missing from the fixture's window); teardown windows are still to be designed. A test is credited with every fixture it *activated*, read from its request during teardown (`request.getfixturevalue` included, which `item.fixturenames` misses). Each process writes its fixture windows and each test the fixtures it used, so the fold credits a test with what the same fixture ran in *any* process: a session fixture that xdist workers compute once (a file lock and a cache file) runs its work in one worker only |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
 | import attribution | for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running) | a stack of modules pushed at a `<module>` code object's `PY_START` and popped at its `PY_RETURN` (a local event) or `PY_UNWIND` (an import that raises, such as `pytest.importorskip` at module level); events re-armed at each push and pop |
-| `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.access`; paths with `/` on every platform, respelled as the index spells them when the recording's file system folds case (`tests/Data/X.TXT` is `tests/data/x.txt`; a path the index does not know matches a changed one in any spelling). A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
+| `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` (a `file:` URI parsed to its path) and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.fstat`, `os.access`, `os.readlink`; each path also under its real path when a symlink is on the way (`child.RealPaths`: a linked directory, a link to a file; directories memoised, the memo dropped after `os.symlink`/`rename`/`remove`/`rmdir`/`link`), so the file really read matches; a path relative to a directory descriptor (`dir_fd=`, `os.listdir(fd)`, `os.scandir(fd)`, `os.fstat`) resolved through the descriptors `os.open` returned (kept through `dup`, dropped at `close`, checked with `samestat` against the file they name), and the test flagged (`FLAG_SUBPROCESS`) when one cannot be resolved; a directory listed with `os.scandir` (`os.walk`, `glob`, `pathlib`) also recorded with the `child.SCANNED` suffix, since `DirEntry.stat()`/`is_file()` raise no event: an edit to a direct entry then selects the test (audit round 5, R29); paths with `/` on every platform, respelled as the index spells them when the recording's file system folds case (`tests/Data/X.TXT` is `tests/data/x.txt`; a path the index does not know matches a changed one in any spelling). A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
 | children | what the Python processes T started through `subprocess.Popen` ran, and those still running when T's window opened (POSIX; roadmap item 15); a process started outside every window (at import, in a hook) is folded into that phase instead: what it ran is the import's, or a hook's | `Popen._execute_child` wrapped; the child records itself from a `sitecustomize` beside the plugin (`child.py`; the plugin's directory comes first on `PYTHONPATH`, and a project's own `sitecustomize` is chained) into `children/<ppid>/<pid>-<start>.jsonl`, and the fold resolves each spawn to its records (the process itself, or a launcher's Python child that ran its command), recursively; liveness by `os.kill(pid, 0)` over the spawn's tree at each window open. A spawn of a pytest process of the same recording (an xdist worker) resolves to its own process record |
 | `P(T)` | T started a process no record follows, or a subinterpreter, or ran while such a process (a pool's worker, a forkserver's child, a fork) was running | audit hooks on `subprocess.Popen`, `os.exec*`, `os.posix_spawn`, `os.fork`; wrappers of `multiprocessing.util.spawnv_passfds` and `_interpreters.create`, which raise no event. An inert interpreter probe (an interpreter by name, nothing but `-c CODE` where the code imports only built-in modules and names nothing that loads code, no `PYTHONPATH`-like environment: roadmap item 10) is accounted like any `Popen` child and judged by its own record; the rule vouches only for one that cannot record (`python -I`), and on Windows. `multiprocessing`'s processes, forks and direct `posix_spawn` children (any flagged child on Windows) are followed by pid: every window opening while one runs is flagged (`waitid` with `WNOWAIT`: a zombie has ended) |
-| text code | T ran code compiled from text no file of the checkout holds (a doctest's examples, a `timeit` statement, a notebook cell, a `skipif` string), which may read any project name | the `exec` audit event: code whose file is not the checkout's, run for something other than project code (project code's own `exec` is a lookup site), naming anything, not run under an import (a library generating its own code) and not by `collections`, `dataclasses`, `annotationlib`, `typing` or attrs (methods generated from a definition); `FLAG_TEXT`, always selected (rule `text_code`). In a child, a flag line |
+| text code | T ran code compiled from text no file of the checkout holds (a doctest's examples, a `timeit` statement; not a string `skipif` condition naming nothing of the project, nor `unittest.mock`'s `autospec` wrappers: R15), a notebook cell, a `skipif` string), which may read any project name | the `exec` audit event: code whose file is not the checkout's, run for something other than project code (project code's own `exec` is a lookup site), naming anything, not run under an import (a library generating its own code) and not by `collections`, `dataclasses`, `annotationlib`, `typing` or attrs (methods generated from a definition); `FLAG_TEXT`, always selected (rule `text_code`). In a child, a flag line |
 | threads | the project code other threads are in the middle of when T's window (or a shared fixture's) opens | `sys._current_frames()`: a long-lived thread looping in one frame raises no event in later windows, yet runs beside their tests |
 | environment | Python version, platform, installed distributions and versions, `PYTHONHASHSEED`, `TZ`, pytest plugins and options | read inside each test process at the end of the run, which keys the store; also at its start, and a run that changed it is named (`collect` warns, the store keeps the start environment, `run` says when it meets it: roadmap item 12) |
 
@@ -95,6 +95,21 @@ The tracer starts when the plugin module is imported, not in
 `pytest_configure`: `-p` plugins load before the initial conftests, and a
 root conftest usually imports the project, whose import-time code (for
 pandas, its decorators and registrations) would otherwise go unrecorded.
+Since audit round 5 (R28) the `sitecustomize` beside the plugin imports it
+as the recorded process starts (`DIFFCONE_COLLECT_MAIN`, which the plugin
+removes from the environment so no child inherits it), before pytest loads
+any `-p` plugin of `addopts`, `PYTEST_ADDOPTS` or the command line (pytest
+loads them in that order, before `-p diffcone_collect` on the command
+line) and before the project's own `sitecustomize`, chained after it; the
+plugin's docstring carries `PYTEST_DONT_REWRITE`, so pytest does not warn
+that the module was imported before it could rewrite it. What the checkout
+had imported all the same (a `.pth` file; `python -S`, where no
+`sitecustomize` runs and the `addopts` plugin loads first) is recorded as
+`preloaded` (store format 3): planning escalates any change in such a
+module, with the module, as for a change that ran during an import, and a
+changed file outside the roots among them selects everything; `collect`
+warns and names them. With xdist, a worker loads the `addopts` plugin
+before `-p diffcone_collect` as before: what it imports is preloaded there.
 
 **Names looked up dynamically are not recorded.** The spike wrapped
 `getattr` and `hasattr` to record them, and that changed test outcomes: the
@@ -400,7 +415,33 @@ selection or states something the tables left implicit; none narrows it.
   middle. So, once E is built, every function or method in E is followed
   back to the code that can run it, and every variable that code writes in
   place (`mutated_by`) is a changed value: its readers and the sites that
-  can see it join E. "Can run" follows resolved references (a call, or a
+  can see it join E. A cache outside a module variable (audit round 5,
+  R22: `self._cache[k] = compute(k)` on a singleton or a session fixture's
+  object, `cls._cache`, a `@memo` decorator's closure, `get.cache`, a
+  `functools.cached_property`) is found by what the code stores rather
+  than where: the index records, per function, each store of a computed
+  value into state outliving the call (`SourceIndex.stores`: the attribute
+  written through `self`/`cls`/a parameter/a function/a class, `@self`,
+  `@param` or `@closure`, and what the value derives from: the symbols the
+  expression names, `name:<n>` on a value of unknown type, `*` for a call
+  through a parameter or a local bound in a way that says nothing). Code
+  in the chain whose stored value derives from a chain member is a cache
+  filler: it is observed, and so is whoever reads that state (the readers
+  of the attribute by name, guarded for a test-code class; every member of
+  the class for `@self`; the readers of the attribute a caller handed for
+  `@param`, `SourceIndex.handed`; only the filler for a closure). A
+  function under `cached_property` or a known memoiser
+  (`SourceIndex.memoized`) serves its value to readers that run nothing of
+  it: its readers and sites are followed as for a changed value; a
+  decorator function of the index counts as a caller of what it decorates
+  (`SourceIndex.decorations`). A method of a receiver the index cannot
+  type is not taken for every method of that name here (unlike W4's
+  `mutated_by` propagation): with that fallback, and with every unknown
+  decorator taken for a memoiser, strata selects 6 231 of 6 231 on
+  `edc32ce0 -> 1241020210` (a background writer thread credited to every
+  test stores a value derived from a logging helper; FastAPI route
+  decorators); without them, 955, as before R22. The two gaps are stated
+  in docs/limitations.md. "Can run" follows resolved references (a call, or a
   read of the function as a value, through a variable or class holding
   it), declared edges, the code naming a class for its special methods and
   constructors, and, for the changed function itself, calls by its name on

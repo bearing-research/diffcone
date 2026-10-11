@@ -133,7 +133,16 @@ everything.
     runs once for many tests is still a dependency of every reader: a test
     module's top-level code, a fixture with a wider scope (or a scope it
     computes), a hook, and any code of your project, a cache a test fills
-    included.
+    included. With a [recording](guides/evidence.md), such a cache is
+    followed when your code keeps it in a module variable, on an object, a
+    class, a closure or a function attribute, or in a
+    `functools.cached_property`, and fills it with a value your code
+    computes. Not followed: a cache kept by a memoising decorator from a
+    package diffcone doesn't know (it knows `functools`, `cachetools`,
+    `cached_property`, Django's and Werkzeug's), and one filled through a
+    method of an object whose type diffcone can't tell
+    (`self._cache.set(k, compute(k))` where `_cache` is set in several
+    ways).
 
 **Code that changes the process while pytest collects reaches every test.**
 :   A `conftest.py`, a test module or a module they import that sets an

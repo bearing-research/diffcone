@@ -51,6 +51,9 @@ class IndexerState:
             doc_decorated=self.index.doc_decorated,
             process_writes=self.index.process_writes,
             main_guarded=self.index.main_guarded,
+            stores=self.index.stores,
+            handed=self.index.handed,
+            memoized=self.index.memoized,
         )
         self.out = self._global
         # Symbols and class scopes added by the module being indexed, and

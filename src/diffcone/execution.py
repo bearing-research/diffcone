@@ -42,6 +42,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from diffcone import child
 from diffcone.cache import IndexCache
 from diffcone.discovery.asv_static import strip_json_comments
 from diffcone.evidence import (
@@ -1334,14 +1335,23 @@ SELECT_PLUGIN = "diffcone_select"
 CHILD_MODULE = "diffcone_child"
 # The recorder's own directory on PYTHONPATH (collect.environment leaves it out).
 PLUGIN_DIR_PREFIX = "diffcone-plugin-"
-# Beside the plugin on PYTHONPATH: a Python process a recorded test starts
-# records itself (child.py, roadmap item 15), then runs the sitecustomize
-# this one shadows, if any.
+# Beside the plugin on PYTHONPATH: the recorded test process itself starts
+# the recorder here, before any pytest plugin or a project's own
+# sitecustomize can import the project (DIFFCONE_COLLECT_MAIN, which the
+# recorder removes from the environment as it starts: audit round 5, R28);
+# a Python process a recorded test starts records itself (child.py,
+# roadmap item 15). Either then runs the sitecustomize this one shadows,
+# if any.
 SITECUSTOMIZE = """\
 import os as _os
 import sys as _sys
 
-if _os.environ.get("DIFFCONE_COLLECT_PARENT"):
+if _os.environ.get("DIFFCONE_COLLECT_OUT") and _os.environ.get("DIFFCONE_COLLECT_MAIN"):
+    try:
+        import diffcone_collect  # starts recording at import
+    except Exception:
+        pass
+elif _os.environ.get("DIFFCONE_COLLECT_PARENT"):
     try:
         import diffcone_child
 
@@ -1394,7 +1404,12 @@ def _packages(modules: set[str]) -> str:
 
 
 def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
-    """The suite under the recorder, as a store's ``command`` records it."""
+    """The suite under the recorder, as a store's ``command`` records it:
+    ``-p diffcone_collect`` before the user's arguments (``extra``), as
+    pytest loads ``-p`` plugins in command-line order, after those of
+    ``addopts`` and ``PYTEST_ADDOPTS``. A ``-p`` inside ``command`` itself
+    cannot be reordered; the recorder starts from ``sitecustomize`` before
+    any of them all the same (plugin_environment)."""
     return pytest_argv(command, "-p", PLUGIN, "-p", "no:cacheprovider", *(extra or []))
 
 
@@ -1496,7 +1511,8 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
 
     The directory comes first on ``PYTHONPATH``: its ``sitecustomize`` must
     shadow any other (a project's own on a source root), and runs the one
-    it shadows itself."""
+    it shadows itself, after starting the recorder when there is something
+    to record (``DIFFCONE_COLLECT_MAIN``)."""
     env = dict(base)
     link_dir = Path(tempfile.mkdtemp(prefix=PLUGIN_DIR_PREFIX))
     (link_dir / "sitecustomize.py").write_text(SITECUSTOMIZE, encoding="utf-8")
@@ -1519,6 +1535,7 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     env["DIFFCONE_COLLECT_ROOT"] = str(Path(root).resolve())
     if out is not None:
         env["DIFFCONE_COLLECT_OUT"] = str(out)
+        env[child.ENV_MAIN] = "1"
     return env
 
 
