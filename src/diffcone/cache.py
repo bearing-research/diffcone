@@ -50,6 +50,9 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 42: writes only (not handing on) give use-scan ``mutated_by`` edges, modules
+# handed to written parameters, stores put back before the test ends, lookups
+# on the whole chain;
 # 41: ``mutated_by`` edges from the use scan (Indexer._mutations), star-imported
 # names in the use scan, UseRecord.direct;
 # 40: no escaped_values; decorated symbols (``decorated`` edges, passive decorators), the known
@@ -68,7 +71,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 41
+INDEX_FORMAT = 42
 
 
 def _indexer_fingerprint() -> str:

@@ -40,6 +40,20 @@ undone. A call's store is undone after the test when the call is:
   ``monkeypatch.context()``) binds, in that statement's body inside a
   function, when the body does not yield and nothing else binds the name.
 
+A store of an attribute (``m.X = v``) is undone after the test when the
+test (a function named ``test*``) or a function-scoped fixture (decorated
+with ``fixture``, no ``scope`` or ``scope="function"``) saves it and puts it
+back, in this shape, every statement at the top level of the function body:
+
+* ``orig = m.X`` before the store, ``orig`` bound nowhere else in it;
+* the stores, one after another (``m.X = v``; a value only for the first,
+  a name or a constant for those after it, so that once one store is made
+  nothing before the restore can raise);
+* then either a ``try:`` whose ``finally:`` starts by putting each back
+  (``m.X = orig``), or, in a fixture, a ``yield`` of a name or a constant
+  (or of nothing) followed at once by the restores: pytest resumes a yield
+  fixture after its test however the test ends.
+
 Anything else is not undone: ``patch(...).start()`` (with or without a
 ``stop``), a patcher kept in a name or an attribute, a ``MonkeyPatch()``
 made directly, ``MonkeyPatch.context()`` entered other than by ``with``,
@@ -296,15 +310,122 @@ def _undone(
     return isinstance(p, (*_FUNCTIONS, ast.ClassDef)) and any(d is node for d in p.decorator_list)
 
 
+def _function_fixture(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """A fixture pytest sets up and tears down around each test: decorated
+    with ``fixture``/``pytest.fixture`` with no ``scope`` or
+    ``scope="function"``."""
+    for decorator in function.decorator_list:
+        func = decorator.func if isinstance(decorator, ast.Call) else decorator
+        parts = _flatten_chain(func)
+        if not parts or parts[-1] != "fixture":
+            continue
+        if isinstance(decorator, ast.Call):
+            for kw in decorator.keywords:
+                if kw.arg == "scope" and not (
+                    isinstance(kw.value, ast.Constant) and kw.value.value == "function"
+                ):
+                    return False
+        return True
+    return False
+
+
+def _inert(expr: ast.expr | None) -> bool:
+    """A value whose evaluation cannot raise: nothing, a name, a constant."""
+    return expr is None or isinstance(expr, (ast.Name, ast.Constant))
+
+
+def _attribute_store(stmt: ast.stmt) -> ast.Attribute | None:
+    """The target of ``a.b.X = v`` (a dotted name), else None."""
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+        if isinstance(target, ast.Attribute) and _flatten_chain(target) is not None:
+            return target
+    return None
+
+
+def _restores(stmts: list[ast.stmt], saved: dict[str, str]) -> dict[str, ast.Attribute]:
+    """The leading ``m.X = orig`` statements: each dotted name put back, with
+    the store target putting it back."""
+    found: dict[str, ast.Attribute] = {}
+    for stmt in stmts:
+        target = _attribute_store(stmt)
+        if target is None:
+            break
+        text = ast.unparse(target)
+        value = stmt.value if isinstance(stmt, ast.Assign) else None
+        if not (isinstance(value, ast.Name) and saved.get(text) == value.id):
+            break
+        found[text] = target
+    return found
+
+
+def _restored_stores(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
+    """The ``id`` of each attribute store target in ``function`` that it puts
+    back before its test ends (the save/store/restore shape in this module's
+    docstring)."""
+    fixture = _function_fixture(function)
+    if not (fixture or function.name.startswith("test")):
+        return set()
+    body = function.body
+    saved: dict[str, str] = {}  # dotted name -> the local holding its old value
+    found: set[int] = set()
+    i = 0
+    while i < len(body):
+        stmt = body[i]
+        if (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, ast.Attribute)
+            and _flatten_chain(stmt.value) is not None
+            and len(_bindings(function, stmt.targets[0].id)) == 1
+        ):
+            saved[ast.unparse(stmt.value)] = stmt.targets[0].id
+            i += 1
+            continue
+        stores: list[ast.Attribute] = []
+        j = i
+        while j < len(body):
+            target = _attribute_store(body[j])
+            if target is None or ast.unparse(target) not in saved:
+                break
+            statement = body[j]
+            if stores and isinstance(statement, ast.Assign) and not _inert(statement.value):
+                break
+            stores.append(target)
+            j += 1
+        if not stores:
+            i += 1
+            continue
+        texts = {ast.unparse(t) for t in stores}
+        after = body[j] if j < len(body) else None
+        restored: dict[str, ast.Attribute] = {}
+        if isinstance(after, ast.Try) and after.finalbody:
+            restored = _restores(after.finalbody, saved)
+        elif (
+            fixture
+            and isinstance(after, ast.Expr)
+            and isinstance(after.value, ast.Yield)
+            and _inert(after.value.value)
+        ):
+            restored = _restores(body[j + 1 :], saved)
+        if texts <= restored.keys():
+            # The restores too: they put back what was there.
+            found.update(id(t) for t in (*stores, *restored.values()))
+        i = j
+    return found
+
+
 def undone_calls(
     root: ast.AST,
     nodes: list[ast.AST] | None = None,
     parents: dict[int, ast.AST] | None = None,
 ) -> frozenset[int]:
     """The ``id`` of every call under ``root`` whose store is undone when
-    the test that made it ends (the rule in this module's docstring);
-    ``nodes`` and ``parents`` are ``root``'s nodes and parent map when the
-    caller has them."""
+    the test that made it ends, and of every attribute store target a test
+    or fixture puts back before then (the rules in this module's
+    docstring); ``nodes`` and ``parents`` are ``root``'s nodes and parent
+    map when the caller has them."""
     nodes = nodes if nodes is not None else list(ast.walk(root))
     # The names a ``with MonkeyPatch.context() as name`` binds somewhere.
     contexts = {
@@ -316,6 +437,8 @@ def undone_calls(
     }
     found: set[int] = set()
     for node in nodes:
+        if isinstance(node, _FUNCTIONS):
+            found |= _restored_stores(node)
         if not isinstance(node, ast.Call):
             continue
         parts = _flatten_chain(node.func)

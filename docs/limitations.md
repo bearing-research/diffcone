@@ -119,7 +119,8 @@ everything.
     place. Not followed: an object stored away and changed later under
     another name (`self.store = store`, then `self.store[k] = v`), an
     object a function returns that its caller then changes, and a library
-    function that changes an argument you pass it.
+    function that changes an argument you pass it, a module of yours
+    included (a library writing into a module you hand it).
 
 **Code that changes the process while pytest collects reaches every test.**
 :   A `conftest.py`, a test module or a module they import that sets an

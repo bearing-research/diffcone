@@ -16,14 +16,19 @@ Pass 2 records, per function (cacheable per module):
   that changes its first argument (``heapq.heappush(p, x)``). ``self`` is a
   parameter: a method that writes ``self.x`` writes its receiver. A local
   bound once to a parameter (``d = p``) is that parameter;
-* every object it hands to a call (``passes``): one of its parameters, or a
-  module-level variable (``REG``, ``cfg.REG``, ``REG["sub"]``), as an
+* every object it hands to a call (``passes``): one of its parameters, a
+  module-level variable (``REG``, ``cfg.REG``, ``REG["sub"]``,
+  ``import_module("pkg.cfg").REG``), or an in-scope module (``pkg.cfg``, a
+  function-local import of it, ``sys.modules["pkg.cfg"]``,
+  ``import_module("pkg.cfg")``, a local bound once to one of those), as an
   argument or as the receiver of a method call, with the callee when it
   resolves and its name otherwise.
 
 After pass 2 (``apply_writes``), a parameter handed to a callee's written
 parameter is written too, until nothing changes; then every variable handed
-to a written parameter gets a ``mutated_by`` edge to the caller. A callee
+to a written parameter gets a ``mutated_by`` edge to the caller, and so does
+every variable of a module handed to one (and of its submodules: which of
+its attributes the callee writes is not recorded). A callee
 that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
 any in-scope function or method of that name, unless the receiver is a
 variable whose value is known: an instance of an in-scope class (only that
@@ -40,8 +45,9 @@ of that name otherwise.
 
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v``; a parameter
-returned to the caller), and a third-party function that changes an
-argument in place.
+returned to the caller; a module returned by a function other code calls),
+and a third-party function that changes an argument in place, a module
+included (a library handed a module of the project that writes into it).
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
-from diffcone.indexer.scopes import External, Resolved, Scope
+from diffcone.indexer.scopes import External, ModuleNode, Resolved, Scope
 from diffcone.indexer.syntax import _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import CLASS, FUNCTION, METHOD, MUTATED_BY, REFERENCES, VARIABLE, Edge
@@ -168,11 +174,61 @@ def _param_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
     return None
 
 
+def _module_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0) -> str | None:
+    """The in-scope module ``expr`` is: a name or chain that resolves to one
+    (a function-local import included), a handle a literal names
+    (``sys.modules["m"]``, ``import_module("m")``), or a local bound once to
+    one of those."""
+    scopes = collector.indexer.scopes
+    literal = collector._literal_module(expr)
+    if literal is not None:
+        return literal if literal in scopes else None
+    if (
+        isinstance(expr, ast.Name)
+        and expr.id in collector.scope.locals
+        and expr.id not in collector.scope.local_imports
+    ):
+        if _own_param(collector, expr.id) is not None or depth > 3:
+            return None
+        source = collector._local_source(expr.id)
+        return _module_of(collector, source, depth + 1) if source is not None else None
+    parts = _flatten_chain(expr)
+    if parts is None:
+        return None
+    node = collector.indexer.resolve_chain(parts, collector.scope)
+    if isinstance(node, ModuleNode):
+        return node.module if node.module in scopes else None
+    if isinstance(node, Resolved) and not node.detail and node.symbol in scopes:
+        return node.symbol
+    return None
+
+
 def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0) -> str | None:
     """The module-level variable ``expr`` is or holds part of (``REG``,
-    ``cfg.REG``, ``REG["sub"]``, a local bound once to one of those)."""
+    ``cfg.REG``, ``REG["sub"]``, a local bound once to one of those, an
+    attribute of an in-scope module however obtained:
+    ``import_module("pkg.cfg").REG``)."""
     while isinstance(expr, ast.Subscript):
         expr = expr.value
+    if isinstance(expr, ast.Attribute):
+        attrs: list[str] = []
+        base: ast.expr = expr
+        while isinstance(base, ast.Attribute):
+            attrs.append(base.attr)
+            base = base.value
+        if not isinstance(base, ast.Name) or base.id in collector.scope.locals:
+            module = _module_of(collector, base, depth)
+            if module is not None:
+                found = collector.indexer.resolve_dotted([*module.split("."), *reversed(attrs)])
+                if isinstance(found, Resolved) and not found.detail:
+                    symbol = collector.indexer.index.symbols.get(found.symbol)
+                    if (
+                        symbol is not None
+                        and symbol.kind == VARIABLE
+                        and symbol.id != collector.source
+                    ):
+                        return symbol.id
+                return None
     if isinstance(expr, ast.Name) and expr.id in collector.scope.locals:
         if _own_param(collector, expr.id) is not None or depth > 3:
             return None  # (``a = b[0]`` and ``b = a[0]`` would go round)
@@ -262,7 +318,7 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         if what is not None:
             handed.append((slot, what))
     if isinstance(func, ast.Attribute) and func.attr not in CONTAINER_MUTATORS:
-        what = _handed(collector, func.value)
+        what = _handed(collector, func.value, modules=False)
         if what is not None:
             handed.append((RECEIVER, what))
     if not handed:
@@ -329,21 +385,26 @@ def _dict_receiver(collector: _ReferenceCollector, expr: ast.expr) -> None:
         _write(collector, expr.args[0])
 
 
-def _handed(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
-    """What a call is handed in ``expr``: one of the function's parameters
-    or a module-level variable (or part of one)."""
+def _handed(collector: _ReferenceCollector, expr: ast.expr, *, modules: bool = True) -> str | None:
+    """What a call is handed in ``expr``: one of the function's parameters,
+    a module-level variable (or part of one), or (``modules``: as an
+    argument) an in-scope module."""
     if isinstance(expr, ast.Call):
         # ``vars(p)``/``p.__dict__``-style views hand on the object itself.
         if isinstance(expr.func, ast.Name) and expr.func.id == "vars" and expr.args:
             expr = expr.args[0]
         else:
-            return None
+            module = _module_of(collector, expr) if modules else None
+            return f"module:{module}" if module is not None else None
     param = _param_of(collector, expr)
     if param is not None:
         return f"param:{param}"
     variable = _variable_of(collector, expr)
     if variable is not None:
         return f"var:{variable}"
+    module = _module_of(collector, expr) if modules else None
+    if module is not None:
+        return f"module:{module}"
     return None
 
 
@@ -541,8 +602,23 @@ def apply_writes(indexer: Resolver) -> None:
             if key not in writes and writes_through(record):
                 writes.add(key)
                 changed = True
+    module_variables: dict[str, list[str]] = defaultdict(list)
+    for symbol in symbols.values():
+        if symbol.kind == VARIABLE:
+            module_variables[symbol.module].append(symbol.id)
     for record in passes:
         caller, what = record[0], record[1]
+        if what.startswith("module:"):
+            # A module handed to a written parameter: any of its variables
+            # (and its submodules') may be what the callee writes.
+            module = what[len("module:") :]
+            if writes_through(record):
+                for m in sorted(module_variables):
+                    if m == module or m.startswith(module + "."):
+                        for variable in module_variables[m]:
+                            if caller not in (variable, m):
+                                out.edges.add(Edge(variable, caller, REFERENCES, MUTATED_BY))
+            continue
         if not what.startswith("var:"):
             continue
         variable = what[len("var:") :]

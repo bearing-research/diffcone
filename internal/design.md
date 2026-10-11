@@ -304,30 +304,40 @@ Further rules (pre-release audit, round 2):
   variable, as an in-place mutation does; so does a write through the
   module and an item of the variable (`store._CACHE["k"].append(x)`, `del
   store._CACHE["k"]`, `store._CACHE["k"] += [x]`).
-* The same changes made through a module object pass 2 does not resolve to
-  the variable's module are `mutated_by` dependencies too, taken from the
-  use scan (`indexer/uses.py`, resolved between the passes:
-  `Indexer._mutations`): a handle (`import_module("pkg.reg").TABLE["x"] =
-  f`, `sys.modules["pkg.reg"]`, `__import__`, `getattr(pkg, "reg")`, a
-  local bound to one, a private function returning one), a function-local
-  import, a star import. Every write form counts: an item or attribute
-  assigned, augmented or deleted, a container mutator, an item changed on
-  the way, `setattr` on what the variable holds, and the variable handed
-  on through such a module object (any use that is not a read: an argument
-  of a function, bound to another name, returned; a variable named through
-  a module-level import is followed into the callee's parameters instead,
-  below). A module handed on (passed
-  to a function, `vars(m)`, any attribute of it read by a name nothing
-  bounds) may have any of its variables changed by whoever gets it, so each
-  of them depends on the code handing it on. A change through a module
-  found at run time (`import_module(name)`, an unpickled object's or a `gc`
-  list element's attributes: `obj.TABLE["x"] = f`) is a dependency of every
-  module's variable of that name; one through an object nothing names
-  (`gc.get_objects()[0]["x"] = f`, `pickle.loads(data)["x"] = f`) of every
-  variable. A store undone after the test (`monkeypatch.setattr(m, "T",
-  x)`) is none: later code does not see it (W26); nor is an object
-  installed in `sys.modules` under a module's name, which hands none of
-  the module's own objects to anyone.
+* The same changes made by in-scope code through a module object pass 2
+  does not resolve to the variable's module are `mutated_by` dependencies
+  too, taken from the use scan (`indexer/uses.py`, resolved between the
+  passes: `Indexer._mutations`): a handle bounded to known modules
+  (`import_module("pkg.reg").TABLE["x"] = f`, `sys.modules["pkg.reg"]`,
+  `__import__`, `getattr(pkg, "reg")`, a local bound to one, a private
+  function returning one), a function-local import, a star import. Every
+  write form counts: an item or attribute assigned, augmented or deleted, a
+  container mutator, an item changed on the way (`m.T["k"].append(x)`),
+  `setattr` on what the variable holds. Through a module found at run time
+  (`import_module(name).TABLE["x"] = f`, an unpickled object's or a `gc`
+  list element's attributes) the change is a dependency of every module's
+  variable of the name written; an item stored into, or a mutator called
+  on, an object nothing names (`gc.get_objects()[0]["x"] = f`,
+  `pickle.loads(data)["x"] = f`) is one of every container variable (a
+  dict, list or set display, a builtin container). A module or a variable
+  handed to in-scope code is followed into the callee's parameters (below:
+  a module handed to a written parameter makes its caller a writer of each
+  of the module's variables); handed to a library, it is not followed (the
+  limitation for arguments a library changes). A store undone after the
+  test (`monkeypatch.setattr(m, "T", x)`, or saved and put back: below) is
+  none: later code does not see it (W26); nor is an object installed in
+  `sys.modules` under a module's name, which hands none of the module's own
+  objects to anyone.
+* A test or a function-scoped fixture that saves a module attribute, stores
+  into it and puts it back before its test ends (`orig = m.X; m.X = v;
+  try: yield finally: m.X = orig`, or `yield` then the restore at once) is
+  a store undone after the test, in `indexer/patches.py`'s one notion of
+  undone: every statement at the top level of the function, the stores one
+  after another with only a name or a constant as the value after the first
+  (nothing between a store and the restore can raise), a plain `yield` only
+  of a name or a constant, the restores first in the `finally`. Any other
+  shape (no restore, code before it, a wider-scoped fixture, a helper that
+  is no test) is a lasting store.
 * Writes through a parameter or a receiver (`indexer/writes.py`). A
   function that changes a parameter in place (an item or attribute
   assigned, augmented or deleted, `p += [x]`, a container mutator on it or
@@ -1039,9 +1049,15 @@ Unknown is never treated as unaffected:
   `mock.patch.dict(logging.__dict__, ...)`, `globals()["logging"]`); or
   its importer's namespace reached by `exec` of code that is not a
   literal. Handing on a module counts for lookups on it and below it, and
-  on a module above it, as a store does (a lookup through `os.path` is
-  recorded on `os`); a name a star import from outside the roots may bind
-  counts as that module's name (`from os import *` then `register(path)`). A
+  on a module above it when what is handed on is a module the project
+  imports by that name (an `import` statement, the module a `from` import
+  reads, a module-level `from os import path`, a literal `import_module`):
+  anything else below (`dt.datetime`, `dt.timezone.utc`) is an object of
+  the library, and a library changing an object it is handed is not
+  followed. A lookup is recorded on the whole chain it looks on
+  (`getattr(os.path, n)` on `os.path`). A name a star import from outside
+  the roots may bind counts as that module's name (`from os import *` then
+  `register(path)`). A
   store through, or the handing on of, a module found at run time
   (`sys.modules[name]`, `import_module(name)`, also through a local name
   bound to one, or returned by a helper) counts for every external module;

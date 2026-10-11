@@ -321,6 +321,47 @@ def test_l4_a_builtin_a_star_import_may_rebind_is_not_a_read(repo):
     assert "bench.time_noop" not in selected(plan)
 
 
+def test_l4_an_object_of_a_library_handed_on_writes_no_module(repo):
+    """marshmallow's shape: ``getattr(dt, name)`` looks on ``datetime``,
+    and code elsewhere hands ``dt.timezone.utc`` and ``dt.datetime`` to
+    calls. Those are objects of the library, no modules (the project imports
+    neither by that name), so they are no writers onto ``datetime``: a
+    change to one test's body selects that test, not every reader of the
+    lookup. (Handing a module below the looked-up one on still counts.)"""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/fields.py": "import datetime as dt\n\n\ndef parse(name, v):\n"
+            "    return getattr(dt, name)(v)\n",
+            "pkg/utils.py": "import datetime as dt\n\n\ndef stamp(value):\n"
+            "    return value.replace(tzinfo=dt.timezone.utc)\n\n\n"
+            "def kind():\n    return type_name(dt.datetime)\n\n\n"
+            "def type_name(t):\n    return t.__name__\n",
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg.fields import parse\n\n\n"
+            "def test_a():\n    assert parse('date', 1)\n",
+            "tests/test_b.py": "from pkg.utils import stamp\n\n\ndef test_b():\n    assert stamp\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench.py": "from pkg.fields import parse\n\n\n"
+            "def time_parse():\n    parse('date', 1)\n",
+        }
+    )
+    head = repo.commit(
+        {
+            "tests/test_b.py": (
+                "from pkg.utils import stamp\n\n\ndef test_b():\n    assert stamp\n    pass\n"
+            )
+        }
+    )
+    plan = repo.plan(
+        base,
+        head,
+        [asv_target("bench.time_parse", "benchmarks.bench.time_parse")],
+        discover_runners=["pytest"],
+    )
+    assert selected(plan) == {"tests/test_b.py::test_b"}
+
+
 # ---------------------------------------------------------------------- L6
 # A change to a module-level variable's object made through a module object
 # other than a name pass 2 resolves (``import_module("pkg.reg").TABLE["x"]
@@ -474,3 +515,98 @@ def test_l6_evidence_a_changed_writer_through_a_handle_selects_the_readers(repo)
     head = repo.commit({"pkg/w.py": writer.format("c")})
     plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=evidence)
     assert selected(plan) == BOTH
+
+
+# A test or function-scoped fixture that saves a module attribute, stores
+# into it and puts it back (``orig = m.X; m.X = v; try: yield finally: m.X =
+# orig``) leaves nothing for later tests, as ``monkeypatch.setattr`` does:
+# no ``mutated_by`` dependency of the attribute's readers. When the shape
+# does not guarantee the restore (none, code that may raise before it, a
+# wider scope), the store lasts.
+
+STATE_FILES = {
+    "pkg/__init__.py": "",
+    "pkg/state.py": "STATE = None\n\n\ndef get():\n    return STATE\n",
+    "pkg/impl.py": "def make():\n    return {0}\n",
+    "tests/__init__.py": "",
+    "tests/test_b.py": "from pkg.state import get\n\n\ndef test_b():\n    assert get() is None\n",
+}
+SAVE = "    orig = m.STATE\n    m.STATE = pkg.impl.make()\n"
+
+
+def _restore_plan(repo, test_a: str):
+    files = {**BENCH, **STATE_FILES, "tests/test_a.py": test_a}
+    base = repo.commit({k: v.replace("{0}", "1") for k, v in files.items()})
+    head = repo.commit({"pkg/impl.py": STATE_FILES["pkg/impl.py"].replace("{0}", "2")})
+    return repo.plan(base, head, [BENCH_TARGET], discover_runners=["pytest"])
+
+
+FIXTURE = "import pytest\n\nimport pkg.impl\n\n\n@pytest.fixture{scope}\ndef client():\n{body}"
+TEST_A = "\n\ndef test_a(client):\n    pass\n"
+LOCAL = "    import pkg.state as m\n\n"
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        FIXTURE.format(
+            scope="",
+            body=LOCAL + SAVE + "    try:\n        yield 1\n    finally:\n        m.STATE = orig\n",
+        )
+        + TEST_A,
+        FIXTURE.format(scope="", body=LOCAL + SAVE + "    yield\n    m.STATE = orig\n") + TEST_A,
+        FIXTURE.format(
+            scope="(autouse=True)",
+            body=LOCAL + SAVE + "    try:\n        yield client_of()\n    finally:\n"
+            "        m.STATE = orig\n        cleanup()\n",
+        )
+        + TEST_A,
+        "import pkg.impl\nimport pkg.state as m\n\n\ndef test_a():\n"
+        + SAVE
+        + "    try:\n        assert m.STATE\n    finally:\n        m.STATE = orig\n",
+    ],
+    ids=["fixture_try_finally", "fixture_plain_yield", "fixture_finally_first", "test_try_finally"],
+)
+def test_l6_a_store_put_back_before_the_test_ends_lasts_for_no_later_test(repo, test_a):
+    plan = _restore_plan(repo, test_a)
+    assert selected(plan) == {"tests/test_a.py::test_a"}
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        FIXTURE.format(scope="", body=LOCAL + SAVE + "    yield 1\n") + TEST_A,
+        FIXTURE.format(
+            scope="", body=LOCAL + SAVE + "    yield 1\n    cleanup()\n    m.STATE = orig\n"
+        )
+        + TEST_A,
+        FIXTURE.format(scope="", body=LOCAL + SAVE + "    yield client_of()\n    m.STATE = orig\n")
+        + TEST_A,
+        FIXTURE.format(
+            scope="(scope='module')",
+            body=LOCAL + SAVE + "    try:\n        yield 1\n    finally:\n        m.STATE = orig\n",
+        )
+        + TEST_A,
+        FIXTURE.format(
+            scope="",
+            body=LOCAL + SAVE + "    m.OTHER = pkg.impl.make()\n    try:\n        yield 1\n"
+            "    finally:\n        m.STATE = orig\n",
+        )
+        + TEST_A,
+        "import pkg.impl\nimport pkg.state as m\n\n\ndef helper():\n"
+        + SAVE
+        + "    try:\n        pass\n    finally:\n        m.STATE = orig\n\n\n"
+        "def test_a():\n    helper()\n",
+    ],
+    ids=[
+        "not_put_back",
+        "code_before_the_restore",
+        "yield_value_may_raise",
+        "module_scope",
+        "second_store_may_raise",
+        "not_a_test",
+    ],
+)
+def test_l6_a_store_not_surely_put_back_lasts(repo, test_a):
+    plan = _restore_plan(repo, test_a)
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}

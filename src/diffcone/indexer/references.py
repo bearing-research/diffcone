@@ -536,6 +536,24 @@ class _ReferenceCollector(ast.NodeVisitor):
         node = self.indexer.resolve_chain(chain, self.scope)
         return node.module if isinstance(node, External) else None
 
+    def _looked_up(self, expr: ast.expr) -> list[str]:
+        """What a lookup on ``expr`` looks on, when that is something of an
+        external module, by its whole dotted name (``getattr(os.path, n)``
+        looks on ``os.path``, not on ``os``): each name the chain may stand
+        for under that module; empty when it is no external module's."""
+        module = self._external_module(expr)
+        if module is None:
+            return []
+        chain = _flatten_chain(expr)
+        names = (
+            sorted(
+                n for n in self._canonical_names(chain) if n == module or n.startswith(module + ".")
+            )
+            if chain is not None
+            else []
+        )
+        return names or [module]
+
     def _written_module(self, expr: ast.expr | None) -> str | None:
         """The external module a write's receiver may be: one it names, or
         ``*`` (any) for a module found at run time (``sys.modules[name]``,
@@ -690,7 +708,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         observe_assign(self, node.targets)
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
+        undone = self.scope.module.undone()
         for target in node.targets:
+            if id(target) in undone:
+                continue  # put back before the test ends (indexer/patches.py)
             self._process_store(target)
             if isinstance(target, ast.Subscript):
                 self._mark_write_only(target.value, SETITEM)
@@ -769,13 +790,13 @@ class _ReferenceCollector(ast.NodeVisitor):
             elif (builtin and parts[0] in REFLECTIVE_BUILTINS) or (
                 not builtin and self._canonical_names(parts) & REFLECTIVE_CALLS
             ):
-                module = self._external_module(node.args[0]) if node.args else None
-                if module is not None:
+                looked = self._looked_up(node.args[0]) if node.args else []
+                for module in looked:
                     # ``dir(builtins)``: what an external module holds.
                     self.indexer.out.external_lookups.add(
                         (self.source, module, "reflection", f"{name}()")
                     )
-                else:
+                if not looked:
                     self.indexer.out.reflection.add((self.source, f"{name}()"))
                 if (
                     node.args
@@ -1198,12 +1219,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # ``getattr(obj, f"pytest_{name}")``: every in-scope attribute
                 # name with that prefix is a candidate, nothing else.
                 names = self.indexer.symbol_names_with_prefix(prefix)
-            elif (module := self._external_module(node.args[0])) is not None:
+            elif looked := self._looked_up(node.args[0]):
                 # On an external module: bounded unless in-scope code stores
                 # something there (decided over the whole tree).
-                self.indexer.out.external_lookups.add(
-                    (self.source, module, "dynamic", "getattr(<non-literal>)")
-                )
+                for module in looked:
+                    self.indexer.out.external_lookups.add(
+                        (self.source, module, "dynamic", "getattr(<non-literal>)")
+                    )
                 return
             else:
                 detail = self._getattr_detail(node.args[0], base)
