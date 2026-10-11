@@ -225,7 +225,7 @@ class Indexer(DynamicBounds):
         }
         # Handed to code the analysis does not follow into (a library, a
         # receiver of unknown type, ``**x``: references._handed_instances).
-        for kind, held in self._global.handed:
+        for kind, held in self._global.handed_instances:
             if kind == "class":
                 self.index.escaped_classes.add(held)
             else:

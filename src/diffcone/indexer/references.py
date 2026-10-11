@@ -1433,11 +1433,11 @@ class _ReferenceCollector(ast.NodeVisitor):
             source = self._local_source(expr.id)
             cls = self._argument_class(source) if source is not None else None
         if cls is not None:
-            self.indexer.out.handed.add(("class", cls))
+            self.indexer.out.handed_instances.add(("class", cls))
             return
         factory = self._argument_source(expr)
         if factory is not None:
-            self.indexer.out.handed.add(("factory", factory))
+            self.indexer.out.handed_instances.add(("factory", factory))
 
     def _mark_type_node(self, node: ast.expr) -> None:
         self._type_nodes.add(id(node))

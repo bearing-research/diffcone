@@ -200,7 +200,7 @@ class _Output:
     # (kind, id): a class whose instance or a function whose result is
     # handed to code the analysis does not follow (``references.py``,
     # ``_handed_on``); the classes join ``SourceIndex.escaped_classes``.
-    handed: set[tuple[str, str]] = field(default_factory=set)
+    handed_instances: set[tuple[str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -243,7 +243,7 @@ class _Output:
         self.memoized |= other.memoized
         self.script_paths |= other.script_paths
         self.test_runs |= other.test_runs
-        self.handed |= other.handed
+        self.handed_instances |= other.handed_instances
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -348,7 +348,7 @@ def _output_to_dict(out: _Output) -> dict:
         "memoized": sorted(out.memoized),
         "script_paths": sorted(list(p) for p in out.script_paths),
         "test_runs": sorted(list(t) for t in out.test_runs),
-        "handed": sorted(list(h) for h in out.handed),
+        "handed_instances": sorted(list(h) for h in out.handed_instances),
     }
 
 
@@ -426,7 +426,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.memoized = set(data["memoized"])
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
-    out.handed = {(a, b) for a, b in data["handed"]}
+    out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
     return out
 
 
