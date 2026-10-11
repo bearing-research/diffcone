@@ -1526,10 +1526,13 @@ reported (`uncollected_test_class`), so a plan over such a project shows
 that its target list is not the suite. Targets a plugin creates have to
 come from a manifest.
 
-Fixtures are functions decorated with a dotted name ending in `fixture` or
-`yield_fixture`, or module-level bindings of the form
-`name = pytest.fixture(...)(function)`; `name=` and `autouse=True` keyword
-arguments are honoured. pytest registers a fixture under every name a
+Fixtures are functions decorated with a dotted name whose last part ends
+in `fixture` (`pytest.fixture`, `yield_fixture`, pytest-asyncio's
+`fixture`, pytest-twisted's `async_fixture` and `async_yield_fixture`,
+pytest-trio's `trio_fixture`), or module-level bindings of the form
+`name = pytest.fixture(...)(function)` with such a decorator; `name=` and
+`autouse=True` keyword arguments are honoured (the plugins' decorators
+pass pytest's keywords through). pytest registers a fixture under every name a
 module binds it to (its `parsefactories` walks the module's namespace), so
 a module also offers the fixtures it binds by alias (`box2 = box`), by
 `from` import (`from pkg.conftest import engine as motor`), by module
@@ -1646,7 +1649,18 @@ table off), or otherwise unknown and becomes `fixture:<name>`; a name
 supplied only by `pytest_generate_tests` is reported the same way. A name
 defined in scope always wins over the table, and a project requesting one
 of these names without the plugin would fail at collection, so the
-assumption never hides a real dependency. Measured on pipx (699 tests):
+assumption never hides a real dependency. That includes a definition
+discovery sees but cannot read: when a level the lookup searches (class,
+module, conftests, plugins) binds the name to a function under a decorator
+not recognised as a fixture's, or to a value that may hold code (a call's
+result, an attribute of a value, a subscript), followed through aliases
+and imports within the source roots (`_unread_fixture`), the name is
+`fixture:<name>` (an `unresolved_fixture` note), not the plugin's. Scrapy's
+`@async_yield_fixture async def client(self, site)` was assumed to be
+pytest-django's `client` before pytest-twisted's decorator was recognised,
+so a change to `site` selected nothing. A name bound by an import from
+outside the source roots (`from django.conf import settings`) is outside
+code, as the plugin's fixture is, and keeps the table. Measured on pipx (699 tests):
 before the table, 153 tests were selected on every change because of
 `mocker` and `fake_process` alone.
 

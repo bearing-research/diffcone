@@ -204,25 +204,33 @@ matches the path, as ``fnmatch_ex`` does), and a ``.txt``/``.rst`` file
 named as an initial path whatever the globs say, become targets whose entry
 is not a symbol, so they are always selected.
 
-Fixtures are recognised by a decorator whose dotted name ends in ``fixture``
-or ``yield_fixture`` (``@pytest.fixture``, ``@pytest.fixture(name=...)``,
-``@fixture``, ``@pytest_asyncio.fixture``), or a call of one binding a
-module function (``x = pytest.fixture(scope=...)(f)``, ``x =
-pytest.fixture(f)``). Overriding follows nearest-scope-wins. Fixture
-parametrisation (``params=``) is not modelled: a fixture is one dependency
-whatever its parameters. ``indirect`` parametrisation is: an argname handed
-to a fixture stays a request, and ``indirect=`` (by keyword, or as the
-third positional argument) that is anything but a literal false value or a
-literal list of names hands every argname over; unless it is ``True``,
-only maybe: such an argname that names no fixture anywhere is a parameter,
-since pytest fails a test whose indirect argname names none. Fixtures from installed
-plugins cannot be seen: a name found at no in-scope level that a well-known
-plugin provides (``WELL_KNOWN_PLUGIN_FIXTURES``: ``mocker`` from
-pytest-mock, ``httpx_mock`` from pytest-httpx, ...) or that was declared
-external is assumed to come from that plugin and reported in an
-``external_fixture`` note with its request count; any other unknown fixture
-becomes the lifecycle dependency ``fixture:<name>`` so the planner selects
-its users.
+Fixtures are recognised by a decorator whose dotted name's last part ends
+in ``fixture`` (``@pytest.fixture``, ``@pytest.fixture(name=...)``,
+``@fixture``, ``@yield_fixture``, ``@pytest_asyncio.fixture``,
+pytest-twisted's ``@async_fixture`` and ``@async_yield_fixture``,
+``@pytest_trio.trio_fixture``; ``name=`` and ``autouse=`` read as
+pytest's), or a call of one binding a module function (``x =
+pytest.fixture(scope=...)(f)``, ``x = pytest.fixture(f)``). Overriding
+follows nearest-scope-wins. Fixture parametrisation (``params=``) is not
+modelled: a fixture is one dependency whatever its parameters.
+``indirect`` parametrisation is: an argname handed to a fixture stays a
+request, and ``indirect=`` (by keyword, or as the third positional
+argument) that is anything but a literal false value or a literal list of
+names hands every argname over; unless it is ``True``, only maybe: such an
+argname that names no fixture anywhere is a parameter, since pytest fails
+a test whose indirect argname names none. Fixtures from installed plugins
+cannot be seen: a name found at no in-scope level that was declared
+external, or that a well-known plugin provides
+(``WELL_KNOWN_PLUGIN_FIXTURES``: ``mocker`` from pytest-mock,
+``httpx_mock`` from pytest-httpx, ...), is assumed to come from that plugin
+and reported in an ``external_fixture`` note with its request count. The
+table never shadows a definition discovery sees but cannot read: when a
+level the lookup searches binds the name to what may be a fixture (a
+function under a decorator it does not recognise, a call's result, an
+attribute of a value; _unread_fixture, _ClassFixtures.unread), the name is
+an unknown fixture, and so is a maybe-indirect argname bound that way. An
+unknown fixture becomes the lifecycle dependency ``fixture:<name>``
+(an ``unresolved_fixture`` note), so the planner selects its users.
 """
 
 from __future__ import annotations
@@ -1451,6 +1459,10 @@ class ModuleFacts:
     # subscript, a name bound with others), "" when it is data (a literal,
     # a call's result, a module).
     opaque: dict[str, str] = field(default_factory=dict)
+    # Of the names bound by assignment, those whose value may be a fixture
+    # discovery cannot read (a call, an attribute of a value, a subscript:
+    # _may_hold_code); a literal or a container is none.
+    unread_values: set[str] = field(default_factory=set)
     # What ``from <module> import *`` binds (_star_exports), once computed.
     star_exports: list[str] | None = None
     # Whether the module binds a ``pytest_ignore_collect`` that may return
@@ -1461,9 +1473,13 @@ class ModuleFacts:
     unknown_stars: list[str] = field(default_factory=list)
 
 
-# The decorators that make a fixture (``pytest.fixture``, pytest-asyncio's
-# ``fixture``, the deprecated ``yield_fixture``), by the dotted name's end.
-FIXTURE_DECORATORS = ("fixture", "yield_fixture")
+def _fixture_decorator(parts: list[str]) -> bool:
+    """Whether a decorator's dotted name makes a fixture: its last part ends
+    in ``fixture`` (``pytest.fixture``, the deprecated ``yield_fixture``,
+    pytest-asyncio's ``fixture``, pytest-twisted's ``async_fixture`` and
+    ``async_yield_fixture``, pytest-trio's ``trio_fixture``). They take
+    pytest's ``name``, ``scope`` and ``autouse`` keywords, or none."""
+    return bool(parts) and parts[-1].endswith("fixture")
 
 
 def _explicit_name(call: ast.Call | None) -> str | None:
@@ -1476,7 +1492,7 @@ def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str
     """(is_fixture, explicit name, autouse)."""
     for dec in node.decorator_list:
         parts, call = decorator_chain(dec)
-        if parts and parts[-1] in FIXTURE_DECORATORS:
+        if _fixture_decorator(parts):
             return True, _explicit_name(call), _autouse(keyword_value(call, "autouse"))
     return False, None, False
 
@@ -1863,7 +1879,7 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
         if not isinstance(value, ast.Call):
             continue
         parts, call = decorator_chain(value.func if isinstance(value.func, ast.Call) else value)
-        if not parts or parts[-1] not in FIXTURE_DECORATORS or len(value.args) != 1:
+        if not _fixture_decorator(parts) or len(value.args) != 1:
             continue
         target = value.args[0]
         if not (isinstance(target, ast.Name) and target.id in functions):
@@ -1922,12 +1938,57 @@ def _collect_facts(parsed: ParsedModule) -> ModuleFacts:
             for target in stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]:
                 if isinstance(target, ast.Name):
                     facts.opaque[target.id] = text
+                if _may_hold_code(value):
+                    facts.unread_values.update(_target_names(target))
     declared, facts.unreadable_plugins = _declared_plugins(body)
     if _scope_values(body, "pytest_plugins"):
         facts.declared_plugins = declared
     facts.plugins = declared + _imported_plugins(parsed)
     facts.unignores = facts.unignores or _may_unignore(body)
     return facts
+
+
+# Values that are data, never a fixture: literals, containers and
+# comprehensions, f-strings, lambdas, comparisons.
+_DATA_VALUES = (
+    ast.Constant,
+    ast.JoinedStr,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.Lambda,
+    ast.Compare,
+)
+
+
+def _may_hold_code(value: ast.expr) -> bool:
+    """Whether a value bound to a name may be a fixture: anything but data
+    (_DATA_VALUES), a call's result included (``client =
+    make_fixture(_client)``)."""
+    return not isinstance(value, _DATA_VALUES)
+
+
+def _target_names(target: ast.expr) -> list[str]:
+    """The names an assignment target binds (``a, b = ...`` binds both)."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for elt in target.elts for n in _target_names(elt)]
+    if isinstance(target, ast.Starred):
+        return _target_names(target.value)
+    return []
+
+
+def _unread_decorated(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """A function under a decorator, none of which discovery recognises as
+    making a fixture: what the decorators return may be one (a plugin's own
+    fixture decorator), whose requests discovery cannot read."""
+    return bool(func.decorator_list) and not _is_fixture(func)[0]
 
 
 def _may_unignore(body: list[ast.stmt]) -> bool:
@@ -1962,7 +2023,16 @@ def _may_unignore(body: list[ast.stmt]) -> bool:
     return False
 
 
-def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> dict[str, Fixture]:
+class _ClassFixtures(dict[str, Fixture]):
+    """A class's fixtures (_class_level), and in ``unread`` the attributes
+    that may be fixtures discovery cannot read: a method under decorators
+    none of which it recognises, a name bound to a value that may hold code
+    (_may_hold_code)."""
+
+    unread: frozenset[str] = frozenset()
+
+
+def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> _ClassFixtures:
     """The fixtures pytest registers for a class, which it reads from
     ``dir(cls)``: ``owners`` is the class and its resolved bases, nearest
     first, wherever they are defined. Each attribute comes from the nearest
@@ -1971,10 +2041,16 @@ def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> dict[str, Fixture]:
     registering one name resolve to the alphabetically last, as pytest
     registers them in ``dir`` order."""
     attrs: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = {}
+    unread: set[str] = set()
     for owner, owner_id in owners:
         for func in scope_functions(owner.body):
             attrs.setdefault(func.name, (func, owner_id))
-    level: dict[str, Fixture] = {}
+        for stmt in iter_scope_statements(owner.body):
+            if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+                if _may_hold_code(stmt.value):
+                    targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                    unread.update(n for t in targets for n in _target_names(t))
+    level = _ClassFixtures()
     for attr, (func, owner_id) in sorted(attrs.items()):
         is_fixture, explicit, autouse = _is_fixture(func)
         if is_fixture:
@@ -1982,6 +2058,9 @@ def _class_level(owners: list[tuple[ast.ClassDef, str]]) -> dict[str, Fixture]:
             level[name] = Fixture(
                 name, f"{owner_id}.{attr}", autouse, _fixture_requests(func, True)
             )
+        elif _unread_decorated(func):
+            unread.add(attr)
+    level.unread = frozenset(unread)
     return level
 
 
@@ -2000,6 +2079,8 @@ class _Resolver:
         unresolved: Counter[str],
         assumed: Counter[str],
         usefixtures: tuple[str, ...],
+        module_facts: Callable[[str], ModuleFacts | None],
+        unread: Counter[str],
     ) -> None:
         self.module = module
         self.conftests = conftests
@@ -2009,6 +2090,27 @@ class _Resolver:
         self.assumed = assumed  # external fixture name -> requesting tests
         # The ini option ``usefixtures``: requested by every test.
         self.usefixtures = usefixtures
+        self.module_facts = module_facts
+        # Fixture name -> requesting tests, for names a level binds to what
+        # discovery cannot read (shadowed).
+        self.unread = unread
+        self._shadowed: dict[str, bool] = {}
+
+    def shadowed(self, class_levels: list[dict[str, Fixture]], name: str) -> bool:
+        """Whether a level the lookup searches (classes, module, conftests,
+        plugins) binds ``name`` to what may be a fixture discovery cannot
+        read: a function under a decorator it does not recognise, a value
+        that may hold code, through aliases and imports within the source
+        roots (_unread_fixture). Such a name is not missing: it may be that
+        level's fixture, with requests nobody can see."""
+        if any(name in getattr(level, "unread", ()) for level in class_levels):
+            return True
+        if name not in self._shadowed:
+            self._shadowed[name] = any(
+                _unread_fixture(facts.parsed.module, name, self.module_facts)
+                for facts in (self.module, *self.conftests, *self.plugins)
+            )
+        return self._shadowed[name]
 
     def plugin_requested(self, name: str) -> bool:
         """Whether an installed plugin requests this name itself
@@ -2091,9 +2193,16 @@ class _Resolver:
                     queue.extend(
                         (other, first_plugin) for level in levels[first_plugin:] for other in level
                     )
-            elif name in self.options.external_fixtures or (
-                self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES
-            ):
+            elif name in self.options.external_fixtures:
+                self.assumed[name] += 1
+            elif self.shadowed(class_levels, name):
+                # Bound in scope to what discovery cannot read: maybe the
+                # fixture pytest finds, not a plugin's (pytest-twisted's
+                # ``@async_yield_fixture def client(self, site)``), and
+                # maybe what an indirect argname is handed to.
+                self.unread[name] += 1
+                deps.append(f"fixture:{name}")
+            elif self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES:
                 self.assumed[name] += 1
             elif name in uncertain:
                 continue  # maybe indirect, and no fixture: a parameter
@@ -2234,6 +2343,30 @@ def _function_bound_to(module: str, attr: str, module_facts) -> str | None:
         return None
 
     return _bound_to(module, attr, module_facts, local)
+
+
+def _unread_fixture(module: str, attr: str, module_facts) -> bool:
+    """Whether ``module``'s namespace binds ``attr`` (_bound_to) to what may
+    be a fixture discovery cannot read: a function under decorators none of
+    which it recognises (_unread_decorated), or a value that may hold code
+    (``unread_values``). A fixture, a plain function or class, data, and a
+    name from outside the source roots are not: what an import from
+    outside binds is outside code, as an installed plugin's fixture is."""
+
+    def local(facts: ModuleFacts, name: str) -> bool | None:
+        if name in facts.fixture_attrs:
+            return False
+        if name in facts.unread_values:  # ``client = wrap(client)`` too
+            return True
+        node = None
+        for stmt in iter_scope_statements(facts.parsed.tree.body):
+            if isinstance(stmt, DEF_NODES) and stmt.name == name:
+                node = stmt  # the last definition, as at run time
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return _unread_decorated(node)
+        return False if node is not None else None
+
+    return bool(_bound_to(module, attr, module_facts, local, past_stars=True))
 
 
 @dataclass(frozen=True)
@@ -3223,6 +3356,7 @@ def discover_pytest(
 
     unresolved: Counter[str] = Counter()
     assumed: Counter[str] = Counter()
+    unread: Counter[str] = Counter()
     # Filled while walking every module: class symbols followed as a base,
     # and (symbol, detail) for each class pytest's rules skipped.
     used_as_base: set[str] = set()
@@ -3234,7 +3368,15 @@ def discover_pytest(
             continue
         conftests = _conftest_chain(path, facts_by_path)
         resolver = _Resolver(
-            facts, conftests, global_plugins, options, unresolved, assumed, ini_usefixtures
+            facts,
+            conftests,
+            global_plugins,
+            options,
+            unresolved,
+            assumed,
+            ini_usefixtures,
+            module_facts,
+            unread,
         )
         module_deps = [facts.parsed.module]
         module_deps += outside_conftests_of(path)
@@ -3316,7 +3458,15 @@ def discover_pytest(
             same = known is not None and known.parsed.path == pm.path
             facts = link(known if known is not None and same else _collect_facts(pm))
         resolver = _Resolver(
-            facts, conftests, global_plugins, options, unresolved, assumed, ini_usefixtures
+            facts,
+            conftests,
+            global_plugins,
+            options,
+            unresolved,
+            assumed,
+            ini_usefixtures,
+            module_facts,
+            unread,
         )
         return (
             plugin_hooks
@@ -3334,6 +3484,16 @@ def discover_pytest(
                 "unresolved_fixture",
                 f"fixture {name!r} requested by {count} test(s) was not found in the source "
                 "roots; its users are selected conservatively (declare it external to opt out)",
+            )
+        )
+    for name, count in sorted(unread.items()):
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "unresolved_fixture",
+                f"fixture {name!r} requested by {count} test(s) is bound in scope to what "
+                "discovery cannot read (a decorator it does not recognise as a fixture's, or "
+                "a value it cannot follow); its users are selected conservatively",
             )
         )
     for name, count in sorted(assumed.items()):
