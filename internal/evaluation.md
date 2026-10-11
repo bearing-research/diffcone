@@ -1441,6 +1441,34 @@ the like in the autouse reset fixture are no longer reads; the fixture
 still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
 W13 and W15: 939 of 6 231 with and without these rules.
 
+## After the behaviour-first round (audit round 5, R1-R30; 2026-10-11)
+
+Six reviews attacked from the outside, one feature at a time (Python
+constructs, pytest features, the recorder, snapshots and classification,
+the CLI-to-CI pipeline, every narrowing rule), each finding proved with a
+scenario whose outcome changes; internal/audit.md round 5. Four fix
+batches (hashing/planner, pass-2 walker and scripts, CLI and snapshots,
+evidence). The checks on the final code:
+
+* strata evidence (`edc32ce0` -> `1241020210`, the recording re-made in
+  store format 3 since R28 needs the preloaded modules): 960 of 6231
+  (403 `executed_changed`, 332 `text_code`, 174 `lookup_site`, 63
+  `subprocess`, 18 `touched_file`, 10 `escalated`, 10 `test_scope`, 6
+  `no_evidence`); the format-2 recording gave 955 before and after the
+  planner batches, so the five are recording variance. Each batch
+  measured 955 on its own; the sound-by-default version of R22's cache
+  rule selected 6231, hence its two documented narrowings.
+* Static plans over the last 8 commits of flask, requests, rich, pluggy,
+  more-itertools and marshmallow (48 plans): byte-identical before and
+  after every batch; escaped classes roughly doubled (R19: rich 43 ->
+  101, marshmallow 24 -> 60) without moving a selection. No reorder
+  commit in that window, so R6's cost was not exercised.
+* `diffcone corpus` over the last 15 commits of the six: 45 validated,
+  no outcome miss; selections identical to round 4's (marshmallow
+  `024d8d358a` 1 of 646).
+* The round-4 census, fixture and collection checks were not re-run (the
+  reboot took the clones); the 48-plan comparison and the corpus stand in.
+
 ## After the code-quality pass (audit round 4, Q1-Q25; 2026-10-10)
 
 Six quality reviews found misses where duplicated rules had drifted

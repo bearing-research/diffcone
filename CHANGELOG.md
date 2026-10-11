@@ -65,6 +65,9 @@ selection rules.
 - Editing an ordinary module named `build.py` (not at the repository root
   or beside `pyproject.toml`/`setup.cfg`) selects, with a recording, the
   tests that ran it, as static planning does, instead of every test.
+- A test module's `pytester`/`testdir` test depends on the project's
+  registered plugins (`pytest11` entry points, `pytest_plugins`, `-p`) and
+  on what its inline files import.
 
 ### Fixed
 
@@ -264,6 +267,71 @@ selection rules.
   as `plan`, and its output is unchanged.
 - A relative `--command` written with forward slashes
   (`.venv/Scripts/python.exe`) is resolved on Windows too.
+- Moving a module's or a class's statements around (a constant moved
+  below the decorator that reads it, two `@register` functions swapped, a
+  `def` moved below a `try`/`except` import of the same name) was no
+  change at all: the order of statements both sides have is now part of
+  the definition, so a reorder reaches importers; appending or swapping
+  plain `def`s still selects nothing.
+- Text a test writes out and runs (`exec`, `eval`, `compile`, `timeit`,
+  `pytester.makepyfile`) is read as the code it is: its imports and calls
+  count. Text built at run time from pieces that are not written out can
+  import anything.
+- A test file given to a test runner (`python -m pytest path`,
+  `pytest.main([...])`, `python -m unittest module`, `unittest`'s
+  loaders, `doctest.testfile`) runs whole, conftests and fixtures
+  included; it counted as an import.
+- A Python child whose interpreter is not the first word (`env X=1
+  python -m ...`, `uv run python ...`, `timeout 30 python ...`,
+  `asyncio.create_subprocess_exec(sys.executable, ...)`, `os.execl`) is
+  followed.
+- `match` class patterns, `operator.attrgetter`/`methodcaller`, and
+  `str.format` template fields (`'{0.attr}'`) read attributes by name; a
+  non-literal name is a dynamic reference.
+- An instance handed to code outside the project (`json.dump(x, w)`,
+  `print(file=w)`, `dict(obj)`, `csv.writer(w)`, `contextlib.closing(r)`)
+  depends on every method of its class, as it does when handed to project
+  code; only dunder methods were reached.
+- An import added to or removed from a module that starts or stops
+  running another module's import-time code reaches the readers of what
+  that code writes (a registry filled at import), in both modes; added
+  imports stay non-structural otherwise.
+- A module obtained from a literal `import_module("pkg.sub")` or
+  `__import__` and handed on counts as handed on.
+- A docstring read through a parameter (`inspect.getdoc(fn)` in a
+  helper) and a module's `__doc__` see docstring-only changes.
+- A class with an `enum.Enum`-family base or an in-scope metaclass
+  depends on its `__init__`/`__new__`, which run when the class is
+  created (`Color.RED.code` reaches `Color.__init__`); `dir(mod)` depends
+  on `mod.__dir__`; `dir`, `hasattr` and `vars` of a library module your
+  code writes to are lookup sites.
+- A doctest's entry and a manifest entry on project code are no longer
+  "isolated test code", nor is a test or `setUp` that module-level code
+  calls, nor a store through a `monkeypatch` a wider-scoped fixture
+  requests or that the module overrides.
+- `WORKTREE` plans read git-ignored `.py` files in directories git does
+  not ignore as a whole (a generated `_version.py`, `local_settings.py`);
+  ignored directories are still skipped. `run` refuses a working tree
+  that differs from the planned snapshot in any file the plan would have
+  selected on (data and configuration files under the roots,
+  `diffcone.toml`, runner configuration, build inputs, conftests, ignored
+  `.py` files, modes, dirty submodules) and names them.
+- File mode changes (`chmod +x`) under the source roots are changes, in
+  commits and the working tree; a tracked file replaced by a directory no
+  longer crashes `WORKTREE` plans.
+- `validate`, `corpus` and `collect` run the whole suite whatever `-x` or
+  `--maxfail` is configured, and `validate` refuses a suite that reported
+  fewer outcomes than it collected: a miss can no longer hide behind an
+  early stop.
+- `check` and `validate` work when pytest's rootdir lies below the
+  repository (an ini file in a subdirectory): the plan records pytest's
+  rootdir, configuration file and `--junit-prefix`, `check --rootdir` and
+  `--junit-prefix` override them, and a directory that fails to collect
+  counts as a collection failure of every test under it. Before, every
+  failure was an unknown miss and the record action confirmed it.
+- `run`'s "did not collect" message names `--lf`, `--ff`, `--sw`, `-k`,
+  `-m` or `--deselect` among the effective pytest arguments and where
+  they are set.
 
 ### Discovery
 
@@ -418,6 +486,21 @@ selection rules.
   missed.
 - A recording stored under a path containing `#`, `?` or `%` can be
   opened; it was skipped as if there were none.
+- Recordings must be made again: store format 3.
+- The recorder starts before pytest loads any `-p` plugin (`addopts`,
+  `PYTEST_ADDOPTS`, the command) and before a project `sitecustomize.py`,
+  so what they import is recorded; modules imported before it could start
+  are noted, `collect` warns, and any change in them is planned from the
+  code.
+- A cache kept on an object, a class, a closure, a function attribute or
+  in `functools.cached_property` reaches every test that reads it, not
+  only the test that filled it.
+- Files reached through a directory descriptor (`dir_fd=`,
+  `os.listdir(fd)`, `os.fstat`), entries of an `os.scandir` listing,
+  `os.readlink`, `sqlite3` `file:` URIs and symlinked paths are recorded;
+  a descriptor the recorder cannot trace flags the test.
+- A string `skipif` condition naming nothing of the project and
+  `autospec=True` mocks no longer mark a test as text code.
 
 ### CI
 
