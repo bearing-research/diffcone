@@ -1150,14 +1150,18 @@ doesn't check anything out, import your code, or run tests.</p>
 </tr>
 </tbody>
 </table>
-<p>Git-ignored files deserve a word. A plan of a commit sees only what git
-recorded, so a <code>.py</code> file git ignores (a generated <code>_version.py</code> or
-<code>_pb2.py</code>, a <code>local_settings.py</code>) is invisible to it, and so is any change
-you make to one. A <code>WORKTREE</code> plan reads such files when they sit in a
-directory git doesn't ignore as a whole, and treats them as new modules on
-top of the base commit; ignored directories (a virtualenv, a build tree)
-and ignored data files are still not seen. If your tests depend on
-generated Python, plan against <code>WORKTREE</code>, or commit what they import.</p>
+<div class="admonition note">
+<p class="admonition-title">Git-ignored files</p>
+<p>A plan of a commit sees only what git recorded. A <code>.py</code> file git
+ignores (a generated <code>_version.py</code> or <code>_pb2.py</code>, a <code>local_settings.py</code>)
+is invisible to it, and so is any change you make to one.</p>
+<p>A <code>WORKTREE</code> plan reads such files, as new modules on top of the base
+commit, when their directory also holds files git tracks or doesn't
+ignore. A directory with only ignored files is skipped, as are ignored
+directories (a virtualenv, a build tree) and ignored data files.</p>
+<p>If your tests depend on generated Python, plan against <code>WORKTREE</code>, or
+commit what they import.</p>
+</div>
 <h2 id="source-roots">Source roots<a class="headerlink" href="#source-roots" title="Permanent link">&para;</a></h2>
 <p>A source root is a directory that diffcone treats as an import root, the
 way Python's <code>sys.path</code> does. Module names come from the closest root that
@@ -1192,6 +1196,11 @@ contains a file:</p>
 that's usually <code>--source-root src --source-root .</code>; for a flat layout, the
 default is fine. Files outside every root are not analysed, so code there
 is treated like a third-party library.</p>
+<p>Under the roots, diffcone reads only <code>.py</code> files. A change to any other
+file there (a data file, a <code>README.md</code>) selects every target, since your
+code may read it. With the root <code>.</code>, that includes your documentation.
+See <a href="../../limitations/#what-a-change-reaches">limitations</a> for why, and
+<a href="../evidence/">execution evidence</a> for a way to narrow it.</p>
 <p>If one pytest session collects several test directories whose files share
 names (common in monorepos that use <code>--import-mode=importlib</code>), give each
 directory its own namespace with <code>DIR=PREFIX</code>:</p>

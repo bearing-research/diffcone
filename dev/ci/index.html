@@ -1245,12 +1245,16 @@ the run's JUnit XML are written to <code>diffcone-results/</code>; upload them w
 <p class="admonition-title">Match the recording</p>
 <p><code>command</code> and <code>pytest-args</code> must be the same in both workflows, and the
 environment must match: the same Python version and installed packages.
-Installing from a lock file makes this automatic. When the environment
-differs, diffcone runs a plan from the code instead of from the
-recording (or every test, if that plan's discovery may be incomplete);
-when the pull request changes the lock file or another
-dependency, build or CI file diffcone recognises (see
-<a href="../reference/discovery/">discovery</a>), it runs every test.</p>
+Installing from a lock file makes this automatic.</p>
+<ul>
+<li>When the environment differs, diffcone runs a plan from the code
+  instead of from the recording. If that plan's discovery may be
+  incomplete, it runs every test, unless you set
+  <code>allow-incomplete-discovery: true</code>.</li>
+<li>When the pull request changes the lock file or another dependency,
+  build or CI file diffcone recognises (see
+  <a href="../reference/discovery/">discovery</a>), it runs every test.</li>
+</ul>
 </div>
 <h2 id="check-against-a-full-run-optional">Check against a full run (optional)<a class="headerlink" href="#check-against-a-full-run-optional" title="Permanent link">&para;</a></h2>
 <p>While you build trust in the selection, keep your existing full test job
@@ -1279,6 +1283,12 @@ didn't execute. It doesn't fail the workflow unless you set
 <code>fail-on-miss: true</code>, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses.</p>
+<p>The check matches JUnit names to tests through pytest's rootdir and
+<code>--junit-prefix</code>, as the plan recorded them, and the action has no inputs
+to change them. So run the full job's pytest from the same directory, with
+the same <code>--junit-prefix</code>, as the <code>run</code> job. Otherwise, run
+<code>diffcone check</code> yourself with <code>--rootdir</code> or <code>--junit-prefix</code> (see
+<a href="../guides/running/#check-a-plan-against-a-full-run">checking a plan</a>).</p>
 <h2 id="or-record-on-every-push-to-the-default-branch">Or: record on every push to the default branch<a class="headerlink" href="#or-record-on-every-push-to-the-default-branch" title="Permanent link">&para;</a></h2>
 <p>If your default branch already runs the full suite on every push, that run
 can be the recording, and pull requests run only the selected tests. Each
@@ -1326,15 +1336,22 @@ test diffcone should have selected fails the default branch's workflow.</p>
    it is a miss, and the job fails. If it passes the second time, it is
    reported as flaky. Only a test can be run again: a file that failed to
    collect, or a failure that matches no target, is a miss straight away.
-   Failures the recorded run already had are not misses;</li>
+   Failures the recorded run already had are not misses. If
+   <code>diffcone check</code> itself fails (an input it can't read), the job fails
+   too;</li>
 <li>saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.</li>
 </ol>
-<p>The check is skipped, with a note, when there is nothing to compare with:
-no recording yet, a recording diffcone can't use (made with other source
-roots, or for a commit that can't be fetched or isn't from before the
-pushed commit, for example), or a commit with no parent. The recording is still
-made and saved.</p>
+<p>The check is skipped, with a note, when there is nothing to compare with:</p>
+<ul>
+<li>no recording yet;</li>
+<li>a recording diffcone can't use: made with other source roots or by an
+  older version of diffcone, or for a commit that can't be fetched or
+  isn't from before the pushed commit;</li>
+<li>a commit with no parent.</li>
+</ul>
+<p>The recording is still made and saved. Until a new one is saved, pull
+requests that restore an unusable recording plan from the code.</p>
 <p>With <code>fail-on-test-failure: true</code> a failing test fails the job too, as a
 plain test run would, after the recording is saved. A test file that can't
 be collected stops the recording itself, which fails the job.</p>
@@ -1375,15 +1392,18 @@ a name that starts with <code>diffcone-</code> and differs per job, and per cell
 matrix: <code>diffcone-${{ matrix.os }}-py${{ matrix.python-version }}</code>, for
 example. The report has one row per name; when a job was re-run, it reads
 the latest upload.</p>
-<p>Each report covers the runs that completed since the last successful
-report that posted started, so a run still going when one report starts is
-in the next. A report with both <code>report-label</code> and <code>miss-label</code> empty
-writes only the job summary and leaves its runs to the next report. If an
-artifact can't be downloaded, the report says so and the job fails, and
-the next report covers the same runs again. Artifacts that have expired
-are not reported. The report leaves out recording artifacts uploaded by
-pull-request runs (a pull request from a fork runs its own code), and
-artifacts whose files it cannot read, which it counts as a problem.</p>
+<p>Each report covers the runs that finished since the previous report that
+posted something started. A run still going when a report starts goes in
+the next one. A report that only writes the job summary (both
+<code>report-label</code> and <code>miss-label</code> empty), or fails to download an artifact,
+leaves its runs to the next report; a failed download also fails the job.</p>
+<p>The report leaves out:</p>
+<ul>
+<li>artifacts that have expired;</li>
+<li>recording artifacts uploaded by pull-request runs (a pull request from a
+  fork runs its own code);</li>
+<li>artifacts whose files it can't read, which it counts as a problem.</li>
+</ul>
 <p><code>report</code> takes <code>hours</code> (the window for the first report: runs that
 completed in this many hours before it; default <code>24</code>), <code>workflow</code> (only
 that workflow's runs; default all), <code>artifact-prefix</code> (default

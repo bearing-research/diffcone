@@ -1030,9 +1030,10 @@ A snapshot is one of:</p>
 <ul>
 <li>a git revision, such as <code>main</code>, <code>HEAD~1</code> or a commit hash;</li>
 <li><code>INDEX</code>, the changes you have staged with <code>git add</code>;</li>
-<li><code>WORKTREE</code>, the files on disk, including uncommitted and untracked files,
-  and git-ignored <code>.py</code> files that sit in a directory git doesn't ignore as
-  a whole (a generated <code>_version.py</code>, a <code>local_settings.py</code>). Ignored
+<li><code>WORKTREE</code>, the files on disk, including uncommitted and untracked files.
+  It also reads git-ignored <code>.py</code> files (a generated <code>_version.py</code>, a
+  <code>local_settings.py</code>) in a directory that also holds files git tracks or
+  doesn't ignore; a directory with only ignored files is skipped. Ignored
   directories (a virtualenv, a build tree) and ignored files that aren't
   Python are left out.</li>
 </ul>
@@ -1072,11 +1073,11 @@ report's names in brackets):</p>
 </tr>
 <tr>
 <td>definition changed (<code>definition_changed</code>)</td>
-<td>Its parameters, defaults, decorators or class bases changed.</td>
+<td>Its parameters, defaults, decorators or class bases changed, or the order of its statements changed.</td>
 </tr>
 <tr>
 <td>annotations changed (<code>annotations_changed</code>)</td>
-<td>Only a function's type annotations changed.</td>
+<td>Only a function's type annotations changed, and they aren't evaluated (see below).</td>
 </tr>
 <tr>
 <td>dependencies changed (<code>dependencies_changed</code>)</td>
@@ -1088,7 +1089,7 @@ report's names in brackets):</p>
 </tr>
 <tr>
 <td>imports added (<code>imports_added</code>)</td>
-<td>A module gained imports and nothing else. This selects nothing by itself; the code that uses the new names has changed too.</td>
+<td>A module gained imports and nothing else. The code that uses the new names has changed too.</td>
 </tr>
 <tr>
 <td>docstring changed (<code>docstring_changed</code>)</td>
@@ -1096,14 +1097,26 @@ report's names in brackets):</p>
 </tr>
 </tbody>
 </table>
-<p>Formatting and comments are not changes: adding blank lines, or moving a
-plain function past another, selects nothing. Moving a statement past code
-that runs at import (a constant below the decorator that reads it, a <code>def</code>
-below the import that falls back to it, two registering decorators swapped)
-is a change to the module or class it stands in. A docstring edit counts
-only where the docstring is used: a doctest, a decorator that rewrites it,
-or code that reads <code>__doc__</code> (<code>inspect.getdoc</code>), including a helper that
-reads it off whatever it is handed.</p>
+<p>Some details:</p>
+<ul>
+<li>Formatting and comments are not changes, and neither is adding blank
+  lines or swapping two neighbouring plain functions. Any other reordering
+  of a module's or class's top-level statements is a definition change
+  and reaches every importer.</li>
+<li>A change to annotations alone is <code>annotations_changed</code> only when the
+  annotations aren't evaluated: the module has <code>from __future__ import
+  annotations</code>, the function has no decorator other than <code>typing</code>'s
+  <code>overload</code>, <code>override</code> or <code>final</code>, and its class has no decorators or
+  keywords. Otherwise it is <code>definition_changed</code>.</li>
+<li>When a module starts importing one of your modules (or stops), that
+  module's import-time code now runs (or no longer does). The tests that
+  read what it registers or changes are selected, even though only an
+  import was added.</li>
+<li>A docstring edit counts only where the docstring is used: a doctest, a
+  decorator that rewrites it, or code that reads <code>__doc__</code>
+  (<code>inspect.getdoc</code>), including a helper that reads it off whatever it is
+  handed.</li>
+</ul>
 <h2 id="from-a-change-to-a-test">From a change to a test<a class="headerlink" href="#from-a-change-to-a-test" title="Permanent link">&para;</a></h2>
 <p>diffcone links symbols by the calls, references and imports it can resolve
 in the code. To plan, it starts from each test and follows those links: a

@@ -709,6 +709,23 @@
         
       
       
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Limitations
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
       <a href="././" class="md-nav__link md-nav__link--active">
         
   
@@ -724,6 +741,103 @@
   
 
       </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-change-reaches" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What a change reaches
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calls-and-lookups" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Calls and lookups
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#objects-and-modules-handed-to-other-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Objects and modules handed to other code
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code-a-test-runs-from-text-or-in-another-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Code a test runs from text or in another process
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-shared-between-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        State shared between tests
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Reading files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
       
     </li>
   
@@ -798,6 +912,11 @@
                       
                     
                     
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
                   
                   <div class="md-sidebar__inner">
                     
@@ -809,6 +928,91 @@
   
     
   
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-a-change-reaches" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        What a change reaches
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#calls-and-lookups" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Calls and lookups
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#objects-and-modules-handed-to-other-code" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Objects and modules handed to other code
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#code-a-test-runs-from-text-or-in-another-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Code a test runs from text or in another process
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-shared-between-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        State shared between tests
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Reading files
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -845,83 +1049,88 @@
 <p>diffcone is designed to select too many tests rather than too few. These
 are the cases where it selects more than you might expect, or can't see
 everything.</p>
+<h2 id="what-a-change-reaches">What a change reaches<a class="headerlink" href="#what-a-change-reaches" title="Permanent link">&para;</a></h2>
 <dl>
 <dt><strong>Changes that run on import reach every importer.</strong></dt>
-<dd>A change to code that runs when a module is imported (a module-level
+<dd>
+<p>A change to code that runs when a module is imported (a module-level
 statement, a constant, a class body, a decorator) selects every target
 whose module imports that module, directly or indirectly. In a codebase
 where most modules import a few central ones, such a change selects
-most tests. <a href="../guides/evidence/">Execution evidence</a> narrows this to the
-tests that actually used the changed code.</dd>
-<dt><strong>A function under a decorator diffcone can't read runs on import.</strong></dt>
-<dd><code>@deco</code> over a function is a call <code>deco(f)</code> when the module is imported,
-and the decorator may call the function then. Unless the decorator is
-one diffcone knows calls nothing of it (<code>property</code>, <code>staticmethod</code>,
-<code>functools.cache</code>, <code>pytest.fixture</code>, <code>dataclasses.dataclass</code> and the
-like, or a decorator of your own that only sets attributes and returns
-the function or a <code>functools.wraps</code> wrapper), a change to the
-function's body counts as a change to code that runs on import. A
-decorator from an installed package (a compiled <code>cache_readonly</code>, say)
-is one diffcone can't read.</dd>
+most tests.</p>
+<p>With a <a href="../guides/evidence/">recording</a>, a changed constant or class
+attribute selects only the tests that read it. Other code that runs on
+import (a module-level statement, a decorator) is still planned this
+way.</p>
+</dd>
+<dt><strong>Functions under unknown decorators count as import-time code.</strong></dt>
+<dd>
+<p><code>@deco</code> over a function is a call <code>deco(f)</code> when the module is
+imported, and the decorator may call the function then. So a change to
+the function's body counts as a change to code that runs on import,
+unless diffcone knows the decorator calls nothing of it:</p>
+<ul>
+<li>a decorator such as <code>property</code>, <code>staticmethod</code>, <code>functools.cache</code>,
+  <code>pytest.fixture</code> or <code>dataclasses.dataclass</code>;</li>
+<li>a decorator of your own that only sets attributes and returns the
+  function, or a <code>functools.wraps</code> wrapper.</li>
+</ul>
+<p>A decorator from an installed package (a compiled <code>cache_readonly</code>,
+say) is one diffcone can't read.</p>
+</dd>
 <dt><strong>Class-level changes affect every method.</strong></dt>
 <dd>A change to a class's body (its bases, decorators or class attributes)
-affects all of its methods. Removing or redirecting an import affects
-the whole importing module; adding one affects only the code that uses
-the new name, unless the imported module runs code of its own that
-the importing module did not run before.</dd>
+affects all of its methods.</dd>
+<dt><strong>Removed imports affect the whole module.</strong></dt>
+<dd>Removing or redirecting an import affects the whole importing module.
+Adding one affects only the code that uses the new name, unless the
+imported module runs code of its own that the importing module did not
+run before.</dd>
+<dt><strong>A change to a file diffcone doesn't read selects everything.</strong></dt>
+<dd>
+<p>Under your source roots, diffcone reads only <code>.py</code> files. A change to
+any other file there (a data file, a <code>.pyx</code>, a <code>README.md</code>, a
+configuration file) selects every target, since code or tests may read
+it. So does a change to a file's mode (a script made executable, a
+file turned into a symlink). <code>diffcone.toml</code> and <code>.diffcone/</code> are the
+exceptions.</p>
+<p>With the source root <code>.</code> (the default), the whole repository is under
+a root, so editing <code>README.md</code> selects every test. With a
+<a href="../guides/evidence/">recording</a>, most such changes select only the
+tests that read the file.</p>
+</dd>
+</dl>
+<h2 id="calls-and-lookups">Calls and lookups<a class="headerlink" href="#calls-and-lookups" title="Permanent link">&para;</a></h2>
+<dl>
 <dt><strong>Calls through objects of unknown type are matched by name.</strong></dt>
 <dd>
 <p>diffcone doesn't infer types. <code>self.method()</code> and <code>cls.method()</code> are
-resolved through the class hierarchy, but a call like <code>obj.run()</code> on an
+resolved through the class hierarchy. A call like <code>obj.run()</code> on an
 object of unknown type is matched against every method named <code>run</code>,
-and against every module-level function, class or variable named <code>run</code>
-in a module such an object can be: one your code passes around as a
-value, gets by name (<code>importlib.import_module</code>, <code>sys.modules</code>, a string
-naming it), or one pytest hands out (test modules, conftests). So it's
-selected whenever any of those changes.</p>
+and against module-level <code>run</code> in modules such an object could be. The
+calling code is selected when any of those changes.</p>
+<p>A module "such an object could be" is one your code passes around as a
+value, gets by name (<code>importlib.import_module</code>, <code>sys.modules</code>, a
+string naming it), or one pytest hands out (test modules, conftests).</p>
 <p>An instance attribute is followed only when every assignment of it is
 in <code>__init__</code> and assigns a parameter, a string, or one of your
 functions or classes by name. An attribute that holds an object
 (<code>self.client = Client()</code>) is not typed for calls: <code>self.client.get()</code>
 is matched against every method named <code>get</code>.</p>
 </dd>
-<dt><strong>Dynamic code is bounded by imports, if at all.</strong></dt>
+<dt><strong>Dynamic lookups are bounded by imports, if at all.</strong></dt>
 <dd>
-<p>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or <code>getattr</code>
-with a computed name is treated as affected by any change in the
-modules its module imports, and in the modules of code that stores
-objects on one of those modules. Some code widens that bound:</p>
+<p>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or
+<code>getattr</code> with a computed name is treated as affected by any change in
+the modules its module imports, and in the modules of code that stores
+objects on one of those modules. Some code changes that bound:</p>
 <ul>
-<li><strong>Text run as code.</strong> <code>exec</code>, <code>eval</code>, <code>timeit</code> and pytest's
-  <code>pytester.makepyfile</code> run text. Text written in the code (a string,
-  a constant, <code>textwrap.dedent</code> of one, a template filled with
-  literals) is read as the code it is: what it imports and calls
-  counts. Text built at run time or read from a file can import
-  anything, so the test is affected by any change; a text a helper's
-  parameter supplies is bounded by what the callers pass.</li>
-<li><strong>pytester.</strong> A test using <code>pytester</code> or <code>testdir</code> runs a pytest
-  session of its own with your project's registered plugins loaded,
-  so it depends on every fixture those plugins define and on what its
-  inline test code imports.</li>
 <li><strong>Lookups on a library module.</strong> <code>getattr(logging, name)</code> is bounded
   unless your code may store something on that module: directly, by
   handing the module to other code, or by putting an object in
-  <code>sys.modules</code> under its name. Then any change can affect the lookup.</li>
-<li><strong>Patches in tests.</strong> A patch undone when the test ends doesn't count
-  as storing: a method of pytest's <code>monkeypatch</code> fixture or
-  pytest-mock's <code>mocker</code> in the test or fixture that requests it, a
-  <code>with mock.patch(...)</code> or <code>with MonkeyPatch.context()</code> block, a
-  <code>@mock.patch(...)</code> decorator. A patch that may outlast the test
-  does: <code>patch(...).start()</code>, a patcher kept for later, a
-  <code>MonkeyPatch()</code> of your own, <code>monkeypatch</code> handed to a helper
-  function, or a <code>with mock.patch(...)</code> around a <code>yield</code> in a fixture.</li>
-<li><strong>Code loaded at run time.</strong> A module imported or run by a name
-  nothing bounds (<code>importlib.import_module(name)</code>,
-  <code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code>), an object unpickled with
-  <code>pickle.loads</code>, and a module loaded from a file whose path is
-  computed (<code>importlib.util.spec_from_file_location</code>) can be affected
-  by any change at all. A name that starts with fixed text
-  (<code>f"plugins.{name}"</code>) is bounded to the modules it can name.</li>
+  <code>sys.modules</code> under its name. Then any change can affect the lookup.
+  A patch undone when the test ends doesn't count (see <em>Patches in
+  tests</em> below).</li>
 <li><strong>Lookup tables.</strong> A name taken from a dict, list or set written in
   the code (<code>getattr(handlers, NAMES[key])</code>, the export table of a
   lazy <code>__getattr__</code>) is bounded by that table only while nothing can
@@ -930,108 +1139,224 @@ objects on one of those modules. Some code widens that bound:</p>
   <code>sys.modules</code> or <code>exec</code>, the lookup counts as dynamic. A parameter or
   local variable that happens to share the table's name isn't bounded
   by it.</li>
-<li><strong>Modules obtained at run time.</strong> A module your code gets by a name
-  it computes counts as any of your modules, so passing it on or
-  writing to it makes every lookup table dynamic. The same goes for a
-  function's <code>__globals__</code>, a frame's <code>f_globals</code>, and what
-  <code>pickle.loads</code>, <code>pkgutil.resolve_name</code> or <code>gc.get_objects()</code> hand
-  back. Two exceptions: a name that starts with fixed text, and a new
-  module (<code>types.ModuleType(name)</code>) that isn't installed in
-  <code>sys.modules</code> under a name of yours. A copy made with
-  <code>importlib.util.module_from_spec</code> counts as the module whose file it
-  loads.</li>
-<li><strong>Passing a module on.</strong> Code that passes a module to other code
-  (<code>read(ops, name)</code>), whether named by an import or obtained with
-  <code>importlib.import_module("pkg.sub")</code>, depends on everything in that
-  module and on what its imports bind (<code>api.core.TABLE</code>), as it depends
-  on every member of a class whose instances it passes on.</li>
-<li><strong>Passing an object on.</strong> Code that hands an instance of one of your
-  classes to a library (<code>json.dump(x, w)</code>, <code>csv.writer(w)</code>,
-  <code>print(file=w)</code>, <code>dict(obj)</code>, <code>handler.stream = w</code>), to a method on
-  an object of unknown type (<code>items.append(w)</code>) or to one of your own
-  functions depends on every method of that class: the receiving code
-  may call any of them by name. Builtins that only use dunder methods
-  (<code>len</code>, <code>str</code>, <code>iter</code>, <code>sorted</code>) don't count.</li>
 <li><strong>Names in strings.</strong> <code>operator.attrgetter("a.b")</code>,
   <code>methodcaller("m")</code>, a format template's fields (<code>"{0.name}"</code>) and a
-  <code>match</code> class pattern (<code>case C(x=1)</code>, <code>case C(1)</code> through
-  <code>__match_args__</code>) read attributes by name, and are matched like
+  <code>match</code> class pattern (<code>case C(x=1)</code>, or <code>case C(1)</code> through
+  <code>__match_args__</code>) read attributes by name. They are matched like
   <code>getattr(x, "a")</code>. A name or template that isn't written out is
-  bounded by what callers pass, else counts as dynamic.</li>
-<li><strong>Replacing modules.</strong> Code that puts an object in <code>sys.modules</code> for
-  good under a computed name may replace any of your modules, so
-  without a recording every test that imports one of them depends on
-  that code.</li>
+  bounded by what callers pass, or else counts as dynamic.</li>
+<li><strong>Names that start with fixed text.</strong> <code>f"plugins.{name}"</code> is bounded
+  to the modules it can name.</li>
 </ul>
 </dd>
+<dt><strong>Code loaded at run time can be affected by any change.</strong></dt>
+<dd>
+<p>These can reach any of your code, so the code using them is selected
+for any change:</p>
+<ul>
+<li>a module imported or run by a name nothing bounds
+  (<code>importlib.import_module(name)</code>, <code>runpy.run_module(name)</code>,
+  <code>runpy.run_path(path)</code>);</li>
+<li>a module loaded from a file whose path is computed
+  (<code>importlib.util.spec_from_file_location</code>);</li>
+<li>an object unpickled from data the code doesn't write out. A
+  <code>pickle.loads(pickle.dumps(x))</code> round trip, and bytes written in the
+  code, are followed.</li>
+</ul>
+</dd>
+<dt><strong>Modules obtained at run time count as any of your modules.</strong></dt>
+<dd>
+<p>A module your code gets by a name it computes counts as any of your
+modules, so passing it on or writing to it makes every lookup table
+dynamic. The same goes for a function's <code>__globals__</code>, a frame's
+<code>f_globals</code>, and what <code>pickle.loads</code>, <code>pkgutil.resolve_name</code> or
+<code>gc.get_objects()</code> hand back.</p>
+<p>Two exceptions: a name that starts with fixed text, and a new module
+(<code>types.ModuleType(name)</code>) that isn't installed in <code>sys.modules</code> under
+a name of yours. A copy made with <code>importlib.util.module_from_spec</code>
+counts as the module whose file it loads.</p>
+</dd>
+<dt><strong>Replacing a module in <code>sys.modules</code> reaches every importer.</strong></dt>
+<dd>Code that puts an object in <code>sys.modules</code> for good under a computed
+name may replace any of your modules. Without a recording, every test
+that imports one of them depends on that code.</dd>
+</dl>
+<h2 id="objects-and-modules-handed-to-other-code">Objects and modules handed to other code<a class="headerlink" href="#objects-and-modules-handed-to-other-code" title="Permanent link">&para;</a></h2>
+<dl>
+<dt><strong>Passing a module on depends on all of it.</strong></dt>
+<dd>Code that passes a module to other code (<code>read(ops, name)</code>) depends on
+everything in that module and on what its imports bind
+(<code>api.core.TABLE</code>). That holds whether the module is named by an
+import or obtained with <code>importlib.import_module("pkg.sub")</code>.</dd>
+<dt><strong>Passing an object on depends on all of its methods.</strong></dt>
+<dd>Code that hands an instance of one of your classes to other code
+depends on every method of that class, since the receiving code may
+call any of them by name. That covers a library (<code>json.dump(x, w)</code>,
+<code>csv.writer(w)</code>, <code>print(file=w)</code>, <code>dict(obj)</code>, <code>handler.stream = w</code>),
+a method on an object of unknown type (<code>items.append(w)</code>), and your
+own functions. Builtins that only use dunder methods (<code>len</code>, <code>str</code>,
+<code>iter</code>, <code>sorted</code>) don't count.</dd>
+</dl>
+<h2 id="code-a-test-runs-from-text-or-in-another-process">Code a test runs from text or in another process<a class="headerlink" href="#code-a-test-runs-from-text-or-in-another-process" title="Permanent link">&para;</a></h2>
+<dl>
+<dt><strong>Text run as code.</strong></dt>
+<dd><code>exec</code>, <code>eval</code>, <code>timeit</code> and pytest's <code>pytester.makepyfile</code> run text.
+Text written in the code (a string, a constant, a template filled with
+literals) is read as code: what it imports and calls counts. Text
+built at run time or read from a file can import anything, so the test
+is selected for any change. Text passed in as a helper's argument is
+read at each call site.</dd>
+<dt><strong>Tests that use <code>pytester</code>.</strong></dt>
+<dd>A test using <code>pytester</code> or <code>testdir</code> runs a pytest session of its own,
+with your project's registered plugins loaded. It depends on every
+fixture those plugins define, and on what its inline test code
+imports.</dd>
 <dt><strong>Python programs a test starts.</strong></dt>
-<dd>A test that runs a script or module of your project in a new process
-(<code>[sys.executable, "scripts/gen.py"]</code>, <code>python -m mypkg.tool</code>,
-<code>python -c "import mypkg"</code>, also after <code>env X=1</code>, <code>uv run</code> or
-<code>timeout 30</code>, or through <code>asyncio.create_subprocess_exec</code>) depends on
-that script or module, and on what it imports, when the code names it
-in a string. A test file given to a test runner (<code>python -m pytest
-tests/test_x.py</code>, <code>pytest.main([...])</code>, <code>python -m unittest
-tests.cases</code>) runs whole: the test depends on everything in that file
-and its <code>conftest.py</code> files. When the program is built at run time (a
-path from a variable or the environment, <code>-c</code> code assembled from
-pieces or code that changes <code>sys.path</code>, <code>*args</code>, a directory or
-<code>unittest discover</code>), the test is affected by any change. So is a test
-that runs a <code>.py</code> file no module name maps to
-(<code>scripts/gen-data.py</code>), which isn't analysed. Console scripts your
-project installs and files outside your source roots aren't seen;
-<a href="../guides/evidence/">execution evidence</a> follows the processes a test
-starts.</dd>
+<dd>
+<p>A test that runs a script or module of your project in a new process
+depends on that program and on what it imports, when the code names it
+in a string: <code>[sys.executable, "scripts/gen.py"]</code>,
+<code>python -m mypkg.tool</code>, <code>python -c "import mypkg"</code>. This also works
+after <code>env X=1</code>, <code>uv run</code> or <code>timeout 30</code>, and with
+<code>asyncio.create_subprocess_exec</code>.</p>
+<ul>
+<li>A test file given to a test runner (<code>python -m pytest
+  tests/test_x.py</code>, <code>pytest.main([...])</code>, <code>python -m unittest
+  tests.cases</code>) runs whole: the test depends on everything in that
+  file and its <code>conftest.py</code> files.</li>
+<li>A <code>.py</code> file no module name maps to (<code>scripts/gen-data.py</code>) is read
+  like <code>-c</code> code: the test depends on the file and on what it imports.</li>
+<li>When the program is built at run time, the test is selected for any
+  change: a path from a variable or the environment, <code>-c</code> code
+  assembled from pieces, a program that imports by a computed name or
+  changes <code>sys.path</code>, <code>*args</code>, a directory, or <code>unittest discover</code>.</li>
+<li>Console scripts your project installs and files outside your source
+  roots aren't seen.</li>
+</ul>
+<p><a href="../guides/evidence/">Execution evidence</a> follows the processes a test
+starts.</p>
+</dd>
+</dl>
+<h2 id="state-shared-between-tests">State shared between tests<a class="headerlink" href="#state-shared-between-tests" title="Permanent link">&para;</a></h2>
+<dl>
 <dt><strong>State changed in place reaches every reader.</strong></dt>
-<dd>Code that changes a module-level object, directly or by handing it to a
+<dd>
+<p>Code that changes a module-level object, directly or by handing it to a
 function that changes it (<code>register(REGISTRY)</code>, <code>registry.add(x)</code>), is
 a dependency of every reader of that object. A change to a function
 also reaches the readers of whatever the functions it calls change in
-place. Not followed: an object stored away and changed later under
-another name (<code>self.store = store</code>, then <code>self.store[k] = v</code>), an
-object a function returns that its caller then changes, and a library
-function that changes an argument you pass it, a module of yours
-included (a library writing into a module you hand it).</dd>
+place.</p>
+<p>Not followed:</p>
+<ul>
+<li>an object stored away and changed later under another name
+  (<code>self.store = store</code>, then <code>self.store[k] = v</code>);</li>
+<li>an object a function returns that its caller then changes;</li>
+<li>a library function that changes an argument you pass it, a module of
+  yours included (a library writing into a module you hand it).</li>
+</ul>
+</dd>
+<dt><strong>Patches in tests.</strong></dt>
+<dd>
+<p>A store on a module, yours or a library's, makes the code storing a
+dependency of every reader. A patch undone when the test ends doesn't
+count:</p>
+<ul>
+<li>a method of pytest's <code>monkeypatch</code> or pytest-mock's <code>mocker</code>, called
+  in the test or in a function-scoped fixture that requests it, unless
+  that module defines its own fixture of the same name;</li>
+<li>a <code>with mock.patch(...)</code> or <code>with MonkeyPatch.context()</code> block in a
+  function that doesn't <code>yield</code>;</li>
+<li>a <code>@mock.patch(...)</code> decorator;</li>
+<li>a value saved and put back in a test or a function-scoped fixture:
+  <code>orig = m.X</code>, then <code>m.X = v</code>, restored in a <code>finally:</code> block or, in a
+  fixture, right after the <code>yield</code>.</li>
+</ul>
+<p>Any other patch counts as a store that may outlast the test:
+<code>patch(...).start()</code>, a patcher kept for later, a <code>MonkeyPatch()</code> of
+your own, <code>monkeypatch</code> handed to a helper function, a
+<code>with mock.patch(...)</code> around a <code>yield</code> in a fixture, or a
+<code>monkeypatch</code> fixture the same module overrides.</p>
+<p>An override of <code>monkeypatch</code> or <code>mocker</code> in a parent <code>conftest.py</code> is
+not seen: diffcone still assumes what a test patches through it is
+undone when the test ends.</p>
+</dd>
 <dt><strong>Tests are assumed not to depend on what an earlier test left behind.</strong></dt>
-<dd>A test, a function-scoped fixture, or a helper in a test module or
-<code>conftest.py</code> that only tests call may change module state (<code>server._state
-= make()</code>): diffcone counts that change for the test running it only, not
-for the other tests and benchmarks that read the same state. A test or
-<code>setUp</code> that other code calls (a test module's top-level code, a
-session fixture), a doctest's function, and a <code>monkeypatch</code> your own
-conftest overrides with a wider scope are not such code. If a test
-relies on state an earlier test set up, declare that dependency in
-<a href="../reference/declarations/"><code>diffcone.toml</code></a> (an <code>[[edges]]</code> entry from
-the reader to the code setting it up) or run the whole suite. Code that
-runs once for many tests is still a dependency of every reader: a test
-module's top-level code, a fixture with a wider scope (or a scope it
-computes), a hook, and any code of your project, a cache a test fills
-included. With a <a href="../guides/evidence/">recording</a>, such a cache is
-followed when your code keeps it in a module variable, on an object, a
-class, a closure or a function attribute, or in a
-<code>functools.cached_property</code>, and fills it with a value your code
-computes. Not followed: a cache kept by a memoising decorator from a
-package diffcone doesn't know (it knows <code>functools</code>, <code>cachetools</code>,
-<code>cached_property</code>, Django's and Werkzeug's), and one filled through a
-method of an object whose type diffcone can't tell
-(<code>self._cache.set(k, compute(k))</code> where <code>_cache</code> is set in several
-ways).</dd>
+<dd>
+<p>When code that runs inside one test changes module state
+(<code>server._state = make()</code>), diffcone counts that change for that test
+only, not for other tests that read the same state. Such code is:</p>
+<ul>
+<li>the test itself, and unittest's <code>setUp</code> and <code>tearDown</code>;</li>
+<li>a function-scoped fixture;</li>
+<li>a helper in a test module or <code>conftest.py</code> that only such code
+  calls.</li>
+</ul>
+<p>A test or <code>setUp</code> that other code calls (a test module's top-level
+code, a session fixture) is not such code, and neither is a doctest's
+function. Code that runs once for many tests is a dependency of every
+test that reads what it changes: a test module's top-level code, a
+fixture with a wider scope (or a scope it computes), a hook, and any
+code of your project, a cache it fills included.</p>
+<p>If a test relies on state an earlier test set up, declare that
+dependency in <a href="../reference/declarations/"><code>diffcone.toml</code></a> (an
+<code>[[edges]]</code> entry from the reader to the code setting it up), or run
+the whole suite.</p>
+</dd>
+<dt><strong>Caches with a recording.</strong></dt>
+<dd>
+<p>With a <a href="../guides/evidence/">recording</a>, a test that reads a cache an
+earlier test filled counts as running the code that filled it. That
+works when your code fills the cache with a value it computes and keeps
+it in a module variable, on an object or class, in a closure or a
+function attribute, or behind a memoising decorator.</p>
+<p>A decorator counts as memoising when diffcone knows it (<code>functools</code>,
+<code>cachetools</code>, Django's and Werkzeug's <code>cached_property</code>, and others) or
+its name says so (<code>cached_property</code>, <code>cached</code>, <code>memoize</code>, <code>memoized</code>,
+<code>cachedmethod</code>).</p>
+<p>Not followed:</p>
+<ul>
+<li>a cache kept by an installed package's decorator under another name;</li>
+<li>a cache filled through a method of an object whose type diffcone
+  can't tell (<code>self._cache.set(k, compute(k))</code> where <code>_cache</code> is set in
+  several ways).</li>
+</ul>
+</dd>
 <dt><strong>Code that changes the process while pytest collects reaches every test.</strong></dt>
-<dd>A <code>conftest.py</code>, a test module or a module they import that sets an
-environment variable, extends <code>sys.path</code> or configures a library
-(<code>warnings.filterwarnings</code>, <code>logging.basicConfig</code>) when it's imported,
-or a collection hook that does, can change what any later test sees.
-Such code is a dependency of every test
-(<a href="../reference/discovery/#pytest">static discovery</a> lists what is
-recognised). diffcone assumes a test doesn't depend on state an
-earlier test left behind.</dd>
+<dd>A <code>conftest.py</code>, a test module or a module they import may set an
+environment variable, extend <code>sys.path</code> or configure a library
+(<code>warnings.filterwarnings</code>, <code>logging.basicConfig</code>) when it's imported.
+A collection hook may do the same. That can change what any later test
+sees, so such code is a dependency of every test.
+<a href="../reference/discovery/#pytest">Static discovery</a> lists what is
+recognised.</dd>
+</dl>
+<h2 id="reading-files">Reading files<a class="headerlink" href="#reading-files" title="Permanent link">&para;</a></h2>
+<dl>
 <dt><strong>A file that doesn't parse selects everything.</strong></dt>
-<dd>Any file under your source roots that isn't valid Python 3, or can't be
-decoded in its declared encoding (UTF-8 unless the file says
+<dd>Any <code>.py</code> file under your source roots that isn't valid Python 3, or
+can't be decoded in its declared encoding (UTF-8 unless the file says
 otherwise), is an analysis error, even a test data file nothing
 imports. So is one that nests an expression hundreds of levels deep,
 as generated code may (a sum of a thousand terms). Choose source roots
 that leave such files out.</dd>
+<dt><strong>Uncommitted analysis is only as stable as your working tree.</strong></dt>
+<dd>A plan of <code>WORKTREE</code> or <code>INDEX</code> describes the files at the moment you
+planned. The report always marks such plans as uncommitted.</dd>
+<dt><strong>Git-ignored files are seen only by <code>WORKTREE</code> plans, and only Python ones.</strong></dt>
+<dd>
+<p>A plan of a commit or of <code>INDEX</code> reads what git recorded. A <code>.py</code> file
+git ignores (a generated <code>_version.py</code>, a <code>local_settings.py</code>) and any
+edit to it are invisible to it. <code>run</code> refuses to run such a plan while
+one is on disk under your source roots: plan with <code>--head WORKTREE</code>
+instead.</p>
+<p>A <code>WORKTREE</code> plan reads ignored <code>.py</code> files in a directory that also
+holds files git tracks or doesn't ignore. A directory with only ignored
+files is skipped, as are ignored directories (a virtualenv, a build
+tree) and ignored files that aren't Python.</p>
+</dd>
+</dl>
+<h2 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h2>
+<dl>
 <dt><strong>Discovery reads the source, so it can't see what plugins do.</strong></dt>
 <dd>A pytest plugin that collects tests by its own rules, or a test base
 class outside your source roots, can mean diffcone's target list is
@@ -1040,18 +1365,9 @@ incomplete. diffcone reports it and the plan exits with code <code>3</code>
 A plugin that collects files just by being installed is invisible to a
 plan from the code. Whenever <code>run</code> starts pytest, it runs every
 collected test the plan doesn't know, and a recording captures what
-pytest really collected. Parametrized tests are selected or skipped as
-a whole.</dd>
-<dt><strong>Uncommitted analysis is only as stable as your working tree.</strong></dt>
-<dd>A plan of <code>WORKTREE</code> or <code>INDEX</code> describes the files at the moment you
-planned. The report always marks such plans as uncommitted.</dd>
-<dt><strong>Git-ignored files are seen only by <code>WORKTREE</code> plans, and only Python ones.</strong></dt>
-<dd>A plan of a commit or of <code>INDEX</code> reads what git recorded: a <code>.py</code> file
-git ignores (a generated <code>_version.py</code>, a <code>local_settings.py</code>) and any
-edit to it are invisible, and <code>run</code> refuses to run such a plan while
-one is on disk. A <code>WORKTREE</code> plan reads ignored <code>.py</code> files that sit in
-a directory git doesn't ignore as a whole; it skips ignored directories
-(a virtualenv, a build tree) and ignored data files.</dd>
+pytest really collected.</dd>
+<dt><strong>Parametrized tests are selected as a whole.</strong></dt>
+<dd>diffcone selects or skips all of a test's parameter cases together.</dd>
 </dl>
 
 

@@ -485,6 +485,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Check a plan against a full run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-json-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The JSON report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -913,6 +930,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Check a plan against a full run">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-json-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The JSON report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1030,10 +1064,13 @@ suite as usual and a small plugin keeps the selected tests, so conftests
 and plugins load exactly as in a full run. Tests pytest collects that the
 plan doesn't know about (from a plugin's own collection, for example) are
 kept too.</p>
-<p><code>run</code> exits with pytest's exit code. If a selected test wasn't collected,
-it exits <code>3</code>, since the run may have skipped tests; if nothing ran because
-nothing was selected, it exits <code>0</code> (see
-<a href="../../reference/cli/#exit-codes">exit codes</a>).</p>
+<p><code>run</code> exits with pytest's exit code, with two exceptions (see
+<a href="../../reference/cli/#exit-codes">exit codes</a>):</p>
+<ul>
+<li>if a selected test wasn't collected and pytest otherwise succeeded, it
+  exits <code>3</code>, since the run may have skipped tests;</li>
+<li>if nothing ran because nothing was selected, it exits <code>0</code>.</li>
+</ul>
 <p>Discovery reads the same pytest options the run will use: those after
 <code>--</code>, those written into <code>--command</code> (<code>uv run pytest -p tests.plugin</code>),
 and the <code>PYTEST_ADDOPTS</code> and <code>PYTEST_PLUGINS</code> environment variables. When
@@ -1044,25 +1081,31 @@ program, so a wrapper script is not recognised), the plan says so and
 exits <code>3</code>.</p>
 <p>If pytest didn't collect a selected test, the message also names any
 option among the effective pytest arguments that keeps tests out of a run
-by the cache or by name (<code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>, <code>-m</code>,
+by the cache or by name (<code>--lf</code>, <code>--ff</code>, <code>--nf</code>, <code>--sw</code>, <code>-k</code>, <code>-m</code>,
 <code>--deselect</code>) and where it is set, since that is the usual reason.</p>
 <p>For ASV, <code>--runner asv</code> builds the matching <code>asv run --bench</code> pattern. Add
-<code>--dry-run</code> to print the command instead of running it; for pytest the
-printed command names the selected tests as node ids, which is the
-equivalent of what the plugin keeps:</p>
+<code>--dry-run</code> to print the command instead of running it:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>diffcone<span class="w"> </span>run<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--head<span class="w"> </span>HEAD<span class="w"> </span>--discover<span class="w"> </span>asv<span class="w"> </span>--runner<span class="w"> </span>asv<span class="w"> </span>--dry-run
 </code></pre></div>
+<p>For pytest, the printed command names the selected tests as node ids. It
+is close to, but not the same as, what <code>run</code> does:</p>
+<ul>
+<li>it leaves out tests pytest collects that the plan doesn't know, which
+  <code>run</code> keeps;</li>
+<li>naming tests on the command line makes pytest load their <code>conftest.py</code>
+  files earlier than a normal run does;</li>
+<li>with <code>--evidence</code>, a dry run doesn't check the environment against the
+  recording.</li>
+</ul>
 <p><code>run</code> refuses to start in two situations, each with an option to override:</p>
 <ul>
-<li><strong>The checkout differs from what was planned.</strong> If you plan a commit
-  (or <code>INDEX</code>) but the working tree differs in any file the plan would
-  have selected on, the plan doesn't describe what would run: a file
-  under your source roots (Python or not: a data file, a <code>.pyx</code>, a
-  configuration file), a git-ignored <code>.py</code> file beside tracked code, a
-  <code>conftest.py</code>, pytest's or ASV's configuration, <code>diffcone.toml</code>, a
-  dependency or lock file, or a submodule with a different commit or
-  edits inside. The message names the files. Plan with <code>--head WORKTREE</code>,
-  or pass <code>--allow-mismatched-worktree</code>.</li>
+<li><strong>The checkout differs from what was planned.</strong> If you planned a commit
+  or <code>INDEX</code> and the working tree differs in a file the plan depends on,
+  <code>run</code> refuses and names the files. That includes any file under your
+  source roots, a git-ignored <code>.py</code> beside tracked code, any
+  <code>conftest.py</code>, pytest or ASV configuration, <code>diffcone.toml</code>, dependency
+  and lock files, and submodules. Plan with <code>--head WORKTREE</code>, or pass
+  <code>--allow-mismatched-worktree</code>.</li>
 <li><strong>Discovery may be incomplete</strong> (exit code <code>3</code>). Pass
   <code>--allow-incomplete-discovery</code> to run the selection anyway.</li>
 </ul>
@@ -1077,6 +1120,8 @@ run. It doesn't run anything, so you can add it next to an existing CI job:</p>
 <p>It lists every test that failed or errored in the full run but wasn't
 selected, and exits with <code>1</code> if there is one. Options:</p>
 <ul>
+<li><code>--full</code> and <code>--baseline</code> can be repeated: several files (from a
+  sharded or split run, say) count as one run.</li>
 <li><code>--baseline base.xml</code> takes a run from before the change. Tests that
   failed there too are reported as already failing, not as misses. Each
   parametrized case counts on its own: a case that failed at the baseline
@@ -1088,16 +1133,59 @@ selected, and exits with <code>1</code> if there is one. Options:</p>
 <li><code>--format markdown</code> writes a summary table for a CI job summary, and
   <code>--format json</code> a report for scripts.</li>
 </ul>
-<p>JUnit names tests relative to pytest's rootdir and may carry a
-<code>--junit-prefix</code>; the plan records both from the configuration and the
-pytest arguments it was made with (so plan with the same <code>--command</code> and
-arguments as the run), and <code>check</code> maps the names through them. When the
-runs were made differently, pass <code>--rootdir DIR</code> (relative to the
-repository) or <code>--junit-prefix PREFIX</code>. If no case matches a target at
-all, the report says so and points at these options rather than reporting
-every failure as a miss. A directory that fails to collect (its
-<code>conftest.py</code> doesn't import) counts as a collection failure of every test
-under it, caught when any of them was selected.</p>
+<p>JUnit names tests relative to pytest's rootdir, sometimes with a
+<code>--junit-prefix</code>. The plan records both, so plan with the same <code>--command</code>
+and arguments as the run. If they differ, pass <code>--rootdir DIR</code> (relative
+to the repository) or <code>--junit-prefix PREFIX</code>. If no case matches a target
+at all, the report says so and points at these options, rather than
+reporting every failure as a miss.</p>
+<p>A directory that fails to collect (its <code>conftest.py</code> doesn't import)
+counts as a collection failure of every test under it. It is caught when
+any of them was selected.</p>
+<h3 id="the-json-report">The JSON report<a class="headerlink" href="#the-json-report" title="Permanent link">&para;</a></h3>
+<p><code>diffcone check --format json</code> writes:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ok</code></td>
+<td><code>true</code> when there is no miss and nothing in <code>not_run</code>.</td>
+</tr>
+<tr>
+<td><code>misses</code></td>
+<td>The new failures the plan didn't select.</td>
+</tr>
+<tr>
+<td><code>not_run</code></td>
+<td>New failures diffcone's own run (<code>--run diffcone=...</code>) didn't execute.</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td><code>status</code>, <code>discovery_incomplete</code>, and how many <code>targets</code> there were and how many were <code>selected</code>.</td>
+</tr>
+<tr>
+<td><code>full_run</code></td>
+<td><code>cases</code>, <code>test_time</code>, <code>selected_test_time</code> (the full run's time for the selected tests) and <code>unmatched_cases</code> (cases that match no target).</td>
+</tr>
+<tr>
+<td><code>mapping</code></td>
+<td>The <code>rootdir</code> and <code>junit_prefix</code> the names were mapped with, and a <code>note</code> when no case matched a target.</td>
+</tr>
+<tr>
+<td><code>failures</code></td>
+<td>Every failure of the full run: <code>test</code>, <code>outcome</code>, <code>kind</code>, <code>selected</code> and <code>already_failing</code> (it failed in the baseline too). <code>kind</code> is <code>test</code>, <code>collection</code> (a file that failed to collect) or <code>unknown</code> (it matches no target).</td>
+</tr>
+<tr>
+<td><code>runs</code></td>
+<td>Each <code>--run</code>: <code>name</code>, <code>cases</code>, <code>test_time</code>, <code>targets_run</code>, <code>misses</code> (new failures it didn't run) and <code>disagreements</code> (tests it ran that failed in one run but not the other).</td>
+</tr>
+</tbody>
+</table>
 <h2 id="validate-a-plan-by-running-everything">Validate a plan by running everything<a class="headerlink" href="#validate-a-plan-by-running-everything" title="Permanent link">&para;</a></h2>
 <p><code>diffcone validate</code> runs your whole suite on both snapshots and reports any
 test whose result changed but wasn't selected:</p>

@@ -656,6 +656,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#recording" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Recording
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#snapshots" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -927,6 +938,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#recording" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Recording
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#snapshots" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1127,15 +1149,81 @@ summary of the same information). The report's format is versioned by
 </tr>
 <tr>
 <td><code>discovery</code></td>
-<td>For each runner: how many targets were found, the configuration read (for pytest, <code>run_arguments</code> lists what was read besides the configuration file: <code>PYTEST_ADDOPTS</code>, <code>PYTEST_PLUGINS</code>, the pytest arguments in <code>--command</code> and those after <code>--</code>), and any notes.</td>
+<td>For each runner: how many targets were found, the configuration read, and any notes. For pytest, the configuration includes <code>rootdir</code>, <code>configfile</code> and <code>junit_prefix</code> (which <a href="../../guides/running/#check-a-plan-against-a-full-run"><code>diffcone check</code></a> uses to match JUnit names), and <code>run_arguments</code>, what was read besides the configuration file: <code>PYTEST_ADDOPTS</code>, <code>PYTEST_PLUGINS</code>, the pytest arguments in <code>--command</code> and those after <code>--</code>.</td>
 </tr>
 </tbody>
 </table>
-<p>With a recording, <code>analysis.evidence</code> describes it: its commit,
-<code>environment_hash</code>, how many tests it holds, and <code>environment_checked</code>.
-<code>plan</code> can't check the environment, so it reports <code>false</code> there: the
-selection holds only in the recorded environment. <code>run</code> checks it before any
-test runs, and its <code>-o</code> report says <code>true</code> when it matched.</p>
+<h2 id="recording">Recording<a class="headerlink" href="#recording" title="Permanent link">&para;</a></h2>
+<p>With a recording, <code>analysis.evidence</code> describes it:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>store</code></td>
+<td>The recording's path.</td>
+</tr>
+<tr>
+<td><code>commit</code></td>
+<td>The commit it was recorded at.</td>
+</tr>
+<tr>
+<td><code>environment_hash</code></td>
+<td>A hash of the recorded environment.</td>
+</tr>
+<tr>
+<td><code>environment_checked</code></td>
+<td>Whether this environment was checked against the recording (see below).</td>
+</tr>
+<tr>
+<td><code>python</code></td>
+<td>The recorded Python version.</td>
+</tr>
+<tr>
+<td><code>hash_seed</code></td>
+<td>The recorded <code>PYTHONHASHSEED</code>.</td>
+</tr>
+<tr>
+<td><code>variables</code></td>
+<td>The names of the environment variables it recorded.</td>
+</tr>
+<tr>
+<td><code>created</code></td>
+<td>When it was recorded, in seconds since the epoch.</td>
+</tr>
+<tr>
+<td><code>tests</code></td>
+<td>How many tests it holds.</td>
+</tr>
+<tr>
+<td><code>reverse_checked</code></td>
+<td>Whether it was recorded with <code>--reverse-check</code>.</td>
+</tr>
+<tr>
+<td><code>planned</code></td>
+<td>The plans made from it: from the recorded commit to each snapshot.</td>
+</tr>
+<tr>
+<td><code>changes_outside_range</code></td>
+<td>Changes made since the recording that lie outside base..head; they were planned too.</td>
+</tr>
+<tr>
+<td><code>escalated_modules</code></td>
+<td>Modules whose changes couldn't be judged from the recording and were planned from the code.</td>
+</tr>
+<tr>
+<td><code>preloaded_modules</code></td>
+<td>Modules of your project imported before the recorder started; changes to them are planned from the code.</td>
+</tr>
+</tbody>
+</table>
+<p><code>plan</code> can't check the environment, so it reports <code>environment_checked:
+false</code>: the selection holds only in the recorded environment. <code>run</code> checks
+it before any test runs, and its <code>-o</code> report says <code>true</code> when it matched.</p>
 <p>The plan <code>diffcone run -o</code> writes is the plan that ran. When the run
 didn't use the recording because the environment differed, it also has
 <code>evidence_not_used</code>: <code>reason</code> (<code>environment</code>), <code>differences</code> (what
@@ -1187,8 +1275,10 @@ started in, so the recorded tests changed it).</p>
 <code>definition_changed</code>, <code>annotations_changed</code>, <code>dependencies_changed</code>,
 <code>dependencies_added</code>, <code>imports_added</code> and <code>docstring_changed</code>
 (<a href="../../concepts/#symbols-and-changes">what they mean</a>). <code>imports_added</code>
-and <code>docstring_changed</code> are listed for completeness: they select tests
-only where the new names or the docstring are used.</p>
+and <code>docstring_changed</code> are listed for completeness. They select tests
+only where the new names or the docstring are used, or, for a new import,
+where a module that now runs (or no longer runs) on import registers or
+changes something the tests read.</p>
 <h2 id="selected-targets">Selected targets<a class="headerlink" href="#selected-targets" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"runner"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pytest"</span><span class="p">,</span>
@@ -1245,7 +1335,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>dynamic_reference</code></td>
 <td>yes</td>
-<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), and a change could be among them; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
 </tr>
 <tr>
 <td><code>unresolved_name_match</code></td>
@@ -1275,7 +1365,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>unanalysed_file_changed</code></td>
 <td>yes</td>
-<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or your runner configuration, build script, dependencies or lock file changed outside them.</td>
+<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
 </tr>
 </tbody>
 </table>
@@ -1297,7 +1387,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>executed_reader</code></td>
 <td></td>
-<td>The test ran code that reads a changed value or definition, or reads a module-level cache that code able to run changed code fills (an earlier test may have filled it, so the test never ran that code).</td>
+<td>The test ran code that reads a changed value or definition, or reads a cache that code able to run changed code fills (an earlier test may have filled it, so the test never ran that code). The cache may be a module variable, or kept on an object, in a closure, in a function attribute or by a memoising decorator such as <code>cached_property</code>.</td>
 </tr>
 <tr>
 <td><code>touched_file</code></td>
@@ -1317,7 +1407,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>escalated</code></td>
 <td></td>
-<td>The change can't be judged from a recording (code that runs on import, for example), so it was planned from the code.</td>
+<td>The change can't be judged from a recording (code that runs on import, or a module imported before the recorder started), so it was planned from the code.</td>
 </tr>
 <tr>
 <td><code>cython_caller</code></td>
@@ -1342,7 +1432,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>subprocess</code></td>
 <td>yes</td>
-<td>The test started a process the recording can't follow: not a Python process started with <code>subprocess</code> on Linux or macOS, one that couldn't record itself, one running your code from a <code>-c</code> snippet or a script outside your source roots, or one running a doctest or a notebook. Or it ran while such a process, started earlier (a <code>multiprocessing</code> pool's worker), was still running. As a fallback for every test: such a process was started outside every test (in a hook, during collection, or while a file outside the source roots was imported).</td>
+<td>The test started a process the recording can't follow, or ran while one was still running. As a fallback for every test: such a process was started outside any test (a hook, collection, or an import outside the roots).</td>
 </tr>
 <tr>
 <td><code>text_code</code></td>
@@ -1362,7 +1452,7 @@ selected the target to be safe.</p>
 <tr>
 <td><code>unindexed_import</code></td>
 <td>yes</td>
-<td>Changed code ran while a file outside the source roots was being imported.</td>
+<td>Changed code ran while a file outside the source roots was being imported, or such a file changed and was imported before the recorder started.</td>
 </tr>
 </tbody>
 </table>

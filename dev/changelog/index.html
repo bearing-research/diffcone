@@ -816,6 +816,18 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static analysis
+      </span>
+    </span>
+  </a>
+  
 </li>
         
           <li class="md-nav__item">
@@ -831,6 +843,55 @@
         
           <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-check-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running, check and validate
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI actions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -880,7 +941,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -941,7 +1002,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_2" class="md-nav__link">
+  <a href="#execution-evidence_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -952,7 +1013,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_1" class="md-nav__link">
+  <a href="#discovery_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1134,6 +1195,18 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static analysis
+      </span>
+    </span>
+  </a>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1149,6 +1222,55 @@
         
           <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-check-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running, check and validate
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI actions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1198,7 +1320,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1259,7 +1381,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_2" class="md-nav__link">
+  <a href="#execution-evidence_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1270,7 +1392,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_1" class="md-nav__link">
+  <a href="#discovery_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1386,508 +1508,502 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<p>Upgrading from 0.3.0: make your execution-evidence recordings again. The
+store format is now 3 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
+recording, naming one is an error, and the <code>run</code> action plans from the
+code until <code>record</code> makes a new one. Expect plans to select more tests
+than 0.3.0 did: most of the changes below close cases where diffcone
+missed an affected test. The JSON report keeps schema version 3 and gains
+fields: <code>always_run</code> and <code>analysis.counts.always_run</code>;
+<code>environment_checked</code> and <code>preloaded_modules</code> in <code>analysis.evidence</code>;
+<code>rootdir</code>, <code>configfile</code>, <code>junit_prefix</code> and <code>run_arguments</code> in pytest's
+<code>discovery[].config</code>; and <code>evidence_not_used</code> in the plan <code>run -o</code> writes.
+<code>check --format json</code> gains <code>mapping.rootdir</code> and <code>mapping.junit_prefix</code>.
+New discovery notes: <code>unparsable_config</code> (discovery incomplete),
+<code>unreadable_plugins</code> and <code>plugin_outside_roots</code>.</p>
 <h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
 <ul>
-<li>diffcone assumes a test does not depend on what an earlier test left
-  behind: a change a test, a function-scoped fixture or a test-module
-  helper makes to module state counts for that test only, not for the
-  other tests and benchmarks reading the same state. A test module's
-  top-level code, wider-scoped fixtures, hooks and project code (a cache
-  a test fills) still count for every reader. Declare a dependency on an
-  earlier test's state in <code>diffcone.toml</code> if a test relies on one.</li>
-<li>A test or fixture that saves a module attribute and puts it back before
-  the test ends counts like <code>monkeypatch</code>.</li>
-<li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: tests (or benchmarks)
-  matching a pattern on their id are selected in every plan, with or
-  without a recording, and the report gives the entry as the reason and
-  how many targets each entry matched. A malformed entry is an analysis
-  error, so the plan selects everything rather than quietly planning those
-  tests. <code>diffcone report</code> computes a job's selected share without them.</li>
+<li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: the tests (or
+  benchmarks) whose id matches a pattern are selected in every plan, with
+  or without a recording, and the report gives the entry as the reason and
+  counts the targets each entry matched; the text report flags an entry
+  that matches nothing. A malformed entry, or one naming an unknown
+  runner, is an analysis error, so the plan selects everything rather than
+  quietly leaving those tests out. <code>diffcone report</code> computes a job's
+  selected share without them.</li>
 <li>A test is selected when the fixtures, hooks or plugins around it change
   though its own code did not (rule <code>lifecycle_changed</code>), for example when
-  another test module adds a plugin to <code>pytest_plugins</code>. pytest plugin
+  another test module adds a plugin to <code>pytest_plugins</code>; with a recording,
+  compared with what ran around it when it was recorded. pytest plugin
   modules are dependencies of every test, since their import-time code
-  runs for the whole session; a plugin in the repository outside the
-  source roots keeps every test always selected.</li>
-<li>An <code>always_run</code> entry naming an unknown runner is an analysis error; one
-  whose pattern matches nothing in a plan is flagged in the text report.</li>
-<li><code>plan --evidence</code> says the environment was not checked
-  (<code>environment_checked: false</code>): only <code>run</code> can check it.</li>
-<li>A module imported by a name that starts with fixed text
-  (<code>import_module(f"plugins.{name}")</code>) is one of the modules with that
-  prefix, not any module. A new <code>types.ModuleType</code> is no project module
-  unless it is installed in <code>sys.modules</code> under one's name,
-  <code>exec(code, namespace)</code> no longer reaches the calling module, and
-  <code>m.__dict__["X"] = v</code> changes only <code>X</code>.</li>
+  runs for the whole session.</li>
+<li>diffcone now assumes a test does not depend on what an earlier test left
+  behind. A change to module state made by code that runs only inside one
+  test counts for that test only, not for the other tests and benchmarks
+  reading the same state: the test itself, a function-scoped fixture,
+  unittest's <code>setUp</code>/<code>tearDown</code>, and a helper in a test module or
+  conftest that only such code calls. A patch undone when the test ends
+  counts the same way, also for lookups on a library module it patches:
+  <code>monkeypatch</code> and <code>mocker</code> methods on pytest's fixtures, a <code>with
+  mock.patch(...)</code> block, a <code>@mock.patch(...)</code> decorator,
+  <code>MonkeyPatch.context()</code>, and a test or fixture that saves a module
+  attribute and puts it back. Still counted for every reader: a test
+  module's top-level code, wider-scoped fixtures, hooks, all project code
+  (a cache a test fills through it), a doctest's function, a manifest
+  entry on project code, a test or <code>setUp</code> that module-level code, a
+  wider-scoped fixture or a hook calls, and a store through a
+  <code>monkeypatch</code> that a wider-scoped fixture requests or the test module
+  overrides (one overridden in a parent conftest is still taken as
+  undone). If a test relies on an earlier test's state,
+  declare the dependency in <code>diffcone.toml</code>.</li>
 <li>A fixture or function that only empties or fills a module-level dict,
   list or set (<code>REG.clear()</code>), or resets another module's variable
-  (<code>mod.X = None</code>), no longer counts as reading it: an autouse reset
-  fixture no longer selects every test when the code filling the registry
+  (<code>mod.X = None</code>), does not count as reading it: an autouse reset fixture
+  no longer selects every test when the code filling the registry
   changes.</li>
 <li>An attribute read on an object of unknown type is matched to
   module-level functions, classes and variables only in modules such an
   object can be: modules passed around, obtained by name or named in a
   string, and test modules and conftests, which pytest hands out. Methods
   still match whatever the receiver.</li>
-<li>Deciding which code may change an object in place: a method called on an
-  instance attribute (<code>self._client.get()</code>) counts only as that class's
-  method when every assignment of the attribute creates an instance of
-  one class (or of a third-party class), and a module-level object made by
-  a third-party call is changed only by methods of classes deriving from a
-  third-party class. Calls on such attributes are still matched by name.</li>
-<li>A patch that ends with its test (<code>monkeypatch.setattr</code> on pytest's
-  fixture, <code>mocker.patch</code>, a <code>with mock.patch(...)</code> block, a
-  <code>@mock.patch(...)</code> decorator) no longer makes a lookup on a library
-  module see every change.</li>
 <li>Indexing a very long function is no longer quadratic in its calls.</li>
-<li>Editing an ordinary module named <code>build.py</code> (not at the repository root
-  or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects, with a recording, the
-  tests that ran it, as static planning does, instead of every test.</li>
-<li>A test module's <code>pytester</code>/<code>testdir</code> test depends on the project's
-  registered plugins (<code>pytest11</code> entry points, <code>pytest_plugins</code>, <code>-p</code>) and
-  on what its inline files import.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<h4 id="static-analysis">Static analysis<a class="headerlink" href="#static-analysis" title="Permanent link">&para;</a></h4>
 <ul>
-<li>A pull request that changes only dependencies selected no tests when the
-  source roots don't hold the repository root: a lock file (<code>uv.lock</code>,
-  <code>poetry.lock</code>, <code>pylock.toml</code>), a <code>requirements*</code> or <code>environment*</code> file,
-  or a workspace member's <code>pyproject.toml</code> outside the roots was ignored.
-  Such a change, and a compiled source outside the roots, now selects every
-  target, as it already did under a root and in evidence mode. Evidence
-  mode now also treats <code>pylock.toml</code>, <code>conda-lock.yml</code>, <code>uv.toml</code> and
-  <code>pytest.toml</code> this way.</li>
-<li>Under execution evidence, editing a test file selected every test when
-  the suite was recorded with a virtual environment inside the checkout
-  (<code>uv run pytest</code> runs <code>.venv/bin/pytest</code>): the recorder took the
-  environment's own scripts for project code, so pytest reading files
-  during collection looked like the project reading them outside any
-  test. The environment is now treated as installed code.</li>
-<li>
-<p>Under execution evidence, a session hook that lists installed
-  distributions (<code>importlib.metadata.distributions()</code>) made adding any
-  file anywhere select every test. Those scans are no longer recorded,
-  and a change under a <code>*.dist-info</code>, <code>*.egg-info</code> or <code>*.egg</code> directory
-  now selects every target, in both modes.</p>
-</li>
-<li>
-<p><code>diffcone check</code> decided "already failing at the baseline" per test
-  function, so a parametrized case that failed at the baseline excused a
-  new failure of another case of the same test: a miss reported as clean.
-  Cases are now compared one by one.</p>
-</li>
-<li>The <code>record</code> action with <code>check: true</code> could pass a push that had a
-  miss: a re-run of the job restored the newest recording instead of its
-  own commit's (so the kept verdict was lost and the push was re-checked
-  against a later baseline), and a check that crashed, or a re-run whose
-  JUnit could not be read, was recorded as checked with no miss. A
-  re-run's other failures (when the job's pytest arguments name a path
-  after an option) no longer count as misses. A recording that is not
-  from before the pushed commit is no longer checked against.</li>
-<li>An unexpected error in any command exits 2; <code>check</code>, <code>report</code>,
-  <code>collect</code> and <code>prune</code> exited 1, which <code>check</code> uses for a miss.</li>
-<li><code>diffcone report</code> ignores recording artifacts uploaded by pull-request
-  runs (a pull request from a fork runs its own code), counts an artifact
-  it cannot read as a problem instead of failing, reports pull-request
-  runs whose selected tests pytest did not collect, and keeps a test id
-  with backticks inside its code span. The <code>report</code> action starts its
-  window at the last report that posted, so a run with only a job summary
-  (a manual run with posting off) no longer hides the runs before it.</li>
-<li>
-<p>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
-  was quoted for a POSIX shell.</p>
-</li>
-<li>
-<p>Holes in the narrowings of 0.2.0, each a miss: a name taken from a
-  dict, list or set written in the code (<code>getattr(handlers, NAMES[key])</code>,
-  a lazy-export table) is bounded by it only while every use of the table
-  is a read, so a table changed through an alias, a helper it is passed
-  to, its module (<code>core.TABLE[k] = v</code>), <code>globals()</code>, <code>vars()</code>,
-  <code>sys.modules</code>, <code>monkeypatch</code> or <code>mock.patch</code> (an object or a dotted
-  string) is no longer read as its literal; and a lookup on a
-  standard-library or third-party module (<code>getattr(logging, name)</code>) counts
-  writes that reach the module indirectly (an alias, a helper it is passed
-  to, a loop, <code>__setattr__</code>, <code>vars()</code>, a module found at run time). Once
-  code can reach a module whose name is known only at run time, no table
-  is bounded.</p>
-</li>
-<li>A class obtained by a name nothing resolves (<code>m.Alt()</code> on an object of
-  unknown type, a lazy <code>__getattr__</code> export) reaches its <code>__init__</code> and
-  <code>__new__</code>: a constructor change selected nothing.</li>
-<li>Reading a module's members wholesale (<code>mod.__dict__[name]</code>,
-  <code>inspect.getmembers(mod)</code>, e.g. parametrizing a test over a module's
-  functions) is a dependency.</li>
 <li>A change to a dependency, build or CI file outside the source roots
-  selected nothing: <code>dev-requirements.txt</code>, <code>Requirements.txt</code>,
-  <code>requirements.pip</code>, pandas' <code>ci/deps/*.yaml</code>, <code>hatch.toml</code>,
-  <code>poetry.toml</code>, <code>pdm.toml</code>, <code>.env</code> and <code>.pth</code> files, <code>sitecustomize.py</code>,
-  <code>noxfile.py</code>, <code>.github/workflows/</code>, and checker configurations pytest
-  plugins run as tests (<code>mypy.ini</code>, <code>ruff.toml</code>). These now select every
-  target, as does a build script anywhere under a root (a nested
-  <code>setup.py</code>) and a lock-file change between <code>INDEX</code> and <code>WORKTREE</code>.</li>
-<li>Changing the arguments of a call made at import time (<code>X =
-  set_mode("slow")</code>, a class attribute, a decorator's or default's
-  argument) did not select the tests that read the state the callee
-  changes.</li>
-<li>A change to PEP 695/696 type parameters (bounds, defaults, their number)
-  was no change at all; a bound or default naming project code is now a
-  dependency.</li>
-<li><code>WORKTREE</code> did not see edits to files flagged assume-unchanged or
-  skip-worktree, and neither did <code>run</code>'s check that the working tree
-  matches the plan; an edited <code>.py</code> file with a non-ASCII name also passed
-  that check.</li>
-<li>
-<p>A submodule under the source roots made every <code>WORKTREE</code> plan select
-  everything; one checked out at another commit, or with uncommitted
-  edits, still counts as a change. A path containing a line break no
-  longer fails the plan.</p>
-</li>
-<li>
-<p>A test that runs project code in a new process (a script path, <code>-m
-  module</code> or <code>-c</code> code named in the code) did not depend on it; a script
-  no module name maps to is now read too, and a Python command whose
-  program is built at run time is affected by any change.</p>
-</li>
-<li>State changed through an argument or a receiver (<code>register(REGISTRY)</code>,
-  <code>registry.add(x)</code>) did not reach its readers, in either mode; nor did a
-  change to code that may call such a writer differently, or a write
-  through a module attribute and an item (<code>store._CACHE["k"].append(x)</code>,
-  <code>del store._CACHE[k]</code>). A function a module-level variable's
-  initialiser calls runs at import, so a change to it reaches the
-  module's importers.</li>
-<li>Reading an attribute a class does not define (<code>C.__doc__</code>,
-  <code>C.__type_params__</code>, an attribute a decorator sets) did not depend on
-  the class. <code>C.__subclasses__()</code>, <code>C.__mro__</code> and <code>C.__bases__</code> reach the
-  classes they return, <code>C.__dict__[name]</code> and <code>obj.__dict__[name]</code> read
-  members as <code>getattr</code> does, and <code>getattr(obj, "__doc__")</code> reads a
-  docstring.</li>
-<li>A parameter or class-body name that shares its name with a module-level
-  string table was bounded by that table, though the caller can pass
-  anything.</li>
-<li>Code that passes a module to other code (<code>read(ops, name)</code>) did not
-  depend on that module's functions, nor on what the module's imports
-  bind (<code>api.core.TABLE</code>).</li>
+  selected nothing when the roots don't hold the repository root. These
+  now select every target: lock files (<code>uv.lock</code>, <code>poetry.lock</code>, any
+  <code>*.lock</code>, <code>pylock.toml</code>, <code>conda-lock.yml</code>), <code>requirements*</code> files (also
+  <code>dev-requirements.txt</code>, <code>Requirements.txt</code>, <code>requirements.pip</code>),
+  <code>environment*</code> files, a <code>.txt</code>/<code>.yml</code>/<code>.yaml</code> file in a directory named
+  <code>deps</code> or <code>dependencies</code>, a workspace member's <code>pyproject.toml</code>,
+  <code>uv.toml</code>, <code>hatch.toml</code>, <code>poetry.toml</code>, <code>pdm.toml</code>, <code>pytest.toml</code>,
+  <code>.env</code> and <code>.pth</code> files, <code>sitecustomize.py</code>, <code>noxfile.py</code>,
+  <code>.github/workflows/</code>, checker configurations that pytest plugins run as
+  tests (<code>mypy.ini</code>, <code>ruff.toml</code>), compiled sources, anything under a
+  <code>*.dist-info</code>, <code>*.egg-info</code> or <code>*.egg</code> directory, a build script
+  anywhere under a root (a nested <code>setup.py</code>), and a lock-file change
+  between <code>INDEX</code> and <code>WORKTREE</code>. Evidence mode treats them the same way.</li>
+<li>A name taken from a dict, list or set written in the code
+  (<code>getattr(handlers, NAMES[key])</code>, a lazy-export table) is bounded by it
+  only while every use of the table is a read: a table changed through an
+  alias, a helper it is passed to, its module (<code>core.TABLE[k] = v</code>),
+  <code>globals()</code>, <code>vars()</code>, <code>sys.modules</code>, <code>monkeypatch</code> or <code>mock.patch</code> (an
+  object or a dotted string) is no longer read as its literal. A
+  parameter or class-body name that shares its name with such a table is
+  no longer bounded by it.</li>
+<li>A lookup on a standard-library or third-party module
+  (<code>getattr(logging, name)</code>) counts writes that reach the module
+  indirectly: an alias, a helper it is passed to, a loop, <code>__setattr__</code>,
+  <code>vars()</code>, a module found at run time, a submodule handed on
+  (<code>register(os.path)</code>). Handing a library object such as
+  <code>datetime.timezone.utc</code> to a call does not make every lookup on that
+  library depend on the caller.</li>
+<li>Modules whose name is known only at run time: once code can reach one,
+  no literal table is bounded. A name that starts with fixed text
+  (<code>import_module(f"plugins.{name}")</code>) stands for the modules with that
+  prefix; a new <code>types.ModuleType</code> is no project module unless it is
+  installed in <code>sys.modules</code> under one's name; <code>exec(code, namespace)</code>
+  does not reach the calling module; <code>m.__dict__["X"] = v</code> changes only
+  <code>X</code>. <code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code> and <code>python -m
+  &lt;name&gt;</code> with a name nothing bounds count as an import of any module, as
+  <code>importlib.import_module(name)</code> does.</li>
 <li>An object put in <code>sys.modules</code> (assignment, <code>setdefault</code>, <code>update</code>,
   <code>monkeypatch.setitem</code>, <code>mock.patch.dict</code>) was ignored. It is now the
   module of that name: lookups on that module see it, and while it stays
   installed, the module's importers depend on the code that installed it.
   Without a recording, code that installs an object under a name computed
   at run time makes every test importing a project module depend on it.</li>
-<li>A function's <code>__globals__</code>, a frame's <code>f_globals</code>, <code>pickle.loads</code>,
-  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code>, <code>gc.get_objects()</code> and
-  <code>importlib.util.module_from_spec</code> copies are recognised as ways to
-  change a module's tables. A lookup by a computed name on a module sees
-  objects other code puts on that module.</li>
-<li>Functions obtained from <code>pickle.load</code>/<code>loads</code> (and cloudpickle, dill,
-  joblib) or from a module loaded by a computed file path were invisible
-  to planning without a recording; such code is now affected by any
-  change. A round trip (<code>loads(dumps(x))</code>, a temporary file), pickle
-  bytes written in the code and a path in the module's own directory are
-  bounded by what they load.</li>
-<li>A local name, parameter or function-local import was taken for a
-  module-level import or builtin of the same name.</li>
-<li>A patch that may outlast its test (<code>patch(...).start()</code>, a patcher kept
-  for later, a <code>MonkeyPatch()</code> of your own, a <code>with mock.patch(...)</code>
-  around a fixture's <code>yield</code>, <code>setattr</code> on any other receiver) is a store
-  on the module it patches, so lookups on that module follow it; set in
-  <code>sys.modules</code> that way, it counts as installed for good. A <code>with
-  mock.patch.dict(os.environ)</code> or <code>warnings.catch_warnings()</code> block whose
-  body yields no longer counts as putting the process state back.</li>
-<li>A call of an unresolved function whose name happens to be <code>rebinds</code>,
-  <code>registers</code> or <code>mutated_by</code> was taken for one of diffcone's own kinds of
-  dependency, and a test could be missed (a module that calls
-  <code>registers()</code> at import). It is planned as the call it is.</li>
-<li><code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code> and <code>python -m &lt;name&gt;</code>
-  with a name nothing bounds count as an import of any module, as
-  <code>importlib.import_module(name)</code> does; they were bounded by their
-  module's imports.</li>
-<li>A decorator diffcone can't show leaves the function alone (one from an
-  installed package, or a project decorator that calls or registers it)
-  makes the decorated function count as code that runs on import, and its
-  parameters are no longer bounded by its call sites.</li>
-<li>A name imported in a <code>try</code>/<code>except</code> or <code>if</code>/<code>else</code>, rebound by a star
-  import, or redefined in the module is no longer taken for
-  <code>typing.final</code>, a quiet decorator or a structural base; attribute uses
-  of a name bound several ways depend on every binding.</li>
-<li>A dynamic import, script path or <code>getattr</code> receiver bounded by its call
-  sites is unbounded when a caller may be unseen (a call through an object
-  of unknown type, an unseen construction).</li>
-<li>A subscript in an evaluated annotation (<code>X: Registry["k"] = 1</code>) counts as
-  code that runs on import.</li>
-<li>A test that patches a module by a dotted string with
-  <code>mock.patch.multiple("pkg.mod", NAME=...)</code> depends on those names and on
-  the module; any dotted patch target counts as an import of its module,
-  and so does a patcher called on a value
-  (<code>pytest.MonkeyPatch().setattr("pkg.mod.NAME", ...)</code>).</li>
-<li><code>python -c</code> code that changes <code>sys.path</code>, <code>sys.meta_path</code> or
-  <code>sys.modules</code> by assignment, deletion or augmented assignment, or calls
-  <code>os.chdir</code>, can import anything; only <code>insert</code>/<code>append</code>/<code>extend</code> counted.</li>
-<li>A file nested too deeply to analyse is an analysis error that selects
-  everything, instead of a crash.</li>
-<li>A write to process-global state (<code>os.environ</code>, warning filters,
-  <code>sys.path</code>) is recognised whichever import binds the name: <code>from os
-  import *</code>, an import in <code>try</code> with another in <code>except</code>, or a
-  function-local one; a test running after it could be missed. A <code>with</code>
-  statement counts as putting state back only when every binding of its
-  name is the restoring one.</li>
-<li>A module handle, an install in <code>sys.modules</code>, an unpickled object or a
-  <code>gc</code> list reached through a star-imported name (<code>from sys import *</code>,
-  then <code>modules[...]</code>) is seen, so a test reading what it changes is
-  selected; handing a submodule of a library on (<code>register(os.path)</code>)
-  counts for dynamic lookups through it.</li>
 <li>A change to a module-level variable made through a module object the
   analysis did not resolve to the variable's module is a dependency of
   the variable's readers: <code>importlib.import_module("pkg.reg").TABLE["x"]
   = f</code>, <code>sys.modules[...]</code>, a function-local import, a star import, or a
-  module passed to a helper that writes into it. Handing a library object
-  such as <code>datetime.timezone.utc</code> to a call no longer makes every dynamic
-  lookup on that library depend on the caller.</li>
-<li>A <code>diffcone.toml</code> that is present but can't be read (left unmerged by a
-  conflicted merge) is an analysis error that selects every target; it was
-  read as no file. A manifest that is not valid JSON says so.</li>
-<li><code>collect</code> and <code>run --collect</code> no longer refuse a clean checkout because
-  untracked bytecode or ASV output has a non-ASCII name; a renamed file
-  counts as both names.</li>
-<li><code>run --dry-run --evidence</code> prints a command you can run, without
-  diffcone's internal recorder plugin.</li>
-<li><code>discover</code> honours <code>--no-cache</code> and <code>--cache-dir</code>: it uses the same cache
-  as <code>plan</code>, and its output is unchanged.</li>
-<li>A relative <code>--command</code> written with forward slashes
-  (<code>.venv/Scripts/python.exe</code>) is resolved on Windows too.</li>
+  module passed to a helper that writes into it. A function's
+  <code>__globals__</code>, a frame's <code>f_globals</code>, <code>pickle.loads</code>,
+  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code>, <code>gc.get_objects()</code> and
+  <code>importlib.util.module_from_spec</code> copies are recognised as ways to
+  change a module's tables, and a lookup by a computed name on a module
+  sees objects other code puts on that module. Star-imported names
+  (<code>from sys import *</code>, then <code>modules[...]</code>) are seen too.</li>
+<li>State changed through an argument or a receiver (<code>register(REGISTRY)</code>,
+  <code>registry.add(x)</code>) did not reach its readers, in either mode; nor did a
+  change to code that may call such a writer differently, or a write
+  through a module attribute and an item (<code>store._CACHE["k"].append(x)</code>,
+  <code>del store._CACHE[k]</code>). A method called on an instance attribute
+  (<code>self._client.get()</code>) counts as that class's method only when every
+  assignment of the attribute creates an instance of one class (or of a
+  third-party class), and a module-level object made by a third-party
+  call is changed only by methods of classes deriving from a third-party
+  class; calls on such attributes are still matched by name. A function
+  a module-level variable's initialiser calls runs at import, so a change
+  to it reaches the module's importers.</li>
+<li>Changing the arguments of a call made at import time (<code>X =
+  set_mode("slow")</code>, a class attribute, a decorator's or default's
+  argument) did not select the tests that read the state the callee
+  changes. An import added to or removed from a module that starts or
+  stops running another module's import-time code reaches the readers of
+  what that code writes (a registry filled at import), in both modes;
+  added imports stay non-structural otherwise.</li>
 <li>Moving a module's or a class's statements around (a constant moved
   below the decorator that reads it, two <code>@register</code> functions swapped, a
   <code>def</code> moved below a <code>try</code>/<code>except</code> import of the same name) was no
   change at all: the order of statements both sides have is now part of
-  the definition, so a reorder reaches importers; appending or swapping
-  plain <code>def</code>s still selects nothing.</li>
+  the definition, so a reorder reaches importers. Only swapping
+  neighbouring plain <code>def</code>s (no decorator that does anything, no
+  annotation evaluated at import) still selects nothing.</li>
+<li>A decorator diffcone can't show leaves the function alone (one from an
+  installed package, or a project decorator that calls or registers it)
+  makes the decorated function count as code that runs on import, and its
+  parameters are no longer bounded by its call sites. A name imported in
+  a <code>try</code>/<code>except</code> or <code>if</code>/<code>else</code>, rebound by a star import, or redefined
+  in the module is no longer taken for <code>typing.final</code>, a quiet decorator
+  or a structural base; attribute uses of a name bound several ways
+  depend on every binding.</li>
+<li>A local name, parameter or function-local import was taken for a
+  module-level import or builtin of the same name, and a call of an
+  unresolved function named <code>rebinds</code>, <code>registers</code> or <code>mutated_by</code> for one
+  of diffcone's own kinds of dependency.</li>
+<li>A dynamic import, script path or <code>getattr</code> receiver bounded by its call
+  sites is unbounded when a caller may be unseen (a call through an object
+  of unknown type, an unseen construction).</li>
+<li>Reading members by name or wholesale is a dependency: an attribute a
+  class does not define (<code>C.__doc__</code>, <code>C.__type_params__</code>, one a decorator
+  sets), <code>C.__dict__[name]</code> and <code>obj.__dict__[name]</code>, <code>mod.__dict__[name]</code>
+  and <code>inspect.getmembers(mod)</code> (a test parametrized over a module's
+  functions), <code>match</code> class patterns, <code>operator.attrgetter</code>/
+  <code>methodcaller</code> and <code>str.format</code> fields (<code>'{0.attr}'</code>); a non-literal
+  name is a dynamic reference. <code>C.__subclasses__()</code>, <code>C.__mro__</code> and
+  <code>C.__bases__</code> reach the classes they return.</li>
+<li>Code that passes a module to other code (<code>read(ops, name)</code>) depends on
+  that module's functions and on what its imports bind (<code>api.core.TABLE</code>);
+  a module from a literal <code>import_module("pkg.sub")</code> or <code>__import__</code> that
+  is handed on counts as handed on. An instance handed to code outside the
+  project (<code>json.dump(x, w)</code>, <code>print(file=w)</code>, <code>dict(obj)</code>,
+  <code>csv.writer(w)</code>) depends on every method of its class, not only its
+  dunder methods.</li>
+<li>A class obtained by a name nothing resolves (<code>m.Alt()</code> on an object of
+  unknown type, a lazy <code>__getattr__</code> export) reaches its <code>__init__</code> and
+  <code>__new__</code>. A class with an <code>enum.Enum</code>-family base or an in-scope
+  metaclass depends on its <code>__init__</code>/<code>__new__</code>, which run when the class
+  is created (<code>Color.RED.code</code> reaches <code>Color.__init__</code>); <code>dir(mod)</code>
+  depends on <code>mod.__dir__</code>, and <code>dir</code>, <code>hasattr</code> and <code>vars</code> of a library
+  module your code writes to are lookup sites.</li>
+<li>A docstring-only change selects the tests that read that docstring, in
+  both modes, also through a parameter (<code>inspect.getdoc(fn)</code> in a
+  helper), <code>getattr(obj, "__doc__")</code> and a module's <code>__doc__</code>.</li>
+<li>A change to PEP 695/696 type parameters (bounds, defaults, their number)
+  was no change at all; a bound or default naming project code is now a
+  dependency. A subscript in an evaluated annotation (<code>X: Registry["k"] =
+  1</code>) counts as code that runs on import.</li>
+<li>Code a test runs in a new process: a test running a script path, <code>-m
+  module</code> or <code>-c</code> code named in the code did not depend on it. A module's
+  file is an import of it; a <code>.py</code> file no module name maps to
+  (<code>scripts/gen-data.py</code>) is read as <code>-c</code> code is (what it imports counts,
+  and a change to the file reaches the test; if it imports by a name it
+  computes, any change does); a Python command whose program is
+  built at run time is affected by any change. A child whose interpreter
+  is not the first word (<code>env X=1 python -m ...</code>, <code>uv run python ...</code>,
+  <code>timeout 30 python ...</code>, <code>asyncio.create_subprocess_exec(sys.executable,
+  ...)</code>, <code>os.execl</code>) is followed. <code>python -c</code> code that changes
+  <code>sys.path</code>, <code>sys.meta_path</code> or <code>sys.modules</code> by any assignment, deletion
+  or augmented assignment, or calls <code>os.chdir</code>, can import anything.</li>
 <li>Text a test writes out and runs (<code>exec</code>, <code>eval</code>, <code>compile</code>, <code>timeit</code>,
   <code>pytester.makepyfile</code>) is read as the code it is: its imports and calls
   count. Text built at run time from pieces that are not written out can
   import anything.</li>
 <li>A test file given to a test runner (<code>python -m pytest path</code>,
-  <code>pytest.main([...])</code>, <code>python -m unittest module</code>, <code>unittest</code>'s
-  loaders, <code>doctest.testfile</code>) runs whole, conftests and fixtures
-  included; it counted as an import.</li>
-<li>A Python child whose interpreter is not the first word (<code>env X=1
-  python -m ...</code>, <code>uv run python ...</code>, <code>timeout 30 python ...</code>,
-  <code>asyncio.create_subprocess_exec(sys.executable, ...)</code>, <code>os.execl</code>) is
-  followed.</li>
-<li><code>match</code> class patterns, <code>operator.attrgetter</code>/<code>methodcaller</code>, and
-  <code>str.format</code> template fields (<code>'{0.attr}'</code>) read attributes by name; a
-  non-literal name is a dynamic reference.</li>
-<li>An instance handed to code outside the project (<code>json.dump(x, w)</code>,
-  <code>print(file=w)</code>, <code>dict(obj)</code>, <code>csv.writer(w)</code>, <code>contextlib.closing(r)</code>)
-  depends on every method of its class, as it does when handed to project
-  code; only dunder methods were reached.</li>
-<li>An import added to or removed from a module that starts or stops
-  running another module's import-time code reaches the readers of what
-  that code writes (a registry filled at import), in both modes; added
-  imports stay non-structural otherwise.</li>
-<li>A module obtained from a literal <code>import_module("pkg.sub")</code> or
-  <code>__import__</code> and handed on counts as handed on.</li>
-<li>A docstring read through a parameter (<code>inspect.getdoc(fn)</code> in a
-  helper) and a module's <code>__doc__</code> see docstring-only changes.</li>
-<li>A class with an <code>enum.Enum</code>-family base or an in-scope metaclass
-  depends on its <code>__init__</code>/<code>__new__</code>, which run when the class is
-  created (<code>Color.RED.code</code> reaches <code>Color.__init__</code>); <code>dir(mod)</code> depends
-  on <code>mod.__dir__</code>; <code>dir</code>, <code>hasattr</code> and <code>vars</code> of a library module your
-  code writes to are lookup sites.</li>
-<li>A doctest's entry and a manifest entry on project code are no longer
-  "isolated test code", nor is a test or <code>setUp</code> that module-level code
-  calls, nor a store through a <code>monkeypatch</code> a wider-scoped fixture
-  requests or that the module overrides.</li>
-<li><code>WORKTREE</code> plans read git-ignored <code>.py</code> files in directories git does
-  not ignore as a whole (a generated <code>_version.py</code>, <code>local_settings.py</code>);
-  ignored directories are still skipped. <code>run</code> refuses a working tree
-  that differs from the planned snapshot in any file the plan would have
-  selected on (data and configuration files under the roots,
-  <code>diffcone.toml</code>, runner configuration, build inputs, conftests, ignored
-  <code>.py</code> files, modes, dirty submodules) and names them.</li>
-<li>File mode changes (<code>chmod +x</code>) under the source roots are changes, in
-  commits and the working tree; a tracked file replaced by a directory no
-  longer crashes <code>WORKTREE</code> plans.</li>
-<li><code>validate</code>, <code>corpus</code> and <code>collect</code> run the whole suite whatever <code>-x</code> or
-  <code>--maxfail</code> is configured, and <code>validate</code> refuses a suite that reported
-  fewer outcomes than it collected: a miss can no longer hide behind an
-  early stop.</li>
-<li><code>check</code> and <code>validate</code> work when pytest's rootdir lies below the
-  repository (an ini file in a subdirectory): the plan records pytest's
-  rootdir, configuration file and <code>--junit-prefix</code>, <code>check --rootdir</code> and
-  <code>--junit-prefix</code> override them, and a directory that fails to collect
-  counts as a collection failure of every test under it. Before, every
-  failure was an unknown miss and the record action confirmed it.</li>
-<li><code>run</code>'s "did not collect" message names <code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>,
-  <code>-m</code> or <code>--deselect</code> among the effective pytest arguments and where
-  they are set.</li>
+  <code>pytest.main([...])</code>, <code>python -m unittest module</code>, <code>unittest.main
+  (module=...)</code>, <code>loadTestsFromName</code>) counted as an import; it runs whole,
+  conftests and fixtures included. <code>unittest</code> discovery,
+  <code>doctest.testfile</code>, <code>DocFileSuite</code> and <code>DocFileTest</code>, a directory or a
+  non-literal argument can run anything, so any change selects the test.</li>
+<li>Functions obtained from <code>pickle.load</code>/<code>loads</code> (and cloudpickle, dill,
+  joblib) or from a module loaded by a computed file path were invisible
+  without a recording; such code is now affected by any change. A round
+  trip (<code>loads(dumps(x))</code>, a temporary file), pickle bytes written in the
+  code and a path in the module's own directory are bounded by what they
+  load.</li>
+<li>Patches: one that may outlast its test (<code>patch(...).start()</code>, a patcher
+  kept for later, a <code>MonkeyPatch()</code> of your own, a <code>with mock.patch(...)</code>
+  around a fixture's <code>yield</code>, <code>setattr</code> on any other receiver) is a store
+  on the module it patches, so lookups on that module follow it, and set
+  in <code>sys.modules</code> that way it counts as installed for good. A <code>with
+  mock.patch.dict(os.environ)</code> or <code>warnings.catch_warnings()</code> block whose
+  body yields does not put the process state back. <code>mock.patch.multiple
+  ("pkg.mod", NAME=...)</code> depends on those names and the module; any dotted
+  patch target counts as an import of its module, also through a patcher
+  called on a value (<code>pytest.MonkeyPatch().setattr("pkg.mod.NAME",
+  ...)</code>).</li>
+<li>A write to process-global state (<code>os.environ</code>, warning filters,
+  <code>sys.path</code>) is recognised whichever import binds the name: <code>from os
+  import *</code>, an import in <code>try</code> with another in <code>except</code>, or a
+  function-local one. A <code>with</code> statement counts as putting state back only
+  when every binding of its name is the restoring one.</li>
+<li>Snapshots: <code>WORKTREE</code> did not see edits to files flagged
+  assume-unchanged or skip-worktree. It now reads git-ignored <code>.py</code> files
+  in directories git does not ignore as a whole (a generated
+  <code>_version.py</code>, <code>local_settings.py</code>); ignored directories are still
+  skipped. File mode changes (<code>chmod +x</code>) under the source roots are
+  changes, in commits and the working tree. A submodule under the roots
+  no longer makes every <code>WORKTREE</code> plan select everything (one checked out
+  at another commit, or with uncommitted edits, still counts as a
+  change); a path containing a line break, or a tracked file replaced by
+  a directory, no longer fails the plan.</li>
+<li>A file nested too deeply to analyse is an analysis error that selects
+  everything (a test, conftest or benchmark module: a file that did not
+  parse, which makes discovery incomplete), instead of a crash. A
+  <code>diffcone.toml</code> that is present but can't be read (left unmerged by a
+  conflicted merge) is an analysis error too; it was read as no file. A
+  manifest that is not valid JSON says so.</li>
 </ul>
-<h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
+<h4 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h4>
 <ul>
-<li>A pytest configuration file (<code>pytest.toml</code>, <code>pytest.ini</code>,
-  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>) or an <code>asv.conf.json</code> that
-  can't be parsed made discovery quietly use the defaults, so tests or
-  benchmarks the file points elsewhere were not targets. It now makes
-  discovery incomplete (exit code <code>3</code>).</li>
-<li><code>asv.conf.jsonc</code> is read like <code>asv.conf.json</code>, and trailing commas in
-  either are accepted, as asv allows.</li>
 <li>An autouse fixture imported into a conftest, a test module or a plugin
   (by name, through star imports at any depth, or as a module attribute)
   was not a dependency of the tests it applies to; nor was a fixture with
   <code>name=</code> imported under its function name.</li>
-<li>pytest options in <code>PYTEST_ADDOPTS</code>, plugins in <code>PYTEST_PLUGINS</code> and
-  pytest arguments written into <code>--command</code> were not read. <code>plan</code> and
-  <code>discover</code> take <code>--command</code>, the CI actions pass it, and the report lists
-  what was read; a command whose pytest arguments cannot be found is
-  reported.</li>
 <li>Conftests pytest loads at startup (in the <code>test*</code> directories of a path
   it starts from) count even when ignored or under <code>norecursedirs</code>;
   <code>--ignore</code>, <code>--ignore-glob</code> and <code>norecursedirs</code> apply only below the
   paths pytest starts from, and not under a conftest whose
   <code>pytest_ignore_collect</code> can return False.</li>
-<li>Understood now: <code>.</code> as an argument, a <code>.txt</code> or <code>.rst</code> file named as an
-  argument (always a doctest), <code>--doctest-glob</code> patterns with a directory,
-  option values written as separate arguments (<code>--ignore tests/slow</code>),
-  absolute paths inside the repository, <code>-o name=value</code> overrides and paths
-  in <code>addopts</code>.</li>
-<li>ASV: <code>setUp</code> and <code>TearDown</code> in any case, and the benchmark class's
-  <code>__init__</code>, are dependencies of its benchmarks.</li>
-<li>The <code>pytest_*</code> methods of an object registered as a plugin
-  (<code>config.pluginmanager.register(...)</code>), and plugins registered with
-  <code>import_plugin("name")</code>, apply to every test.</li>
-<li>Code pytest runs while collecting that changes the process (a conftest,
-  test module or module they import that sets an environment variable or
-  extends <code>sys.path</code> at import, a <code>pytest_generate_tests</code> that does) is a
-  dependency of every test.</li>
 <li><code>pytest_plugins</code> is read however it is built (<code>+</code>, <code>+=</code>, <code>.append</code>,
   <code>.extend</code>, a comma-separated string, a variable) or imported from
-  another module; when it can't be read, every test is selected and the
-  report says why.</li>
+  another module; one that can't be read keeps every test selected
+  (<code>unreadable_plugins</code>), as does a plugin module in the repository
+  outside the source roots (<code>plugin_outside_roots</code>). The <code>pytest_*</code>
+  methods of an object registered as a plugin
+  (<code>config.pluginmanager.register(...)</code>), and plugins registered with
+  <code>import_plugin("name")</code>, apply to every test.</li>
 <li><code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>, or
-  imported, apply their <code>usefixtures</code>.</li>
-<li><code>indirect=</code> given as a variable, as the third positional argument or
-  through <code>**kwargs</code> no longer drops the fixture from the test's
-  dependencies.</li>
+  imported, apply their <code>usefixtures</code>; <code>indirect=</code> given as a variable, as
+  the third positional argument or through <code>**kwargs</code> no longer drops the
+  fixture from the test's dependencies.</li>
 <li>Tests defined, aliased or marked <code>__test__ = True</code> inside <code>if</code>/<code>try</code>
   blocks, and tests imported from such modules, are found; an imported
   test discovery can't follow is reported, not dropped.</li>
+<li>Code pytest runs while collecting that changes the process (a conftest,
+  a test module or a module they import that sets an environment variable
+  or extends <code>sys.path</code> at import, a <code>pytest_generate_tests</code> that does,
+  also through a patch nothing undoes: <code>mock.patch.dict(os.environ,
+  ...).start()</code>, <code>pytest.MonkeyPatch().setenv(...)</code>, <code>syspath_prepend</code>)
+  is a dependency of every test.</li>
 <li>A collection hook imported into a conftest (by a star import, or from
   outside the source roots), or a star import from outside the roots in a
   conftest or plugin, makes discovery possibly incomplete.</li>
-<li>Code run while collecting that writes the environment or the import path
-  through a patch nothing undoes (<code>mock.patch.dict(os.environ,
-  ...).start()</code>, <code>pytest.MonkeyPatch().setenv(...)</code>,
-  <code>syspath_prepend</code>) is a dependency of every test.</li>
-<li>ASV: a <code>timeraw_</code> benchmark bound under another name, or renamed with
-  <code>benchmark_name</code>, depends on what its code imports; <code>benchmark_name</code>
-  applies wherever the function is bound, inherited methods included;
-  <code>benchmark_dir: "."</code> finds benchmarks, and a <code>benchmark_dir</code> outside the
-  repository makes discovery incomplete.</li>
-<li>A test, conftest or benchmark module nested too deeply to analyse is
-  reported as a file that did not parse, which makes discovery
-  incomplete, instead of stopping discovery with an internal error.</li>
+<li>A <code>pytester</code>/<code>testdir</code> test depends on the project's registered plugins
+  (<code>pytest11</code> entry points, <code>pytest_plugins</code>, <code>-p</code>) and on what its inline
+  files import.</li>
+<li>ASV: <code>setUp</code> and <code>TearDown</code> in any case, and the benchmark class's
+  <code>__init__</code>, are dependencies of its benchmarks; a <code>timeraw_</code> benchmark
+  bound under another name, or renamed with <code>benchmark_name</code>, depends on
+  what its code imports; <code>benchmark_name</code> applies wherever the function is
+  bound, inherited methods included; <code>benchmark_dir: "."</code> finds
+  benchmarks.</li>
 </ul>
-<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<h4 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h4>
 <ul>
-<li>Recordings must be made again: the store format changed.</li>
-<li>When <code>run</code> couldn't use a recording because only <code>-O</code> or <code>PYTHONPATH</code>
-  differed, it listed no differences; every difference is now named.</li>
+<li>Editing a test file selected every test when the suite was recorded
+  with a virtual environment inside the checkout (<code>uv run pytest</code> runs
+  <code>.venv/bin/pytest</code>): pytest reading files during collection looked like
+  the project reading them outside any test. An environment in the
+  checkout, or inside a source directory (where it hid that directory's
+  code or gave a false "installed copy" error), is now installed code.</li>
+<li>A session hook that lists installed distributions
+  (<code>importlib.metadata.distributions()</code>) made adding any file anywhere
+  select every test; those scans are no longer recorded.</li>
+<li>The recorder starts before pytest loads any <code>-p</code> plugin (<code>addopts</code>,
+  <code>PYTEST_ADDOPTS</code>, the command) and before a project <code>sitecustomize.py</code>,
+  so what they import is recorded. Modules imported before it could start
+  are listed (<code>preloaded_modules</code>), <code>collect</code> warns, and any change in
+  them is planned from the code.</li>
+<li>Files the recording missed are recorded: files a library reads while it
+  is imported (matplotlib's <code>matplotlibrc</code>), files reached through a
+  directory descriptor (<code>dir_fd=</code>, <code>os.listdir(fd)</code>, <code>os.fstat</code>), entries
+  of an <code>os.scandir</code> listing, <code>os.readlink</code>, <code>sqlite3</code> <code>file:</code> URIs,
+  symlinked paths, and on macOS and Windows a file opened under another
+  capitalisation. A descriptor the recorder cannot trace flags the test.</li>
 <li>A process started while a <code>conftest.py</code> is imported or in a hook was not
   credited to anything; what it runs now counts as part of that import or
   hook, and one the recording cannot follow makes every change plan from
-  the code. pytest-xdist workers are not affected.</li>
-<li>A test using a <code>multiprocessing</code> pool, forkserver or forked process that
-  an earlier test started is always selected while that process runs.</li>
-<li>Files a library reads while it is imported (matplotlib's <code>matplotlibrc</code>)
-  were not recorded.</li>
-<li>A virtual environment created inside a source directory hid that
-  directory's code, or gave a false "installed copy" error.</li>
+  the code (pytest-xdist workers are not affected). A test using a
+  <code>multiprocessing</code> pool, forkserver or forked process that an earlier
+  test started is always selected while that process runs.</li>
 <li>Tests that run code compiled from text no file holds (doctests,
   <code>--doctest-modules</code>, <code>timeit</code>, a notebook kernel) are always selected
-  (rule <code>text_code</code>).</li>
-<li>On macOS and Windows, a file opened under another capitalisation was not
-  matched.</li>
-<li>A <code>python -c</code> probe that runs project code is caught by its own
-  recording, and a project's own <code>sitecustomize.py</code> no longer stops
-  subprocesses from recording themselves. A child recording cut short (a
-  full disk) is treated as unreadable.</li>
-<li>A fake test class found without naming it (a base's <code>__subclasses__()</code>,
-  <code>gc</code>, a frame's globals) counts as held by the code that found it.</li>
+  (rule <code>text_code</code>). A string <code>skipif</code> condition naming nothing of the
+  project and <code>autospec=True</code> mocks do not count as such text.</li>
 <li>A change to code that runs at import, or that ran during an import,
   reaches the tests reading what it writes into another module, Cython
-  code included; library code importing a test module by a computed name
-  sees changes to it; <code>pytest_plugins</code> in a test module selects every test
-  when it changes.</li>
-<li><code>run --collect</code> on a recording made with <code>--reverse-check</code> runs the
-  selected tests again in reverse order, so the advanced records are
-  order-checked too.</li>
+  code included. Code that can obtain a test module without importing it
+  by name sees changes to it: library code importing one by a computed
+  name, an unpickler, a loader of a computed path. A lazy-export
+  <code>__getattr__</code> whose table only test-time code can change does not count
+  as such code, nor do <code>gc.get_stats()</code>, <code>gc.collect()</code> and
+  <code>gc.callbacks</code>, and <code>hasattr(obj, "name")</code> notices only <code>name</code>.
+  <code>pytest_plugins</code> in a test module selects every test when it changes.</li>
+<li>A function added, deleted or redefined with an annotation that calls
+  code (<code>def f(x: set_mode("fast"))</code>), or a module-level variable whose
+  annotation does, reaches what that code writes: before Python 3.14
+  annotations run with the definition. A definition whose annotations call
+  nothing is not escalated.</li>
+<li>Caches: a module-level cache filled by an earlier test hid the function
+  that filled it from later tests' records, in every order; a change to
+  that function now reaches the tests reading the cache. So does a cache
+  kept on an object, a class, a closure, a function attribute or in a
+  memoising decorator diffcone knows (<code>functools.cached_property</code>,
+  <code>cachetools</code>, Django's and Werkzeug's <code>cached_property</code>); a decorator
+  from an installed package it doesn't know is taken to keep nothing. A
+  store made by a test's own code counts for that test only.</li>
+<li>A non-literal <code>getattr</code> on a standard or third-party module sees
+  changes anywhere in the project, not only in its own imports, and a
+  test module's import-time change reaches lookups in library code.</li>
+<li>Code a hook ran that changed, or that reads a change, selects every
+  test.</li>
 <li>Cython: edits to blank lines or <code>#</code> lines inside a string in a function
   body were ignored.</li>
+<li>A recording stored under a path containing <code>#</code>, <code>?</code> or <code>%</code> was skipped
+  as if there were none.</li>
+<li>When <code>run</code> couldn't use a recording because only <code>-O</code> or <code>PYTHONPATH</code>
+  differed, it listed no differences; every difference is now named.</li>
+</ul>
+<h4 id="running-check-and-validate">Running, check and validate<a class="headerlink" href="#running-check-and-validate" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>diffcone check</code> decided "already failing at the baseline" per test
+  function, so a parametrized case that failed at the baseline excused a
+  new failure of another case: a miss reported as clean. Cases are now
+  compared one by one.</li>
+<li><code>check</code> and <code>validate</code> work when pytest's rootdir lies below the
+  repository (an ini file in a subdirectory): the plan records pytest's
+  rootdir, configuration file and <code>--junit-prefix</code>, <code>check --rootdir</code> and
+  <code>--junit-prefix</code> override them, and a directory that fails to collect
+  counts as a collection failure of every test under it. Before, every
+  failure was an unknown miss, which the <code>record</code> action confirmed.</li>
+<li><code>validate</code>, <code>corpus</code> and <code>collect</code> run the whole suite whatever <code>-x</code> or
+  <code>--maxfail</code> is configured, and <code>validate</code> and <code>corpus</code> stop with exit
+  code 2 when the suite reported fewer outcomes than it collected: a miss
+  can no longer hide behind an early stop. <code>validate</code> runs pytest without
+  <code>-v</code> and reports the command line it ran.</li>
+<li><code>run</code> refuses a working tree that differs from the planned snapshot in
+  any file the plan would have selected on (data and configuration files
+  under the roots, <code>diffcone.toml</code>, runner configuration, build inputs,
+  conftests, ignored <code>.py</code> files, file modes, dirty submodules, files
+  flagged assume-unchanged or skip-worktree, <code>.py</code> files with non-ASCII
+  names) and names them.</li>
+<li><code>run</code>'s "did not collect" message names <code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>,
+  <code>-m</code> or <code>--deselect</code> among the effective pytest arguments and where
+  they are set.</li>
+<li><code>collect</code> and <code>run --collect</code> no longer refuse a clean checkout because
+  untracked bytecode or ASV output has a non-ASCII name; a renamed file
+  counts as both names.</li>
+<li><code>run --dry-run --evidence</code> prints a command you can run, without
+  diffcone's internal recorder plugin.</li>
+<li><code>discover</code> honours <code>--no-cache</code> and <code>--cache-dir</code>: it uses the same
+  cache as <code>plan</code>, and its output is unchanged.</li>
+<li>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
+  was quoted for a POSIX shell, and one written with forward slashes
+  (<code>.venv/Scripts/python.exe</code>) was not resolved.</li>
+<li>An unexpected error in any command exits 2; <code>check</code>, <code>report</code>,
+  <code>collect</code> and <code>prune</code> exited 1, which <code>check</code> uses for a miss.</li>
+</ul>
+<h4 id="ci-actions">CI actions<a class="headerlink" href="#ci-actions" title="Permanent link">&para;</a></h4>
+<ul>
+<li>The <code>record</code> action with <code>check: true</code> could pass a push that had a
+  miss: a re-run of the job restored the newest recording instead of its
+  own commit's (so the kept verdict was lost and the push was re-checked
+  against a later baseline), and a check that crashed, or a re-run whose
+  JUnit could not be read, was recorded as checked with no miss. A
+  recording that is not from before the pushed commit is no longer
+  checked against. A re-run's other failures (when the job's pytest
+  arguments name a path after an option) no longer count as misses, and
+  the re-run of a missed test runs a <code>command</code> with quotes or spaces as
+  written.</li>
+<li><code>diffcone report</code> ignores recording artifacts uploaded by pull-request
+  runs (a pull request from a fork runs its own code), counts an artifact
+  it cannot read as a problem instead of failing, reports pull-request
+  runs whose selected tests pytest did not collect, keeps a test id with
+  backticks inside its code span, and escapes <code>|</code> in "not checked"
+  reasons.</li>
+<li>The <code>report</code> action failed whenever a job of a reported run had been
+  re-run (two artifacts of the same name); it reads the latest attempt's.
+  Its window starts at the last report that posted, so a run with only a
+  job summary (a manual run with posting off) no longer hides the runs
+  before it.</li>
+<li>The <code>record</code> action's re-run of a new unselected failure stopped at the
+  first failure when <code>pytest-args</code> or <code>addopts</code> had <code>-x</code> or <code>--maxfail</code>,
+  and the misses it never reached were reported as flaky. It now re-runs
+  with <code>--maxfail=0</code>, and a missed test the re-run did not run still
+  counts as a miss.</li>
+</ul>
+<h3 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>pytest options in <code>PYTEST_ADDOPTS</code>, plugins in <code>PYTEST_PLUGINS</code> and
+  pytest arguments written into the run's command are read: <code>plan</code> and
+  <code>discover</code> take <code>--command</code>, the CI actions pass it, and the report
+  lists what was read (<code>run_arguments</code>). A command whose pytest arguments
+  cannot be found is reported.</li>
+<li>Understood now: <code>.</code> as an argument, a <code>.txt</code> or <code>.rst</code> file named as an
+  argument (always a doctest), <code>--doctest-glob</code> patterns with a directory,
+  option values written as separate arguments (<code>--ignore tests/slow</code>),
+  absolute paths inside the repository, <code>-o name=value</code> overrides and
+  paths in <code>addopts</code>.</li>
+<li>A pytest configuration file below the repository root that pytest
+  would use (one nearer the paths it starts from than the root's) is not
+  read by discovery, so it makes discovery incomplete
+  (<code>unmodelled_runner_option</code>, exit code 3; <code>run</code> refuses without
+  <code>--allow-incomplete-discovery</code>).</li>
+<li>A pytest configuration file (<code>pytest.toml</code>, <code>pytest.ini</code>,
+  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>) or an <code>asv.conf.json</code> that
+  can't be parsed made discovery quietly use the defaults; it now makes
+  discovery incomplete (<code>unparsable_config</code>, exit code 3), as does a
+  <code>benchmark_dir</code> outside the repository.</li>
+<li><code>asv.conf.jsonc</code> is read like <code>asv.conf.json</code>, and trailing commas in
+  either are accepted, as asv allows.</li>
+</ul>
+<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
+<ul>
 <li>A Python process a test starts with <code>subprocess</code> (directly, through
   <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and
   the test is credited with what it ran instead of being selected for
-  every change. So is every test that runs while the process is still
-  running (a server or a warm worker another test started). A process
-  started another way (<code>os.system</code>, a shell, <code>multiprocessing</code>, anything
-  on Windows), one that cannot record itself (a replaced environment,
-  <code>python -S</code>, Python before 3.12), and one running project code from a
-  <code>-c</code> snippet or a script outside the source roots still select their
-  test for every change.</li>
+  every change; so is every test that runs while the process is still
+  running (a server or a warm worker another test started). A <code>python -c</code>
+  probe that runs project code is caught by its own recording, and a
+  project's own <code>sitecustomize.py</code> does not stop subprocesses from
+  recording themselves. A process started another way (<code>os.system</code>, a
+  shell, <code>multiprocessing</code>, anything on Windows), one that cannot record
+  itself (a replaced environment, <code>python -S</code>, Python before 3.12), one
+  whose recording was cut short (a full disk), and one running project
+  code from a <code>-c</code> snippet or a script outside the source roots still
+  select their test for every change.</li>
 <li>A test run that changes its own environment (a test that installs or
   upgrades a package with the test interpreter) is named: <code>collect</code> warns
   with the packages, the recording keeps the environment it started in,
   and <code>run</code> says when it meets that environment. The recording is still
   keyed by the environment at the end, so such a run plans from the code.</li>
+<li><code>plan --evidence</code> says the environment was not checked
+  (<code>environment_checked: false</code>): only <code>run</code> can check it, and its <code>-o</code>
+  report says <code>true</code> when the environment matched.</li>
+<li><code>run --collect</code> on a recording made with <code>--reverse-check</code> runs the
+  selected tests again in reverse order, so the advanced records are
+  order-checked too.</li>
 <li>A method or attribute added to (or changed or deleted on) a fake class
-  in a test module no longer selects every test that ran library code
-  calling a method of that name (<code>x.read()</code>). It selects only the tests
-  that also ran code able to hand that code a fake: code naming the class
-  or a subclass. A fake built at import, in a decorator or during
-  collection, or one whose class or bases sit outside test code, is
-  treated as before.</li>
+  in a test module selects only the tests that ran library code calling a
+  method of that name (<code>x.read()</code>) and also ran code able to hand that
+  code a fake: code naming the class or a subclass, or finding it without
+  naming it (a base's <code>__subclasses__()</code>, <code>gc</code>, a frame's globals). A
+  fake built at import, in a decorator or during collection, or one whose
+  class or bases sit outside test code, still selects every such test.</li>
 <li>A lookup on a standard or third-party module that tests patch
   (<code>dir(builtins)</code> or <code>hasattr(os, name)</code> in library code, with
   <code>monkeypatch.setattr(builtins, ...)</code> in a test) no longer makes every
-  change anywhere select every test that ran the lookup. The tests that
+  change anywhere select every test that ran the lookup: the tests that
   patch the module are selected through their own code. A module written
   at import or in a hook is treated as before, and a change to code that
-  runs at import still reaches the lookup when it can run a writer. A
-  non-literal <code>getattr</code> on such a module now sees changes anywhere in the
-  project, not only in its own imports, and a test module's import-time
-  change now reaches lookups in library code.</li>
-<li>A test whose fixtures, hooks or plugins change though its own code did
-  not is selected under a recording too (<code>lifecycle_changed</code>), and code a
-  hook ran that changed, or that reads a change, selects every test.</li>
-<li>A module-level cache filled by an earlier test hid the function that
-  filled it from later tests' records, in every order: a change to that
-  function now reaches the tests reading the cache.</li>
-<li>A docstring-only change selects the tests that read that docstring.</li>
-<li>A lazy-export <code>__getattr__</code> whose table only test-time code can change
-  no longer counts as importing test modules; <code>gc.get_stats()</code>,
-  <code>gc.collect()</code> and <code>gc.callbacks</code> no longer count as walking the object
-  graph; <code>hasattr(obj, "name")</code> notices only <code>name</code>.</li>
-<li>Unpicklers and loaders of a computed path count as code that can obtain
-  a test module.</li>
-<li>A function added, deleted or redefined with an annotation that calls
-  code (<code>def f(x: set_mode("fast"))</code>), or a module-level variable whose
-  annotation does, reaches what that code writes: before Python 3.14
-  annotations run with the definition, so tests reading that state were
-  missed.</li>
-<li>A recording stored under a path containing <code>#</code>, <code>?</code> or <code>%</code> can be
-  opened; it was skipped as if there were none.</li>
-<li>Recordings must be made again: store format 3.</li>
-<li>The recorder starts before pytest loads any <code>-p</code> plugin (<code>addopts</code>,
-  <code>PYTEST_ADDOPTS</code>, the command) and before a project <code>sitecustomize.py</code>,
-  so what they import is recorded; modules imported before it could start
-  are noted, <code>collect</code> warns, and any change in them is planned from the
-  code.</li>
-<li>A cache kept on an object, a class, a closure, a function attribute or
-  in <code>functools.cached_property</code> reaches every test that reads it, not
-  only the test that filled it.</li>
-<li>Files reached through a directory descriptor (<code>dir_fd=</code>,
-  <code>os.listdir(fd)</code>, <code>os.fstat</code>), entries of an <code>os.scandir</code> listing,
-  <code>os.readlink</code>, <code>sqlite3</code> <code>file:</code> URIs and symlinked paths are recorded;
-  a descriptor the recorder cannot trace flags the test.</li>
-<li>A string <code>skipif</code> condition naming nothing of the project and
-  <code>autospec=True</code> mocks no longer mark a test as text code.</li>
+  runs at import still reaches the lookup when it can run a writer.</li>
+<li>Editing an ordinary module named <code>build.py</code> (not at the repository root
+  or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects the tests that ran it,
+  as static planning does, instead of every test.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1903,12 +2019,6 @@ selection rules.</p>
 <li><code>run -o</code> adds <code>evidence_not_used</code> (why the recording was not used, and
   what differed) to the plan it writes, and <code>diffcone report</code> shows those
   differences per job.</li>
-<li>The <code>report</code> action failed whenever a job of a reported run had been
-  re-run, since the run then holds two artifacts of the same name; it now
-  reads the latest attempt's.</li>
-<li>The <code>record</code> action's re-run of a missed test runs a <code>command</code> with
-  quotes or spaces as written.</li>
-<li>The report's job table escapes <code>|</code> in "not checked" reasons.</li>
 </ul>
 <h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
 <h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>
@@ -1928,7 +2038,7 @@ selection rules.</p>
   whether the check itself failed, so a re-run reports a failed check as
   one rather than as a miss.</li>
 </ul>
-<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li>On Windows, <code>uv python list</code> run through the path <code>shutil.which</code> gives
   (<code>...\uv.EXE</code>) is recognised as an inert query, as it is elsewhere; it
@@ -1963,7 +2073,7 @@ selection rules.</p>
   that reaches it whenever anything in its import closure changes, unless
   project code stores something on that module.</li>
 </ul>
-<h3 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_3">Execution evidence<a class="headerlink" href="#execution-evidence_3" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
   interpreter version check importing only built-in modules, with nothing
@@ -1978,7 +2088,7 @@ selection rules.</p>
   the middle of while it runs, which also covers a later test running
   beside a thread that loops in one function.</li>
 </ul>
-<h3 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h3>
+<h3 id="discovery_2">Discovery<a class="headerlink" href="#discovery_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
   pytest; a node id, or a path after an option that may take it as its

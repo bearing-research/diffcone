@@ -966,7 +966,9 @@ test for another reason, it names the rule.</dd>
 <dt><strong>It errs on the side of running more.</strong></dt>
 <dd>When diffcone cannot tell what a change reaches (a dynamic import, a
 file it cannot parse, a test a plugin creates), it selects more tests
-and tells you why. It is designed never to skip a test that could fail.</dd>
+and tells you why. Assuming your tests don't depend on each other (see
+<a href="limitations/">limitations</a>), it is designed never to skip a test
+that could fail.</dd>
 <dt><strong>It never runs your code to plan.</strong></dt>
 <dd>Planning reads files and git history only. Your tests run only when you
 ask diffcone to run them.</dd>
