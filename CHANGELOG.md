@@ -390,6 +390,22 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Running, check and validate
 
+- `validate` and `corpus` could not run the suites of several projects.
+  A checkout of a commit lacks a git-ignored, build-generated module such
+  as the `_version.py` setuptools-scm or hatch-vcs writes, so the package
+  could not be imported; the repository's copy of each git-ignored module
+  inside a package is now copied into every checkout that lacks it
+  (`--setup-command` runs after it). pytest's cache plugin is no longer
+  disabled, which made a configured `--failed-first` or `--lf` a usage
+  error; it starts from an empty cache of its own instead, so those options
+  neither narrow nor reorder the run, and the repository's `.pytest_cache`
+  is left alone. With `--coverage`, a suite that did not run is reported
+  as such instead of as a missing coverage database; pytest-cov is loaded
+  with `-p` when plugin autoloading is disabled; the database's place is
+  set in diffcone's coverage config instead of `COVERAGE_FILE`, which the
+  tests' own processes inherited; and parallel parts beside it are read
+  too. Errors name the snapshot (`base <commit>` or `head`) whose suite
+  failed.
 - `validate` and `corpus` reported tests outside the target list as
   misses even when the plan said discovery was incomplete (it exits 3,
   and `run` refuses it). They are now listed as "outside the target list"

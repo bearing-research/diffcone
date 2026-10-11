@@ -35,7 +35,16 @@ the environment:
   the process also writes ``collected-<pid>``, the number of tests it
   collected (``session.testscollected``, after deselection), so a run
   that stopped before reporting them all can be told apart from a whole
-  one.
+  one;
+* ``DIFFCONE_CACHE_DIR``: a directory, empty, for pytest's cache plugin
+  instead of the project's ``.pytest_cache``. ``validate`` keeps the plugin
+  (a project's ``addopts`` may carry ``--failed-first``, which pytest
+  refuses without it) but has it start from nothing, so ``--lf``/``--ff``
+  find no recorded failure to narrow or reorder the run by, and the
+  repository's cache is neither read nor written. The setting is pytest's
+  ``cache_dir``, put where ``getini`` finds it before the cache plugin
+  configures itself; ``-o cache_dir=`` would be an unknown option, an error
+  under ``strict``, when the command or ``addopts`` disable the plugin.
 """
 
 from __future__ import annotations
@@ -47,6 +56,7 @@ import pytest
 
 DIRECTORY = os.environ.get("DIFFCONE_SELECT")
 OUTCOMES = os.environ.get("DIFFCONE_OUTCOMES")
+CACHE_DIR = os.environ.get("DIFFCONE_CACHE_DIR")
 _ROOT = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 # The repository as given and with symlinks resolved: pytest reports paths
 # under whichever its rootdir is, and a linked or relative ``--repo`` differs.
@@ -77,11 +87,19 @@ def _repository_nodeid(nodeid: str) -> str:
     return _relative(os.path.join(_rootpath, path)) + sep + rest
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
+    # Before the cache plugin's (also tryfirst, but registered before this
+    # one, and pluggy calls the later registered first): it reads its
+    # directory, and ``--lf``/``--ff`` the failures recorded there, in its own
+    # configure. (A historic hook takes no wrapper.)
     global _rootpath
     rootpath = getattr(config, "rootpath", None) or getattr(config, "rootdir", None)
     if rootpath is not None:
         _rootpath = str(rootpath)
+    inicache = getattr(config, "_inicache", None)
+    if CACHE_DIR and isinstance(inicache, dict):
+        inicache["cache_dir"] = CACHE_DIR
 
 
 def _key(item) -> str:
