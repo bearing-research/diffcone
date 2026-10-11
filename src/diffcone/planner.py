@@ -1760,6 +1760,10 @@ _WRITER_MARKS = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
 
 # Methods unittest calls around each test of their class.
 _PER_TEST_HOOKS = frozenset({"setUp", "tearDown", "asyncSetUp", "asyncTearDown"})
+# Edge details from a class to its own method that say the runtime may call
+# it (resolver: a base outside the roots, a special method): no referrer for
+# isolated_test_code.
+_RUNTIME_CALLS = frozenset({"external_base", "special_method"})
 
 
 def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]) -> frozenset[str]:
@@ -1820,6 +1824,13 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         for edge in index.edges:
             # A writer edge points at the code writing, which is no use of it.
             if edge.kind == DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
+                continue
+            # A class's edge to its own method saying the runtime may call it
+            # (an external base such as ``unittest.TestCase``, a special
+            # method) is the runner's per-test call, not a use by other code.
+            if edge_mark(edge) in _RUNTIME_CALLS and any(
+                s.container == edge.source for s in defined.get(edge.target, ())
+            ):
                 continue
             if edge.source != edge.target:
                 referrers[edge.target].add(edge.source)

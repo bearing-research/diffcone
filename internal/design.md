@@ -397,8 +397,10 @@ Further rules (pre-release audit, round 2):
   test; a benchmark, which runs in a fresh process), unittest's per-test
   `setUp`/`tearDown`, and every function or method with a caller that is
   no fixture of a wider scope, when only isolated code refers to it (to a
-  fixed point; a writer edge is no reference; an entry or a per-test hook,
-  which the runner calls, needs no caller). Not isolated: an entry outside
+  fixed point; a writer edge is no reference, and neither is a class's
+  edge to its own method saying the runtime may call it, `external_base`
+  or `special_method`: unittest's per-test call of `setUp` or a test; an
+  entry or a per-test hook, which the runner calls, needs no caller). Not isolated: an entry outside
   the test modules (a doctest's entry is the project function itself, a
   manifest may point at project code: audit round 5, R23), an entry or
   `setUp` that module-level code, a wider-scoped fixture or a hook refers
