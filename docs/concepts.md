@@ -7,9 +7,10 @@ A snapshot is one of:
 
 - a git revision, such as `main`, `HEAD~1` or a commit hash;
 - `INDEX`, the changes you have staged with `git add`;
-- `WORKTREE`, the files on disk, including uncommitted and untracked files,
-  and git-ignored `.py` files that sit in a directory git doesn't ignore as
-  a whole (a generated `_version.py`, a `local_settings.py`). Ignored
+- `WORKTREE`, the files on disk, including uncommitted and untracked files.
+  It also reads git-ignored `.py` files (a generated `_version.py`, a
+  `local_settings.py`) in a directory that also holds files git tracks or
+  doesn't ignore; a directory with only ignored files is skipped. Ignored
   directories (a virtualenv, a build tree) and ignored files that aren't
   Python are left out.
 
@@ -41,21 +42,32 @@ report's names in brackets):
 |---|---|
 | added or deleted (`added`, `deleted`) | A new helper function, a removed method. |
 | body changed (`body_changed`) | The code inside a function changed. |
-| definition changed (`definition_changed`) | Its parameters, defaults, decorators or class bases changed. |
-| annotations changed (`annotations_changed`) | Only a function's type annotations changed. |
+| definition changed (`definition_changed`) | Its parameters, defaults, decorators or class bases changed, or the order of its statements changed. |
+| annotations changed (`annotations_changed`) | Only a function's type annotations changed, and they aren't evaluated (see below). |
 | dependencies changed (`dependencies_changed`) | It now calls or imports something different, or no longer uses something it did. |
 | dependencies added (`dependencies_added`) | A name it uses now resolves to something (a missing import was added). |
-| imports added (`imports_added`) | A module gained imports and nothing else. This selects nothing by itself; the code that uses the new names has changed too. |
+| imports added (`imports_added`) | A module gained imports and nothing else. The code that uses the new names has changed too. |
 | docstring changed (`docstring_changed`) | Only its docstring changed. |
 
-Formatting and comments are not changes: adding blank lines, or moving a
-plain function past another, selects nothing. Moving a statement past code
-that runs at import (a constant below the decorator that reads it, a `def`
-below the import that falls back to it, two registering decorators swapped)
-is a change to the module or class it stands in. A docstring edit counts
-only where the docstring is used: a doctest, a decorator that rewrites it,
-or code that reads `__doc__` (`inspect.getdoc`), including a helper that
-reads it off whatever it is handed.
+Some details:
+
+- Formatting and comments are not changes, and neither is adding blank
+  lines or swapping two neighbouring plain functions. Any other reordering
+  of a module's or class's top-level statements is a definition change
+  and reaches every importer.
+- A change to annotations alone is `annotations_changed` only when the
+  annotations aren't evaluated: the module has `from __future__ import
+  annotations`, the function has no decorator other than `typing`'s
+  `overload`, `override` or `final`, and its class has no decorators or
+  keywords. Otherwise it is `definition_changed`.
+- When a module starts importing one of your modules (or stops), that
+  module's import-time code now runs (or no longer does). The tests that
+  read what it registers or changes are selected, even though only an
+  import was added.
+- A docstring edit counts only where the docstring is used: a doctest, a
+  decorator that rewrites it, or code that reads `__doc__`
+  (`inspect.getdoc`), including a helper that reads it off whatever it is
+  handed.
 
 ## From a change to a test
 

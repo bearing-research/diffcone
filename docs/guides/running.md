@@ -21,10 +21,12 @@ and plugins load exactly as in a full run. Tests pytest collects that the
 plan doesn't know about (from a plugin's own collection, for example) are
 kept too.
 
-`run` exits with pytest's exit code. If a selected test wasn't collected,
-it exits `3`, since the run may have skipped tests; if nothing ran because
-nothing was selected, it exits `0` (see
-[exit codes](../reference/cli.md#exit-codes)).
+`run` exits with pytest's exit code, with two exceptions (see
+[exit codes](../reference/cli.md#exit-codes)):
+
+- if a selected test wasn't collected and pytest otherwise succeeded, it
+  exits `3`, since the run may have skipped tests;
+- if nothing ran because nothing was selected, it exits `0`.
 
 Discovery reads the same pytest options the run will use: those after
 `--`, those written into `--command` (`uv run pytest -p tests.plugin`),
@@ -37,29 +39,35 @@ exits `3`.
 
 If pytest didn't collect a selected test, the message also names any
 option among the effective pytest arguments that keeps tests out of a run
-by the cache or by name (`--lf`, `--ff`, `--sw`, `-k`, `-m`,
+by the cache or by name (`--lf`, `--ff`, `--nf`, `--sw`, `-k`, `-m`,
 `--deselect`) and where it is set, since that is the usual reason.
 
 For ASV, `--runner asv` builds the matching `asv run --bench` pattern. Add
-`--dry-run` to print the command instead of running it; for pytest the
-printed command names the selected tests as node ids, which is the
-equivalent of what the plugin keeps:
+`--dry-run` to print the command instead of running it:
 
 ```bash
 diffcone run --base main --head HEAD --discover asv --runner asv --dry-run
 ```
 
+For pytest, the printed command names the selected tests as node ids. It
+is close to, but not the same as, what `run` does:
+
+- it leaves out tests pytest collects that the plan doesn't know, which
+  `run` keeps;
+- naming tests on the command line makes pytest load their `conftest.py`
+  files earlier than a normal run does;
+- with `--evidence`, a dry run doesn't check the environment against the
+  recording.
+
 `run` refuses to start in two situations, each with an option to override:
 
-- **The checkout differs from what was planned.** If you plan a commit
-  (or `INDEX`) but the working tree differs in any file the plan would
-  have selected on, the plan doesn't describe what would run: a file
-  under your source roots (Python or not: a data file, a `.pyx`, a
-  configuration file), a git-ignored `.py` file beside tracked code, a
-  `conftest.py`, pytest's or ASV's configuration, `diffcone.toml`, a
-  dependency or lock file, or a submodule with a different commit or
-  edits inside. The message names the files. Plan with `--head WORKTREE`,
-  or pass `--allow-mismatched-worktree`.
+- **The checkout differs from what was planned.** If you planned a commit
+  or `INDEX` and the working tree differs in a file the plan depends on,
+  `run` refuses and names the files. That includes any file under your
+  source roots, a git-ignored `.py` beside tracked code, any
+  `conftest.py`, pytest or ASV configuration, `diffcone.toml`, dependency
+  and lock files, and submodules. Plan with `--head WORKTREE`, or pass
+  `--allow-mismatched-worktree`.
 - **Discovery may be incomplete** (exit code `3`). Pass
   `--allow-incomplete-discovery` to run the selection anyway.
 
@@ -78,6 +86,8 @@ diffcone check --plan plan.json --full full.xml
 It lists every test that failed or errored in the full run but wasn't
 selected, and exits with `1` if there is one. Options:
 
+- `--full` and `--baseline` can be repeated: several files (from a
+  sharded or split run, say) count as one run.
 - `--baseline base.xml` takes a run from before the change. Tests that
   failed there too are reported as already failing, not as misses. Each
   parametrized case counts on its own: a case that failed at the baseline
@@ -89,16 +99,31 @@ selected, and exits with `1` if there is one. Options:
 - `--format markdown` writes a summary table for a CI job summary, and
   `--format json` a report for scripts.
 
-JUnit names tests relative to pytest's rootdir and may carry a
-`--junit-prefix`; the plan records both from the configuration and the
-pytest arguments it was made with (so plan with the same `--command` and
-arguments as the run), and `check` maps the names through them. When the
-runs were made differently, pass `--rootdir DIR` (relative to the
-repository) or `--junit-prefix PREFIX`. If no case matches a target at
-all, the report says so and points at these options rather than reporting
-every failure as a miss. A directory that fails to collect (its
-`conftest.py` doesn't import) counts as a collection failure of every test
-under it, caught when any of them was selected.
+JUnit names tests relative to pytest's rootdir, sometimes with a
+`--junit-prefix`. The plan records both, so plan with the same `--command`
+and arguments as the run. If they differ, pass `--rootdir DIR` (relative
+to the repository) or `--junit-prefix PREFIX`. If no case matches a target
+at all, the report says so and points at these options, rather than
+reporting every failure as a miss.
+
+A directory that fails to collect (its `conftest.py` doesn't import)
+counts as a collection failure of every test under it. It is caught when
+any of them was selected.
+
+### The JSON report
+
+`diffcone check --format json` writes:
+
+| Field | Contents |
+|---|---|
+| `ok` | `true` when there is no miss and nothing in `not_run`. |
+| `misses` | The new failures the plan didn't select. |
+| `not_run` | New failures diffcone's own run (`--run diffcone=...`) didn't execute. |
+| `plan` | `status`, `discovery_incomplete`, and how many `targets` there were and how many were `selected`. |
+| `full_run` | `cases`, `test_time`, `selected_test_time` (the full run's time for the selected tests) and `unmatched_cases` (cases that match no target). |
+| `mapping` | The `rootdir` and `junit_prefix` the names were mapped with, and a `note` when no case matched a target. |
+| `failures` | Every failure of the full run: `test`, `outcome`, `kind`, `selected` and `already_failing` (it failed in the baseline too). `kind` is `test`, `collection` (a file that failed to collect) or `unknown` (it matches no target). |
+| `runs` | Each `--run`: `name`, `cases`, `test_time`, `targets_run`, `misses` (new failures it didn't run) and `disagreements` (tests it ran that failed in one run but not the other). |
 
 ## Validate a plan by running everything
 

@@ -95,12 +95,15 @@ the run's JUnit XML are written to `diffcone-results/`; upload them with
 
     `command` and `pytest-args` must be the same in both workflows, and the
     environment must match: the same Python version and installed packages.
-    Installing from a lock file makes this automatic. When the environment
-    differs, diffcone runs a plan from the code instead of from the
-    recording (or every test, if that plan's discovery may be incomplete);
-    when the pull request changes the lock file or another
-    dependency, build or CI file diffcone recognises (see
-    [discovery](reference/discovery.md)), it runs every test.
+    Installing from a lock file makes this automatic.
+
+    - When the environment differs, diffcone runs a plan from the code
+      instead of from the recording. If that plan's discovery may be
+      incomplete, it runs every test, unless you set
+      `allow-incomplete-discovery: true`.
+    - When the pull request changes the lock file or another dependency,
+      build or CI file diffcone recognises (see
+      [discovery](reference/discovery.md)), it runs every test.
 
 ## Check against a full run (optional)
 
@@ -133,6 +136,13 @@ didn't execute. It doesn't fail the workflow unless you set
 `fail-on-miss: true`, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses.
+
+The check matches JUnit names to tests through pytest's rootdir and
+`--junit-prefix`, as the plan recorded them, and the action has no inputs
+to change them. So run the full job's pytest from the same directory, with
+the same `--junit-prefix`, as the `run` job. Otherwise, run
+`diffcone check` yourself with `--rootdir` or `--junit-prefix` (see
+[checking a plan](guides/running.md#check-a-plan-against-a-full-run)).
 
 ## Or: record on every push to the default branch
 
@@ -185,15 +195,22 @@ On a push, `record` with `check: true`:
    it is a miss, and the job fails. If it passes the second time, it is
    reported as flaky. Only a test can be run again: a file that failed to
    collect, or a failure that matches no target, is a miss straight away.
-   Failures the recorded run already had are not misses;
+   Failures the recorded run already had are not misses. If
+   `diffcone check` itself fails (an input it can't read), the job fails
+   too;
 4. saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.
 
 The check is skipped, with a note, when there is nothing to compare with:
-no recording yet, a recording diffcone can't use (made with other source
-roots, or for a commit that can't be fetched or isn't from before the
-pushed commit, for example), or a commit with no parent. The recording is still
-made and saved.
+
+- no recording yet;
+- a recording diffcone can't use: made with other source roots or by an
+  older version of diffcone, or for a commit that can't be fetched or
+  isn't from before the pushed commit;
+- a commit with no parent.
+
+The recording is still made and saved. Until a new one is saved, pull
+requests that restore an unusable recording plan from the code.
 
 With `fail-on-test-failure: true` a failing test fails the job too, as a
 plain test run would, after the recording is saved. A test file that can't
@@ -242,15 +259,18 @@ matrix: `diffcone-${{ matrix.os }}-py${{ matrix.python-version }}`, for
 example. The report has one row per name; when a job was re-run, it reads
 the latest upload.
 
-Each report covers the runs that completed since the last successful
-report that posted started, so a run still going when one report starts is
-in the next. A report with both `report-label` and `miss-label` empty
-writes only the job summary and leaves its runs to the next report. If an
-artifact can't be downloaded, the report says so and the job fails, and
-the next report covers the same runs again. Artifacts that have expired
-are not reported. The report leaves out recording artifacts uploaded by
-pull-request runs (a pull request from a fork runs its own code), and
-artifacts whose files it cannot read, which it counts as a problem.
+Each report covers the runs that finished since the previous report that
+posted something started. A run still going when a report starts goes in
+the next one. A report that only writes the job summary (both
+`report-label` and `miss-label` empty), or fails to download an artifact,
+leaves its runs to the next report; a failed download also fails the job.
+
+The report leaves out:
+
+- artifacts that have expired;
+- recording artifacts uploaded by pull-request runs (a pull request from a
+  fork runs its own code);
+- artifacts whose files it can't read, which it counts as a problem.
 
 `report` takes `hours` (the window for the first report: runs that
 completed in this many hours before it; default `24`), `workflow` (only
