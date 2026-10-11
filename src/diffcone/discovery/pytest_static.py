@@ -129,6 +129,13 @@ Lifecycle dependencies attached to each test:
   pytest replaces any fixture of that name and prunes what it requests;
 * fixtures requested by literal name through ``request.getfixturevalue``,
   and every fixture visible from the test when the name is not a literal;
+* every fixture of the session's plugin modules (``pytest11`` entry points,
+  ``-p`` in addopts, ``PYTEST_PLUGINS``, ``pytest_plugins``) for a test
+  requesting ``pytester`` or ``testdir``: the inline session it runs loads
+  the project's registered plugins, and its test code requests their
+  fixtures by names only the inline text holds (what that text imports is
+  the indexer's: it reads ``makepyfile``, ``makeconftest``, ``runpytest
+  -p`` and the rest, indexer/references.py);
 * the ini option ``usefixtures``, requested by every test;
 * ``autouse`` fixtures visible from the test (``autouse=`` anything but a
   literal false value, since ``autouse=FLAG`` applies whenever the flag is
@@ -852,6 +859,10 @@ def _entry_point_plugins(files: dict[str, bytes]) -> list[str]:
 
 
 BUILTIN_PLUGINS = frozenset({"pytester", "pytest", "_pytest"})
+# pytest's fixtures that run a pytest session of their own (``pytester``,
+# the legacy ``testdir``): a test using one depends on every fixture the
+# project's registered plugins define (``_Resolver.lifecycle``).
+PYTESTER_FIXTURES = frozenset({"pytester", "testdir"})
 
 
 # pytest's default ``norecursedirs``.
@@ -2060,6 +2071,18 @@ class _Resolver:
                         queue.append((req, level_index + 1 if req == name else 0))
             elif name in BUILTIN_FIXTURES:
                 queue.extend((req, 0) for req in BUILTIN_REQUESTS.get(name, ()))
+                if name in PYTESTER_FIXTURES:
+                    # The test runs a pytest session of its own, with the
+                    # project's registered plugins loaded: whatever they
+                    # define may run in it (the inline test code requests
+                    # fixtures by name the indexer cannot see), so every
+                    # plugin fixture is a dependency; the plugin modules and
+                    # hooks are dependencies of every test already. What the
+                    # inline code imports is the indexer's (pass 2 reads
+                    # pytester's texts: indexer/references.py).
+                    queue.extend(
+                        (other, first_plugin) for level in levels[first_plugin:] for other in level
+                    )
             elif name in self.options.external_fixtures or (
                 self.options.well_known_fixtures and name in WELL_KNOWN_PLUGIN_FIXTURES
             ):

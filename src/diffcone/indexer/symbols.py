@@ -375,6 +375,8 @@ class FirstPass(IndexerState):
                     for stmt in iter_scope_statements(n.body):
                         if not isinstance(stmt, DEF_NODES):
                             cscope.bindings |= _collect_store_names(stmt)
+                            if _binds(stmt, "__match_args__"):
+                                cscope.match_args = _match_args(stmt)
                 # Every definition of the class (``if``/``else`` variants) is
                 # one symbol, so its members are indexed together: a method
                 # defined in several of them is one symbol too.
@@ -513,3 +515,28 @@ def _least_isolated(scopes: set[str]) -> str:
     if scopes == {"function"}:
         return "function"
     return "other" if scopes - {""} else ""
+
+
+def _binds(stmt: ast.stmt, name: str) -> bool:
+    targets = (
+        stmt.targets
+        if isinstance(stmt, ast.Assign)
+        else [stmt.target]
+        if isinstance(stmt, ast.AnnAssign)
+        else []
+    )
+    return any(isinstance(t, ast.Name) and t.id == name for t in targets)
+
+
+def _match_args(stmt: ast.stmt) -> tuple[str, ...] | None:
+    """The literal tuple of names ``__match_args__ = (...)`` binds, or None
+    for anything else."""
+    value = stmt.value if isinstance(stmt, (ast.Assign, ast.AnnAssign)) else None
+    if not isinstance(value, (ast.Tuple, ast.List)):
+        return None
+    names: list[str] = []
+    for elt in value.elts:
+        if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+            return None
+        names.append(elt.value)
+    return tuple(names)

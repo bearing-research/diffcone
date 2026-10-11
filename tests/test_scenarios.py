@@ -1214,7 +1214,10 @@ def test_dynamic_references_are_bounded_by_the_import_closure(repo):
     )
     plan2 = repo.plan(base, head2, targets)
     assert selected(plan2) == {"t::test_made", "t::test_dyn"}
-    assert rules(plan2, "t::test_made") == {"dynamic_reference"}
+    # The template's one field is ``make``'s parameter, which the test fills
+    # with a literal: the text is read at the call site (audit round 5,
+    # R12), so ``core.f`` is a dependency, not a closure-bounded guess.
+    assert rules(plan2, "t::test_made") == {"dependency"}
     # A tests-only change elsewhere reaches neither dynamic user.
     head3 = repo.commit(
         {

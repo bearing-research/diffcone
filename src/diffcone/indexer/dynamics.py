@@ -12,7 +12,13 @@ from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.facts import _AttrWrite, _CallSite, _FuncParams, _ParamDynamic
 from diffcone.indexer.resolver import Resolver
 from diffcone.indexer.scopes import Node, Resolved, Unresolved
-from diffcone.indexer.scripts import script_value
+from diffcone.indexer.scripts import (
+    HOLE_NAME,
+    code_value,
+    format_attribute_names,
+    plugin_options,
+    script_value,
+)
 from diffcone.indexer.syntax import IMPORT_ATTRIBUTION_DEPTH
 from diffcone.model import (
     CLASS,
@@ -73,11 +79,16 @@ class DynamicBounds(Resolver):
                     values = self._param_values(pd.function, pd.param, unresolved_names)
                 planned.append((pd, values))
             for pd, values in planned:
-                if values is None or pd.kind != "getattr":
+                if values is None or pd.kind not in ("getattr", "format"):
+                    continue
+                if pd.kind == "format":
+                    for text in values:
+                        unresolved_names.update(format_attribute_names(text))
                     continue
                 for name in dict.fromkeys(values):
                     if pd.base is None:
-                        unresolved_names.add(name)
+                        # ``attrgetter("a.b")``: each name on the way.
+                        unresolved_names.update(n for n in name.split(".") if n)
                         continue
                     node, rest = self.resolve_chain_names(pd.base + [name], pd.scope)
                     if isinstance(node, Resolved) and not node.detail:
@@ -90,8 +101,21 @@ class DynamicBounds(Resolver):
         for pd, values in planned:
             if pd.kind == "import" and self._import_per_caller(pd, unresolved_names):
                 continue
-            if pd.kind == "script" and self._scripts_per_caller(pd, unresolved_names):
+            if pd.kind in ("script", "code", "template") and self._scripts_per_caller(
+                pd, unresolved_names
+            ):
                 continue
+            if pd.kind == "runner":
+                if values is not None:
+                    plugin_options(self, pd.function, values)
+                continue  # a pytester argument from elsewhere is not followed
+            if (
+                values is None
+                and pd.kind == "format"
+                and pd.self_class
+                and self._not_a_string(pd.self_class, pd.param, writes)
+            ):
+                continue  # ``self.formatter.format(record)``: no template
             if values is None:
                 # The name is unbounded. If the *receiver* is one the call
                 # sites name, the read is still bounded: it can only be an
@@ -115,6 +139,16 @@ class DynamicBounds(Resolver):
             for name in dict.fromkeys(values):
                 if pd.kind == "script":
                     script_value(self, pd.function, name, pd.detail)
+                elif pd.kind == "code":
+                    code_value(self, pd.function, name, pd.detail, _namespace(pd, 0))
+                elif pd.kind == "template":
+                    text = (pd.base or [""])[0].replace(HOLE_NAME, name)
+                    code_value(self, pd.function, text, pd.detail, _namespace(pd, 1))
+                elif pd.kind == "format":
+                    for attr in format_attribute_names(name):
+                        self.out.unresolved.add(
+                            UnresolvedReference(pd.function, UNRESOLVED_ATTRIBUTE, attr, pd.detail)
+                        )
                 elif pd.kind == "import":
                     if name.startswith("."):
                         self.out.unresolved.add(
@@ -123,11 +157,16 @@ class DynamicBounds(Resolver):
                     else:
                         self._module_import_edge(pd.function, name)
                 elif pd.base is None:
-                    self.out.unresolved.add(
-                        UnresolvedReference(
-                            pd.function, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
-                        )
-                    )
+                    for part in name.split("."):
+                        if part:
+                            self.out.unresolved.add(
+                                UnresolvedReference(
+                                    pd.function,
+                                    UNRESOLVED_ATTRIBUTE,
+                                    part,
+                                    f"getattr(..., {name!r})",
+                                )
+                            )
                 else:
                     chain = ".".join(pd.base + [name])
                     node, rest = self.resolve_chain_names(pd.base + [name], pd.scope)
@@ -204,8 +243,9 @@ class DynamicBounds(Resolver):
         return True
 
     def _scripts_per_caller(self, pd: _ParamDynamic, unresolved_names: set[str]) -> bool:
-        """``run_python(script)`` starting ``[sys.executable, script]``: the
-        script path each call site passes, attributed to that caller as
+        """``run_python(script)`` starting ``[sys.executable, script]``, or
+        ``run_source(code)`` executing it: the script path (or code text)
+        each call site passes, attributed to that caller as
         ``_import_per_caller`` attributes module names (diffcone.indexer.
         scripts). False when the callers are not known."""
         attributed = self._attributed_imports(pd.function, pd.param, unresolved_names, set())
@@ -218,8 +258,28 @@ class DynamicBounds(Resolver):
                 )
                 continue
             for value in dict.fromkeys(values):
-                script_value(self, caller, value, pd.detail)
+                if pd.kind == "code":
+                    # ``base`` holds the module whose namespace the text runs in.
+                    code_value(self, caller, value, pd.detail, _namespace(pd, 0))
+                elif pd.kind == "template":
+                    # ``base`` holds the text with the one hole the value fills,
+                    # then that module.
+                    text = (pd.base or [""])[0].replace(HOLE_NAME, value)
+                    code_value(self, caller, text, pd.detail, _namespace(pd, 1))
+                else:
+                    script_value(self, caller, value, pd.detail)
         return True
+
+    def _not_a_string(
+        self, class_id: str, attr: str, writes: dict[tuple[str, str], list[_AttrWrite]]
+    ) -> bool:
+        """Whether every write of ``self.<attr>`` binds an instance of an
+        in-scope class or a factory's result (writes.py): then it is no
+        ``str`` template whose fields read attributes by name."""
+        bound = self._family_writes(class_id, attr, writes, None)
+        return bound is not None and all(
+            binding[0] in ("instance", "factory") for _, binding in bound
+        )
 
     def _attributed_imports(
         self,
@@ -257,21 +317,6 @@ class DynamicBounds(Resolver):
                 else None
             )
             found.extend(deeper if deeper is not None else [(site.caller, None)])
-        return found
-
-    def _class_members(self, classes: set[str]) -> set[str]:
-        """Every symbol inside those classes and their in-scope subclasses: an
-        instance of one may be an instance of the other."""
-        found: set[str] = set()
-        stack = list(classes)
-        for cls in classes:
-            stack.extend(self._descendants.get(cls, ()))
-        while stack:
-            cscope = self.class_scopes.get(stack.pop())
-            for member in cscope.members.values() if cscope is not None else ():
-                if member not in found:
-                    found.add(member)
-                    stack.append(member)  # a nested class's members are inside too
         return found
 
     def _receiver_classes(
@@ -465,3 +510,11 @@ class DynamicBounds(Resolver):
             else:
                 return None
         return values
+
+
+def _namespace(pd: _ParamDynamic, at: int) -> str | None:
+    """The module whose namespace a ``code``/``template`` text runs in,
+    stored in ``base`` at ``at`` (absent when the text has a namespace of
+    its own)."""
+    base = pd.base or []
+    return base[at] if len(base) > at else None

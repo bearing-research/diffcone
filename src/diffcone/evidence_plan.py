@@ -191,6 +191,7 @@ from diffcone.model import (
     RUN_PATH,
     RUNS_PROGRAM,
     RUNS_SCRIPT,
+    RUNS_TEXT,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     WRITES,
@@ -292,6 +293,11 @@ def _site_kind(detail: str) -> str:
         return SITE_ANY
     if detail.startswith(RUN_PATH):
         # Runs a file whose code may look anything up, not only import.
+        return SITE_ANY
+    if detail.startswith(RUNS_TEXT):
+        # Text built at run time: what it imported and ran is in the record
+        # (or the test is flagged for running text no file holds), as for
+        # ``exec()`` of text written out; no module getter.
         return SITE_ANY
     if imports_anything(detail):
         return SITE_IMPORT

@@ -36,7 +36,22 @@ from diffcone.indexer.scopes import (
     _resolve_relative_name,
     _string_prefix,
 )
-from diffcone.indexer.scripts import observe_command, observe_shell, observe_string, script_value
+from diffcone.indexer.scripts import (
+    HOLE_NAME,
+    code_edges,
+    code_texts,
+    format_attribute_names,
+    observe_call_arguments,
+    observe_command,
+    observe_shell,
+    observe_string,
+    plugin_options,
+    runner_list_known,
+    script_value,
+    test_file,
+    unwrap_text,
+    whole_module,
+)
 from diffcone.indexer.syntax import (
     DYNAMIC_CALLS,
     REFLECTIVE_ATTRIBUTES,
@@ -66,6 +81,8 @@ from diffcone.model import (
     MUTATED_BY,
     REBINDS,
     REFERENCES,
+    RUNS_PROGRAM,
+    RUNS_TEXT,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
@@ -335,6 +352,13 @@ class _ReferenceCollector(ast.NodeVisitor):
             if node.attr not in ("keys", "__contains__", "__len__"):
                 self._member_read(inner.value, key)
         parts = _flatten_chain(node)
+        if parts is not None and isinstance(node.ctx, ast.Load):
+            # ``top = __import__("pkg.sub"); top.sub``: a chain off a local
+            # bound once to a module obtained by a literal name.
+            held = self._module_chain(node)
+            if held is not None:
+                parts = None
+                self._module_members(node, held)
         if parts is not None:
             mark = self._write_only.get(id(node), "")
             if mark == _READ:
@@ -365,12 +389,80 @@ class _ReferenceCollector(ast.NodeVisitor):
             if node is not self._call_func:
                 self._escape(target)
             return
+        if isinstance(node.ctx, ast.Load) and (held := self._module_chain(node)) is not None:
+            # ``import_module("pkg").sub``, ``__import__("pkg.sub").sub.f``:
+            # an attribute chain off a module obtained by a literal name.
+            self._module_members(node, held)
+            self.generic_visit(node)
+            return
         # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
         # unknown, but the attribute name still bounds what it may refer to.
         self.indexer.out.unresolved.add(
             UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
         )
         self.generic_visit(node)
+
+    def _module_chain(self, node: ast.Attribute) -> list[str] | None:
+        """The absolute dotted name an attribute chain stands for when its
+        base is a module obtained by a literal name (``import_module("m")``,
+        ``sys.modules["m"]``, ``__import__("m")``: the top package unless a
+        ``fromlist`` is given) or a local bound once to one; None
+        otherwise."""
+        attrs: list[str] = []
+        expr: ast.expr = node
+        while isinstance(expr, ast.Attribute):
+            attrs.insert(0, expr.attr)
+            expr = expr.value
+        if (
+            isinstance(expr, ast.Name)
+            and expr.id in self.scope.locals
+            and expr.id not in self.scope.params
+        ):
+            source = self._local_source(expr.id)
+            if source is None:
+                return None
+            expr = source
+        module = self._obtained_module(expr)
+        return None if module is None else [*module.split("."), *attrs]
+
+    def _obtained_module(self, expr: ast.expr) -> str | None:
+        """The module a call or subscript yields by a literal name."""
+        module = self._literal_module(expr)
+        if module is not None:
+            return module
+        if not (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "__import__"
+            and not self._is_shadowed("__import__")
+            and expr.args
+        ):
+            return None
+        name = _string(expr.args[0])
+        if name is None or not all(p.isidentifier() for p in name.split(".")):
+            return None
+        fromlist = expr.args[3] if len(expr.args) > 3 else None
+        for k in expr.keywords:
+            if k.arg == "fromlist":
+                fromlist = k.value
+        if fromlist is None or (isinstance(fromlist, (ast.List, ast.Tuple)) and not fromlist.elts):
+            return name.split(".")[0]
+        return name
+
+    def _module_members(self, node: ast.Attribute, chain: list[str]) -> None:
+        """A reference to what ``chain`` names, off a module obtained by a
+        literal name (``_module_chain``), with the module itself referred to
+        as a value (its members count once the module is handed on)."""
+        target = self.indexer.resolve_dotted(chain)
+        self.indexer._record(self.source, target, chain=".".join(chain))
+        if node is not self._call_func:
+            self._escape(target)
+        for i in range(len(chain) - 1, 0, -1):
+            prefix = chain[:i]
+            found = self.indexer.resolve_dotted(prefix)
+            if isinstance(found, ModuleNode):
+                self.indexer._record(self.source, found, chain=".".join(prefix))
+                break
 
     def _namespace_read(self, node: ast.Attribute) -> None:
         """``m.__dict__[k]``, ``m.__dict__.get(k)`` or any other read of a
@@ -465,6 +557,71 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
         observe_shell(self, node)
         self.generic_visit(node)
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:
+        if isinstance(node.op, ast.Add):
+            observe_shell(self, node)  # ``"X=1 " + sys.executable + " -m pkg.tool"``
+        self.generic_visit(node)
+
+    def visit_Dict(self, node: ast.Dict) -> None:
+        for key, value in zip(node.keys, node.values, strict=True):
+            if key is None:
+                self._hand_on(value)  # ``{**obj}`` calls ``obj.keys()``
+        self.generic_visit(node)
+
+    def visit_MatchClass(self, node: ast.MatchClass) -> None:
+        """``case C(x=1)`` / ``case C(1)``: an ``isinstance`` check that
+        then reads attributes of the subject by name: each keyword's, and
+        for the positional patterns the names ``C.__match_args__`` lists (a
+        literal tuple in ``C`` or an in-scope base; when it is not written
+        out there, any attribute of ``C``). Resolved on the class when it
+        is in scope, bounded by the name otherwise."""
+        self._mark_type_node(node.cls)
+        parts = _flatten_chain(node.cls)
+        cls: str | None = None
+        if parts is not None:
+            target = self.indexer.resolve_chain(parts, self.scope)
+            if (
+                isinstance(target, Resolved)
+                and not target.detail
+                and target.symbol in self.indexer.class_scopes
+            ):
+                cls = target.symbol
+        names = list(node.kwd_attrs)
+        if node.patterns:
+            positional = self._match_args(cls) if cls is not None else None
+            if positional is not None:
+                names += positional[: len(node.patterns)]
+            elif cls is not None:
+                for member in sorted(self.indexer._class_members({cls})):
+                    if member != self.source:
+                        self.indexer.out.edges.add(
+                            Edge(self.source, member, REFERENCES, "match pattern")
+                        )
+        shown = ".".join(parts) if parts is not None else "<expr>"
+        for name in names:
+            if cls is not None and parts is not None:
+                self._resolve([*parts, name])
+            else:
+                self.indexer.out.unresolved.add(
+                    UnresolvedReference(
+                        self.source, UNRESOLVED_ATTRIBUTE, name, f"case {shown}({name}=...)"
+                    )
+                )
+        self.generic_visit(node)
+
+    def _match_args(self, cls: str) -> tuple[str, ...] | None:
+        """``__match_args__`` as the first class in ``cls``'s MRO writes it
+        out; None when none does before a class the index cannot see."""
+        for cid in self.indexer._mro(cls):
+            cscope = self.indexer.class_scopes.get(cid)
+            if cscope is None:
+                return None
+            if cscope.match_args is not None:
+                return cscope.match_args
+            if "__match_args__" in cscope.bindings or cscope.opaque:
+                return None
+        return None
 
     def visit_List(self, node: ast.List) -> None:
         observe_command(self, node)
@@ -710,6 +867,18 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._stash_binding(node.targets[0], node.value)
         undone = self.scope.module.undone()
         for target in node.targets:
+            if isinstance(target, ast.Attribute) and not self._is_self(target.value):
+                # ``handler.stream = W()``: stored on an object other code
+                # holds, which may call any method of it by name.
+                self._hand_on(node.value)
+                if target.attr == "plugins" and isinstance(node.value, (ast.List, ast.Tuple)):
+                    # ``pytester.plugins = ["pkg.plug"]``: loaded into the
+                    # sessions it runs.
+                    for elt in node.value.elts:
+                        if (name := _string(elt)) is not None:
+                            whole_module(
+                                self.indexer, self.source, name, "loaded as a pytest plugin"
+                            )
             if id(target) in undone:
                 continue  # put back before the test ends (indexer/patches.py)
             self._process_store(target)
@@ -756,6 +925,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         parts = _flatten_chain(node.func)
         observe_call(self, node, parts)
         self._process_call(node, parts)
+        self._handed_instances(node, parts)
+        self._format_fields(node)
+        if parts is not None:
+            observe_call_arguments(self, node, parts)
+            self._runner_call(node, parts)
+            self._pytester_call(node, parts)
+            self._string_names(node, parts)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in WRITE_ONLY_METHODS
@@ -808,18 +984,8 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self._member_read(node.args[0], None)
             if builtin and parts[0] in DYNAMIC_CALLS:
                 code = node.args[0] if node.args else None
-                literal = isinstance(code, ast.Constant) and isinstance(code.value, str)
-                scope_node = self.scope.literal_node or self.scope.module.tree
-                if (
-                    parts[0] in ("exec", "eval")
-                    and code is not None
-                    and not literal
-                    and (reads_files(code) or (scope_node is not None and reads_files(scope_node)))
-                ):
-                    # Code read from a file at run time (``exec(open("plugin.py")
-                    # .read())``) can import anything; code generated from the
-                    # program's own templates reaches only what its module can.
-                    self._dynamic(f"{name}() of code read at run time: an import of anything")
+                if parts[0] in ("exec", "eval") and code is not None:
+                    self._text_code(node, code, f"{name}()")
                 else:
                     self._dynamic(f"{name}()")
             elif builtin and parts[0] == "__import__":
@@ -871,6 +1037,407 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     _call_func: ast.expr | None = None
+
+    def _text_code(
+        self, node: ast.Call, code: ast.expr, what: str, *, namespace: bool = True
+    ) -> None:
+        """Text run as code in this process (``exec``, ``eval``,
+        ``timeit``, an interactive interpreter's ``runsource``). Written
+        out (``scripts.code_texts``), it imports what it imports and reaches
+        the names it reaches through those imports (``code_edges``), and
+        is unbounded when it imports or runs by a name it computes; run in
+        this module's namespace (``namespace``) it also reaches what the
+        namespace names, a dynamic reference bounded by the module's import
+        closure. A text a parameter gives is bounded by what the call sites
+        pass; read from a file or built at run time otherwise, it can import
+        anything."""
+        holes: list[ast.expr] = []
+        texts = code_texts(self, code, holes)
+        own = namespace and self._own_namespace(node)
+        module = self.scope.module.name if own else None
+        if texts is not None:
+            computed = (
+                f"{RUNS_TEXT} with {what}, text that imports or runs by a name it computes: "
+                "an import of anything"
+            )
+            for text in texts:
+                if HOLE_NAME in text:
+                    # One field a parameter fills (``exec(f"def fn():\n    {body}")``):
+                    # the text each call site makes, read there.
+                    base = [text, module] if module is not None else [text]
+                    if not (
+                        len(holes) == 1
+                        and len(texts) == 1
+                        and self._param_dynamic(holes[0], "template", base, computed)
+                    ):
+                        self._dynamic(computed)
+                elif not code_edges(self.indexer, self.source, text, module):
+                    self._dynamic(computed)
+            return
+        if own:
+            self._dynamic(what)  # text from elsewhere may name anything the namespace does
+        scope_node = self.scope.literal_node or self.scope.module.tree
+        if reads_files(code) or (scope_node is not None and reads_files(scope_node)):
+            # ``exec(open("plugin.py").read())``: code read at run time.
+            self._dynamic(f"{what} of code read at run time: an import of anything")
+            return
+        detail = f"{RUNS_TEXT} with {what}: an import of anything"
+        base = [module] if module is not None else []
+        if not self._param_dynamic(unwrap_text(self, code), "code", base, detail):
+            self._dynamic(detail)
+
+    def _own_namespace(self, node: ast.Call) -> bool:
+        """Whether ``exec``/``eval`` runs its text with this module's
+        globals: no ``globals`` argument, ``globals()``, a ``__dict__``, or
+        anything but a dict display (or a local bound once to an empty
+        one), in which the text can name only what it imports."""
+        namespace = node.args[1] if len(node.args) > 1 else None
+        for keyword in node.keywords:
+            if keyword.arg == "globals":
+                namespace = keyword.value
+        if namespace is None or (isinstance(namespace, ast.Constant) and namespace.value is None):
+            return True
+        if isinstance(namespace, ast.Name) and namespace.id in self.scope.locals:
+            namespace = self._local_source(namespace.id) or namespace
+        if isinstance(namespace, ast.Dict):
+            return any(key is None for key in namespace.keys)  # ``{**globals()}``
+        if isinstance(namespace, ast.Call) and isinstance(namespace.func, ast.Name):
+            return not (namespace.func.id == "dict" and not namespace.args)
+        return True
+
+    def _runner_call(self, node: ast.Call, parts: list[str]) -> None:
+        """A test runner, or text as code, run in this process: ``pytest.main
+        ([...])`` and ``unittest.main(module=...)`` run the tests of what
+        they are given (``scripts.test_file``: a file or module whole, else
+        unbounded); ``unittest``'s ``loadTestsFromName(s)`` likewise, its
+        ``discover`` and ``doctest.testfile``/``DocFileSuite`` are
+        unbounded; ``timeit`` and ``code.InteractiveInterpreter`` run
+        text."""
+        names = self._canonical_names(parts)
+        last = parts[-1]
+        unbounded = f"{RUNS_PROGRAM}: an import of anything"
+        keywords = {k.arg: k.value for k in node.keywords if k.arg}
+        if "pytest.main" in names:
+            args = node.args[0] if node.args else keywords.get("args")
+            for plugin in _elements(keywords.get("plugins")):
+                if (name := _string(plugin)) is not None:
+                    whole_module(self.indexer, self.source, name, "loaded as a pytest plugin")
+            if not runner_list_known(self, args, "pytest"):
+                self._dynamic(f"{unbounded} (pytest.main)")
+            return
+        if "unittest.main" in names:
+            module = node.args[0] if node.args else keywords.get("module")
+            if module is None:
+                return  # this module's own tests, which are targets of their own
+            if isinstance(module, ast.Constant) and module.value is None:
+                self._dynamic(f"{unbounded} (unittest.main of what sys.argv names)")
+            elif (name := _string(module)) is not None and not test_file(self, name, "unittest"):
+                self._dynamic(f"{unbounded} (unittest.main)")
+            return
+        if last in (
+            "loadTestsFromName",
+            "loadTestsFromNames",
+            "discover",
+        ) and self._unittest_loader(
+            node.func.value if isinstance(node.func, ast.Attribute) else None
+        ):
+            if last == "discover" or not node.args:
+                self._dynamic(f"{unbounded} (unittest discovery)")
+                return
+            values = self.scope.string_candidates(node.args[0])
+            if values is None or not all(test_file(self, v, "unittest") for v in values):
+                self._dynamic(f"{unbounded} (unittest.{last})")
+            return
+        if names & {"doctest.testfile", "doctest.DocFileSuite", "doctest.DocFileTest"}:
+            self._dynamic(f"{unbounded} (doctest examples read from a file)")
+            return
+        if names & TIMEIT_CALLS:
+            # The setup and the statement run as one program, in a namespace
+            # of timeit's own (``globals=`` hands this one's on: a value).
+            setup = node.args[1] if len(node.args) > 1 else keywords.get("setup")
+            stmt = node.args[0] if node.args else keywords.get("stmt")
+            pieces: list[str] = []
+            for text in (setup, stmt):
+                if text is None or self._is_callable_value(text):
+                    continue  # a function handed to timeit: it escapes as a value
+                found = code_texts(self, text)
+                if found is None or len(found) != 1 or HOLE_NAME in found[0]:
+                    self._text_code(node, text, f"{last}()", namespace=False)
+                    return
+                pieces.append(found[0])
+            if pieces and not code_edges(self.indexer, self.source, "\n".join(pieces)):
+                self._dynamic(
+                    f"{RUNS_TEXT} with {last}(), text that imports or runs by a name it "
+                    "computes: an import of anything"
+                )
+            return
+        if last in ("runsource", "push", "runcode") and node.args:
+            receiver = node.func.value if isinstance(node.func, ast.Attribute) else None
+            if receiver is not None and self._interactive_interpreter(receiver):
+                self._text_code(node, node.args[0], f"{last}()", namespace=False)
+        if "code.interact" in names:
+            self._dynamic(f"{unbounded} (code read from standard input)")
+
+    def _unittest_loader(self, receiver: ast.expr | None) -> bool:
+        """``unittest.defaultTestLoader``, ``unittest.TestLoader()`` or a
+        local bound once to one."""
+        if receiver is None:
+            return False
+        if isinstance(receiver, ast.Name) and receiver.id in self.scope.locals:
+            receiver = self._local_source(receiver.id) or receiver
+        expr = receiver.func if isinstance(receiver, ast.Call) else receiver
+        chain = _flatten_chain(expr)
+        return chain is not None and bool(
+            self._canonical_names(chain) & {"unittest.defaultTestLoader", "unittest.TestLoader"}
+        )
+
+    def _interactive_interpreter(self, receiver: ast.expr) -> bool:
+        if isinstance(receiver, ast.Name) and receiver.id in self.scope.locals:
+            receiver = self._local_source(receiver.id) or receiver
+        if not isinstance(receiver, ast.Call):
+            return False
+        chain = _flatten_chain(receiver.func)
+        return chain is not None and bool(
+            self._canonical_names(chain)
+            & {"code.InteractiveInterpreter", "code.InteractiveConsole"}
+        )
+
+    def _is_callable_value(self, expr: ast.expr) -> bool:
+        """A function, method, class or lambda rather than text."""
+        if isinstance(expr, ast.Lambda):
+            return True
+        chain = _flatten_chain(expr)
+        if chain is None:
+            return False
+        target = self.indexer.resolve_chain(chain, self.scope)
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = self.indexer.index.symbols.get(target.symbol)
+            return symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS)
+        return isinstance(target, External)
+
+    def _pytester_call(self, node: ast.Call, parts: list[str]) -> None:
+        """pytest's ``pytester``/``testdir`` fixture runs text as a test
+        session of its own, with the project's registered plugins loaded
+        (discovery adds those to the test: pytest_static.py). What the text
+        it writes imports and names counts here: ``makepyfile``,
+        ``makeconftest``, ``getmodulecol``, ``getitems`` and ``runitem``
+        texts as code (``code_edges``; a ``pytest_plugins`` in them loads
+        those modules whole), ``maketxtfile`` as doctest examples, ``makeini``
+        and ``makepyprojecttoml`` for ``-p NAME``, ``runpytest*``,
+        ``inline_run``, ``parseconfig*`` and ``inline_genitems`` for ``-p
+        NAME`` and ``plugins=``, ``copy_example`` as a file or directory of
+        tests run whole, ``runpython_c`` as code. A text not written out is
+        unbounded; a non-literal ``runpytest`` argument is not followed."""
+        last = parts[-1]
+        if last not in PYTESTER_METHODS or len(parts) < 2:
+            return
+        target = self.indexer.resolve_chain(parts, self.scope)
+        if isinstance(target, (Resolved, External)):
+            return  # a method of the project's own, or a library's
+        unbounded = f"{RUNS_PROGRAM}: an import of anything (pytester.{last})"
+        texts = [a for a in node.args if not isinstance(a, ast.Starred)]
+        for keyword in node.keywords:
+            if keyword.arg is not None:
+                if keyword.arg != "plugins":
+                    texts.append(keyword.value)
+            elif isinstance(keyword.value, ast.Dict):
+                texts += [v for v in keyword.value.values if v is not None]  # ``**{name: src}``
+            else:
+                self._dynamic(unbounded)  # ``**sources``: texts from elsewhere
+        if last == "makefile":
+            ext = _string(node.args[0]) if node.args else None
+            texts = texts[1:]
+            if ext is None:
+                self._dynamic(unbounded)
+                return
+            last = {".py": "makepyfile", ".txt": "maketxtfile", ".rst": "maketxtfile"}.get(
+                ext, "makeini"
+            )
+        if last in PYTESTER_CODE or last == "runpython_c":
+            for text in texts:
+                found = code_texts(self, text)
+                if found is None:
+                    self._dynamic(unbounded)
+                    continue
+                for code in found:
+                    if last == "maketxtfile":
+                        code = _doctest_source(code)
+                    if not code_edges(self.indexer, self.source, code):
+                        self._dynamic(unbounded)
+            return
+        if last in PYTESTER_CONFIG:
+            for text in texts:
+                found = code_texts(self, text)
+                if found is None:
+                    self._dynamic(unbounded)
+                    continue
+                for config in found:
+                    plugin_options(self.indexer, self.source, config.split())
+            return
+        if last == "copy_example":
+            for text in texts:
+                found = self.scope.string_candidates(text)
+                if found is None:
+                    self._dynamic(unbounded)
+                    continue
+                for name in found:
+                    if name.endswith((".py", ".pyw")):
+                        test_file(self, name, "pytest")
+                    else:
+                        self.indexer.out.test_runs.add((self.source, name.strip("/"), "pytest"))
+            return
+        if last in PYTESTER_RUNS:
+            words: list[str] = []
+            for arg in node.args:
+                if isinstance(arg, ast.Starred):
+                    continue
+                found = self.scope.string_candidates(arg)
+                if found is not None and len(found) == 1:
+                    words.append(found[0])
+                elif not self._param_dynamic(
+                    arg, "runner", None, f"{unbounded} (a non-literal argument)"
+                ):
+                    words.append("")
+            plugin_options(self.indexer, self.source, words)
+            for plugin in _elements(
+                next((k.value for k in node.keywords if k.arg == "plugins"), None)
+            ):
+                if (name := _string(plugin)) is not None:
+                    whole_module(self.indexer, self.source, name, "loaded as a pytest plugin")
+
+    def _string_names(self, node: ast.Call, parts: list[str]) -> None:
+        """Attribute and method names a library reads off an object from a
+        string: ``operator.attrgetter("a.b")`` (each name of each
+        argument), ``operator.methodcaller("m", ...)``: a reference to each
+        name bounded like ``getattr(x, "a")`` on an unknown receiver; a name
+        that is not written out is bounded by what the call sites pass for a
+        parameter, else a dynamic reference."""
+        names = self._canonical_names(parts)
+        if not names & ATTRIBUTE_GETTERS:
+            return
+        args = node.args[:1] if "operator.methodcaller" in names else node.args
+        for arg in args:
+            if isinstance(arg, ast.Starred):
+                self._dynamic(f"{parts[-1]}(*args): an attribute read by any name")
+                continue
+            self._named_attributes(arg, f"{parts[-1]}(...)")
+
+    def _named_attributes(self, expr: ast.expr, detail: str) -> None:
+        """A string naming attributes (dotted: each one), read off an
+        object the analysis does not know."""
+        found = self.scope.string_candidates(expr)
+        if found is None:
+            unbounded = f"{detail}: an attribute read by a name not written out"
+            if not self._param_dynamic(expr, "getattr", None, unbounded):
+                self._dynamic(unbounded)
+            return
+        for value in found:
+            for name in value.split("."):
+                if name.isidentifier():
+                    self.indexer.out.unresolved.add(
+                        UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, detail)
+                    )
+
+    def _format_fields(self, node: ast.Call) -> None:
+        """``"{0.name}".format(obj)``, ``"{x.name}".format(x=obj)``,
+        ``format_map``, ``string.Formatter().format(fmt, ...)``: each
+        attribute a field of the template reads, bounded by its name. A
+        template not written out whose arguments are more than literals is
+        bounded by what the call sites pass for a parameter (or what
+        ``__init__`` binds an attribute to), else a dynamic reference."""
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr not in ("format", "format_map"):
+            return
+        template: ast.expr | None = func.value
+        args = list(node.args)
+        if isinstance(func.value, ast.Call) and (chain := _flatten_chain(func.value.func)):
+            if self._only(chain, {"string.Formatter"}):
+                template = args[0] if args else None
+                args = args[1:]
+            else:
+                return  # ``make().format(...)``: not a string's
+        if template is None:
+            return
+        values = [a for a in args if not isinstance(a, ast.Starred)]
+        values += [k.value for k in node.keywords]
+        if all(isinstance(v, (ast.Constant, ast.JoinedStr)) for v in values) and len(values) == len(
+            args
+        ) + len(node.keywords):
+            return  # literals only: nothing whose attributes matter
+        detail = f"str.{func.attr}(...)"
+        # ``(self.error or DEFAULT).format(...)``: either may be the template.
+        candidates = (
+            list(template.values)
+            if isinstance(template, ast.BoolOp)
+            else [template.body, template.orelse]
+            if isinstance(template, ast.IfExp)
+            else [template]
+        )
+        for candidate in candidates:
+            found = self.scope.string_candidates(candidate)
+            if found is None:
+                unbounded = f"{detail}: an attribute read by a name in a template not written out"
+                if not self._param_dynamic(candidate, "format", None, unbounded):
+                    if _flatten_chain(candidate) is None:
+                        continue  # ``make().format(...)``: not known to be a string
+                    self._dynamic(unbounded)
+                continue
+            for text in found:
+                for name in format_attribute_names(text):
+                    self.indexer.out.unresolved.add(
+                        UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, detail)
+                    )
+
+    def _handed_instances(self, node: ast.Call, parts: list[str] | None) -> None:
+        """An instance of a known class (``C()``, the class itself, a local
+        bound once to one, a factory's result) handed to a callee the
+        analysis does not follow into: a library's, a builtin that reads
+        more than dunders (``dict(x)``, ``vars(x)``, keywords such as
+        ``print(file=w)``), a method on a receiver of unknown type
+        (``items.append(C())``), a class with no in-scope constructor, or
+        ``**x``. Whoever holds it may call any method of it by name, so the
+        class escapes (``SourceIndex.escaped_classes``); a call site of an
+        in-scope function records what it is handed already."""
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                self._hand_on(keyword.value)  # ``f(**obj)`` calls ``obj.keys()``
+        values = [a for a in node.args if not isinstance(a, ast.Starred)]
+        keywords = [k.value for k in node.keywords if k.arg is not None]
+        if parts is not None:
+            if len(parts) == 1 and not self._is_shadowed(parts[0]):
+                if parts[0] not in ("dict", "vars"):
+                    values = []  # a builtin reads dunders of its positional arguments
+            elif self._canonical_names(parts) & TYPE_ONLY_CALLS:
+                return  # ``cast(C, x)``, ``TypeVar("T", bound=C)``: the class as a type
+            else:
+                target = self.indexer.resolve_chain(parts, self.scope)
+                if isinstance(target, Resolved) and not target.detail:
+                    symbol = self.indexer.index.symbols.get(target.symbol)
+                    if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                        return  # a call site: positional_classes and keyword_classes
+                    if symbol is not None and symbol.kind == CLASS:
+                        init = self.indexer.lookup_in_class(
+                            symbol.id, "__init__", dispatch=target.receiver
+                        )
+                        if isinstance(init, Resolved) and not init.detail:
+                            return
+        for value in [*values, *keywords]:
+            self._hand_on(value)
+
+    def _hand_on(self, expr: ast.expr) -> None:
+        """``expr`` is given to code that may read any attribute of it by
+        name: the class it is an instance of, when it says (``C()``, ``C``,
+        a local bound once to one), or the factory whose result it is."""
+        cls = self._argument_class(expr)
+        if cls is None and isinstance(expr, ast.Name) and expr.id in self.scope.locals:
+            source = self._local_source(expr.id)
+            cls = self._argument_class(source) if source is not None else None
+        if cls is not None:
+            self.indexer.out.handed.add(("class", cls))
+            return
+        factory = self._argument_source(expr)
+        if factory is not None:
+            self.indexer.out.handed.add(("factory", factory))
 
     def _mark_type_node(self, node: ast.expr) -> None:
         self._type_nodes.add(id(node))
@@ -1774,6 +2341,84 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         for module in names:
             self.indexer._module_import_edge(self.source, module)
+        if isinstance(self._parent(node), ast.Expr):
+            return  # the module is imported and dropped
+        # The module is held: a reference to it as a value (handed on, its
+        # members are reachable through it: SourceIndex.escaped_modules).
+        for module in names:
+            held = module
+            if name != "importlib.import_module":
+                fromlist = node.args[3] if len(node.args) > 3 else None
+                for k in node.keywords:
+                    if k.arg == "fromlist":
+                        fromlist = k.value
+                if fromlist is None or (
+                    isinstance(fromlist, (ast.List, ast.Tuple)) and not fromlist.elts
+                ):
+                    held = module.split(".")[0]  # ``__import__("a.b")`` is ``a``
+            target = self.indexer.resolve_dotted(held.split("."))
+            if isinstance(target, ModuleNode):
+                self.indexer._record(self.source, target, chain=held)
+
+
+def _elements(expr: ast.expr | None) -> list[ast.expr]:
+    """The elements of a list or tuple display; nothing for anything else."""
+    return list(expr.elts) if isinstance(expr, (ast.List, ast.Tuple)) else []
+
+
+def _string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _doctest_source(text: str) -> str:
+    """The code of the ``>>>`` examples in a doctest text, as one
+    program."""
+    import doctest
+
+    try:
+        examples = doctest.DocTestParser().get_examples(text)
+    except ValueError:
+        return "import __diffcone_unreadable_doctest__"
+    return "".join(e.source for e in examples)
+
+
+# ``operator`` functions that read attributes or methods named by their
+# string arguments.
+ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter", "operator.methodcaller"})
+# Calls that take a class as a type, not as a value handed on.
+TYPE_ONLY_CALLS = CASTS | frozenset(
+    {"typing.TypeVar", "typing.NewType", "typing.Optional", "typing.Union", "typing.Type"}
+)
+# Calls that run text as code with a namespace of their own.
+TIMEIT_CALLS = frozenset({"timeit.timeit", "timeit.repeat", "timeit.Timer"})
+# pytester methods, by what their text is (``_pytester_call``).
+PYTESTER_CODE = frozenset(
+    {"makepyfile", "makeconftest", "getmodulecol", "getitems", "runitem", "maketxtfile"}
+)
+PYTESTER_CONFIG = frozenset({"makeini", "makepyprojecttoml"})
+PYTESTER_RUNS = frozenset(
+    {
+        "runpytest",
+        "runpytest_inprocess",
+        "runpytest_subprocess",
+        "inline_run",
+        "parseconfig",
+        "parseconfigure",
+        "inline_genitems",
+    }
+)
+PYTESTER_METHODS = (
+    PYTESTER_CODE
+    | PYTESTER_CONFIG
+    | PYTESTER_RUNS
+    | {
+        "makefile",
+        "copy_example",
+        "runpython_c",
+    }
+)
 
 
 def _own_directory_relative(path: ast.expr) -> ast.expr | None:

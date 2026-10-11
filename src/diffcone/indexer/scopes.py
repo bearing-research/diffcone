@@ -54,6 +54,10 @@ class ClassScope:
     # Some base is outside the source roots and may call this class's
     # methods (not a builtin or a purely structural typing/abc base).
     external_base: bool = False
+    # ``__match_args__ = ("x", "y")`` written out in the class body: the
+    # attributes a positional class pattern reads (``case C(1, 2)``); None
+    # when the class does not bind it (or binds something else).
+    match_args: tuple[str, ...] | None = None
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising

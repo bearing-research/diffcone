@@ -55,9 +55,14 @@ RUNS_PROGRAM = "starts a Python program it builds at run time"
 RUNS_SCRIPT = "runs or reads "
 # ``runpy.run_path(<non-literal>)``: runs a file by a path known at run time.
 RUN_PATH = "runpy.run_path"
+# ``exec``/``eval``/``timeit`` of text the program builds at run time (not
+# written out, not read from a file): static planning bounds nothing;
+# evidence mode sees what the text ran in the record (the recorder flags a
+# test that ran text no file holds) and treats the site as ``exec()``.
+RUNS_TEXT = "runs text built at run time"
 # Dynamic references that run code named at run time without saying "import"
 # in their detail.
-_RUNS_NAMED = ("runpy.run_module", RUN_PATH, RUNS_PROGRAM, RUNS_SCRIPT)
+_RUNS_NAMED = ("runpy.run_module", RUN_PATH, RUNS_PROGRAM, RUNS_SCRIPT, RUNS_TEXT)
 
 
 def imports_anything(detail: str) -> bool:
