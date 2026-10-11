@@ -1240,7 +1240,8 @@ end-to-end suite, go in the same file:</p>
 <p>diffcone caches its analysis in <code>.diffcone/cache/</code> (add <code>.diffcone/</code> to
 your <code>.gitignore</code>). Committed snapshots are analysed once, and every file
 is cached by its content, so planning your working tree again only re-reads
-the files you changed. Cached and uncached plans are identical.</p>
+the files you changed. Cached and uncached plans are identical, and so are
+the manifests <code>diffcone discover</code> writes, which uses the same cache.</p>
 <ul>
 <li><code>--no-cache</code> turns the cache off; <code>--cache-dir</code> moves it.</li>
 <li><code>diffcone prune --keep HEAD</code> removes everything the cache doesn't need

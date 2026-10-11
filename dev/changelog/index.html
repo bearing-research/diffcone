@@ -1388,6 +1388,15 @@ selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
 <h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
 <ul>
+<li>diffcone assumes a test does not depend on what an earlier test left
+  behind: a change a test, a function-scoped fixture or a test-module
+  helper makes to module state counts for that test only, not for the
+  other tests and benchmarks reading the same state. A test module's
+  top-level code, wider-scoped fixtures, hooks and project code (a cache
+  a test fills) still count for every reader. Declare a dependency on an
+  earlier test's state in <code>diffcone.toml</code> if a test relies on one.</li>
+<li>A test or fixture that saves a module attribute and puts it back before
+  the test ends counts like <code>monkeypatch</code>.</li>
 <li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: tests (or benchmarks)
   matching a pattern on their id are selected in every plan, with or
   without a recording, and the report gives the entry as the reason and
@@ -1430,6 +1439,10 @@ selection rules.</p>
   fixture, <code>mocker.patch</code>, a <code>with mock.patch(...)</code> block, a
   <code>@mock.patch(...)</code> decorator) no longer makes a lookup on a library
   module see every change.</li>
+<li>Indexing a very long function is no longer quadratic in its calls.</li>
+<li>Editing an ordinary module named <code>build.py</code> (not at the repository root
+  or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects, with a recording, the
+  tests that ran it, as static planning does, instead of every test.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1577,6 +1590,67 @@ selection rules.</p>
   <code>sys.modules</code> that way, it counts as installed for good. A <code>with
   mock.patch.dict(os.environ)</code> or <code>warnings.catch_warnings()</code> block whose
   body yields no longer counts as putting the process state back.</li>
+<li>A call of an unresolved function whose name happens to be <code>rebinds</code>,
+  <code>registers</code> or <code>mutated_by</code> was taken for one of diffcone's own kinds of
+  dependency, and a test could be missed (a module that calls
+  <code>registers()</code> at import). It is planned as the call it is.</li>
+<li><code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code> and <code>python -m &lt;name&gt;</code>
+  with a name nothing bounds count as an import of any module, as
+  <code>importlib.import_module(name)</code> does; they were bounded by their
+  module's imports.</li>
+<li>A decorator diffcone can't show leaves the function alone (one from an
+  installed package, or a project decorator that calls or registers it)
+  makes the decorated function count as code that runs on import, and its
+  parameters are no longer bounded by its call sites.</li>
+<li>A name imported in a <code>try</code>/<code>except</code> or <code>if</code>/<code>else</code>, rebound by a star
+  import, or redefined in the module is no longer taken for
+  <code>typing.final</code>, a quiet decorator or a structural base; attribute uses
+  of a name bound several ways depend on every binding.</li>
+<li>A dynamic import, script path or <code>getattr</code> receiver bounded by its call
+  sites is unbounded when a caller may be unseen (a call through an object
+  of unknown type, an unseen construction).</li>
+<li>A subscript in an evaluated annotation (<code>X: Registry["k"] = 1</code>) counts as
+  code that runs on import.</li>
+<li>A test that patches a module by a dotted string with
+  <code>mock.patch.multiple("pkg.mod", NAME=...)</code> depends on those names and on
+  the module; any dotted patch target counts as an import of its module,
+  and so does a patcher called on a value
+  (<code>pytest.MonkeyPatch().setattr("pkg.mod.NAME", ...)</code>).</li>
+<li><code>python -c</code> code that changes <code>sys.path</code>, <code>sys.meta_path</code> or
+  <code>sys.modules</code> by assignment, deletion or augmented assignment, or calls
+  <code>os.chdir</code>, can import anything; only <code>insert</code>/<code>append</code>/<code>extend</code> counted.</li>
+<li>A file nested too deeply to analyse is an analysis error that selects
+  everything, instead of a crash.</li>
+<li>A write to process-global state (<code>os.environ</code>, warning filters,
+  <code>sys.path</code>) is recognised whichever import binds the name: <code>from os
+  import *</code>, an import in <code>try</code> with another in <code>except</code>, or a
+  function-local one; a test running after it could be missed. A <code>with</code>
+  statement counts as putting state back only when every binding of its
+  name is the restoring one.</li>
+<li>A module handle, an install in <code>sys.modules</code>, an unpickled object or a
+  <code>gc</code> list reached through a star-imported name (<code>from sys import *</code>,
+  then <code>modules[...]</code>) is seen, so a test reading what it changes is
+  selected; handing a submodule of a library on (<code>register(os.path)</code>)
+  counts for dynamic lookups through it.</li>
+<li>A change to a module-level variable made through a module object the
+  analysis did not resolve to the variable's module is a dependency of
+  the variable's readers: <code>importlib.import_module("pkg.reg").TABLE["x"]
+  = f</code>, <code>sys.modules[...]</code>, a function-local import, a star import, or a
+  module passed to a helper that writes into it. Handing a library object
+  such as <code>datetime.timezone.utc</code> to a call no longer makes every dynamic
+  lookup on that library depend on the caller.</li>
+<li>A <code>diffcone.toml</code> that is present but can't be read (left unmerged by a
+  conflicted merge) is an analysis error that selects every target; it was
+  read as no file. A manifest that is not valid JSON says so.</li>
+<li><code>collect</code> and <code>run --collect</code> no longer refuse a clean checkout because
+  untracked bytecode or ASV output has a non-ASCII name; a renamed file
+  counts as both names.</li>
+<li><code>run --dry-run --evidence</code> prints a command you can run, without
+  diffcone's internal recorder plugin.</li>
+<li><code>discover</code> honours <code>--no-cache</code> and <code>--cache-dir</code>: it uses the same cache
+  as <code>plan</code>, and its output is unchanged.</li>
+<li>A relative <code>--command</code> written with forward slashes
+  (<code>.venv/Scripts/python.exe</code>) is resolved on Windows too.</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1615,6 +1689,33 @@ selection rules.</p>
   test module or module they import that sets an environment variable or
   extends <code>sys.path</code> at import, a <code>pytest_generate_tests</code> that does) is a
   dependency of every test.</li>
+<li><code>pytest_plugins</code> is read however it is built (<code>+</code>, <code>+=</code>, <code>.append</code>,
+  <code>.extend</code>, a comma-separated string, a variable) or imported from
+  another module; when it can't be read, every test is selected and the
+  report says why.</li>
+<li><code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>, or
+  imported, apply their <code>usefixtures</code>.</li>
+<li><code>indirect=</code> given as a variable, as the third positional argument or
+  through <code>**kwargs</code> no longer drops the fixture from the test's
+  dependencies.</li>
+<li>Tests defined, aliased or marked <code>__test__ = True</code> inside <code>if</code>/<code>try</code>
+  blocks, and tests imported from such modules, are found; an imported
+  test discovery can't follow is reported, not dropped.</li>
+<li>A collection hook imported into a conftest (by a star import, or from
+  outside the source roots), or a star import from outside the roots in a
+  conftest or plugin, makes discovery possibly incomplete.</li>
+<li>Code run while collecting that writes the environment or the import path
+  through a patch nothing undoes (<code>mock.patch.dict(os.environ,
+  ...).start()</code>, <code>pytest.MonkeyPatch().setenv(...)</code>,
+  <code>syspath_prepend</code>) is a dependency of every test.</li>
+<li>ASV: a <code>timeraw_</code> benchmark bound under another name, or renamed with
+  <code>benchmark_name</code>, depends on what its code imports; <code>benchmark_name</code>
+  applies wherever the function is bound, inherited methods included;
+  <code>benchmark_dir: "."</code> finds benchmarks, and a <code>benchmark_dir</code> outside the
+  repository makes discovery incomplete.</li>
+<li>A test, conftest or benchmark module nested too deeply to analyse is
+  reported as a file that did not parse, which makes discovery
+  incomplete, instead of stopping discovery with an internal error.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1697,6 +1798,13 @@ selection rules.</p>
   graph; <code>hasattr(obj, "name")</code> notices only <code>name</code>.</li>
 <li>Unpicklers and loaders of a computed path count as code that can obtain
   a test module.</li>
+<li>A function added, deleted or redefined with an annotation that calls
+  code (<code>def f(x: set_mode("fast"))</code>), or a module-level variable whose
+  annotation does, reaches what that code writes: before Python 3.14
+  annotations run with the definition, so tests reading that state were
+  missed.</li>
+<li>A recording stored under a path containing <code>#</code>, <code>?</code> or <code>%</code> can be
+  opened; it was skipped as if there were none.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1715,6 +1823,9 @@ selection rules.</p>
 <li>The <code>report</code> action failed whenever a job of a reported run had been
   re-run, since the run then holds two artifacts of the same name; it now
   reads the latest attempt's.</li>
+<li>The <code>record</code> action's re-run of a missed test runs a <code>command</code> with
+  quotes or spaces as written.</li>
+<li>The report's job table escapes <code>|</code> in "not checked" reasons.</li>
 </ul>
 <h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
 <h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>

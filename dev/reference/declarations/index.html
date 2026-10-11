@@ -1084,7 +1084,8 @@ make diffcone select more tests, never fewer.</p>
 <p>diffcone reads the file from both snapshots, so it changes along with your
 code. A declaration that names something that doesn't exist, an
 <code>always_run</code> entry without <code>targets</code> or with an unknown <code>runner</code>, an
-unknown key, or a file that doesn't parse is reported as an analysis
+unknown key, a file that doesn't parse, or one that is there but can't
+be read (left unmerged by a conflicted merge, say) is reported as an analysis
 error: the plan then selects every target, so these typos can't silently
 remove tests from a plan. The one typo diffcone can't catch is an
 <code>always_run</code> pattern that matches nothing (see above): the plan stands, and

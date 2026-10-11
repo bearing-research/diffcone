@@ -1111,10 +1111,11 @@ the report's <code>discovery</code> section lists what it read (<code>run_argume
 <li>tests inherited from base classes, including base classes in other
   modules;</li>
 <li>tests imported into a test module, by name or with <code>from module import *</code>,
-  including tests the other module imported itself;</li>
-<li>tests bound to another name (<code>test_alias = test_orig</code>), <code>runTest</code> in a
-  <code>unittest.TestCase</code> without <code>test*</code> methods, and functions marked
-  <code>__test__ = True</code>;</li>
+  including tests the other module imported itself or defines inside an
+  <code>if</code> or <code>try</code> block;</li>
+<li>tests bound to another name (<code>test_alias = test_orig</code>, also inside an
+  <code>if</code> block), <code>runTest</code> in a <code>unittest.TestCase</code> without <code>test*</code> methods,
+  and functions marked <code>__test__ = True</code>;</li>
 <li>doctests: text files matching <code>--doctest-glob</code> (by default
   <code>test*.txt</code>), and the docstrings in your modules when
   <code>--doctest-modules</code> is set.</li>
@@ -1127,8 +1128,10 @@ the report's <code>discovery</code> section lists what it read (<code>run_argume
   those use, resolved the way pytest does: class (including the fixtures
   it inherits from base classes in other modules), then module, then each
   <code>conftest.py</code> outward, then plugins listed in <code>pytest_plugins</code> (in any
-  conftest or test module, and the plugins those list) and the pytest
-  plugins of your project and of other packages in the repository. A
+  conftest or test module, and the plugins those list; the list may be
+  built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>, or imported from another
+  module) and the pytest plugins of your project and of other packages in
+  the repository. A
   fixture is found under every name a module
   binds it to, as in pytest: an alias (<code>box2 = box</code>), an import (<code>from
   tests.helpers import engine</code>, <code>from tests.helpers import *</code>, through
@@ -1136,10 +1139,13 @@ the report's <code>discovery</code> section lists what it read (<code>run_argume
   tests.helpers.engine</code>), unless the fixture sets its own <code>name=</code>. When two
   plugins define a fixture of the same name, both count.
   A name the test parametrizes is a parameter, not a fixture, for the test
-  and for every fixture it uses;</li>
+  and for every fixture it uses, unless <code>indirect</code> hands it to the fixture
+  (when <code>indirect</code> is a variable rather than <code>True</code>, <code>False</code> or a list of
+  names, every name that has a fixture counts as handed over);</li>
 <li>marks such as <code>usefixtures</code> and <code>parametrize</code> on its class and the
   class's base classes, including marks stored in a variable and applied
-  by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>);</li>
+  by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>),
+  and <code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>;</li>
 <li>autouse fixtures that apply to it, including ones whose <code>autouse=</code> is a
   variable and ones a <code>conftest.py</code>, test module or plugin imports;</li>
 <li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions, and unittest's
@@ -1165,7 +1171,10 @@ the report's <code>discovery</code> section lists what it read (<code>run_argume
   <code>os.environ</code>, <code>sys.path</code> and <code>sys.modules</code>, attributes set on
   third-party modules, and common configuration calls such as
   <code>warnings.filterwarnings</code>, <code>logging.basicConfig</code>, <code>locale.setlocale</code>,
-  <code>numpy.random.seed</code> and hypothesis's <code>settings.load_profile</code>. State a
+  <code>numpy.random.seed</code> and hypothesis's <code>settings.load_profile</code>, whether
+  made directly or through a patch that is not undone when a test ends
+  (<code>mock.patch.dict(os.environ, ...).start()</code>,
+  <code>pytest.MonkeyPatch().setenv(...)</code>). State a
   library keeps behind its own configuration function is not recognised;
   declare such a dependency in <a href="../declarations/"><code>diffcone.toml</code></a> if a
   test relies on it.</li>
@@ -1181,7 +1190,10 @@ file is always selected.</p>
 it are always selected and the report says why; add a source root that
 contains it. The same goes for a plugin in your repository that your source
 roots don't hold (<code>pytest_plugins = ["support.plugin"]</code> with <code>support/</code>
-outside them): every test is always selected.</p>
+outside them): every test is always selected. And when diffcone can't read
+which plugins <code>pytest_plugins</code> names (it is built by a function call or a
+comprehension, or imported from outside your source roots), every test is
+always selected too; write the list out as strings to avoid that.</p>
 <p>Some files can change what any test does, so a change to one selects every
 target. Outside your source roots, these are:</p>
 <ul>
@@ -1223,28 +1235,34 @@ parameter cases together.</p>
 <h2 id="asv">ASV<a class="headerlink" href="#asv" title="Permanent link">&para;</a></h2>
 <p><code>benchmark_dir</code> is read from <code>asv.conf.json</code> or <code>asv.conf.jsonc</code> (the one
 nearest the root of the repository, up to three levels down; comments and
-trailing commas are allowed), relative to the directory that holds it; it
-defaults to <code>benchmarks</code>. Benchmarks are the
+trailing commas are allowed), relative to the directory that holds it
+(<code>"."</code> is that directory itself); it defaults to <code>benchmarks</code>. Benchmarks
+are the
 functions and methods whose names start with <code>time_</code>, <code>timeraw_</code>, <code>mem_</code>,
 <code>peakmem_</code> or <code>track_</code> (or <code>Time</code>, <code>Timeraw</code>, <code>Mem</code>, <code>PeakMem</code>, <code>Track</code>
 followed by a capital or an underscore), including inherited ones and ones imported into a
 benchmark module, in every module under <code>benchmark_dir</code> as ASV walks it,
-named as ASV names them (a <code>benchmark_name</code> you set is used). Each depends
+named as ASV names them (a <code>benchmark_name</code> you set is used, also for
+the function imported elsewhere or inherited by a subclass). Each depends
 on its class's and module's <code>setup</code>, <code>setup_cache</code> and <code>teardown</code> (also
 when imported from another module; <code>setup</code> and <code>teardown</code> in any case, such
 as <code>setUp</code>, as ASV finds them), on the <code>__init__</code>, <code>__new__</code>, <code>__getattr__</code> and <code>__getattribute__</code> of its
 class, which ASV runs for every benchmark (also when inherited), and on its
-module. Class attributes such as <code>params</code> count as part of the class. A <code>timeraw_</code> benchmark also
-depends on the modules its code imports; if its code isn't a plain string,
-it is always selected.</p>
+module. Class attributes such as <code>params</code> count as part of the class. A <code>timeraw_</code> benchmark
+(by the name ASV matches: <code>timeraw_import = _impl</code> is one) also depends on
+the modules its code imports; if its code isn't a plain string, it is
+always selected.</p>
 <h2 id="when-the-target-list-may-be-short">When the target list may be short<a class="headerlink" href="#when-the-target-list-may-be-short" title="Permanent link">&para;</a></h2>
 <p>Some things can't be known by reading the source:</p>
 <ul>
 <li>a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;</li>
 <li>a test base class, or an imported test, from outside your source roots;</li>
+<li>an imported test that its module binds to something discovery can't
+  follow (<code>test_x = factory.make</code>);</li>
 <li>a test file, benchmark file or doctest module outside your source roots
-  (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>);</li>
+  (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>),
+  or a <code>benchmark_dir</code> outside the repository;</li>
 <li>options that change what pytest collects in ways discovery doesn't
   follow (<code>-c</code>/<code>--config-file</code>, <code>--rootdir</code>, <code>--pyargs</code>);</li>
 <li>a <code>--command</code> discovery can't find pytest's arguments in (it looks for
@@ -1254,7 +1272,9 @@ it is always selected.</p>
 <li>a plugin with a <code>pytest_ignore_collect</code> hook that can return <code>False</code>;</li>
 <li>a <code>conftest.py</code> or plugin that turns files or objects into tests itself
   (<code>pytest_collect_file</code>, <code>pytest_collect_directory</code>,
-  <code>pytest_pycollect_makeitem</code>);</li>
+  <code>pytest_pycollect_makeitem</code>), whether it defines the hook or imports it,
+  and one that star-imports (<code>from module import *</code>) from outside your
+  source roots, since that may bring such a hook in;</li>
 <li>a <code>--doctest-glob</code> that matches files other than <code>.txt</code>, <code>.rst</code> or
   <code>.md</code>;</li>
 <li>a test given by node id after <code>--</code> (<code>tests/test_x.py::test_one</code>), or a

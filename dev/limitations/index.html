@@ -853,6 +853,16 @@ whose module imports that module, directly or indirectly. In a codebase
 where most modules import a few central ones, such a change selects
 most tests. <a href="../guides/evidence/">Execution evidence</a> narrows this to the
 tests that actually used the changed code.</dd>
+<dt><strong>A function under a decorator diffcone can't read runs on import.</strong></dt>
+<dd><code>@deco</code> over a function is a call <code>deco(f)</code> when the module is imported,
+and the decorator may call the function then. Unless the decorator is
+one diffcone knows calls nothing of it (<code>property</code>, <code>staticmethod</code>,
+<code>functools.cache</code>, <code>pytest.fixture</code>, <code>dataclasses.dataclass</code> and the
+like, or a decorator of your own that only sets attributes and returns
+the function or a <code>functools.wraps</code> wrapper), a change to the
+function's body counts as a change to code that runs on import. A
+decorator from an installed package (a compiled <code>cache_readonly</code>, say)
+is one diffcone can't read.</dd>
 <dt><strong>Class-level changes affect every method.</strong></dt>
 <dd>A change to a class's body (its bases, decorators or class attributes)
 affects all of its methods. Removing or redirecting an import affects
@@ -894,8 +904,9 @@ objects on one of those modules. Some code widens that bound:</p>
   does: <code>patch(...).start()</code>, a patcher kept for later, a
   <code>MonkeyPatch()</code> of your own, <code>monkeypatch</code> handed to a helper
   function, or a <code>with mock.patch(...)</code> around a <code>yield</code> in a fixture.</li>
-<li><strong>Code loaded at run time.</strong> A module imported by a name nothing
-  bounds (<code>importlib.import_module(name)</code>), an object unpickled with
+<li><strong>Code loaded at run time.</strong> A module imported or run by a name
+  nothing bounds (<code>importlib.import_module(name)</code>,
+  <code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code>), an object unpickled with
   <code>pickle.loads</code>, and a module loaded from a file whose path is
   computed (<code>importlib.util.spec_from_file_location</code>) can be affected
   by any change at all. A name that starts with fixed text
@@ -934,8 +945,8 @@ objects on one of those modules. Some code widens that bound:</p>
 <code>python -c "import mypkg"</code>) depends on that script or module, and on
 what it imports, when the code names it in a string. When the program
 is built at run time (a path from a variable or the environment, <code>-c</code>
-code assembled from pieces, <code>*args</code>), the test is affected by any
-change. So is a test that runs a <code>.py</code> file no module name maps to
+code assembled from pieces or code that changes <code>sys.path</code>, <code>*args</code>),
+the test is affected by any change. So is a test that runs a <code>.py</code> file no module name maps to
 (<code>scripts/gen-data.py</code>), which isn't analysed. Console scripts your
 project installs and files outside your source roots aren't seen;
 <a href="../guides/evidence/">execution evidence</a> follows the processes a test
@@ -948,7 +959,20 @@ also reaches the readers of whatever the functions it calls change in
 place. Not followed: an object stored away and changed later under
 another name (<code>self.store = store</code>, then <code>self.store[k] = v</code>), an
 object a function returns that its caller then changes, and a library
-function that changes an argument you pass it.</dd>
+function that changes an argument you pass it, a module of yours
+included (a library writing into a module you hand it).</dd>
+<dt><strong>Tests are assumed not to depend on what an earlier test left behind.</strong></dt>
+<dd>A test, a function-scoped fixture, or a helper in a test module or
+<code>conftest.py</code> that only tests call may change module state (<code>server._state
+= make()</code>): diffcone counts that change for the test running it only, not
+for the other tests and benchmarks that read the same state. If a test
+relies on state an earlier test set up, declare that dependency in
+<a href="../reference/declarations/"><code>diffcone.toml</code></a> (an <code>[[edges]]</code> entry from
+the reader to the code setting it up) or run the whole suite. Code that
+runs once for many tests is still a dependency of every reader: a test
+module's top-level code, a fixture with a wider scope (or a scope it
+computes), a hook, and any code of your project, a cache a test fills
+included.</dd>
 <dt><strong>Code that changes the process while pytest collects reaches every test.</strong></dt>
 <dd>A <code>conftest.py</code>, a test module or a module they import that sets an
 environment variable, extends <code>sys.path</code> or configures a library
@@ -962,7 +986,9 @@ earlier test left behind.</dd>
 <dd>Any file under your source roots that isn't valid Python 3, or can't be
 decoded in its declared encoding (UTF-8 unless the file says
 otherwise), is an analysis error, even a test data file nothing
-imports. Choose source roots that leave such files out.</dd>
+imports. So is one that nests an expression hundreds of levels deep,
+as generated code may (a sum of a thousand terms). Choose source roots
+that leave such files out.</dd>
 <dt><strong>Discovery reads the source, so it can't see what plugins do.</strong></dt>
 <dd>A pytest plugin that collects tests by its own rules, or a test base
 class outside your source roots, can mean diffcone's target list is
