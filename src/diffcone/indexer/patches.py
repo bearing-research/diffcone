@@ -30,12 +30,19 @@ undone. A call's store is undone after the test when the call is:
 * a method of the pytest ``monkeypatch`` fixture (``monkeypatch.setattr``,
   ``setitem``, ``setenv``, ``delattr``, ...) or a patcher of pytest-mock's
   ``mocker`` (``mocker.patch``, ``mocker.patch.object``, ...): a parameter
-  of that name of the test (a function named ``test*``) or fixture (one
-  decorated with ``fixture``) the call stands in, not of an enclosing
-  function, and not rebound there. Both fixtures are function-scoped, so
-  what they store is undone when the test ends (a fixture requesting one
-  is function-scoped too). A helper's parameter of that name is whatever
-  its callers pass, a ``MonkeyPatch()`` nothing undoes among them;
+  of that name of the test (a function named ``test*``) or function-scoped
+  fixture (one decorated with ``fixture``, no ``scope`` or
+  ``scope="function"``) the call stands in, not of an enclosing function,
+  and not rebound there, when the module defines no fixture of that name
+  itself. Both fixtures are function-scoped, so what they store is undone
+  when the test ends. A fixture of a wider scope can request one only
+  through an override (pytest refuses the builtin: ScopeMismatch), and an
+  override in the module is whatever it yields: what is stored through
+  either lasts as long as the override says, which is not known here, so
+  it is not undone (audit round 5, R27; an override in another module,
+  such as a parent conftest, is not seen). A helper's parameter of that
+  name is whatever its callers pass, a ``MonkeyPatch()`` nothing undoes
+  among them;
 * a method of a name a ``with MonkeyPatch.context() as mp:`` (or
   ``monkeypatch.context()``) binds, in that statement's body inside a
   function, when the body does not yield and nothing else binds the name.
@@ -242,6 +249,8 @@ def _fixture_parameter(node: ast.Call, name: str, parents: dict[int, ast.AST]) -
     scope = _scope(node, parents)
     if not isinstance(scope, _FUNCTIONS) or not _requests_fixtures(scope):
         return False
+    if not scope.name.startswith("test") and not _function_fixture(scope):
+        return False  # a wider-scoped fixture requests an override (R27)
     args = scope.args
     params = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)}
     return name in params and not _bindings(scope, name)
@@ -287,11 +296,17 @@ def _context_bound(node: ast.Call, name: str, parents: dict[int, ast.AST]) -> bo
 
 
 def _undone(
-    node: ast.Call, parts: list[str], parents: dict[int, ast.AST], contexts: set[str]
+    node: ast.Call,
+    parts: list[str],
+    parents: dict[int, ast.AST],
+    contexts: set[str],
+    overridden: set[str],
 ) -> bool:
     head = parts[0]
     if len(parts) >= 2 and head in _TEST_FIXTURES:
         through = _TEST_FIXTURES[head]
+        if head in overridden:
+            return False  # the module's own fixture of that name: unknown
         if (through is None and len(parts) == 2) or parts[1] == through:
             return _fixture_parameter(node, head, parents)
         return False
@@ -435,6 +450,15 @@ def undone_calls(
         for item in node.items
         if isinstance(item.optional_vars, ast.Name) and _monkeypatch_context(item.context_expr)
     }
+    # The pytest fixtures the module overrides with ones of its own (R27).
+    overridden = {
+        node.name
+        for node in nodes
+        if isinstance(node, _FUNCTIONS)
+        and node.name in _TEST_FIXTURES
+        and not node.name.startswith("test")
+        and _requests_fixtures(node)
+    }
     found: set[int] = set()
     for node in nodes:
         if isinstance(node, _FUNCTIONS):
@@ -446,6 +470,6 @@ def undone_calls(
             continue
         if parents is None:
             parents = parent_map(nodes)
-        if _undone(node, parts, parents, contexts):
+        if _undone(node, parts, parents, contexts, overridden):
             found.add(id(node))
     return frozenset(found)

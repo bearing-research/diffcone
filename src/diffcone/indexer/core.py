@@ -374,6 +374,9 @@ class Indexer(DynamicBounds):
         for e in self.index.edges:
             if e.detail == MUTATED_BY:
                 writers[e.target].add(e.source)
+        self.index.decorator_symbols = {
+            decorator for _, decorator, _ in self._global.decorations if decorator
+        }
         for decorated, decorator, receiver in sorted(self._global.decorations):
             if receiver:
                 self.index.edges.add(Edge(receiver, decorated, REFERENCES, REGISTERS))

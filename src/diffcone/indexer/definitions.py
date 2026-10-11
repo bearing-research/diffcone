@@ -82,6 +82,91 @@ def _import_entries(scope: ModuleScope, node: ast.Import | ast.ImportFrom) -> li
     ]
 
 
+# statement_layout entry prefix of a ``def`` whose statement only binds a
+# name: swapping two adjacent ones changes nothing that runs.
+INERT_DEF = "def~"
+
+
+def statement_layout(
+    body: list[ast.stmt], scope: ModuleScope, shadowed: Collection[str], *, plain: bool
+) -> tuple[str, ...]:
+    """A module or class body as the sequence of its statements, each an
+    entry of its kind and the names it binds (``assign:A``, ``def:f``,
+    ``import pkg.plug``, ``expr``, ``if``), blocks descended into in order
+    after the entry of the compound statement. Docstrings, bare strings and ``pass`` bind
+    and run nothing and are left out, as is the body of ``if
+    TYPE_CHECKING:``. A ``def`` that only binds a name (inert decorators,
+    literal defaults, no annotation evaluated at import; ``plain``: in a
+    class, only when the class has no decorator or keyword) is an
+    ``INERT_DEF`` entry: the classifier lets adjacent ones trade places.
+    The hashes keep no order between definitions and other statements
+    (``X = 1`` moved below ``@deco(X) def f``, ``def f`` moved below a
+    ``try: from pkg.fast import f`` fallback, two ``@register`` defs
+    swapped), so the classifier compares these (audit round 5, R6)."""
+    out: list[str] = []
+    add = out.append
+
+    def walk(stmts: list[ast.stmt]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, FUNC_NODES):
+                inert = (
+                    plain
+                    and _inert_def(stmt, scope, shadowed)
+                    and (_future_annotations(scope) or not _has_annotations(stmt))
+                )
+                add(f"{INERT_DEF if inert else 'def'}:{stmt.name}")
+            elif isinstance(stmt, ast.ClassDef):
+                add(f"class:{stmt.name}")
+            elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                for entry in _import_entries(scope, stmt):
+                    add(entry)
+            elif isinstance(stmt, (ast.Pass, ast.Global, ast.Nonlocal)):
+                continue
+            elif (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant)
+                and isinstance(stmt.value.value, str)
+            ):
+                continue
+            elif isinstance(stmt, ast.If) and "TYPE_CHECKING" in ast.unparse(stmt.test):
+                add("if")
+                walk(stmt.orelse)
+            else:
+                if isinstance(stmt, (ast.For, ast.AsyncFor)):
+                    bound: set[str] = _collect_store_names(stmt.target)
+                elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                    bound = set()
+                    for item in stmt.items:
+                        if item.optional_vars is not None:
+                            bound |= _collect_store_names(item.optional_vars)
+                elif isinstance(stmt, (ast.If, ast.While, ast.Try, ast.Match)) or type(
+                    stmt
+                ).__name__ in ("TryStar",):
+                    bound = set()
+                else:
+                    bound = _collect_store_names(stmt)
+                kind = type(stmt).__name__.lower()
+                if kind in ("assign", "annassign", "augassign", "typealias"):
+                    kind = "assign"
+                elif kind in ("asyncfor", "asyncwith", "trystar"):
+                    kind = kind.removeprefix("async").removesuffix("star")
+                add(f"{kind}:{','.join(sorted(bound))}" if bound else kind)
+                for attr in ("body", "orelse", "finalbody"):
+                    child = getattr(stmt, attr, None)
+                    if isinstance(child, list) and child:
+                        walk(child)
+                for handler in getattr(stmt, "handlers", []) or []:
+                    add(f"except:{handler.name}" if handler.name else "except")
+                    walk(handler.body)
+                for case in getattr(stmt, "cases", []) or []:
+                    names = sorted(_collect_store_names(case.pattern))
+                    add(f"case:{','.join(names)}" if names else "case")
+                    walk(case.body)
+
+    walk(body)
+    return tuple(out)
+
+
 def _class_attributes(node: ast.ClassDef) -> dict[str, str]:
     """Each name a class body binds by plain assignment, with a hash of the
     statements binding it; every other non-definition statement (a loop, a

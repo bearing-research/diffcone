@@ -123,8 +123,9 @@ For each change diffcone classifies between C and head:
 | change | E, what is selected | escalates to static |
 |---|---|---|
 | body changed, `f` | `{f}` | when a library or conftest import ran `f`: its result is baked into objects built at import. When a *test* module's import ran it, the tests that executed that module's code instead |
-| docstring changed | the doctest target (as today) + static readers of `__doc__` (`inspect.getdoc`, `.__doc__`, `getattr(obj, "__doc__")`) that refer to the symbol or sit in its module: the tests that ran them | when read at import (`@doc`, `Appender`), or when the reader is import-time code (its module) |
+| docstring changed | the doctest target (as today) + static readers of `__doc__` (`inspect.getdoc`, `.__doc__`, `getattr(obj, "__doc__")`) that refer to the symbol or sit in its module, and every reader that reads a docstring off a value its references do not bound (a parameter, a local; `planner.docstring_readers`, R7) unless it is a decorator: the tests that ran them | when read at import (`@doc`, `Appender`), or when the reader is import-time code (its module) |
 | signature or defaults changed | `{f}` + its static callers (resolved references and name matches of its name) + introspection sites (`inspect.signature`) | — |
+| an import added (or removed) that newly runs (or stops running) a module's import-time code (`planner._newly_run_modules`: outside the importer's base import closure, or in a function body; R24) | the readers of every variable that module or its callees write into (`_import_writes`, as for changed import-time code), and the readers of the module or its members whose own imports never reach it (`pkg.sub.f()` under `import pkg`) | when such a reader is import-time code (its module) |
 | decorators changed | as a signature change; for a fixture (in a test module or a conftest), every test in its scope, since `autouse`, `scope`, `params` and `name` change who runs it | library code and conftests' non-fixture functions: always, since decorators run at import and may register. A test function's own decorators: never, since they reach only that test |
 | annotations changed, or a function added or deleted with them | as a signature change (an addition or deletion: as an added or deleted name) | when an annotation calls code (`def f(x: set_mode("fast"))`, `X: set_mode("fast") = 1`): before Python 3.14 it runs with the `def` or the assignment, and what it writes reaches its readers. One that only names something (`x: Item`), or a deferred one (`from __future__ import annotations`), runs nothing (audit F3, Q3) |
 | added or deleted name `n` in module or class N | static readers of `n` (resolved, imported, name-matched), enumeration sites (`dir`, `vars`, `__dict__`, `inspect.getmembers`, star imports), the symbol itself, and the unbounded lookup sites that can see N: for a method, reads off objects from elsewhere; for a module-level name, reads off modules and `globals()`/`vars()`. For test code, only lookup sites in test code: nothing else holds a test module or a runner-only test instance | — |
@@ -442,7 +443,9 @@ selection or states something the tables left implicit; none narrows it.
   static planning does not use. A changed attribute reaches the readers of
   its name: resolved `self.x` edges and name matches, plus lookup and
   reflection sites. A changed statement, an opaque body statement or a
-  dunder attribute escalates. The class's `definition_changed` also fires
+  dunder attribute escalates, and so does a reorder of the body's
+  statements (`Symbol.statement_layout`, `classify.reordered`: no
+  attribute's own hash says so; R6). The class's `definition_changed` also fires
   when a member is only added or deleted, since the member list is part of
   that hash. That case is the member's own change, because code notices a
   new or missing attribute only by looking it up. A special method (`__eq__`)

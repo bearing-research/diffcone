@@ -43,7 +43,8 @@ observed by"), and a test is selected when its record meets E:
   class whose creation may read its body (``SourceIndex.open_classes``:
   decorators, keywords, a base the index cannot see, such as a dataclass
   field default or an ``Enum`` member; or an ancestor with
-  ``__init_subclass__``). A special method (``__eq__``) is used without
+  ``__init_subclass__``), and a reorder of the body's statements
+  (``Symbol.statement_layout``; R6). A special method (``__eq__``) is used without
   being named, so a change to one reaches every member of the class's
   hierarchy; a module's ``__getattr__``/``__dir__`` escalates its module;
 * an added or deleted name: its readers, the unbounded lookup and
@@ -55,7 +56,9 @@ observed by"), and a test is selected when its record meets E:
 * module-level code: escalates the module, and so does a change to
   ``__all__`` (what star imports bind);
 * a docstring only: the code reading docstrings (``reads_docstrings``)
-  that refers to the symbol or sits in its module, as in static planning;
+  that refers to the symbol or sits in its module, or reads a docstring
+  off a value it does not name (``reads_any_docstring``, not a decorator:
+  R7), as in static planning;
   such a reader running at import escalates its module. A docstring its
   decorator reads at import (``doc_decorated``: pandas' ``@doc``)
   escalates the change;
@@ -142,7 +145,9 @@ from diffcone.classify import (
     DEPENDENCIES_CHANGED,
     DOCSTRING_CHANGED,
     SymbolChange,
+    _import_closures,
     classify,
+    reordered,
 )
 from diffcone.cython import ASSIGNMENT as CYTHON_ASSIGNMENT
 from diffcone.cython import CLASS as CYTHON_CLASS
@@ -201,6 +206,8 @@ from diffcone.model import (
     imports_anything,
 )
 from diffcone.planner import (
+    ANY_DOCSTRING,
+    NEWLY_IMPORTED,
     OWN_DIRS,
     OWN_FILES,
     RULE_ANALYSIS_ERROR,
@@ -234,6 +241,7 @@ from diffcone.planner import (
     _inside,
     _is_dunder,
     _members_by_container,
+    _newly_run_modules,
     _on_unknown_value,
     _project_dirs,
     _runner_dependency_fallbacks,
@@ -1006,6 +1014,7 @@ class _Observers:
                 self._escalate_change(
                     change, f"{change.id} docstring_changed: its decorator reads it at import"
                 )
+        self._newly_run()
         self._docstring_readers()
         cython = self._cython()
         for path in self.unanalysed:
@@ -1136,6 +1145,56 @@ class _Observers:
         out.discard(symbol.id)
         return out
 
+    def _newly_run(self) -> None:
+        """A module a changed symbol newly imports, or no longer imports
+        (``planner._newly_run_modules``: an import added to a module outside
+        its base import closure, or to a function body, and the closure of
+        the imported module; R24), ran at C for no test, or will run for
+        none: what its import-time code or its callees write into is a
+        changed value for every reader (``_import_writes``), and a reader of
+        the module or its members whose own imports never reach it
+        (``pkg.sub.f()`` under ``import pkg``) now finds, or no longer finds,
+        it."""
+        newly_run = _newly_run_modules(self.c, self.other, self.changes)
+        if not newly_run:
+            return
+        change_by_id = {c.id: c for c in self.changes}
+        closures = {"c": _import_closures(self.c), "other": _import_closures(self.other)}
+        readers: dict[str, list[str]] = defaultdict(list)
+        for index in (self.c, self.other):
+            for edge in index.edges:
+                if edge.kind != REFERENCES:
+                    continue
+                target = self.symbols.get(edge.target)
+                module = (
+                    edge.target
+                    if edge.target in newly_run
+                    else (target.module if target is not None else None)
+                )
+                if module in newly_run:
+                    readers[module].append(edge.source)
+        for module, step in sorted(newly_run.items()):
+            change = change_by_id[step.target]
+            how = "newly imported" if step.kind == NEWLY_IMPORTED else "no longer imported"
+            why = f"{module}: {how} by {change.id} ({'/'.join(change.changes)})"
+            self._import_writes([module], change, why)
+            for reader in sorted(set(readers.get(module, ()))):
+                symbol = self.symbols.get(reader)
+                if symbol is None:
+                    continue
+                reached = {
+                    m
+                    for label, index in (("c", self.c), ("other", self.other))
+                    for m in closures[label].get(symbol.module, set())
+                }
+                if module in reached:
+                    continue  # its own imports run the module
+                detail = f"{reader} reads {module}, which only that import binds: {why}"
+                if symbol.kind in (FUNCTION, METHOD):
+                    self._observe(reader, RULE_EXECUTED_READER, detail, change)
+                else:
+                    self._escalate_module(symbol.module, detail)
+
     def _docstring_readers(self) -> None:
         """A docstring-only change runs no different code, but code reading
         docstrings (``C.__doc__``, ``inspect.getdoc(f)``, its module's
@@ -1150,6 +1209,9 @@ class _Observers:
             return
         for index in (self.c, self.other):
             for reader, referenced in sorted(docstring_readers(index).items()):
+                if ANY_DOCSTRING in referenced:
+                    # Read off a value its references do not bound (R7).
+                    referenced = referenced | documented.keys()
                 hits = sorted(referenced & documented.keys())
                 if not hits:
                     continue
@@ -1611,6 +1673,14 @@ class _Observers:
                 # class or rebuild it. A definition change that is only an
                 # added or deleted member is that member's own change.
                 self._escalate_change(change, f"{label}: the class statement runs at import")
+            elif (
+                change.base is not None
+                and change.head is not None
+                and reordered(change.base.statement_layout, change.head.statement_layout)
+            ):
+                # The body's statements run in another order (R6): what each
+                # sees differs, and no attribute's own hash says so.
+                self._escalate_change(change, f"{label}: its statements run in another order")
             if BODY_CHANGED in kinds:
                 self._class_body(symbol, change, label)
             # A definition change that is only an added or deleted member is

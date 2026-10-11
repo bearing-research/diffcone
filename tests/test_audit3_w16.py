@@ -272,7 +272,7 @@ def test_w17_a_module_does_not_run_what_is_installed_as_it(detail):
     graph.add(Edge("pkg.core", "pkg.compat.install", REFERENCES, detail), ("base", "head"))
     graph.add(Edge("pkg.compat.REG", "pkg.compat.install", REFERENCES, "mutated_by"), ("head",))
     change = SymbolChange("pkg.core", MODULE, ("body_changed",), None, None)
-    effects = _import_call_effects(graph, [change], {"pkg.core"})
+    effects = _import_call_effects(graph, [change.id], {"pkg.core"})
     assert ("pkg.compat.REG" in effects) is (detail == "")
 
 

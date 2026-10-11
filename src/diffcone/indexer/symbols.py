@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 from bisect import bisect_left
 from collections import defaultdict
+from collections.abc import Collection
 
 from diffcone.indexer.definitions import (
     _annotated_args,
@@ -23,12 +24,14 @@ from diffcone.indexer.definitions import (
     _is_inert_decorator,
     _is_literal,
     _is_special_method,
+    _is_staticmethod,
     _least_passive,
     _passive_decorator_def,
     _passive_factory_def,
     _quiet_def,
     _start_line,
     _variable_statements,
+    statement_layout,
 )
 from diffcone.indexer.literals import (
     _collect_literal_bindings,
@@ -74,34 +77,44 @@ def _doc_reads(body: list[ast.stmt], *, deep: bool = False):
     """``__doc__`` names, attributes and strings, and ``getdoc(...)`` calls,
     in a scope's own statements: not in nested definitions, which are symbols
     of their own, unless ``deep`` (a decorator factory's wrapper reading
-    ``f.__doc__`` is no symbol: it counts for the factory)."""
-    stack: list[ast.AST] = list(body)
+    ``f.__doc__`` is no symbol: it counts for the factory). Yields (node,
+    receiver): the expression whose docstring is read (None for the bare
+    name ``__doc__``, the module's own; the node itself when no receiver can
+    be told, as for a string ``"__doc__"`` outside a ``getattr`` or a
+    ``__dict__`` subscript)."""
+    stack: list[tuple[ast.AST, ast.AST | None]] = [(stmt, None) for stmt in body]
     while stack:
-        node = stack.pop()
+        node, parent = stack.pop()
         if isinstance(node, DEF_NODES) and not deep:
             # Decorators, defaults and bases run in this scope; the body not.
-            stack.extend(node.decorator_list)
+            children: list[ast.AST] = list(node.decorator_list)
             if isinstance(node, ast.ClassDef):
-                stack.extend([*node.bases, *node.keywords])
+                children += [*node.bases, *node.keywords]
             else:
-                stack.extend([*node.args.defaults, *(d for d in node.args.kw_defaults if d)])
+                children += [*node.args.defaults, *(d for d in node.args.kw_defaults if d)]
+            stack.extend((child, node) for child in children)
             continue
         # Reads only: ``__doc__ = """..."""`` assigns a docstring, it reads none.
         if isinstance(node, ast.Name) and node.id == "__doc__":
             if isinstance(node.ctx, ast.Load):
-                yield node
+                yield node, None
         elif isinstance(node, ast.Attribute) and node.attr == "__doc__":
             if isinstance(node.ctx, ast.Load):
-                yield node
+                yield node, node.value
         elif isinstance(node, ast.Call):
             func = node.func
             name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
             if name == "getdoc":
-                yield node
+                yield node, node.args[0] if node.args else node
         elif isinstance(node, ast.Constant) and node.value == "__doc__":
             # ``getattr(C, "__doc__")``, ``C.__dict__["__doc__"]``.
-            yield node
-        stack.extend(ast.iter_child_nodes(node))
+            if isinstance(parent, ast.Call) and parent.args and parent.args[0] is not node:
+                yield node, parent.args[0]
+            elif isinstance(parent, ast.Subscript):
+                yield node, parent.value
+            else:
+                yield node, node
+        stack.extend((child, node) for child in ast.iter_child_nodes(node))
 
 
 def _reads_docstrings(body: list[ast.stmt], *, deep: bool = False) -> bool:
@@ -109,7 +122,28 @@ def _reads_docstrings(body: list[ast.stmt], *, deep: bool = False) -> bool:
 
 
 def _names_module_doc(body: list[ast.stmt]) -> bool:
-    return any(isinstance(n, ast.Name) for n in _doc_reads(body))
+    return any(isinstance(n, ast.Name) for n, _ in _doc_reads(body))
+
+
+def _reads_any_docstring(
+    body: list[ast.stmt], bound: Collection[str], self_name: str | None, *, deep: bool = False
+) -> bool:
+    """Whether a docstring read's receiver is a value the symbol's references
+    do not bound (Symbol.reads_any_docstring): not the module's own
+    ``__doc__``, not a chain of attributes and subscripts rooted at a
+    module-level name (``bound``: imports, definitions, module variables) or
+    at ``self``/``cls`` (``self_name``), which the resolver follows. What a
+    call returns (``make().__doc__``), a parameter, a local: any."""
+    for _, receiver in _doc_reads(body, deep=deep):
+        if receiver is None:
+            continue
+        root: ast.AST = receiver
+        while isinstance(root, (ast.Attribute, ast.Subscript)):
+            root = root.value
+        if isinstance(root, ast.Name) and (root.id in bound or root.id == self_name):
+            continue
+        return True
+    return False
 
 
 class FirstPass(IndexerState):
@@ -158,6 +192,7 @@ class FirstPass(IndexerState):
         )
         module_doc_hash = _docstring_hash([scope.tree.body])
         module_reads_doc = _reads_docstrings(scope.tree.body)
+        bound = set(scope.imports) | scope.bindings | defined
         if module_reads_doc and _names_module_doc(scope.tree.body):
             # ``ArgumentParser(description=__doc__)``: import-time code reads
             # the module's own docstring.
@@ -177,7 +212,9 @@ class FirstPass(IndexerState):
                 line_ranges=((1, _end_line(scope.tree)),),
                 imports=imports,
                 import_layout=layout,
+                statement_layout=statement_layout(body, scope, defined, plain=True),
                 reads_docstrings=module_reads_doc,
+                reads_any_docstring=_reads_any_docstring(scope.tree.body, bound, None),
             )
         )
         self._index_definitions(scope, scope.tree.body, scope.name, scope.members, None)
@@ -290,6 +327,8 @@ class FirstPass(IndexerState):
         shadowed = (
             module_defs if class_scope is None else module_defs | defined | class_scope.bindings
         )
+        # The module-level names a docstring read is bounded by.
+        bound = set(scope.imports) | scope.bindings | module_defs
         funcs: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
         classes: dict[str, list[ast.ClassDef]] = {}
         order: list[str] = []
@@ -343,6 +382,12 @@ class FirstPass(IndexerState):
                     )
 
                 body_hash, definition_hash, doc_hash = class_hashes()
+                plain = len(nodes) == 1 and not (first.decorator_list or first.keywords)
+                class_body = [stmt for n in nodes for stmt in _split_docstring(n.body)[1]]
+                class_bindings: set[str] = set()
+                for stmt in iter_scope_statements(class_body):
+                    if not isinstance(stmt, DEF_NODES):
+                        class_bindings |= _collect_store_names(stmt)
                 symbol = Symbol(
                     id=symbol_id,
                     kind=CLASS,
@@ -355,14 +400,23 @@ class FirstPass(IndexerState):
                     container=container_id,
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
                     docstring_hash=doc_hash,
+                    statement_layout=statement_layout(
+                        class_body,
+                        scope,
+                        module_defs | set(member_names) | class_bindings,
+                        plain=plain,
+                    ),
                     reads_docstrings=any(_reads_docstrings(n.body) for n in nodes),
+                    reads_any_docstring=any(
+                        _reads_any_docstring(n.body, bound, None) for n in nodes
+                    ),
                 )
                 if not self._add_symbol(symbol):
                     continue
                 members[name] = symbol_id
                 self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
-                cscope.plain = len(nodes) == 1 and not (first.decorator_list or first.keywords)
+                cscope.plain = plain
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                     cscope.base_names.extend(
@@ -481,6 +535,10 @@ class FirstPass(IndexerState):
                     # Nested functions are not symbols: a decorator factory's
                     # wrapper reading ``f.__doc__`` counts for the factory.
                     reads_docstrings=any(_reads_docstrings([n], deep=True) for n in nodes),
+                    reads_any_docstring=any(
+                        _reads_any_docstring([n], bound, _self_name(n, class_scope), deep=True)
+                        for n in nodes
+                    ),
                     fixture_scope=_least_isolated({_fixture_scope(n) for n in nodes}),
                 )
                 if not self._add_symbol(symbol):
@@ -505,6 +563,16 @@ class FirstPass(IndexerState):
         while end < len(names) and names[end].startswith(prefix):
             end += 1
         return tuple(names[start:end])
+
+
+def _self_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, class_scope: ClassScope | None
+) -> str | None:
+    """The ``self``/``cls`` parameter of a bound method, as written."""
+    if class_scope is None or _is_staticmethod(node):
+        return None
+    params = node.args.posonlyargs + node.args.args
+    return params[0].arg if params else None
 
 
 def _least_isolated(scopes: set[str]) -> str:
