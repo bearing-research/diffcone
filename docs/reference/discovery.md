@@ -206,7 +206,11 @@ Some things can't be known by reading the source:
   (with `--source-root src`, add `--source-root .` for tests in `tests/`),
   or a `benchmark_dir` outside the repository;
 - options that change what pytest collects in ways discovery doesn't
-  follow (`-c`/`--config-file`, `--rootdir`, `--pyargs`);
+  follow (`-c`/`--config-file`, `--rootdir`, `--pyargs`), or a
+  configuration file below the repository root that pytest will use (its
+  rootdir is then that directory, the monorepo shape): discovery reads
+  only the configuration at the root, so what the nested file sets is not
+  known;
 - a `--command` discovery can't find pytest's arguments in (it looks for
   `-m pytest` or a `pytest` program), or one that names pytest more than
   once;

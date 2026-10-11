@@ -6,10 +6,20 @@ Three kinds of snapshot can be read, and every one says what it is:
   nothing is checked out and the working tree is not touched.
 * ``INDEX``: the staged content of every tracked file (what ``git commit``
   would record right now).
-* ``WORKTREE``: the files on disk, tracked or untracked, excluding ignored
-  ones; tracked files deleted from disk are absent.
+* ``WORKTREE``: the files on disk, tracked or untracked; tracked files
+  deleted from disk are absent. Git-ignored ``.py`` files are read too when
+  they lie in a directory git does not ignore as a whole (a generated
+  ``_version.py`` or ``_pb2.py``, a ``local_settings.py`` beside tracked
+  code): what runs on disk imports them. An ignored directory (a
+  virtualenv, a build directory, ``__pycache__``, a directory holding
+  nothing but ignored files) is skipped entirely, and ignored files that
+  are not Python are not seen.
 
 The last two are always reported as uncommitted state on top of ``HEAD``.
+
+Every snapshot also records the git mode of each entry under the roots that
+is not a plain file (``file_modes``: executable, symlink, submodule), so a
+``chmod +x`` of a script a test runs by path is a change.
 """
 
 from __future__ import annotations
@@ -52,7 +62,19 @@ CONFIG_FILES = (
 # are read too -- shallowest first, and only a few levels down.
 ASV_CONFIGS = ("asv.conf.json", "asv.conf.jsonc")
 ASV_CONFIG_DEPTH = 3
-NESTED_CONFIGS = (*ASV_CONFIGS, "pyproject.toml", "setup.cfg")
+# pytest's configuration file names, in its order of precedence: below the
+# root they are read so discovery can tell where pytest's rootdir is (an
+# ini file in a subdirectory, the monorepo shape).
+PYTEST_CONFIGS = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
+NESTED_CONFIGS = (*ASV_CONFIGS, *PYTEST_CONFIGS)
 
 WORKTREE = "WORKTREE"
 INDEX = "INDEX"
@@ -72,6 +94,10 @@ class Snapshot:
     # with ``with_config``) the content of the text files among them that
     # pytest could collect as doctests.
     other_files: dict[str, str] = field(default_factory=dict)
+    # The git mode of every entry under the roots that is not a plain file
+    # (REGULAR_MODE): path -> mode. Keyed with the content, so a mode change
+    # (``chmod +x``) is a change of the file.
+    file_modes: dict[str, str] = field(default_factory=dict)
     # The content of the Cython sources among them (diffcone.cython).
     cython_files: dict[str, bytes] = field(default_factory=dict)
     text_files: dict[str, bytes] = field(default_factory=dict)
@@ -166,6 +192,9 @@ def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str
             path = raw.decode("utf-8", "surrogateescape")
             if path and not is_bytecode(path):
                 out.setdefault(path, "added")
+        # The ignored Python files the working tree snapshot reads.
+        for path in ignored_python_files(repo, []):
+            out.setdefault(path, "added")
         # ``git diff`` does not look at a file flagged assume-unchanged or
         # skip-worktree: compare what is on disk with the commit.
         for path, skip_worktree in sorted(_flagged_paths(repo, []).items()):
@@ -248,6 +277,59 @@ def _normalise_root(root: str) -> str:
 SYMLINK_MODE = "120000"
 # A submodule's entry (a gitlink): its id is the submodule's commit.
 GITLINK_MODE = "160000"
+REGULAR_MODE = "100644"
+EXECUTABLE_MODE = "100755"
+# Where diffcone keeps its own state: never part of a snapshot.
+OWN_DIR = ".diffcone"
+
+
+def _notable_modes(
+    entries: dict[str, tuple[str, str]] | list[tuple[str, str, str]],
+) -> dict[str, str]:
+    """path -> mode of the entries whose mode is not REGULAR_MODE."""
+    if isinstance(entries, dict):
+        return {p: m for p, (m, _) in sorted(entries.items()) if m != REGULAR_MODE}
+    return {p: m for m, _, p in sorted(entries, key=lambda e: e[2]) if m != REGULAR_MODE}
+
+
+def _honours_file_mode(repo: Path) -> bool:
+    """Whether git records the executable bit from disk (``core.fileMode``,
+    false on filesystems without one, where ``git add`` keeps the staged
+    mode and gives a new file REGULAR_MODE)."""
+    try:
+        out = _git(repo, ["config", "--type=bool", "--get", "core.fileMode"])
+    except GitError:
+        return os.name != "nt"
+    return out.strip() != b"false"
+
+
+def ignored_files(repo: Path, pathspec: list[str]) -> list[str]:
+    """Git-ignored files on disk under ``pathspec`` that are not inside an
+    ignored directory: an ignored ``local_settings.py`` beside tracked code
+    is listed, nothing under an ignored virtualenv, build directory or a
+    directory holding only ignored files is (``ls-files --ignored
+    --directory`` lists such a directory as one entry). Bytecode and
+    diffcone's own directory are left out."""
+    out = _git(
+        repo,
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", *pathspec],
+    )
+    listed = _listed(out)
+    directories = tuple(p for p in listed if p.endswith("/"))
+    return sorted(
+        p
+        for p in listed
+        if not p.endswith("/")
+        and not p.startswith(directories)
+        and not is_bytecode(p)
+        and not (p == OWN_DIR or p.startswith(OWN_DIR + "/"))
+    )
+
+
+def ignored_python_files(repo: Path, pathspec: list[str]) -> list[str]:
+    """The ``.py`` files among ignored_files."""
+    return [p for p in ignored_files(repo, pathspec) if p.endswith(".py")]
+
 
 # Python files nobody imports that decide what is installed or how the tests
 # run (planner.is_build_script): build scripts and build backends' hooks,
@@ -406,8 +488,10 @@ def _pathspec(source_roots: list[str]) -> list[str]:
 
 
 # ``git ls-files -t`` tags read here: S skip-worktree (sparse checkout), M
-# unmerged, ? untracked (with --others); H, cached, is any other.
-TAG_SKIP_WORKTREE, TAG_UNMERGED, TAG_OTHER = "S", "M", "?"
+# unmerged, ? untracked (with --others); H, cached, is any other. The
+# ignored files the working tree snapshot adds (ignored_python_files) carry
+# a tag of diffcone's own, ``!``.
+TAG_SKIP_WORKTREE, TAG_UNMERGED, TAG_OTHER, TAG_IGNORED = "S", "M", "?", "!"
 
 
 def _ls_files_tagged(repo: Path, args: list[str], source_roots: list[str]) -> list[tuple[str, str]]:
@@ -480,15 +564,17 @@ def _submodule_id(repo: Path, path: str, recorded: str) -> str:
     return head + ("-dirty" if dirty else "")
 
 
-def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) -> dict[str, str]:
+def _worktree_blob_ids(
+    repo: Path, paths: list[str], source_roots: list[str], staged: dict[str, tuple[str, str]]
+) -> dict[str, str]:
     """The git blob id each of ``paths`` would have if added now. A file git
     reports unmodified has its staged id; a modified or untracked one, or
     one flagged assume-unchanged or skip-worktree that is on disk (git does
     not look at those), is hashed by ``git hash-object``, which applies the
     same filters (line endings, clean filters) and object format as ``git
     add`` would, so equal content gives the id a commit has. A symbolic link
-    is the id of its target path, as git stores it."""
-    staged = _ls_files_staged_ids(repo, source_roots)
+    is the id of its target path, as git stores it. ``staged`` is
+    _ls_files_staged_ids for the roots."""
     listed = _git(
         repo, ["ls-files", "-z", "-m", "--others", "--exclude-standard", *_pathspec(source_roots)]
     )
@@ -515,6 +601,33 @@ def _worktree_blob_ids(repo: Path, paths: list[str], source_roots: list[str]) ->
         out = _git(repo, ["hash-object", "--stdin-paths"], stdin=request).decode().split()
         ids.update(zip(to_hash, out, strict=True))
     return ids
+
+
+def _worktree_modes(
+    repo: Path, paths: list[str], staged: dict[str, tuple[str, str]]
+) -> dict[str, str]:
+    """path -> mode of those of ``paths`` whose mode is not REGULAR_MODE, as
+    ``git add`` would record them now: a symbolic link, a staged submodule,
+    a file with an executable bit (when git honours the bit, else its
+    staged mode)."""
+    honours = _honours_file_mode(repo)
+    modes: dict[str, str] = {}
+    for path in paths:
+        full = repo / path
+        staged_mode = staged.get(path, ("", ""))[0]
+        if staged_mode == GITLINK_MODE:
+            mode = GITLINK_MODE
+        elif full.is_symlink():
+            mode = SYMLINK_MODE
+        elif not full.is_file():
+            mode = staged_mode or REGULAR_MODE  # not on disk by design (skip-worktree)
+        elif honours:
+            mode = EXECUTABLE_MODE if full.stat().st_mode & 0o111 else REGULAR_MODE
+        else:
+            mode = staged_mode or REGULAR_MODE
+        if mode != REGULAR_MODE:
+            modes[path] = mode
+    return modes
 
 
 def _listed(listing: bytes) -> list[str]:
@@ -603,6 +716,7 @@ def read_commit_snapshot(
             for _, oid, p in sorted(entries_ids, key=lambda e: e[2])
             if _other_file(p, source_roots)
         },
+        file_modes=_notable_modes(entries_ids),
         cython_files=read_files(
             repo, commit, sorted(p for m, p in entries if is_cython(p) and m != SYMLINK_MODE)
         ),
@@ -684,6 +798,7 @@ def read_index_snapshot(
         other_files={
             p: oid for p, (_, oid) in sorted(staged_ids.items()) if _other_file(p, source_roots)
         },
+        file_modes=_notable_modes(staged_ids),
         cython_files=read_files(
             repo,
             "",
@@ -701,16 +816,21 @@ def read_index_snapshot(
 def read_worktree_snapshot(
     repo: Path, source_roots: list[str], *, with_config: bool = False
 ) -> Snapshot:
-    """Files on disk: tracked and untracked, minus ignored ones.
+    """Files on disk: tracked and untracked, plus the ignored ``.py`` files
+    outside ignored directories (ignored_files).
 
     Skip-worktree entries (sparse checkouts) are not on disk by design and
     are read from the index instead of being treated as deletions; when one
     is on disk, as an assume-unchanged entry is, the file on disk is read
     (git does not look at either). A submodule is listed with the commit
-    checked out in it, as a commit or the index lists its gitlink.
+    checked out in it, as a commit or the index lists its gitlink. A
+    tracked file replaced on disk by a directory is absent, like one
+    deleted; the files inside the directory are untracked files.
     """
     head = resolve_commit(repo, "HEAD")
     listed = _ls_files_tagged(repo, ["--cached", "--others", "--exclude-standard"], source_roots)
+    listed += [(TAG_IGNORED, p) for p in ignored_python_files(repo, _pathspec(source_roots))]
+    staged = _ls_files_staged_ids(repo, source_roots)
     files: dict[str, bytes] = {}
     from_index: list[str] = []
     for tag, path in listed:
@@ -738,6 +858,24 @@ def read_worktree_snapshot(
         if alias not in files:
             files[alias] = (repo / real).read_bytes()
     files = dict(sorted(files.items()))
+    other_paths = sorted(
+        {
+            p
+            for tag, p in listed
+            if _other_file(p, source_roots)
+            and tag != TAG_IGNORED
+            and not (tag == TAG_OTHER and is_bytecode(p))
+            and (
+                (repo / p).is_file()
+                or (repo / p).is_symlink()
+                or tag == TAG_SKIP_WORKTREE  # not on disk by design: the staged id
+                # A tracked directory is a submodule only when the index
+                # holds a gitlink there; a tracked file replaced by a
+                # directory is a deletion.
+                or (tag != TAG_OTHER and staged.get(p, ("", ""))[0] == GITLINK_MODE)
+            )
+        }
+    )
     config_files: dict[str, bytes] = {}
     python_paths: tuple[str, ...] = ()
     if with_config:
@@ -750,41 +888,28 @@ def read_worktree_snapshot(
             full = repo / name
             if full.is_file():
                 config_files[name] = full.read_bytes()
-        python_paths = tuple(p for p in _python_paths(listing) if (repo / p).is_file())
+        python_paths = tuple(
+            sorted(
+                {p for p in _python_paths(listing) if (repo / p).is_file()}
+                | {p for p in ignored_python_files(repo, []) if (repo / p).is_file()}
+            )
+        )
     return Snapshot(
         info=SnapshotInfo(
             revision=WORKTREE,
             commit=head,
             kind=KIND_WORKTREE,
             description=(
-                "working tree (tracked and untracked files, ignored files excluded) on top of "
-                f"commit {head[:12]}; uncommitted"
+                "working tree (tracked and untracked files, plus ignored Python files outside "
+                f"ignored directories) on top of commit {head[:12]}; uncommitted"
             ),
         ),
         source_roots=list(source_roots),
         files=files,
         config_files=config_files,
         python_paths=python_paths,
-        other_files=_worktree_blob_ids(
-            repo,
-            sorted(
-                {
-                    p
-                    for tag, p in listed
-                    if _other_file(p, source_roots)
-                    and not (tag == TAG_OTHER and is_bytecode(p))
-                    and (
-                        (repo / p).is_file()
-                        or (repo / p).is_symlink()
-                        or tag == TAG_SKIP_WORKTREE  # not on disk by design: the staged id
-                        # A tracked directory is a submodule (a gitlink), which
-                        # commits and the index list too.
-                        or (tag != TAG_OTHER and (repo / p).is_dir())
-                    )
-                }
-            ),
-            source_roots,
-        ),
+        other_files=_worktree_blob_ids(repo, other_paths, source_roots, staged),
+        file_modes=_worktree_modes(repo, sorted({*files, *other_paths}), staged),
         cython_files={
             p: (repo / p).read_bytes()
             for p in sorted({p for _, p in listed if is_cython(p)})

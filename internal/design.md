@@ -29,7 +29,15 @@ kinds, and the kind travels with the index into the report:
 |---|---|---|
 | any git revision | `commit` | `.py` files under the source roots from the object store (`git ls-tree` + `git cat-file --batch`); nothing is checked out |
 | `INDEX` | `index` | staged content of tracked files (`git ls-files --cached`, blobs read as `:path`) |
-| `WORKTREE` | `worktree` | files on disk: tracked and untracked (`git ls-files --cached --others --exclude-standard`), ignored files excluded, tracked files deleted on disk absent |
+| `WORKTREE` | `worktree` | files on disk: tracked and untracked (`git ls-files --cached --others --exclude-standard`), plus git-ignored `.py` files outside ignored directories (`ls-files --others --ignored --exclude-standard --directory`: an entry with a trailing slash is a directory ignored as a whole, a virtualenv, a build tree, `__pycache__`, a directory holding only ignored files, and nothing under it is read; an ignored file elsewhere, a generated `_version.py` beside tracked code, is read, since what runs imports it); other ignored files are not seen; tracked files deleted on disk absent, and a tracked file replaced by a directory is a deletion |
+
+Every snapshot also records `file_modes`, the git mode of each entry under
+the roots that is not a plain file (`100755` executable, `120000` symlink,
+`160000` submodule; commits from `ls-tree`, the index from `ls-files -s`,
+the working tree from the executable bit when `core.fileMode` is honoured,
+else the staged mode). The planner compares them like `other_files`, so
+`chmod +x` on a script a test runs by path is an unanalysed-file change
+that selects everything, in both modes.
 
 `INDEX` and `WORKTREE` record `HEAD` as their commit and carry a description
 that says "uncommitted". A frozen `SnapshotInfo` (revision, commit, kind,
@@ -1793,6 +1801,18 @@ Further rules (pre-release audit, round 3):
   the overrides in the resulting `addopts` and on the command line set
   every other key (one level deep). `-c`, `--config-file`, `--rootdir` and
   `--pyargs` stay reported.
+* pytest's rootdir and configuration file are determined as pytest's
+  `determine_setup` does (`pytest_rootdir`: `--rootdir`, `-c`, else the
+  first configuration file in the arguments' common ancestor or above,
+  taking `pyproject.toml`/`tox.ini`/`setup.cfg` only with a pytest table,
+  then `setup.py`, then each argument's own ancestors, then a bare
+  `pyproject.toml`, else the repository; the snapshot reads nested
+  configuration files up to three levels down for this) and recorded in
+  the plan's discovery config with the `--junit-prefix` (`rootdir`,
+  `configfile`, `junit_prefix`), which `check` maps JUnit names through
+  (round 5, R4/R5). A configuration file below the repository root that
+  pytest would use is one discovery did not read (it reads the root's), so
+  it is reported (`unmodelled_runner_option`) and the plan is incomplete.
 * What pytest's own `pytest_ignore_collect` skips (`--ignore`,
   `--ignore-glob`, `norecursedirs`, `__pycache__`) applies to what it walks
   to below an initial path, never to an initial path or a directory above
@@ -2021,11 +2041,22 @@ implemented; see the roadmap.
 
 `run` executes the checkout, so a plan made from a commit or the index only
 describes what will run while the checkout holds that code: it refuses (exit
-2) when any `.py` file under the source roots differs between the analysed
-snapshot and the working tree, unless `--allow-mismatched-worktree` says to
-go ahead. Differences elsewhere (a manifest, a README, an extra commit that
+2) when the working tree differs from the analysed snapshot in any file the
+planner would have selected on (`execution._mismatch_matters`, the
+planner's own rule): any file under the source roots, Python or not (a data
+file, a `.pyx`, a configuration file), `diffcone.toml`, the runners'
+configuration at the root, a `conftest.py` or ASV configuration anywhere,
+and anything `build_input` names (dependency and lock files, compiled
+sources, CI files). Tracked files that differ in content or mode, untracked
+files, git-ignored `.py` files outside ignored directories (the working
+tree snapshot reads those), files flagged assume-unchanged or skip-worktree
+that differ on disk, and submodules whose checked-out commit or content
+differs from the gitlink all count; bytecode, diffcone's own directory and
+ASV's output directories do not. The message names the files. Differences
+elsewhere (a manifest, a README outside the roots, an extra commit that
 touches neither) do not block it, and neither does a plan that selected
-nothing, since nothing would run.
+nothing, since nothing would run; `--allow-mismatched-worktree` says to go
+ahead.
 
 `diffcone/execution.py` is the only module that runs project code, and only
 from the `run` and `validate` commands after a plan exists.
@@ -2040,17 +2071,32 @@ from the `run` and `validate` commands after a plan exists.
   item whose test is not selected, matching it by the file relative to the
   repository and the rest of the node id. A selected target pytest did not
   collect (outside a directory or module that skipped) is reported as a
-  warning, since a node id on the command line used to fail loudly. The
-  cost is one full collection. `--dry-run` prints the equivalent command
+  warning, since a node id on the command line used to fail loudly, and the
+  message names any option among the effective pytest arguments that keeps
+  tests out of a run by the cache or by name (`--lf`, `--ff`, `--nf`,
+  `--sw`, `-k`, `-m`, `--deselect`), where it is written and how to run
+  without it (round 5, R16: `--lf` with a last-failed cache drops whole
+  files while collecting). The cost is one full collection. `--dry-run` prints the equivalent command
   with node ids appended. ASV gets a `--bench` regex. That regex is
   `^(name|name|...)($|\()`, not `...$`: ASV matches it against a benchmark's
   name, and against `name(param0, param1, ...)` for a parameterised one, so
   an anchored pattern selects none of those (58 of networkx's 59) and `run`
   would report success having run nothing. It exits with the runner's exit
   code, 0 when nothing was selected.
-* `validate` (pytest only) runs the full suite at base and head with `-v`
-  and parses the per-test outcome lines, folding parameter cases into their
-  function and keeping the worst outcome. Commits are checked out into
+* `validate` (pytest only) runs the full suite at base and head under the
+  selection plugin, which writes one outcome line per report with the node
+  id made relative to the repository (pytest's own is relative to its
+  rootdir, which lies below the repository in a monorepo; the plan's ids
+  are repository-relative), folding parameter cases into their function
+  and keeping the worst outcome. `--maxfail=0` goes last on the command
+  line so an `-x`/`--maxfail` in `addopts` or the command does not stop
+  either suite (a test failing at both snapshots would otherwise end both
+  runs before the test whose outcome changed, and the oracle would say OK);
+  the plugin also records how many tests each process collected
+  (`session.testscollected`), and a run that reported outcomes for fewer
+  is refused (exit 2) rather than compared, as is one that exited with
+  anything but 0 or 1. `collect` adds `--maxfail=0` the same way. Commits
+  are checked out into
   temporary detached worktrees that are removed afterwards; `WORKTREE` runs
   in the repository; `INDEX` is not supported. `--setup-command` runs a
   shell command inside each checkout before its suite, for build-generated
@@ -2104,6 +2150,20 @@ from the `run` and `validate` commands after a plan exists.
   silently credits only the first test to run each line and makes
   per-test contexts unusable.
 
+* `check` (roadmap item 9, `check.py`) reads files only: a plan and the
+  JUnit XML of a full run (and of selective runs). pytest's junitxml names
+  a case by `classname` (the file relative to pytest's rootdir, `/` as
+  `.`, then the classes; `--junit-prefix` in front) and `name`; the plan's
+  targets are mangled the same way with the rootdir and prefix the plan's
+  discovery recorded (`--rootdir`/`--junit-prefix` override them) and
+  matched exactly. A case with an empty class name (the prefix alone,
+  with one) is a collector's failure: its `name` is the dotted file, or
+  the dotted directory when a directory failed to collect (a `conftest.py`
+  that does not import), and it stands for every target of that file or
+  under that directory, caught when any is selected and a miss of them
+  all otherwise (round 5, R4/R5). When no case at all matches a target
+  the report says the rootdir or prefix is likely wrong instead of
+  reporting every failure as an unknown miss.
 * `corpus` drives `validate` over a commit range with a shared outcome
   cache (each committed snapshot's suite runs once when serial; coverage
   runs are per pair), records per-commit selection, savings, outcome and

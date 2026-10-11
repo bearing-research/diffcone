@@ -35,8 +35,15 @@ arguments in `--command` (it looks for `-m pytest` or a `pytest`
 program, so a wrapper script is not recognised), the plan says so and
 exits `3`.
 
+If pytest didn't collect a selected test, the message also names any
+option among the effective pytest arguments that keeps tests out of a run
+by the cache or by name (`--lf`, `--ff`, `--sw`, `-k`, `-m`,
+`--deselect`) and where it is set, since that is the usual reason.
+
 For ASV, `--runner asv` builds the matching `asv run --bench` pattern. Add
-`--dry-run` to print the command instead of running it:
+`--dry-run` to print the command instead of running it; for pytest the
+printed command names the selected tests as node ids, which is the
+equivalent of what the plugin keeps:
 
 ```bash
 diffcone run --base main --head HEAD --discover asv --runner asv --dry-run
@@ -44,10 +51,15 @@ diffcone run --base main --head HEAD --discover asv --runner asv --dry-run
 
 `run` refuses to start in two situations, each with an option to override:
 
-- **The checkout differs from what was planned.** If you plan a commit but
-  have uncommitted changes to Python files, the plan doesn't describe the
-  code that would run. Plan with `--head WORKTREE`, or pass
-  `--allow-mismatched-worktree`.
+- **The checkout differs from what was planned.** If you plan a commit
+  (or `INDEX`) but the working tree differs in any file the plan would
+  have selected on, the plan doesn't describe what would run: a file
+  under your source roots (Python or not: a data file, a `.pyx`, a
+  configuration file), a git-ignored `.py` file beside tracked code, a
+  `conftest.py`, pytest's or ASV's configuration, `diffcone.toml`, a
+  dependency or lock file, or a submodule with a different commit or
+  edits inside. The message names the files. Plan with `--head WORKTREE`,
+  or pass `--allow-mismatched-worktree`.
 - **Discovery may be incomplete** (exit code `3`). Pass
   `--allow-incomplete-discovery` to run the selection anyway.
 
@@ -77,6 +89,17 @@ selected, and exits with `1` if there is one. Options:
 - `--format markdown` writes a summary table for a CI job summary, and
   `--format json` a report for scripts.
 
+JUnit names tests relative to pytest's rootdir and may carry a
+`--junit-prefix`; the plan records both from the configuration and the
+pytest arguments it was made with (so plan with the same `--command` and
+arguments as the run), and `check` maps the names through them. When the
+runs were made differently, pass `--rootdir DIR` (relative to the
+repository) or `--junit-prefix PREFIX`. If no case matches a target at
+all, the report says so and points at these options rather than reporting
+every failure as a miss. A directory that fails to collect (its
+`conftest.py` doesn't import) counts as a collection failure of every test
+under it, caught when any of them was selected.
+
 ## Validate a plan by running everything
 
 `diffcone validate` runs your whole suite on both snapshots and reports any
@@ -91,6 +114,14 @@ Commits are checked out into temporary worktrees; `WORKTREE` runs in
 place. With `--coverage` (which needs pytest-cov installed where your tests
 run), it also records which tests executed changed code, and reports any
 such test that wasn't selected.
+
+The whole suite must run on both sides for the comparison to mean
+anything, so `validate`, `corpus` and `collect` add `--maxfail=0` after
+your arguments, which overrides an `-x` or `--maxfail` in `addopts` or in
+the command. A suite that still stops early (a `conftest.py` that sets
+`maxfail`, a plugin that ends the session) reports outcomes for fewer
+tests than it collected; `validate` then refuses with exit code `2`
+instead of comparing.
 
 `diffcone corpus --range A..B` validates every commit in a range and
 summarises the results: how many failures were missed and what share of

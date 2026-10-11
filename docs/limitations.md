@@ -179,3 +179,11 @@ everything.
 **Uncommitted analysis is only as stable as your working tree.**
 :   A plan of `WORKTREE` or `INDEX` describes the files at the moment you
     planned. The report always marks such plans as uncommitted.
+
+**Git-ignored files are seen only by `WORKTREE` plans, and only Python ones.**
+:   A plan of a commit or of `INDEX` reads what git recorded: a `.py` file
+    git ignores (a generated `_version.py`, a `local_settings.py`) and any
+    edit to it are invisible, and `run` refuses to run such a plan while
+    one is on disk. A `WORKTREE` plan reads ignored `.py` files that sit in
+    a directory git doesn't ignore as a whole; it skips ignored directories
+    (a virtualenv, a build tree) and ignored data files.

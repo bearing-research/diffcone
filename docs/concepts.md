@@ -7,8 +7,11 @@ A snapshot is one of:
 
 - a git revision, such as `main`, `HEAD~1` or a commit hash;
 - `INDEX`, the changes you have staged with `git add`;
-- `WORKTREE`, the files on disk, including uncommitted and untracked files
-  (files ignored by git are left out).
+- `WORKTREE`, the files on disk, including uncommitted and untracked files,
+  and git-ignored `.py` files that sit in a directory git doesn't ignore as
+  a whole (a generated `_version.py`, a `local_settings.py`). Ignored
+  directories (a virtualenv, a build tree) and ignored files that aren't
+  Python are left out.
 
 diffcone reads commits straight from git, so it doesn't matter what is
 checked out. The report always says which kind of snapshot it read, so a

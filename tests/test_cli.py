@@ -267,13 +267,18 @@ def test_run_refuses_a_working_tree_that_is_not_what_was_planned(repo, capsys):
     code = main(["run", *args, "--dry-run", "--command", "pytest"])
     err = capsys.readouterr().err
     assert code == 2
-    assert "differing Python file(s) under the source roots" in err
+    assert "differs in 1 file(s) the plan would select on" in err
     assert "pkg/ops.py" in err and "--allow-mismatched-worktree" in err
 
     code = main(["run", *args, "--dry-run", "--allow-mismatched-worktree", "--command", "pytest"])
     assert code == 0
 
-    # A difference outside the source roots is not one the plan cares about.
+    # Any file under the roots is one the plan would select on (a committed
+    # change to it selects everything), not only Python; bytecode is not.
     (repo.path / "pkg" / "ops.py").write_text("def add(a, b):\n    return b + a\n", "utf-8")
-    (repo.path / "notes.md").write_text("hello\n", "utf-8")
+    (repo.path / "pkg" / "__pycache__").mkdir()
+    (repo.path / "pkg" / "__pycache__" / "ops.cpython-313.pyc").write_bytes(b"")
     assert main(["run", *args, "--dry-run", "--command", "pytest"]) == 0
+    (repo.path / "notes.md").write_text("hello\n", "utf-8")
+    code = main(["run", *args, "--dry-run", "--command", "pytest"])
+    assert code == 2 and "notes.md" in capsys.readouterr().err

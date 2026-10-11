@@ -25,6 +25,7 @@ class IndexerState:
         self.index = SourceIndex(
             snapshot=snapshot.info,
             other_files=dict(snapshot.other_files),
+            file_modes=dict(snapshot.file_modes),
             cython={
                 path: read_cython(path, content.decode("utf-8", "surrogateescape"))
                 for path, content in sorted(snapshot.cython_files.items())

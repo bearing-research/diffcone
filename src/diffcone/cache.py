@@ -50,7 +50,9 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
-# 45: batches A and D of round 5 merged (both had numbered their index 44);
+# 45: batches A, C and D of round 5 merged (each had numbered its index 44):
+# SourceIndex.file_modes (git modes of the entries under the roots), the
+# evidence stores/memoized/decorations facts;
 # 44: Symbol.statement_layout (the order of a module's or class's statements,
 # audit round 5 R6), Symbol.reads_any_docstring (R7), classes with Enum-family
 # bases or in-scope metaclasses depend on their ``__init__``/``__new__`` (R20),
@@ -156,6 +158,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "any_module_readers": sorted(index.any_module_readers),
         "module_writers": {m: list(w) for m, w in sorted(index.module_writers.items())},
         "other_files": dict(sorted(index.other_files.items())),
+        "file_modes": dict(sorted(index.file_modes.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
         "edges": [asdict(e) for e in sorted(index.edges)],
         "unresolved": [asdict(u) for u in sorted(index.unresolved)],
@@ -213,6 +216,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         any_module_readers=set(data["any_module_readers"]),
         module_writers={m: tuple(w) for m, w in data["module_writers"].items()},
         other_files=dict(data["other_files"]),
+        file_modes=dict(data["file_modes"]),
         reflection={(s, d) for s, d in data["reflection"]},
         external_sites={(s, d): tuple(w) for s, d, w in data["external_sites"]},
         table_imports={(s, d): (tuple(c), tuple(w)) for s, d, c, w in data["table_imports"]},
