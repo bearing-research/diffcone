@@ -37,7 +37,9 @@ unselected targets (1):
 **It errs on the side of running more.**
 :   When diffcone cannot tell what a change reaches (a dynamic import, a
     file it cannot parse, a test a plugin creates), it selects more tests
-    and tells you why. It is designed never to skip a test that could fail.
+    and tells you why. Assuming your tests don't depend on each other (see
+    [limitations](limitations.md)), it is designed never to skip a test
+    that could fail.
 
 **It never runs your code to plan.**
 :   Planning reads files and git history only. Your tests run only when you

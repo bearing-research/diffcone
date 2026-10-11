@@ -68,13 +68,18 @@ Declarations can only add dependencies or selected tests, so they can only
 make diffcone select more tests, never fewer.
 
 diffcone reads the file from both snapshots, so it changes along with your
-code. A declaration that names something that doesn't exist, an
-`always_run` entry without `targets` or with an unknown `runner`, an
-unknown key, a file that doesn't parse, or one that is there but can't
-be read (left unmerged by a conflicted merge, say) is reported as an analysis
-error: the plan then selects every target, so these typos can't silently
-remove tests from a plan. The one typo diffcone can't catch is an
-`always_run` pattern that matches nothing (see above): the plan stands, and
-only the count shows it. A declaration between two very large modules
-(more than 5,000 pairs of symbols) is also an error; declare the specific
-functions instead.
+code. These are reported as an analysis error:
+
+- a declaration that names something that doesn't exist;
+- an `always_run` entry without `targets`, or with an unknown `runner`;
+- an unknown key;
+- a file that doesn't parse;
+- a file that is there but can't be read (left unmerged by a conflicted
+  merge, say);
+- a declaration between two very large modules (more than 5,000 pairs of
+  symbols): declare the specific functions instead.
+
+An analysis error makes the plan select every target, so these mistakes
+can't silently remove tests from a plan. The one mistake diffcone can't
+catch is an `always_run` pattern that matches nothing (see above): the
+plan stands, and only the count shows it.

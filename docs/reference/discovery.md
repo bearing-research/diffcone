@@ -9,14 +9,19 @@ each one understands.
 **Configuration** is read from `pytest.toml`, `.pytest.toml`,
 `pytest.ini`, `.pytest.ini`, `pyproject.toml` (`[tool.pytest.ini_options]`
 or `[tool.pytest]`), `tox.ini` or `setup.cfg` at the root of the
-repository, in pytest's order: `testpaths`, `python_files`, `python_classes`, `python_functions`, `norecursedirs`,
-`usefixtures`, and the options in `addopts`. pytest reads options from
-three more places, and so does discovery, in pytest's order: the
-`PYTEST_ADDOPTS` environment variable, the pytest arguments written into
-`--command` (`uv run pytest -p tests.plugin`), and the arguments you pass
-after `--`. Plugins named in `PYTEST_PLUGINS` are loaded too. Planning reads
-the environment when it runs, so plan in the environment the tests run in;
-the report's `discovery` section lists what it read (`run_arguments`).
+repository, in pytest's order: `testpaths`, `python_files`,
+`python_classes`, `python_functions`, `norecursedirs`, `usefixtures`, and
+the options in `addopts`. pytest reads options from three more places, and
+so does discovery, in pytest's order: the `PYTEST_ADDOPTS` environment
+variable, the pytest arguments written into `--command` (`uv run pytest -p
+tests.plugin`), and the arguments you pass after `--`. Plugins named in
+`PYTEST_PLUGINS` are loaded too.
+
+Planning reads the environment when it runs, so plan in the environment
+the tests run in. The report's `discovery` section lists what it read
+(`run_arguments`), and pytest's `rootdir`, `configfile` and
+`--junit-prefix` (`junit_prefix`) as they follow from the configuration
+and arguments; `diffcone check` uses those to match JUnit names to tests.
 
 Among those options:
 
@@ -52,26 +57,34 @@ Among those options:
 
 **What each test depends on**, besides its own code:
 
-- its fixtures, requested by parameter, `usefixtures` (the mark or the
-  configuration option) or `request.getfixturevalue` (every fixture it can
-  see, when the name isn't written out), and the fixtures
-  those use, resolved the way pytest does: class (including the fixtures
-  it inherits from base classes in other modules), then module, then each
-  `conftest.py` outward, then plugins listed in `pytest_plugins` (in any
-  conftest or test module, and the plugins those list; the list may be
-  built with `+`, `+=`, `.append` or `.extend`, or imported from another
-  module) and the pytest plugins of your project and of other packages in
-  the repository. A
-  fixture is found under every name a module
-  binds it to, as in pytest: an alias (`box2 = box`), an import (`from
-  tests.helpers import engine`, `from tests.helpers import *`, through
-  any number of modules) or a module attribute (`engine =
-  tests.helpers.engine`), unless the fixture sets its own `name=`. When two
-  plugins define a fixture of the same name, both count.
-  A name the test parametrizes is a parameter, not a fixture, for the test
-  and for every fixture it uses, unless `indirect` hands it to the fixture
-  (when `indirect` is a variable rather than `True`, `False` or a list of
-  names, every name that has a fixture counts as handed over);
+- its fixtures, and the fixtures those use:
+    - A fixture is requested by parameter, by `usefixtures` (the mark or
+      the configuration option) or by `request.getfixturevalue` (every
+      fixture the test can see, when the name isn't written out).
+    - It is looked up the way pytest does: the class (including fixtures
+      inherited from base classes in other modules), the module, each
+      `conftest.py` outward, then plugins. Plugins are those listed in
+      `pytest_plugins` (in any conftest or test module, and the plugins
+      those list) and the pytest plugins of your project and of other
+      packages in the repository. A `pytest_plugins` list may be built
+      with `+`, `+=`, `.append` or `.extend`, or imported from another
+      module.
+    - A fixture is found under every name a module binds it to, as in
+      pytest: an alias (`box2 = box`), an import (`from tests.helpers
+      import engine`, `from tests.helpers import *`, through any number of
+      modules) or a module attribute (`engine = tests.helpers.engine`),
+      unless the fixture sets its own `name=`. When two plugins define a
+      fixture of the same name, both count.
+    - A name the test parametrizes is a parameter, not a fixture, for the
+      test and for every fixture it uses, unless `indirect` hands it to
+      the fixture. When `indirect` is a variable rather than `True`,
+      `False` or a list of names, every name that has a fixture counts as
+      handed over.
+- for a test that uses `pytester` or `testdir`, every fixture of the
+  session's plugins (entry points, `-p`, `PYTEST_PLUGINS`,
+  `pytest_plugins`): the pytest session it runs loads them, and its inline
+  test code may request any of them. What that inline code imports is
+  followed too;
 - marks such as `usefixtures` and `parametrize` on its class and the
   class's base classes, including marks stored in a variable and applied
   by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`),
@@ -97,17 +110,21 @@ Among those options:
   process for every test after it: a `conftest.py`, a test module or a
   module they import that sets an environment variable or extends
   `sys.path` when imported, or a `pytest_generate_tests` in a
-  sub-directory's `conftest.py` that does. diffcone recognises writes to
-  `os.environ`, `sys.path` and `sys.modules`, attributes set on
-  third-party modules, and common configuration calls such as
-  `warnings.filterwarnings`, `logging.basicConfig`, `locale.setlocale`,
-  `numpy.random.seed` and hypothesis's `settings.load_profile`, whether
-  made directly or through a patch that is not undone when a test ends
-  (`mock.patch.dict(os.environ, ...).start()`,
-  `pytest.MonkeyPatch().setenv(...)`). State a
-  library keeps behind its own configuration function is not recognised;
-  declare such a dependency in [`diffcone.toml`](declarations.md) if a
-  test relies on it.
+  sub-directory's `conftest.py` that does (see below for what counts).
+
+Changes to the process that diffcone recognises:
+
+- writes to `os.environ`, `sys.path` and `sys.modules`;
+- attributes set on third-party modules;
+- common configuration calls such as `warnings.filterwarnings`,
+  `logging.basicConfig`, `locale.setlocale`, `numpy.random.seed` and
+  hypothesis's `settings.load_profile`.
+
+They count whether made directly or through a patch that is not undone
+when a test ends (`mock.patch.dict(os.environ, ...).start()`,
+`pytest.MonkeyPatch().setenv(...)`). State a library keeps behind its own
+configuration function is not recognised; declare such a dependency in
+[`diffcone.toml`](declarations.md) if a test relies on it.
 
 A test is also selected when what runs around it changes although its own
 code did not: for example, a test module adds a plugin to
@@ -143,11 +160,16 @@ target. Outside your source roots, these are:
   (`mypy.ini`, `ruff.toml`);
 - compiled sources.
 
-Inside your source roots, a change to any file diffcone doesn't read as
-Python selects every target, and so does a change to a build script or
-`sitecustomize.py`, wherever it sits. `diffcone.toml` and `.diffcone/` are
-the exceptions. Other files outside the roots are assumed not to affect the
-tests: if your tests read one, put it under a source root.
+Inside your source roots, a change to any file that isn't a `.py` file
+selects every target: a data file, a `README.md`, a configuration file. So
+does a change to a file's mode (a script made executable), and a change to
+a build script or `sitecustomize.py`, wherever it sits. `diffcone.toml` and
+`.diffcone/` are the exceptions. With the source root `.`, every file in
+the repository is under a root (see
+[limitations](../limitations.md#what-a-change-reaches)).
+
+Other files outside the roots are assumed not to affect the tests: if your
+tests read one, put it under a source root.
 
 ### Fixtures from installed plugins
 
@@ -173,25 +195,28 @@ parameter cases together.
 
 ## ASV
 
-`benchmark_dir` is read from `asv.conf.json` or `asv.conf.jsonc` (the one
-nearest the root of the repository, up to three levels down; comments and
-trailing commas are allowed), relative to the directory that holds it
-(`"."` is that directory itself); it defaults to `benchmarks`. Benchmarks
-are the
-functions and methods whose names start with `time_`, `timeraw_`, `mem_`,
-`peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`, `PeakMem`, `Track`
-followed by a capital or an underscore), including inherited ones and ones imported into a
-benchmark module, in every module under `benchmark_dir` as ASV walks it,
-named as ASV names them (a `benchmark_name` you set is used, also for
-the function imported elsewhere or inherited by a subclass). Each depends
-on its class's and module's `setup`, `setup_cache` and `teardown` (also
-when imported from another module; `setup` and `teardown` in any case, such
-as `setUp`, as ASV finds them), on the `__init__`, `__new__`, `__getattr__` and `__getattribute__` of its
-class, which ASV runs for every benchmark (also when inherited), and on its
-module. Class attributes such as `params` count as part of the class. A `timeraw_` benchmark
-(by the name ASV matches: `timeraw_import = _impl` is one) also depends on
-the modules its code imports; if its code isn't a plain string, it is
-always selected.
+- **Where.** `benchmark_dir` is read from `asv.conf.json` or
+  `asv.conf.jsonc`: the one nearest the root of the repository, up to
+  three levels down. Comments and trailing commas are allowed. The
+  directory is relative to the one holding the file (`"."` is that
+  directory itself), and defaults to `benchmarks`.
+- **Benchmarks.** Functions and methods whose names start with `time_`,
+  `timeraw_`, `mem_`, `peakmem_` or `track_` (or `Time`, `Timeraw`, `Mem`,
+  `PeakMem`, `Track` followed by a capital or an underscore), in every
+  module under `benchmark_dir` as ASV walks it. Inherited ones and ones
+  imported into a benchmark module count. They are named as ASV names
+  them; a `benchmark_name` you set is used, also for the function
+  imported elsewhere or inherited by a subclass.
+- **What each depends on.** Its module and class (class attributes such
+  as `params` count as part of the class), and:
+    - its class's and module's `setup`, `setup_cache` and `teardown`,
+      also when imported from another module (`setup` and `teardown` in
+      any case, such as `setUp`, as ASV finds them);
+    - the `__init__`, `__new__`, `__getattr__` and `__getattribute__` of
+      its class, which ASV runs for every benchmark, also when inherited.
+- **`timeraw_` benchmarks** (by the name ASV matches: `timeraw_import =
+  _impl` is one) also depend on the modules their code imports. If the
+  code isn't a plain string, the benchmark is always selected.
 
 ## When the target list may be short
 
@@ -223,8 +248,10 @@ Some things can't be known by reading the source:
   source roots, since that may bring such a hook in;
 - a `--doctest-glob` that matches files other than `.txt`, `.rst` or
   `.md`;
-- a test given by node id after `--` (`tests/test_x.py::test_one`), or a
-  path right after an option that may take it as its value (`--cov src`);
+- a test given by node id (`tests/test_x.py::test_one`), or a path right
+  after an option that may take it as its value (`--cov src`), wherever
+  pytest's arguments come from: `addopts`, `PYTEST_ADDOPTS`, `--command`
+  or after `--`;
 - a test bound to something discovery can't follow
   (`TestMachine = Machine.TestCase`);
 - a plugin your configuration turns on that collects files of its own
@@ -241,6 +268,11 @@ tests your runner would collect. You can:
 - widen your source roots so the missing code is analysed;
 - list the missing tests in a [manifest](manifest.md); or
 - use [execution evidence](../guides/evidence.md): a recording captures
-  what pytest really collected, which settles these notes when nothing was
-  missed (except a configuration file that can't be parsed: fix the
-  file).
+  what pytest really collected, which can settle a note.
+
+A recording settles a pytest note when pytest collected nothing at the
+recorded commit that wasn't a target, the same note stood there too, and
+the file it names is unchanged since. Notes about options, the command
+line or the configuration (an unparsable configuration file, a plugin the
+configuration turns on, an option or path discovery doesn't model) name
+no file, so a recording never settles them; nor does it settle ASV notes.

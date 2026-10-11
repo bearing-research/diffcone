@@ -38,9 +38,12 @@ diffcone evidence
 `collect` refuses to record a commit with a file it can't analyse, since
 the code in it couldn't be matched to what the tests ran. If pytest stops
 early (an interrupt, an internal error, a usage error), nothing is
-written. A recording made by an earlier version of diffcone may not be
-readable by a later one; `diffcone evidence` then leaves it out, and you
-need to record again.
+written.
+
+A recording made by an earlier version of diffcone may not be readable by
+a later one. `diffcone evidence` and `--evidence auto` then skip it (so
+`auto` fails with "no evidence recording" if it was the only one), and
+naming its path is an error. Record again.
 
 Some tests behave differently depending on what ran before them. Add
 `--reverse-check` to run the suite a second time in reverse order; tests
@@ -53,8 +56,9 @@ diffcone plan --base main --head WORKTREE --discover pytest --evidence auto
 ```
 
 `--evidence auto` uses the recording, made with the same source roots, from
-the nearest ancestor of the head (or pass a recording's path). The recording doesn't need to be at your base:
-diffcone also accounts for the changes made since it was recorded.
+the nearest ancestor of the head (or pass a recording's path). The
+recording doesn't need to be at your base: diffcone also accounts for the
+changes made since it was recorded.
 
 `plan` doesn't run anything, so it can't check that your test environment
 is the one the recording was made in: the report says
@@ -78,37 +82,40 @@ entry names it.
 Some changes can't be judged from a recording, and diffcone says so in the
 report:
 
-- Code that ran while a module was imported is planned from the code for
-  that module, as without evidence: a change to it reaches every test
-  that imports the module. The recorder starts before pytest loads any
-  plugin (`-p` in `addopts`, `PYTEST_ADDOPTS` or your command) and before
-  your own `sitecustomize.py`, so what those import is recorded. Modules
-  of your checkout that were imported before it could start (a `.pth`
-  file; `python -S`, which runs no `sitecustomize`) are listed by
-  `collect`, which warns, and in the report (`preloaded_modules`): any
-  change in one of them is planned from the code.
-- A value one test computes and later tests read from a cache your code
-  keeps, in a module variable, on an object (`self._cache[k] =
-  compute(k)`), a class, a closure or a function attribute, or in a
-  `functools.cached_property`, counts for every test that reads the
-  cache, not only the one that filled it. `functools.cache` and
-  `lru_cache` caches are cleared before every test instead. A cache kept
-  by a memoising decorator from a package diffcone doesn't know, or
-  filled through a method of an object whose type it can't tell, isn't
-  seen (see [limitations](../limitations.md)).
+- Code that runs when a module is imported is planned from the code, as
+  without evidence. The exception is a changed constant or class
+  attribute, which selects the tests that read it.
+- The recorder starts before pytest loads any plugin (`-p` in `addopts`,
+  `PYTEST_ADDOPTS` or your command) and before your own
+  `sitecustomize.py`, so what those import is recorded. If a module of
+  your project was imported before that (by a `.pth` file, or under
+  `python -S`), `collect` warns and lists it in `preloaded_modules`;
+  changes to it are always planned from the code.
+- If one test fills a cache and later tests read it, every test that
+  reads it counts. This covers caches in module variables, on objects and
+  classes, in closures, in function attributes and in `cached_property`.
+  `functools.cache` and `lru_cache` are cleared before each test instead.
+  Caches kept by an unknown memoising decorator, or filled through a
+  method of an object whose type diffcone can't tell, are not seen (see
+  [limitations](../limitations.md#state-shared-between-tests)).
 - Tests with no recording (new tests, for example) and tests whose
   recording was unstable are always selected.
-- A Python process a test starts with `subprocess` (directly, through
-  `asyncio`, or through `uv run`) records itself on Linux and macOS, and the test is credited
-  with what it ran, as is every test that runs while it is still running.
-  A test that starts a process any other way (`os.system`, a shell,
-  `multiprocessing`, or anything on Windows), or whose child can't record
-  itself, is always selected, and so is every test that runs while such a
-  process is still running (a `multiprocessing` pool reused by a later
-  test). So is a test whose child runs your code from a `python -c`
-  snippet or a script outside your source roots. A `python -c` snippet
-  that can't run your code (a version check) or `uv python list` doesn't
-  count. A project `sitecustomize.py` still runs in every child.
+- Processes a test starts:
+    - **Followed.** A Python process started with `subprocess` (directly,
+      through `asyncio`, or through `uv run`) records itself on Linux and
+      macOS. The test is credited with what it ran, and so is every test
+      that runs while it is still running.
+    - **Always selected.** A test that starts a process any other way
+      (`os.system`, a shell, `multiprocessing`, or anything on Windows),
+      or whose child can't record itself. So is every test that runs
+      while such a process is still running (a `multiprocessing` pool
+      reused by a later test), and a test whose child runs your code from
+      a `python -c` snippet or a script outside your source roots.
+    - **Ignored.** A `python -c` snippet that can't run your code (a
+      version check), and package-manager commands such as `uv sync`,
+      `uv pip` or `uv python list`.
+
+    A project `sitecustomize.py` still runs in every child.
 - A process started outside every test (by a `conftest.py` as it is
   imported, or in a hook) counts as part of that import or hook: a change
   to what it ran is planned as a change to code that ran there. One that
@@ -147,17 +154,28 @@ diffcone run --base main --head HEAD --discover pytest \
 ```
 
 A recording is only valid in the environment it was made in. Before any
-test runs, even when the plan selects nothing, `run` checks that the Python
-implementation and version and its `-O` setting, the platform and machine,
-the installed packages, your `PYTHONPATH` and a few environment variables
-(`TZ`, `LANG`, `LC_ALL`, `PYTHONWARNINGS`) match the recording; it sets
-`PYTHONHASHSEED` to the recorded value itself. If they don't match, it
-falls back to a plan from the code and tells you what differed. If that
-plan's discovery may be incomplete, it runs the whole suite instead. A package installed in
-editable mode from outside your repository (`pip install -e ../lib`)
-counts as installed: diffcone doesn't see edits to its code, as with any
-other installed package. If your tests also depend on your own
-environment variables, record them with `--env-var`:
+test runs, even when the plan selects nothing, `run` checks that these
+match the recording:
+
+- the Python implementation and version, and its `-O` setting;
+- the platform and machine;
+- the installed packages;
+- your `PYTHONPATH`;
+- a few environment variables (`TZ`, `LANG`, `LC_ALL`,
+  `PYTHONWARNINGS`).
+
+It sets `PYTHONHASHSEED` to the recorded value itself. With `--dry-run`,
+nothing is checked.
+
+If the environment doesn't match, or the check couldn't run, `run` falls
+back to a plan from the code and tells you what differed. If that plan's
+discovery may be incomplete, it runs the whole suite instead, unless you
+pass `--allow-incomplete-discovery`.
+
+A package installed in editable mode from outside your repository
+(`pip install -e ../lib`) counts as installed: diffcone doesn't see edits
+to its code, as with any other installed package. If your tests also
+depend on your own environment variables, record them with `--env-var`:
 
 ```bash
 diffcone collect --command "uv run pytest" --env-var MYAPP_MODE -- -n 8
@@ -187,7 +205,11 @@ This needs a clean checkout of the head, and the same `--command`, pytest
 arguments and source roots the recording was made with. If the recording
 was made with `--reverse-check`, `run --collect` runs the selected tests a
 second time in reverse order, so the new records are checked the same way.
-If the environment differs or pytest stops early, no recording is written.
+
+If the environment differs, or pytest is interrupted or ends with an error
+of its own (not a test failure), no recording is written. A run stopped
+at a failure (`-x`) still writes one, and the tests it didn't reach are
+selected until they are recorded again.
 
 In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See [CI](../ci.md).

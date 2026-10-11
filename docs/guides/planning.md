@@ -21,14 +21,19 @@ diffcone plan --base main --head HEAD --discover pytest \
 | A pull request in CI | `--base origin/main --head HEAD` |
 | Only what you have staged | `--base HEAD --head INDEX` |
 
-Git-ignored files deserve a word. A plan of a commit sees only what git
-recorded, so a `.py` file git ignores (a generated `_version.py` or
-`_pb2.py`, a `local_settings.py`) is invisible to it, and so is any change
-you make to one. A `WORKTREE` plan reads such files when they sit in a
-directory git doesn't ignore as a whole, and treats them as new modules on
-top of the base commit; ignored directories (a virtualenv, a build tree)
-and ignored data files are still not seen. If your tests depend on
-generated Python, plan against `WORKTREE`, or commit what they import.
+!!! note "Git-ignored files"
+
+    A plan of a commit sees only what git recorded. A `.py` file git
+    ignores (a generated `_version.py` or `_pb2.py`, a `local_settings.py`)
+    is invisible to it, and so is any change you make to one.
+
+    A `WORKTREE` plan reads such files, as new modules on top of the base
+    commit, when their directory also holds files git tracks or doesn't
+    ignore. A directory with only ignored files is skipped, as are ignored
+    directories (a virtualenv, a build tree) and ignored data files.
+
+    If your tests depend on generated Python, plan against `WORKTREE`, or
+    commit what they import.
 
 ## Source roots
 
@@ -46,6 +51,12 @@ Use the roots your code is actually imported from. For a `src` layout,
 that's usually `--source-root src --source-root .`; for a flat layout, the
 default is fine. Files outside every root are not analysed, so code there
 is treated like a third-party library.
+
+Under the roots, diffcone reads only `.py` files. A change to any other
+file there (a data file, a `README.md`) selects every target, since your
+code may read it. With the root `.`, that includes your documentation.
+See [limitations](../limitations.md#what-a-change-reaches) for why, and
+[execution evidence](evidence.md) for a way to narrow it.
 
 If one pytest session collects several test directories whose files share
 names (common in monorepos that use `--import-mode=importlib`), give each
