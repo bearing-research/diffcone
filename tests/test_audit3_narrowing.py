@@ -273,7 +273,10 @@ def test_pln1_a_class_named_on_an_unknown_receiver_reaches_its_constructor(repo)
     extra = {"pkg/make.py": "def make(m):\n    return m.Alt()\n"}
     plan = _constructor_plan(repo, "", test, extra)
     assert selected(plan) == {"t::test_thing"}
-    assert rules(plan, "t::test_thing") == {"unresolved_name_match"}
+    # The module ``import_module('pkg.impl_b')`` yields is handed to ``make``
+    # (audit round 5, R25): ``Alt`` and its constructor are reached through
+    # the module's members, a dependency rather than a name match.
+    assert rules(plan, "t::test_thing") == {"dependency"}
 
 
 # ---------------------------------------------------------------- PLN-3 / IDX-1

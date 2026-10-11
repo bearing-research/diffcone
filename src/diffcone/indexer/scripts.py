@@ -76,6 +76,7 @@ import ast
 import re
 import shlex
 import string
+import textwrap
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -817,7 +818,8 @@ def code_edges(indexer: Resolver, source: str, code: str, module: str | None = N
     if HOLE_NAME in code:
         return False
     try:
-        tree = ast.parse(code)
+        # As ``textwrap.dedent`` (unwrapped by ``code_texts``) would leave it.
+        tree = ast.parse(textwrap.dedent(code))
     except (SyntaxError, ValueError):
         return False
     aliases: dict[str, str] = {}
