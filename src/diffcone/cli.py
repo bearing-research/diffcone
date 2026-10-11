@@ -261,7 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument(
         "--setup-command",
         help="shell command run inside each temporary checkout before its suite (recreate "
-        "build-generated files such as a setuptools-scm _version.py)",
+        "build-generated files such as compiled extensions; the repository's git-ignored "
+        "modules inside a package, a generated _version.py, are copied in first)",
     )
     _add_common(v)
     _add_evidence(v)

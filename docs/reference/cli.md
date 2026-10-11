@@ -122,7 +122,7 @@ diffcone validate [-h] --base BASE --head HEAD [--targets TARGETS] [--command CO
 | `--targets` `TARGETS` |  | Path to a JSON target manifest. |
 | `--command` `COMMAND` |  | Pytest command line (default: "python -m pytest"). |
 | `--coverage` |  | Also run both suites under pytest-cov with per-test contexts and require every test that executed a changed symbol, at either snapshot, to be selected (reports recall/precision). |
-| `--setup-command` `SETUP_COMMAND` |  | Shell command run inside each temporary checkout before its suite (recreate build-generated files such as a setuptools-scm _version.py). |
+| `--setup-command` `SETUP_COMMAND` |  | Shell command run inside each temporary checkout before its suite (recreate build-generated files such as compiled extensions; the repository's git-ignored modules inside a package, a generated _version.py, are copied in first). |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--source-root` `DIR[=PREFIX]` |  | Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names. |
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |

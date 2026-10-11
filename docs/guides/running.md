@@ -184,5 +184,13 @@ Tips for both commands:
   against the checked-out code rather than an installed copy.
 - If `--command` uses a relative path (`.venv/bin/python -m pytest`), it is
   resolved against the current directory, then the repository.
+- A temporary checkout gets your repository's copy of each git-ignored
+  Python module inside a package that the commit lacks, such as the
+  `_version.py` that setuptools-scm or hatch-vcs generate, so the package
+  can be imported.
 - `--setup-command` runs a shell command in each temporary checkout before
-  its tests, for example to regenerate a `_version.py`.
+  its tests, for whatever else a build generates (compiled extensions).
+- pytest's cache plugin runs with an empty cache of its own: a configured
+  `--lf` or `--ff` doesn't narrow or reorder the suite, and your
+  `.pytest_cache` is left alone. Don't disable the plugin in `--command`
+  (`-p no:cacheprovider`) when your configuration or plugins need it.

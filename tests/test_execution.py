@@ -1330,3 +1330,174 @@ def test_the_reverse_run_removes_its_plugin_directory_not_the_users_pythonpath(
     assert execution._reverse_run(plan, tmp_path, None, None, out, {}) == 0
     assert (user_dir / "keep.py").exists()
     assert seen and not Path(seen[0]).exists()
+
+
+def test_validate_runs_a_suite_whose_addopts_need_the_cache_plugin(repo):
+    """``addopts = --lf --ff`` are options of pytest's cache plugin: validation
+    used to disable the plugin and pytest refused the run as a usage error
+    (coverage.py's ``--failed-first``). The plugin stays, but starts from an
+    empty directory of its own: the repository's recorded failures neither
+    narrow the run (``--lf`` would run test_mul alone) nor get overwritten."""
+    base = repo.commit(
+        {
+            ".gitignore": ".pytest_cache/\n",
+            "pytest.ini": "[pytest]\naddopts = --lf --ff\n",
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    cache = repo.path / ".pytest_cache" / "v" / "cache"
+    cache.mkdir(parents=True)
+    recorded = json.dumps({"tests/test_ops.py::test_mul": True})
+    (cache / "lastfailed").write_text(recorded, encoding="utf-8")
+    for plan in (
+        repo.plan(base, head, [], discover_runners=["pytest"]),
+        repo.plan(base, "WORKTREE", [], discover_runners=["pytest"]),  # runs in the repo
+    ):
+        v = validate_pytest(plan, repo=repo.path, command=PYTEST)
+        assert {(o.runner_id, o.base, o.head) for o in v.outcomes} == {
+            ("tests/test_ops.py::test_add", "PASSED", "PASSED"),
+            ("tests/test_ops.py::test_mul", "PASSED", "PASSED"),
+        }
+        assert v.ok
+    assert (cache / "lastfailed").read_text(encoding="utf-8") == recorded
+    assert sorted(p.name for p in cache.iterdir()) == ["lastfailed"]
+
+
+def test_validate_adds_no_cache_option_a_disabled_cache_plugin_would_refuse(repo):
+    """A command that disables the cache plugin itself, under a strict
+    configuration: validation passes no option of the plugin's (``-o
+    cache_dir=`` would be an unknown option, an error under strict)."""
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\naddopts = --strict-config\n",
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    v = validate_pytest(plan, repo=repo.path, command=f"{PYTEST} -p no:cacheprovider")
+    assert {o.head for o in v.outcomes} == {"PASSED"} and v.ok
+
+
+GENERATED = {
+    ".gitignore": "pkg/_version.py\npkg/_tracked.py\nscratch.py\nbuild/\n",
+    "pkg/__init__.py": "from pkg._version import version\n",
+    "pkg/ops.py": OPS,
+    "tests/test_ops.py": TEST_OPS,
+}
+
+
+def test_validate_copies_the_repositorys_generated_modules_into_its_checkouts(repo):
+    """A setuptools-scm/hatch-vcs ``_version.py`` is git-ignored, so a
+    checkout of a commit lacks it and its package cannot be imported
+    (tox, virtualenv, urllib3, pytest-xdist): the repository's copy goes
+    into every checkout, and the suite runs without a --setup-command."""
+    base = repo.commit(GENERATED)
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    # Nothing to copy yet: the suite cannot run, and the error says which one.
+    with pytest.raises(GitError, match=f"the suite did not run at base {base[:12]}"):
+        validate_pytest(plan, repo=repo.path, command=PYTEST)
+    (repo.path / "pkg" / "_version.py").write_text('version = "1.0"\n', encoding="utf-8")
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST)
+    assert {o.head for o in v.outcomes} == {"PASSED"} and v.ok
+    assert repo.git("status", "--porcelain") == ""  # the repository is left as it was
+
+
+def test_copy_generated_modules_copies_only_missing_package_modules(repo, tmp_path):
+    repo.commit({**GENERATED, "pkg/_tracked.py": "WHERE = 'commit'\n"})
+    for path, text in {
+        "pkg/_version.py": "version = '1.0'\n",  # copied
+        "pkg/_tracked.py": "WHERE = 'disk'\n",  # the checkout has it: kept
+        "scratch.py": "x = 1\n",  # in no package
+        "build/lib/pkg/ops.py": "",  # inside an ignored directory
+    }.items():
+        (repo.path / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo.path / path).write_text(text, encoding="utf-8")
+    checkout = tmp_path / "checkout"
+    (checkout / "pkg").mkdir(parents=True)
+    (checkout / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (checkout / "pkg" / "_tracked.py").write_text("WHERE = 'commit'\n", encoding="utf-8")
+    assert execution.copy_generated_modules(repo.path, checkout) == ["pkg/_version.py"]
+    assert (checkout / "pkg" / "_version.py").read_text(encoding="utf-8") == "version = '1.0'\n"
+    assert (checkout / "pkg" / "_tracked.py").read_text(encoding="utf-8") == "WHERE = 'commit'\n"
+    assert not (checkout / "scratch.py").exists() and not (checkout / "build").exists()
+
+
+def test_coverage_validation_loads_pytest_cov_when_plugin_autoload_is_off(repo, monkeypatch):
+    """PYTEST_DISABLE_PLUGIN_AUTOLOAD: pytest loads no installed plugin it is
+    not told to, so ``--cov`` was an unrecognised argument. The selection
+    plugin is named with ``-p`` and loads regardless; pytest-cov is named
+    too, unless the command already names it (loaded twice, pluggy refuses)."""
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    for command in (PYTEST, f"{PYTEST} -p pytest_cov.plugin"):
+        v = validate_pytest(plan, repo=repo.path, command=command, coverage=True)
+        assert {o.head for o in v.outcomes} == {"PASSED"}
+        assert v.ok and v.coverage is not None and v.coverage.recall == 1.0
+    assert execution._pytest_cov_plugin(["python", "-m", "pytest"], {}) == []
+
+
+def test_coverage_validation_keeps_its_database_out_of_the_suites_environment(
+    repo, monkeypatch, tmp_path
+):
+    """The database's place is diffcone's coverage config, not COVERAGE_FILE:
+    the suite's processes inherit the environment, and a test that runs
+    coverage itself (coverage.py's suite) would write into the database. A
+    COVERAGE_FILE the user set, and the project's own ``parallel``/``data_file``,
+    do not move it either."""
+    base = repo.commit(
+        {
+            "pyproject.toml": (
+                '[tool.coverage.run]\nparallel = true\ndata_file = "build/.cov"\nsource = ["pkg"]\n'
+            ),
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+            "tests/test_env.py": (
+                "import os\n\n\ndef test_env():\n    assert 'COVERAGE_FILE' not in os.environ\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    monkeypatch.setenv("COVERAGE_FILE", str(tmp_path / "user.coverage"))
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert {o.head for o in v.outcomes} == {"PASSED"}
+    assert v.ok and v.coverage is not None and v.coverage.recall == 1.0
+    assert [h.runner_id for h in v.coverage.affected] == ["tests/test_ops.py::test_add"]
+    assert not (tmp_path / "user.coverage").exists()
+
+
+def test_read_coverage_contexts_reads_parallel_parts(tmp_path):
+    """Data a process wrote as a parallel part (``.coverage.<host>.<pid>.<n>``)
+    and never combined is read with the database."""
+    import coverage
+
+    from diffcone.execution import coverage_files, read_coverage_contexts
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    db = tmp_path / ".coverage"
+    for n, context in enumerate(("tests/test_m.py::test_a|run", "tests/test_m.py::test_b|run")):
+        cov = coverage.Coverage(data_file=str(db), data_suffix=f"host.{n}.0", config_file=False)
+        cov.set_option("run:core", "ctrace")
+        cov.start()
+        cov.switch_context(context)
+        namespace: dict = {}
+        exec(compile((root / "mod.py").read_text(), str(root / "mod.py"), "exec"), namespace)
+        namespace["f"]()
+        cov.stop()
+        cov.save()
+    assert not db.exists() and len(coverage_files(db)) == 2
+    contexts = read_coverage_contexts(db, root, set())
+    assert set(contexts) == {"tests/test_m.py::test_a", "tests/test_m.py::test_b"}
+    assert all(2 in lines["mod.py"] for lines in contexts.values())

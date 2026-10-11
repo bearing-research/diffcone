@@ -2241,9 +2241,23 @@ three after a plan exists, `collect` to record execution evidence.
   anything but 0 or 1. `collect` adds `--maxfail=0` the same way. Commits
   are checked out into
   temporary detached worktrees that are removed afterwards; `WORKTREE` runs
-  in the repository; `INDEX` is not supported. `--setup-command` runs a
-  shell command inside each checkout before its suite, for build-generated
-  git-ignored files a fresh checkout lacks (pytest's own `_version.py`). Each run gets the checkout's
+  in the repository; `INDEX` is not supported. A fresh checkout lacks
+  build-generated git-ignored files: the repository's git-ignored `.py`
+  files outside ignored directories whose directory in the checkout is a
+  package (holds `__init__.py`) and that the checkout lacks are copied
+  into it (`copy_generated_modules`: the `_version.py` of setuptools-scm
+  and hatch-vcs; every checkout gets the same copy, so it is no
+  difference between the snapshots, and a tracked module is never
+  replaced). `--setup-command` then runs a shell command inside each
+  checkout before its suite, for what copying cannot recreate (compiled
+  extensions). pytest's cache plugin stays loaded (a project's `addopts`
+  may carry `--failed-first`, a usage error without it), and the
+  selection plugin points its `cache_dir` at an empty directory of the
+  run's own before the plugin configures itself (in `getini`'s cache, not
+  with `-o cache_dir=`, which is an unknown option, an error under
+  `strict`, when the command disables the plugin): `--lf`/`--ff` find no
+  recorded failure, and the repository's `.pytest_cache` is neither read
+  nor written. An error names the snapshot whose suite it is about. Each run gets the checkout's
   source roots first on `PYTHONPATH`, so the checkout's code wins over an
   installed (editable) copy of the project; with a `src` layout the working
   directory alone would not achieve that and the suite would silently test
@@ -2268,7 +2282,16 @@ three after a plan exists, `collect` to record execution evidence.
   usually exclude the tests, which would make added tests unattributable;
   `branch`/`parallel` change the database layout) and reads it directly:
   both the `line_bits` and `arc` tables, paths resolved against the
-  checkout, contexts folded to the test function.
+  checkout, contexts folded to the test function. The database's place is
+  that config's `data_file`, not `COVERAGE_FILE` (removed from the suite's
+  environment): the tests' own processes inherit the environment, and one
+  that runs coverage itself (coverage.py's suite) would write into the
+  database. Parallel parts beside the database (`<db>.<suffix>`) are read
+  with it. With plugin autoloading disabled (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`,
+  `--disable-plugin-autoload` on the command line) pytest-cov is loaded
+  with `-p pytest_cov.plugin` unless the command already names it. A suite
+  that did not run (exit other than 0 or 1) is reported as such before the
+  database is looked for.
   The base run's database is kept as well (in a corpus, per commit
   alongside its cached outcomes) and read with the line ranges of the
   changed symbols *as they were at base*, so a test that executed a symbol

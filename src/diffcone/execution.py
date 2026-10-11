@@ -495,9 +495,41 @@ def parse_outcome_lines(lines: list[str]) -> dict[str, str]:
     return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
 
 
+def copy_generated_modules(repo: Path, checkout: Path) -> list[str]:
+    """Copy into a fresh ``checkout`` the git-ignored Python modules the
+    repository has inside a package (a directory with ``__init__.py``) that
+    the checkout lacks, and return their paths.
+
+    Those are build-generated: the ``_version.py`` that setuptools-scm or
+    hatch-vcs writes (``from ._version import version`` in the package's
+    ``__init__``). A checkout of a commit has none, so its package cannot be
+    imported (a conftest that imports it is a usage error, a plugin entry
+    point that does fails pytest before any test) and the suite does not
+    run. The repository's copy is what its own runs import. Every checkout
+    gets the same copy, so it is no difference between two snapshots; a
+    module the commit tracks is never replaced, and nothing inside an
+    ignored directory (a virtualenv, a build tree) is copied. Compiled
+    extensions are not: they need ``--setup-command``, which runs after
+    this and may overwrite what it copied."""
+    copied = []
+    for path in ignored_python_files(repo, []):
+        source, target = repo / path, checkout / path
+        if (
+            not source.is_file()
+            or target.exists()
+            or target.is_symlink()
+            or not (target.parent / "__init__.py").is_file()
+        ):
+            continue
+        shutil.copyfile(source, target)
+        copied.append(path)
+    return copied
+
+
 class _Checkout:
     """A directory holding a snapshot: a temporary detached worktree for a
-    commit, or the repository itself for WORKTREE."""
+    commit (holding the repository's generated modules,
+    copy_generated_modules), or the repository itself for WORKTREE."""
 
     def __init__(
         self, repo: Path, kind: str, commit: str, setup_command: str | None = None
@@ -517,6 +549,11 @@ class _Checkout:
             # all used "checkout" raced on creating it.
             self.path = Path(self._tmp.name) / f"checkout-{Path(self._tmp.name).name}"
             _git(self.repo, ["worktree", "add", "--detach", "-q", str(self.path), self.commit])
+            try:
+                copy_generated_modules(self.repo, self.path)
+            except (GitError, OSError):
+                self.__exit__()
+                raise
         elif self.kind != KIND_WORKTREE:
             raise GitError("validate supports commit and WORKTREE snapshots, not INDEX")
         if self.setup_command:
@@ -578,11 +615,12 @@ def _run_full_pytest(
     source_roots: Sequence[str] = (),
     hash_seed: str | None = None,
     coverage_include: list[str] | None = None,
+    snapshot: str = "",
 ) -> Iterator[_SuiteRun]:
     """Run the whole suite once (the outcomes come from the selection
     plugin); with ``coverage`` the same run also records per-test coverage
     contexts into a temporary database that lives for the duration of the
-    context.
+    context. ``snapshot`` names the run in its errors (``base 1a2b3c4d``).
 
     The whole suite must run: ``--maxfail=0`` last on the command line
     overrides an ``-x``/``--maxfail`` the project's ``addopts`` or the
@@ -591,9 +629,13 @@ def _run_full_pytest(
     and a run that reported outcomes for fewer tests than it collected (a
     conftest that sets ``maxfail``, a plugin that stops the session, an
     interrupt) is refused rather than compared."""
-    argv = pytest_argv(
-        command, "-p", "no:cacheprovider", "-p", SELECT_PLUGIN, "--no-header", "-rN", NO_MAXFAIL
-    )
+    # The cache plugin stays: a project's addopts may carry --failed-first,
+    # which pytest refuses as an unrecognised argument without it. The
+    # selection plugin points it at an empty directory of its own instead
+    # (DIFFCONE_CACHE_DIR), so --lf/--ff have no recorded failure to narrow
+    # or reorder the run by and the repository's cache is left alone.
+    argv = pytest_argv(command, "-p", SELECT_PLUGIN, "--no-header", "-rN", NO_MAXFAIL)
+    where = f" at {snapshot}" if snapshot else ""
     with tempfile.TemporaryDirectory(prefix="diffcone-cov-") as tmp:
         # Outcomes come from the selection plugin, not the console: a project
         # whose addopts carry ``-q`` prints no per-test lines at all.
@@ -601,6 +643,7 @@ def _run_full_pytest(
         outcomes_dir = Path(tmp) / "outcomes"
         outcomes_dir.mkdir()
         env["DIFFCONE_OUTCOMES"] = str(outcomes_dir)
+        env["DIFFCONE_CACHE_DIR"] = str(Path(tmp) / "pytest-cache")
         if hash_seed is not None:
             # An evidence plan assumed the recorded hash seed; check it under that.
             env["PYTHONHASHSEED"] = hash_seed
@@ -609,11 +652,15 @@ def _run_full_pytest(
             db = Path(tmp) / ".coverage"
             # The project's own addopts stay in force so this run collects the
             # same tests as a plain run; only the coverage options are added.
-            # The project's coverage config is replaced: its ``source``/``omit``
-            # (typically excluding tests) would blind attribution, and
-            # ``parallel``/``branch`` change the database layout.
+            # The project's coverage config is replaced (pytest-cov reads only
+            # the file --cov-config names): its ``source``/``omit`` (typically
+            # excluding tests) would blind attribution, and ``parallel``/
+            # ``branch``/``data_file`` change the database's layout or place.
             rc = Path(tmp) / "coveragerc"
-            config = "[run]\nbranch = false\nparallel = false\nrelative_files = false\n"
+            config = (
+                f"[run]\ndata_file = {db}\nbranch = false\nparallel = false\n"
+                "relative_files = false\n"
+            )
             if coverage_include is not None:
                 # Measure only these checkout-relative files: on a suite the
                 # size of pandas, per-test contexts over every file make a
@@ -626,7 +673,14 @@ def _run_full_pytest(
                 argv += ["--cov=."]
             rc.write_text(config, encoding="utf-8")
             argv += ["--cov-context=test", "--cov-report=", f"--cov-config={rc}"]
-            env["COVERAGE_FILE"] = str(db)
+            argv += _pytest_cov_plugin(argv, env)
+            # The database's place is the config's ``data_file``, not the
+            # COVERAGE_FILE environment variable, which the suite's own
+            # processes inherit: a test that runs coverage in a subprocess
+            # (coverage.py's own suite does) would write into this database,
+            # and look for its ``.coverage`` in vain. One the user set would
+            # override ``data_file``, so it goes.
+            env.pop("COVERAGE_FILE", None)
             # coverage.py 7.x defaults to the sys.monitoring core on Python
             # 3.12+, which disables a line after its first hit: with per-test
             # contexts only the *first* test to run a line gets credit for it.
@@ -644,22 +698,25 @@ def _run_full_pytest(
         finally:
             remove_plugin_dir(env)
         log = proc.stdout + proc.stderr
-        if coverage and not (db and db.exists()):
-            raise GitError(
-                "coverage validation produced no coverage database; is pytest-cov installed in "
-                f"the environment that runs {argv[0]!r} (and not disabled by --no-cov)?\n"
-                f"exit code {proc.returncode}\n{log[-2000:]}"
-            )
         # pytest exits 0 when every test passed and 1 when some failed; both
         # are suites that ran. Anything else means it did not: 2 a collection
         # error or an interrupt, 3 an internal error, 4 a usage error, 5 no
         # tests at all. Comparing the outcomes of a suite that never ran finds
-        # no missed outcome change and would report success.
+        # no missed outcome change and would report success. (Checked before
+        # the coverage database: a suite that never ran writes none, and that
+        # is not pytest-cov's fault.)
         if proc.returncode not in (0, 1):
             raise GitError(
-                f"the suite did not run: {argv[0]!r} exited {proc.returncode} "
+                f"the suite did not run{where}: {argv[0]!r} exited {proc.returncode} "
                 f"({PYTEST_EXIT.get(proc.returncode, 'unknown')}), so there are no outcomes to "
                 f"compare\n{log[-2000:]}"
+            )
+        if coverage and not (db and coverage_files(db)):
+            raise GitError(
+                f"coverage validation produced no coverage database{where}; is pytest-cov "
+                f"installed in the environment that runs {argv[0]!r} (and not disabled by "
+                "--no-cov, or left unloaded by --disable-plugin-autoload)?\n"
+                f"exit code {proc.returncode}\n{log[-2000:]}"
             )
         lines = [
             line
@@ -668,14 +725,14 @@ def _run_full_pytest(
         ]
         if not lines:
             raise GitError(
-                f"the suite ran ({argv[0]!r} exited {proc.returncode}) but reported no test "
+                f"the suite ran{where} ({argv[0]!r} exited {proc.returncode}) but reported no test "
                 "outcomes: diffcone's outcome plugin did not load, so there is nothing to "
                 f"compare\n{log[-2000:]}"
             )
         stopped = suite_stopped_early(outcomes_dir, lines)
         if stopped:
             raise GitError(
-                f"the suite stopped early: {stopped}; comparing its outcomes would miss "
+                f"the suite stopped early{where}: {stopped}; comparing its outcomes would miss "
                 f"the tests that never ran\n{log[-2000:]}"
             )
         yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db, argv)
@@ -683,6 +740,30 @@ def _run_full_pytest(
 
 # Last on the suite's command line: no stop at a failure.
 NO_MAXFAIL = "--maxfail=0"
+
+
+def _pytest_cov_plugin(argv: list[str], env: dict[str, str]) -> list[str]:
+    """``-p pytest_cov.plugin`` when plugin autoloading is off
+    (PYTEST_DISABLE_PLUGIN_AUTOLOAD, ``--disable-plugin-autoload``): pytest
+    then loads no installed plugin it is not told to, pytest-cov included,
+    and the ``--cov`` options are unrecognised arguments. Nothing when the
+    command line or PYTEST_ADDOPTS already name pytest-cov: loaded twice
+    under two names, pluggy refuses the second."""
+    words = [*argv, *env.get("PYTEST_ADDOPTS", "").split()]
+    autoload_off = bool(env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD")) or (
+        "--disable-plugin-autoload" in words
+    )
+    if not autoload_off or any("pytest_cov" in w or "pytest-cov" in w for w in words):
+        return []
+    return ["-p", "pytest_cov.plugin"]
+
+
+def coverage_files(db: Path) -> list[Path]:
+    """The coverage data of one run: the database ``db`` and the parallel
+    parts beside it (``<db>.<host>.<pid>.<random>``) that a process wrote
+    without combining them into it."""
+    parts = sorted(p for p in db.parent.glob(db.name + ".*") if p.is_file())
+    return [*([db] if db.is_file() else []), *parts]
 
 
 def suite_stopped_early(outcomes_dir: Path, lines: list[str]) -> str | None:
@@ -739,7 +820,8 @@ def read_coverage_contexts(
     Reads both the ``line_bits`` table (line coverage) and the ``arc`` table
     (branch coverage, which coverage.py uses *instead* when ``branch = True``
     is configured). Paths may be stored relative when the project sets
-    ``relative_files``; they are resolved against the checkout root.
+    ``relative_files``; they are resolved against the checkout root. Parallel
+    parts beside ``db_path`` are read with it (coverage_files).
     """
     result: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
     root = root.resolve()
@@ -763,20 +845,23 @@ def read_coverage_contexts(
         resolved[path] = rel
         return rel
 
-    con = sqlite3.connect(db_path)
-    try:
-        line_rows = con.execute(
-            "SELECT context.context, file.path, line_bits.numbits FROM line_bits "
-            "JOIN context ON context.id = line_bits.context_id "
-            "JOIN file ON file.id = line_bits.file_id"
-        ).fetchall()
-        arc_rows = con.execute(
-            "SELECT context.context, file.path, arc.fromno, arc.tono FROM arc "
-            "JOIN context ON context.id = arc.context_id "
-            "JOIN file ON file.id = arc.file_id"
-        ).fetchall()
-    finally:
-        con.close()
+    line_rows: list[tuple[str, str, bytes]] = []
+    arc_rows: list[tuple[str, str, int, int]] = []
+    for path in coverage_files(db_path):
+        con = sqlite3.connect(path)
+        try:
+            line_rows += con.execute(
+                "SELECT context.context, file.path, line_bits.numbits FROM line_bits "
+                "JOIN context ON context.id = line_bits.context_id "
+                "JOIN file ON file.id = line_bits.file_id"
+            ).fetchall()
+            arc_rows += con.execute(
+                "SELECT context.context, file.path, arc.fromno, arc.tono FROM arc "
+                "JOIN context ON context.id = arc.context_id "
+                "JOIN file ON file.id = arc.file_id"
+            ).fetchall()
+        finally:
+            con.close()
     for context, path, numbits in line_rows:
         rel = rel_path(path) if context else None
         if rel is not None:
@@ -970,7 +1055,8 @@ class OutcomeCache(dict[_OutcomeKey, dict[str, str]]):
             if self._directory is None:
                 self._directory = tempfile.TemporaryDirectory(prefix="diffcone-basecov-")
             copy = Path(self._directory.name) / f"{key[0]}-{int(key[1])}-{key[2]}.coverage"
-            shutil.copyfile(db, copy)
+            for part in coverage_files(db):  # its parallel parts keep their suffix
+                shutil.copyfile(part, copy.with_name(copy.name + part.name[len(db.name) :]))
             self._databases[key] = (copy, checkout)
 
     def coverage_of(self, key: _OutcomeKey) -> tuple[Path, Path] | None:
@@ -1032,6 +1118,11 @@ def validate_pytest(
             cache.close()
 
 
+def _snapshot_label(side: str, kind: str, commit: str) -> str:
+    """``base 1a2b3c4d5e6f`` or ``head WORKTREE``: which suite an error is about."""
+    return f"{side} {commit[:12] if kind == KIND_COMMIT else WORKTREE}"
+
+
 def _validate_pytest(
     plan: Plan,
     repo: Path,
@@ -1058,6 +1149,7 @@ def _validate_pytest(
                 coverage=coverage,
                 source_roots=plan.source_roots,
                 hash_seed=seed,
+                snapshot=_snapshot_label("base", plan.base.kind, plan.base.commit),
             ) as base_run:
                 base_log = base_run.log
                 if coverage and base_run.coverage_db is not None:
@@ -1078,6 +1170,7 @@ def _validate_pytest(
             coverage=coverage,
             source_roots=plan.source_roots,
             hash_seed=seed,
+            snapshot=_snapshot_label("head", plan.head.kind, plan.head.commit),
         ) as head_run:
             head_outcomes, head_log = head_run.outcomes, head_run.log
             head_argv = head_run.argv
