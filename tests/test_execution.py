@@ -250,7 +250,18 @@ def test_validate_catches_and_misses(repo, capsys):
         "outcome_changed": 2,
         "caught": 1,
         "missed": 1,
+        "missed_targets": 1,
+        "outside_targets": 0,
     }
+    assert data["discovery_incomplete"] is False
+    assert data["missed"] == [
+        {
+            "runner_id": "tests/test_data.py::test_data",
+            "base": "PASSED",
+            "head": "FAILED",
+            "target": True,
+        }
+    ]
 
     # A clean case: only the visible change, and WORKTREE as head.
     (repo.path / "data.txt").write_text("3\n")
@@ -348,9 +359,15 @@ def test_validate_with_coverage_measures_recall(repo, capsys):
         "executed_a_changed_symbol": 2,
         "caught": 1,
         "missed": 1,
+        "missed_targets": 1,
+        "outside_targets": 0,
     }
     assert data["coverage"]["missed"] == [
-        {"runner_id": "tests/test_bridge.py::test_bridge", "executed": ["pkg.util.helper"]}
+        {
+            "runner_id": "tests/test_bridge.py::test_bridge",
+            "executed": ["pkg.util.helper"],
+            "target": True,
+        }
     ]
 
     # Text output names the miss and the ratios.
@@ -565,6 +582,159 @@ def test_validation_status_label_names_the_failing_check():
     assert "validation (pytest): MISSED (outcome, coverage)" in execution.validation_to_text(v)
     v.coverage = None
     assert "validation (pytest): MISSED (outcome)" in execution.validation_to_text(v)
+
+
+# A test class whose base lives outside the source roots: pytest collects the
+# inherited test, discovery cannot see it and says so (``unknown_base_class``),
+# so the plan's discovery is incomplete.
+INHERITED_FILES = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": OPS,
+    "data.txt": "3\n",
+    "helpers/__init__.py": "",
+    "helpers/base.py": (
+        "from pkg.ops import add\n\n\n"
+        "class Base:\n    def test_inherited(self):\n        assert add(1, 2) == 3\n"
+    ),
+    "tests/test_ops.py": TEST_OPS,
+    "tests/test_cls.py": "from helpers.base import Base\n\n\nclass TestThing(Base):\n    pass\n",
+    "tests/test_data.py": (
+        "from pathlib import Path\n\n\n"
+        "def test_data():\n"
+        "    data = Path(__file__).parent.parent / 'data.txt'\n"
+        "    assert data.read_text() == '3\\n'\n"
+    ),
+}
+INHERITED = "tests/test_cls.py::TestThing::test_inherited"
+
+
+def test_tests_outside_an_incomplete_target_list_are_reported_not_missed(repo, capsys):
+    """alembic, itsdangerous: tests discovery says it cannot see change
+    outcome. That gap is the plan's exit 3, not a selection miss: validation
+    reports them apart, stays OK and measures recall over the targets."""
+    base = repo.commit(INHERITED_FILES)
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "a + b + 1")})
+    plan = repo.plan(base, head, [], OUTSIDE_DATA_ROOTS, discover_runners=["pytest"])
+    assert [n.kind for n in plan.incomplete_discovery] == ["unknown_base_class"]
+    assert INHERITED not in {t.runner_id for t in plan.targets}
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST, coverage=True)
+    assert v.discovery_incomplete and v.ok
+    assert v.missed == [] and v.missed_targets == []
+    assert [(o.runner_id, o.base, o.head) for o in v.outside_targets] == [
+        (INHERITED, "PASSED", "FAILED")
+    ]
+    assert [o.runner_id for o in v.caught] == ["tests/test_ops.py::test_add"]
+    c = v.coverage
+    assert c is not None and c.discovery_incomplete and c.missed == []
+    assert [h.runner_id for h in c.outside_targets] == [INHERITED]
+    assert c.recall == 1.0  # of the targets: the inherited test is not counted
+    text = execution.validation_to_text(v)
+    assert "validation (pytest): OK" in text
+    assert (
+        "1 outcome change(s) outside the target list (discovery incomplete: the plan exits 3):"
+        in text
+    )
+    assert f"    {INHERITED}: PASSED -> FAILED" in text
+    assert "recall 100% of targets (caught 1, missed 0); 1 test(s) outside the target list" in text
+    assert "MISSED" not in text
+    d = execution.validation_to_dict(v)
+    assert d["ok"] is True and d["discovery_incomplete"] is True
+    assert d["counts"]["missed"] == 0 and d["counts"]["outside_targets"] == 1
+    assert d["outside_targets"] == [
+        {"runner_id": INHERITED, "base": "PASSED", "head": "FAILED", "target": False}
+    ]
+    assert d["coverage"]["counts"]["outside_targets"] == 1
+    assert d["coverage"]["recall"] == 1.0
+
+    argv = [
+        "validate",
+        "--repo",
+        str(repo.path),
+        "--base",
+        base,
+        "--discover",
+        "pytest",
+        *(arg for root in OUTSIDE_DATA_ROOTS for arg in ("--source-root", root)),
+        "--command",
+        PYTEST,
+    ]
+    assert main([*argv, "--head", head]) == 0
+    assert "validation (pytest): OK" in capsys.readouterr().out
+
+    # Incomplete discovery does not excuse a target: test_data is one, its
+    # outcome changes through a file the analysis does not read, and it
+    # stays a miss.
+    head2 = repo.commit({"data.txt": "4\n"})
+    assert main([*argv, "--head", head2]) == 1
+    out = capsys.readouterr().out
+    assert "validation (pytest): MISSED (outcome)" in out
+    assert "  MISSED tests/test_data.py::test_data: PASSED -> FAILED" in out
+    assert "outside the target list (discovery incomplete: the plan exits 3)" in out
+
+    # The corpus follows ``ok``: the first pair passes, the second misses.
+    report = execution.corpus_validation(
+        repo.path,
+        f"{base}..{head2}",
+        lambda b, h: repo.plan(b, h, [], OUTSIDE_DATA_ROOTS, discover_runners=["pytest"]),
+        command=PYTEST,
+        only_python_changes=False,
+    )
+    first, second = report.entries
+    assert first.validation is not None and first.validation.ok
+    assert second.validation is not None and not second.validation.ok
+    assert report.outcome_missed == 1 and report.outcome_outside_targets == 1
+    text = execution.corpus_to_text(report)
+    assert "outcome changes: 3 (missed 1; 1 outside the target list, discovery incomplete)" in (
+        text
+    )
+    assert f"  {first.commit[:10]} ok: " in text
+    assert "1 outcome change(s) outside the target list (discovery incomplete" in text
+    assert "MISSED outcome tests/test_data.py::test_data" in text
+    totals = execution.corpus_to_dict(report)["totals"]
+    assert totals["outcome_missed"] == 1 and totals["outcome_outside_targets"] == 1
+
+
+def test_a_test_outside_a_complete_target_list_is_a_discovery_miss():
+    """A plan that claims its discovery is complete is wrong about a test it
+    has no target for: that stays a miss, labelled as not a target."""
+    from diffcone.execution import CoverageHit, CoverageValidation, TargetOutcome, Validation
+
+    outcomes = [
+        TargetOutcome("t::target", "PASSED", "PASSED", False),
+        TargetOutcome("t::unseen", "PASSED", "FAILED", False, known_at_head=False),
+        TargetOutcome("t::gone", "PASSED", None, False, known_at_head=False),
+    ]
+    hits = [
+        CoverageHit("t::target", True, ("pkg.f",)),
+        CoverageHit("t::unseen", False, ("pkg.f",), is_target=False),
+    ]
+    v = Validation("pytest", ["pytest"], outcomes, coverage=CoverageValidation(hits))
+    assert not v.ok
+    assert [o.runner_id for o in v.missed] == ["t::unseen"]
+    assert v.missed_targets == [] and [o.runner_id for o in v.outside_targets] == ["t::unseen"]
+    assert [o.runner_id for o in v.removed] == ["t::gone"]
+    assert v.coverage is not None and v.coverage.recall == 0.5
+    text = execution.validation_to_text(v)
+    assert "validation (pytest): MISSED (outcome, coverage)" in text
+    assert "  MISSED (not a target) t::unseen: PASSED -> FAILED" in text
+    assert "  MISSED (not a target) t::unseen: executed pkg.f" in text
+    assert "outside the target list (discovery" not in text
+    d = execution.validation_to_dict(v)
+    assert d["missed"] == [
+        {"runner_id": "t::unseen", "base": "PASSED", "head": "FAILED", "target": False}
+    ]
+    assert d["coverage"]["missed"] == [
+        {"runner_id": "t::unseen", "executed": ["pkg.f"], "target": False}
+    ]
+
+    # The same validation of a plan whose discovery said it is incomplete.
+    v.discovery_incomplete = True
+    v.coverage.discovery_incomplete = True
+    assert v.ok and v.missed == [] and v.coverage.missed == []
+    assert v.coverage.recall == 1.0
+    text = execution.validation_to_text(v)
+    assert "MISSED" not in text
+    assert "1 test(s) outside the target list (discovery incomplete: the plan exits 3)" in text
 
 
 def test_coverage_credits_every_test_that_runs_a_line(repo):

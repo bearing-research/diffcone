@@ -19,7 +19,9 @@ tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
 the runner's exit code (0 when nothing was selected or with --dry-run; pytest's
 5 counts as 0), or 3 when a selected target was not collected. ``validate`` exits
-0 when every outcome change was selected, 1 when some were missed, 2 on
+0 when every outcome change was selected (a test that is not a target is
+reported apart, not missed, when the plan says its discovery is
+incomplete), 1 when some were missed, 2 on
 errors. ``check`` exits 0 when every new failure of the full run was
 selected, 1 when the plan missed one, 2 when an input cannot be read.
 ``report`` exits 0 when the CI runs it reads have no miss and no failed check,
@@ -234,8 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Outcome-based validation: runs the whole pytest suite at base and head "
             "(commits in temporary git worktrees, WORKTREE in place), then reports every "
-            "test whose pass/fail outcome changed but was not selected. Behaviour changes "
-            "that keep the same outcome are invisible to this check."
+            "test whose pass/fail outcome changed but was not selected. A test that is not "
+            "a target is reported apart, not as a miss, when the plan says its discovery is "
+            "incomplete. Behaviour changes that keep the same outcome are invisible to this "
+            "check."
         ),
     )
     v.add_argument("--base", required=True, help="base snapshot: a git revision or WORKTREE")

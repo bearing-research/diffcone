@@ -140,6 +140,27 @@ place. With `--coverage` (which needs pytest-cov installed where your tests
 run), it also records which tests executed changed code, and reports any
 such test that wasn't selected.
 
+A miss comes in two kinds:
+
+- `MISSED`: a target whose result changed (or that executed changed code)
+  and that the plan did not select.
+- A test that is not a target at all, because discovery did not find it.
+  If the plan says its discovery is incomplete (it exits `3`, and
+  `diffcone run` refuses it without `--allow-incomplete-discovery`), such
+  tests are a gap the plan already reported, not a selection miss:
+  `validate` lists them as "outside the target list (discovery
+  incomplete: the plan exits 3)" and they do not fail the check. Coverage
+  recall is then measured over the targets, with the other tests counted
+  apart (`recall 100% of targets; 1589 test(s) outside the target list`).
+  If the plan claims its discovery is complete, such a test is a discovery
+  miss and is reported as `MISSED (not a target)`.
+
+`validate` exits `0` when nothing was missed and `1` when something was. In
+`--format json`, `missed` lists every miss (each with `"target": true` or
+`false`), `outside_targets` lists the changed tests that are not targets,
+and `discovery_incomplete` says whether those count as misses; `counts` and
+`coverage.counts` carry `missed_targets` and `outside_targets` as well.
+
 The whole suite must run on both sides for the comparison to mean
 anything, so `validate`, `corpus` and `collect` add `--maxfail=0` after
 your arguments, which overrides an `-x` or `--maxfail` in `addopts` or in
@@ -150,7 +171,9 @@ instead of comparing.
 
 `diffcone corpus --range A..B` validates every commit in a range and
 summarises the results: how many failures were missed and what share of
-tests each plan would have skipped. It skips commits that change no `.py`
+tests each plan would have skipped, with tests outside an incomplete target
+list counted apart, as `validate` does; it exits `1` when a plan missed something or a commit
+could not be validated. It skips commits that change no `.py`
 file unless you pass `--all-commits`. Use `--jobs N` to validate several
 commits in parallel. Both commands take `--evidence` to validate plans made
 from a recording.
