@@ -180,9 +180,9 @@ def test_run_executes_only_selected_targets(repo, capsys):
         ]
     )
     assert code == 0
-    assert (
-        capsys.readouterr().out.strip()
-        == "asv run --python=same --bench '^(bench\\.time_add)($|\\()'"
+    # Quoted for the platform's shell, as join_command does.
+    assert capsys.readouterr().out.strip() == execution.join_command(
+        ["asv", "run", "--python=same", "--bench", "^(bench\\.time_add)($|\\()"]
     )
 
 

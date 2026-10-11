@@ -158,7 +158,18 @@ def test_q3_an_annotation_that_calls_nothing_reaches_its_readers_only(repo, afte
 # --------------------------------------------------------------------------- Q16
 
 
-@pytest.mark.parametrize("name", ["we#ird", "what?now", "pct%41", "a b"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "we#ird",
+        pytest.param(
+            "what?now",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="? is not allowed in a path"),
+        ),
+        "pct%41",
+        "a b",
+    ],
+)
 def test_q16_a_store_path_with_uri_characters_opens(tmp_path, name):
     """The store is opened read-only through a URI: ``#``, ``?`` and ``%`` in
     the path are percent-encoded, not read as a fragment, query or escape."""
