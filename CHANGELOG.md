@@ -64,9 +64,11 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   changes.
 - An attribute read on an object of unknown type is matched to
   module-level functions, classes and variables only in modules such an
-  object can be: modules passed around, obtained by name or named in a
-  string, and test modules and conftests, which pytest hands out. Methods
-  still match whatever the receiver.
+  object can be: modules passed around or bound to another name, obtained
+  by name or named in a string, and test modules and conftests, which
+  pytest hands out. A name bound only to modules (`m = ops`, then
+  `m.value()`) is followed like the import itself. Methods still match
+  whatever the receiver.
 - A text a test writes or runs (`pytester.makepyfile`, `exec`, `-c` code)
   whose template field the test's own parameter fills, when
   `@pytest.mark.parametrize` on the test gives that parameter literal
@@ -268,6 +270,15 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Discovery
 
+- A fixture defined with a decorator whose name ends in `fixture`
+  (pytest-twisted's `async_fixture` and `async_yield_fixture`,
+  pytest-trio's `trio_fixture`) was not seen; when its name was also a
+  well-known plugin's (pytest-django's `client`), it was taken for that
+  plugin's fixture and what it requested reached nothing. Such decorators
+  now make fixtures, and a plugin's fixture name is no longer assumed when
+  the test's class, module, conftests or plugins define it in a way
+  diffcone can't read: the name is an unknown fixture, selected on every
+  change.
 - An autouse fixture imported into a conftest, a test module or a plugin
   (by name, through star imports at any depth, or as a module attribute)
   was not a dependency of the tests it applies to; nor was a fixture with
