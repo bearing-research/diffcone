@@ -1193,7 +1193,10 @@ report:</p>
   to that test.
 - Code that ran outside every test, in a pytest hook or while pytest
   collected, can affect any test: a change to it, or to what it reads,
-  selects every test, and so does a change to <code>pytest_plugins</code>.
+  selects every test, and so does a change to <code>pytest_plugins</code>. Reading a
+  function's annotations there (as pytest does on Python 3.14) is not
+  running the function: only a change to the annotations, or to what they
+  name, counts.
 - Changes to compiled sources (except <a href="#cython">Cython</a> with a profiled
   recording), build files, dependencies and configuration select every
   test.
