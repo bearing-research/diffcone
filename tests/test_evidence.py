@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,8 +28,9 @@ from diffcone.evidence import (
     load_store,
     write_store,
 )
+from diffcone.report import to_text
 from diffcone.snapshot import GitError
-from diffcone.testing import executed, selected, touched
+from diffcone.testing import asv_target, executed, selected, touched
 
 pytestmark = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
 
@@ -757,3 +760,276 @@ def test_w28_a_mismatch_is_never_explained_by_an_empty_list():
     recorded = environment()
     (line,) = environment_differences(recorded, dict(recorded))
     assert "hash differs" in line
+
+
+# --------------------------------------------------------------------------- environment check
+
+BASE = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "pkg/__init__.py": "",
+    "tests/__init__.py": "",
+}
+
+
+def _plan(repo, base, head, evidence, targets=()):
+    return repo.plan(base, head, list(targets), discover_runners=["pytest"], evidence=evidence)
+
+
+PYTEST = f"{sys.executable} -m pytest -p no:cacheprovider"
+CALC = {
+    "calc/__init__.py": "",
+    "calc/ops.py": "def add(a, b):\n    return a + b\n\n\ndef other():\n    return 1\n",
+    "tests/__init__.py": "",
+    "tests/test_ops.py": (
+        "import os\n\nfrom calc.ops import add, other\n\n\n"
+        "def test_x():\n    if os.environ.get('FLAG') == 'on':\n        assert other() == 1\n\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+    ),
+}
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monkeypatch, capsys):
+    """Recorded with FLAG off, test_x never called other(); run with FLAG on,
+    the evidence selects nothing for a change to other(), but it does not
+    apply here: the static plan runs, and test_x fails."""
+    base = repo.commit(CALC)
+    monkeypatch.setenv("FLAG", "off")
+    repo.collect(env_variables=["FLAG"])
+    # A different size: a same-size edit within the second of the recording
+    # run would reuse the stale .pyc (Python checks mtime and size).
+    ops = CALC["calc/ops.py"].replace("return 1", "return 1 + 1")
+    head = repo.commit({"calc/ops.py": ops})
+    monkeypatch.setenv("FLAG", "on")
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--evidence",
+            "auto",
+            "--command",
+            PYTEST,
+            "--",
+            "-q",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert "environment differs" in err
+    assert code == 1  # test_x ran under the static plan, and failed
+
+
+def test_evp9_plan_says_the_environment_was_not_checked(repo):
+    repo.commit(
+        {
+            **BASE,
+            "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+            "tests/test_ops.py": "from pkg.ops import add\n\n\ndef test_add():\n"
+            "    assert add(1, 2) == 3\n",
+        }
+    )
+    ev = repo.collect()
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    plan = _plan(repo, ev.commit, head, ev)
+    assert plan.evidence["environment_checked"] is False
+    assert "environment NOT checked" in to_text(plan)
+    # ``run`` checks it in the test process, and says so in its report.
+    out = repo.path.parent / "ran.json"
+    args = ["run", "--repo", str(repo.path), "--base", ev.commit, "--head", head]
+    args += ["--discover", "pytest", "--command", f"{sys.executable} -m pytest"]
+    assert main([*args, "--evidence", "auto", "--no-cache", "-o", str(out)]) == 0
+    report = json.loads(out.read_text())
+    assert report["analysis"]["evidence"]["environment_checked"] is True
+
+
+# --------------------------------------------------------------------------- order checks
+
+CACHED_LIB = """\
+_STATE = {}
+
+
+def compute():
+    return 42
+
+
+def get():
+    if "v" not in _STATE:
+        _STATE["v"] = compute()
+    return _STATE["v"]
+"""
+
+PASSING = "def test_a():\n    pass\n"
+
+USES_GET = """\
+from pkg.lib import get
+
+
+def test_m1():
+    assert get() == 42
+
+
+def test_m2():
+    assert get() == 42
+"""
+
+
+def test_evp4_run_collect_order_checks_fresh_records(repo, capfd):
+    """A reverse-checked recording advanced by ``run --collect``: the fresh
+    records are checked in reverse order too. ``test_m2`` reads the value
+    ``test_m1`` cached, so its forward record lacks ``compute``; in reverse
+    it is the one that computes, so both are unstable."""
+    c0 = repo.commit({**BASE, "pkg/lib.py": CACHED_LIB, "tests/test_a.py": PASSING})
+    ev0 = repo.collect(reverse_check=True)
+    assert ev0.reverse_checked
+    c1 = repo.commit({"tests/test_m.py": USES_GET})
+    assert _run_collect(repo, c0, c1) == 0
+    assert "running the selected tests again in reverse order" in capfd.readouterr().err
+    head1 = repo.git("rev-parse", c1).strip()
+    (info,) = [s for s in list_stores(repo.path) if s.commit == head1]
+    ev1 = load_store(info.path)
+    assert ev1.reverse_checked
+    unstable = {t for t, r in ev1.tests.items() if r.flags & FLAG_UNSTABLE}
+    assert unstable == {"tests/test_m.py::test_m1", "tests/test_m.py::test_m2"}
+    c2 = repo.commit({"pkg/lib.py": CACHED_LIB.replace("return 42", "return 41")})
+    bench = asv_target("benchmarks.TimeGet.time_get", "pkg.lib.get")
+    plan = _plan(repo, c1, c2, ev1, [bench])
+    assert selected(plan) == {
+        "tests/test_m.py::test_m1",
+        "tests/test_m.py::test_m2",
+        "benchmarks.TimeGet.time_get",
+    }
+
+
+def test_evp4_advance_marks_unchecked_fresh_records_unstable(repo):
+    """``advance`` itself: fresh records from a run in one order, onto a
+    reverse-checked recording, are unstable, so the store's claim holds."""
+    a = "tests/test_a.py::test_a"
+    repo.commit({**BASE, "pkg/lib.py": CACHED_LIB, "tests/test_a.py": PASSING})
+    checked = repo.collect(reverse_check=True)
+    assert not checked.tests[a].flags & FLAG_UNSTABLE
+    fresh = repo.collect()
+    assert not fresh.reverse_checked
+    advanced = advance(checked, fresh, {a}, checked.commit)
+    assert advanced.reverse_checked
+    assert advanced.tests[a].flags & FLAG_UNSTABLE
+    # Onto a recording that was never order-checked, nothing is claimed.
+    plain = advance(fresh, fresh, {a}, fresh.commit)
+    assert not plain.reverse_checked
+    assert not plain.tests[a].flags & FLAG_UNSTABLE
+
+
+# --------------------------------------------------------------------------- stores
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "we#ird",
+        pytest.param(
+            "what?now",
+            marks=pytest.mark.skipif(sys.platform == "win32", reason="? is not allowed in a path"),
+        ),
+        "pct%41",
+        "a b",
+    ],
+)
+def test_q16_a_store_path_with_uri_characters_opens(tmp_path, name):
+    """The store is opened read-only through a URI: ``#``, ``?`` and ``%`` in
+    the path are percent-encoded, not read as a fragment, query or escape."""
+    evidence = Evidence(
+        commit="c" * 40,
+        source_roots=["."],
+        environment={"python": "3.13.1 (main)"},
+        environment_hash="e",
+        command="pytest",
+        created=time.time(),
+        symbols=["pkg.lib.f"],
+        paths=[],
+        tests={"tests/test_a.py::test_a": TestRecord(frozenset({0}), frozenset())},
+    )
+    repo = tmp_path / name
+    store = write_store(evidence, repo / ".diffcone" / "evidence")
+    loaded = load_store(store)
+    assert loaded.tests == evidence.tests
+    assert loaded.symbols == ["pkg.lib.f"]
+    (info,) = list_stores(repo)
+    assert (info.commit, info.tests, info.python) == ("c" * 40, 1, "3.13.1")
+
+
+def test_q16_a_store_without_a_python_version_lists(tmp_path):
+    """A recorded environment with an empty ``python`` field is listed, not
+    an IndexError (quality item 19)."""
+    evidence = Evidence(
+        commit="d" * 40,
+        source_roots=["."],
+        environment={"python": ""},
+        environment_hash="e",
+        command="pytest",
+        created=time.time(),
+        symbols=[],
+        paths=[],
+        tests={},
+    )
+    write_store(evidence, tmp_path / ".diffcone" / "evidence")
+    (info,) = list_stores(tmp_path)
+    assert info.python == ""
+
+
+# What ran only through annotations evaluated outside every test: kept by
+# the store, and merged when a store advances.
+
+ADD_OPS = "def add(a, b):\n    return a + b\n"
+
+TYPED = """\
+from pathlib import Path
+
+from pkg.ops import add
+
+
+def test_typed(tmp_path: Path) -> None:
+    assert add(1, 2) == 3
+
+
+def test_plain():
+    assert add(2, 2) == 4
+"""
+
+TYPED_OTHER = "from pkg.ops import add\n\n\ndef test_other():\n    assert add(0, 0) == 0\n"
+TYPED_FILES = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "pkg/__init__.py": "",
+    "pkg/ops.py": ADD_OPS,
+    "tests/__init__.py": "",
+    "tests/test_ops.py": TYPED,
+    "tests/test_other.py": TYPED_OTHER,
+}
+
+
+def test_e7_the_store_keeps_what_ran_only_through_annotations(repo, tmp_path):
+    repo.commit(TYPED_FILES)
+    ev = repo.collect()
+    again = load_store(write_store(ev, tmp_path / "stores"))
+    assert again.annotations_only == ev.annotations_only
+    if sys.version_info >= (3, 14):
+        assert "tests.test_ops.test_typed" in ev.annotations_only
+
+
+def test_e7_a_symbol_is_annotations_only_only_if_every_source_says_so():
+    """Advancing a store merges recordings: a symbol whose own code ran
+    outside the tests in any of them is not annotations-only."""
+
+    def source(only, hook):
+        return SimpleNamespace(
+            annotations_only=set(only), import_phase=set(hook), hook_phase=set(hook), import_by={}
+        )
+
+    merged = evidence_module._annotations_only(
+        [source({"a.f", "a.g"}, {"a.f", "a.g"}), source({"a.h"}, {"a.g", "a.h"})]
+    )
+    assert merged == {"a.f", "a.h"}

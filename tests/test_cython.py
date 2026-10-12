@@ -14,6 +14,8 @@ from diffcone.indexer import build_index
 from diffcone.snapshot import read_snapshot
 from diffcone.testing import executed, rules, selected
 
+needs_monitoring = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+
 PYX = '''\
 # cython: language_level=3
 cimport cython
@@ -322,6 +324,76 @@ def test_snapshots_and_the_cache_carry_cython_modules(repo):
     repo.git("add", "pkg/_ext.pyx")
     staged = build_index(read_snapshot(repo.path, "INDEX", ["."]))
     assert staged.cython == worktree.cython
+
+
+# --------------------------------------------------------------------------- strings and flags
+
+CYTHON_QUERY = '''\
+def query():
+    return """
+SELECT a
+# not a comment: part of the string
+FROM t
+"""
+'''
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ("# not a comment: part of the string", "# changed text"),
+        ("SELECT a\n", "SELECT a\n\n"),
+        ("# not a comment: part of the string\n", ""),
+        ("FROM t\n", "FROM t   \n"),
+    ],
+    ids=["hash line edited", "blank line added", "hash line deleted", "trailing space"],
+)
+def test_evp7_cython_lines_inside_a_string_are_part_of_the_body(edit):
+    after = CYTHON_QUERY.replace(*edit)
+    changes = cython_changes(
+        {"m.pyx": read("m.pyx", CYTHON_QUERY)}, {"m.pyx": read("m.pyx", after)}
+    )
+    assert changes.functions == (("m.pyx", "query"),)
+    # Outside every function too (the hash used when tokenize cannot read
+    # the file).
+    outside = "X = '''\n# a\n'''\n"
+    edited = outside.replace("# a", "")
+    assert read("m.pyx", outside).outside_hash != read("m.pyx", edited).outside_hash
+
+
+@needs_monitoring
+def test_evp7_a_hash_inside_a_cython_string_hides_no_name():
+    # ``#`` inside a one-line string is not a comment: what follows is still
+    # mentioned (a nogil callee is found through the functions naming it).
+    module = read("m.pyx", 'cdef int f():\n    s = "#"; return g()\n')
+    (function,) = module.functions
+    assert "g" in function.names
+
+
+@needs_monitoring
+def test_evp7_line_endings_are_no_change_inside_a_cython_string():
+    """Strings keep their whitespace now, so a CRLF checkout (Windows) must
+    read as the LF one: Cython, like Python, reads universal newlines."""
+    from diffcone.cython import cython_changes, read
+
+    text = 'def total(a):\n    """Sum.\n\n    More.\n    """\n    return a\n'
+    lf = {"pkg/_ext.pyx": read("pkg/_ext.pyx", text)}
+    crlf = {"pkg/_ext.pyx": read("pkg/_ext.pyx", text.replace("\n", "\r\n"))}
+    changes = cython_changes(lf, crlf)
+    assert not changes.functions and not changes.names
+
+
+def test_e10_a_cython_function_with_profiling_off_selects_through_its_callers():
+    from diffcone.cython import read
+
+    module = read(
+        "pkg/_fast.pyx",
+        "cimport cython\n\n@cython.profile(False)\ncdef int _scale(int x):\n    return x * 3\n\n"
+        "def tripled(int x):\n    return _scale(x)\n",
+    )
+    flags = {f.name: f.unprofiled for f in module.functions}
+    assert flags == {"_scale": True, "tripled": False}
 
 
 # --------------------------------------------------------------------------- recording
