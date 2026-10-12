@@ -42,7 +42,15 @@ from pathlib import Path
 import diffcone.planner as planner_mod
 from diffcone.cache import IndexCache
 from diffcone.classify import classify
-from diffcone.model import CLASS, FUNCTION, METHOD, MODULE, REFERENCES, UNRESOLVED_DYNAMIC, VARIABLE
+from diffcone.model import (
+    CLASS,
+    FUNCTION,
+    METHOD,
+    MODULE,
+    UNRESOLVED_DYNAMIC,
+    VARIABLE,
+    EdgeKind,
+)
 from diffcone.planner import _changed_unanalysed_files, _ImportReach, _index_snapshot
 from diffcone.snapshot import resolve_commit
 
@@ -149,7 +157,7 @@ def reverse_refs(indexes):
     dyn_method, dyn_module = set(), set()
     for index in indexes:
         for e in index.edges:
-            if e.kind == REFERENCES:
+            if e.kind == EdgeKind.REFERENCES:
                 refs[e.target].add(e.source)
         for u in index.unresolved:
             if u.kind == UNRESOLVED_DYNAMIC:

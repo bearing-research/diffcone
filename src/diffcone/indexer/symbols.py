@@ -62,13 +62,12 @@ from diffcone.indexer.syntax import (
 from diffcone.indexer.uses import UseRecord, scan_module
 from diffcone.model import (
     CLASS,
-    DEFINED_IN,
     FUNCTION,
     METHOD,
     MODULE,
-    REFERENCES,
     VARIABLE,
     Edge,
+    EdgeKind,
     Symbol,
 )
 from diffcone.snapshot import member_symbol_id
@@ -279,7 +278,7 @@ class FirstPass(IndexerState):
             if self._add_symbol(symbol):
                 scope.variables[name] = symbol_id
                 scope.variable_stmts[name] = stmt
-                self.out.edges.add(Edge(symbol_id, scope.name, DEFINED_IN))
+                self.out.edges.add(Edge(symbol_id, scope.name, EdgeKind.DEFINED_IN))
 
     def _register_imports(
         self,
@@ -415,7 +414,7 @@ class FirstPass(IndexerState):
                 if not self._add_symbol(symbol):
                     continue
                 members[name] = symbol_id
-                self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+                self.out.edges.add(Edge(symbol_id, container_id, EdgeKind.DEFINED_IN))
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 cscope.plain = plain
                 for n in nodes:
@@ -449,7 +448,9 @@ class FirstPass(IndexerState):
                         and member_symbol is not None
                         and member_symbol.kind == METHOD
                     ):
-                        self.out.edges.add(Edge(symbol_id, member_id, REFERENCES, "special_method"))
+                        self.out.edges.add(
+                            Edge(symbol_id, member_id, EdgeKind.REFERENCES, "special_method")
+                        )
             else:
                 nodes = funcs[name]
                 first = nodes[0]
@@ -550,7 +551,7 @@ class FirstPass(IndexerState):
                 if not self._add_symbol(symbol):
                     continue
                 members[name] = symbol_id
-                self.out.edges.add(Edge(symbol_id, container_id, DEFINED_IN))
+                self.out.edges.add(Edge(symbol_id, container_id, EdgeKind.DEFINED_IN))
 
     def _member_id(self, module: str, name: str) -> str:
         return member_symbol_id(module, name, self._children.get(module, frozenset()))

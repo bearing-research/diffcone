@@ -7,6 +7,7 @@ Symbol identity is the dotted qualified name (``pkg.mod``, ``pkg.mod.func``,
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from diffcone.cython import CythonModule
 
@@ -16,15 +17,19 @@ FUNCTION = "function"
 METHOD = "method"
 VARIABLE = "variable"  # a simple module-level assignment ``NAME = <expr>``
 
-# Edge kinds. ``source`` depends on ``target``.
-REFERENCES = "references"  # name/call/attribute reference resolved to a symbol
-DEFINED_IN = "defined_in"  # symbol is defined inside the target container
-IMPORTS = "imports"  # module-level import of a module (init-time dependency)
-IMPORTS_NAME = "imports_name"  # module-level ``from m import name`` of a symbol
-UNRESOLVED_NAME_MATCH = "unresolved_name_match"  # conservative edge synthesised by the planner
-DECLARED = "declared"  # dependency stated in diffcone.toml, not found by analysis
-ENTRY = "entry"  # target -> its entry symbol
-LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
+
+class EdgeKind(StrEnum):
+    """What an ``Edge`` is: ``source`` depends on ``target`` this way."""
+
+    REFERENCES = "references"  # name/call/attribute reference resolved to a symbol
+    DEFINED_IN = "defined_in"  # symbol is defined inside the target container
+    IMPORTS = "imports"  # module-level import of a module (init-time dependency)
+    IMPORTS_NAME = "imports_name"  # module-level ``from m import name`` of a symbol
+    UNRESOLVED_NAME_MATCH = "unresolved_name_match"  # conservative edge made by the planner
+    DECLARED = "declared"  # dependency stated in diffcone.toml, not found by analysis
+    ENTRY = "entry"  # target -> its entry symbol
+    LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
+
 
 # Unresolved reference kinds.
 UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
@@ -270,7 +275,7 @@ DYNAMIC_DEPENDENCY = "dynamic:"
 class Edge:
     source: str
     target: str
-    kind: str
+    kind: EdgeKind
     detail: str = ""
 
 
@@ -281,7 +286,7 @@ def edge_mark(edge: Edge) -> str:
     ``references`` edge says so: the detail of any other kind is not a
     mark (a name match carries the unresolved name, so a bare call of a
     function named ``rebinds`` is a call), and gives ""."""
-    return edge.detail if edge.kind == REFERENCES else ""
+    return edge.detail if edge.kind == EdgeKind.REFERENCES else ""
 
 
 @dataclass(frozen=True, order=True)

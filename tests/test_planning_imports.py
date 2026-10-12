@@ -24,7 +24,14 @@ import pytest
 from diffcone.cache import ModuleCache, index_to_dict
 from diffcone.classify import SymbolChange
 from diffcone.indexer import build_index
-from diffcone.model import INSTALLED, MODULE, REFERENCES, UNRESOLVED_ATTRIBUTE, Edge, SnapshotInfo
+from diffcone.model import (
+    INSTALLED,
+    MODULE,
+    UNRESOLVED_ATTRIBUTE,
+    Edge,
+    EdgeKind,
+    SnapshotInfo,
+)
 from diffcone.planner import _Graph, _import_call_effects
 from diffcone.snapshot import Snapshot
 from diffcone.testing import (
@@ -910,8 +917,10 @@ def test_w17_a_module_does_not_run_what_is_installed_as_it(detail):
     # dependency, not a call: a change to the module's import-time code does
     # not run the installer, so what the installer fills stays as it was.
     graph = _Graph()
-    graph.add(Edge("pkg.core", "pkg.compat.install", REFERENCES, detail), ("base", "head"))
-    graph.add(Edge("pkg.compat.REG", "pkg.compat.install", REFERENCES, "mutated_by"), ("head",))
+    graph.add(Edge("pkg.core", "pkg.compat.install", EdgeKind.REFERENCES, detail), ("base", "head"))
+    graph.add(
+        Edge("pkg.compat.REG", "pkg.compat.install", EdgeKind.REFERENCES, "mutated_by"), ("head",)
+    )
     change = SymbolChange("pkg.core", MODULE, ("body_changed",), None, None)
     effects = _import_call_effects(graph, [change.id], {"pkg.core"})
     assert ("pkg.compat.REG" in effects) is (detail == "")

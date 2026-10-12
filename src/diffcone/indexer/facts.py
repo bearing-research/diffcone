@@ -10,7 +10,7 @@ from typing import Any
 
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope, Scope
 from diffcone.indexer.syntax import _digest
-from diffcone.model import Edge, ExternalReference, Symbol, UnresolvedReference
+from diffcone.model import Edge, EdgeKind, ExternalReference, Symbol, UnresolvedReference
 
 
 @dataclass
@@ -354,7 +354,7 @@ def _output_to_dict(out: _Output) -> dict:
 
 def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out = _Output()
-    out.edges = {Edge(*e) for e in data["edges"]}
+    out.edges = {Edge(s, t, EdgeKind(k), d) for s, t, k, d in data["edges"]}
     out.unresolved = {UnresolvedReference(*u) for u in data["unresolved"]}
     out.external = {ExternalReference(*x) for x in data["external"]}
     for f, sites in data["call_sites"].items():

@@ -48,17 +48,15 @@ from collections.abc import Iterable
 
 from diffcone.model import (
     CLASS,
-    DECLARED,
     EXTERNAL_WRITTEN,
-    IMPORTS,
     INSTALLED,
     INSTALLED_ANYWHERE,
     METHOD,
     MODULE,
     MUTATED_BY,
-    REFERENCES,
     REGISTERS,
     UNRESOLVED_DYNAMIC,
+    EdgeKind,
     SourceIndex,
     edge_mark,
     imports_anything,
@@ -123,9 +121,12 @@ def state_writing_roots(
     for edge in index.edges:
         if (edge.source, "edge", edge.target) in main_only:
             continue  # only under ``if __name__ == "__main__":``
-        if edge.kind in (REFERENCES, DECLARED) and edge_mark(edge) not in _NOT_RUN:
+        if (
+            edge.kind in (EdgeKind.REFERENCES, EdgeKind.DECLARED)
+            and edge_mark(edge) not in _NOT_RUN
+        ):
             callers[edge.target].add((edge.source, edge.detail))
-        elif edge.kind == IMPORTS:
+        elif edge.kind == EdgeKind.IMPORTS:
             imported[edge.source].add(edge.target)
             importers[edge.target].add(edge.source)
     # A dynamic reference reaches what its module's import closure holds (as

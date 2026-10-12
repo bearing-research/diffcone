@@ -43,6 +43,7 @@ from diffcone.manifest import Target
 from diffcone.model import (
     AnalysisError,
     Edge,
+    EdgeKind,
     ExternalReference,
     SnapshotInfo,
     SourceIndex,
@@ -208,7 +209,9 @@ def index_from_dict(data: dict) -> SourceIndex:
         snapshot=SnapshotInfo(**data["snapshot"]),
         modules=set(data["modules"]),
         symbols=symbols,
-        edges={Edge(**e) for e in data["edges"]},
+        edges={
+            Edge(e["source"], e["target"], EdgeKind(e["kind"]), e["detail"]) for e in data["edges"]
+        },
         unresolved={UnresolvedReference(**u) for u in data["unresolved"]},
         external={ExternalReference(**x) for x in data["external"]},
         errors=[AnalysisError(**e) for e in data["errors"]],

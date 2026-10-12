@@ -123,32 +123,25 @@ from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ANY_MODULE,
     CLASS,
-    DECLARED,
-    DEFINED_IN,
     DYNAMIC_DEPENDENCY,
-    ENTRY,
     EXTERNAL_WRITTEN,
     FUNCTION,
-    IMPORTS,
-    IMPORTS_NAME,
     INSTALLED,
     INSTALLED_ANYWHERE,
-    LIFECYCLE,
     METHOD,
     MODULE,
     MUTATED_BY,
     REBINDS,
-    REFERENCES,
     REGISTERS,
     RUNS_SCRIPT,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_MODULE_ATTRIBUTE,
-    UNRESOLVED_NAME_MATCH,
     VARIABLE,
     WRITES,
     AnalysisError,
     Edge,
+    EdgeKind,
     SnapshotInfo,
     SourceIndex,
     Symbol,
@@ -496,7 +489,7 @@ class Seeds:
 class Step:
     source: str
     target: str
-    kind: str
+    kind: EdgeKind | StepKind
     detail: str
     revisions: tuple[str, ...]
 
@@ -656,7 +649,7 @@ def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[st
 def _propagate(
     edge: Edge, target_mode: int, target_change: SymbolChange | None, source_is_module: bool
 ) -> int | None:
-    if edge.kind == DEFINED_IN:
+    if edge.kind == EdgeKind.DEFINED_IN:
         return STRUCTURAL if target_mode == STRUCTURAL else None
     mark = edge_mark(edge)  # a name match's detail is no mark: it is a call
     if mark == REGISTERS:
@@ -668,11 +661,11 @@ def _propagate(
         return None  # emptying or adding to a container reads nothing of it
     if target_mode == REGISTERED and source_is_module:
         return None  # registering ran at import, unchanged
-    if edge.kind in (IMPORTS, IMPORTS_NAME):
+    if edge.kind in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME):
         if target_change is not None and DELETED in target_change.changes:
             return STRUCTURAL
         # Importing a module runs its import-time code.
-        return BEHAVIOR if edge.kind == IMPORTS else None
+        return BEHAVIOR if edge.kind == EdgeKind.IMPORTS else None
     if mark == MUTATED_BY:
         return CONTENT
     return BEHAVIOR
@@ -717,7 +710,7 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
     planning both reach such a reader from a docstring-only change."""
     read = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
     for edge in index.edges:
-        if edge.source in read and edge.kind != DEFINED_IN:
+        if edge.source in read and edge.kind != EdgeKind.DEFINED_IN:
             read[edge.source].add(edge.target)
 
     def decorator(reader: str) -> bool:
@@ -733,7 +726,7 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
 
     imported: dict[str, set[str]] = defaultdict(set)
     for edge in index.edges:
-        if edge.kind == IMPORTS:
+        if edge.kind == EdgeKind.IMPORTS:
             imported[edge.source].add(edge.target)
     for ref in index.unresolved:
         if ref.symbol in read and ref.name == "__doc__" and ref.kind == UNRESOLVED_MODULE_ATTRIBUTE:
@@ -760,19 +753,31 @@ def _sides(change: SymbolChange) -> tuple[str, ...]:
     return tuple(r for r, s in (("base", change.base), ("head", change.head)) if s is not None)
 
 
-# Explanation steps that are not index edges: a module runs a changed
-# symbol when it is imported (_runs_at_import), and import-time code calls a
-# function (_import_call_effects).
-RUNS_AT_IMPORT = "runs_at_import"
-# A symbol reading docstrings (``f.__doc__``) of something whose docstring
-# changed.
-READS_DOCSTRING = "reads_docstring"
-CALLED_AT_IMPORT = "called_at_import"
-CALLED_BY = "called_by"
+class StepKind(StrEnum):
+    """Explanation steps that are not index edges (``Step.kind`` is an
+    ``EdgeKind`` or one of these)."""
+
+    # A module runs a changed symbol when it is imported (_runs_at_import),
+    # and import-time code calls a function (_import_call_effects).
+    RUNS_AT_IMPORT = "runs_at_import"
+    # A symbol reading docstrings (``f.__doc__``) of something whose
+    # docstring changed.
+    READS_DOCSTRING = "reads_docstring"
+    CALLED_AT_IMPORT = "called_at_import"
+    CALLED_BY = "called_by"
+    # From a module to the changed symbol whose import of it runs it anew,
+    # or no longer (R24: _newly_run_modules).
+    NEWLY_IMPORTED = "newly_imported_by"
+    NO_LONGER_IMPORTED = "no_longer_imported_by"
+    # From a reader of ``pkg.sub`` to the module ``pkg.sub`` that an import
+    # somewhere binds on its package, or no longer does.
+    BOUND_ON_PACKAGE = "bound_on_package"
+
+
 # What a call made at import can run: what the caller references (a
 # function, a class's constructor and special methods, a variable holding a
 # function), what an unresolved call may be, what the project declares.
-_CALL_KINDS = frozenset({REFERENCES, UNRESOLVED_NAME_MATCH, DECLARED})
+_CALL_KINDS = frozenset({EdgeKind.REFERENCES, EdgeKind.UNRESOLVED_NAME_MATCH, EdgeKind.DECLARED})
 # Edge marks (edge_mark) that are no call: a write in place, an object
 # installed in ``sys.modules``.
 _NO_CALL = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
@@ -827,15 +832,6 @@ def _import_call_effects(
     return effects
 
 
-# Explanation step from a module to the changed symbol whose import of it
-# runs it anew, or no longer (R24: _newly_run_modules).
-NEWLY_IMPORTED = "newly_imported_by"
-NO_LONGER_IMPORTED = "no_longer_imported_by"
-# From a reader of ``pkg.sub`` to the module ``pkg.sub`` that an import
-# somewhere binds on its package, or no longer does.
-BOUND_ON_PACKAGE = "bound_on_package"
-
-
 def _newly_run_modules(
     base: SourceIndex, head: SourceIndex, changes: list[SymbolChange]
 ) -> dict[str, Step]:
@@ -865,12 +861,12 @@ def _newly_run_modules(
         else:
             for label, index in (("base", base), ("head", head)):
                 for edge in index.edges:
-                    if edge.source == change.id and edge.kind == IMPORTS:
+                    if edge.source == change.id and edge.kind == EdgeKind.IMPORTS:
                         runs[label].add(edge.target)
             own = {label: {symbol.module} for label in runs}
         for label, other, kind in (
-            ("head", "base", NEWLY_IMPORTED),
-            ("base", "head", NO_LONGER_IMPORTED),
+            ("head", "base", StepKind.NEWLY_IMPORTED),
+            ("base", "head", StepKind.NO_LONGER_IMPORTED),
         ):
             already: set[str] = set()
             for module in own[other]:
@@ -909,7 +905,7 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
                 continue
             if target in module_nodes:
                 continue
-            detail = f"{CALLER}:{edge.detail}" if edge.kind == DECLARED else CALLER
+            detail = f"{CALLER}:{edge.detail}" if edge.kind == EdgeKind.DECLARED else CALLER
             if not _is_name_node(source):
                 added.append((Edge(CALLS + target, source, edge.kind, detail), revs))
             if source not in module_nodes:
@@ -935,19 +931,19 @@ def _call_steps(steps: list[Step]) -> list[Step]:
             continue
         source = source.removeprefix(CALLS)
         target = target.removeprefix(CALLS)
-        if step.kind == REFERENCES and step.detail == MUTATED_BY:
-            out.append(Step(source, target, REFERENCES, MUTATED_BY, step.revisions))
+        if step.kind == EdgeKind.REFERENCES and step.detail == MUTATED_BY:
+            out.append(Step(source, target, EdgeKind.REFERENCES, MUTATED_BY, step.revisions))
             continue
         if _is_name_node(source) and out and out[-1].target == source:
             source = out.pop().source
         if _is_name_node(target):
             pending = _matched_name(target)
-            out.append(Step(source, target, CALLED_BY, "", step.revisions))
+            out.append(Step(source, target, StepKind.CALLED_BY, "", step.revisions))
             continue
         detail = f"by name match on {pending!r}" if pending is not None else ""
         if step.detail.startswith(f"{CALLER}:"):
             detail = "declared"
-        out.append(Step(source, target, CALLED_BY, detail, step.revisions))
+        out.append(Step(source, target, StepKind.CALLED_BY, detail, step.revisions))
         pending = None
     return out
 
@@ -964,9 +960,9 @@ def _effect_path(
     pending: str | None = None  # the name a pseudo-node matched on
     while (link := parent.get(node)) is not None:
         caller, edge, revs = link
-        if edge.kind == UNRESOLVED_NAME_MATCH:
+        if edge.kind == EdgeKind.UNRESOLVED_NAME_MATCH:
             rule = Rule.UNRESOLVED_NAME_MATCH
-        elif edge.kind == DECLARED and rule == Rule.DEPENDENCY:
+        elif edge.kind == EdgeKind.DECLARED and rule == Rule.DEPENDENCY:
             rule = Rule.DECLARED_DEPENDENCY
         if _is_name_node(caller):
             pending = _matched_name(caller)
@@ -975,8 +971,8 @@ def _effect_path(
         if pending is not None:
             detail = f"by name match on {pending!r}"
         else:
-            detail = "declared" if edge.kind == DECLARED else ""
-        steps.append(Step(steps[-1].target, caller, CALLED_AT_IMPORT, detail, revs))
+            detail = "declared" if edge.kind == EdgeKind.DECLARED else ""
+        steps.append(Step(steps[-1].target, caller, StepKind.CALLED_AT_IMPORT, detail, revs))
         pending = None
         node = caller
     return tuple(steps), rule
@@ -1066,7 +1062,7 @@ def _runner_only_classes(
     # Symbol -> the runner classes it refers to.
     refers: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
-        if edge.kind == REFERENCES and edge.target in runner:
+        if edge.kind == EdgeKind.REFERENCES and edge.target in runner:
             refers[edge.source].add(edge.target)
             if not within_runner(edge.source):
                 held.add(edge.target)
@@ -1146,7 +1142,7 @@ def plan_from_indexes(
     for cls in sorted(base.escaped_classes | head.escaped_classes):
         for member in members.get(cls, ()):
             graph.add(
-                Edge(cls, member, REFERENCES, "attribute of a class passed to other code"),
+                Edge(cls, member, EdgeKind.REFERENCES, "attribute of a class passed to other code"),
                 ("base", "head"),
             )
     # So can a module handed on as a value (``read(ops, name)`` reading
@@ -1164,14 +1160,14 @@ def plan_from_indexes(
             module_reach[module].update(found)
     reached: set[str] = set()
     for edge, revs in sorted(union.items()):
-        if edge.kind == REFERENCES and edge.target in escaped_modules:
+        if edge.kind == EdgeKind.REFERENCES and edge.target in escaped_modules:
             for member in members.get(edge.target, ()):
                 if member != edge.source:
                     graph.add(
                         Edge(
                             edge.source,
                             member,
-                            REFERENCES,
+                            EdgeKind.REFERENCES,
                             "attribute of a module passed to other code",
                         ),
                         revs,
@@ -1180,7 +1176,10 @@ def plan_from_indexes(
                 node = f"{edge.target}.<imports>"
                 graph.add(
                     Edge(
-                        edge.source, node, REFERENCES, "attribute of a module passed to other code"
+                        edge.source,
+                        node,
+                        EdgeKind.REFERENCES,
+                        "attribute of a module passed to other code",
                     ),
                     revs,
                 )
@@ -1190,7 +1189,7 @@ def plan_from_indexes(
         for target in sorted(module_reach[module]):
             for symbol in [target, *members.get(target, ())]:
                 graph.add(
-                    Edge(node, symbol, REFERENCES, f"what {module} imports binds"),
+                    Edge(node, symbol, EdgeKind.REFERENCES, f"what {module} imports binds"),
                     ("base", "head"),
                 )
 
@@ -1235,7 +1234,7 @@ def plan_from_indexes(
         for source in from_side:
             for target in to_side:
                 if source != target:
-                    graph.add(Edge(source, target, DECLARED, decl.detail), ("declared",))
+                    graph.add(Edge(source, target, EdgeKind.DECLARED, decl.detail), ("declared",))
 
     # Conservative edges from unresolved references: ``obj.run()`` may be any
     # known ``run`` (function, method or class) in either revision, and
@@ -1274,13 +1273,16 @@ def plan_from_indexes(
     for node_of, by_name in ((_name_node, symbols_by_name), (_attribute_node, attribute_by_name)):
         for name, symbols in by_name.items():
             for symbol_id in symbols:
-                graph.add(Edge(node_of(name), symbol_id, UNRESOLVED_NAME_MATCH), ("both",))
+                graph.add(Edge(node_of(name), symbol_id, EdgeKind.UNRESOLVED_NAME_MATCH), ("both",))
                 # Whatever obtains a class this way can call it, which runs
                 # the constructor its MRO resolves to (a resolved class
                 # reference gets the same edges from the indexer). The hooks
                 # are dunders, so no name matches them directly.
                 for hook, revs in _constructor_hooks(symbol_id, base, head):
-                    graph.add(Edge(node_of(name), hook, UNRESOLVED_NAME_MATCH, "constructor"), revs)
+                    graph.add(
+                        Edge(node_of(name), hook, EdgeKind.UNRESOLVED_NAME_MATCH, "constructor"),
+                        revs,
+                    )
     any_module_readers = base.any_module_readers | head.any_module_readers
     pending_unresolved: list[tuple[UnresolvedReference, tuple[str, ...]]] = []
     dynamic_symbols: dict[str, tuple[str, ...]] = {}
@@ -1317,7 +1319,7 @@ def plan_from_indexes(
                 if _on_unknown_value(ref, any_module_readers, base, head)
                 else _name_node(ref.name)
             )
-            graph.add(Edge(ref.symbol, node, UNRESOLVED_NAME_MATCH, ref.detail), revs)
+            graph.add(Edge(ref.symbol, node, EdgeKind.UNRESOLVED_NAME_MATCH, ref.detail), revs)
         pending_unresolved.append((ref, revs))
 
     # A listing of an external module in-scope code writes to (``name in
@@ -1338,10 +1340,10 @@ def plan_from_indexes(
         symbol for (symbol, detail) in base.reflection | head.reflection if detail == "dir()"
     }
     for edge, revs in sorted(union.items()):
-        if edge.source in listing and edge.kind == REFERENCES and edge.detail == "module":
+        if edge.source in listing and edge.kind == EdgeKind.REFERENCES and edge.detail == "module":
             hook = f"{edge.target}.__dir__"
             if edge.target in module_nodes and hook in known_symbols:
-                graph.add(Edge(edge.source, hook, REFERENCES, "dir()"), revs)
+                graph.add(Edge(edge.source, hook, EdgeKind.REFERENCES, "dir()"), revs)
 
     # Targets join the graph as nodes with explicit dependency edges.
     dynamic_deps: dict[str, list[str]] = defaultdict(list)
@@ -1349,7 +1351,7 @@ def plan_from_indexes(
     entry_modules: dict[str, str] = {}
     for target in targets:
         if target.entry_symbol in known_symbols:
-            graph.add(Edge(target.node_id, target.entry_symbol, ENTRY), ("manifest",))
+            graph.add(Edge(target.node_id, target.entry_symbol, EdgeKind.ENTRY), ("manifest",))
             entry = head.symbols.get(target.entry_symbol) or base.symbols.get(target.entry_symbol)
             if entry is not None and entry.module != target.entry_symbol:
                 if entry.module not in target.lifecycle_dependencies:
@@ -1368,7 +1370,7 @@ def plan_from_indexes(
             if module is not None and module in known_symbols:
                 dynamic_deps[target.node_id].append(module)
             elif dep in known_symbols:
-                graph.add(Edge(target.node_id, dep, LIFECYCLE), ("manifest",))
+                graph.add(Edge(target.node_id, dep, EdgeKind.LIFECYCLE), ("manifest",))
             else:
                 fallbacks.append(
                     Fallback(
@@ -1439,7 +1441,7 @@ def plan_from_indexes(
         if symbol.module not in mode:
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
-            step = Step(symbol.module, change.id, RUNS_AT_IMPORT, "", _sides(change))
+            step = Step(symbol.module, change.id, StepKind.RUNS_AT_IMPORT, "", _sides(change))
             seed_paths[symbol.module] = ((step,), Rule.DEPENDENCY)
             queue.append(symbol.module)
     # What import-time code calls runs with the arguments written there
@@ -1483,14 +1485,14 @@ def plan_from_indexes(
         # that import.
         symbol_module = {s.id: s.module for index in (base, head) for s in index.symbols.values()}
         for edge, revs in sorted(union.items()):
-            if edge.kind != REFERENCES or edge.source in mode:
+            if edge.kind != EdgeKind.REFERENCES or edge.source in mode:
                 continue
             module = edge.target if edge.target in module_nodes else symbol_module.get(edge.target)
             if module is None or module not in newly_run or module in reach.closure_of(edge.source):
                 continue
             mode[edge.source] = BEHAVIOR
             via[edge.source] = None
-            first = Step(edge.source, module, BOUND_ON_PACKAGE, edge.detail, revs)
+            first = Step(edge.source, module, StepKind.BOUND_ON_PACKAGE, edge.detail, revs)
             seed_paths[edge.source] = ((first, newly_run[module]), Rule.DEPENDENCY)
             queue.append(edge.source)
     # Whatever else may now call a writer differently reaches what it
@@ -1506,8 +1508,8 @@ def plan_from_indexes(
                     mode[node] = BEHAVIOR
                     via[node] = None
                     if node != change.id:
-                        step = Step(node, change.id, RUNS_AT_IMPORT, "its decorator reads the "
-                                    "docstring", _sides(change))  # fmt: skip
+                        why = "its decorator reads the docstring"
+                        step = Step(node, change.id, StepKind.RUNS_AT_IMPORT, why, _sides(change))
                         seed_paths[node] = ((step,), Rule.DEPENDENCY)
                     queue.append(node)
     if documented:
@@ -1520,7 +1522,7 @@ def plan_from_indexes(
                     via[reader] = None
                     target = min(referenced & documented)
                     sides = _sides(next(c for c in seeded if c.id == target))
-                    step = Step(reader, target, READS_DOCSTRING, "", sides)
+                    step = Step(reader, target, StepKind.READS_DOCSTRING, "", sides)
                     seed_paths[reader] = ((step,), Rule.DEPENDENCY)
                     queue.append(reader)
     seed_reasons = dict(seeds.nodes) if seeds is not None else {}
@@ -1587,7 +1589,7 @@ def plan_from_indexes(
     for node_id, module in sorted(entry_modules.items()):
         if node_id not in mode and module in mode:
             mode[node_id] = BEHAVIOR
-            via[node_id] = (Edge(node_id, module, LIFECYCLE), ("manifest",), module)
+            via[node_id] = (Edge(node_id, module, EdgeKind.LIFECYCLE), ("manifest",), module)
 
     affected_by_name = {
         name: tuple(s for s in symbols if s in mode) for name, symbols in symbols_by_name.items()
@@ -1836,7 +1838,7 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     for index in indexes:
         for edge in index.edges:
             # A writer edge points at the code writing, which is no use of it.
-            if edge.kind == DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
+            if edge.kind == EdgeKind.DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
                 continue
             # A class's edge to its own method saying the runtime may call it
             # (an external base such as ``unittest.TestCase``, a special
@@ -1897,7 +1899,7 @@ class _ImportReach:
                 self.module_of[symbol.id] = symbol.module
         for index in (base, head):
             for edge in index.edges:
-                if edge.kind == IMPORTS and edge.target in self.module_of:
+                if edge.kind == EdgeKind.IMPORTS and edge.target in self.module_of:
                     source_module = self.module_of.get(edge.source)
                     if source_module is not None:
                         self.imports_of[source_module].add(edge.target)
@@ -2046,13 +2048,13 @@ def _explain(
             break
         walked.add(current)
         edge, revs, nxt = link
-        if edge.kind == DECLARED and rule == Rule.DEPENDENCY:
+        if edge.kind == EdgeKind.DECLARED and rule == Rule.DEPENDENCY:
             # The path only holds because the project said so; say which rule
             # carried it rather than calling it an ordinary dependency. A name
             # match anywhere on the path outranks it: that one is our guess,
             # this one is the project's statement.
             rule = Rule.DECLARED_DEPENDENCY
-        if edge.kind == UNRESOLVED_NAME_MATCH:
+        if edge.kind == EdgeKind.UNRESOLVED_NAME_MATCH:
             rule = Rule.UNRESOLVED_NAME_MATCH  # outranks a declared edge
             if _is_name_node(edge.target):
                 pending = (edge.source, edge.detail, revs)  # collapse the pseudo-node
@@ -2060,7 +2062,9 @@ def _explain(
                 continue
             if pending is not None:
                 source, detail, revs = pending
-                steps.append(Step(source, edge.target, UNRESOLVED_NAME_MATCH, detail, revs))
+                steps.append(
+                    Step(source, edge.target, EdgeKind.UNRESOLVED_NAME_MATCH, detail, revs)
+                )
                 pending = None
                 current = nxt
                 continue

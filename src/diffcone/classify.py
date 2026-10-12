@@ -6,7 +6,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 from diffcone.indexer.definitions import INERT_DEF
-from diffcone.model import CLASS, DEFINED_IN, IMPORTS, IMPORTS_NAME, MODULE, SourceIndex, Symbol
+from diffcone.model import (
+    CLASS,
+    MODULE,
+    EdgeKind,
+    SourceIndex,
+    Symbol,
+)
 
 ADDED = "added"
 DELETED = "deleted"
@@ -88,7 +94,7 @@ def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str,
     symbol does as much as a new edge does."""
     grouped: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     for e in index.edges:
-        if e.kind != DEFINED_IN:
+        if e.kind != EdgeKind.DEFINED_IN:
             grouped[e.source].add((e.kind, e.target, e.detail))
     for u in index.unresolved:
         grouped[u.symbol].add((UNRESOLVED_SIG, f"{u.kind}:{u.name}", ""))
@@ -224,7 +230,7 @@ def _module_additions_matter(
     for kind, _target, _detail in added:
         # A new third-party import is not import-time code of the project's
         # (installed code is assumed unchanged); anything else is.
-        if kind not in (IMPORTS, IMPORTS_NAME, EXTERNAL_SIG):
+        if kind not in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME, EXTERNAL_SIG):
             return True
     newly_run = _runtime_imports(h, base_modules) - _runtime_imports(b, base_modules)
     return bool(newly_run - closure)

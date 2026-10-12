@@ -52,12 +52,12 @@ from diffcone.model import (
     INSTALLED_ANYWHERE,
     METHOD,
     MUTATED_BY,
-    REFERENCES,
     REGISTERS,
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     WRITES,
     Edge,
+    EdgeKind,
     SourceIndex,
     UnresolvedReference,
 )
@@ -391,15 +391,15 @@ class Indexer(DynamicBounds):
                 if symbol is not None and symbol.kind in (FUNCTION, METHOD):
                     self.index.decorations.add((decorated, decorator))
             if receiver:
-                self.index.edges.add(Edge(receiver, decorated, REFERENCES, REGISTERS))
+                self.index.edges.add(Edge(receiver, decorated, EdgeKind.REFERENCES, REGISTERS))
             for variable in sorted(writers.get(decorator, ())):
-                self.index.edges.add(Edge(variable, decorated, REFERENCES, REGISTERS))
+                self.index.edges.add(Edge(variable, decorated, EdgeKind.REFERENCES, REGISTERS))
         for cls, bases in sorted(self.index.class_bases.items()):
             stack, seen = list(bases), set(bases)
             while stack:
                 base = stack.pop()
                 if f"{base}.__init_subclass__" in self.index.symbols:
-                    self.index.edges.add(Edge(base, cls, REFERENCES, REGISTERS))
+                    self.index.edges.add(Edge(base, cls, EdgeKind.REFERENCES, REGISTERS))
                 for up in self.index.class_bases.get(base, ()):
                     if up not in seen:
                         seen.add(up)
@@ -479,7 +479,7 @@ class Indexer(DynamicBounds):
                 plain=bool(data["plain"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
             )
-        edges = {Edge(*e) for e in record["edges"]}
+        edges = {Edge(s, t, EdgeKind(k), d) for s, t, k, d in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):
             return False
         # Top-level identities depend on which submodules exist: a record
@@ -829,7 +829,7 @@ class Indexer(DynamicBounds):
         for a change through a name it resolves."""
         for var, writers in sorted(self._use_mutations.items()):
             for writer in sorted(writers):
-                self.index.edges.add(Edge(var, writer, REFERENCES, MUTATED_BY))
+                self.index.edges.add(Edge(var, writer, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _outside_stars(self, records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
         """The records, and each about a name a star import may bind
@@ -1075,10 +1075,10 @@ class Indexer(DynamicBounds):
         shows what an installed object ran)."""
         for module, writer in sorted(self._installed):
             if writer != module:
-                self.index.edges.add(Edge(module, writer, REFERENCES, INSTALLED))
+                self.index.edges.add(Edge(module, writer, EdgeKind.REFERENCES, INSTALLED))
         for module, writer in sorted(self._installed_anywhere):
             if writer != module:
-                self.index.edges.add(Edge(module, writer, REFERENCES, INSTALLED_ANYWHERE))
+                self.index.edges.add(Edge(module, writer, EdgeKind.REFERENCES, INSTALLED_ANYWHERE))
 
     def _module_reach(self) -> None:
         """For each module referenced as a value, what is reachable as an
@@ -1087,7 +1087,7 @@ class Indexer(DynamicBounds):
         module_reach``; the planner adds them to what the referrers of an
         escaped module depend on, as W9 does its members)."""
         for edge in self.index.edges:
-            if edge.kind != REFERENCES or edge.target not in self.scopes:
+            if edge.kind != EdgeKind.REFERENCES or edge.target not in self.scopes:
                 continue
             if edge.target in self.index.module_reach:
                 continue

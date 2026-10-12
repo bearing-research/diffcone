@@ -88,12 +88,12 @@ from diffcone.indexer.process import STATE_MUTATORS
 from diffcone.indexer.scopes import ModuleNode, Resolved
 from diffcone.indexer.syntax import _digest, _flatten_chain
 from diffcone.model import (
-    IMPORTS,
     MODULE,
     RUNS_PROGRAM,
     RUNS_SCRIPT,
     UNRESOLVED_DYNAMIC,
     Edge,
+    EdgeKind,
     UnresolvedReference,
 )
 from diffcone.snapshot import module_name_for
@@ -355,7 +355,7 @@ def whole_module(indexer: Resolver, source: str, module: str, detail: str = RUNS
     indexer._module_import_edge(source, module)
     for symbol in module_symbols(indexer, module):
         if symbol != source:
-            indexer.out.edges.add(Edge(source, symbol, "references", detail))
+            indexer.out.edges.add(Edge(source, symbol, EdgeKind.REFERENCES, detail))
     return True
 
 
@@ -1540,7 +1540,7 @@ def apply_scripts(indexer: Resolver) -> None:
             module = module_of.get(path)
             if module is not None:
                 if module != source:
-                    out.edges.add(Edge(source, module, IMPORTS))
+                    out.edges.add(Edge(source, module, EdgeKind.IMPORTS))
                 continue
             unread(source, path)
     for source, suffix, runner in sorted(out.test_runs):

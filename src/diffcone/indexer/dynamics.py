@@ -22,10 +22,10 @@ from diffcone.indexer.scripts import (
 from diffcone.indexer.syntax import IMPORT_ATTRIBUTION_DEPTH
 from diffcone.model import (
     CLASS,
-    REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     Edge,
+    EdgeKind,
     UnresolvedReference,
 )
 
@@ -129,7 +129,12 @@ class DynamicBounds(Resolver):
                 if classes:
                     for member in sorted(self._class_members(classes)):
                         self.out.edges.add(
-                            Edge(pd.function, member, REFERENCES, "attribute read dynamically")
+                            Edge(
+                                pd.function,
+                                member,
+                                EdgeKind.REFERENCES,
+                                "attribute read dynamically",
+                            )
                         )
                     continue
                 self.out.unresolved.add(
@@ -186,7 +191,7 @@ class DynamicBounds(Resolver):
                     node = self._step(node, attr)
                 if isinstance(node, Resolved) and not ref.rest and node.symbol != ref.source:
                     self.out.edges.add(
-                        Edge(ref.source, node.symbol, REFERENCES, f"self.{ref.attr}")
+                        Edge(ref.source, node.symbol, EdgeKind.REFERENCES, f"self.{ref.attr}")
                     )
                 else:
                     self._record(ref.source, node, chain=ref.chain)

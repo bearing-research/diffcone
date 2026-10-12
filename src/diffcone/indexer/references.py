@@ -80,7 +80,6 @@ from diffcone.model import (
     MODULE,
     MUTATED_BY,
     REBINDS,
-    REFERENCES,
     RUNS_PROGRAM,
     RUNS_TEXT,
     UNRESOLVED_ATTRIBUTE,
@@ -88,6 +87,7 @@ from diffcone.model import (
     VARIABLE,
     WRITES,
     Edge,
+    EdgeKind,
     ExternalReference,
     UnresolvedReference,
 )
@@ -285,7 +285,9 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
-    def _resolve(self, parts: list[str], kind: str = REFERENCES, mark: str = "") -> None:
+    def _resolve(
+        self, parts: list[str], kind: EdgeKind = EdgeKind.REFERENCES, mark: str = ""
+    ) -> None:
         alias = self.indexer.module_alias(parts[0], self.scope) if len(parts) > 1 else None
         if alias is None:
             node, rest = self.indexer.resolve_chain_names(parts, self.scope)
@@ -306,7 +308,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._resolved(parts, node, rest, kind, mark)
 
     def _resolved(
-        self, parts: list[str], node: Node, rest: Sequence[str], kind: str, mark: str
+        self, parts: list[str], node: Node, rest: Sequence[str], kind: EdgeKind, mark: str
     ) -> None:
         """Record what ``parts`` resolved to (``node``, and the names read
         off a value of unknown type after it)."""
@@ -618,7 +620,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 for member in sorted(self.indexer._class_members({cls})):
                     if member != self.source:
                         self.indexer.out.edges.add(
-                            Edge(self.source, member, REFERENCES, "match pattern")
+                            Edge(self.source, member, EdgeKind.REFERENCES, "match pattern")
                         )
         shown = ".".join(parts) if parts is not None else "<expr>"
         for name in names:
@@ -682,7 +684,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                         )
                     ):
                         self.indexer.out.edges.add(
-                            Edge(symbol.id, self.source, REFERENCES, MUTATED_BY)
+                            Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
                         )
                         return
         base = expr
@@ -701,7 +703,9 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
-            self.indexer.out.edges.add(Edge(symbol.id, self.source, REFERENCES, MUTATED_BY))
+            self.indexer.out.edges.add(
+                Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
+            )
 
     def _external_module(self, expr: ast.expr | None) -> str | None:
         """The external module ``expr`` names (``logging``, ``os.path``), if
@@ -1896,7 +1900,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.indexer.out.rebound.add(symbol.id)
         elif len(rest) != (1 if mark == WRITES else 0):
             return False
-        self.indexer.out.edges.add(Edge(self.source, symbol.id, REFERENCES, mark))
+        self.indexer.out.edges.add(Edge(self.source, symbol.id, EdgeKind.REFERENCES, mark))
         return True
 
     def _global_rebinding(self, name: str) -> None:
@@ -2165,7 +2169,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         if data is not None and self._dumped(data):
             for hook in self.indexer.pickling_hooks():
                 if hook != self.source:
-                    self.indexer.out.edges.add(Edge(self.source, hook, REFERENCES, "unpickled"))
+                    self.indexer.out.edges.add(
+                        Edge(self.source, hook, EdgeKind.REFERENCES, "unpickled")
+                    )
             return
         found = _pickled_globals(self._literal_bytes(data)) if data is not None else None
         if found is not None:

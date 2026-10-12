@@ -60,17 +60,15 @@ from diffcone.indexer.writes import returns_third_party
 from diffcone.model import (
     CLASS,
     FUNCTION,
-    IMPORTS,
-    IMPORTS_NAME,
     METHOD,
     MODULE,
-    REFERENCES,
     UNRESOLVED_ATTRIBUTE,
     UNRESOLVED_DYNAMIC,
     UNRESOLVED_MODULE_ATTRIBUTE,
     UNRESOLVED_NAME,
     VARIABLE,
     Edge,
+    EdgeKind,
     ExternalReference,
     Symbol,
     UnresolvedReference,
@@ -441,7 +439,7 @@ class Resolver(FirstPass):
                     continue
                 if member in _EXPLICIT_SPECIAL_METHODS:
                     continue
-                self.out.edges.add(Edge(class_id, member_id, REFERENCES, "external_base"))
+                self.out.edges.add(Edge(class_id, member_id, EdgeKind.REFERENCES, "external_base"))
 
     def _build_descendants(self) -> None:
         subclasses: dict[str, set[str]] = defaultdict(set)
@@ -684,7 +682,7 @@ class Resolver(FirstPass):
         runners = [module.name] + ([class_scope.id] if class_scope is not None else [])
         for runner in runners:
             if runner != symbol_id:
-                self.out.edges.add(Edge(runner, symbol_id, REFERENCES, "decorated"))
+                self.out.edges.add(Edge(runner, symbol_id, EdgeKind.REFERENCES, "decorated"))
 
     def _passive_in_scope(self, decorator: ast.expr, where: Scope) -> str:
         """How a decorator that is in-scope code treats what it decorates
@@ -948,7 +946,7 @@ class Resolver(FirstPass):
                 self._record(
                     source,
                     target,
-                    kind=IMPORTS_NAME if not local else REFERENCES,
+                    kind=EdgeKind.IMPORTS_NAME if not local else EdgeKind.REFERENCES,
                     chain=f"from {base} import {alias.name}",
                 )
 
@@ -986,7 +984,7 @@ class Resolver(FirstPass):
         for i in range(1, len(parts) + 1):
             prefix = ".".join(parts[:i])
             if prefix in self.scopes and prefix != source:
-                self.out.edges.add(Edge(source, prefix, IMPORTS))
+                self.out.edges.add(Edge(source, prefix, EdgeKind.IMPORTS))
 
     def resolve_dotted(self, chain: list[str]) -> Node:
         """An absolute dotted name as a string names it (``"pkg.mod.NAME"``):
@@ -1365,7 +1363,7 @@ class Resolver(FirstPass):
         for class_id, name in hooks:
             hit = self.lookup_in_class(class_id, name)
             if isinstance(hit, Resolved) and not hit.detail and hit.symbol != source:
-                self.out.edges.add(Edge(source, hit.symbol, REFERENCES, name))
+                self.out.edges.add(Edge(source, hit.symbol, EdgeKind.REFERENCES, name))
 
     def _instantiates_at_creation(self, class_id: str) -> bool:
         """Whether creating the class makes instances of it: a base, as
@@ -1456,7 +1454,7 @@ class Resolver(FirstPass):
                 family += self._descendants.get(node.symbol, ())
             for cls in family:
                 if cls != source:
-                    self.out.edges.add(Edge(source, cls, REFERENCES, "class object"))
+                    self.out.edges.add(Edge(source, cls, EdgeKind.REFERENCES, "class object"))
             handed: set[str] = set()
             if attr in ("__mro__", "__bases__", "__base__"):
                 handed = {a for cls in family for a in self._mro(cls)[1:]}
@@ -1468,10 +1466,14 @@ class Resolver(FirstPass):
                 for holder in self._mro(cls):
                     for member in sorted(self.class_scopes[holder].members.values()):
                         if member != source:
-                            self.out.edges.add(Edge(source, member, REFERENCES, f"via {attr}"))
+                            self.out.edges.add(
+                                Edge(source, member, EdgeKind.REFERENCES, f"via {attr}")
+                            )
             return
 
-    def _record(self, source: str, node: Node, kind: str = REFERENCES, chain: str = "") -> None:
+    def _record(
+        self, source: str, node: Node, kind: EdgeKind = EdgeKind.REFERENCES, chain: str = ""
+    ) -> None:
         if node is None:
             return
         if isinstance(node, Resolved):
@@ -1500,12 +1502,14 @@ class Resolver(FirstPass):
             for other in node.alternatives:
                 if other != source:
                     self.out.edges.add(Edge(source, other, kind, "alternative binding"))
-            if kind == REFERENCES and not node.detail and node.symbol in self.class_scopes:
+            if kind == EdgeKind.REFERENCES and not node.detail and node.symbol in self.class_scopes:
                 # Using a class (``Foo(...)``, subclassing) runs its constructor.
                 for hook in ("__init__", "__new__"):
                     found = self.lookup_in_class(node.symbol, hook)
                     if isinstance(found, Resolved) and found.symbol != source:
-                        self.out.edges.add(Edge(source, found.symbol, REFERENCES, "constructor"))
+                        self.out.edges.add(
+                            Edge(source, found.symbol, EdgeKind.REFERENCES, "constructor")
+                        )
         elif isinstance(node, ModuleNode):
             if node.module in self.scopes and node.module != source:
                 self.out.edges.add(Edge(source, node.module, kind, "module"))

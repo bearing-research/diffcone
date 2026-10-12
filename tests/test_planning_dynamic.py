@@ -20,7 +20,10 @@ import pytest
 from diffcone.indexer import build_index
 from diffcone.indexer.literals import make_evaluator
 from diffcone.indexer.uses import _no_evaluate, scan_module
-from diffcone.model import IMPORTS, SnapshotInfo
+from diffcone.model import (
+    EdgeKind,
+    SnapshotInfo,
+)
 from diffcone.snapshot import Snapshot, read_snapshot
 from diffcone.testing import (
     FixtureRepo,
@@ -1708,7 +1711,12 @@ def test_q2_dynamic_run_of_a_module_named_at_run_time_is_unbounded(repo, case):
 def test_q2_one_classifier_of_dynamic_details():
     """Every detail the indexer gives a dynamic reference that imports or
     runs code named at run time reads as one; a lookup does not."""
-    from diffcone.model import DISCARDED_IMPORT, RUNS_PROGRAM, RUNS_SCRIPT, imports_anything
+    from diffcone.model import (
+        DISCARDED_IMPORT,
+        RUNS_PROGRAM,
+        RUNS_SCRIPT,
+        imports_anything,
+    )
 
     for detail in (
         "importlib.import_module(<non-literal>)",
@@ -2189,7 +2197,9 @@ def test_l3_a_module_file_run_by_name_counts_every_binding(files, expr):
         files={k: v.encode() for k, v in files.items()},
     )
     edges = build_index(snapshot).edges
-    imported = {e.target for e in edges if e.source == "tests.test_a.test_a" and e.kind == IMPORTS}
+    imported = {
+        e.target for e in edges if e.source == "tests.test_a.test_a" and e.kind == EdgeKind.IMPORTS
+    }
     assert "pkg.fast" in imported
 
 

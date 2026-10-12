@@ -87,12 +87,12 @@ from diffcone.model import (
     FUNCTION,
     METHOD,
     MUTATED_BY,
-    REFERENCES,
     STORE_CLOSURE,
     STORE_PARAM,
     STORE_SELF,
     VARIABLE,
     Edge,
+    EdgeKind,
 )
 
 if TYPE_CHECKING:
@@ -766,7 +766,7 @@ def apply_writes(indexer: Resolver) -> None:
     passes = sorted(out.passes)
     edges_from: dict[str, list[Edge]] = defaultdict(list)
     for edge in indexer.index.edges:
-        if edge.kind == REFERENCES:
+        if edge.kind == EdgeKind.REFERENCES:
             edges_from[edge.source].append(edge)
     external_users = {x.symbol for x in indexer.index.external}
 
@@ -949,7 +949,9 @@ def apply_writes(indexer: Resolver) -> None:
                     if m == module or m.startswith(module + "."):
                         for variable in module_variables[m]:
                             if caller not in (variable, m):
-                                out.edges.add(Edge(variable, caller, REFERENCES, MUTATED_BY))
+                                out.edges.add(
+                                    Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY)
+                                )
             continue
         if not what.startswith("var:"):
             continue
@@ -960,7 +962,7 @@ def apply_writes(indexer: Resolver) -> None:
             # part of its hash already.
             continue
         if writes_through(record):
-            out.edges.add(Edge(variable, caller, REFERENCES, MUTATED_BY))
+            out.edges.add(Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY))
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

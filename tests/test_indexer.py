@@ -10,7 +10,11 @@ import pytest
 
 from diffcone.cache import IndexCache, ModuleCache, index_to_dict
 from diffcone.indexer import build_index
-from diffcone.model import REFERENCES, Edge, SnapshotInfo
+from diffcone.model import (
+    Edge,
+    EdgeKind,
+    SnapshotInfo,
+)
 from diffcone.snapshot import Snapshot, module_name_for
 from diffcone.testing import asv_target, py_target, selected
 
@@ -209,7 +213,7 @@ def test_parse_error_is_recorded_not_hidden():
 
 
 def test_edge_type_is_hashable_and_ordered():
-    assert Edge("a", "b", "references") < Edge("a", "c", "references")
+    assert Edge("a", "b", EdgeKind.REFERENCES) < Edge("a", "c", EdgeKind.REFERENCES)
 
 
 def test_star_import_order_prefers_in_scope_modules():
@@ -1042,8 +1046,8 @@ def test_q15_override_edges_keep_their_kind_after_an_uncertain_hit():
         for e in build_index(snapshot).edges
         if e.source == "pkg.m.Base.go"
     }
-    assert ("pkg.m.Sub.run", REFERENCES, "override") in edges
-    assert ("pkg.m.Mixin.Inner.__init__", REFERENCES, "constructor") in edges
+    assert ("pkg.m.Sub.run", EdgeKind.REFERENCES, "override") in edges
+    assert ("pkg.m.Mixin.Inner.__init__", EdgeKind.REFERENCES, "constructor") in edges
 
 
 # ------------------------------------------------------------ definitions that run no project code

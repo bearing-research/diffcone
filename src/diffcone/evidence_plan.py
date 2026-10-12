@@ -195,15 +195,12 @@ from diffcone.model import (
     ATTRIBUTE_KINDS,
     CLASS,
     CLASS_STATEMENT,
-    DECLARED,
     DERIVED_ANY,
     DERIVED_NAME,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
     FUNCTION,
     GRAPH_HANDLE,
-    IMPORTS,
-    IMPORTS_NAME,
     INSTALLED,
     INSTALLED_ANYWHERE,
     METHOD,
@@ -211,7 +208,6 @@ from diffcone.model import (
     MUTATED_BY,
     OPAQUE_ATTRIBUTE,
     REBINDS,
-    REFERENCES,
     REGISTERS,
     RUN_PATH,
     RUNS_PROGRAM,
@@ -223,6 +219,7 @@ from diffcone.model import (
     UNRESOLVED_DYNAMIC,
     VARIABLE,
     WRITES,
+    EdgeKind,
     SourceIndex,
     Symbol,
     attribute_reachable,
@@ -231,7 +228,6 @@ from diffcone.model import (
 )
 from diffcone.planner import (
     ANY_DOCSTRING,
-    NEWLY_IMPORTED,
     OWN_DIRS,
     OWN_FILES,
     Decision,
@@ -241,6 +237,7 @@ from diffcone.planner import (
     Reason,
     Rule,
     Seeds,
+    StepKind,
     _changed_unanalysed_files,
     _decision,
     _ImportReach,
@@ -504,7 +501,7 @@ def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]
     for index in (c_index, other):
         for edge in index.edges:
             if (
-                edge.kind == REFERENCES
+                edge.kind == EdgeKind.REFERENCES
                 and edge.target in runner
                 and not _inside(edge.source, runner, c_index, other)
             ):
@@ -583,7 +580,7 @@ class _Observers:
                 mark = edge_mark(edge)
                 if mark in (INSTALLED, INSTALLED_ANYWHERE):
                     continue  # static planning's: the record holds what ran
-                if edge.kind in (REFERENCES, DECLARED):
+                if edge.kind in (EdgeKind.REFERENCES, EdgeKind.DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     written_only[edge.target][edge.source].add(
                         mark if mark in (WRITES, REBINDS) else ""
@@ -597,7 +594,7 @@ class _Observers:
                     if mark in (MUTATED_BY, REGISTERS):
                         # A registry and what is put in it (``_forward``).
                         self.holds[edge.source].add(edge.target)
-                elif edge.kind in (IMPORTS, IMPORTS_NAME):
+                elif edge.kind in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME):
                     self.importers_of[edge.target].add(edge.source)
                     self.imported_by[edge.source].add(edge.target)
             for ref in index.unresolved:
@@ -1325,7 +1322,7 @@ class _Observers:
         readers: dict[str, list[str]] = defaultdict(list)
         for index in (self.c, self.other):
             for edge in index.edges:
-                if edge.kind != REFERENCES:
+                if edge.kind != EdgeKind.REFERENCES:
                     continue
                 target = self.symbols.get(edge.target)
                 module = (
@@ -1337,7 +1334,7 @@ class _Observers:
                     readers[module].append(edge.source)
         for module, step in sorted(newly_run.items()):
             change = change_by_id[step.target]
-            how = "newly imported" if step.kind == NEWLY_IMPORTED else "no longer imported"
+            how = "newly imported" if step.kind == StepKind.NEWLY_IMPORTED else "no longer imported"
             why = f"{module}: {how} by {change.id} ({'/'.join(change.changes)})"
             self._import_writes([module], change, why)
             for reader in sorted(set(readers.get(module, ()))):

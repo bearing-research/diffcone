@@ -266,7 +266,12 @@ from diffcone.discovery.session_state import (
 )
 from diffcone.indexer import DEF_NODES, iter_scope_statements
 from diffcone.manifest import Target
-from diffcone.model import DYNAMIC_DEPENDENCY, IMPORTS, IMPORTS_NAME, METHOD, SourceIndex
+from diffcone.model import (
+    DYNAMIC_DEPENDENCY,
+    METHOD,
+    EdgeKind,
+    SourceIndex,
+)
 from diffcone.snapshot import PYTEST_CONFIGS, Snapshot
 
 RUNNER = "pytest"
@@ -2536,7 +2541,7 @@ def _fixture_reach(snapshot: Snapshot, index: SourceIndex) -> set[str]:
 
     importers: dict[str, set[str]] = {}
     for edge in index.edges:
-        if edge.kind in (IMPORTS, IMPORTS_NAME):
+        if edge.kind in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME):
             importers.setdefault(module_of(edge.target), set()).add(module_of(edge.source))
     reach = set(marked)
     queue = list(marked)
