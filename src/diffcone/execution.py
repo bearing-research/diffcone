@@ -510,12 +510,17 @@ def copy_generated_modules(repo: Path, checkout: Path) -> list[str]:
     module the commit tracks is never replaced, and nothing inside an
     ignored directory (a virtualenv, a build tree) is copied. Compiled
     extensions are not: they need ``--setup-command``, which runs after
-    this and may overwrite what it copied."""
+    this and may overwrite what it copied. Nor are conftests and test files
+    (``test_*.py``, ``*_test.py``): an ignored one is the user's own, and
+    copied it would add tests or fixtures neither commit has."""
     copied = []
     for path in ignored_python_files(repo, []):
         source, target = repo / path, checkout / path
         if (
-            not source.is_file()
+            target.name == "conftest.py"
+            or target.name.startswith("test_")
+            or target.name.endswith("_test.py")
+            or not source.is_file()
             or target.exists()
             or target.is_symlink()
             or not (target.parent / "__init__.py").is_file()

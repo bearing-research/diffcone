@@ -395,11 +395,11 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   as the `_version.py` setuptools-scm or hatch-vcs writes, so the package
   could not be imported; the repository's copy of each git-ignored module
   inside a package is now copied into every checkout that lacks it
-  (`--setup-command` runs after it). pytest's cache plugin is no longer
+  (not a conftest or test file; `--setup-command` runs after it). pytest's cache plugin is no longer
   disabled, which made a configured `--failed-first` or `--lf` a usage
   error; it starts from an empty cache of its own instead, so those options
   neither narrow nor reorder the run, and the repository's `.pytest_cache`
-  is left alone. With `--coverage`, a suite that did not run is reported
+  is left alone (a run whose cache could not be moved is refused). With `--coverage`, a suite that did not run is reported
   as such instead of as a missing coverage database; pytest-cov is loaded
   with `-p` when plugin autoloading is disabled; the database's place is
   set in diffcone's coverage config instead of `COVERAGE_FILE`, which the

@@ -2248,7 +2248,8 @@ three after a plan exists, `collect` to record execution evidence.
   into it (`copy_generated_modules`: the `_version.py` of setuptools-scm
   and hatch-vcs; every checkout gets the same copy, so it is no
   difference between the snapshots, and a tracked module is never
-  replaced). `--setup-command` then runs a shell command inside each
+  replaced; ignored conftests and test files, the user's own, are not
+  copied). `--setup-command` then runs a shell command inside each
   checkout before its suite, for what copying cannot recreate (compiled
   extensions). pytest's cache plugin stays loaded (a project's `addopts`
   may carry `--failed-first`, a usage error without it), and the
@@ -2257,7 +2258,9 @@ three after a plan exists, `collect` to record execution evidence.
   with `-o cache_dir=`, which is an unknown option, an error under
   `strict`, when the command disables the plugin): `--lf`/`--ff` find no
   recorded failure, and the repository's `.pytest_cache` is neither read
-  nor written. An error names the snapshot whose suite it is about. Each run gets the checkout's
+  nor written; the plugin checks at session start that the cache is
+  there and refuses the run otherwise (the setting uses pytest internals,
+  and a silent miss would let `--lf` narrow the run). An error names the snapshot whose suite it is about. Each run gets the checkout's
   source roots first on `PYTHONPATH`, so the checkout's code wins over an
   installed (editable) copy of the project; with a `src` layout the working
   directory alone would not achieve that and the suite would silently test

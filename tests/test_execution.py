@@ -1366,6 +1366,31 @@ def test_validate_runs_a_suite_whose_addopts_need_the_cache_plugin(repo):
     assert sorted(p.name for p in cache.iterdir()) == ["lastfailed"]
 
 
+def test_validate_refuses_a_run_whose_cache_it_could_not_move(repo):
+    """Moving pytest's cache uses its internals. Should that stop taking
+    effect (here a conftest puts the cache back after diffcone set it), the
+    run is refused rather than left for ``--lf`` to narrow without a word."""
+    conftest = (
+        "import pytest\n"
+        "from _pytest.cacheprovider import Cache\n\n\n"
+        "@pytest.hookimpl(trylast=True)\n"
+        "def pytest_configure(config):\n"
+        "    config.cache = Cache(config.rootpath / '.elsewhere', config, _ispytest=True)\n"
+    )
+    base = repo.commit(
+        {
+            "conftest.py": conftest,
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+        }
+    )
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    with pytest.raises(GitError, match="could not point pytest's cache"):
+        validate_pytest(plan, repo=repo.path, command=PYTEST)
+
+
 def test_validate_adds_no_cache_option_a_disabled_cache_plugin_would_refuse(repo):
     """A command that disables the cache plugin itself, under a strict
     configuration: validation passes no option of the plugin's (``-o
@@ -1385,7 +1410,8 @@ def test_validate_adds_no_cache_option_a_disabled_cache_plugin_would_refuse(repo
 
 
 GENERATED = {
-    ".gitignore": "pkg/_version.py\npkg/_tracked.py\nscratch.py\nbuild/\n",
+    ".gitignore": "pkg/_version.py\npkg/_tracked.py\nscratch.py\nbuild/\n"
+    "pkg/conftest.py\npkg/test_local.py\npkg/local_test.py\n",
     "pkg/__init__.py": "from pkg._version import version\n",
     "pkg/ops.py": OPS,
     "tests/test_ops.py": TEST_OPS,
@@ -1416,6 +1442,9 @@ def test_copy_generated_modules_copies_only_missing_package_modules(repo, tmp_pa
         "pkg/_tracked.py": "WHERE = 'disk'\n",  # the checkout has it: kept
         "scratch.py": "x = 1\n",  # in no package
         "build/lib/pkg/ops.py": "",  # inside an ignored directory
+        "pkg/conftest.py": "",  # the user's own conftest and tests: not copied
+        "pkg/test_local.py": "",
+        "pkg/local_test.py": "",
     }.items():
         (repo.path / path).parent.mkdir(parents=True, exist_ok=True)
         (repo.path / path).write_text(text, encoding="utf-8")

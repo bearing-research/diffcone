@@ -187,10 +187,11 @@ Tips for both commands:
 - A temporary checkout gets your repository's copy of each git-ignored
   Python module inside a package that the commit lacks, such as the
   `_version.py` that setuptools-scm or hatch-vcs generate, so the package
-  can be imported.
+  can be imported. Ignored conftests and test files are not copied.
 - `--setup-command` runs a shell command in each temporary checkout before
   its tests, for whatever else a build generates (compiled extensions).
 - pytest's cache plugin runs with an empty cache of its own: a configured
   `--lf` or `--ff` doesn't narrow or reorder the suite, and your
-  `.pytest_cache` is left alone. Don't disable the plugin in `--command`
+  `.pytest_cache` is left alone. If the cache can't be moved there, the
+  run is refused. Don't disable the plugin in `--command`
   (`-p no:cacheprovider`) when your configuration or plugins need it.

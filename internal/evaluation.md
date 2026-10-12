@@ -1441,6 +1441,96 @@ the like in the autouse reset fixture are no longer reads; the fixture
 still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
 W13 and W15: 939 of 6 231 with and without these rules.
 
+## Corpus evaluation on 0.4.0's code (2026-10-12)
+
+The checks re-run on main after round 5 and the docs pass (312bce1), with
+test environments rebuilt for the 42 census repositories and pandas (the
+recipes are now a script: each project's own CI dependencies, Python
+3.13, setuptools-scm versions pretended so resolvers don't pick ancient
+releases).
+
+* Plan-only census, the same clones for three versions (334 plans, 8
+  commits per repository):
+
+  | version | selected | mean selection per plan |
+  |---|---|---|
+  | 0.3.0 | 297 923 of 327 637 | 88.2 % |
+  | main before round 5 (d319080) | 312 092 | 92.4 % |
+  | main (312bce1) | 313 506 | 93.6 % |
+
+  Rounds 3-4 cost 4.2 points (the misses they closed); round 5 cost 1.2,
+  in three repositories: boltons (2 080 -> 3 269 of 3 269: `namedlist`
+  `exec`s a code template filled from computed field names, so the text
+  can import anything), pytest-asyncio (401 -> 521: `pytester` text whose
+  f-string field a parametrized argument fills; fixed below, 15 fewer per
+  commit), flake8 (1 610 -> 1 715: a `BaseFormatter` handed to a library,
+  whose `handle` looks names up dynamically).
+* `fixture_check.py`, 42 repositories and pandas: 0 missed fixtures except
+  scrapy, 3 tests: pytest-twisted's `@async_yield_fixture` defined a
+  fixture named `client`, which discovery did not recognise and took for
+  pytest-django's `client`, dropping what it requested. Fixed (any
+  decorator ending in `fixture`; the well-known table never shadows a
+  definition discovery can't read): scrapy 0 of 4 020.
+* `collection_check.py`: no new gap; every collected test that is not a
+  target is behind an incomplete-discovery note. pandas: 25 620 collected,
+  25 620 targets (earlier rounds: 22 801 of 25 208; the environment now
+  installs all of requirements-dev.txt).
+* `diffcone corpus --coverage`, the last 6 Python-changing commits of 35
+  repositories with working validation (133 commits): 299 outcome changes
+  of targets, none missed; 11 634 target tests executed changed code, all
+  selected. Three repositories reported "misses" that were tests outside
+  the target list, in plans whose discovery said so (exit 3): alembic
+  (1 589 tests behind base classes from SQLAlchemy's testing plugin),
+  itsdangerous (inherited test classes) and one scrapy Sybil doc example;
+  `validate`/`corpus` now report those as outside the target list. Static
+  savings where any: flask 40 %, packaging 37 %, more-itertools 36 %,
+  dateutil 33 %, poetry 16 %; the rest select nearly everything, as the
+  census predicts.
+* Found by the evaluation and fixed: a module bound to another name
+  (`m = ops; m.value()`) missed a body change since W20 (cfed684, never
+  released; 0.3.0 selected it); the scrapy fixture miss above.
+* Validation itself could not run on six more projects. None of the first
+  guesses held (the outcome plugin loaded, the projects' coverage configs
+  were not the trigger); in every case the suite never ran:
+  * tox, virtualenv, urllib3, pytest-xdist: a checkout of a commit lacks
+    the git-ignored `_version.py` setuptools-scm/hatch-vcs write, so the
+    package can't be imported (a conftest import error, exit 4; xdist's
+    own plugin entry point; urllib3's `filterwarnings` naming
+    `urllib3._version`). `validate` now copies the repository's ignored
+    modules inside a package into each checkout that lacks them (never a
+    conftest or test file), which replaces the `cp .../_version.py` setup
+    commands in the recipes below.
+  * coverage.py: diffcone's own `-p no:cacheprovider` made its addopts'
+    `--failed-first` a usage error. The cache plugin now stays, pointed at
+    an empty directory of diffcone's, and a run whose cache could not be
+    moved is refused (so `--lf` can't narrow it silently).
+  * with `--coverage`, "no coverage database" was the symptom: the exit
+    code is now checked first. The database is placed by diffcone's
+    coverage config instead of `COVERAGE_FILE`, which coverage.py's suite
+    inherited in its own subprocesses.
+  * dateutil: one genuine error, a base commit whose collection fails under
+    pytest 9.1 (the commit under test is the fix for it).
+  * pre-commit: not diffcone; a Ruby build from source in
+    `tests/languages` spins on this machine (the project's tox ignores
+    that directory).
+
+  Re-run after the fix (outcome-only; with `--coverage`):
+
+  | project | outcomes | coverage recall (precision) |
+  |---|---|---|
+  | coverage.py | 4 validated, 2 outcome changes, 0 missed | 129 of 129 (5 %) |
+  | tox | 2 validated, 4 changes, 0 missed | 688 of 688 (28 %) |
+  | virtualenv | 3 validated, 3 changes, 0 missed | 322 of 322 (39 %) |
+  | pytest-xdist | 4 validated, 8 changes, 0 missed | 249 of 249 (33 %) |
+  | dateutil | 3 validated, 1 error (genuine), 0 missed | 2 of 2 |
+  | urllib3 | 4 validated, 2 changes, 0 missed | 83 of 83 (2 %) |
+  | pre-commit (`--ignore=tests/languages`) | 2 validated, 0 missed | 385 of 385 (36 %) |
+
+  urllib3 needs the command without `-p no:cacheprovider` (pytest-memray's
+  `limit_memory` uses the cache plugin); the corpus scripts no longer need
+  that flag for any project. Totals with these: 41 repositories, 0 missed
+  outcome changes, every coverage-affected test selected.
+
 ## After the behaviour-first round (audit round 5, R1-R30; 2026-10-11)
 
 Six reviews attacked from the outside, one feature at a time (Python

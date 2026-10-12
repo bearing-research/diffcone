@@ -102,6 +102,20 @@ def pytest_configure(config):
         inicache["cache_dir"] = CACHE_DIR
 
 
+def pytest_sessionstart(session):
+    # The setting above uses pytest internals; if it ever stops taking effect,
+    # --lf would narrow the run to the repository's recorded failures without
+    # a word, so a cache elsewhere is a usage error (the suite did not run).
+    cache = getattr(session.config, "cache", None)
+    if CACHE_DIR and cache is not None:
+        where = os.path.realpath(cache.mkdir("diffcone"))
+        if os.path.commonpath([where, os.path.realpath(CACHE_DIR)]) != os.path.realpath(CACHE_DIR):
+            raise pytest.UsageError(
+                f"diffcone could not point pytest's cache at {CACHE_DIR} (it is at {where}); "
+                "--lf/--ff would read the repository's recorded failures"
+            )
+
+
 def _key(item) -> str:
     """The item's test as diffcone names it: the file relative to the
     repository, then the rest of the node id without the parameter case."""
