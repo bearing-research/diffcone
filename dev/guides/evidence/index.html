@@ -1188,7 +1188,10 @@ report:</p>
   test.
 - A test that runs code from text rather than a file (doctests, including
   pytest's <code>--doctest-modules</code>, <code>timeit</code> statements, a notebook kernel) is
-  always selected: that code can use any name of your code.
+  always selected: that code can use any name of your code. Annotations
+  evaluated from text (string annotations, which pydantic and FastAPI
+  evaluate) are not: the test is credited with the function or class they
+  belong to and the classes and functions they name.
 - Code that background threads are running while a test runs is credited
   to that test.
 - Code that ran outside every test, in a pytest hook or while pytest
