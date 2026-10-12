@@ -4,14 +4,18 @@ pytest runs, so the name mapping is pytest's own."""
 from __future__ import annotations
 
 import copy
+import json
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from diffcone import check as checking
 from diffcone.cli import main
 from diffcone.report import to_dict
+from diffcone.testing import FixtureRepo
 
 OPS = """\
 def add(a, b):
@@ -215,3 +219,274 @@ def test_a_crash_exits_2_not_the_miss_code(command, tmp_path, monkeypatch, capsy
     }[command]
     assert main(argv) == 2
     assert "internal error" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- runs and summary
+
+
+def test_r6_a_failure_diffcones_run_did_not_run_fails_the_check(tmp_path):
+    from diffcone.check import check, load_plan, read_junit
+
+    plan = {
+        "status": "complete",
+        "discovery_incomplete": False,
+        "selected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+        "unselected_targets": [],
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+    (tmp_path / "full.xml").write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_x">'
+        '<failure message="boom"/></testcase></testsuite></testsuites>'
+    )
+    (tmp_path / "dc.xml").write_text("<testsuites><testsuite/></testsuites>")
+    report = check(
+        load_plan(tmp_path / "plan.json"),
+        read_junit(tmp_path / "full.xml"),
+        runs={"diffcone": read_junit(tmp_path / "dc.xml")},
+    )
+    assert report.not_run == ["tests/test_a.py::test_x"]
+    assert not report.ok
+
+
+def test_f8_a_miss_is_counted_once_in_the_summary(tmp_path):
+    from diffcone.check import check, load_plan, read_junit, to_markdown
+
+    plan = {
+        "status": "complete",
+        "discovery_incomplete": False,
+        "selected_targets": [],
+        "unselected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+    }
+    (tmp_path / "plan.json").write_text(json.dumps(plan))
+    (tmp_path / "full.xml").write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_x">'
+        '<failure message="boom"/></testcase></testsuite></testsuites>'
+    )
+    (tmp_path / "dc.xml").write_text("<testsuites><testsuite/></testsuites>")
+    report = check(
+        load_plan(tmp_path / "plan.json"),
+        read_junit(tmp_path / "full.xml"),
+        runs={"diffcone": read_junit(tmp_path / "dc.xml")},
+    )
+    assert "**1 missed**" in to_markdown(report)
+
+
+# --------------------------------------------------------------------------- rootdir and prefix
+
+
+PY = sys.executable
+DIFFCONE = shutil.which("diffcone", path=str(Path(sys.executable).parent)) or str(
+    Path(sys.executable).parent / "diffcone"
+)
+PYTEST = f"{PY} -m pytest"
+
+
+ADD_OPS = "def add(a, b):\n    return a + b\n"
+ADD_OPS_BROKEN = "def add(a, b):\n    return a + b + 1\n"
+
+
+def _cli(repo: FixtureRepo, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [DIFFCONE, *args], cwd=cwd or repo.path, capture_output=True, text=True, check=False
+    )
+
+
+def _pytest(repo: FixtureRepo, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [PY, "-m", "pytest", "-q", "-p", "no:cacheprovider", *args],
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _check(repo: FixtureRepo, plan: Path, full: Path, *extra: str) -> tuple[int, dict]:
+    proc = _cli(repo, "check", "--plan", str(plan), "--full", str(full), "--format", "json", *extra)
+    return proc.returncode, json.loads(proc.stdout)
+
+
+MONOREPO = {
+    "README.md": "monorepo\n",
+    "python/pytest.ini": "[pytest]\ntestpaths = tests\n",
+    "python/pkg/__init__.py": "",
+    "python/pkg/ops.py": ADD_OPS,
+    "python/tests/__init__.py": "",
+    "python/tests/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n\n\n"
+        "def test_other():\n    assert True\n"
+    ),
+}
+MONOREPO_ADD, MONOREPO_OTHER = (
+    "python/tests/test_ops.py::test_add",
+    "python/tests/test_ops.py::test_other",
+)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [PYTEST, f"{PYTEST} -c python/pytest.ini --rootdir python"],
+    ids=["found", "given"],
+)
+def test_r4_rootdir_below_the_repository_root(repo, tmp_path, command):
+    """pytest's rootdir is ``python/`` (its ini file is there), so JUnit
+    class names and node ids are relative to it while the plan names tests
+    relative to the repository. ``check`` maps through the rootdir the
+    plan's discovery determined, and ``validate`` compares
+    repository-relative ids: no false miss, no false verdict."""
+    base = repo.commit(MONOREPO)
+    head = repo.commit({"python/pkg/ops.py": ADD_OPS_BROKEN})
+    plan = tmp_path / "plan.json"
+    proc = _cli(
+        repo,
+        "plan",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--source-root",
+        "python",
+        "--command",
+        command,
+        "-o",
+        str(plan),
+        "--",
+        "python",
+    )
+    assert proc.returncode == 3, proc.stderr  # the nested ini is reported, not read
+    data = json.loads(plan.read_text("utf-8"))
+    assert [t["runner_id"] for t in data["selected_targets"]] == [MONOREPO_ADD]
+    config = data["discovery"][0]["config"]
+    assert config["rootdir"] == "python" and config["configfile"] == "python/pytest.ini"
+    notes = {n["kind"] for n in data["discovery"][0]["notes"]}
+    assert "unmodelled_runner_option" in notes
+
+    full = tmp_path / "full.xml"
+    _pytest(repo, *command.split()[3:], "python", f"--junitxml={full}")
+    assert 'classname="tests.test_ops"' in full.read_text("utf-8")
+    code, verdict = _check(repo, plan, full)
+    assert code == 0, verdict
+    assert verdict["full_run"]["unmatched_cases"] == 0
+    assert verdict["mapping"] == {"rootdir": "python", "junit_prefix": "", "note": None}
+    assert [(f["test"], f["kind"], f["selected"]) for f in verdict["failures"]] == [
+        (MONOREPO_ADD, "test", True)
+    ]
+    # Mapped with the wrong rootdir, nothing matches and the report says so.
+    code, verdict = _check(repo, plan, full, "--rootdir", ".")
+    assert code == 1 and verdict["full_run"]["unmatched_cases"] == 2
+    assert "--rootdir" in verdict["mapping"]["note"]
+
+    proc = _cli(
+        repo,
+        "validate",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--source-root",
+        "python",
+        "--command",
+        f"{command} python",
+        "--format",
+        "json",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    verdict = json.loads(proc.stdout)
+    assert {o["runner_id"] for o in verdict["outcomes"]} == {MONOREPO_ADD, MONOREPO_OTHER}
+    assert [(o["runner_id"], o["head"]) for o in verdict["caught"]] == [(MONOREPO_ADD, "FAILED")]
+    assert verdict["missed"] == []
+
+
+COLLECTION = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": ADD_OPS,
+    "tests/__init__.py": "",
+    "tests/test_top.py": "def test_top():\n    assert True\n",
+    "tests/sub/__init__.py": "",
+    "tests/sub/conftest.py": "import pytest\n\n\n@pytest.fixture\ndef one():\n    return 1\n",
+    "tests/sub/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add(one):\n    assert add(one, 1) == 2\n"
+    ),
+}
+SUB_ADD, TOP = "tests/sub/test_ops.py::test_add", "tests/test_top.py::test_top"
+# The fixture's body changes (which selects its tests) and the conftest no
+# longer imports (an added import alone is additive by the documented rule).
+BROKEN_CONFTEST = {
+    "tests/sub/conftest.py": (
+        "import pytest\nimport nosuchmodule\n\n\n@pytest.fixture\ndef one():\n    return 2\n"
+    )
+}
+
+
+def _plan_file(repo: FixtureRepo, base: str, head: str, out: Path, *extra: str) -> dict:
+    proc = _cli(
+        repo, "plan", "--base", base, "--head", head, "--discover", "pytest", "-o", str(out), *extra
+    )
+    assert proc.returncode in (0, 3), proc.stderr
+    return json.loads(out.read_text("utf-8"))
+
+
+def _unselect(plan_path: Path, *tests: str) -> None:
+    data = json.loads(plan_path.read_text("utf-8"))
+    moved = [t for t in data["selected_targets"] if t["runner_id"] in tests]
+    data["selected_targets"] = [t for t in data["selected_targets"] if t not in moved]
+    data["unselected_targets"] += moved
+    plan_path.write_text(json.dumps(data), "utf-8")
+
+
+def test_r5_a_directory_that_fails_to_collect_is_a_collection_failure_of_its_tests(repo, tmp_path):
+    """A ``conftest.py`` that no longer imports makes its directory a
+    collector error (``classname="" name="tests.sub"``): a collection
+    failure of every target under it, caught when any is selected, a miss
+    of them all otherwise."""
+    base = repo.commit(COLLECTION)
+    head = repo.commit(BROKEN_CONFTEST)
+    plan = tmp_path / "plan.json"
+    data = _plan_file(repo, base, head, plan)
+    assert [t["runner_id"] for t in data["selected_targets"]] == [SUB_ADD]
+    assert [t["runner_id"] for t in data["unselected_targets"]] == [TOP]
+    full = tmp_path / "full.xml"
+    _pytest(repo, "--continue-on-collection-errors", f"--junitxml={full}")
+    assert 'classname="" name="tests.sub"' in full.read_text("utf-8")
+    code, verdict = _check(repo, plan, full)
+    assert code == 0, verdict
+    assert [(f["test"], f["kind"], f["selected"]) for f in verdict["failures"]] == [
+        ("tests.sub", "collection", True)
+    ]
+    _unselect(plan, SUB_ADD)
+    code, verdict = _check(repo, plan, full)
+    assert code == 1 and verdict["misses"] == ["tests.sub"]
+    assert verdict["failures"][0]["kind"] == "collection"
+
+
+def test_r5_junit_prefix_from_the_plan_or_the_option(repo, tmp_path):
+    """``--junit-prefix`` puts a prefix before every class name (alone on
+    a collector error): taken off when the plan's pytest arguments carry
+    it, or when ``check --junit-prefix`` says so."""
+    base = repo.commit(COLLECTION)
+    head = repo.commit(BROKEN_CONFTEST)
+    full = tmp_path / "full.xml"
+    _pytest(repo, "--continue-on-collection-errors", "--junit-prefix=ci", f"--junitxml={full}")
+    xml = full.read_text("utf-8")
+    assert 'classname="ci" name="tests.sub"' in xml and 'classname="ci.tests.test_top"' in xml
+
+    carried = tmp_path / "carried.json"
+    data = _plan_file(repo, base, head, carried, "--", "--junit-prefix=ci")
+    assert data["discovery"][0]["config"]["junit_prefix"] == "ci"
+    code, verdict = _check(repo, carried, full)
+    assert code == 0 and verdict["full_run"]["unmatched_cases"] == 0
+    assert verdict["mapping"]["junit_prefix"] == "ci"
+    assert [(f["test"], f["kind"]) for f in verdict["failures"]] == [("tests.sub", "collection")]
+
+    plain = tmp_path / "plain.json"
+    _plan_file(repo, base, head, plain)
+    code, verdict = _check(repo, plain, full, "--junit-prefix", "ci")
+    assert code == 0 and verdict["full_run"]["unmatched_cases"] == 0
+    # Without either, nothing matches and the report points at the option.
+    code, verdict = _check(repo, plain, full)
+    assert code == 1 and verdict["full_run"]["unmatched_cases"] == 2
+    assert "--junit-prefix" in verdict["mapping"]["note"]
