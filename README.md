@@ -2,6 +2,12 @@
 
 [![CI](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml/badge.svg)](https://github.com/bearing-research/diffcone/actions/workflows/ci.yml)
 [![Docs](https://github.com/bearing-research/diffcone/actions/workflows/docs.yml/badge.svg)](https://bearing-research.github.io/diffcone/)
+[![PyPI](https://img.shields.io/pypi/v/diffcone)](https://pypi.org/project/diffcone/)
+[![Python](https://img.shields.io/pypi/pyversions/diffcone)](https://pypi.org/project/diffcone/)
+[![License](https://img.shields.io/pypi/l/diffcone)](https://github.com/bearing-research/diffcone/blob/main/LICENSE)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen)](https://pypi.org/project/diffcone/)
 
 **Run the tests your change can affect, and know why each one was picked.**
 
