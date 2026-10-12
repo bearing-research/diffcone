@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from diffcone.cache import ModuleCache, index_to_dict
+from diffcone.cache import IndexCache, ModuleCache, index_to_dict
 from diffcone.indexer import build_index
-from diffcone.model import Edge, SnapshotInfo
+from diffcone.model import REFERENCES, Edge, SnapshotInfo
 from diffcone.snapshot import Snapshot, module_name_for
+from diffcone.testing import asv_target, py_target, selected
+
+needs_monitoring = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
 
 
 def index(files: dict[str, str], roots: list[str] | None = None):
@@ -981,3 +985,131 @@ def test_prefix_bounded_dynamic_names():
         "pytest_two",
     }
     assert ("pkg.a", "imports", "") in edges(idx, "pkg.lazy.const")
+
+
+# ----------------------------------------------------------------------- modules too deeply nested
+# A module too deeply nested for the recursive walks of its syntax tree
+# is an analysis error (select everything), not an exception out of planning.
+
+# A benchmark on code no scenario changes: a plan that selects it selected
+# everything.
+BENCH = {
+    "pkg/__init__.py": "",
+    "pkg/quiet.py": "def idle():\n    return 0\n",
+    "benchmarks/bench_quiet.py": "from pkg.quiet import idle\n\n\ndef time_idle():\n    idle()\n",
+}
+BENCH_TARGET = asv_target("bench_quiet.time_idle", "benchmarks.bench_quiet.time_idle")
+
+
+def test_q14_deeply_nested_module_degrades_the_plan(repo, tmp_path):
+    deep = "X = " + " + ".join(["1"] * 5000) + "\n"
+    first = repo.commit({**BENCH, "pkg/big.py": deep, "pkg/m.py": "def f():\n    return 1\n"})
+    second = repo.commit({"pkg/m.py": "def f():\n    return 2\n"})
+    test = py_target("tests/test_m.py::test_f", "tests.test_m.test_f")
+    plan = repo.plan(first, second, [test, BENCH_TARGET])
+    assert plan.degraded
+    assert any("too deeply nested" in e.message for e in plan.errors)
+    assert selected(plan) == {"tests/test_m.py::test_f", "bench_quiet.time_idle"}
+    # Running out of stack depends on the caller: such an index is not
+    # cached whole.
+    cache = IndexCache(tmp_path / "cache")
+    repo.plan(first, second, [test, BENCH_TARGET], cache=cache)
+    assert not list((tmp_path / "cache" / "index").glob("*.json"))
+
+
+# --------------------------------------------------------------------------- dispatch edges
+# The edges recorded beside a hit found after an unknown base (an
+# override, the constructor) keep the kind they were asked for.
+
+
+def test_q15_override_edges_keep_their_kind_after_an_uncertain_hit():
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/m.py": (
+            "import external\n\n\nclass Mixin:\n    def run(self):\n        return 1\n\n"
+            "    class Inner:\n        def __init__(self):\n            pass\n\n\n"
+            "class Base(external.Thing, Mixin):\n    def go(self):\n        self.run()\n"
+            "        self.Inner()\n\n\nclass Sub(Base):\n    def run(self):\n        return 2\n"
+        ),
+    }
+    snapshot = Snapshot(
+        info=SnapshotInfo(revision="x", commit="x"),
+        source_roots=["."],
+        files={k: v.encode() for k, v in files.items()},
+    )
+    edges = {
+        (e.target, e.kind, e.detail)
+        for e in build_index(snapshot).edges
+        if e.source == "pkg.m.Base.go"
+    }
+    assert ("pkg.m.Sub.run", REFERENCES, "override") in edges
+    assert ("pkg.m.Mixin.Inner.__init__", REFERENCES, "constructor") in edges
+
+
+# ------------------------------------------------------------ definitions that run no project code
+
+
+QUIET = """\
+import functools
+
+import pytest
+
+from pkg.deco import register
+
+property = register  # rebound: no longer the builtin
+
+
+@pytest.fixture
+def plain():
+    pass
+
+
+@pytest.fixture(scope="session", params=[1, pytest.param(2, id="two")])
+def with_params():
+    pass
+
+
+@pytest.mark.parametrize("x", CASES)
+def test_marked(x):
+    pass
+
+
+@functools.lru_cache(maxsize=None)
+def cached():
+    pass
+
+
+@pytest.fixture(params=make())
+def calls_in_args():
+    pass
+
+
+@register
+def project_decorator():
+    pass
+
+
+@property
+def rebound_builtin():
+    pass
+
+
+def computed_default(x=make()):
+    pass
+
+
+def calls_in_annotation(x: make()):
+    pass
+"""
+
+
+@needs_monitoring
+def test_evp6_which_def_headers_run_no_project_code(repo):
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    repo.commit({"pkg/__init__.py": "", "pkg/deco.py": "def register(f):\n    return f\n",
+                 "pkg/mod.py": QUIET})  # fmt: skip
+    index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
+    quiet = {s.name for s in index.symbols.values() if s.module == "pkg.mod" and s.quiet_header}
+    assert quiet == {"plain", "with_params", "test_marked", "cached"}
