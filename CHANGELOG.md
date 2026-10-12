@@ -324,6 +324,13 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Execution evidence
 
+- On Python 3.14, editing the body of a function whose annotations were
+  read outside the tests selected every test, or every test importing its
+  module. Python 3.14 evaluates annotations in code of their own, which
+  pytest runs while collecting (reading a signature) and frameworks run at
+  import (FastAPI, dataclasses, pydantic). That code no longer counts as
+  the function running there, nor as reading a change its annotations
+  don't name; a change to the annotations still counts.
 - Editing a test file selected every test when the suite was recorded
   with a virtual environment inside the checkout (`uv run pytest` runs
   `.venv/bin/pytest`): pytest reading files during collection looked like

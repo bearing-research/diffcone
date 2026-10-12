@@ -50,6 +50,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 48: Symbol.annotation_names (what a function's annotations can read; E7);
 # 47: a name bound to modules reads off them (indexer/aliases.py), and a
 # module followed through a name is one a value of unknown type may be;
 # 46: batch B of round 5 (text run as code, test runs, handed instances,
@@ -82,7 +83,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 47
+INDEX_FORMAT = 48
 
 
 def _indexer_fingerprint() -> str:

@@ -166,6 +166,11 @@ class Symbol:
     # at import (annotations_changed).
     annotation_hash: str = ""
     deferred_annotations: bool = False
+    # Functions: the names their annotations use (variable names and
+    # attribute names), with "*" when they call something, which can look
+    # anything up: all that evaluating them can read (Python 3.14 evaluates
+    # them in code of their own, ``__annotate__``; evidence_plan).
+    annotation_names: tuple[str, ...] = ()
     # Functions: the ``def`` statement runs no code at import beyond binding
     # the name (inert decorators, literal defaults, deferred or no
     # annotations, a plain class for methods).

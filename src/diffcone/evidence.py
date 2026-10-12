@@ -94,6 +94,12 @@ class Evidence:
     # Symbols executed outside every test window while no import was running
     # (session hooks, collection, pytest_generate_tests).
     hook_phase: frozenset[str] = frozenset()
+    # Symbols in the phases above whose only code that ran there was their
+    # annotations' (Python 3.14 evaluates annotations lazily, in a code
+    # object of their own, ``__annotate__``, that pytest calls while
+    # collecting): a change to the body or docstring leaves that code as it
+    # was (``evidence_plan``).
+    annotations_only: frozenset[str] = frozenset()
     # Paths project code opened or stat'ed outside every test window
     # -> the modules being imported then ("" for none: a hook or collection;
     # ``path:<file>`` for a module outside the index).
@@ -271,6 +277,34 @@ class _Raw:
     # the shared fixtures each test used.
     fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
     test_fixtures: dict[str, set[str]] = field(default_factory=dict)
+    # Symbols that ran outside every test window through their annotations'
+    # code (``__annotate__``), and through any other code.
+    outside_annotations: set[str] = field(default_factory=set)
+    outside_code: set[str] = field(default_factory=set)
+
+    @property
+    def annotations_only(self) -> set[str]:
+        return self.outside_annotations - self.outside_code
+
+
+def _annotate_code(qualname: str) -> bool:
+    """Whether a code object is the one Python 3.14 compiles to evaluate a
+    definition's annotations: ``__annotate__`` (a module-level function's),
+    ``C.__annotate__`` (a class's, or one of its methods'). It starts on the
+    ``def``/``class`` line, so it maps to that symbol."""
+    return qualname == "__annotate__" or qualname.endswith(".__annotate__")
+
+
+def _annotations_only(sources: list[_Raw] | list[Evidence]) -> frozenset[str]:
+    """The symbols whose only code that ran outside every test, in every
+    source, was their annotations'."""
+    only: set[str] = set()
+    code: set[str] = set()
+    for s in sources:
+        only |= s.annotations_only
+        outside = set(s.import_phase) | set(s.hook_phase) | set(s.import_by)
+        code |= outside - s.annotations_only
+    return frozenset(only - code)
 
 
 class _Children:
@@ -401,6 +435,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             raw.collected = (raw.collected or set()) | set(data["collected"])
         symbol_of: list[str | None] = []
         file_of: list[str | None] = []
+        annotate: list[bool] = []
         for path, line, qualname in data["table"]:
             path = canonical(path)
             symbol = owners(path, line, qualname)
@@ -408,14 +443,24 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             # Code from a repository file the index does not read (outside the
             # source roots): recorded as a path the test touched.
             file_of.append(None if symbol is not None else path)
+            annotate.append(_annotate_code(qualname))
+
+        def outside(i: int, symbol_of=symbol_of, annotate=annotate) -> None:
+            """Code ``i`` (with a symbol) ran outside every test window."""
+            symbol = symbol_of[i]
+            assert symbol is not None
+            (raw.outside_annotations if annotate[i] else raw.outside_code).add(symbol)
+
         for i in data["import_phase"]:
             if symbol_of[i] is not None:
                 raw.import_phase.add(symbol_of[i])
+                outside(i)
             elif file_of[i] is not None:
                 raw.import_paths[file_of[i]].add("")
         for i in data["hook_phase"]:
             if symbol_of[i] is not None:
                 raw.hook_phase.add(symbol_of[i])
+                outside(i)
         for key, seen in (("import_paths", raw.import_paths), ("import_dirs", raw.import_dirs)):
             for path, modules in data[key].items():
                 for module_path in modules:
@@ -426,6 +471,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             symbol = symbol_of[int(key)]
             if symbol is None:
                 continue
+            outside(int(key))
             for module_path in modules:
                 raw.import_by[symbol].add(module_of(module_path))
         # A process started outside every test window ran as part of the
@@ -435,6 +481,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             module = module_of(module_path)
             c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
             raw.import_phase |= c_symbols
+            raw.outside_code |= c_symbols
             for symbol in c_symbols:
                 if module:
                     raw.import_by[symbol].add(module)
@@ -737,6 +784,7 @@ def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
     return {
         "import_phase": frozenset().union(*(s.import_phase for s in sources)),
         "hook_phase": frozenset().union(*(s.hook_phase for s in sources)),
+        "annotations_only": _annotations_only(sources),
         "import_by": _merged(s.import_by for s in sources),
         "import_paths": _merged(s.import_paths for s in sources),
         "import_dirs": _merged(s.import_dirs for s in sources),
@@ -812,6 +860,7 @@ def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
         "created": evidence.created,
         "import_phase": sorted(evidence.import_phase),
         "hook_phase": sorted(evidence.hook_phase),
+        "annotations_only": sorted(evidence.annotations_only),
         "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
         "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
         "import_flagged": sorted(evidence.import_flagged),
@@ -890,6 +939,7 @@ def load_store(path: Path) -> Evidence:
             tests=tests,
             import_phase=frozenset(meta["import_phase"]),
             hook_phase=frozenset(meta["hook_phase"]),
+            annotations_only=frozenset(meta.get("annotations_only", ())),
             import_by={s: frozenset(m) for s, m in import_by.items()},
             import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},

@@ -438,6 +438,7 @@ def symbol_from_dict(data: dict) -> Symbol:
     data["imports"] = tuple(data["imports"])
     data["import_layout"] = tuple(data["import_layout"])
     data["statement_layout"] = tuple(data["statement_layout"])
+    data["annotation_names"] = tuple(data["annotation_names"])
     return Symbol(**data)
 
 

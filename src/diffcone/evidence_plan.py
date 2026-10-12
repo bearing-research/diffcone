@@ -929,8 +929,12 @@ class _Observers:
 
     def _ran_outside_tests(self, code: str) -> bool:
         """Whether ``code`` (a symbol) ran at C outside every test: during
-        an import, in a hook or during collection."""
+        an import, in a hook or during collection. Evaluating its
+        annotations there (``__annotate__``, Python 3.14) is not running it:
+        that writes, obtains and hands on nothing of its own."""
         ev = self.evidence
+        if code in ev.annotations_only:
+            return False
         return code in ev.import_phase or code in ev.import_by or code in ev.hook_phase
 
     def _only_in_tests(self, code: Iterable[str]) -> bool:
@@ -1558,7 +1562,7 @@ class _Observers:
             if changed.scope:
                 readers = readers | self.attribute_readers.get(changed.name, set())
             for reader in sorted(readers):
-                self._reader(reader, None, label)
+                self._reader(reader, None, label, read=changed.name)
             # A lookup by a name nothing bounds may find it, and read its
             # value as well as notice it come or go.
             for site, kind in self.sites:
@@ -1610,7 +1614,7 @@ class _Observers:
                     recorded,
                 )
             for reader in sorted(self.by_name.get(name, ())):
-                self._reader(reader, None, label)
+                self._reader(reader, None, label, read=name)
 
     def _cython_mentioning(self, name: str) -> list[tuple[str, CythonFunction]]:
         """The Cython functions at C whose header or body mentions ``name``."""
@@ -1937,7 +1941,7 @@ class _Observers:
                 matched, symbol.id, change, attribute
             )
             for reader in sorted(readers):
-                self._reader(reader, change, attribute)
+                self._reader(reader, change, attribute, read=name)
         self._sites(symbol, change, label, at_import=True)
 
     def _hierarchy(self, cls: str, change: SymbolChange, label: str) -> None:
@@ -2002,7 +2006,11 @@ class _Observers:
         for reader in sorted(readers):
             own = change is not None and target == change.id
             self._reader(
-                reader, change, label if own else f"{label} via {target}", in_tests=in_tests
+                reader,
+                change,
+                label if own else f"{label} via {target}",
+                in_tests=in_tests,
+                read=target.rsplit(".", 1)[-1],
             )
 
     def _guard(
@@ -2077,15 +2085,23 @@ class _Observers:
         return self._holders_of[cls]
 
     def _reader(
-        self, reader: str, change: SymbolChange | None, label: str, *, in_tests: bool = False
+        self,
+        reader: str,
+        change: SymbolChange | None,
+        label: str,
+        *,
+        in_tests: bool = False,
+        read: str | None = None,
     ) -> None:
+        """``read``: the name ``reader`` reads (a variable's, an attribute's),
+        or None when it finds what changed by looking it up."""
         symbol = self.symbols.get(reader)
         if symbol is None:
             return
         if symbol.kind in (FUNCTION, METHOD):
             self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
             if not in_tests:
-                self._import_effect(reader, change, f"{label}, read by {reader}")
+                self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
         elif symbol.kind == VARIABLE:
             # Its initialiser captured the value: it changed too.
             if reader not in self._followed:
@@ -2118,13 +2134,29 @@ class _Observers:
             else:
                 self._observe(importer, RULE_EXECUTED_READER, f"{importer} imports {label}", change)
 
-    def _import_effect(self, symbol_id: str, change: SymbolChange | None, label: str) -> None:
+    def _import_effect(
+        self, symbol_id: str, change: SymbolChange | None, label: str, *, read: str | None = None
+    ) -> None:
         """Code that ran at C while a module was imported built that module's
         import-time state; code that ran outside every test and import ran in
         a hook or during collection. Either may also have written into
         another module's state, which every later test reads
-        (``_import_writes``)."""
+        (``_import_writes``).
+
+        A symbol whose only code that ran there was its annotations'
+        (``__annotate__``, Python 3.14) ran none of its body there: a change
+        to its body or docstring alone changes nothing that ran outside the
+        tests, and as a reader (``read``: the name it reads, None for a
+        lookup) it read the change there only if its annotations use that
+        name, or call something that could look it up. Any other change of
+        its own (its annotations, its definition) is taken as before."""
         ev = self.evidence
+        if symbol_id in ev.annotations_only:
+            if change is not None and symbol_id == change.id:
+                if set(change.changes) <= {BODY_CHANGED, DOCSTRING_CHANGED}:
+                    return
+            elif not self._annotations_read(symbol_id, read):
+                return
         if ev.import_by.get(symbol_id) or symbol_id in ev.hook_phase:
             self._import_writes(
                 [symbol_id], change, f"{symbol_id} ran outside every test at C; {label}"
@@ -2158,6 +2190,13 @@ class _Observers:
                 self._escalate_change(change, reason)
             elif symbol_id not in self.seed_nodes:
                 self.seed_nodes[symbol_id] = reason
+
+    def _annotations_read(self, symbol_id: str, read: str | None) -> bool:
+        """Whether evaluating ``symbol_id``'s annotations at C can read
+        ``read`` (a name; None: whatever a lookup finds)."""
+        symbol = self.c.symbols.get(symbol_id) or self.symbols[symbol_id]
+        names = symbol.annotation_names
+        return "*" in names or (read is not None and read in names)
 
     def _collects_itself(self, symbol_id: str) -> bool:
         """Whether code of ``symbol_id`` that ran outside every test is code

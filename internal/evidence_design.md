@@ -478,7 +478,15 @@ selection or states something the tables left implicit; none narrows it.
   a registered plugin object's method, only the tests under it for a
   path-scoped hook such as `pytest_generate_tests`). The exception is a
   test's or fixture's own code that pytest runs to collect it (`ids=`
-  callables), which reaches only that test or fixture's users. A lookup or
+  callables), which reaches only that test or fixture's users. Another is
+  a function whose only code that ran outside every test, at import or in
+  a hook, was its annotations' (`__annotate__`, Python 3.14, which
+  `inspect.signature` runs: pytest while collecting, frameworks at
+  import): the fold records it in `annotations_only`, and a change to its
+  body or docstring alone is not one to code that ran there (E7), and as
+  a reader it read a change there only if its annotations use the name
+  read, or call something that could look it up (`Symbol.annotation_names`).
+  A change to its annotations or definition is taken as before. A lookup or
   reflection site that joins E is a reader too: one that ran at import (a
   module-level `dir(pkg.reg)`) or in a hook is followed as readers are,
   since no test's record holds it.

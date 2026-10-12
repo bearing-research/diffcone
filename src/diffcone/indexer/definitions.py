@@ -942,6 +942,40 @@ def _has_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
+# What in an annotation runs code that can look anything up: a call (``getattr``,
+# ``eval``) or an expression that defines and runs a function.
+_ANNOTATION_RUNS = (
+    ast.Call,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.Await,
+    ast.Yield,
+    ast.YieldFrom,
+)
+
+
+def _annotation_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """The names the function's annotations use, variable names and attribute
+    names, with "*" when they run code that can look anything up (a call):
+    what evaluating them can read. A string annotation is not evaluated."""
+    parts = [a.annotation for a in _annotated_args(node.args) if a.annotation is not None]
+    if node.returns is not None:
+        parts.append(node.returns)
+    names: set[str] = set()
+    for part in parts:
+        for sub in ast.walk(part):
+            if isinstance(sub, ast.Name):
+                names.add(sub.id)
+            elif isinstance(sub, ast.Attribute):
+                names.add(sub.attr)
+            elif isinstance(sub, _ANNOTATION_RUNS):
+                names.add("*")
+    return names
+
+
 def _future_annotations(scope: ModuleScope) -> bool:
     binding = scope.imports.get("annotations")
     return binding is not None and binding.module == "__future__"

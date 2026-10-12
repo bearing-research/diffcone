@@ -13,6 +13,10 @@ fix if cheap, else note).
 
 Over-selection, crashes on rare input and stale text are listed at the end.
 
+Later rounds follow the `audit` skill (`.claude/skills/audit/SKILL.md`):
+review, record here before fixing, fix in worktree batches, validate on
+strata, the census and the corpus, then fact-check the docs.
+
 ## Planner and model (P)
 
 | id | finding | status |
@@ -424,3 +428,6 @@ which the test's outcome changes between the snapshots.
 | E4 | `validate`/`corpus` could not run on coverage.py, tox, virtualenv (pytest usage error), urllib3, pytest-xdist (outcome plugin not loaded), and with `--coverage` on projects that configure coverage themselves (no database); pre-commit timed out. | fixed: the suites never ran. Generated `_version.py` missing from checkouts (copied in now, never a conftest or test file); diffcone's `-p no:cacheprovider` broke `--failed-first` (the plugin stays, on an empty cache of diffcone's, and a run whose cache couldn't be moved is refused); the exit code is checked before the coverage database, whose place is diffcone's config, not `COVERAGE_FILE`. dateutil's one error is genuine; pre-commit's hang is its own Ruby build. |
 | E6 | `collect` and `run --collect` still pass `-p no:cacheprovider`, so recording a project whose addopts carry `--failed-first` (coverage.py) is a usage error. Loud, not a miss. | open: the store records the command line; change with the next store format |
 | E5 | Precision (pytest-asyncio): `pytester` text whose f-string field a parametrized argument fills counted as text built at run time. | fixed: literal parametrize values on the test itself are substituted and the text read once per value |
+| E7 | Precision, Python 3.14: annotations are evaluated lazily by a code object of their own (`__annotate__`) on the `def` line, which the recorder credited to the function. When pytest reads a signature while collecting, or a decorator does at import (FastAPI, dataclasses, pydantic), a body edit of that project function selected every test or every importer of its module: strata recorded on 3.14 planned 6231 of 6231 (961 on 3.13). Found while testing the audit skill's strata scripts. | fixed: symbols whose only code outside the tests was `__annotate__` are stored (`annotations_only`); a body or docstring change of one is not a change to code run at import or in a hook, and as a reader it read the change there only if its annotations use the name read or call something (`Symbol.annotation_names`, index format 48). strata on 3.14: 656 of 6231 |
+| E8 | Precision: each test's recorded run stats its own test file, so editing a test file selects every test in it that ran (on 3.13 and 3.14). | open: find what stats it (pytest internals in the test window) |
+| E9 | Precision, Python 3.13 and earlier: `inspect.signature` evaluates string annotations (`from __future__ import annotations`) with `eval` in `inspect.get_annotations`; `inspect` is not among the recorder's text generators (`typing` and `annotationlib`, where 3.14 does the same, are), so those tests count as running text code and are always selected: strata 961 of 6231 on 3.13 against 656 on 3.14 (335 against 11 `text_code`). | open: a narrowing, decide with the user; the soundness argument is the one for `typing` |

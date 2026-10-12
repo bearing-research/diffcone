@@ -10,6 +10,7 @@ from collections.abc import Collection
 
 from diffcone.indexer.definitions import (
     _annotated_args,
+    _annotation_names,
     _calls_nothing,
     _canonical_imports,
     _container_kind,
@@ -528,6 +529,9 @@ class FirstPass(IndexerState):
                     line_ranges=tuple((_start_line(n), _end_line(n)) for n in nodes),
                     annotation_hash=annotation_hash,
                     deferred_annotations=deferred,
+                    annotation_names=tuple(
+                        sorted(set().union(*(_annotation_names(n) for n in nodes)))
+                    ),
                     inert_definition=inert,
                     inert_header=header,
                     quiet_header=quiet,

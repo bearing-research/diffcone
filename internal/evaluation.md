@@ -1441,6 +1441,31 @@ the like in the autouse reset fixture are no longer reads; the fixture
 still reads `strata.server._state` itself). On main with W1, W3, W4, W5, W7, W9,
 W13 and W15: 939 of 6 231 with and without these rules.
 
+## strata on Python 3.13 and 3.14 (audit E7, 2026-10-11)
+
+Re-recorded strata at `edc32ce0` with the audit skill's scripts and planned
+`edc32ce0` -> `1241020210`. uv picked Python 3.14 for the first recording,
+which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
+
+| recording | before E7 | after E7 |
+|---|---|---|
+| Python 3.13 | 961 | 961 |
+| Python 3.14 | 6 231 (`pytest_hook_changed`) | 656 |
+
+* 3.14 evaluates annotations in a code object of their own
+  (`__annotate__`, on the `def` line), which pytest and frameworks run
+  outside the tests; 780 symbols ran there only that way. The chain that
+  selected everything: a test module's changed `MALFORMED`, name-matched by
+  a test method that ran in the "hook phase" only through its annotations,
+  which can run `strata.lake_files.configure`, which writes what
+  `strata.__getattr__` (run during collection) can see.
+* 3.13 selects more than 3.14 after the fix: 335 tests against 11 count as
+  running text code, `inspect.get_annotations` evaluating string
+  annotations with `eval`; on 3.14 `annotationlib` does it, which the
+  recorder exempts as it does `typing` (E9, open).
+* strata's CI records on 3.12, 3.13 and 3.14 cells, so its 3.14 cells
+  planned everything on any such change until this fix reaches it.
+
 ## Corpus evaluation on 0.4.0's code (2026-10-12)
 
 The checks re-run on main after round 5 and the docs pass (312bce1), with
