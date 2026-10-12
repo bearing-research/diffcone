@@ -60,3 +60,19 @@ def test_every_documented_command_parses():
             build_parser().parse_args(words)
         except SystemExit as exc:
             pytest.fail(f"{where}: does not parse ({exc})")
+
+
+def test_the_report_reference_lists_every_rule_and_which_are_fallbacks():
+    """The rule tables of the report reference name each ``Rule`` once, and
+    mark as a fallback exactly the ``CONSERVATIVE_RULES`` (the report's
+    ``conservative``)."""
+    import re
+
+    from diffcone.planner import CONSERVATIVE_RULES, Rule
+
+    text = (ROOT / "docs" / "reference" / "report.md").read_text("utf-8")
+    rows = re.findall(r"^\| `([a-z_]+)` \| (yes)? ?\|", text, re.M)
+    documented = [name for name, _ in rows]
+    assert sorted(documented) == sorted(set(documented)), "a rule is listed twice"
+    assert set(documented) == set(Rule)
+    assert {name for name, fallback in rows if fallback} == set(CONSERVATIVE_RULES)

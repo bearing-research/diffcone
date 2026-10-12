@@ -90,6 +90,7 @@ import re
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
@@ -184,65 +185,73 @@ CONTENT = 2
 BEHAVIOR = 3
 STRUCTURAL = 4
 
-RULE_DEPENDENCY = "dependency"
-RULE_UNRESOLVED_NAME_MATCH = "unresolved_name_match"
-RULE_DYNAMIC_REFERENCE = "dynamic_reference"
-RULE_ENTRY_UNRESOLVED = "entry_symbol_unresolved"
-RULE_LIFECYCLE_UNRESOLVED = "lifecycle_dependency_unresolved"
-RULE_ANALYSIS_ERROR = "analysis_error"
-RULE_RUNNER_DEPENDENCY = "runner_dependency"
-RULE_ENTRY_DOCSTRING = "entry_docstring_changed"
-RULE_DECLARED_DEPENDENCY = "declared_dependency"
-# A target diffcone.toml says to run on every change ([[always_run]]).
-RULE_ALWAYS_RUN = "always_run"
-RULE_NEW_TARGET = "new_target"
-# A discovered target whose lifecycle dependencies differ between the
-# snapshots: a fixture, hook or plugin now applies to it, or no longer does,
-# although nothing it depends on changed (``pytest_plugins`` added in another
-# test module registers a plugin for the whole session).
-RULE_LIFECYCLE_CHANGED = "lifecycle_changed"
-RULE_UNANALYSED_FILE = "unanalysed_file_changed"
-# Evidence mode (evidence_plan.py). ``escalated`` is a selection made by
-# static planning of a change that evidence cannot bound.
-RULE_ESCALATED = "escalated"
-RULE_EXECUTED_CHANGED = "executed_changed"
-RULE_EXECUTED_READER = "executed_reader"
-RULE_LOOKUP_SITE = "lookup_site"
-RULE_TOUCHED_FILE = "touched_file"
-RULE_TEST_SCOPE = "test_scope"
-RULE_CHANGED_TARGET = "changed_target"
-RULE_NO_EVIDENCE = "no_evidence"
-RULE_UNSTABLE = "unstable"
-RULE_SUBPROCESS = "subprocess"
-# Evidence: the test ran code compiled from text no file holds (a doctest).
-RULE_TEXT_CODE = "text_code"
-RULE_PYTEST_HOOK = "pytest_hook_changed"
-RULE_UNOBSERVED_FILE = "unobserved_file_changed"
-RULE_UNINDEXED_IMPORT = "unindexed_import"
-# A test executed a Cython function that names a changed nogil or cpdef one,
-# which a profiled build does not report itself (roadmap item 7).
-RULE_CYTHON_CALLER = "cython_caller"
+
+class Rule(StrEnum):
+    """Why a target was selected: the rule each ``Reason`` and ``Fallback``
+    names. The values are the report's ``rules`` (docs/reference/report.md
+    lists them; ``CONSERVATIVE_RULES`` are those that may over-select)."""
+
+    DEPENDENCY = "dependency"
+    UNRESOLVED_NAME_MATCH = "unresolved_name_match"
+    DYNAMIC_REFERENCE = "dynamic_reference"
+    ENTRY_UNRESOLVED = "entry_symbol_unresolved"
+    LIFECYCLE_UNRESOLVED = "lifecycle_dependency_unresolved"
+    ANALYSIS_ERROR = "analysis_error"
+    RUNNER_DEPENDENCY = "runner_dependency"
+    ENTRY_DOCSTRING = "entry_docstring_changed"
+    DECLARED_DEPENDENCY = "declared_dependency"
+    # A target diffcone.toml says to run on every change ([[always_run]]).
+    ALWAYS_RUN = "always_run"
+    NEW_TARGET = "new_target"
+    # A discovered target whose lifecycle dependencies differ between the
+    # snapshots: a fixture, hook or plugin now applies to it, or no longer does,
+    # although nothing it depends on changed (``pytest_plugins`` added in another
+    # test module registers a plugin for the whole session).
+    LIFECYCLE_CHANGED = "lifecycle_changed"
+    UNANALYSED_FILE = "unanalysed_file_changed"
+    # Evidence mode (evidence_plan.py). ``escalated`` is a selection made by
+    # static planning of a change that evidence cannot bound.
+    ESCALATED = "escalated"
+    EXECUTED_CHANGED = "executed_changed"
+    EXECUTED_READER = "executed_reader"
+    LOOKUP_SITE = "lookup_site"
+    TOUCHED_FILE = "touched_file"
+    TEST_SCOPE = "test_scope"
+    CHANGED_TARGET = "changed_target"
+    NO_EVIDENCE = "no_evidence"
+    UNSTABLE = "unstable"
+    SUBPROCESS = "subprocess"
+    # Evidence: the test ran code compiled from text no file holds (a doctest).
+    TEXT_CODE = "text_code"
+    PYTEST_HOOK = "pytest_hook_changed"
+    UNOBSERVED_FILE = "unobserved_file_changed"
+    UNINDEXED_IMPORT = "unindexed_import"
+    # A test executed a Cython function that names a changed nogil or cpdef one,
+    # which a profiled build does not report itself (roadmap item 7).
+    CYTHON_CALLER = "cython_caller"
+
+
 # A declared endpoint that names a container stands for everything in it;
 # beyond this many pairs the declaration is too coarse to be useful.
 DECLARATION_FANOUT = 5000
 
 CONSERVATIVE_RULES = frozenset(
     {
-        RULE_UNRESOLVED_NAME_MATCH,
-        RULE_DYNAMIC_REFERENCE,
-        RULE_ENTRY_UNRESOLVED,
-        RULE_LIFECYCLE_UNRESOLVED,
-        RULE_ANALYSIS_ERROR,
-        RULE_RUNNER_DEPENDENCY,
-        RULE_UNANALYSED_FILE,
-        RULE_LOOKUP_SITE,
-        RULE_NO_EVIDENCE,
-        RULE_UNSTABLE,
-        RULE_SUBPROCESS,
-        RULE_TEXT_CODE,
-        RULE_PYTEST_HOOK,
-        RULE_UNOBSERVED_FILE,
-        RULE_UNINDEXED_IMPORT,
+        Rule.UNRESOLVED_NAME_MATCH,
+        Rule.DYNAMIC_REFERENCE,
+        Rule.ENTRY_UNRESOLVED,
+        Rule.LIFECYCLE_UNRESOLVED,
+        Rule.ANALYSIS_ERROR,
+        Rule.RUNNER_DEPENDENCY,
+        Rule.UNANALYSED_FILE,
+        Rule.LOOKUP_SITE,
+        Rule.NO_EVIDENCE,
+        Rule.UNSTABLE,
+        Rule.SUBPROCESS,
+        Rule.TEXT_CODE,
+        Rule.PYTEST_HOOK,
+        Rule.UNOBSERVED_FILE,
+        Rule.UNINDEXED_IMPORT,
     }
 )
 
@@ -494,7 +503,7 @@ class Step:
 
 @dataclass(frozen=True)
 class Reason:
-    rule: str
+    rule: Rule
     detail: str
     path: tuple[Step, ...] = ()
     changed_symbol: str | None = None
@@ -516,7 +525,7 @@ class Decision:
 
 @dataclass(frozen=True)
 class Fallback:
-    rule: str
+    rule: Rule
     scope: str  # "all_targets" | "target"
     detail: str
     target: str | None = None
@@ -776,7 +785,7 @@ def _is_call(edge: Edge) -> bool:
 
 def _import_call_effects(
     graph: _Graph, roots: Iterable[str], module_nodes: set[str]
-) -> dict[str, tuple[tuple[Step, ...], str, int]]:
+) -> dict[str, tuple[tuple[Step, ...], Rule, int]]:
     """The state a piece of import-time code that now runs differently (a
     changed one, or a module newly run or no longer run: ``roots``) can
     leave different: every variable mutated in place (a ``mutated_by``
@@ -799,7 +808,7 @@ def _import_call_effects(
         if root not in parent:
             parent[root] = None
             queue.append(root)
-    effects: dict[str, tuple[tuple[Step, ...], str, int]] = {}
+    effects: dict[str, tuple[tuple[Step, ...], Rule, int]] = {}
     while queue:
         node = queue.popleft()
         if not _is_name_node(node):
@@ -945,20 +954,20 @@ def _call_steps(steps: list[Step]) -> list[Step]:
 
 def _effect_path(
     first: Step, parent: dict[str, tuple[str, Edge, tuple[str, ...]] | None]
-) -> tuple[tuple[Step, ...], str]:
+) -> tuple[tuple[Step, ...], Rule]:
     """The steps from a mutated variable back to the changed code whose call
     reached its mutator (_import_call_effects), name-match pseudo-nodes
     collapsed, and the rule they amount to."""
     steps = [first]
-    rule = RULE_DEPENDENCY
+    rule = Rule.DEPENDENCY
     node = first.target
     pending: str | None = None  # the name a pseudo-node matched on
     while (link := parent.get(node)) is not None:
         caller, edge, revs = link
         if edge.kind == UNRESOLVED_NAME_MATCH:
-            rule = RULE_UNRESOLVED_NAME_MATCH
-        elif edge.kind == DECLARED and rule == RULE_DEPENDENCY:
-            rule = RULE_DECLARED_DEPENDENCY
+            rule = Rule.UNRESOLVED_NAME_MATCH
+        elif edge.kind == DECLARED and rule == Rule.DEPENDENCY:
+            rule = Rule.DECLARED_DEPENDENCY
         if _is_name_node(caller):
             pending = _matched_name(caller)
             node = caller
@@ -1348,7 +1357,7 @@ def plan_from_indexes(
         else:
             fallbacks.append(
                 Fallback(
-                    RULE_ENTRY_UNRESOLVED,
+                    Rule.ENTRY_UNRESOLVED,
                     "target",
                     f"entry symbol {target.entry_symbol!r} was not found in either revision",
                     target=target.node_id,
@@ -1363,7 +1372,7 @@ def plan_from_indexes(
             else:
                 fallbacks.append(
                     Fallback(
-                        RULE_LIFECYCLE_UNRESOLVED,
+                        Rule.LIFECYCLE_UNRESOLVED,
                         "target",
                         f"lifecycle dependency {dep!r} was not found in either revision",
                         target=target.node_id,
@@ -1388,7 +1397,7 @@ def plan_from_indexes(
         more = len(unanalysed) - UNANALYSED_PATHS_SHOWN
         fallbacks.append(
             Fallback(
-                RULE_UNANALYSED_FILE,
+                Rule.UNANALYSED_FILE,
                 "all_targets",
                 f"{len(unanalysed)} file(s) the analysis does not read changed under the source "
                 f"roots ({shown}{f', and {more} more' if more > 0 else ''}); code or tests may "
@@ -1401,7 +1410,7 @@ def plan_from_indexes(
         more = len(outside) - UNANALYSED_PATHS_SHOWN
         fallbacks.append(
             Fallback(
-                RULE_UNANALYSED_FILE,
+                Rule.UNANALYSED_FILE,
                 "all_targets",
                 f"{len(outside)} build, dependency or runner configuration file(s) outside the "
                 f"source roots changed ({shown}{f', and {more} more' if more > 0 else ''}); they "
@@ -1421,7 +1430,7 @@ def plan_from_indexes(
         queue.append(change.id)
     # Nodes seeded for a change they are not themselves: the steps from the
     # node to the change, and the rule they make the explanation.
-    seed_paths: dict[str, tuple[tuple[Step, ...], str]] = {}
+    seed_paths: dict[str, tuple[tuple[Step, ...], Rule]] = {}
     # A change that runs when its module is imported affects the module's
     # import, hence (through ``imports`` edges) every importer.
     at_import = [c for c in impacting if _runs_at_import(c)]
@@ -1431,7 +1440,7 @@ def plan_from_indexes(
             mode[symbol.module] = BEHAVIOR
             via[symbol.module] = None
             step = Step(symbol.module, change.id, RUNS_AT_IMPORT, "", _sides(change))
-            seed_paths[symbol.module] = ((step,), RULE_DEPENDENCY)
+            seed_paths[symbol.module] = ((step,), Rule.DEPENDENCY)
             queue.append(symbol.module)
     # What import-time code calls runs with the arguments written there
     # (``X = set_mode("slow")``, a class attribute, a decorator's argument):
@@ -1482,7 +1491,7 @@ def plan_from_indexes(
             mode[edge.source] = BEHAVIOR
             via[edge.source] = None
             first = Step(edge.source, module, BOUND_ON_PACKAGE, edge.detail, revs)
-            seed_paths[edge.source] = ((first, newly_run[module]), RULE_DEPENDENCY)
+            seed_paths[edge.source] = ((first, newly_run[module]), Rule.DEPENDENCY)
             queue.append(edge.source)
     # Whatever else may now call a writer differently reaches what it
     # writes through the ``calls:`` pseudo-nodes (_add_caller_effects).
@@ -1499,7 +1508,7 @@ def plan_from_indexes(
                     if node != change.id:
                         step = Step(node, change.id, RUNS_AT_IMPORT, "its decorator reads the "
                                     "docstring", _sides(change))  # fmt: skip
-                        seed_paths[node] = ((step,), RULE_DEPENDENCY)
+                        seed_paths[node] = ((step,), Rule.DEPENDENCY)
                     queue.append(node)
     if documented:
         for index in (base, head):
@@ -1512,7 +1521,7 @@ def plan_from_indexes(
                     target = min(referenced & documented)
                     sides = _sides(next(c for c in seeded if c.id == target))
                     step = Step(reader, target, READS_DOCSTRING, "", sides)
-                    seed_paths[reader] = ((step,), RULE_DEPENDENCY)
+                    seed_paths[reader] = ((step,), Rule.DEPENDENCY)
                     queue.append(reader)
     seed_reasons = dict(seeds.nodes) if seeds is not None else {}
     for node in sorted(seed_reasons):
@@ -1605,7 +1614,7 @@ def plan_from_indexes(
     if errors:
         fallbacks.append(
             Fallback(
-                RULE_ANALYSIS_ERROR,
+                Rule.ANALYSIS_ERROR,
                 "all_targets",
                 f"{len(errors)} analysis error(s); the dependency graph is incomplete, "
                 "so every supplied target is selected",
@@ -1645,7 +1654,7 @@ def plan_from_indexes(
             if reach.closure_of(module) & changed_modules:
                 reasons.append(
                     Reason(
-                        RULE_DYNAMIC_REFERENCE,
+                        Rule.DYNAMIC_REFERENCE,
                         f"the target runs code with the globals of {module}, and a change lies "
                         "in that module's import closure",
                     )
@@ -1662,7 +1671,7 @@ def plan_from_indexes(
         ):
             reasons.append(
                 Reason(
-                    RULE_NEW_TARGET,
+                    Rule.NEW_TARGET,
                     f"{target.runner_id} is not in the base snapshot: a new target is selected "
                     "whatever its entry symbol did",
                 )
@@ -1676,7 +1685,7 @@ def plan_from_indexes(
             # re-running a target whose own docstring changed is cheap.
             reasons.append(
                 Reason(
-                    RULE_ENTRY_DOCSTRING,
+                    Rule.ENTRY_DOCSTRING,
                     f"the docstring of the entry symbol {target.entry_symbol} changed",
                 )
             )
@@ -1753,7 +1762,7 @@ def _runner_dependency_fallbacks(
         for target in targets:
             if target.runner == runner:
                 fallbacks.append(
-                    Fallback(RULE_RUNNER_DEPENDENCY, "target", detail, target=target.node_id)
+                    Fallback(Rule.RUNNER_DEPENDENCY, "target", detail, target=target.node_id)
                 )
     return fallbacks
 
@@ -2024,11 +2033,11 @@ def _explain(
     dynamic_symbols: dict[str, tuple[str, ...]],
     unbounded_dynamic: dict[str, str],
     seed_reasons: dict[str, str],
-    seed_paths: dict[str, tuple[tuple[Step, ...], str]],
+    seed_paths: dict[str, tuple[tuple[Step, ...], Rule]],
 ) -> Reason:
     steps: list[Step] = []
     current = node
-    rule = RULE_DEPENDENCY
+    rule = Rule.DEPENDENCY
     pending: tuple[str, str, tuple[str, ...]] | None = None  # (source, detail, revs)
     walked: set[str] = set()
     while True:
@@ -2037,14 +2046,14 @@ def _explain(
             break
         walked.add(current)
         edge, revs, nxt = link
-        if edge.kind == DECLARED and rule == RULE_DEPENDENCY:
+        if edge.kind == DECLARED and rule == Rule.DEPENDENCY:
             # The path only holds because the project said so; say which rule
             # carried it rather than calling it an ordinary dependency. A name
             # match anywhere on the path outranks it: that one is our guess,
             # this one is the project's statement.
-            rule = RULE_DECLARED_DEPENDENCY
+            rule = Rule.DECLARED_DEPENDENCY
         if edge.kind == UNRESOLVED_NAME_MATCH:
-            rule = RULE_UNRESOLVED_NAME_MATCH  # outranks a declared edge
+            rule = Rule.UNRESOLVED_NAME_MATCH  # outranks a declared edge
             if _is_name_node(edge.target):
                 pending = (edge.source, edge.detail, revs)  # collapse the pseudo-node
                 current = nxt
@@ -2064,19 +2073,19 @@ def _explain(
         seed_steps, seed_rule = seed_paths[current]
         steps += seed_steps
         current = seed_steps[-1].target
-        if rule != RULE_UNRESOLVED_NAME_MATCH and seed_rule != RULE_DEPENDENCY:
+        if rule != Rule.UNRESOLVED_NAME_MATCH and seed_rule != Rule.DEPENDENCY:
             rule = seed_rule
     change = change_by_id.get(current)
     if change is not None:
         detail = f"{current} {'/'.join(change.changes)}"
         return Reason(rule, detail, tuple(steps), current, change.changes)
     if current in seed_reasons:
-        return Reason(RULE_ESCALATED, seed_reasons[current], tuple(steps))
+        return Reason(Rule.ESCALATED, seed_reasons[current], tuple(steps))
     # Pseudo-seed: a symbol with a dynamic reference.
     revs = dynamic_symbols.get(current, ())
     if unbounded_dynamic.get(current) == "written":
         return Reason(
-            RULE_DYNAMIC_REFERENCE,
+            Rule.DYNAMIC_REFERENCE,
             f"{current} looks up a name on an external module that in-scope code writes to "
             f"({', '.join(revs)}); code anywhere may run a writer, so any change can change "
             "what it finds",
@@ -2085,14 +2094,14 @@ def _explain(
     kind = unbounded_dynamic.get(current, "")
     if kind.startswith("changed-script:"):
         return Reason(
-            RULE_UNANALYSED_FILE,
+            Rule.UNANALYSED_FILE,
             f"{current} runs {kind[len('changed-script:') :]}, a Python file no module name "
             "maps to, which changed (the analysis reads only what it imports)",
             tuple(steps),
         )
     if kind.startswith("script:"):
         return Reason(
-            RULE_DYNAMIC_REFERENCE,
+            Rule.DYNAMIC_REFERENCE,
             f"{current} runs {kind[len('script:') :]}, a Python file no module name maps to "
             f"({', '.join(revs)}) that imports or runs code by a name it computes, so any "
             "change can affect it",
@@ -2100,13 +2109,13 @@ def _explain(
         )
     if current in unbounded_dynamic:
         return Reason(
-            RULE_DYNAMIC_REFERENCE,
+            Rule.DYNAMIC_REFERENCE,
             f"{current} imports a module named at runtime ({', '.join(revs)}); any module in "
             "scope may be behind it, so its dependencies cannot be bounded statically",
             tuple(steps),
         )
     return Reason(
-        RULE_DYNAMIC_REFERENCE,
+        Rule.DYNAMIC_REFERENCE,
         f"{current} uses a dynamic import/attribute access ({', '.join(revs)}); "
         "a change is reachable from its module's imports, so its dependencies cannot be "
         "bounded statically",
@@ -2358,7 +2367,7 @@ def lifecycle_reason(
         if deps
     ]
     return Reason(
-        RULE_LIFECYCLE_CHANGED,
+        Rule.LIFECYCLE_CHANGED,
         f"what the runner sets up around {runner_id} changed {between}: it {'; it '.join(parts)}",
     )
 
@@ -2603,7 +2612,7 @@ def _with_always_run(plan: Plan, entries: list[AlwaysRun]) -> Plan:
             continue
         for e in hits:
             plan.always_run_matched[e] += 1
-        decision.reasons += [Reason(RULE_ALWAYS_RUN, e.detail) for e in hits]
+        decision.reasons += [Reason(Rule.ALWAYS_RUN, e.detail) for e in hits]
         decision.selected = True
         decision.unselected_reason = None
     return plan

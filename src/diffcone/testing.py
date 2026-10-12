@@ -18,7 +18,12 @@ from typing import cast
 from diffcone.cache import IndexCache
 from diffcone.evidence import Evidence
 from diffcone.manifest import Manifest, Target, parse_manifest
-from diffcone.planner import Plan, Reason, plan
+from diffcone.planner import (
+    Plan,
+    Reason,
+    Rule,
+    plan,
+)
 from diffcone.report import to_dict
 
 # A hermetic git environment: no user config, deterministic identity.
@@ -171,7 +176,7 @@ def rules(plan: Plan, runner_id: str) -> set[str]:
     raise KeyError(runner_id)
 
 
-def reason(plan: Plan, runner_id: str, rule: str = "dependency") -> Reason:
+def reason(plan: Plan, runner_id: str, rule: str = Rule.DEPENDENCY) -> Reason:
     for d in plan.decisions:
         if d.target.runner_id == runner_id:
             for r in d.reasons:

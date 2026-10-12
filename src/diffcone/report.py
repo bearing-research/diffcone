@@ -7,7 +7,13 @@ from dataclasses import asdict
 from typing import Any
 
 from diffcone.model import UNRESOLVED_DYNAMIC, SnapshotInfo
-from diffcone.planner import RULE_ALWAYS_RUN, Decision, Plan, Reason, without_cyclic_gc
+from diffcone.planner import (
+    Decision,
+    Plan,
+    Reason,
+    Rule,
+    without_cyclic_gc,
+)
 
 # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
 # 3: analysis.evidence (null for a static plan) and the evidence reason rules
@@ -108,7 +114,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
                 "selected": len(selected),
                 "unselected": len(unselected),
                 "always_run": sum(
-                    any(r.rule == RULE_ALWAYS_RUN for r in d.reasons) for d in selected
+                    any(r.rule == Rule.ALWAYS_RUN for r in d.reasons) for d in selected
                 ),
             },
         },

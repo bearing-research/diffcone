@@ -234,30 +234,12 @@ from diffcone.planner import (
     NEWLY_IMPORTED,
     OWN_DIRS,
     OWN_FILES,
-    RULE_ANALYSIS_ERROR,
-    RULE_CHANGED_TARGET,
-    RULE_CYTHON_CALLER,
-    RULE_ENTRY_DOCSTRING,
-    RULE_ESCALATED,
-    RULE_EXECUTED_CHANGED,
-    RULE_EXECUTED_READER,
-    RULE_LIFECYCLE_UNRESOLVED,
-    RULE_LOOKUP_SITE,
-    RULE_NEW_TARGET,
-    RULE_NO_EVIDENCE,
-    RULE_PYTEST_HOOK,
-    RULE_SUBPROCESS,
-    RULE_TEST_SCOPE,
-    RULE_TEXT_CODE,
-    RULE_TOUCHED_FILE,
-    RULE_UNINDEXED_IMPORT,
-    RULE_UNOBSERVED_FILE,
-    RULE_UNSTABLE,
     Decision,
     Fallback,
     LifecycleChanges,
     Plan,
     Reason,
+    Rule,
     Seeds,
     _changed_unanalysed_files,
     _decision,
@@ -868,7 +850,7 @@ class _Observers:
                 rest.add(reader)
                 continue
             why = Reason(
-                RULE_EXECUTED_READER,
+                Rule.EXECUTED_READER,
                 f"{reader} reads {label} by name, on a value only code obtaining {module} "
                 "can hand it",
                 (),
@@ -1013,7 +995,7 @@ class _Observers:
             self._forward_of[key] = frozenset(seen)
         return self._forward_of[key]
 
-    def _observe(self, symbol: str, rule: str, detail: str, change: SymbolChange | None) -> None:
+    def _observe(self, symbol: str, rule: Rule, detail: str, change: SymbolChange | None) -> None:
         if symbol not in self.E:
             self.E[symbol] = Reason(
                 rule,
@@ -1023,7 +1005,7 @@ class _Observers:
                 change.changes if change is not None else (),
             )
 
-    def _select_all(self, rule: str, detail: str) -> None:
+    def _select_all(self, rule: Rule, detail: str) -> None:
         self.fallbacks.append(Fallback(rule, "all_targets", detail))
 
     def _scope(self, symbol: Symbol, change: SymbolChange) -> None:
@@ -1045,7 +1027,7 @@ class _Observers:
             self.direct.setdefault(
                 test,
                 Reason(
-                    RULE_TEST_SCOPE,
+                    Rule.TEST_SCOPE,
                     f"{change.id} {'/'.join(change.changes)} in test code; pytest reads marks, "
                     "fixtures and parameters without a static reader, so every test in its "
                     "scope is selected",
@@ -1099,7 +1081,7 @@ class _Observers:
                 # pytest loads it for tests that never ran a line of it (a new
                 # autouse fixture, a hook): no record can vouch for them.
                 self._select_all(
-                    RULE_UNOBSERVED_FILE,
+                    Rule.UNOBSERVED_FILE,
                     f"{path} {what}: a conftest.py outside the source roots, which the "
                     "index does not read",
                 )
@@ -1188,7 +1170,7 @@ class _Observers:
                 f"{writer} can run {ran} and stores into {variable}, where a later test may "
                 f"read what an earlier one stored ({why.detail})"
             )
-            self._observe(variable, RULE_EXECUTED_READER, label, change)
+            self._observe(variable, Rule.EXECUTED_READER, label, change)
             self._readers(variable, change, label, in_tests=True, content_only=True)
             self._sites(self.symbols[variable], change, label, in_tests=True)
         # Storing or memoised code anywhere in the chain, every round: what a
@@ -1213,7 +1195,7 @@ class _Observers:
                     f"{keeper} can run {ran}, and its decorator may keep the result for "
                     f"later readers ({why.detail})"
                 )
-                self._observe(keeper, RULE_EXECUTED_READER, label, change)
+                self._observe(keeper, Rule.EXECUTED_READER, label, change)
                 self._readers(keeper, change, label, in_tests=True, content_only=True)
                 self._sites(self.symbols[keeper], change, label, in_tests=True)
             wheres: set[str] = set()
@@ -1230,7 +1212,7 @@ class _Observers:
                 f"{keeper} can run {ran} and stores what that computes, where a later test "
                 f"may read what an earlier one stored ({why.detail})"
             )
-            self._observe(keeper, RULE_EXECUTED_READER, label, change)
+            self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
                 self._reader(reader, change, label, in_tests=True)
         return bool(found) or kept
@@ -1371,7 +1353,7 @@ class _Observers:
                     continue  # its own imports run the module
                 detail = f"{reader} reads {module}, which only that import binds: {why}"
                 if symbol.kind in (FUNCTION, METHOD):
-                    self._observe(reader, RULE_EXECUTED_READER, detail, change)
+                    self._observe(reader, Rule.EXECUTED_READER, detail, change)
                 else:
                     self._escalate_module(symbol.module, detail)
 
@@ -1399,7 +1381,7 @@ class _Observers:
                 why = f"{reader} reads docstrings and refers to {hits[0]}, whose docstring changed"
                 symbol = self.symbols[reader]
                 if symbol.kind in (FUNCTION, METHOD):
-                    self._observe(reader, RULE_EXECUTED_READER, why, change)
+                    self._observe(reader, Rule.EXECUTED_READER, why, change)
                 else:
                     self._escalate_module(symbol.module, why)
 
@@ -1412,7 +1394,7 @@ class _Observers:
             if module == "" or module.startswith(UNINDEXED_MODULE):
                 where = module[len(UNINDEXED_MODULE) :] if module else ""
                 self._select_all(
-                    RULE_SUBPROCESS,
+                    Rule.SUBPROCESS,
                     f"{why} ran outside every test "
                     + (
                         f"while {where}, a file outside the source roots, was imported"
@@ -1449,7 +1431,7 @@ class _Observers:
         for path, what in sorted(self.outside.items()):
             if UNINDEXED_MODULE + path in preloaded:
                 self._select_all(
-                    RULE_UNINDEXED_IMPORT,
+                    Rule.UNINDEXED_IMPORT,
                     f"{path} {what}: a file outside the source roots, imported before the "
                     "recorder started",
                 )
@@ -1481,7 +1463,7 @@ class _Observers:
         )
         for path, why in changes.files:
             self._select_all(
-                RULE_UNOBSERVED_FILE,
+                Rule.UNOBSERVED_FILE,
                 f"{path} {why}: a Cython change outside function bodies is not attributed "
                 "to any function",
             )
@@ -1493,7 +1475,7 @@ class _Observers:
         for path, name in changes.functions:
             label = f"{symbol_id(path, name)} body_changed (Cython)"
             function = self.c.cython[path].by_name()[name]
-            self._cython_ran(path, function, RULE_EXECUTED_CHANGED, label, label, recorded)
+            self._cython_ran(path, function, Rule.EXECUTED_CHANGED, label, label, recorded)
         for changed in changes.names:
             self._cython_name(changed, recorded)
         return paths
@@ -1502,7 +1484,7 @@ class _Observers:
         self,
         path: str,
         function: CythonFunction,
-        rule: str,
+        rule: Rule,
         detail: str,
         label: str,
         recorded: set[str],
@@ -1515,7 +1497,7 @@ class _Observers:
         sid = symbol_id(path, function.name)
         if path not in recorded:
             self._select_all(
-                RULE_UNOBSERVED_FILE,
+                Rule.UNOBSERVED_FILE,
                 f"{label}: the evidence holds no Cython record from {path} (collected "
                 "without a profile=True build of it?)",
             )
@@ -1527,7 +1509,7 @@ class _Observers:
             for caller in self._cython_callers(path, function.name):
                 self._observe(
                     caller,
-                    RULE_CYTHON_CALLER,
+                    Rule.CYTHON_CALLER,
                     f"{caller} names {sid}, a {kind} function a profiled build does not "
                     f"always report; {label}",
                     None,
@@ -1550,7 +1532,7 @@ class _Observers:
                 self._cython_ran(
                     path,
                     function,
-                    RULE_EXECUTED_READER,
+                    Rule.EXECUTED_READER,
                     f"{symbol_id(path, function.name)} names {changed.name}; {label}",
                     label,
                     recorded,
@@ -1569,7 +1551,7 @@ class _Observers:
                 if kind != SITE_IMPORT and site in self.symbols:
                     self._observe(
                         site,
-                        RULE_LOOKUP_SITE,
+                        Rule.LOOKUP_SITE,
                         f"{site} looks names up by a name nothing bounds and may see "
                         f"{changed.path}; {label}",
                         None,
@@ -1596,7 +1578,7 @@ class _Observers:
                     self._cython_ran(
                         path,
                         function,
-                        RULE_EXECUTED_READER,
+                        Rule.EXECUTED_READER,
                         f"{symbol_id(path, function.name)} is a method of {cls} or a "
                         f"subclass; {label}",
                         label,
@@ -1607,7 +1589,7 @@ class _Observers:
                 self._cython_ran(
                     path,
                     function,
-                    RULE_EXECUTED_READER,
+                    Rule.EXECUTED_READER,
                     f"{symbol_id(path, function.name)} names {name}, whose instances "
                     f"changed; {label}",
                     label,
@@ -1703,14 +1685,14 @@ class _Observers:
         for module in sorted(self.evidence.import_by.get(symbol_id_, ())):
             if module.startswith(UNINDEXED_MODULE):
                 self._select_all(
-                    RULE_UNINDEXED_IMPORT,
+                    Rule.UNINDEXED_IMPORT,
                     f"{label}: {symbol_id_} ran while a file outside the source roots was imported",
                 )
             else:
                 self._escalate_module(module, f"{symbol_id_} ran while {module} was imported")
         if symbol_id_ in self.evidence.hook_phase:
             self._select_all(
-                RULE_UNOBSERVED_FILE,
+                Rule.UNOBSERVED_FILE,
                 f"{label}: {symbol_id_} ran outside every test (a hook or collection)",
             )
 
@@ -1731,7 +1713,7 @@ class _Observers:
         modules = {**self.c.cython, **self.other.cython}
         if function is None or any(m.statements is None for m in modules.values()):
             self._select_all(
-                RULE_UNOBSERVED_FILE,
+                Rule.UNOBSERVED_FILE,
                 f"{label}: {symbol_id_} ran while a module was imported, and what it can "
                 "write is not known",
             )
@@ -1758,7 +1740,7 @@ class _Observers:
                     continue
                 self._followed.add(variable)
                 why = f"{variable} may be written by {cause}"
-                self._observe(variable, RULE_EXECUTED_READER, why, None)
+                self._observe(variable, Rule.EXECUTED_READER, why, None)
                 self._readers(variable, None, why)
                 self._sites(self.symbols[variable], None, why, at_import=True)
 
@@ -1768,7 +1750,7 @@ class _Observers:
         test = self.test_code.is_test_code(symbol.module)
         label = f"{change.id} {'/'.join(change.changes)}"
         if symbol.kind in (FUNCTION, METHOD) and symbol.name.startswith("pytest_"):
-            self._select_all(RULE_PYTEST_HOOK, f"{label}: a pytest hook can change any test")
+            self._select_all(Rule.PYTEST_HOOK, f"{label}: a pytest hook can change any test")
             return
         if (
             symbol.kind == VARIABLE
@@ -1784,7 +1766,7 @@ class _Observers:
                 or symbol.name == "pytest_plugins"
             )
         ):
-            self._select_all(RULE_PYTEST_HOOK, f"{label}: it decides what pytest loads")
+            self._select_all(Rule.PYTEST_HOOK, f"{label}: it decides what pytest loads")
             return
         body_only = symbol.kind in (FUNCTION, METHOD) and kinds <= {
             BODY_CHANGED,
@@ -1797,7 +1779,7 @@ class _Observers:
             self._scope(symbol, change)
         if symbol.kind == MODULE:
             if kinds & {ADDED, DELETED}:
-                self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
+                self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
                 self._readers(change.id, change, label)
                 if DELETED in kinds:
                     self._importers(change.id, change, label)
@@ -1808,7 +1790,7 @@ class _Observers:
                 self._escalate_change(change, f"{label}: module-level code runs at import")
             return
         if symbol.kind in (FUNCTION, METHOD):
-            self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
+            self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             self._import_effect(change.id, change, label)
             if kinds & {ADDED, DELETED, DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
                 self._readers(change.id, change, label)
@@ -1841,7 +1823,7 @@ class _Observers:
             # names the variable, the import statement reads it.
             self._escalate_change(change, f"{label}: star imports of the module bind its names")
         if symbol.kind == VARIABLE:
-            self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
+            self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             self._readers(change.id, change, label)
             # A lookup by a name nothing bounds reads the value as well as
             # noticing the name come or go: a variable runs no code of its
@@ -1859,7 +1841,7 @@ class _Observers:
                 self._import_writes([change.id], change, f"{label}: its statement runs code")
             return
         if symbol.kind == CLASS:
-            self._observe(change.id, RULE_EXECUTED_CHANGED, label, change)
+            self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             if kinds & {ADDED, DELETED, BODY_CHANGED}:
                 # Its body runs at import, and what its calls write is read
                 # elsewhere (``x = set_mode("fast")`` as a class attribute).
@@ -1954,7 +1936,7 @@ class _Observers:
                 if kind in (FUNCTION, METHOD, CLASS):
                     self._observe(
                         member,
-                        RULE_EXECUTED_READER,
+                        Rule.EXECUTED_READER,
                         f"{member} belongs to the hierarchy of {cls}; {label}",
                         change,
                     )
@@ -2033,7 +2015,7 @@ class _Observers:
                 rest.add(reader)
                 continue
             why = Reason(
-                RULE_EXECUTED_READER,
+                Rule.EXECUTED_READER,
                 f"{reader} reads {label} by name, on an object only code naming {cls} or a "
                 "subclass can hand it",
                 (),
@@ -2099,14 +2081,14 @@ class _Observers:
         if symbol is None:
             return
         if symbol.kind in (FUNCTION, METHOD):
-            self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
+            self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
             if not in_tests:
                 self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
         elif symbol.kind == VARIABLE:
             # Its initialiser captured the value: it changed too.
             if reader not in self._followed:
                 self._followed.add(reader)
-                self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
+                self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
                 self._readers(reader, change, label, in_tests=in_tests)
                 self._sites(
                     symbol,
@@ -2118,7 +2100,7 @@ class _Observers:
         elif in_tests:
             # Module or class top-level code reads what a test stored only
             # when the module is imported inside a test, whose record holds it.
-            self._observe(reader, RULE_EXECUTED_READER, f"{reader} reads {label}", change)
+            self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
         else:
             # Module or class top-level code: import-time state.
             self._escalate_module(symbol.module, f"top-level code of {reader} reads {label}")
@@ -2132,7 +2114,7 @@ class _Observers:
             if symbol.kind == MODULE:
                 self._escalate_module(importer, f"{importer} imports {label}")
             else:
-                self._observe(importer, RULE_EXECUTED_READER, f"{importer} imports {label}", change)
+                self._observe(importer, Rule.EXECUTED_READER, f"{importer} imports {label}", change)
 
     def _import_effect(
         self, symbol_id: str, change: SymbolChange | None, label: str, *, read: str | None = None
@@ -2164,7 +2146,7 @@ class _Observers:
         for module in sorted(self.evidence.import_by.get(symbol_id, ())):
             if module.startswith(UNINDEXED_MODULE):
                 self._select_all(
-                    RULE_UNINDEXED_IMPORT,
+                    Rule.UNINDEXED_IMPORT,
                     f"{label}: {symbol_id} ran while {module[len(UNINDEXED_MODULE) :]}, a file "
                     "outside the source roots, was imported",
                 )
@@ -2180,7 +2162,7 @@ class _Observers:
                 # environment variable, a mark on an item, another library's
                 # state) reaches tests that run none of its code.
                 self._select_all(
-                    RULE_PYTEST_HOOK,
+                    Rule.PYTEST_HOOK,
                     f"{label}: {symbol_id} ran outside every test at C (in a pytest hook or "
                     "during collection), and what it does there can reach any later test",
                 )
@@ -2306,7 +2288,7 @@ class _Observers:
                     continue
                 self._followed.add(variable)
                 why = f"{label}; it can run {current}, which writes into {variable}"
-                self._observe(variable, RULE_EXECUTED_READER, f"{variable}: {why}", change)
+                self._observe(variable, Rule.EXECUTED_READER, f"{variable}: {why}", change)
                 self._readers(variable, change, why, content_only=True)
                 self._sites(written, change, why, at_import=True)
             stack.extend(sorted(self.calls.get(current, ()), reverse=True))
@@ -2332,7 +2314,7 @@ class _Observers:
             if symbol.kind in (FUNCTION, METHOD, CLASS, MODULE):
                 self._observe(
                     symbol.id,
-                    RULE_ESCALATED,
+                    Rule.ESCALATED,
                     f"{symbol.id} is in {module}, whose import-time state may differ: {why}",
                     None,
                 )
@@ -2360,7 +2342,7 @@ class _Observers:
             handed=handed,
             guarded=guarded,
         ):
-            self._observe(site, RULE_LOOKUP_SITE, f"{detail}; {label}", change)
+            self._observe(site, Rule.LOOKUP_SITE, f"{detail}; {label}", change)
             followed = (site, in_tests) in self._sites_followed or (
                 site,
                 False,
@@ -2378,7 +2360,7 @@ class _Observers:
                     writers,
                     frozenset(),
                     Reason(
-                        RULE_LOOKUP_SITE,
+                        Rule.LOOKUP_SITE,
                         f"{detail}; {label}",
                         (),
                         change.id if change is not None else None,
@@ -2393,7 +2375,7 @@ class _Observers:
             for site in sorted(self._guard(set(handed), symbol.container, change, what)):
                 self._observe(
                     site,
-                    RULE_LOOKUP_SITE,
+                    Rule.LOOKUP_SITE,
                     f"{site} looks names up by a name nothing bounds and may be handed an "
                     f"instance of {symbol.container}; {label}",
                     change,
@@ -2575,7 +2557,7 @@ class _Observers:
         ``pkg/build.py`` is imported like any module."""
         if is_build_script(path, self.project_dirs) if source else build_input(path):
             self._select_all(
-                RULE_UNOBSERVED_FILE,
+                Rule.UNOBSERVED_FILE,
                 f"{path} {what}: compiled source, build, dependency or pytest configuration, "
                 "read where no test's record sees it",
             )
@@ -2592,7 +2574,7 @@ class _Observers:
                 where = seen or "the checkout root"
                 if module == "" or module.startswith(UNINDEXED_MODULE):
                     self._select_all(
-                        RULE_UNOBSERVED_FILE,
+                        Rule.UNOBSERVED_FILE,
                         f"{path} {what}, and project code touched {where} outside every test "
                         "and outside any import it could be credited to (a hook or collection)",
                     )
@@ -2663,7 +2645,7 @@ def plan_with_evidence(
     if errors:
         fallbacks.append(
             Fallback(
-                RULE_ANALYSIS_ERROR,
+                Rule.ANALYSIS_ERROR,
                 "all_targets",
                 f"{len(errors)} analysis error(s); the dependency graph is incomplete, "
                 "so every supplied target is selected",
@@ -2698,12 +2680,12 @@ def plan_with_evidence(
         )
         for decision in static.decisions:
             for r in decision.reasons:
-                if r.rule == RULE_ANALYSIS_ERROR:
+                if r.rule == Rule.ANALYSIS_ERROR:
                     continue  # reported once, above
-                if r.rule in (RULE_ESCALATED,) or r.path or r.changed_symbol:
+                if r.rule in (Rule.ESCALATED,) or r.path or r.changed_symbol:
                     escalated[decision.target.node_id].append(
                         Reason(
-                            RULE_ESCALATED,
+                            Rule.ESCALATED,
                             f"static planning of C -> {side}: {r.detail}",
                             r.path,
                             r.changed_symbol,
@@ -2799,7 +2781,7 @@ def _evidence_decision(
     record = evidence.tests.get(target.runner_id)
     fixture_sources = any(obs.fixture_sources_changed for obs in observed)
     for r in dict.fromkeys(target_fallbacks.get(target.node_id, ())):
-        if r.rule == RULE_LIFECYCLE_UNRESOLVED and record is not None and not fixture_sources:
+        if r.rule == Rule.LIFECYCLE_UNRESOLVED and record is not None and not fixture_sources:
             # A fixture discovery could not resolve still ran, so the record
             # holds it. Only one added or redefined where discovery cannot
             # see it could reach the test unrecorded, and a fixture needs
@@ -2810,7 +2792,7 @@ def _evidence_decision(
     if record is None:
         reasons.append(
             Reason(
-                RULE_NO_EVIDENCE,
+                Rule.NO_EVIDENCE,
                 f"{target.runner_id} has no record in the evidence from {short} (new, "
                 "deselected or not collected then)",
             )
@@ -2819,18 +2801,18 @@ def _evidence_decision(
         if record.flags & FLAG_UNSTABLE:
             reasons.append(
                 Reason(
-                    RULE_UNSTABLE,
+                    Rule.UNSTABLE,
                     "its record differed between two collections in different orders",
                 )
             )
         if record.flags & FLAG_SUBPROCESS:
             reasons.append(
-                Reason(RULE_SUBPROCESS, "it started a subprocess, whose execution is not recorded")
+                Reason(Rule.SUBPROCESS, "it started a subprocess, whose execution is not recorded")
             )
         if record.flags & FLAG_TEXT:
             reasons.append(
                 Reason(
-                    RULE_TEXT_CODE,
+                    Rule.TEXT_CODE,
                     "it ran code compiled from text no file holds (a doctest, timeit), "
                     "which may use any name",
                 )
@@ -2886,7 +2868,7 @@ def _evidence_decision(
                 if how is not None:
                     reasons.append(
                         Reason(
-                            RULE_TOUCHED_FILE,
+                            Rule.TOUCHED_FILE,
                             f"{how} in the evidence run at {short}; {path} {what}",
                         )
                     )
@@ -2899,7 +2881,7 @@ def _evidence_decision(
     if hit:
         reasons.append(
             Reason(
-                RULE_CHANGED_TARGET,
+                Rule.CHANGED_TARGET,
                 f"{hit[0]} changed: the target's entry or what contains it (a skipped test's "
                 "record lacks its own entry)",
                 (),
@@ -2909,7 +2891,7 @@ def _evidence_decision(
     if base_target_ids is not None and target.runner_id not in base_target_ids:
         reasons.append(
             Reason(
-                RULE_NEW_TARGET,
+                Rule.NEW_TARGET,
                 f"{target.runner_id} is not in the base snapshot: a new target is selected "
                 "whatever its entry symbol did",
             )
@@ -2924,7 +2906,7 @@ def _evidence_decision(
     if target.entry_symbol in docstring_ids:
         reasons.append(
             Reason(
-                RULE_ENTRY_DOCSTRING,
+                Rule.ENTRY_DOCSTRING,
                 f"the docstring of the entry symbol {target.entry_symbol} changed",
             )
         )

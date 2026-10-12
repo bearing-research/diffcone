@@ -30,10 +30,7 @@ from pathlib import Path
 from diffcone.cache import IndexCache
 from diffcone.model import UNRESOLVED_DYNAMIC
 from diffcone.planner import (
-    RULE_ANALYSIS_ERROR,
-    RULE_DYNAMIC_REFERENCE,
-    RULE_LIFECYCLE_UNRESOLVED,
-    RULE_UNRESOLVED_NAME_MATCH,
+    Rule,
     plan,
     plan_from_indexes,
 )
@@ -273,25 +270,25 @@ def _causes(p) -> dict[str, tuple[str, str]]:
         rid = d.target.runner_id
         rules = {r.rule: r for r in d.reasons}
         explained = next((r for r in d.reasons if r.path), None)
-        if RULE_ANALYSIS_ERROR in rules:
+        if Rule.ANALYSIS_ERROR in rules:
             out[rid] = ("analysis error", "")
         elif rid in neither:
             out[rid] = ("dependency", "")
-        elif RULE_LIFECYCLE_UNRESOLVED in rules and rid not in (no_dynamic | no_names):
-            out[rid] = ("unknown fixture", rules[RULE_LIFECYCLE_UNRESOLVED].detail)
+        elif Rule.LIFECYCLE_UNRESOLVED in rules and rid not in (no_dynamic | no_names):
+            out[rid] = ("unknown fixture", rules[Rule.LIFECYCLE_UNRESOLVED].detail)
         elif rid not in no_dynamic and rid in no_names:
             seed = ""
-            if explained is not None and explained.rule == RULE_DYNAMIC_REFERENCE:
+            if explained is not None and explained.rule == Rule.DYNAMIC_REFERENCE:
                 seed = explained.path[-1].target
             out[rid] = ("dynamic reference", seed)
         elif rid not in no_names and rid in no_dynamic:
             name = ""
-            if explained is not None and explained.rule == RULE_UNRESOLVED_NAME_MATCH:
+            if explained is not None and explained.rule == Rule.UNRESOLVED_NAME_MATCH:
                 steps = [s for s in explained.path if s.kind == "unresolved_name_match"]
                 name = steps[-1].target.rsplit(".", 1)[-1] if steps else ""
             out[rid] = ("name match", name)
-        elif RULE_LIFECYCLE_UNRESOLVED in rules:
-            out[rid] = ("unknown fixture", rules[RULE_LIFECYCLE_UNRESOLVED].detail)
+        elif Rule.LIFECYCLE_UNRESOLVED in rules:
+            out[rid] = ("unknown fixture", rules[Rule.LIFECYCLE_UNRESOLVED].detail)
         else:
             out[rid] = ("dynamic or name match", "")
     assert set(out) == full
