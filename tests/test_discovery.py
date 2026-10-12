@@ -1900,8 +1900,8 @@ def test_d12_a_configured_collecting_plugin_makes_discovery_incomplete(repo):
 @pytest.mark.parametrize(
     "files, note",
     [
-        # (``-o`` overrides and paths in addopts are modelled since round 3:
-        # tests/test_audit3_discovery.py.)
+        # (``-o`` overrides and paths in addopts are modelled: see the
+        # initial-paths tests.)
         (
             {"pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-c other.ini'\n"},
             "unmodelled_runner_option",

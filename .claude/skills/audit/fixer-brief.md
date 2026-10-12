@@ -35,8 +35,9 @@ narrowed case is still sound.
 
 ## How
 
-- Regression tests in tests/test_audit<N>_<BATCH>.py, named
-  `test_<letter><n>_...`, each failing on the old code (check by stashing
+- Regression tests in the test module that covers the behaviour (the
+  layout is in CLAUDE.md, "Testing expectations"; never a module per
+  round), named `test_<letter><n>_...`, each failing on the old code (check by stashing
   your source change, running it, then restoring). FixtureRepo scenarios
   asserting exact target sets; mix pytest and ASV targets where natural.
 - Keep cache identity (a cold and a warm cache give byte-identical plans;

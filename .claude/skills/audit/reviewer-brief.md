@@ -43,10 +43,10 @@ whose outcome a change can affect. Severity:
 ## How to look
 
 - Reproduce every finding with a `diffcone.testing.FixtureRepo` scenario
-  (style: tests/test_scenarios.py, tests/test_audit5_*.py;
+  (style: tests/test_scenarios.py, tests/test_planning_*.py;
   `repo.commit({...})`, `repo.plan(base, head, [], discover_runners=["pytest"])`,
   `selected(plan)`; evidence mode: `repo.collect()` then `evidence=` as in
-  tests/test_audit4_evidence.py). A miss is shown when the test's outcome
+  tests/test_evidence_scenarios.py). A miss is shown when the test's outcome
   actually changes between base and head under pytest (run
   `python -m pytest` in `repo.path` at each commit) AND diffcone doesn't
   select it.
@@ -57,6 +57,15 @@ whose outcome a change can affect. Severity:
   `git -C <REPO> archive main | tar -x -C <S>/<ROUND>/tree`.
 - Think in classes: when you find a miss, ask what else falls through the
   same gap, and list the class.
+- Attack every exemption by what the exempted code READS, not by what kind
+  of code it is. "Generated from a definition" was true of annotations
+  evaluated from text, yet they read project names no record showed (audit
+  E10). For each exemption, narrowing or "not a change" rule in your area,
+  build the case where the exempted thing reads or does something a test's
+  outcome depends on.
+- Run every scenario on each Python version the project supports (at least
+  the oldest and the newest): the recorder sees different code on each
+  (3.14's `__annotate__` hid E10 on the newest).
 - Be concrete and verified. Put unverified suspicions in a separate short
   list.
 

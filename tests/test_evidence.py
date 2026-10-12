@@ -32,7 +32,8 @@ from diffcone.report import to_text
 from diffcone.snapshot import GitError
 from diffcone.testing import asv_target, executed, selected, touched
 
-pytestmark = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+# Recording needs sys.monitoring; the store and fold tests run everywhere.
+needs_monitoring = pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
 
 OPS = """\
 import json
@@ -118,6 +119,7 @@ FILES = {
 T = "tests/test_ops.py::"
 
 
+@needs_monitoring
 def test_each_test_records_what_it_executed_and_touched(repo):
     repo.commit(FILES)
     ev = repo.collect()
@@ -139,6 +141,7 @@ def test_each_test_records_what_it_executed_and_touched(repo):
     assert {"pkg.ops", "tests.conftest", "tests.test_ops"} <= ev.import_phase
 
 
+@needs_monitoring
 def test_code_run_by_an_import_is_attributed_to_the_importing_module(repo):
     repo.commit(
         {
@@ -156,6 +159,7 @@ def test_code_run_by_an_import_is_attributed_to_the_importing_module(repo):
     assert executed(ev, "tests/test_table.py::test_value") == {"tests.test_table.test_value"}
 
 
+@needs_monitoring
 def test_functools_caches_are_cleared_between_tests(repo):
     repo.commit(
         {
@@ -172,6 +176,7 @@ def test_functools_caches_are_cleared_between_tests(repo):
     assert "pkg.calc.compute" in executed(ev, "tests/test_calc.py::test_two")
 
 
+@needs_monitoring
 def test_a_record_that_depends_on_test_order_is_unstable(repo):
     repo.commit(
         {
@@ -194,6 +199,7 @@ def test_a_record_that_depends_on_test_order_is_unstable(repo):
     assert ev.reverse_checked
 
 
+@needs_monitoring
 def test_the_store_round_trips(repo, tmp_path):
     repo.commit(FILES)
     ev = repo.collect()
@@ -210,6 +216,7 @@ def test_the_store_round_trips(repo, tmp_path):
     assert [s.commit for s in list_stores(repo.path)] == [ev.commit]
 
 
+@needs_monitoring
 def test_a_store_write_that_fails_leaves_nothing_behind(repo, tmp_path, monkeypatch):
     repo.commit(FILES)
     ev = repo.collect()
@@ -225,6 +232,7 @@ def test_a_store_write_that_fails_leaves_nothing_behind(repo, tmp_path, monkeypa
     assert list(stores.iterdir()) == []
 
 
+@needs_monitoring
 def test_collection_at_an_older_commit_uses_a_temporary_worktree(repo):
     first = repo.commit(FILES)
     repo.commit({"pkg/ops.py": OPS + "\n\ndef extra():\n    return 3\n"})
@@ -234,6 +242,7 @@ def test_collection_at_an_older_commit_uses_a_temporary_worktree(repo):
     assert executed(ev, T + "test_add") == {"pkg.ops.add", "tests.test_ops.test_add"}
 
 
+@needs_monitoring
 def test_the_record_is_finished_before_the_session_reports_done(repo):
     # pytest-xdist reports a worker done after its session finishes and then
     # kills workers that take more than ten seconds to exit, so the record
@@ -255,6 +264,7 @@ def pytest_unconfigure(config):
     assert executed(ev, T + "test_add") == {"pkg.ops.add", "tests.test_ops.test_add"}
 
 
+@needs_monitoring
 def test_a_dirty_tree_is_refused(repo):
     repo.commit(FILES)
     (repo.path / "pkg" / "ops.py").write_text(OPS + "\n# edited\n", "utf-8")
@@ -262,6 +272,7 @@ def test_a_dirty_tree_is_refused(repo):
         repo.collect()
 
 
+@needs_monitoring
 def test_a_suite_that_runs_an_installed_copy_is_refused(repo, tmp_path):
     installed = tmp_path / "site"
     (installed / "pkg").mkdir(parents=True)
@@ -279,6 +290,7 @@ def test_a_suite_that_runs_an_installed_copy_is_refused(repo, tmp_path):
         repo.collect()
 
 
+@needs_monitoring
 def test_collect_and_evidence_commands(repo, capsys):
     repo.commit(FILES)
     command = f"{sys.executable} -m pytest"
@@ -298,6 +310,7 @@ def _edited_add(repo):
     return ev, head
 
 
+@needs_monitoring
 def test_run_with_evidence_runs_only_the_tests_that_executed_the_change(repo, capfd):
     ev, head = _edited_add(repo)
     command = f"{sys.executable} -m pytest"
@@ -310,6 +323,7 @@ def test_run_with_evidence_runs_only_the_tests_that_executed_the_change(repo, ca
     assert "environment differs" not in err
 
 
+@needs_monitoring
 def test_run_falls_back_to_static_planning_in_another_environment(repo, capsys, monkeypatch):
     from diffcone import execution
     from diffcone.testing import selected
@@ -328,6 +342,7 @@ def test_run_falls_back_to_static_planning_in_another_environment(repo, capsys, 
     assert {t.runner_id for t in run.static.selected} == selected(static)
 
 
+@needs_monitoring
 def test_a_project_variable_is_part_of_the_environment(repo, monkeypatch):
     """``collect --env-var`` (roadmap item 9): pandas' PANDAS_FUTURE changes
     what tests do, so a run with another value uses no evidence."""
@@ -364,6 +379,7 @@ INSTALLS = (
 )
 
 
+@needs_monitoring
 def test_a_test_run_that_changes_its_own_environment_is_named(repo, tmp_path, monkeypatch, capfd):
     """Roadmap item 12: strata's tests upgraded orjson while recording, so
     the recording never matched a fresh environment, and nothing said why."""
@@ -402,6 +418,7 @@ def test_a_test_run_that_changes_its_own_environment_is_named(repo, tmp_path, mo
     assert any("fakepkg==1.0" in line for line in unused["differences"])
 
 
+@needs_monitoring
 def test_a_recording_that_keeps_its_environment_says_nothing(repo, capfd):
     repo.commit(FILES)
     command = f"{sys.executable} -m pytest"
@@ -410,6 +427,7 @@ def test_a_recording_that_keeps_its_environment_says_nothing(repo, capfd):
     assert repo.collect().environment_at_start is None
 
 
+@needs_monitoring
 def test_evidence_at_a_commit_the_checkout_lacks_says_what_to_fetch(repo):
     from diffcone.evidence import find_store
 
@@ -425,6 +443,7 @@ def test_evidence_at_a_commit_the_checkout_lacks_says_what_to_fetch(repo):
         find_store(repo.path, "auto", ["."], ev.commit)
 
 
+@needs_monitoring
 def test_validate_with_evidence(repo):
     from diffcone.execution import validate_pytest
 
@@ -460,6 +479,7 @@ def _kinds(plan):
     return sorted(n.kind for n in plan.incomplete_discovery)
 
 
+@needs_monitoring
 def test_the_recording_settles_a_class_pytest_does_not_collect(repo):
     """Discovery cannot know no plugin collects a helper class with a
     ``test_`` method; the recording ran the real collection (roadmap item 9)."""
@@ -485,6 +505,7 @@ def test_the_recording_settles_a_class_pytest_does_not_collect(repo):
     assert _kinds(plan) == ["uncollected_test_class"]
 
 
+@needs_monitoring
 def test_tests_a_plugin_collected_keep_the_plan_incomplete(repo):
     repo.commit(
         {
@@ -507,6 +528,7 @@ def test_tests_a_plugin_collected_keep_the_plan_incomplete(repo):
     assert "tests/plug/test_plug.py::CheckThing::test_x" in gap.detail
 
 
+@needs_monitoring
 def test_an_incomplete_static_fallback_runs_the_whole_suite(repo):
     from diffcone import execution
 
@@ -540,6 +562,7 @@ def _run_collect(repo, base, head, *extra):
     return main(args + ["--evidence", "auto", "--collect", "--no-cache", *extra])
 
 
+@needs_monitoring
 def test_run_collect_advances_the_store_to_head(repo, capfd):
     repo.commit(FILES)
     ev = repo.collect()
@@ -583,6 +606,7 @@ def test_run_collect_advances_the_store_to_head(repo, capfd):
     assert f"advanced from {ev.commit[:12]}" in capfd.readouterr().out
 
 
+@needs_monitoring
 def test_run_collect_with_nothing_selected_relabels_the_store(repo, capfd):
     # A test that starts a subprocess is always selected: leave it out.
     tests = TESTS[: TESTS.index("\n\ndef test_subprocess")] + "\n"
@@ -600,6 +624,7 @@ def test_run_collect_with_nothing_selected_relabels_the_store(repo, capfd):
     }
 
 
+@needs_monitoring
 def test_run_collect_refusals(repo, capsys):
     repo.commit(FILES)
     ev = repo.collect()
@@ -616,6 +641,7 @@ def test_run_collect_refusals(repo, capsys):
         main(["run", "--repo", str(repo.path), "--base", "HEAD", "--head", "HEAD", "--collect"])
 
 
+@needs_monitoring
 def test_run_collect_in_another_environment_does_not_advance(repo):
     from diffcone import execution
 
@@ -701,6 +727,7 @@ def test_advance_merges_records_by_name():
         advance(previous, replace(fresh, environment_hash="x"), set(), "h")
 
 
+@needs_monitoring
 def test_run_collect_drops_the_records_of_deleted_tests(repo, capfd):
     repo.commit(FILES)
     ev = repo.collect()
@@ -715,6 +742,7 @@ def test_run_collect_drops_the_records_of_deleted_tests(repo, capfd):
     assert set(advanced.tests) == set(ev.tests) - {T + "test_listing"}
 
 
+@needs_monitoring
 def test_w28_optimize_and_pythonpath_differences_are_reported():
     """``-O`` and PYTHONPATH are in the recorded environment and its hash, so
     a run that differs only there names them instead of an empty list."""
@@ -731,6 +759,7 @@ def test_w28_optimize_and_pythonpath_differences_are_reported():
     assert line.startswith("PYTHONPATH entries: ") and "/opt/extra" in line
 
 
+@needs_monitoring
 def test_w28_every_recorded_field_has_a_difference_line():
     """Whatever field differs, the list names it; a field only one side has
     (a variable added with ``--env-var``, a later recorder's field) too."""
@@ -751,6 +780,7 @@ def test_w28_every_recorded_field_has_a_difference_line():
     ]
 
 
+@needs_monitoring
 def test_w28_a_mismatch_is_never_explained_by_an_empty_list():
     """The caller has a hash mismatch: when no field differs, the list still
     says so rather than printing nothing."""
@@ -788,6 +818,7 @@ CALC = {
 }
 
 
+@needs_monitoring
 @pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
 def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monkeypatch, capsys):
     """Recorded with FLAG off, test_x never called other(); run with FLAG on,
@@ -825,6 +856,7 @@ def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monke
     assert code == 1  # test_x ran under the static plan, and failed
 
 
+@needs_monitoring
 def test_evp9_plan_says_the_environment_was_not_checked(repo):
     repo.commit(
         {
@@ -879,6 +911,7 @@ def test_m2():
 """
 
 
+@needs_monitoring
 def test_evp4_run_collect_order_checks_fresh_records(repo, capfd):
     """A reverse-checked recording advanced by ``run --collect``: the fresh
     records are checked in reverse order too. ``test_m2`` reads the value
@@ -906,6 +939,7 @@ def test_evp4_run_collect_order_checks_fresh_records(repo, capfd):
     }
 
 
+@needs_monitoring
 def test_evp4_advance_marks_unchecked_fresh_records_unstable(repo):
     """``advance`` itself: fresh records from a run in one order, onto a
     reverse-checked recording, are unstable, so the store's claim holds."""
@@ -1011,6 +1045,7 @@ TYPED_FILES = {
 }
 
 
+@needs_monitoring
 def test_e7_the_store_keeps_what_ran_only_through_annotations(repo, tmp_path):
     repo.commit(TYPED_FILES)
     ev = repo.collect()

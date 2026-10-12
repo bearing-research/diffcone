@@ -104,6 +104,8 @@ Acceptance tests use small git repository fixtures with before/after commits. As
 
 Any change that **narrows** selection must come with a regression scenario.
 
+Tests live by the behaviour they cover, never by the round or change that added them: `test_scenarios.py` (the handoff's required scenarios and general static planning), `test_planning_imports.py`, `test_planning_dynamic.py` (lookups, literal tables, text run as code, escapes), `test_planning_classes.py`, `test_planning_state.py` (module and process state, registries, patches, isolation), `test_planning_changes.py` (what counts as a change: order, docstrings, annotations, non-Python files, declarations, manifests); `test_discovery.py`; `test_evidence.py` (store and fold), `test_evidence_recorder.py` (what `collect.py`/`child.py` record), `test_evidence_scenarios.py` (planning from evidence), `test_cython.py`, `test_child.py`; `test_execution.py`, `test_cli.py`, `test_check.py`, `test_ci_report.py`; `test_worktree.py` (snapshots), `test_indexer.py`, `test_cache.py`, `test_docs.py`. A regression test named after an audit finding keeps its id (`test_r12_...`) to trace it to `internal/audit.md`.
+
 ## Docs to maintain
 
 `README.md`, `internal/design.md`, `internal/roadmap.md`, and `AGENTS.md` are required by the milestone. Always separate implemented functionality from planned functionality.
