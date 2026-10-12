@@ -1161,8 +1161,10 @@ report:</p>
   Caches kept by an unknown memoising decorator, or filled through a
   method of an object whose type diffcone can't tell, are not seen (see
   <a href="../../limitations/#state-shared-between-tests">limitations</a>).</li>
-<li>Tests with no recording (new tests, for example) and tests whose
-  recording was unstable are always selected.</li>
+<li>Tests with no recording (new tests, for example), tests whose
+  recording was unstable, and tests that failed or errored while they were
+  recorded are always selected: a failing test's recording stops where it
+  failed.</li>
 <li>
 <p>Processes a test starts:</p>
 <ul>
@@ -1230,7 +1232,7 @@ match the recording:</p>
 <li>the installed packages;</li>
 <li>your <code>PYTHONPATH</code>;</li>
 <li>a few environment variables (<code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>,
-  <code>PYTHONWARNINGS</code>).</li>
+  <code>PYTHONWARNINGS</code>, <code>VIRTUAL_ENV</code>).</li>
 </ul>
 <p>It sets <code>PYTHONHASHSEED</code> to the recorded value itself. With <code>--dry-run</code>,
 nothing is checked.</p>

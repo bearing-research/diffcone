@@ -1509,7 +1509,7 @@ may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
 <p>Upgrading from 0.3.0: make your execution-evidence recordings again. The
-store format is now 4 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
+store format is now 5 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
 recording, naming one is an error, and the <code>run</code> action plans from the
 code until <code>record</code> makes a new one. Expect plans to select more tests
 than 0.3.0 did: most of the changes below close cases where diffcone
@@ -1822,6 +1822,16 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 </ul>
 <h4 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h4>
 <ul>
+<li>A test that failed or errored while it was recorded is always selected:
+  its recording stops where it failed, so where it passes (a flaky failure,
+  a different environment) it can run code the recording never saw.
+  <code>VIRTUAL_ENV</code> is now part of the environment a recording is checked
+  against: a tool run from its own environment passes its <code>VIRTUAL_ENV</code> to
+  the suite, and IPython warns on one that is not the interpreter's.</li>
+<li>A test module listing the machine's locales while pytest collected it
+  (<code>locale -a</code>, as pandas' locale tests do) made every change select every
+  test. Listing locales runs no Python, and no longer counts as a process
+  the recording can't follow.</li>
 <li>Before Python 3.14, a test that had a library evaluate string
   annotations (<code>from __future__ import annotations</code>, forward references)
   through <code>typing.get_type_hints</code>, as pydantic and FastAPI do, recorded
