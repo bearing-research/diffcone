@@ -477,3 +477,23 @@ def test_pruning_keeps_what_planning_at_the_kept_commit_reads(repo, tmp_path, mo
     assert cache.hits == 1
     assert cache.modules.facts_hits == 3 and cache.modules.facts_misses == 1
     assert to_json(plan) == to_json(planner.plan(repo.path, second, third, **args))
+
+
+# --------------------------------------------------------------------------- revisions as given
+# A cached index reports errors under the revision as spelt this time.
+
+
+def test_i8_cached_errors_name_the_revision_as_given(repo, tmp_path):
+    from diffcone.cache import IndexCache
+    from diffcone.planner import plan
+    from diffcone.report import to_dict
+
+    repo.commit({"pkg/__init__.py": "", "pkg/bad.py": "def f(:\n"})
+    repo.git("tag", "v1")
+    sha = repo.git("rev-parse", "HEAD").strip()
+    head = repo.commit({"pkg/ok.py": "X = 1\n"})
+    cache = IndexCache(tmp_path / "cache")
+    plan(repo.path, "v1", head, None, cache=cache)  # stores the index under v1's spelling
+    cached = to_dict(plan(repo.path, sha, head, None, cache=cache))
+    fresh = to_dict(plan(repo.path, sha, head, None))
+    assert cached["analysis_errors"] == fresh["analysis_errors"]
