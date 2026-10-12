@@ -155,13 +155,7 @@ from pathlib import Path
 
 from diffcone.child import SCANNED
 from diffcone.classify import (
-    ADDED,
-    ANNOTATIONS_CHANGED,
-    BODY_CHANGED,
-    DEFINITION_CHANGED,
-    DELETED,
-    DEPENDENCIES_CHANGED,
-    DOCSTRING_CHANGED,
+    ChangeKind,
     SymbolChange,
     _import_closures,
     classify,
@@ -354,12 +348,14 @@ def _runs_at_import(change: SymbolChange) -> bool:
         return True
     sides = [s for s in (change.base, change.head) if s is not None]
     if symbol.kind == VARIABLE:
-        if DEFINITION_CHANGED in kinds:
+        if ChangeKind.DEFINITION_CHANGED in kinds:
             return True
         if not all(s.inert_definition for s in sides):
             return True
-        return bool(kinds & {ADDED, DELETED}) and any(_definition_runs_code(s) for s in sides)
-    if not kinds & {ADDED, DELETED, DEFINITION_CHANGED}:
+        return bool(kinds & {ChangeKind.ADDED, ChangeKind.DELETED}) and any(
+            _definition_runs_code(s) for s in sides
+        )
+    if not kinds & {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.DEFINITION_CHANGED}:
         return False
     return any(_definition_runs_code(s) for s in sides)
 
@@ -720,7 +716,8 @@ class _Observers:
             c.carries_impact
             and c.symbol.kind in (FUNCTION, METHOD, CLASS)
             and c.symbol.module in pytest_modules
-            and {ADDED, DELETED, DEFINITION_CHANGED} & set(c.changes)
+            and {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.DEFINITION_CHANGED}
+            & set(c.changes)
             for c in self.changes
         )
         self.E: dict[str, Reason] = {}
@@ -1047,7 +1044,7 @@ class _Observers:
                 continue
             if change.carries_impact:
                 self._change(change)
-            elif DOCSTRING_CHANGED in change.changes and change.id in decorated:
+            elif ChangeKind.DOCSTRING_CHANGED in change.changes and change.id in decorated:
                 # Its decorator reads the docstring when the module is
                 # imported: no record shows that, the import-time state does.
                 self._escalate_change(
@@ -1064,7 +1061,9 @@ class _Observers:
             self._file(path, what, names=not (before and after))
         for change in self.changes:
             symbol = change.symbol
-            if symbol.kind == MODULE and {ADDED, DELETED} & set(change.changes):
+            if symbol.kind == MODULE and {ChangeKind.ADDED, ChangeKind.DELETED} & set(
+                change.changes
+            ):
                 what = f"{change.id} {'/'.join(change.changes)}"
                 self._file(symbol.path, what, names=True, source=True)
         # A source file is also data to whoever reads it as a file
@@ -1362,7 +1361,9 @@ class _Observers:
         the change of what it refers to (or of its own module): the tests
         that ran it, or, for code that runs at import, its module's."""
         documented = {
-            c.id: c for c in self.changes if not c.carries_impact and DOCSTRING_CHANGED in c.changes
+            c.id: c
+            for c in self.changes
+            if not c.carries_impact and ChangeKind.DOCSTRING_CHANGED in c.changes
         }
         if not documented:
             return
@@ -1766,19 +1767,19 @@ class _Observers:
             self._select_all(Rule.PYTEST_HOOK, f"{label}: it decides what pytest loads")
             return
         body_only = symbol.kind in (FUNCTION, METHOD) and kinds <= {
-            BODY_CHANGED,
-            DEPENDENCIES_CHANGED,
-            DOCSTRING_CHANGED,
+            ChangeKind.BODY_CHANGED,
+            ChangeKind.DEPENDENCIES_CHANGED,
+            ChangeKind.DOCSTRING_CHANGED,
         }
         if test and not body_only and change.id not in self.test_code.entries:
             # A test's own change reaches the targets it is the entry of
             # (changed_target); anything else in test code reaches its scope.
             self._scope(symbol, change)
         if symbol.kind == MODULE:
-            if kinds & {ADDED, DELETED}:
+            if kinds & {ChangeKind.ADDED, ChangeKind.DELETED}:
                 self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
                 self._readers(change.id, change, label)
-                if DELETED in kinds:
+                if ChangeKind.DELETED in kinds:
                     self._importers(change.id, change, label)
                 # What it imports runs at its import too.
                 runs = sorted(self._forward([change.id], imports=True))
@@ -1789,9 +1790,14 @@ class _Observers:
         if symbol.kind in (FUNCTION, METHOD):
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             self._import_effect(change.id, change, label)
-            if kinds & {ADDED, DELETED, DEFINITION_CHANGED, ANNOTATIONS_CHANGED}:
+            if kinds & {
+                ChangeKind.ADDED,
+                ChangeKind.DELETED,
+                ChangeKind.DEFINITION_CHANGED,
+                ChangeKind.ANNOTATIONS_CHANGED,
+            }:
                 self._readers(change.id, change, label)
-                if DELETED in kinds:
+                if ChangeKind.DELETED in kinds:
                     self._importers(change.id, change, label)
                 self._sites(symbol, change, label)
             if _runs_at_import(change):
@@ -1829,7 +1835,7 @@ class _Observers:
             # (an annotation evaluated at import is code too).
             runs_code = _runs_at_import(change)
             self._sites(symbol, change, label, at_import=runs_code)
-            if DELETED in kinds:
+            if ChangeKind.DELETED in kinds:
                 self._importers(change.id, change, label)
             if runs_code:
                 # ``X = set_mode("fast")``, ``X: set_mode("fast") = 1``: what
@@ -1839,14 +1845,14 @@ class _Observers:
             return
         if symbol.kind == CLASS:
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
-            if kinds & {ADDED, DELETED, BODY_CHANGED}:
+            if kinds & {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.BODY_CHANGED}:
                 # Its body runs at import, and what its calls write is read
                 # elsewhere (``x = set_mode("fast")`` as a class attribute).
                 self._import_writes([change.id], change, f"{label}: its body runs at import")
-            if kinds & {ADDED, DELETED}:
+            if kinds & {ChangeKind.ADDED, ChangeKind.DELETED}:
                 self._readers(change.id, change, label)
                 self._sites(symbol, change, label, at_import=True)
-                if DELETED in kinds:
+                if ChangeKind.DELETED in kinds:
                     self._importers(change.id, change, label)
                 if self._runs_on_creation(symbol.id):
                     # ``class B(Base)`` whose base registers subclasses, a
@@ -1855,7 +1861,7 @@ class _Observers:
                 return
             before = self.c.class_attributes.get(symbol.id, {})
             after = self.other.class_attributes.get(symbol.id, {})
-            if DEPENDENCIES_CHANGED in kinds or before.get(CLASS_STATEMENT) != after.get(
+            if ChangeKind.DEPENDENCIES_CHANGED in kinds or before.get(CLASS_STATEMENT) != after.get(
                 CLASS_STATEMENT
             ):
                 # Bases, decorators, metaclass keywords (or what the body's
@@ -1871,7 +1877,7 @@ class _Observers:
                 # The body's statements run in another order (R6): what each
                 # sees differs, and no attribute's own hash says so.
                 self._escalate_change(change, f"{label}: its statements run in another order")
-            if BODY_CHANGED in kinds:
+            if ChangeKind.BODY_CHANGED in kinds:
                 self._class_body(symbol, change, label)
             # A definition change that is only an added or deleted member is
             # that member's own change: code notices a new or missing
@@ -1960,7 +1966,9 @@ class _Observers:
         readers = set(self.readers_of.get(target, ()))
         if content_only:
             readers -= self.write_sites.get(target, set())
-        elif not (change is not None and target == change.id and DELETED in change.changes):
+        elif not (
+            change is not None and target == change.id and ChangeKind.DELETED in change.changes
+        ):
             readers -= self.rebind_sites.get(target, set())
         name = target.rsplit(".", 1)[-1]
         if not _is_dunder(name):
@@ -2132,7 +2140,7 @@ class _Observers:
         ev = self.evidence
         if symbol_id in ev.annotations_only:
             if change is not None and symbol_id == change.id:
-                if set(change.changes) <= {BODY_CHANGED, DOCSTRING_CHANGED}:
+                if set(change.changes) <= {ChangeKind.BODY_CHANGED, ChangeKind.DOCSTRING_CHANGED}:
                     return
             elif not self._annotations_read(symbol_id, read):
                 return
@@ -2652,7 +2660,7 @@ def plan_with_evidence(
     escalated: dict[str, list[Reason]] = defaultdict(list)
     target_fallbacks: dict[str, list[Reason]] = defaultdict(list)
     changed_ids: set[str] = {c.id for c in changes if c.carries_impact}
-    docstring_ids: set[str] = {c.id for c in changes if DOCSTRING_CHANGED in c.changes}
+    docstring_ids: set[str] = {c.id for c in changes if ChangeKind.DOCSTRING_CHANGED in c.changes}
     for side, other in pairs:
         runner_only = _runner_only(evidence_index, other, pytest_targets)
         obs = _Observers(evidence_index, other, evidence, test_code, declared, runner_only)
@@ -2662,7 +2670,7 @@ def plan_with_evidence(
         observed.append(obs)
         fallbacks += obs.fallbacks
         changed_ids |= {c.id for c in obs.changes if c.carries_impact}
-        docstring_ids |= {c.id for c in obs.changes if DOCSTRING_CHANGED in c.changes}
+        docstring_ids |= {c.id for c in obs.changes if ChangeKind.DOCSTRING_CHANGED in c.changes}
         runner = _runner_dependency_fallbacks(targets, obs.changes, evidence_index, other)
         seeds = Seeds(frozenset(obs.seed_changes), dict(obs.seed_nodes))
         static = plan_from_indexes(

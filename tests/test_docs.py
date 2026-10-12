@@ -76,3 +76,20 @@ def test_the_report_reference_lists_every_rule_and_which_are_fallbacks():
     assert sorted(documented) == sorted(set(documented)), "a rule is listed twice"
     assert set(documented) == set(Rule)
     assert {name for name, fallback in rows if fallback} == set(CONSERVATIVE_RULES)
+
+
+def test_the_docs_name_every_change_kind():
+    """The report reference lists every ``ChangeKind`` the report's
+    ``changes`` can hold, and the concepts page explains each."""
+    import re
+
+    from diffcone.classify import ChangeKind
+
+    report = (ROOT / "docs" / "reference" / "report.md").read_text("utf-8")
+    listed = re.search(r"`changes` lists one or more of (.*?)\n\(?\[", report, re.S)
+    assert listed is not None
+    assert set(re.findall(r"`([a-z_]+)`", listed.group(1))) == set(ChangeKind)
+    concepts = (ROOT / "docs" / "concepts.md").read_text("utf-8")
+    rows = re.findall(r"^\| [^|]*\((`[a-z_]+`(?:, `[a-z_]+`)*)\) \|", concepts, re.M)
+    explained = {k for row in rows for k in re.findall(r"`([a-z_]+)`", row)}
+    assert explained == set(ChangeKind)

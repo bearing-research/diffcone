@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from enum import StrEnum
 
 from diffcone.indexer.definitions import INERT_DEF
 from diffcone.model import (
@@ -14,24 +15,30 @@ from diffcone.model import (
     Symbol,
 )
 
-ADDED = "added"
-DELETED = "deleted"
-BODY_CHANGED = "body_changed"
-DEFINITION_CHANGED = "definition_changed"
-IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
-DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
-# Edges were only added. A name the symbol uses now resolves to something
-# (a missing import added, a fallback import that now succeeds): its own
-# behaviour changed. For a module, only when its import-time code gained a
-# reference, or an added import brings in-scope modules into its import
-# closure whose import-time code did not run before; new name bindings alone
-# are ``imports_added``, their users carrying their own added edges.
-DEPENDENCIES_ADDED = "dependencies_added"
-DOCSTRING_CHANGED = "docstring_changed"  # only the docstring differs
-# Only a function's annotations differ and they are never evaluated at import
-# (see Symbol.deferred_annotations): behaviour-level, not structural, not
-# import-time (introspection such as typer's happens when called).
-ANNOTATIONS_CHANGED = "annotations_changed"
+
+class ChangeKind(StrEnum):
+    """How a symbol differs between the snapshots (``SymbolChange.changes``,
+    the report's ``changes``; docs/concepts.md says what each means)."""
+
+    ADDED = "added"
+    DELETED = "deleted"
+    BODY_CHANGED = "body_changed"
+    DEFINITION_CHANGED = "definition_changed"
+    IMPORTS_ADDED = "imports_added"  # modules: new import bindings only
+    DEPENDENCIES_CHANGED = "dependencies_changed"  # an edge was removed or redirected
+    # Edges were only added. A name the symbol uses now resolves to something
+    # (a missing import added, a fallback import that now succeeds): its own
+    # behaviour changed. For a module, only when its import-time code gained a
+    # reference, or an added import brings in-scope modules into its import
+    # closure whose import-time code did not run before; new name bindings alone
+    # are ``imports_added``, their users carrying their own added edges.
+    DEPENDENCIES_ADDED = "dependencies_added"
+    DOCSTRING_CHANGED = "docstring_changed"  # only the docstring differs
+    # Only a function's annotations differ and they are never evaluated at import
+    # (see Symbol.deferred_annotations): behaviour-level, not structural, not
+    # import-time (introspection such as typer's happens when called).
+    ANNOTATIONS_CHANGED = "annotations_changed"
+
 
 # Changes that invalidate everything defined inside the symbol (and, for
 # deletions, everything that imports it), not just direct references.
@@ -39,20 +46,27 @@ ANNOTATIONS_CHANGED = "annotations_changed"
 # an existing member: a member whose own resolution changed because of the
 # addition carries its own dependencies_added (a name it used now
 # resolves) or dependencies_changed (a binding it used moved).
-STRUCTURAL = frozenset({ADDED, DELETED, DEFINITION_CHANGED, DEPENDENCIES_CHANGED})
+STRUCTURAL = frozenset(
+    {
+        ChangeKind.ADDED,
+        ChangeKind.DELETED,
+        ChangeKind.DEFINITION_CHANGED,
+        ChangeKind.DEPENDENCIES_CHANGED,
+    }
+)
 
 # Changes that are reported but carry no impact of their own: nothing an
 # existing dependent can observe differs (a member whose resolution moved
 # because of the addition carries its own dependencies_added or
 # dependencies_changed).
-NON_IMPACT = frozenset({IMPORTS_ADDED, DOCSTRING_CHANGED})
+NON_IMPACT = frozenset({ChangeKind.IMPORTS_ADDED, ChangeKind.DOCSTRING_CHANGED})
 
 
 @dataclass(frozen=True, order=True)
 class SymbolChange:
     id: str
     kind: str
-    changes: tuple[str, ...]
+    changes: tuple[ChangeKind, ...]
     base: Symbol | None
     head: Symbol | None
 
@@ -79,7 +93,7 @@ class SymbolChange:
         """
         if STRUCTURAL & set(self.changes):
             return True
-        return self.kind == CLASS and BODY_CHANGED in self.changes
+        return self.kind == CLASS and ChangeKind.BODY_CHANGED in self.changes
 
 
 # Dependency-signature kinds for references outside the edge graph.
@@ -255,20 +269,20 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         if b is None:
             assert h is not None  # the id came from one of the two
             if h.module not in base.failed_modules:
-                changes.append(SymbolChange(symbol_id, h.kind, (ADDED,), None, h))
+                changes.append(SymbolChange(symbol_id, h.kind, (ChangeKind.ADDED,), None, h))
             continue
         if h is None:
             if b.module in head.failed_modules:
                 continue
-            changes.append(SymbolChange(symbol_id, b.kind, (DELETED,), b, None))
+            changes.append(SymbolChange(symbol_id, b.kind, (ChangeKind.DELETED,), b, None))
             continue
-        kinds: list[str] = []
+        kinds: list[ChangeKind] = []
         if b.body_hash != h.body_hash:
-            kinds.append(BODY_CHANGED)
+            kinds.append(ChangeKind.BODY_CHANGED)
         elif b.docstring_hash != h.docstring_hash:
-            kinds.append(DOCSTRING_CHANGED)
+            kinds.append(ChangeKind.DOCSTRING_CHANGED)
         if b.kind != h.kind:
-            kinds.append(DEFINITION_CHANGED)
+            kinds.append(ChangeKind.DEFINITION_CHANGED)
         elif b.definition_hash != h.definition_hash:
             future = {i for i in set(b.imports) ^ set(h.imports) if i.startswith("from __future__")}
             if (
@@ -277,23 +291,25 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
                 and _is_subsequence(b.import_layout, h.import_layout)
                 and not future
             ):
-                kinds.append(IMPORTS_ADDED)
+                kinds.append(ChangeKind.IMPORTS_ADDED)
             else:
-                kinds.append(DEFINITION_CHANGED)
+                kinds.append(ChangeKind.DEFINITION_CHANGED)
         if (
             b.kind in (MODULE, CLASS)
-            and DEFINITION_CHANGED not in kinds
+            and ChangeKind.DEFINITION_CHANGED not in kinds
             and reordered(b.statement_layout, h.statement_layout)
         ):
             # The statements both have run in another order: what each
             # sees when it runs differs (R6).
-            kinds.append(DEFINITION_CHANGED)
-        if b.annotation_hash != h.annotation_hash and DEFINITION_CHANGED not in kinds:
+            kinds.append(ChangeKind.DEFINITION_CHANGED)
+        if b.annotation_hash != h.annotation_hash and ChangeKind.DEFINITION_CHANGED not in kinds:
             deferred = b.deferred_annotations and h.deferred_annotations
-            kinds.append(ANNOTATIONS_CHANGED if deferred else DEFINITION_CHANGED)
+            kinds.append(
+                ChangeKind.ANNOTATIONS_CHANGED if deferred else ChangeKind.DEFINITION_CHANGED
+            )
         before = base_deps.get(symbol_id, empty)
         after = head_deps.get(symbol_id, empty)
-        if BODY_CHANGED in kinds or DEFINITION_CHANGED in kinds:
+        if ChangeKind.BODY_CHANGED in kinds or ChangeKind.DEFINITION_CHANGED in kinds:
             # The edit itself explains new unresolved and external references;
             # they matter on their own only when a binding moved under them.
             before = frozenset(d for d in before if d[0] not in (UNRESOLVED_SIG, EXTERNAL_SIG))
@@ -304,7 +320,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         resolved_now = any(d[0] == UNRESOLVED_SIG for d in before - after)
         if before != after:
             if lost:
-                kinds.append(DEPENDENCIES_CHANGED)
+                kinds.append(ChangeKind.DEPENDENCIES_CHANGED)
             elif (
                 h.kind != MODULE
                 or resolved_now
@@ -312,17 +328,17 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
                     symbol_id, after - before, base_closures, base_modules, b, h
                 )
             ):
-                kinds.append(DEPENDENCIES_ADDED)
-            elif IMPORTS_ADDED not in kinds:
-                kinds.append(IMPORTS_ADDED)
+                kinds.append(ChangeKind.DEPENDENCIES_ADDED)
+            elif ChangeKind.IMPORTS_ADDED not in kinds:
+                kinds.append(ChangeKind.IMPORTS_ADDED)
         elif (
             h.kind == MODULE
-            and IMPORTS_ADDED in kinds
+            and ChangeKind.IMPORTS_ADDED in kinds
             and _module_additions_matter(symbol_id, frozenset(), base_closures, base_modules, b, h)
         ):
             # No new edge (a TYPE_CHECKING copy already had it), but the
             # import now runs.
-            kinds.append(DEPENDENCIES_ADDED)
+            kinds.append(ChangeKind.DEPENDENCIES_ADDED)
         if kinds:
             changes.append(SymbolChange(symbol_id, h.kind, tuple(kinds), b, h))
     return changes

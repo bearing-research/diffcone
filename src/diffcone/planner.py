@@ -96,10 +96,7 @@ from typing import TypeVar
 
 from diffcone.cache import IndexCache
 from diffcone.classify import (
-    ADDED,
-    DEFINITION_CHANGED,
-    DELETED,
-    DOCSTRING_CHANGED,
+    ChangeKind,
     SymbolChange,
     _import_closures,
     _runtime_imports,
@@ -662,7 +659,7 @@ def _propagate(
     if target_mode == REGISTERED and source_is_module:
         return None  # registering ran at import, unchanged
     if edge.kind in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME):
-        if target_change is not None and DELETED in target_change.changes:
+        if target_change is not None and ChangeKind.DELETED in target_change.changes:
             return STRUCTURAL
         # Importing a module runs its import-time code.
         return BEHAVIOR if edge.kind == EdgeKind.IMPORTS else None
@@ -684,10 +681,12 @@ def _runs_at_import(change: SymbolChange) -> bool:
     if symbol.kind == VARIABLE:
         # Binding a literal runs nothing; a computed value does, and so does
         # an eagerly evaluated annotation that changed (definition_changed).
-        if DEFINITION_CHANGED in change.changes:
+        if ChangeKind.DEFINITION_CHANGED in change.changes:
             return True
         return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
-    if not {ADDED, DELETED, DEFINITION_CHANGED} & set(change.changes):
+    if not {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.DEFINITION_CHANGED} & set(
+        change.changes
+    ):
         return False
     return not all(s.inert_definition for s in (change.base, change.head) if s is not None)
 
@@ -1453,7 +1452,7 @@ def plan_from_indexes(
     # or adds to it is not (CONTENT).
     # A docstring a decorator reads (below) is handed to the decorator at
     # import as well: what the decorator writes may hold it.
-    documented = {c.id for c in seeded if DOCSTRING_CHANGED in c.changes}
+    documented = {c.id for c in seeded if ChangeKind.DOCSTRING_CHANGED in c.changes}
     decorated = documented & (base.doc_decorated | head.doc_decorated)
     roots = [c.id for c in at_import] + sorted(decorated - {c.id for c in at_import})
     for node, (steps, rule, effect) in sorted(
@@ -1682,7 +1681,7 @@ def plan_from_indexes(
         if moved is not None and target.runner_id in discovered_ids:
             reasons.append(lifecycle_reason(target.runner_id, *moved, "between the snapshots"))
         entry_change = change_by_id.get(target.entry_symbol)
-        if entry_change is not None and DOCSTRING_CHANGED in entry_change.changes:
+        if entry_change is not None and ChangeKind.DOCSTRING_CHANGED in entry_change.changes:
             # For a doctest the docstring is the test; for anything else
             # re-running a target whose own docstring changed is cheap.
             reasons.append(
