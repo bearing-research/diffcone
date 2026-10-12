@@ -1,7 +1,7 @@
 # Running and checking
 
-Planning never runs your code. These commands run tests after a plan
-exists, using the command line you give them.
+Planning never runs your code, with or without a recording. These
+commands run tests after a plan exists, using the command line you give them.
 
 The examples use the default source root, the repository itself. For a
 `src` layout, add `--source-root src --source-root .` to each command, as

@@ -34,12 +34,16 @@ unselected targets (1):
   references from each test to the change.
 - **It errs on the side of running more:** when diffcone can't tell what a
   change reaches, it selects more tests and says why.
-- **It never runs your code to plan:** planning reads files and git history
-  only.
 - **pytest and ASV:** tests and benchmarks are found from your
   configuration and source, the way each runner collects them.
-- **Execution evidence:** for large codebases where nearly everything
-  imports everything, record once what each test ran and plan from that.
+- **Two ways to plan:**
+  - **From the code (the default).** diffcone reads your source and git
+    history. It never imports your code or runs your tests.
+  - **From execution evidence (opt-in, Python 3.12+).** For large codebases
+    where nearly everything imports everything. You run your test suite
+    once under diffcone's recorder, which notes what each test ran; plans
+    then select from that recording. Recording runs your tests; planning
+    from a recording only reads it.
 
 ## Install
 
@@ -58,7 +62,7 @@ diffcone plan --base main --head WORKTREE --discover pytest --format text
 # Run only those tests (arguments after -- go to pytest)
 diffcone run --base main --head WORKTREE --discover pytest --command "uv run pytest" -- -x
 
-# Record what each test runs, then plan from the recording (Python 3.12+)
+# Run the suite once under the recorder, then plan from the recording (Python 3.12+)
 diffcone collect --command "uv run pytest" -- -n 8
 diffcone plan --base main --head HEAD --discover pytest --evidence auto -o plan.json
 

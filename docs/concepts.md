@@ -112,4 +112,6 @@ Reading the code works well when changes stay local. In a large library
 where nearly every module imports a few central ones, a change to a
 central module reaches nearly every test. [Execution
 evidence](guides/evidence.md) solves this by recording which functions each
-test actually ran, once, and selecting from that record instead.
+test actually ran, once, and selecting from that record instead. Making the
+recording runs your test suite under diffcone's recorder; planning from it
+reads the recording and still runs nothing.

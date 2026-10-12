@@ -41,9 +41,9 @@ unselected targets (1):
     [limitations](limitations.md)), it is designed never to skip a test
     that could fail.
 
-**It never runs your code to plan.**
-:   Planning reads files and git history only. Your tests run only when you
-    ask diffcone to run them.
+**It plans without running your code.**
+:   By default, planning reads your source and git history only. Your tests
+    run only when you ask diffcone to run them.
 
 **It works with pytest and ASV.**
 :   Tests and benchmarks are found by reading your configuration and
@@ -52,7 +52,8 @@ unselected targets (1):
 **It can learn from a test run.**
 :   For large codebases where nearly everything imports nearly everything,
     [execution evidence](guides/evidence.md) records what each test
-    actually ran, and plans from that.
+    actually ran, and plans from that. This is opt-in: making a recording
+    runs your test suite, while planning from one only reads it.
 
 ## Next steps
 
