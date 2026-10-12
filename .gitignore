@@ -219,3 +219,7 @@ __marimo__/
 
 # diffcone index cache
 .diffcone/
+
+# Claude Code: worktrees and local settings stay local; project skills are shared
+.claude/*
+!.claude/skills/
