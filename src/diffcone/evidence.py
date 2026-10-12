@@ -39,6 +39,8 @@ from diffcone.model import (
     SymbolKind,
 )
 
+# 5: tests that failed or errored when recorded (FLAG_FAILED), and
+# ``VIRTUAL_ENV`` in the environment.
 # 4: the symbols that ran outside every test only through their annotations
 # (``annotations_only``, Python 3.14), and a recording keeps pytest's cache
 # plugin on an empty cache (its command line lost ``-p no:cacheprovider``).
@@ -49,7 +51,7 @@ from diffcone.model import (
 # window are folded into the phase that made them, and what no record
 # shows there is kept (``import_flagged``); inert probes are accounted;
 # text code is flagged.
-STORE_FORMAT = 4
+STORE_FORMAT = 5
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -57,6 +59,10 @@ FLAG_UNSTABLE = 2  # the test's record differed between two collections
 # The test ran code compiled from text no file of the checkout holds (a
 # doctest's examples, a ``timeit`` statement), which may read any name.
 FLAG_TEXT = 4
+# The test failed or errored when recorded, so its record stops where it
+# failed: where it passes (another environment, a flaky failure), it may run
+# code no record shows.
+FLAG_FAILED = 8
 EVIDENCE_DIR = Path(".diffcone") / "evidence"
 # An import run by a module outside the source roots: nothing static can say
 # who observes what it built.

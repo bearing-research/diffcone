@@ -1145,6 +1145,10 @@ def test_rec1_a_pytest_process_started_outside_every_test_is_its_own_record(repo
         (["/usr/bin/uname", "-m"], False),
         (["file", "-b", "/opt/py/bin/python3.13"], False),
         (["/sbin/ldconfig", "-p"], False),
+        (["locale", "-a"], False),
+        (["/usr/bin/locale"], False),
+        (["locale", "-m"], False),
+        (["locale", "-k", "LC_TIME"], True),
         (["file", "-b", "data/table.bin"], True),
         (["file", "-b", "/repo/data/table.bin"], True),
         (["ldconfig"], True),
@@ -1160,6 +1164,25 @@ def test_rec1_a_system_query_outside_every_test_is_no_problem(tmp_path, argv, pr
     test once spawns outside tests counted."""
     (tmp_path / child.CHILDREN).mkdir()
     assert bool(child.resolve(tmp_path, 10, 11, 5, argv).problems) is problem
+
+
+@needs_monitoring
+@pytest.mark.skipif(shutil.which("locale") is None, reason="needs the locale program")
+def test_e12_a_test_module_listing_locales_at_import_does_not_widen_plans(repo):
+    """pandas' ``test_localization`` lists the machine's locales while it is
+    collected (``subprocess.check_output(["locale", "-a"])``): a process no
+    record follows, outside every test, so every change selected every
+    test. ``locale -a`` runs no Python and reads no file of the checkout."""
+    files = {
+        **BASE,
+        "tests/test_loc.py": (
+            "import subprocess\n\nLOCALES = subprocess.check_output(['locale', '-a'])\n\n\n"
+            "def test_loc():\n    assert LOCALES is not None\n"
+        ),
+    }
+    handled, other = _plans(repo, files, HANDLED, OTHER_CHANGED)
+    assert "tests/test_loc.py::test_loc" not in selected(handled) | selected(other)
+    assert selected(other) == {OTHER_ID}
 
 
 # --------------------------------------------------------------------------- child processes
@@ -1843,3 +1866,93 @@ def test_e9_annotations_evaluated_from_text_are_not_text_code(repo):
     assert ev.tests["tests/test_fw.py::test_check"].flags == 0
     head = repo.commit({"pkg/ops.py": ADD_OPS.replace("a + b", "b + a")})
     assert "tests/test_fw.py::test_check" not in selected(_plan(repo, base, head, ev))
+
+
+# --------------------------------------------------------------------------- failed tests
+
+
+FAILING = """\
+import os
+
+import pytest
+
+from pkg.steps import check, finish
+
+
+@pytest.fixture
+def broken():
+    raise RuntimeError("setup fails")
+
+
+def test_passes():
+    assert finish() == 2
+
+
+def test_fails_when_recorded():
+    check()
+    assert finish() == 2
+
+
+def test_errors_in_setup(broken):
+    pass
+
+
+@pytest.mark.xfail(reason="known", strict=True)
+def test_xfails():
+    assert False
+"""
+STEPS = (
+    "import os\n\n\ndef check():\n"
+    "    assert os.environ.get('E11_PASS'), 'not in this environment'\n\n\n"
+    "def finish():\n    return 2\n"
+)
+FAILING_FILES = {
+    ".gitignore": "__pycache__/\n.diffcone/\n",
+    "pkg/__init__.py": "",
+    "pkg/steps.py": STEPS,
+    "tests/__init__.py": "",
+    "tests/test_steps.py": FAILING,
+}
+
+
+@needs_monitoring
+def test_e11_a_test_that_fails_or_errors_while_recorded_is_flagged(repo):
+    from diffcone.evidence import FLAG_FAILED
+
+    repo.commit(FAILING_FILES)
+    ev = repo.collect()
+    failed = {t for t, r in ev.tests.items() if r.flags & FLAG_FAILED}
+    assert failed == {
+        "tests/test_steps.py::test_fails_when_recorded",
+        "tests/test_steps.py::test_errors_in_setup",
+    }
+
+
+@needs_monitoring
+def test_e11_a_test_that_failed_while_recorded_is_selected_for_code_after_its_failure(
+    repo, monkeypatch
+):
+    """Recorded where ``check()`` fails, the test's record stops there; where
+    it passes (another environment: here ``E11_PASS``), it runs ``finish``,
+    whose change it must be selected for. Before: only test_passes was."""
+    base = repo.commit(FAILING_FILES)
+    ev = repo.collect()
+    head = repo.commit({"pkg/steps.py": STEPS.replace("return 2", "return 3")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=ev)
+    chosen = selected(plan)
+    assert {
+        "tests/test_steps.py::test_passes",
+        "tests/test_steps.py::test_fails_when_recorded",
+    } <= (chosen)
+    assert "no_evidence" in rules(plan, "tests/test_steps.py::test_fails_when_recorded")
+
+
+@needs_monitoring
+def test_e11_the_recorded_environment_holds_virtual_env(repo, monkeypatch):
+    """A tool run from its own environment hands its ``VIRTUAL_ENV`` to the
+    suite, where a library may act on it (IPython warns), so a recording
+    made under one ``VIRTUAL_ENV`` does not vouch for a run under another."""
+    repo.commit(FAILING_FILES)
+    monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else")
+    ev = repo.collect()
+    assert ev.environment["variables"]["VIRTUAL_ENV"] == "/somewhere/else"

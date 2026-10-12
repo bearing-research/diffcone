@@ -148,7 +148,13 @@ FLAG_SUBPROCESS = 1
 # The test ran code compiled from text no file of the checkout holds (a
 # doctest, ``timeit``), which can read any name of the project.
 FLAG_TEXT = 4
-ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL", "PYTHONWARNINGS")
+# The test failed or errored when recorded: its record stops where it failed.
+FLAG_FAILED = 8
+# ``VIRTUAL_ENV``: a library may act on it (IPython warns when it names
+# another environment than the interpreter's, which a suite treating
+# warnings as errors fails on), and a tool run from its own environment
+# (``uv run`` elsewhere) hands its own to the suite.
+ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL", "PYTHONWARNINGS", "VIRTUAL_ENV")
 
 
 def _variables() -> tuple[str, ...]:
@@ -1136,6 +1142,8 @@ class _Writer:
 
 
 writer: _Writer | None = None
+# The window of the test whose protocol is running, for its reports.
+_test_window: dict | None = None
 
 
 def _spawn_list(spawns) -> list:
@@ -1374,7 +1382,8 @@ def pytest_runtest_protocol(item, nextitem):
             cache.cache_clear()
         except Exception:
             pass
-    mine = _window()
+    global _test_window
+    mine = _test_window = _window()
     try:
         _unaccounted_children()  # started outside every window
     except Exception as exc:
@@ -1430,6 +1439,13 @@ def pytest_runtest_protocol(item, nextitem):
                 writer.add(fold_nodeid(item.nodeid), mine)
         except Exception as exc:
             _error("runtest_protocol", exc)
+
+
+def pytest_runtest_logreport(report):
+    # A test that failed or errored (in setup, call or teardown) stopped where
+    # it failed: code it runs when it passes is not in its record.
+    if recording and report.failed and _test_window is not None:
+        _test_window["flags"] |= FLAG_FAILED
 
 
 @pytest.hookimpl(trylast=True)

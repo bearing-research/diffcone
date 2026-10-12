@@ -111,7 +111,10 @@ def system_query(argv: list[str] | None) -> bool:
     runs no Python and reads no file of the checkout: ``uname`` and ``file
     -b <interpreter>`` (``platform.processor()``, ``platform.architecture()``),
     ``ldconfig -p`` (``ctypes.util.find_library``). pytest-xdist workers
-    call them as they start, outside every test."""
+    call them as they start, outside every test. Also ``locale``, ``locale
+    -a`` and ``locale -m``, which list the machine's locales and character
+    maps: projects testing locale handling ask at import (pandas'
+    ``get_locales``, while its test modules are collected)."""
     if not argv:
         return False
     name = os.path.basename(argv[0]).lower()
@@ -119,6 +122,8 @@ def system_query(argv: list[str] | None) -> bool:
         return True
     if name == "ldconfig":
         return argv[1:] == ["-p"]
+    if name == "locale":
+        return argv[1:] in ([], ["-a"], ["-m"])
     if name == "file":
         return (
             len(argv) == 3

@@ -134,7 +134,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `escalated` | | The change can't be judged from a recording (code that runs on import, or a module imported before the recorder started), so it was planned from the code. |
 | `cython_caller` | | The test ran Cython code that calls a changed function the recording can't see. |
 | `lookup_site` | yes | The test looked a name up dynamically where something the lookup can see changed: a name added or removed, a definition or a value. |
-| `no_evidence` | yes | The test has no recording (a new test, for example). |
+| `no_evidence` | yes | The test has no recording (a new test, for example), or it failed or errored while it was recorded, so its recording stops where it failed. |
 | `unstable` | yes | The test's recordings differed between runs. |
 | `subprocess` | yes | The test started a process the recording can't follow, or ran while one was still running. As a fallback for every test: such a process was started outside any test (a hook, collection, or an import outside the roots). |
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |

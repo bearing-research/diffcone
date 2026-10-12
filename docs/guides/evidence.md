@@ -98,8 +98,10 @@ report:
   Caches kept by an unknown memoising decorator, or filled through a
   method of an object whose type diffcone can't tell, are not seen (see
   [limitations](../limitations.md#state-shared-between-tests)).
-- Tests with no recording (new tests, for example) and tests whose
-  recording was unstable are always selected.
+- Tests with no recording (new tests, for example), tests whose
+  recording was unstable, and tests that failed or errored while they were
+  recorded are always selected: a failing test's recording stops where it
+  failed.
 - Processes a test starts:
     - **Followed.** A Python process started with `subprocess` (directly,
       through `asyncio`, or through `uv run`) records itself on Linux and
@@ -168,7 +170,7 @@ match the recording:
 - the installed packages;
 - your `PYTHONPATH`;
 - a few environment variables (`TZ`, `LANG`, `LC_ALL`,
-  `PYTHONWARNINGS`).
+  `PYTHONWARNINGS`, `VIRTUAL_ENV`).
 
 It sets `PYTHONHASHSEED` to the recorded value itself. With `--dry-run`,
 nothing is checked.

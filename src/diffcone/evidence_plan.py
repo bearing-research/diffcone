@@ -178,6 +178,7 @@ from diffcone.cython import (
 from diffcone.declarations import Declaration
 from diffcone.discovery import DiscoveryResult
 from diffcone.evidence import (
+    FLAG_FAILED,
     FLAG_SUBPROCESS,
     FLAG_TEXT,
     FLAG_UNSTABLE,
@@ -2830,6 +2831,14 @@ def _evidence_decision(
                 Reason(
                     Rule.UNSTABLE,
                     "its record differed between two collections in different orders",
+                )
+            )
+        if record.flags & FLAG_FAILED:
+            reasons.append(
+                Reason(
+                    Rule.NO_EVIDENCE,
+                    f"it failed or errored when recorded at {short}: its record stops "
+                    "where it failed",
                 )
             )
         if record.flags & FLAG_SUBPROCESS:

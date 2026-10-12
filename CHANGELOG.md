@@ -9,7 +9,7 @@ selection rules.
 ## [Unreleased]
 
 Upgrading from 0.3.0: make your execution-evidence recordings again. The
-store format is now 4 (0.3.0 wrote 1): `--evidence auto` skips an older
+store format is now 5 (0.3.0 wrote 1): `--evidence auto` skips an older
 recording, naming one is an error, and the `run` action plans from the
 code until `record` makes a new one. Expect plans to select more tests
 than 0.3.0 did: most of the changes below close cases where diffcone
@@ -324,6 +324,16 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Execution evidence
 
+- A test that failed or errored while it was recorded is always selected:
+  its recording stops where it failed, so where it passes (a flaky failure,
+  a different environment) it can run code the recording never saw.
+  `VIRTUAL_ENV` is now part of the environment a recording is checked
+  against: a tool run from its own environment passes its `VIRTUAL_ENV` to
+  the suite, and IPython warns on one that is not the interpreter's.
+- A test module listing the machine's locales while pytest collected it
+  (`locale -a`, as pandas' locale tests do) made every change select every
+  test. Listing locales runs no Python, and no longer counts as a process
+  the recording can't follow.
 - Before Python 3.14, a test that had a library evaluate string
   annotations (`from __future__ import annotations`, forward references)
   through `typing.get_type_hints`, as pydantic and FastAPI do, recorded
