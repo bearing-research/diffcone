@@ -479,7 +479,9 @@ def test_evp1_a_fake_found_without_naming_it(repo, how):
     bench = asv_target("benchmarks.TimeStream.time_flushed", "pkg.stream.flushed")
     plan = _plan(repo, base, head, ev, [bench])
     # test_open never holds a fake: the narrowing stands.
-    assert _pytest(plan) == {HELD, "tests/test_bare.py::test_bare"}
+    # test_bare reads ``closed`` only: a method added to its class changes
+    # nothing it does (its own file is not in its record, E8).
+    assert _pytest(plan) == {HELD}
 
 
 # --------------------------------------------------------------------------- EVP-3
@@ -529,7 +531,8 @@ def test_evp3_library_code_imports_a_test_module_by_name(repo):
     head = repo.commit({"tests/test_a.py": helper})
     bench = asv_target("benchmarks.TimeLoad.time_load", "pkg.loader.load")
     plan = _plan(repo, base, head, ev, [bench])
-    assert _pytest(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+    # test_a uses no ``HELPER`` (its own file is not in its record, E8).
+    assert _pytest(plan) == {"tests/test_b.py::test_b"}
 
 
 def test_evp3_library_code_builds_a_fake_from_a_test_module(repo):
@@ -553,7 +556,8 @@ def test_evp3_library_code_builds_a_fake_from_a_test_module(repo):
     flush = "    closed = False\n\n    def flush(self):\n        return 1\n"
     head = repo.commit({"tests/test_fakes.py": fakes.replace("    closed = False\n", flush)})
     plan = _plan(repo, base, head, ev)
-    assert selected(plan) == {"tests/test_fakes.py::test_fakes", "tests/test_build.py::test_build"}
+    # test_fakes checks only that ``_Fake`` exists (E8).
+    assert selected(plan) == {"tests/test_build.py::test_build"}
 
 
 def test_evp3_a_test_class_instance_handed_to_a_library_lookup(repo):
@@ -580,7 +584,8 @@ def test_evp3_a_test_class_instance_handed_to_a_library_lookup(repo):
     head = repo.commit({"tests/test_helpers.py": helpers.replace("    x = 0\n", go)})
     plan = _plan(repo, base, head, ev)
     # test_other runs the same lookup, but never holds a Helper.
-    assert selected(plan) == {"tests/test_h.py::test_h", "tests/test_helpers.py::test_helpers"}
+    # test_helpers reads ``Helper.x`` only (E8).
+    assert selected(plan) == {"tests/test_h.py::test_h"}
 
 
 def test_evp7_line_endings_are_no_change_inside_a_cython_string():

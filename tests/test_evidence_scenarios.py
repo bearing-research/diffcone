@@ -349,9 +349,9 @@ def test_pytest_run_from_an_environment_in_the_checkout_is_not_project_code(repo
     head = repo.commit({"tests/test_ops.py": TEST_OPS.replace("== 3", "== 1 + 2")})
     plan = _plan(repo, base, head, ev)
     assert plan.fallbacks == []
-    # pytest stats a test's own file inside the test: the file's tests, and
-    # no benchmark (everything was selected).
-    assert selected(plan) == {ADD, MUL}
+    # The edited test only: pytest's stat of a test's own file is not in its
+    # record (E8), and no benchmark (everything was selected).
+    assert selected(plan) == {ADD}
 
 
 SCANS = {

@@ -36,6 +36,9 @@ from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
 from diffcone.model import MODULE, SourceIndex
 
+# 4: the symbols that ran outside every test only through their annotations
+# (``annotations_only``, Python 3.14), and a recording keeps pytest's cache
+# plugin on an empty cache (its command line lost ``-p no:cacheprovider``).
 # 3: the modules imported before the recorder started (``preloaded``), and
 # scanned directories (``child.SCANNED``) among the listed ones. A store of
 # an earlier format is refused: its recorder did not note what ran before
@@ -43,7 +46,7 @@ from diffcone.model import MODULE, SourceIndex
 # window are folded into the phase that made them, and what no record
 # shows there is kept (``import_flagged``); inert probes are accounted;
 # text code is flagged.
-STORE_FORMAT = 3
+STORE_FORMAT = 4
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -189,6 +192,7 @@ class _Owners:
         self._spellings: dict[str, str] | None = None
         self._canonical: dict[str, str] = {}
         spans: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
+        self.symbol_ids = set(index.symbols)
         for symbol in index.symbols.values():
             if symbol.kind == MODULE:
                 self.module_of_path[symbol.path] = symbol.id
@@ -212,6 +216,12 @@ class _Owners:
             self.memo[key] = symbol_id(path, function.name) if function else None
             return self.memo[key]
         found = self.module_of_path.get(path)
+        if line == 0 and found is not None:
+            # A class's annotations evaluated from text (child.annotation_reads):
+            # found by its qualname, as the recorder has no line for it.
+            owner = f"{found}.{qualname.removesuffix(child.ANNOTATIONS)}"
+            self.memo[key] = owner if owner in self.symbol_ids else found
+            return self.memo[key]
         if qualname != "<module>" and path in self.spans:
             best: tuple[int, str] | None = None
             spans = self.spans[path]
@@ -291,7 +301,8 @@ def _annotate_code(qualname: str) -> bool:
     """Whether a code object is the one Python 3.14 compiles to evaluate a
     definition's annotations: ``__annotate__`` (a module-level function's),
     ``C.__annotate__`` (a class's, or one of its methods'). It starts on the
-    ``def``/``class`` line, so it maps to that symbol."""
+    ``def``/``class`` line, so it maps to that symbol. The recorder names
+    annotations evaluated from text the same way (``child.ANNOTATIONS``)."""
     return qualname == "__annotate__" or qualname.endswith(".__annotate__")
 
 

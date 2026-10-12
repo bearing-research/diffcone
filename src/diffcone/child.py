@@ -855,7 +855,18 @@ def _audit(event: str, args: Any) -> None:
             if event not in ("os.fork", "os.forkpty") and not in_popen(event, args):
                 _flag(f"started a process another way ({event})")
         elif event == "exec":
-            if args and text_code(args[0], sys._getframe().f_back, _code_path):
+            caller = sys._getframe().f_back
+            reads = annotation_reads(args[0], caller, _code_path) if args else None
+            if reads is not None:
+                rows, paths = reads
+                for row in rows:
+                    if row not in _seen_codes:
+                        _seen_codes.add(row)
+                        _write(["c", *row])
+                root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
+                for rel in paths:
+                    _touch(os.path.join(root, rel))
+            elif args and text_code(args[0], caller, _code_path):
                 name = args[0].co_filename
                 if name not in _text_seen:
                     _text_seen.add(name)
@@ -867,14 +878,13 @@ def _audit(event: str, args: Any) -> None:
 _text_seen: set[str] = set()
 # Modules that run text they generate themselves from a definition, reading
 # only names they put in its namespace (``collections.namedtuple``,
-# dataclasses, annotations, attrs' generated methods, ``unittest.mock``'s
+# dataclasses, attrs' generated methods, ``unittest.mock``'s
 # signature-checking wrappers for ``autospec``), or text from pytest's
 # command line (``-m``/``-k`` expressions, matched against marks and names).
+# Annotation evaluators come first (``annotation_reads``).
 TEXT_GENERATORS = (
     "collections",
     "dataclasses",
-    "annotationlib",
-    "typing",
     "attr",
     "unittest.mock",
     "_pytest.mark",
@@ -934,6 +944,106 @@ def text_code(code: Any, caller: Any, code_path: Any) -> bool:
     if module == CONDITION_EVALUATOR:
         return _condition_reads_project(code, caller, code_path)
     return True
+
+
+# Modules that evaluate annotations from text (a string annotation, a
+# forward reference): ``typing.get_type_hints`` and the frameworks that call
+# it, ``annotationlib`` and ``inspect.get_annotations`` with ``eval_str``.
+ANNOTATION_EVALUATORS = ("typing", "typing_extensions", "annotationlib", "inspect")
+# The evaluators' names for the object whose annotations they evaluate, in
+# the order they are tried (``get_type_hints`` walks a class's ``base``es).
+_OWNER_LOCALS = ("base", "owner", "obj")
+# What an annotations row's qualname ends with: the symbol's annotations were
+# evaluated, as Python 3.14 runs its ``__annotate__`` (evidence.py folds both
+# alike). A class's row has line 0 and is found by its qualname.
+ANNOTATIONS = ".__annotate__"
+
+
+def annotation_reads(code: Any, caller: Any, code_path: Any) -> tuple[list, list] | None:
+    """What evaluating an annotation from text reads, when ``exec``/``eval``
+    of ``code`` called from the frame ``caller`` is an annotation evaluator's
+    (``ANNOTATION_EVALUATORS``); None otherwise. The text is the annotation
+    of a function or class (its owner) and names what it reads. Returns
+    (rows, paths): ``(path, line, qualname)`` code rows to credit as run (the
+    owner's annotations, and the project's functions and classes the names
+    resolve to, each as its annotations), and checkout paths to credit as
+    read (the module whose namespace the text was evaluated in, when no
+    owner is found: its annotations are in that file). No record would
+    show this otherwise: the evaluated code is compiled from the text.
+    Nothing here runs project code (namespaces are read, not ``getattr``)."""
+    if not isinstance(code, types.CodeType) or caller is None:
+        return None
+    if not _of(str(caller.f_globals.get("__name__", "")), ANNOTATION_EVALUATORS):
+        return None
+    rows: list = []
+    paths: list = []
+    namespaces: list[dict] = []
+    owner = None
+    frame = caller
+    while frame is not None and _of(
+        str(frame.f_globals.get("__name__", "")), ANNOTATION_EVALUATORS
+    ):
+        local = frame.f_locals
+        namespaces += [v for v in local.values() if isinstance(v, dict)]
+        if owner is None:
+            for name in _OWNER_LOCALS:
+                if _annotations_row(local.get(name), code_path) is not None:
+                    owner = local[name]
+                    break
+        frame = frame.f_back
+    if owner is not None:
+        rows.append(_annotations_row(owner, code_path))
+    else:
+        for namespace in namespaces:
+            rel = _module_file(namespace, code_path)
+            if rel is not None:
+                paths.append(rel)
+    attributes = set(code.co_names)
+    for name in sorted(_loaded_names(code)):
+        attributes.discard(name)
+    for name in sorted(_loaded_names(code)):
+        for namespace in namespaces:
+            if name not in namespace:
+                continue
+            value = namespace[name]
+            if isinstance(value, types.ModuleType):
+                # ``models.Item``: what the module holds under the names read
+                # off it (its namespace, not ``getattr``: no ``__getattr__``).
+                found = vars(value)
+                values = [found[a] for a in sorted(attributes) if a in found]
+            else:
+                values = [value]
+            for v in values:
+                row = _annotations_row(v, code_path)
+                if row is not None:
+                    rows.append(row)
+            break
+    return rows, paths
+
+
+def _annotations_row(value: Any, code_path: Any) -> tuple[str, int, str] | None:
+    """The annotations row of a function or class of the checkout (a
+    function's wrapped one through ``__wrapped__`` when it is not)."""
+    seen = 0
+    while isinstance(value, types.FunctionType) and seen < 10:
+        rel = code_path(value.__code__.co_filename)
+        if rel is not None:
+            return rel, value.__code__.co_firstlineno, value.__code__.co_qualname + ANNOTATIONS
+        value = value.__dict__.get("__wrapped__")
+        seen += 1
+    if isinstance(value, type):
+        module = sys.modules.get(str(type.__dict__["__module__"].__get__(value, type)))
+        rel = _module_file(vars(module), code_path) if module is not None else None
+        qualname = type.__dict__["__qualname__"].__get__(value, type)
+        if rel is not None and "<locals>" not in qualname:
+            return rel, 0, qualname + ANNOTATIONS
+    return None
+
+
+def _module_file(namespace: dict, code_path: Any) -> str | None:
+    """The checkout path of the module whose namespace this is, if any."""
+    file = namespace.get("__file__")
+    return code_path(file) if isinstance(file, str) and "__name__" in namespace else None
 
 
 def _names_something(code: types.CodeType) -> bool:

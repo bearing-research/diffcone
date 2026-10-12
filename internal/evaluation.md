@@ -1465,6 +1465,12 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   recorder exempts as it does `typing` (E9, open).
 * strata's CI records on 3.12, 3.13 and 3.14 cells, so its 3.14 cells
   planned everything on any such change until this fix reaches it.
+* After E6, E8, E9 and E10 (recordings made again, store format 4): 653 of
+  6 231 on 3.13 and 657 on 3.14. `text_code` 335 -> 10 on 3.13 (string
+  annotations evaluated by `inspect` are credited, not flagged), and
+  `touched_file` 18 -> 7 and 8 (a test's own file is no longer in its
+  record); `executed_changed` stays 403 on both, so crediting what
+  annotations read added no selection here.
 
 ## Corpus evaluation on 0.4.0's code (2026-10-12)
 

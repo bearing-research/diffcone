@@ -48,7 +48,7 @@ eval/strata_check.sh <tree2> after
 3.13 and 3.14, and the recorder sees different code on each (3.14
 evaluates annotations lazily), so measure 3.13 and 3.14 (`PY=3.14
 STRATA=$S/strata314 eval/strata_setup.sh <tree>`). Baselines at main
-after audit E7: 961 of 6231 on 3.13, 656 on 3.14.
+after audit E10: 653 of 6231 on 3.13, 657 on 3.14.
 
 Record again after any store-format change (`STORE_FORMAT`) or recorder
 change. Compare the counts by rule; every change needs an explanation (a

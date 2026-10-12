@@ -264,3 +264,77 @@ def test_e7_a_reader_whose_annotations_name_the_change(repo):
         assert plan == EVERY | {"tests/test_factor.py::test_factor"}
     else:
         assert "tests/test_factor.py::test_factor" in plan
+
+
+# --------------------------------------------------------------------------- E10, E9
+# Annotations evaluated from text (``from __future__ import annotations``,
+# forward references) by a library outside the checkout, as pydantic and
+# FastAPI do: before Python 3.14 nothing ran a code object of the project,
+# and the evaluation was exempt from the text-code flag, so a test whose
+# outcome depended on the annotations had no record of them (E10, a miss);
+# ``inspect`` evaluating them instead flagged every such test (E9).
+
+FRAMEWORK = """\
+import inspect
+import typing
+
+
+def check(mod):
+    for name in sorted(vars(mod)):
+        obj = vars(mod)[name]
+        if getattr(obj, "__module__", None) == mod.__name__ and callable(obj):
+            {how}
+"""
+STRING_API = (
+    "from __future__ import annotations\n\nfrom pkg import models\n\n\n"
+    "def handler(x: models.Item) -> None:\n    pass\n\n\n"
+    "class Model:\n    item: models.Item\n"
+)
+
+
+def _framework_repo(repo, how):
+    site = repo.path.parent / "site"
+    site.mkdir(exist_ok=True)
+    (site / "fw.py").write_text(FRAMEWORK.format(how=how), encoding="utf-8")
+    return {
+        **FILES,
+        "pkg/models.py": "class Item:\n    pass\n\n\nclass Other:\n    pass\n",
+        "pkg/api.py": STRING_API,
+        "tests/conftest.py": f"import sys\n\nsys.path.insert(0, {str(site)!r})\n",
+        "tests/test_fw.py": (
+            "import fw\nimport pkg.api\n\n\ndef test_check():\n    fw.check(pkg.api)\n"
+        ),
+    }
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    "how", ["typing.get_type_hints(obj)", "inspect.get_annotations(obj, eval_str=True)"]
+)
+def test_e10_a_changed_annotation_a_library_evaluated_from_text(repo, how):
+    base = repo.commit(_framework_repo(repo, how))
+    ev = repo.collect()
+    head = repo.commit({"pkg/api.py": STRING_API.replace("x: models.Item", "x: models.Missing")})
+    assert "tests/test_fw.py::test_check" in selected(_plan(repo, base, head, ev))
+
+
+@needs_monitoring
+def test_e10_a_deleted_class_a_class_annotation_named(repo):
+    """``Model.item: models.Item`` evaluated by the library: the test read
+    ``Item`` through the text; deleting it fails the test."""
+    base = repo.commit(_framework_repo(repo, "typing.get_type_hints(obj)"))
+    ev = repo.collect()
+    head = repo.commit({"pkg/models.py": "class Other:\n    pass\n"})
+    assert "tests/test_fw.py::test_check" in selected(_plan(repo, base, head, ev))
+
+
+@needs_monitoring
+def test_e9_annotations_evaluated_from_text_are_not_text_code(repo):
+    """``inspect`` evaluating string annotations (before Python 3.14) is an
+    annotation evaluator like ``typing``: what it reads is credited, and
+    the test is no longer always selected."""
+    base = repo.commit(_framework_repo(repo, "inspect.signature(obj, eval_str=True)"))
+    ev = repo.collect()
+    assert ev.tests["tests/test_fw.py::test_check"].flags == 0
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    assert "tests/test_fw.py::test_check" not in selected(_plan(repo, base, head, ev))

@@ -9,7 +9,7 @@ selection rules.
 ## [Unreleased]
 
 Upgrading from 0.3.0: make your execution-evidence recordings again. The
-store format is now 3 (0.3.0 wrote 1): `--evidence auto` skips an older
+store format is now 4 (0.3.0 wrote 1): `--evidence auto` skips an older
 recording, naming one is an error, and the `run` action plans from the
 code until `record` makes a new one. Expect plans to select more tests
 than 0.3.0 did: most of the changes below close cases where diffcone
@@ -324,6 +324,22 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Execution evidence
 
+- Before Python 3.14, a test that had a library evaluate string
+  annotations (`from __future__ import annotations`, forward references)
+  through `typing.get_type_hints`, as pydantic and FastAPI do, recorded
+  nothing of them, so a change to those annotations, or to a class they
+  name, did not select it. The recorder now credits the test with the
+  annotations' owner and what their names resolve to, through `typing`,
+  `annotationlib` and `inspect` alike; `inspect`'s evaluation no longer
+  counts as running text code, which selected the test on every change.
+- A recording no longer disables pytest's cache plugin: a configured
+  `--failed-first` made recording a usage error. The plugin starts from
+  an empty cache of its own, so `--lf`/`--ff` neither narrow nor reorder
+  the recorded run, and the repository's `.pytest_cache` is left alone.
+- Editing one test selected every test of its file: pytest looks up each
+  test's location as the test starts, which read the file inside the
+  test's record. That lookup is no longer recorded; a test that reads its
+  own file still is.
 - On Python 3.14, editing the body of a function whose annotations were
   read outside the tests selected every test, or every test importing its
   module. Python 3.14 evaluates annotations in code of their own, which

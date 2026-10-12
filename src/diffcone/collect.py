@@ -98,6 +98,13 @@ Environment variables:
                                stops the session before any test runs
 ``DIFFCONE_CHECK_ONLY``        with check mode: stop after the check (the
                                evidence plan selected nothing to run)
+``DIFFCONE_CACHE_DIR``         an empty directory for pytest's cache plugin
+                               instead of the project's ``.pytest_cache``: a
+                               recording keeps the plugin (``addopts`` may
+                               carry ``--failed-first``, which pytest refuses
+                               without it) but ``--lf``/``--ff`` find nothing
+                               to narrow or reorder the run by (as in
+                               ``selection.py``)
 
 Files written per process: ``process-<pid>.json`` (code table, import-time
 records, preloaded modules, environment, errors) and ``tests-<pid>.bin``
@@ -245,6 +252,7 @@ def environment_hash(env: dict) -> str:
 # --------------------------------------------------------------------------- state
 
 OUT = os.environ.get("DIFFCONE_COLLECT_OUT")
+CACHE_DIR = os.environ.get("DIFFCONE_CACHE_DIR")
 environment_at_start: dict | None = None
 _root = os.environ.get("DIFFCONE_COLLECT_ROOT") or os.getcwd()
 # Both spellings: a code object's file name is the path it was imported by
@@ -353,6 +361,26 @@ def _serialised(window: dict) -> dict:
     data["spawns"] = _spawn_list(window["spawns"])
     data["flags"] = window["flags"]
     return data
+
+
+def _credit_rows(rows: list, paths: list) -> None:
+    """Credit what an annotation evaluated from text read
+    (``child.annotation_reads``): code rows as code that ran now, where it
+    ran (a window, an import, a hook), and paths as read."""
+    for row in rows:
+        i = codes.get(row)
+        if i is None:
+            i = codes[row] = len(table)
+            table.append(list(row))
+        for w in _windows():
+            w["codes"].add(i)
+        if not active:
+            if importing:
+                import_by.setdefault(i, set()).add(importing[-1])
+            else:
+                hook_codes.add(i)
+    for rel in paths:
+        _touch(os.path.join(_root, rel))
 
 
 def _code_index(code, rel: str) -> int:
@@ -692,8 +720,14 @@ def _audit(event, args):
                 _inert_pending = False
                 _flag()
         elif event == "exec":
-            # Text a doctest or ``timeit`` runs (child.text_code).
-            if args and child.text_code(args[0], sys._getframe().f_back, _code_path):
+            caller = sys._getframe().f_back
+            # An annotation evaluated from text: credited with what it reads
+            # (child.annotation_reads); other text a doctest or ``timeit``
+            # runs flags the test (child.text_code).
+            reads = child.annotation_reads(args[0], caller, _code_path) if args else None
+            if reads is not None:
+                _credit_rows(*reads)
+            elif args and child.text_code(args[0], caller, _code_path):
                 _flag(FLAG_TEXT)
     except Exception as exc:
         _error(f"audit {event}", exc)
@@ -1193,8 +1227,15 @@ def _start() -> None:
 # --------------------------------------------------------------------------- hooks
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config):
     global writer
+    # Before the cache plugin's configure (registered before this one, and
+    # pluggy calls the later registered first among tryfirst), which reads
+    # its directory and the failures ``--lf``/``--ff`` use.
+    inicache = getattr(config, "_inicache", None)
+    if CACHE_DIR and isinstance(inicache, dict):
+        inicache["cache_dir"] = CACHE_DIR
     expected = os.environ.get("DIFFCONE_CHECK_ENV")
     if expected:
         env = environment()
@@ -1218,6 +1259,20 @@ def pytest_configure(config):
             writer = _Writer(OUT)
         except Exception as exc:
             _error("configure", exc)
+
+
+def pytest_sessionstart(session):
+    # The setting above uses pytest internals; should it stop taking effect,
+    # ``--lf`` would narrow the recording to the repository's recorded
+    # failures without a word: a cache elsewhere is a usage error.
+    cache = getattr(session.config, "cache", None)
+    if CACHE_DIR and cache is not None:
+        where = os.path.realpath(cache.mkdir("diffcone"))
+        if os.path.commonpath([where, os.path.realpath(CACHE_DIR)]) != os.path.realpath(CACHE_DIR):
+            raise pytest.UsageError(
+                f"diffcone could not point pytest's cache at {CACHE_DIR} (it is at {where}); "
+                "--lf/--ff would read the repository's recorded failures"
+            )
 
 
 @pytest.hookimpl(wrapper=True)
@@ -1332,6 +1387,23 @@ def pytest_runtest_protocol(item, nextitem):
     except Exception as exc:
         _error("threads", exc)
     mon.restart_events()
+    # pytest works out where the test is (``item.location``, cached) as it
+    # logs the test's start, which stats the test's own file: pytest finding
+    # the test, not the test reading its file. Worked out here first, its
+    # touches quiet. The test's object comes first and is not quiet: getting
+    # it may build an instance of the test's class, whose ``__init__`` is
+    # the test's own code.
+    try:
+        item.obj  # noqa: B018
+    except Exception:
+        pass
+    child.quiet.depth += 1
+    try:
+        item.location  # noqa: B018
+    except Exception:
+        pass
+    finally:
+        child.quiet.depth -= 1
     try:
         return (yield)
     finally:

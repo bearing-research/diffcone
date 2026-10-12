@@ -1785,8 +1785,10 @@ def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
     cannot be reordered; the recorder starts from ``sitecustomize`` before
     any of them all the same (plugin_environment). ``--maxfail=0`` comes
     last: a recording must cover the whole suite, whatever ``-x`` the
-    project's ``addopts`` or the command carry."""
-    return pytest_argv(command, "-p", PLUGIN, "-p", "no:cacheprovider", *(extra or []), NO_MAXFAIL)
+    project's ``addopts`` or the command carry. pytest's cache plugin stays
+    (``addopts`` may carry ``--failed-first``), on an empty directory of its
+    own (``DIFFCONE_CACHE_DIR``, plugin_environment)."""
+    return pytest_argv(command, "-p", PLUGIN, *(extra or []), NO_MAXFAIL)
 
 
 def advance_refusal(
@@ -1912,6 +1914,9 @@ def plugin_environment(base: dict[str, str], out: Path | None, root: Path) -> di
     if out is not None:
         env["DIFFCONE_COLLECT_OUT"] = str(out)
         env[child.ENV_MAIN] = "1"
+        # A recording leaves the repository's ``.pytest_cache`` alone, and
+        # its configured ``--lf``/``--ff`` have nothing to go by.
+        env["DIFFCONE_CACHE_DIR"] = str(link_dir / "pytest-cache")
     return env
 
 
@@ -2097,7 +2102,6 @@ def run_with_evidence(
         if advance_from is not None:
             modules = _python_module_names(plan.head_index, plan.source_roots)
             env["DIFFCONE_COLLECT_PACKAGES"] = _packages(modules)
-            plugins += ["-p", "no:cacheprovider"]
         try:
             result = run_selected(
                 plan,
@@ -2191,7 +2195,7 @@ def _reverse_run(
             "pytest",
             cwd=cwd,
             command=command,
-            extra=["-p", PLUGIN, "-p", "no:cacheprovider", *(extra or [])],
+            extra=["-p", PLUGIN, *(extra or [])],
             env=reverse_env,
         )
     finally:
