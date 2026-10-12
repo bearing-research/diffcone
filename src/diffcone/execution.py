@@ -54,7 +54,11 @@ from diffcone.evidence import (
     write_store,
 )
 from diffcone.manifest import Target
-from diffcone.model import KIND_COMMIT, KIND_WORKTREE, MODULE, SourceIndex
+from diffcone.model import (
+    SnapshotKind,
+    SourceIndex,
+    SymbolKind,
+)
 from diffcone.planner import OWN_DIRS, OWN_FILES, Plan, _index_snapshot, build_input
 from diffcone.snapshot import (
     ASV_CONFIGS,
@@ -230,16 +234,16 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     submodules whose commit or content differs. ASV's output directories
     beside its configuration are left out: nothing runs them.
     """
-    if plan.head.kind == KIND_WORKTREE:
+    if plan.head.kind == SnapshotKind.WORKTREE:
         return None
     # What matters is the code, not the commit: a checkout carrying an extra
     # commit that only adds a manifest runs the analysed code, while one
     # uncommitted edit to a source file does not.
     # ``-z``: without it git quotes a name with non-ASCII characters
     # (``"pkg/\303\251.py"``), which then does not end in ``.py``.
-    analysed_rev = plan.head.commit if plan.head.kind == KIND_COMMIT else INDEX
+    analysed_rev = plan.head.commit if plan.head.kind == SnapshotKind.COMMIT else INDEX
     against = ["diff", "--name-only", "-z"] + (
-        [plan.head.commit] if plan.head.kind == KIND_COMMIT else []
+        [plan.head.commit] if plan.head.kind == SnapshotKind.COMMIT else []
     )
     try:
         differing = _listed(_git(repo, against))
@@ -268,7 +272,9 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     if not in_scope:
         return None
     analysed = (
-        f"commit {plan.head.commit[:12]}" if plan.head.kind == KIND_COMMIT else "the staged index"
+        f"commit {plan.head.commit[:12]}"
+        if plan.head.kind == SnapshotKind.COMMIT
+        else "the staged index"
     )
     shown = ", ".join(in_scope[:MISMATCHES_SHOWN])
     if len(in_scope) > MISMATCHES_SHOWN:
@@ -547,7 +553,7 @@ class _Checkout:
         self._tmp: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
-        if self.kind == KIND_COMMIT:
+        if self.kind == SnapshotKind.COMMIT:
             self._tmp = tempfile.TemporaryDirectory(prefix="diffcone-validate-")
             # A name of its own: git names the worktree's admin directory
             # (.git/worktrees/<name>) after it, and parallel corpus jobs that
@@ -559,7 +565,7 @@ class _Checkout:
             except (GitError, OSError):
                 self.__exit__()
                 raise
-        elif self.kind != KIND_WORKTREE:
+        elif self.kind != SnapshotKind.WORKTREE:
             raise GitError("validate supports commit and WORKTREE snapshots, not INDEX")
         if self.setup_command:
             # Build-generated, git-ignored files (a setuptools-scm _version.py,
@@ -1106,7 +1112,7 @@ def validate_pytest(
     per-test coverage and every test that executed a changed symbol must be
     selected. ``outcome_cache`` lets consecutive validations (a corpus) reuse
     a committed snapshot's outcomes instead of running its suite again."""
-    if plan.head.kind == KIND_WORKTREE and plan.base.kind == KIND_WORKTREE:
+    if plan.head.kind == SnapshotKind.WORKTREE and plan.base.kind == SnapshotKind.WORKTREE:
         raise GitError("validate needs at least one committed snapshot")
     command = resolve_command(command, repo)
     selected = {
@@ -1125,7 +1131,7 @@ def validate_pytest(
 
 def _snapshot_label(side: str, kind: str, commit: str) -> str:
     """``base 1a2b3c4d5e6f`` or ``head WORKTREE``: which suite an error is about."""
-    return f"{side} {commit[:12] if kind == KIND_COMMIT else WORKTREE}"
+    return f"{side} {commit[:12] if kind == SnapshotKind.COMMIT else WORKTREE}"
 
 
 def _validate_pytest(
@@ -1161,7 +1167,7 @@ def _validate_pytest(
                     cache.keep_coverage(base_key, base_run.coverage_db, base_dir)
                 return base_run.outcomes
 
-    if plan.base.kind == KIND_COMMIT:
+    if plan.base.kind == SnapshotKind.COMMIT:
         base_outcomes = cache.reuse_or_run(base_key, run_base)
     else:
         base_outcomes = run_base()
@@ -1181,11 +1187,11 @@ def _validate_pytest(
             head_argv = head_run.argv
             if coverage:
                 cov = coverage_validation(plan, head_run, head_dir, selected, targets=targets)
-                if head_run.coverage_db is not None and plan.head.kind == KIND_COMMIT:
+                if head_run.coverage_db is not None and plan.head.kind == SnapshotKind.COMMIT:
                     cache.keep_coverage(
                         (plan.head.commit, coverage, seed), head_run.coverage_db, head_dir
                     )
-    if plan.head.kind == KIND_COMMIT:
+    if plan.head.kind == SnapshotKind.COMMIT:
         cache.offer((plan.head.commit, coverage, seed), head_outcomes)
     if cov is not None:
         kept = cache.coverage_of(base_key)
@@ -1758,7 +1764,7 @@ def _python_module_names(index: SourceIndex, source_roots: list[str]) -> set[str
     names = set()
     dirs = sorted((split_root(r)[0] for r in source_roots), key=len, reverse=True)
     for symbol in index.symbols.values():
-        if symbol.kind != MODULE:
+        if symbol.kind != SymbolKind.MODULE:
             continue
         for d in dirs:
             if d in ("", ".") or symbol.path.startswith(d + "/"):
@@ -1804,7 +1810,7 @@ def advance_refusal(
             f"the working tree has {len(dirty)} change(s) (e.g. {dirty[0]}); a recording "
             "describes a commit, so commit them first"
         )
-    if plan.head.kind == KIND_COMMIT and plan.head.commit != resolve_commit(repo, "HEAD"):
+    if plan.head.kind == SnapshotKind.COMMIT and plan.head.commit != resolve_commit(repo, "HEAD"):
         return f"head {plan.head.revision} is not the checked-out commit"
     if sorted(plan.source_roots) != sorted(evidence.source_roots):
         return (
@@ -1974,7 +1980,7 @@ def collect_evidence(
         )
     modules = _python_module_names(index, source_roots)
     argv = _collect_argv(command, extra)
-    kind = KIND_COMMIT if rev is not None else KIND_WORKTREE
+    kind = SnapshotKind.COMMIT if rev is not None else SnapshotKind.WORKTREE
     with (
         _Checkout(repo, kind, commit, setup_command) as cwd,
         tempfile.TemporaryDirectory(prefix="diffcone-collect-") as tmp,

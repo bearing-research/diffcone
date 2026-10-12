@@ -16,6 +16,7 @@ from diffcone.indexer.literals import (
 )
 from diffcone.indexer.patches import undone_calls
 from diffcone.indexer.uses import UseRecord
+from diffcone.model import UnresolvedKind
 
 
 @dataclass(frozen=True)
@@ -255,7 +256,7 @@ class External:
 
 @dataclass(frozen=True)
 class Unresolved:
-    kind: str
+    kind: UnresolvedKind
     name: str
 
 

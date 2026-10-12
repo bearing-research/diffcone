@@ -34,7 +34,10 @@ from typing import Any
 from diffcone import child
 from diffcone.cache import make_own_dir
 from diffcone.cython import symbol_id
-from diffcone.model import MODULE, SourceIndex
+from diffcone.model import (
+    SourceIndex,
+    SymbolKind,
+)
 
 # 4: the symbols that ran outside every test only through their annotations
 # (``annotations_only``, Python 3.14), and a recording keeps pytest's cache
@@ -194,7 +197,7 @@ class _Owners:
         spans: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         self.symbol_ids = set(index.symbols)
         for symbol in index.symbols.values():
-            if symbol.kind == MODULE:
+            if symbol.kind == SymbolKind.MODULE:
                 self.module_of_path[symbol.path] = symbol.id
                 self.modules.add(symbol.id)
             for start, end in symbol.line_ranges:

@@ -33,11 +33,9 @@ from pathlib import Path
 
 from diffcone.cython import is_cython
 from diffcone.model import (
-    KIND_COMMIT,
-    KIND_INDEX,
-    KIND_WORKTREE,
     AnalysisError,
     SnapshotInfo,
+    SnapshotKind,
 )
 
 
@@ -173,11 +171,11 @@ def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str
     included), as path -> "added", "deleted" or "edited". ``commit`` may be
     ``INDEX`` when the snapshot is the working tree: the staged content is
     then what it is compared with."""
-    if commit == INDEX and kind == KIND_WORKTREE:
+    if commit == INDEX and kind == SnapshotKind.WORKTREE:
         args = ["diff", "--name-status", "-z", "--no-renames"]
-    elif kind == KIND_WORKTREE:
+    elif kind == SnapshotKind.WORKTREE:
         args = ["diff", "--name-status", "-z", "--no-renames", commit]
-    elif kind == KIND_INDEX:
+    elif kind == SnapshotKind.INDEX:
         args = ["diff", "--cached", "--name-status", "-z", "--no-renames", commit]
     else:
         args = ["diff", "--name-status", "-z", "--no-renames", commit, revision]
@@ -186,7 +184,7 @@ def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str
     for status, path in zip(fields[0::2], fields[1::2], strict=False):
         if path:
             out[path] = {"A": "added", "D": "deleted"}.get(status[:1], "edited")
-    if kind == KIND_WORKTREE:
+    if kind == SnapshotKind.WORKTREE:
         untracked = _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
         for raw in untracked.split(b"\0"):
             path = raw.decode("utf-8", "surrogateescape")
@@ -704,7 +702,7 @@ def read_commit_snapshot(
         info=SnapshotInfo(
             revision=revision,
             commit=commit,
-            kind=KIND_COMMIT,
+            kind=SnapshotKind.COMMIT,
             description=commit_description(commit, revision),
         ),
         source_roots=list(source_roots),
@@ -787,7 +785,7 @@ def read_index_snapshot(
         info=SnapshotInfo(
             revision=INDEX,
             commit=head,
-            kind=KIND_INDEX,
+            kind=SnapshotKind.INDEX,
             description=f"git index (staged content) on top of commit {head[:12]}; uncommitted",
         ),
         source_roots=list(source_roots),
@@ -898,7 +896,7 @@ def read_worktree_snapshot(
         info=SnapshotInfo(
             revision=WORKTREE,
             commit=head,
-            kind=KIND_WORKTREE,
+            kind=SnapshotKind.WORKTREE,
             description=(
                 "working tree (tracked and untracked files, plus ignored Python files outside "
                 f"ignored directories) on top of commit {head[:12]}; uncommitted"

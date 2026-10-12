@@ -88,12 +88,12 @@ from diffcone.indexer.process import STATE_MUTATORS
 from diffcone.indexer.scopes import ModuleNode, Resolved
 from diffcone.indexer.syntax import _digest, _flatten_chain
 from diffcone.model import (
-    MODULE,
     RUNS_PROGRAM,
     RUNS_SCRIPT,
-    UNRESOLVED_DYNAMIC,
     Edge,
     EdgeKind,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
 )
 from diffcone.snapshot import module_name_for
@@ -477,7 +477,7 @@ def _module_file(collector: _ReferenceCollector, expr: ast.expr) -> bool:
     modules: list[str] = []
     if isinstance(node, Resolved):
         symbol = indexer.index.symbols.get(node.symbol)
-        if symbol is not None and symbol.kind == MODULE and not node.detail:
+        if symbol is not None and symbol.kind == SymbolKind.MODULE and not node.detail:
             modules.append(symbol.id)
         modules += [*node.also, *node.alternatives]
     elif isinstance(node, ModuleNode):
@@ -527,7 +527,7 @@ def script_value(indexer: Resolver, source: str, value: str, detail: str) -> Non
     """A literal a call site passes for a script parameter (_script_known)."""
     path = _normalise(value) if value.rstrip().endswith((".py", ".pyw")) else None
     if path is None:
-        indexer.out.unresolved.add(UnresolvedReference(source, UNRESOLVED_DYNAMIC, "", detail))
+        indexer.out.unresolved.add(UnresolvedReference(source, UnresolvedKind.DYNAMIC, "", detail))
     else:
         indexer.out.script_paths.add((source, path))
 
@@ -540,7 +540,7 @@ def code_value(
     reaches (reading ``module``'s namespace when it runs there), or an
     unbounded dynamic reference (``code_edges``)."""
     if not code_edges(indexer, source, value, module):
-        indexer.out.unresolved.add(UnresolvedReference(source, UNRESOLVED_DYNAMIC, "", detail))
+        indexer.out.unresolved.add(UnresolvedReference(source, UnresolvedKind.DYNAMIC, "", detail))
 
 
 def unwrap_text(collector: _ReferenceCollector, expr: ast.expr) -> ast.expr:
@@ -1528,7 +1528,7 @@ def apply_scripts(indexer: Resolver) -> None:
             out.unresolved.add(
                 UnresolvedReference(
                     source,
-                    UNRESOLVED_DYNAMIC,
+                    UnresolvedKind.DYNAMIC,
                     "",
                     f"{RUNS_SCRIPT}{path}, a Python file no module name maps to that "
                     "imports or runs code by a name it computes: an import of anything",
@@ -1559,7 +1559,7 @@ def apply_scripts(indexer: Resolver) -> None:
             out.unresolved.add(
                 UnresolvedReference(
                     source,
-                    UNRESOLVED_DYNAMIC,
+                    UnresolvedKind.DYNAMIC,
                     "",
                     f"{RUNS_PROGRAM}: an import of anything ({runner} given {suffix}, which "
                     "no file under the source roots matches)",

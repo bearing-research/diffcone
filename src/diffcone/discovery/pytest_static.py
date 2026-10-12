@@ -268,9 +268,9 @@ from diffcone.indexer import DEF_NODES, iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import (
     DYNAMIC_DEPENDENCY,
-    METHOD,
     EdgeKind,
     SourceIndex,
+    SymbolKind,
 )
 from diffcone.snapshot import PYTEST_CONFIGS, Snapshot
 
@@ -3351,7 +3351,7 @@ def discover_pytest(
             *(
                 s.id
                 for s in index.symbols.values()
-                if s.kind == METHOD
+                if s.kind == SymbolKind.METHOD
                 and s.name == "pytest_generate_tests"
                 and s.module in test_modules
             ),

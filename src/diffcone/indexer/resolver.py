@@ -58,19 +58,12 @@ from diffcone.indexer.syntax import (
 )
 from diffcone.indexer.writes import returns_third_party
 from diffcone.model import (
-    CLASS,
-    FUNCTION,
-    METHOD,
-    MODULE,
-    UNRESOLVED_ATTRIBUTE,
-    UNRESOLVED_DYNAMIC,
-    UNRESOLVED_MODULE_ATTRIBUTE,
-    UNRESOLVED_NAME,
-    VARIABLE,
     Edge,
     EdgeKind,
     ExternalReference,
     Symbol,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
 )
 
@@ -186,7 +179,7 @@ class Resolver(FirstPass):
         """An ``__init__`` also runs whenever a class that inherits it is
         constructed: that happens unseen when such a class escapes or its name
         occurs as an unresolved reference."""
-        if symbol.kind != METHOD or symbol.name != "__init__":
+        if symbol.kind != SymbolKind.METHOD or symbol.name != "__init__":
             return False
         owner = symbol.container
         if owner not in self.class_scopes:
@@ -228,7 +221,7 @@ class Resolver(FirstPass):
         if not isinstance(node, Resolved) or node.detail:
             return None
         symbol = self.index.symbols.get(node.symbol)
-        return node.symbol if symbol is not None and symbol.kind == CLASS else None
+        return node.symbol if symbol is not None and symbol.kind == SymbolKind.CLASS else None
 
     def _ensure_bases(self, class_id: str) -> None:
         """Resolve a class's bases on demand (a dotted base such as
@@ -415,7 +408,7 @@ class Resolver(FirstPass):
                 return hit
             if not cscope.complete:
                 uncertain = True
-        return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+        return Unresolved(UnresolvedKind.ATTRIBUTE, attr)
 
     def _external_callers(self) -> None:
         """A class whose MRO has a base outside the source roots (a
@@ -435,7 +428,7 @@ class Resolver(FirstPass):
                 continue
             for member, member_id in sorted(cscope.members.items()):
                 symbol = self.index.symbols.get(member_id)
-                if symbol is None or symbol.kind != METHOD or _is_special_method(member):
+                if symbol is None or symbol.kind != SymbolKind.METHOD or _is_special_method(member):
                     continue
                 if member in _EXPLICIT_SPECIAL_METHODS:
                     continue
@@ -706,7 +699,7 @@ class Resolver(FirstPass):
             return ""
         if register:
             return SAME if symbol.dispatcher else ""
-        if symbol.kind != FUNCTION:
+        if symbol.kind != SymbolKind.FUNCTION:
             return ""
         if isinstance(decorator, ast.Call):
             return symbol.passive_factory
@@ -760,7 +753,7 @@ class Resolver(FirstPass):
             node = self.resolve_chain(parts, where) if parts else None
             if isinstance(node, Resolved) and not node.detail:
                 symbol = self.index.symbols.get(node.symbol)
-                if symbol is not None and symbol.kind == CLASS:
+                if symbol is not None and symbol.kind == SymbolKind.CLASS:
                     return True
         return False
 
@@ -784,9 +777,13 @@ class Resolver(FirstPass):
             if not isinstance(node, Resolved) or node.detail:
                 return True
             symbol = self.index.symbols.get(node.symbol)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD, CLASS):
+            if symbol is None or symbol.kind not in (
+                SymbolKind.FUNCTION,
+                SymbolKind.METHOD,
+                SymbolKind.CLASS,
+            ):
                 return True
-            if symbol.kind == CLASS:
+            if symbol.kind == SymbolKind.CLASS:
                 hooks = [
                     self.index.symbols.get(f"{symbol.id}.{m}")
                     for m in ("__init__", "__new__", "__call__")
@@ -907,7 +904,7 @@ class Resolver(FirstPass):
             )
             if isinstance(target, Resolved) and not target.detail:
                 aliased = self.index.symbols.get(target.symbol)
-                if aliased is not None and aliased.kind == VARIABLE:
+                if aliased is not None and aliased.kind == SymbolKind.VARIABLE:
                     fscope.param_aliases[name] = aliased.id
         collector = _ReferenceCollector(self, symbol_id, fscope)
         for stmt in node.body:
@@ -925,7 +922,7 @@ class Resolver(FirstPass):
                 self.out.unresolved.add(
                     UnresolvedReference(
                         source,
-                        UNRESOLVED_DYNAMIC,
+                        UnresolvedKind.DYNAMIC,
                         written,
                         f"import from {written}: above the top-level package of {scope.name} "
                         "(check the source roots)",
@@ -956,7 +953,7 @@ class Resolver(FirstPass):
                 self.out.unresolved.add(
                     UnresolvedReference(
                         source,
-                        UNRESOLVED_MODULE_ATTRIBUTE,
+                        UnresolvedKind.MODULE_ATTRIBUTE,
                         module.rsplit(".", 1)[-1],
                         f"import {module}",
                     )
@@ -970,7 +967,7 @@ class Resolver(FirstPass):
                     self.out.unresolved.add(
                         UnresolvedReference(
                             source,
-                            UNRESOLVED_DYNAMIC,
+                            UnresolvedKind.DYNAMIC,
                             module,
                             f"import {module}: the analysed package is named {hidden}; the "
                             "source roots name it differently from the import (add a source "
@@ -1043,7 +1040,7 @@ class Resolver(FirstPass):
             return found
         if name in BUILTIN_NAMES or (name.startswith("__") and name.endswith("__")):
             return None
-        return Unresolved(UNRESOLVED_NAME, name)
+        return Unresolved(UnresolvedKind.NAME, name)
 
     def _lookup_in_module(self, target: ModuleScope, name: str, seen: set[str]) -> Node:
         """Resolve ``name`` as seen from inside ``target``'s global namespace.
@@ -1107,14 +1104,14 @@ class Resolver(FirstPass):
         if not binding.module:
             # Bound by a relative import above the top-level package (see
             # _import_edges, which records the import as unbounded).
-            return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, binding.attr or "")
+            return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, binding.attr or "")
         if not self._module_in_scope(binding.module):
             if self._module_in_scope(binding.module.split(".")[0]):
                 # ``pkg.missing`` inside an analysed package: not an external
                 # dependency, but nothing we can see either (deleted module,
                 # compiled extension, generated code).
                 name = binding.attr or binding.module.rsplit(".", 1)[-1]
-                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, name)
+                return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, name)
             return External(binding.module)
         node: Node = ModuleNode(binding.module)
         if binding.attr is not None:
@@ -1122,7 +1119,7 @@ class Resolver(FirstPass):
             # (a compiled extension) resolves through itself: stop there.
             key = (binding.module, binding.attr)
             if key in self._resolving_bindings:
-                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, binding.attr)
+                return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, binding.attr)
             self._resolving_bindings.add(key)
             try:
                 node = self._step(node, binding.attr)
@@ -1161,7 +1158,7 @@ class Resolver(FirstPass):
                     return replace(bound, also=(*bound.also, sub))
                 return ModuleNode(sub)
             if target is None:
-                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, attr)
+                return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, attr)
             found = self._lookup_in_module(target, attr, set())
             if found is None or isinstance(found, Unresolved):
                 lazy = target.members.get("__getattr__")
@@ -1173,9 +1170,9 @@ class Resolver(FirstPass):
             if found is None:
                 # Looked up on a module that binds nothing of that name: what
                 # finds it there was put on the module (W20).
-                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, attr)
+                return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, attr)
             if isinstance(found, Unresolved):
-                return Unresolved(UNRESOLVED_MODULE_ATTRIBUTE, found.name)
+                return Unresolved(UnresolvedKind.MODULE_ATTRIBUTE, found.name)
             return found
         if isinstance(node, External):
             return node
@@ -1185,20 +1182,20 @@ class Resolver(FirstPass):
             symbol = self.index.symbols.get(node.symbol)
             if symbol is None:
                 return node
-            if symbol.kind == CLASS:
+            if symbol.kind == SymbolKind.CLASS:
                 return self.lookup_in_class(symbol.id, attr, dispatch=node.receiver)
-            if symbol.kind == MODULE:
+            if symbol.kind == SymbolKind.MODULE:
                 return self._step(ModuleNode(symbol.id), attr)
             return node  # attribute on a function object
         if isinstance(node, Unresolved):
-            return Unresolved(UNRESOLVED_ATTRIBUTE, attr)
+            return Unresolved(UnresolvedKind.ATTRIBUTE, attr)
         return None
 
     def resolve_chain(self, parts: list[str], scope: Scope) -> Node:
         node = self._lookup_base(parts[0], scope)
         if isinstance(node, Local):
             # ``obj.method`` on a local: the method name bounds what it may be.
-            return Unresolved(UNRESOLVED_ATTRIBUTE, parts[1]) if len(parts) > 1 else None
+            return Unresolved(UnresolvedKind.ATTRIBUTE, parts[1]) if len(parts) > 1 else None
         return self.chain_from(node, parts)
 
     def chain_from(self, node: Node, parts: list[str]) -> Node:
@@ -1310,7 +1307,7 @@ class Resolver(FirstPass):
         if isinstance(node, Local):
             if len(parts) < 2:
                 return None, ()
-            return Unresolved(UNRESOLVED_ATTRIBUTE, parts[1]), tuple(parts[2:])
+            return Unresolved(UnresolvedKind.ATTRIBUTE, parts[1]), tuple(parts[2:])
         return self.chain_names_from(node, parts)
 
     def chain_names_from(self, node: Node, parts: list[str]) -> tuple[Node, tuple[str, ...]]:
@@ -1320,7 +1317,9 @@ class Resolver(FirstPass):
                 return node, ()
             if isinstance(node, Resolved):
                 symbol = self.index.symbols.get(node.symbol)
-                opaque = node.detail or (symbol is not None and symbol.kind not in (CLASS, MODULE))
+                opaque = node.detail or (
+                    symbol is not None and symbol.kind not in (SymbolKind.CLASS, SymbolKind.MODULE)
+                )
                 if opaque:
                     return node, tuple(parts[i:])
             node = self._step(node, attr)
@@ -1399,7 +1398,9 @@ class Resolver(FirstPass):
         symbol = self.index.symbols.get(target.symbol)
         if symbol is None:
             return
-        if symbol.kind in (FUNCTION, METHOD) or (classes and symbol.kind == CLASS):
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) or (
+            classes and symbol.kind == SymbolKind.CLASS
+        ):
             self.out.escapes.add(symbol.id)
             for override_id, detail in target.overrides:
                 if not detail:
@@ -1488,7 +1489,7 @@ class Resolver(FirstPass):
                     and lazy.name == "__getattr__"
                     and lazy.container == lazy.module
                 )
-                missing = UNRESOLVED_MODULE_ATTRIBUTE if on_module else UNRESOLVED_ATTRIBUTE
+                missing = UnresolvedKind.MODULE_ATTRIBUTE if on_module else UnresolvedKind.ATTRIBUTE
                 self.out.unresolved.add(
                     UnresolvedReference(source, missing, node.uncertain_attr, chain)
                 )

@@ -151,6 +151,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
+from enum import StrEnum
 from pathlib import Path
 
 from diffcone.child import SCANNED
@@ -187,18 +188,14 @@ from diffcone.evidence import (
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ATTRIBUTE_KINDS,
-    CLASS,
     CLASS_STATEMENT,
     DERIVED_ANY,
     DERIVED_NAME,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
-    FUNCTION,
     GRAPH_HANDLE,
     INSTALLED,
     INSTALLED_ANYWHERE,
-    METHOD,
-    MODULE,
     MUTATED_BY,
     OPAQUE_ATTRIBUTE,
     REBINDS,
@@ -210,12 +207,12 @@ from diffcone.model import (
     STORE_CLOSURE,
     STORE_PARAM,
     STORE_SELF,
-    UNRESOLVED_DYNAMIC,
-    VARIABLE,
     WRITES,
     EdgeKind,
     SourceIndex,
     Symbol,
+    SymbolKind,
+    UnresolvedKind,
     attribute_reachable,
     edge_mark,
     imports_anything,
@@ -283,33 +280,37 @@ _CONSTRUCTORS = frozenset(
     {"__new__", "__init__", "__post_init__", "__call__", "__init_subclass__", "__set_name__"}
 )
 
-# UNRESOLVED_DYNAMIC details, by what the site can see.
-SITE_CLOSURE = "closure"  # a name looked up on a module global: its import closure
-SITE_ELSEWHERE = "elsewhere"  # on an object from anywhere
-SITE_IMPORT = "import"  # a module named at run time
-SITE_ANY = "any"  # eval/exec/run_path
+
+# The kinds of dynamic lookup (UnresolvedKind.DYNAMIC details), by what the site can see.
+class SiteKind(StrEnum):
+    """What a lookup site can see."""
+
+    CLOSURE = "closure"  # a name looked up on a module global: its import closure
+    ELSEWHERE = "elsewhere"  # on an object from anywhere
+    IMPORT = "import"  # a module named at run time
+    ANY = "any"  # eval/exec/run_path
 
 
-def _site_kind(detail: str) -> str:
+def _site_kind(detail: str) -> SiteKind:
     if detail.endswith(EXTERNAL_WRITTEN):
         # On an external module: in-scope code anywhere may have stored there,
         # not only the site's own import closure.
-        return SITE_ANY
+        return SiteKind.ANY
     if detail.startswith(RUN_PATH):
         # Runs a file whose code may look anything up, not only import.
-        return SITE_ANY
+        return SiteKind.ANY
     if detail.startswith(RUNS_TEXT):
         # Text built at run time: what it imported and ran is in the record
         # (or the test is flagged for running text no file holds), as for
         # ``exec()`` of text written out; no module getter.
-        return SITE_ANY
+        return SiteKind.ANY
     if imports_anything(detail):
-        return SITE_IMPORT
+        return SiteKind.IMPORT
     if detail.startswith(("getattr(<non-literal>) on a receiver from elsewhere", "vars(")):
-        return SITE_ELSEWHERE
+        return SiteKind.ELSEWHERE
     if detail.startswith(("getattr(<non-literal>)", "globals(")):
-        return SITE_CLOSURE
-    return SITE_ANY  # eval, exec, runpy.run_path, anything not recognised
+        return SiteKind.CLOSURE
+    return SiteKind.ANY  # eval, exec, runpy.run_path, anything not recognised
 
 
 def _definition_runs_code(symbol: Symbol) -> bool:
@@ -324,9 +325,9 @@ def _definition_runs_code(symbol: Symbol) -> bool:
     nothing) and an annotation evaluated at import
     (``X: set_mode("fast") = 1``), which its ``inert_definition`` does not
     cover."""
-    if symbol.kind in (FUNCTION, METHOD):
+    if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
         return not (symbol.inert_header and (symbol.inert_definition or symbol.quiet_header))
-    if symbol.kind == VARIABLE:
+    if symbol.kind == SymbolKind.VARIABLE:
         eager = bool(symbol.annotation_hash) and not symbol.deferred_annotations
         return not symbol.inert_definition or eager
     return True
@@ -344,10 +345,10 @@ def _runs_at_import(change: SymbolChange) -> bool:
     deletion."""
     symbol = change.symbol
     kinds = set(change.changes)
-    if symbol.kind in (MODULE, CLASS):
+    if symbol.kind in (SymbolKind.MODULE, SymbolKind.CLASS):
         return True
     sides = [s for s in (change.base, change.head) if s is not None]
-    if symbol.kind == VARIABLE:
+    if symbol.kind == SymbolKind.VARIABLE:
         if ChangeKind.DEFINITION_CHANGED in kinds:
             return True
         if not all(s.inert_definition for s in sides):
@@ -391,7 +392,7 @@ class _TestCode:
         self.path_of_module: dict[str, str] = {}
         for index in indexes:
             for symbol in index.symbols.values():
-                if symbol.kind == MODULE:
+                if symbol.kind == SymbolKind.MODULE:
                     self.module_of_path[symbol.path] = symbol.id
                     self.path_of_module[symbol.id] = symbol.path
         self.tests_by_file: dict[str, list[str]] = defaultdict(list)
@@ -484,11 +485,11 @@ def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]
     runner: set[str] = set()
     for target in targets:
         entry = symbols.get(target.entry_symbol)
-        if entry is not None and entry.kind == METHOD and entry.container:
+        if entry is not None and entry.kind == SymbolKind.METHOD and entry.container:
             runner.add(entry.container)
         for dep in target.lifecycle_dependencies:
             owner = symbols.get(dep)
-            if owner is not None and owner.kind == CLASS:
+            if owner is not None and owner.kind == SymbolKind.CLASS:
                 runner.add(dep)
     runner = _closure(runner, bases)
     if not runner:
@@ -532,7 +533,7 @@ class _Observers:
         self.attribute_readers: dict[str, set[str]] = defaultdict(set)  # "attribute:n" edges
         self.importers_of: dict[str, set[str]] = defaultdict(set)
         self.by_name: dict[str, set[str]] = defaultdict(set)
-        self.sites: list[tuple[str, str]] = []  # (symbol, kind)
+        self.sites: list[tuple[str, SiteKind]] = []
         # Sites on an external module the project writes to -> the writers.
         # When only test-window code writes there (``_only_in_tests``), the
         # site is seen only by a change to code that runs at import and can
@@ -594,13 +595,13 @@ class _Observers:
                     self.importers_of[edge.target].add(edge.source)
                     self.imported_by[edge.source].add(edge.target)
             for ref in index.unresolved:
-                if ref.kind == UNRESOLVED_DYNAMIC and ref.detail.startswith(CHILD_PROGRAMS):
+                if ref.kind == UnresolvedKind.DYNAMIC and ref.detail.startswith(CHILD_PROGRAMS):
                     # A Python program the symbol starts: the record follows
                     # the child (or flags the test), so no lookup site here.
                     continue
-                if ref.kind == UNRESOLVED_DYNAMIC:
+                if ref.kind == UnresolvedKind.DYNAMIC:
                     site = (ref.symbol, _site_kind(ref.detail))
-                    if site[1] == SITE_IMPORT and not ref.detail.endswith(DISCARDED_IMPORT):
+                    if site[1] == SiteKind.IMPORT and not ref.detail.endswith(DISCARDED_IMPORT):
                         # Imports a module named at run time (or runs code
                         # read at run time): it can hold any module. Code
                         # generated in the program reaches what its module
@@ -639,9 +640,9 @@ class _Observers:
                     continue
                 writers = external.get((symbol, detail))
                 if writers:
-                    site_writers[(symbol, SITE_ANY)].update(writers)
+                    site_writers[(symbol, SiteKind.ANY)].update(writers)
                 if not (writers and self._only_in_tests(writers)):
-                    self.sites.append((symbol, SITE_ANY))
+                    self.sites.append((symbol, SiteKind.ANY))
         # A table getter whose writers all run only inside test windows
         # obtains a test module only in a test that ran one of them (and
         # never outside every test); otherwise it is any getter.
@@ -714,7 +715,7 @@ class _Observers:
         }
         self.fixture_sources_changed = any(
             c.carries_impact
-            and c.symbol.kind in (FUNCTION, METHOD, CLASS)
+            and c.symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS)
             and c.symbol.module in pytest_modules
             and {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.DEFINITION_CHANGED}
             & set(c.changes)
@@ -840,7 +841,7 @@ class _Observers:
         rest: set[str] = set()
         for reader in sorted(matched):
             symbol = self.symbols.get(reader)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 rest.add(reader)
                 continue
             why = Reason(
@@ -922,7 +923,7 @@ class _Observers:
         code, a decorator) leaves what it did for every later test."""
         for sid in code:
             symbol = self.symbols.get(sid)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 return False
             if self._ran_outside_tests(sid):
                 return False
@@ -938,7 +939,9 @@ class _Observers:
         what a module of ``sources`` imports, transitively, as well."""
         key = frozenset(sources)
         if imports:
-            stack = sorted(s for s in key if s in self.symbols and self.symbols[s].kind == MODULE)
+            stack = sorted(
+                s for s in key if s in self.symbols and self.symbols[s].kind == SymbolKind.MODULE
+            )
             modules: set[str] = set()
             while stack:
                 module = stack.pop()
@@ -953,7 +956,11 @@ class _Observers:
                 self._attribute_named = defaultdict(set)
                 runner = self._runner_modules()
                 for symbol in self.symbols.values():
-                    if symbol.kind in (FUNCTION, METHOD, CLASS) and not _is_dunder(symbol.name):
+                    if symbol.kind in (
+                        SymbolKind.FUNCTION,
+                        SymbolKind.METHOD,
+                        SymbolKind.CLASS,
+                    ) and not _is_dunder(symbol.name):
                         self._symbols_named[symbol.name].add(symbol.id)
                         if symbol.module in runner or attribute_reachable(
                             symbol, self.attribute_modules
@@ -969,14 +976,14 @@ class _Observers:
                 symbol = self.symbols.get(current)
                 if symbol is None:
                     continue
-                if symbol.kind == CLASS:
+                if symbol.kind == SymbolKind.CLASS:
                     stack.extend(self._constructors(current))
-                if symbol.kind == MODULE and current not in key:
+                if symbol.kind == SymbolKind.MODULE and current not in key:
                     continue  # its import ran already: it runs nothing new
                 stack.extend(self.calls.get(current, ()))
                 for holder in self.holds.get(current, ()):
                     held = self.symbols.get(holder)
-                    if held is not None and held.kind == MODULE:
+                    if held is not None and held.kind == SymbolKind.MODULE:
                         # Top-level code put something in it: whatever it names.
                         stack.extend(self.calls.get(holder, ()))
                     else:
@@ -1004,16 +1011,16 @@ class _Observers:
 
     def _scope(self, symbol: Symbol, change: SymbolChange) -> None:
         classes: set[str] = set()
-        current: str | None = symbol.id if symbol.kind == CLASS else symbol.container
+        current: str | None = symbol.id if symbol.kind == SymbolKind.CLASS else symbol.container
         while current:
             holder = self.symbols.get(current)
             if holder is None:
                 break
-            if holder.kind == CLASS:
+            if holder.kind == SymbolKind.CLASS:
                 classes |= self._related(current, SUBCLASSES)
             current = holder.container
         whole_module = (
-            symbol.kind == VARIABLE
+            symbol.kind == SymbolKind.VARIABLE
             and symbol.container == symbol.module
             and symbol.module not in self.test_code.conftests
         )
@@ -1061,7 +1068,7 @@ class _Observers:
             self._file(path, what, names=not (before and after))
         for change in self.changes:
             symbol = change.symbol
-            if symbol.kind == MODULE and {ChangeKind.ADDED, ChangeKind.DELETED} & set(
+            if symbol.kind == SymbolKind.MODULE and {ChangeKind.ADDED, ChangeKind.DELETED} & set(
                 change.changes
             ):
                 what = f"{change.id} {'/'.join(change.changes)}"
@@ -1136,14 +1143,18 @@ class _Observers:
         queue: deque[str] = deque()
         for s in sorted({*self.E, *self.guarded}):
             symbol = self.symbols.get(s)
-            if symbol is not None and symbol.kind in (FUNCTION, METHOD) and s not in self._runs_e:
+            if (
+                symbol is not None
+                and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+                and s not in self._runs_e
+            ):
                 self._runs_e[s] = s
                 queue.append(s)
         found: list[tuple[str, str, str]] = []  # (variable, writer, what it can run)
         while queue:
             node = queue.popleft()
             symbol = self.symbols[node]
-            if symbol.kind in (FUNCTION, METHOD):
+            if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 for variable in sorted(self.writes.get(node, ())):
                     if variable not in self._followed and variable in self.symbols:
                         found.append((variable, node, self._runs_e[node]))
@@ -1225,7 +1236,7 @@ class _Observers:
         if derived in self._runs_e:
             return True
         symbol = self.symbols.get(derived)
-        if symbol is not None and symbol.kind == CLASS:
+        if symbol is not None and symbol.kind == SymbolKind.CLASS:
             return any(c in self._runs_e for c in self._constructors(derived))
         return False
 
@@ -1241,7 +1252,7 @@ class _Observers:
         readers: set[str] = set()
         symbol = self.symbols[keeper]
         container = self.symbols.get(symbol.container or "")
-        cls = container.id if container is not None and container.kind == CLASS else None
+        cls = container.id if container is not None and container.kind == SymbolKind.CLASS else None
         attrs: set[str] = set()
         for where in wheres:
             if where == STORE_SELF:
@@ -1250,7 +1261,7 @@ class _Observers:
                         readers |= {
                             m
                             for m in self.members.get(c, ())
-                            if self.symbols[m].kind in (FUNCTION, METHOD)
+                            if self.symbols[m].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
                         }
             elif where == STORE_PARAM:
                 attrs |= self.handed_to.get(keeper, set())
@@ -1279,7 +1290,7 @@ class _Observers:
         (internal/evidence_design.md, the isolation assumption). A module's
         top-level code ends a chain: it runs at import, which
         ``_import_effect`` follows."""
-        if symbol.kind == MODULE:
+        if symbol.kind == SymbolKind.MODULE:
             return set()
         if self._called_by is None:
             self._called_by = defaultdict(set)
@@ -1293,11 +1304,11 @@ class _Observers:
                 self._called_by[decorated] |= decorators
         out = set(self._called_by.get(symbol.id, ()))
         container = self.symbols.get(symbol.container or "")
-        if symbol.kind in (FUNCTION, METHOD) and _is_dunder(symbol.name):
-            if container is not None and container.kind == CLASS:
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and _is_dunder(symbol.name):
+            if container is not None and container.kind == SymbolKind.CLASS:
                 for cls in self._related(container.id, SUBCLASSES):
                     out |= self._called_by.get(cls, set())
-        elif symbol.kind in (FUNCTION, METHOD) and by_name:
+        elif symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and by_name:
             plain, held = self._matched(symbol, symbol.name)
             out |= plain | held
         out.discard(symbol.id)
@@ -1348,7 +1359,7 @@ class _Observers:
                 if module in reached:
                     continue  # its own imports run the module
                 detail = f"{reader} reads {module}, which only that import binds: {why}"
-                if symbol.kind in (FUNCTION, METHOD):
+                if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     self._observe(reader, Rule.EXECUTED_READER, detail, change)
                 else:
                     self._escalate_module(symbol.module, detail)
@@ -1378,7 +1389,7 @@ class _Observers:
                 change = documented[hits[0]]
                 why = f"{reader} reads docstrings and refers to {hits[0]}, whose docstring changed"
                 symbol = self.symbols[reader]
-                if symbol.kind in (FUNCTION, METHOD):
+                if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     self._observe(reader, Rule.EXECUTED_READER, why, change)
                 else:
                     self._escalate_module(symbol.module, why)
@@ -1546,7 +1557,7 @@ class _Observers:
             # A lookup by a name nothing bounds may find it, and read its
             # value as well as notice it come or go.
             for site, kind in self.sites:
-                if kind != SITE_IMPORT and site in self.symbols:
+                if kind != SiteKind.IMPORT and site in self.symbols:
                     self._observe(
                         site,
                         Rule.LOOKUP_SITE,
@@ -1730,7 +1741,7 @@ class _Observers:
         if self._variables_by_name is None:
             self._variables_by_name = defaultdict(set)
             for symbol in self.symbols.values():
-                if symbol.kind == VARIABLE:
+                if symbol.kind == SymbolKind.VARIABLE:
                     self._variables_by_name[symbol.name].add(symbol.id)
         for n in sorted(function.names):
             for variable in sorted(self._variables_by_name.get(n, ())):
@@ -1747,11 +1758,13 @@ class _Observers:
         kinds = set(change.changes)
         test = self.test_code.is_test_code(symbol.module)
         label = f"{change.id} {'/'.join(change.changes)}"
-        if symbol.kind in (FUNCTION, METHOD) and symbol.name.startswith("pytest_"):
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and symbol.name.startswith(
+            "pytest_"
+        ):
             self._select_all(Rule.PYTEST_HOOK, f"{label}: a pytest hook can change any test")
             return
         if (
-            symbol.kind == VARIABLE
+            symbol.kind == SymbolKind.VARIABLE
             and symbol.container == symbol.module
             and (
                 (
@@ -1766,7 +1779,7 @@ class _Observers:
         ):
             self._select_all(Rule.PYTEST_HOOK, f"{label}: it decides what pytest loads")
             return
-        body_only = symbol.kind in (FUNCTION, METHOD) and kinds <= {
+        body_only = symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and kinds <= {
             ChangeKind.BODY_CHANGED,
             ChangeKind.DEPENDENCIES_CHANGED,
             ChangeKind.DOCSTRING_CHANGED,
@@ -1775,7 +1788,7 @@ class _Observers:
             # A test's own change reaches the targets it is the entry of
             # (changed_target); anything else in test code reaches its scope.
             self._scope(symbol, change)
-        if symbol.kind == MODULE:
+        if symbol.kind == SymbolKind.MODULE:
             if kinds & {ChangeKind.ADDED, ChangeKind.DELETED}:
                 self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
                 self._readers(change.id, change, label)
@@ -1787,7 +1800,7 @@ class _Observers:
             else:
                 self._escalate_change(change, f"{label}: module-level code runs at import")
             return
-        if symbol.kind in (FUNCTION, METHOD):
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             self._import_effect(change.id, change, label)
             if kinds & {
@@ -1812,20 +1825,20 @@ class _Observers:
                     self._escalate_change(change, why)
             if _is_dunder(symbol.name) and not body_only and symbol.container:
                 container = self.symbols.get(symbol.container)
-                if container is not None and container.kind == CLASS:
+                if container is not None and container.kind == SymbolKind.CLASS:
                     self._hierarchy(container.id, change, label)
-                elif container is not None and container.kind == MODULE:
+                elif container is not None and container.kind == SymbolKind.MODULE:
                     # A module ``__getattr__``/``__dir__`` (PEP 562) serves every
                     # lookup the module does not answer, wherever it is made.
                     self._escalate_change(
                         change, f"{label}: a module's {symbol.name} serves its missing names"
                     )
             return
-        if symbol.kind == VARIABLE and symbol.name == "__all__":
+        if symbol.kind == SymbolKind.VARIABLE and symbol.name == "__all__":
             # What ``from m import *`` binds in every star importer: no record
             # names the variable, the import statement reads it.
             self._escalate_change(change, f"{label}: star imports of the module bind its names")
-        if symbol.kind == VARIABLE:
+        if symbol.kind == SymbolKind.VARIABLE:
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             self._readers(change.id, change, label)
             # A lookup by a name nothing bounds reads the value as well as
@@ -1843,7 +1856,7 @@ class _Observers:
                 # that never run it.
                 self._import_writes([change.id], change, f"{label}: its statement runs code")
             return
-        if symbol.kind == CLASS:
+        if symbol.kind == SymbolKind.CLASS:
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
             if kinds & {ChangeKind.ADDED, ChangeKind.DELETED, ChangeKind.BODY_CHANGED}:
                 # Its body runs at import, and what its calls write is read
@@ -1936,7 +1949,7 @@ class _Observers:
         for c in sorted(related):
             for member in self.members.get(c, ()):
                 kind = self.symbols[member].kind
-                if kind in (FUNCTION, METHOD, CLASS):
+                if kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS):
                     self._observe(
                         member,
                         Rule.EXECUTED_READER,
@@ -1977,7 +1990,7 @@ class _Observers:
             matched -= readers | {target}
             own = change is not None and target == change.id
             container = self.symbols.get(symbol.container) if symbol and symbol.container else None
-            if container is not None and container.kind == CLASS:
+            if container is not None and container.kind == SymbolKind.CLASS:
                 matched = self._guard(
                     matched, container.id, change, label if own else f"{label} via {target}"
                 )
@@ -2016,7 +2029,7 @@ class _Observers:
         rest: set[str] = set()
         for reader in sorted(matched):
             symbol = self.symbols.get(reader)
-            if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+            if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 rest.add(reader)
                 continue
             why = Reason(
@@ -2059,7 +2072,7 @@ class _Observers:
                     builders.add(source)
             builders.update(site for site, _ in self._seeing_sites(self.symbols[c]))
             for member in self.members.get(c, ()):
-                if self.symbols[member].kind in (FUNCTION, METHOD):
+                if self.symbols[member].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     members.add(member)
         # Code that finds the class without naming it: through an ancestor's
         # ``__subclasses__()`` (or any class's: ``object.__subclasses__()``
@@ -2085,11 +2098,11 @@ class _Observers:
         symbol = self.symbols.get(reader)
         if symbol is None:
             return
-        if symbol.kind in (FUNCTION, METHOD):
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
             if not in_tests:
                 self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
-        elif symbol.kind == VARIABLE:
+        elif symbol.kind == SymbolKind.VARIABLE:
             # Its initialiser captured the value: it changed too.
             if reader not in self._followed:
                 self._followed.add(reader)
@@ -2116,7 +2129,7 @@ class _Observers:
             symbol = self.symbols.get(importer)
             if symbol is None:
                 continue
-            if symbol.kind == MODULE:
+            if symbol.kind == SymbolKind.MODULE:
                 self._escalate_module(importer, f"{importer} imports {label}")
             else:
                 self._observe(importer, Rule.EXECUTED_READER, f"{importer} imports {label}", change)
@@ -2193,7 +2206,7 @@ class _Observers:
         scope) and what static planning reaches from it. Not a hook, nor a
         helper a hook calls."""
         symbol = self.symbols.get(symbol_id)
-        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+        if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             return False
         if symbol_id in self.test_code.entries:
             return True
@@ -2211,14 +2224,18 @@ class _Observers:
         self.seed_changes.add(change.id)
         symbol = change.symbol
         self._module_symbols(symbol.module, why)
-        sources = self._import_code(symbol.module) if symbol.kind == MODULE else [change.id]
+        sources = (
+            self._import_code(symbol.module) if symbol.kind == SymbolKind.MODULE else [change.id]
+        )
         runs = sources
         before = change.base.imports if change.base is not None else None
         after = change.head.imports if change.head is not None else None
-        if symbol.kind == MODULE and before != after:
+        if symbol.kind == SymbolKind.MODULE and before != after:
             # Its imports changed: what it imports may now run at its import.
             runs = sorted(self._forward([*sources, change.id], imports=True))
-        self._sites(symbol, change, why, imports=symbol.kind == MODULE, at_import=True, runs=runs)
+        self._sites(
+            symbol, change, why, imports=symbol.kind == SymbolKind.MODULE, at_import=True, runs=runs
+        )
         self._import_writes(sources, change, why)
 
     def _escalate_module(self, module: str, why: str) -> None:
@@ -2247,8 +2264,8 @@ class _Observers:
         self._import_code_followed.add(module)
         out = []
         for symbol in self._symbols_of(module):
-            if symbol.kind in (MODULE, VARIABLE, CLASS) or (
-                symbol.kind in (FUNCTION, METHOD)
+            if symbol.kind in (SymbolKind.MODULE, SymbolKind.VARIABLE, SymbolKind.CLASS) or (
+                symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
                 and not symbol.inert_definition
                 and not symbol.quiet_header
             ):
@@ -2279,10 +2296,10 @@ class _Observers:
             symbol = self.symbols.get(current)
             if symbol is None:
                 continue
-            if symbol.kind == CLASS and current not in start:
+            if symbol.kind == SymbolKind.CLASS and current not in start:
                 stack.extend(sorted(self._constructors(current), reverse=True))
                 continue
-            if symbol.kind not in (FUNCTION, METHOD) and current not in start:
+            if symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD) and current not in start:
                 continue  # read, not run
             if current in self._ran_at_import:
                 continue
@@ -2316,7 +2333,12 @@ class _Observers:
             return
         self.escalated_modules.add(module)
         for symbol in self._symbols_of(module):
-            if symbol.kind in (FUNCTION, METHOD, CLASS, MODULE):
+            if symbol.kind in (
+                SymbolKind.FUNCTION,
+                SymbolKind.METHOD,
+                SymbolKind.CLASS,
+                SymbolKind.MODULE,
+            ):
                 self._observe(
                     symbol.id,
                     Rule.ESCALATED,
@@ -2431,7 +2453,7 @@ class _Observers:
         # A test module or conftest is held by pytest and by its importers.
         # Only code that imports it, or is handed it (below), can look a
         # module-level name up on it.
-        module_name = test and (symbol.kind == MODULE or symbol.container == namespace)
+        module_name = test and (symbol.kind == SymbolKind.MODULE or symbol.container == namespace)
         for site, kind in self.sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
@@ -2439,10 +2461,10 @@ class _Observers:
             library = test and not self.test_code.is_test_code(site_symbol.module)
             if family is not None and not _inside(site, family, self.c, self.other):
                 continue  # but see the handing-on sites below
-            if kind == SITE_CLOSURE or module_name:
+            if kind == SiteKind.CLOSURE or module_name:
                 if namespace not in self.reach.closure_of(site):
                     continue
-            elif kind == SITE_IMPORT:
+            elif kind == SiteKind.IMPORT:
                 if not imports or test:
                     continue
             elif library:
@@ -2463,7 +2485,7 @@ class _Observers:
             )
             for reader in self.readers_of.get(namespace, ()):
                 kind_ = self.symbols[reader].kind if reader in self.symbols else None
-                if kind_ in (FUNCTION, METHOD):
+                if kind_ in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     getters.setdefault(reader, "uses the module as a value")
             for site, how in sorted(getters.items()):
                 if site not in listed and site in self.symbols:
@@ -2495,7 +2517,7 @@ class _Observers:
             if outside:
                 # What it obtained outside every test may serve any later one.
                 for site, kind in self.sites:
-                    if kind in (SITE_ELSEWHERE, SITE_ANY) and site not in listed:
+                    if kind in (SiteKind.ELSEWHERE, SiteKind.ANY) and site not in listed:
                         if site in self.symbols:
                             listed.add(site)
                             out.append(

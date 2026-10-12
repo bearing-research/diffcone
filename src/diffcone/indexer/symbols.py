@@ -61,14 +61,10 @@ from diffcone.indexer.syntax import (
 )
 from diffcone.indexer.uses import UseRecord, scan_module
 from diffcone.model import (
-    CLASS,
-    FUNCTION,
-    METHOD,
-    MODULE,
-    VARIABLE,
     Edge,
     EdgeKind,
     Symbol,
+    SymbolKind,
 )
 from diffcone.snapshot import member_symbol_id
 
@@ -200,7 +196,7 @@ class FirstPass(IndexerState):
         self._add_symbol(
             Symbol(
                 id=scope.name,
-                kind=MODULE,
+                kind=SymbolKind.MODULE,
                 module=scope.name,
                 name=scope.name.rsplit(".", 1)[-1],
                 path=scope.path,
@@ -241,7 +237,7 @@ class FirstPass(IndexerState):
             assert value is not None  # _variable_statements keeps assignments with a value
             symbol = Symbol(
                 id=symbol_id,
-                kind=VARIABLE,
+                kind=SymbolKind.VARIABLE,
                 module=scope.name,
                 name=name,
                 path=scope.path,
@@ -390,7 +386,7 @@ class FirstPass(IndexerState):
                         class_bindings |= _collect_store_names(stmt)
                 symbol = Symbol(
                     id=symbol_id,
-                    kind=CLASS,
+                    kind=SymbolKind.CLASS,
                     module=scope.name,
                     name=name,
                     path=scope.path,
@@ -446,7 +442,7 @@ class FirstPass(IndexerState):
                     if (
                         _is_special_method(member)
                         and member_symbol is not None
-                        and member_symbol.kind == METHOD
+                        and member_symbol.kind == SymbolKind.METHOD
                     ):
                         self.out.edges.add(
                             Edge(symbol_id, member_id, EdgeKind.REFERENCES, "special_method")
@@ -518,7 +514,7 @@ class FirstPass(IndexerState):
                     )
                 symbol = Symbol(
                     id=symbol_id,
-                    kind=METHOD if class_scope is not None else FUNCTION,
+                    kind=SymbolKind.METHOD if class_scope is not None else SymbolKind.FUNCTION,
                     module=scope.name,
                     name=name,
                     path=scope.path,

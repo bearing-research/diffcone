@@ -26,11 +26,11 @@ from diffcone.classify import ChangeKind, SymbolChange
 from diffcone.indexer import build_index
 from diffcone.model import (
     INSTALLED,
-    MODULE,
-    UNRESOLVED_ATTRIBUTE,
     Edge,
     EdgeKind,
     SnapshotInfo,
+    SymbolKind,
+    UnresolvedKind,
 )
 from diffcone.planner import _Graph, _import_call_effects
 from diffcone.snapshot import Snapshot
@@ -921,7 +921,7 @@ def test_w17_a_module_does_not_run_what_is_installed_as_it(detail):
     graph.add(
         Edge("pkg.compat.REG", "pkg.compat.install", EdgeKind.REFERENCES, "mutated_by"), ("head",)
     )
-    change = SymbolChange("pkg.core", MODULE, (ChangeKind.BODY_CHANGED,), None, None)
+    change = SymbolChange("pkg.core", SymbolKind.MODULE, (ChangeKind.BODY_CHANGED,), None, None)
     effects = _import_call_effects(graph, [change.id], {"pkg.core"})
     assert ("pkg.compat.REG" in effects) is (detail == "")
 
@@ -1349,7 +1349,7 @@ def _reads(idx) -> tuple[set[str], set[str]]:
     source = "tests.test_p.test_p"
     targets = {e.target for e in idx.edges if e.source == source and e.kind == "references"}
     names = {
-        u.name for u in idx.unresolved if u.symbol == source and u.kind == UNRESOLVED_ATTRIBUTE
+        u.name for u in idx.unresolved if u.symbol == source and u.kind == UnresolvedKind.ATTRIBUTE
     }
     return targets, names
 

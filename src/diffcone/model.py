@@ -11,11 +11,15 @@ from enum import StrEnum
 
 from diffcone.cython import CythonModule
 
-MODULE = "module"
-CLASS = "class"
-FUNCTION = "function"
-METHOD = "method"
-VARIABLE = "variable"  # a simple module-level assignment ``NAME = <expr>``
+
+class SymbolKind(StrEnum):
+    """What a ``Symbol`` is."""
+
+    MODULE = "module"
+    CLASS = "class"
+    FUNCTION = "function"
+    METHOD = "method"
+    VARIABLE = "variable"  # a simple module-level assignment ``NAME = <expr>``
 
 
 class EdgeKind(StrEnum):
@@ -31,17 +35,21 @@ class EdgeKind(StrEnum):
     LIFECYCLE = "lifecycle"  # target -> declared setup/fixture dependency
 
 
-# Unresolved reference kinds.
-UNRESOLVED_NAME = "name"  # bare name that resolves to nothing known
-UNRESOLVED_ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
-UNRESOLVED_DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
-# ``pkg.name`` on an in-scope module that does not bind ``name`` (a PEP 562
-# ``__getattr__``, a name other code puts there, a missing submodule): the
-# receiver is a module, so the name may be any module-level symbol, of any
-# module (audit round 3, W20).
-UNRESOLVED_MODULE_ATTRIBUTE = "module_attribute"
+class UnresolvedKind(StrEnum):
+    """What an ``UnresolvedReference`` could not resolve."""
+
+    NAME = "name"  # bare name that resolves to nothing known
+    ATTRIBUTE = "attribute"  # ``<unknown>.name`` — bounded by the attribute name
+    DYNAMIC = "dynamic"  # getattr/importlib/eval with non-literal arguments
+    # ``pkg.name`` on an in-scope module that does not bind ``name`` (a PEP 562
+    # ``__getattr__``, a name other code puts there, a missing submodule): the
+    # receiver is a module, so the name may be any module-level symbol, of any
+    # module (audit round 3, W20).
+    MODULE_ATTRIBUTE = "module_attribute"
+
+
 # Unresolved kinds that look an attribute up by name.
-ATTRIBUTE_KINDS = frozenset({UNRESOLVED_ATTRIBUTE, UNRESOLVED_MODULE_ATTRIBUTE})
+ATTRIBUTE_KINDS = frozenset({UnresolvedKind.ATTRIBUTE, UnresolvedKind.MODULE_ATTRIBUTE})
 # SourceIndex.attribute_modules: any module may be a value of unknown type.
 ANY_MODULE = "*"
 OPAQUE_ATTRIBUTE = "*"  # SourceIndex.class_attributes: class-body code binding nothing by name
@@ -71,7 +79,7 @@ _RUNS_NAMED = ("runpy.run_module", RUN_PATH, RUNS_PROGRAM, RUNS_SCRIPT, RUNS_TEX
 
 
 def imports_anything(detail: str) -> bool:
-    """Whether an UNRESOLVED_DYNAMIC reference, by its detail, imports or
+    """Whether an UnresolvedKind.DYNAMIC reference, by its detail, imports or
     runs a module, program or file named at run time, so that any module in
     scope may run behind it and its module's import closure bounds nothing.
     The one reading of these details for static planning, evidence mode and
@@ -128,7 +136,7 @@ CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords
 @dataclass(frozen=True, order=True)
 class Symbol:
     id: str
-    kind: str
+    kind: SymbolKind
     module: str
     name: str
     path: str
@@ -292,7 +300,7 @@ def edge_mark(edge: Edge) -> str:
 @dataclass(frozen=True, order=True)
 class UnresolvedReference:
     symbol: str
-    kind: str
+    kind: UnresolvedKind
     name: str
     detail: str
 
@@ -310,9 +318,12 @@ class AnalysisError:
     message: str
 
 
-KIND_COMMIT = "commit"
-KIND_INDEX = "index"
-KIND_WORKTREE = "worktree"
+class SnapshotKind(StrEnum):
+    """What a snapshot was read from (the report's ``analysis.<side>.kind``)."""
+
+    COMMIT = "commit"
+    INDEX = "index"
+    WORKTREE = "worktree"
 
 
 @dataclass(frozen=True)
@@ -321,16 +332,16 @@ class SnapshotInfo:
 
     revision: str
     commit: str
-    kind: str = KIND_COMMIT
+    kind: SnapshotKind = SnapshotKind.COMMIT
     description: str = ""
 
     @property
     def committed(self) -> bool:
-        return self.kind == KIND_COMMIT
+        return self.kind == SnapshotKind.COMMIT
 
     @property
     def is_worktree(self) -> bool:
-        return self.kind == KIND_WORKTREE
+        return self.kind == SnapshotKind.WORKTREE
 
 
 @dataclass

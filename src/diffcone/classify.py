@@ -8,11 +8,10 @@ from enum import StrEnum
 
 from diffcone.indexer.definitions import INERT_DEF
 from diffcone.model import (
-    CLASS,
-    MODULE,
     EdgeKind,
     SourceIndex,
     Symbol,
+    SymbolKind,
 )
 
 
@@ -65,7 +64,7 @@ NON_IMPACT = frozenset({ChangeKind.IMPORTS_ADDED, ChangeKind.DOCSTRING_CHANGED})
 @dataclass(frozen=True, order=True)
 class SymbolChange:
     id: str
-    kind: str
+    kind: SymbolKind
     changes: tuple[ChangeKind, ...]
     base: Symbol | None
     head: Symbol | None
@@ -93,7 +92,7 @@ class SymbolChange:
         """
         if STRUCTURAL & set(self.changes):
             return True
-        return self.kind == CLASS and ChangeKind.BODY_CHANGED in self.changes
+        return self.kind == SymbolKind.CLASS and ChangeKind.BODY_CHANGED in self.changes
 
 
 # Dependency-signature kinds for references outside the edge graph.
@@ -206,7 +205,7 @@ def _runtime_imports(symbol: Symbol, modules: set[str]) -> set[str]:
 def _import_closures(index: SourceIndex) -> dict[str, set[str]]:
     """Each module's transitive closure of the modules importing it runs
     (itself included)."""
-    modules = {s.id for s in index.symbols.values() if s.kind == MODULE}
+    modules = {s.id for s in index.symbols.values() if s.kind == SymbolKind.MODULE}
     imports = {m: _runtime_imports(index.symbols[m], modules) for m in modules}
     closures: dict[str, set[str]] = {}
 
@@ -261,7 +260,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     base_deps = _dependency_signatures(base)
     head_deps = _dependency_signatures(head)
     base_closures = _import_closures(base)
-    base_modules = {s.id for s in base.symbols.values() if s.kind == MODULE}
+    base_modules = {s.id for s in base.symbols.values() if s.kind == SymbolKind.MODULE}
     empty: frozenset[tuple[str, str, str]] = frozenset()
     for symbol_id in sorted(set(base.symbols) | set(head.symbols)):
         b = base.symbols.get(symbol_id)
@@ -286,7 +285,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
         elif b.definition_hash != h.definition_hash:
             future = {i for i in set(b.imports) ^ set(h.imports) if i.startswith("from __future__")}
             if (
-                b.kind == MODULE
+                b.kind == SymbolKind.MODULE
                 and set(b.imports) <= set(h.imports)
                 and _is_subsequence(b.import_layout, h.import_layout)
                 and not future
@@ -295,7 +294,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             else:
                 kinds.append(ChangeKind.DEFINITION_CHANGED)
         if (
-            b.kind in (MODULE, CLASS)
+            b.kind in (SymbolKind.MODULE, SymbolKind.CLASS)
             and ChangeKind.DEFINITION_CHANGED not in kinds
             and reordered(b.statement_layout, h.statement_layout)
         ):
@@ -322,7 +321,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             if lost:
                 kinds.append(ChangeKind.DEPENDENCIES_CHANGED)
             elif (
-                h.kind != MODULE
+                h.kind != SymbolKind.MODULE
                 or resolved_now
                 or _module_additions_matter(
                     symbol_id, after - before, base_closures, base_modules, b, h
@@ -332,7 +331,7 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             elif ChangeKind.IMPORTS_ADDED not in kinds:
                 kinds.append(ChangeKind.IMPORTS_ADDED)
         elif (
-            h.kind == MODULE
+            h.kind == SymbolKind.MODULE
             and ChangeKind.IMPORTS_ADDED in kinds
             and _module_additions_matter(symbol_id, frozenset(), base_closures, base_modules, b, h)
         ):

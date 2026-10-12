@@ -46,7 +46,9 @@ from diffcone.model import (
     EdgeKind,
     ExternalReference,
     SnapshotInfo,
+    SnapshotKind,
     SourceIndex,
+    UnresolvedKind,
     UnresolvedReference,
 )
 
@@ -206,13 +208,18 @@ def index_from_dict(data: dict) -> SourceIndex:
         raise ValueError("unsupported index format")
     symbols = {s.id: s for s in map(symbol_from_dict, data["symbols"])}
     return SourceIndex(
-        snapshot=SnapshotInfo(**data["snapshot"]),
+        snapshot=SnapshotInfo(
+            **data["snapshot"] | {"kind": SnapshotKind(data["snapshot"]["kind"])}
+        ),
         modules=set(data["modules"]),
         symbols=symbols,
         edges={
             Edge(e["source"], e["target"], EdgeKind(e["kind"]), e["detail"]) for e in data["edges"]
         },
-        unresolved={UnresolvedReference(**u) for u in data["unresolved"]},
+        unresolved={
+            UnresolvedReference(u["symbol"], UnresolvedKind(u["kind"]), u["name"], u["detail"])
+            for u in data["unresolved"]
+        },
         external={ExternalReference(**x) for x in data["external"]},
         errors=[AnalysisError(**e) for e in data["errors"]],
         failed_modules=set(data["failed_modules"]),

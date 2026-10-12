@@ -45,20 +45,18 @@ from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
     ANY_MODULE,
     EXTERNAL_WRITTEN,
-    FUNCTION,
     GRAPH_HANDLE,
     GRAPH_MODULES,
     INSTALLED,
     INSTALLED_ANYWHERE,
-    METHOD,
     MUTATED_BY,
     REGISTERS,
-    UNRESOLVED_DYNAMIC,
-    VARIABLE,
     WRITES,
     Edge,
     EdgeKind,
     SourceIndex,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
 )
 from diffcone.snapshot import Snapshot, child_modules, module_name_for
@@ -249,7 +247,7 @@ class Indexer(DynamicBounds):
         # Emptying a container drops what it held, which runs the finalizers
         # of in-scope classes (``__del__``): then what it held matters.
         finalizers = any(
-            s.kind == METHOD and s.name == "__del__" for s in self.index.symbols.values()
+            s.kind == SymbolKind.METHOD and s.name == "__del__" for s in self.index.symbols.values()
         )
         for edge in sorted(e for e in self.index.edges if e.detail in (WRITES, SETITEM)):
             symbol = self.index.symbols.get(edge.target)
@@ -352,7 +350,9 @@ class Indexer(DynamicBounds):
             if kind == "reflection":
                 self.out.reflection.add((symbol, detail))
             else:
-                self.out.unresolved.add(UnresolvedReference(symbol, UNRESOLVED_DYNAMIC, "", detail))
+                self.out.unresolved.add(
+                    UnresolvedReference(symbol, UnresolvedKind.DYNAMIC, "", detail)
+                )
             known = self.index.external_sites.get((symbol, detail), ())
             self.index.external_sites[(symbol, detail)] = tuple(sorted(by.union(known)))
 
@@ -388,7 +388,7 @@ class Indexer(DynamicBounds):
         for decorated, decorator, receiver in sorted(self._global.decorations):
             if decorator:
                 symbol = self.index.symbols.get(decorator)
-                if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                     self.index.decorations.add((decorated, decorator))
             if receiver:
                 self.index.edges.add(Edge(receiver, decorated, EdgeKind.REFERENCES, REGISTERS))
@@ -536,7 +536,7 @@ class Indexer(DynamicBounds):
 
         def variable(place: str, name: str) -> str | None:
             found = self.index.symbols.get(f"{place}.{name}")
-            return found.id if found is not None and found.kind == VARIABLE else None
+            return found.id if found is not None and found.kind == SymbolKind.VARIABLE else None
 
         def changed(module: str, name: str) -> bool:
             return bool(
@@ -811,7 +811,7 @@ class Indexer(DynamicBounds):
         (``indexer/writes.py``); a library writing into one is not."""
         found: dict[str, set[str]] = {}
         for symbol in self.index.symbols.values():
-            if symbol.kind != VARIABLE:
+            if symbol.kind != SymbolKind.VARIABLE:
                 continue
             module, name = symbol.module, symbol.name
             by = set(mutated.get(symbol.id, ())) | mutated.get(f"{ANY}.{name}", set())

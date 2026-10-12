@@ -43,13 +43,9 @@ import diffcone.planner as planner_mod
 from diffcone.cache import IndexCache
 from diffcone.classify import classify
 from diffcone.model import (
-    CLASS,
-    FUNCTION,
-    METHOD,
-    MODULE,
-    UNRESOLVED_DYNAMIC,
-    VARIABLE,
     EdgeKind,
+    SymbolKind,
+    UnresolvedKind,
 )
 from diffcone.planner import _changed_unanalysed_files, _ImportReach, _index_snapshot
 from diffcone.snapshot import resolve_commit
@@ -90,7 +86,7 @@ by_path = collections.defaultdict(list)
 for sym in head_index.symbols.values():
     for start, end in sym.line_ranges:
         by_path[sym.path].append((start, end, sym.id))
-module_of_path = {s.path: s.id for s in head_index.symbols.values() if s.kind == MODULE}
+module_of_path = {s.path: s.id for s in head_index.symbols.values() if s.kind == SymbolKind.MODULE}
 
 
 def owner(path: str, line: int, qualname: str) -> str | None:
@@ -160,7 +156,7 @@ def reverse_refs(indexes):
             if e.kind == EdgeKind.REFERENCES:
                 refs[e.target].add(e.source)
         for u in index.unresolved:
-            if u.kind == UNRESOLVED_DYNAMIC:
+            if u.kind == UnresolvedKind.DYNAMIC:
                 # A read off an object of unknown type can find a method; one
                 # off a module (or globals()/vars()) can find a module-level name.
                 if "receiver from elsewhere" in u.detail or u.detail.startswith("vars"):
@@ -252,7 +248,7 @@ def static_select(c: str, ids: set[str]) -> set[str]:
         # Dynamic sites are evidence's business: a test that ran one is in the
         # record through the code it reached (see analyse()).
         index, snap = real_index(*a, **k)
-        index.unresolved = {u for u in index.unresolved if u.kind != UNRESOLVED_DYNAMIC}
+        index.unresolved = {u for u in index.unresolved if u.kind != UnresolvedKind.DYNAMIC}
         return index, snap
 
     planner_mod._index_snapshot = no_dynamic
@@ -303,7 +299,7 @@ def analyse(c: str) -> dict:
             rsym = h.symbols.get(r) or b.symbols.get(r)
             if rsym is None:
                 continue
-            if rsym.kind in (MODULE, CLASS):
+            if rsym.kind in (SymbolKind.MODULE, SymbolKind.CLASS):
                 if is_test_module(rsym.path):
                     direct.update(tests_of_module.get(rsym.path, set()))
                 else:
@@ -327,7 +323,7 @@ def analyse(c: str) -> dict:
         kinds = set(ch.changes)
         if not ch.carries_impact and kinds != {"docstring_changed"}:
             continue
-        if sym.kind in (FUNCTION, METHOD):
+        if sym.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             if sym.name.startswith("pytest_") and sym.path.endswith("conftest.py"):
                 select_all.append(f"{sym.id} (pytest hook)")
                 continue
@@ -335,7 +331,11 @@ def analyse(c: str) -> dict:
             head_decs = decorators(head_c, ch.head) if ch.head else None
             fixture = is_test_code(sym.path) and is_fixture((base_decs or []) + (head_decs or []))
             if kinds & {"added", "deleted"}:
-                E |= readers(sym.id, sym.name) | {sym.id} | name_sites(sym, sym.kind == METHOD)
+                E |= (
+                    readers(sym.id, sym.name)
+                    | {sym.id}
+                    | name_sites(sym, sym.kind == SymbolKind.METHOD)
+                )
                 if fixture:  # a new fixture can shadow a same-named one in its scope
                     direct |= tests_in_scope(sym.path)
                 continue
@@ -352,7 +352,7 @@ def analyse(c: str) -> dict:
                 elif not is_test_module(sym.path):
                     escalate.add(sym.id)
                     notes.append(f"{sym.id} decorators changed")
-        elif sym.kind == VARIABLE:
+        elif sym.kind == SymbolKind.VARIABLE:
             rs = readers(sym.id, sym.name)
             E |= rs | {sym.id}
             if kinds & {"added", "deleted"}:
@@ -361,11 +361,11 @@ def analyse(c: str) -> dict:
                     method=bool(
                         sym.container
                         and (h.symbols.get(sym.container) or b.symbols.get(sym.container)).kind
-                        == CLASS
+                        == SymbolKind.CLASS
                     ),
                 )
             import_time_readers(rs, sym.id)
-        elif sym.kind == CLASS:
+        elif sym.kind == SymbolKind.CLASS:
             if kinds == {"docstring_changed"}:
                 continue
             if kinds & {"added", "deleted"}:
@@ -406,7 +406,7 @@ def analyse(c: str) -> dict:
         library = any(not is_test_module(path) for path in esc_paths)
         for index in (b, h):
             for u in index.unresolved:
-                if u.kind != UNRESOLVED_DYNAMIC:
+                if u.kind != UnresolvedKind.DYNAMIC:
                     continue
                 if "import" in u.detail:
                     if library:

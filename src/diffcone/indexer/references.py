@@ -70,25 +70,20 @@ from diffcone.indexer.uses import (
 )
 from diffcone.indexer.writes import observe_assign, observe_augassign, observe_call
 from diffcone.model import (
-    CLASS,
     DISCARDED_IMPORT,
-    FUNCTION,
     GRAPH_HANDLE,
     GRAPH_INERT,
     GRAPH_MODULES,
-    METHOD,
-    MODULE,
     MUTATED_BY,
     REBINDS,
     RUNS_PROGRAM,
     RUNS_TEXT,
-    UNRESOLVED_ATTRIBUTE,
-    UNRESOLVED_DYNAMIC,
-    VARIABLE,
     WRITES,
     Edge,
     EdgeKind,
     ExternalReference,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
 )
 from diffcone.snapshot import module_name_for, split_root
@@ -328,12 +323,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self.indexer.out.reflection.add((self.source, GRAPH_HANDLE))
         for name in rest:
             self.indexer.out.unresolved.add(
-                UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, chain)
+                UnresolvedReference(self.source, UnresolvedKind.ATTRIBUTE, name, chain)
             )
 
     def _dynamic(self, detail: str) -> None:
         self.indexer.out.unresolved.add(
-            UnresolvedReference(self.source, UNRESOLVED_DYNAMIC, "", detail)
+            UnresolvedReference(self.source, UnresolvedKind.DYNAMIC, "", detail)
         )
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -422,7 +417,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         # ``Foo().run``, ``items[0].run``, ``make().run``: the base value is
         # unknown, but the attribute name still bounds what it may refer to.
         self.indexer.out.unresolved.add(
-            UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, node.attr, f"<expr>.{node.attr}")
+            UnresolvedReference(
+                self.source, UnresolvedKind.ATTRIBUTE, node.attr, f"<expr>.{node.attr}"
+            )
         )
         self.generic_visit(node)
 
@@ -629,7 +626,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             else:
                 self.indexer.out.unresolved.add(
                     UnresolvedReference(
-                        self.source, UNRESOLVED_ATTRIBUTE, name, f"case {shown}({name}=...)"
+                        self.source, UnresolvedKind.ATTRIBUTE, name, f"case {shown}({name}=...)"
                     )
                 )
         self.generic_visit(node)
@@ -679,8 +676,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                         and symbol.id != self.source
                         and symbol.module != self.scope.module.name
                         and (
-                            (symbol.kind == VARIABLE and not target.detail)
-                            or (symbol.kind == MODULE and target.detail.startswith("attribute:"))
+                            (symbol.kind == SymbolKind.VARIABLE and not target.detail)
+                            or (
+                                symbol.kind == SymbolKind.MODULE
+                                and target.detail.startswith("attribute:")
+                            )
                         )
                     ):
                         self.indexer.out.edges.add(
@@ -699,7 +699,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         node = self.indexer.resolve_chain([base.id], self.scope)
         if isinstance(node, Resolved) and not node.detail:
             symbol = self.indexer.index.symbols.get(node.symbol)
-            if symbol is None or symbol.kind != VARIABLE or symbol.id == self.source:
+            if symbol is None or symbol.kind != SymbolKind.VARIABLE or symbol.id == self.source:
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
@@ -819,9 +819,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         symbol = self.indexer.index.symbols.get(target.symbol)
         if symbol is None:
             return None
-        if symbol.kind == CLASS:
+        if symbol.kind == SymbolKind.CLASS:
             return ["instance", symbol.id]
-        if symbol.kind == FUNCTION:
+        if symbol.kind == SymbolKind.FUNCTION:
             return ["factory", symbol.id]
         return None
 
@@ -850,7 +850,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if base is None:
                 self.indexer.out.unresolved.add(
                     UnresolvedReference(
-                        self.source, UNRESOLVED_ATTRIBUTE, name, f"hasattr(..., {name!r})"
+                        self.source, UnresolvedKind.ATTRIBUTE, name, f"hasattr(..., {name!r})"
                     )
                 )
             else:
@@ -1238,7 +1238,11 @@ class _ReferenceCollector(ast.NodeVisitor):
         target = self.indexer.resolve_chain(chain, self.scope)
         if isinstance(target, Resolved) and not target.detail:
             symbol = self.indexer.index.symbols.get(target.symbol)
-            return symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS)
+            return symbol is not None and symbol.kind in (
+                SymbolKind.FUNCTION,
+                SymbolKind.METHOD,
+                SymbolKind.CLASS,
+            )
         return isinstance(target, External)
 
     def _pytester_call(self, node: ast.Call, parts: list[str]) -> None:
@@ -1361,7 +1365,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             for name in value.split("."):
                 if name.isidentifier():
                     self.indexer.out.unresolved.add(
-                        UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, detail)
+                        UnresolvedReference(self.source, UnresolvedKind.ATTRIBUTE, name, detail)
                     )
 
     def _format_fields(self, node: ast.Call) -> None:
@@ -1411,7 +1415,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             for text in found:
                 for name in format_attribute_names(text):
                     self.indexer.out.unresolved.add(
-                        UnresolvedReference(self.source, UNRESOLVED_ATTRIBUTE, name, detail)
+                        UnresolvedReference(self.source, UnresolvedKind.ATTRIBUTE, name, detail)
                     )
 
     def _handed_instances(self, node: ast.Call, parts: list[str] | None) -> None:
@@ -1439,9 +1443,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                 target = self.indexer.resolve_chain(parts, self.scope)
                 if isinstance(target, Resolved) and not target.detail:
                     symbol = self.indexer.index.symbols.get(target.symbol)
-                    if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+                    if symbol is not None and symbol.kind in (
+                        SymbolKind.FUNCTION,
+                        SymbolKind.METHOD,
+                    ):
                         return  # a call site: positional_classes and keyword_classes
-                    if symbol is not None and symbol.kind == CLASS:
+                    if symbol is not None and symbol.kind == SymbolKind.CLASS:
                         init = self.indexer.lookup_in_class(
                             symbol.id, "__init__", dispatch=target.receiver
                         )
@@ -1582,16 +1589,16 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not (isinstance(target, Resolved) and not target.detail):
             return
         symbol = self.indexer.index.symbols.get(target.symbol)
-        if symbol is not None and symbol.kind == CLASS:
+        if symbol is not None and symbol.kind == SymbolKind.CLASS:
             # Constructing a class calls the ``__init__`` its MRO resolves to
             # (any subclass's, for ``cls(...)``), with ``self`` implicit.
             init = self.indexer.lookup_in_class(symbol.id, "__init__", dispatch=target.receiver)
             self._add_call_site(node, init, receiver_bound=True)
             return
-        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+        if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             return
         receiver_bound = False
-        if symbol.kind == METHOD and len(parts) > 1:
+        if symbol.kind == SymbolKind.METHOD and len(parts) > 1:
             base = self.indexer._lookup_base(parts[0], self.scope)
             base_is_class = (
                 isinstance(base, Resolved)
@@ -1607,7 +1614,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not (isinstance(target, Resolved) and not target.detail):
             return
         symbol = self.indexer.index.symbols.get(target.symbol)
-        if symbol is None or symbol.kind not in (FUNCTION, METHOD):
+        if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             return
         unbounded = any(isinstance(a, ast.Starred) for a in node.args) or any(
             k.arg is None for k in node.keywords
@@ -1653,7 +1660,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(node, Resolved) or node.detail:
             return None
         symbol = self.indexer.index.symbols.get(node.symbol)
-        return node.symbol if symbol is not None and symbol.kind == CLASS else None
+        return node.symbol if symbol is not None and symbol.kind == SymbolKind.CLASS else None
 
     def _argument_param(self, expr: ast.expr) -> str | None:
         """The enclosing function's parameter an argument is, when it is
@@ -1680,7 +1687,11 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(node, Resolved) or node.detail:
             return None
         symbol = self.indexer.index.symbols.get(node.symbol)
-        return node.symbol if symbol is not None and symbol.kind in (FUNCTION, METHOD) else None
+        return (
+            node.symbol
+            if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+            else None
+        )
 
     def _local_source(self, name: str) -> ast.expr | None:
         """What this scope assigns ``name``, when that is the only thing that
@@ -1835,7 +1846,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 # Unknown receiver, known attribute name: bounded like ``obj.name``.
                 self.indexer.out.unresolved.add(
                     UnresolvedReference(
-                        self.source, UNRESOLVED_ATTRIBUTE, name, f"getattr(..., {name!r})"
+                        self.source, UnresolvedKind.ATTRIBUTE, name, f"getattr(..., {name!r})"
                     )
                 )
             else:
@@ -1892,7 +1903,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         ):
             return False
         symbol = self.indexer.index.symbols.get(node.symbol)
-        if symbol is None or symbol.kind != VARIABLE:
+        if symbol is None or symbol.kind != SymbolKind.VARIABLE:
             return False
         if mark == REBINDS:
             if rest or symbol.module == self.scope.module.name:
@@ -1908,7 +1919,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         node = self.indexer.resolve_chain([name], self.scope)
         if isinstance(node, Resolved) and not node.detail:
             symbol = self.indexer.index.symbols.get(node.symbol)
-            if symbol is not None and symbol.kind == VARIABLE:
+            if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
                 self.indexer.out.rebound.add(symbol.id)
 
     def _process_write(self, what: str) -> None:

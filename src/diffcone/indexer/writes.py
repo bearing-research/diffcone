@@ -81,18 +81,15 @@ from diffcone.indexer.scopes import External, ModuleNode, Resolved, Scope
 from diffcone.indexer.syntax import _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
-    CLASS,
     DERIVED_ANY,
     DERIVED_NAME,
-    FUNCTION,
-    METHOD,
     MUTATED_BY,
     STORE_CLOSURE,
     STORE_PARAM,
     STORE_SELF,
-    VARIABLE,
     Edge,
     EdgeKind,
+    SymbolKind,
 )
 
 if TYPE_CHECKING:
@@ -257,7 +254,7 @@ def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0)
                     symbol = collector.indexer.index.symbols.get(found.symbol)
                     if (
                         symbol is not None
-                        and symbol.kind == VARIABLE
+                        and symbol.kind == SymbolKind.VARIABLE
                         and symbol.id != collector.source
                     ):
                         return symbol.id
@@ -278,7 +275,7 @@ def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0)
     if not isinstance(target, Resolved):
         return None
     symbol = collector.indexer.index.symbols.get(target.symbol)
-    if symbol is None or symbol.kind != VARIABLE or symbol.id == collector.source:
+    if symbol is None or symbol.kind != SymbolKind.VARIABLE or symbol.id == collector.source:
         return None
     return symbol.id
 
@@ -328,7 +325,11 @@ def _state_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
     node = collector.indexer.resolve_chain([base.id], scope)
     if isinstance(node, Resolved) and not node.detail:
         symbol = collector.indexer.index.symbols.get(node.symbol)
-        if symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS):
+        if symbol is not None and symbol.kind in (
+            SymbolKind.FUNCTION,
+            SymbolKind.METHOD,
+            SymbolKind.CLASS,
+        ):
             return attr
     return None
 
@@ -383,9 +384,13 @@ def _derived(collector: _ReferenceCollector, value: ast.expr | None, depth: int 
                     found.add(DERIVED_NAME + parts[-1])
                     continue
                 symbol = indexer.index.symbols.get(target.symbol)
-                if symbol is not None and symbol.kind in (FUNCTION, METHOD, CLASS):
+                if symbol is not None and symbol.kind in (
+                    SymbolKind.FUNCTION,
+                    SymbolKind.METHOD,
+                    SymbolKind.CLASS,
+                ):
                     found.add(symbol.id)
-                elif symbol is not None and symbol.kind == VARIABLE and len(parts) > 1:
+                elif symbol is not None and symbol.kind == SymbolKind.VARIABLE and len(parts) > 1:
                     found.add(DERIVED_NAME + parts[-1])
             elif isinstance(target, (External, ModuleNode)):
                 continue  # a library's own call, or a module named
@@ -582,19 +587,19 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             return  # a third-party callee runs none of our code
         if isinstance(target, Resolved) and not target.detail:
             symbol = indexer.index.symbols.get(target.symbol)
-            if symbol is not None and symbol.kind == VARIABLE and len(parts) > 1:
+            if symbol is not None and symbol.kind == SymbolKind.VARIABLE and len(parts) > 1:
                 pass  # a method of the variable's value: by name (apply_writes)
-            elif symbol is not None and symbol.kind == CLASS:
+            elif symbol is not None and symbol.kind == SymbolKind.CLASS:
                 init = indexer.lookup_in_class(symbol.id, "__init__")
                 if isinstance(init, Resolved) and not init.detail:
                     callees.append(init.symbol)
                 bound = True
                 if not callees:
                     return  # no in-scope constructor: nothing of ours runs
-            elif symbol is not None and symbol.kind in (FUNCTION, METHOD):
+            elif symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 callees.append(symbol.id)
                 callees += [o for o, detail in target.overrides if not detail]
-                if symbol.kind == METHOD and len(parts) == 2:
+                if symbol.kind == SymbolKind.METHOD and len(parts) == 2:
                     base = indexer._lookup_base(parts[0], collector.scope)
                     bound = not (
                         isinstance(base, Resolved)
@@ -658,7 +663,7 @@ def _computed_pass(collector: _ReferenceCollector, node: ast.Call, parts: list[s
             return  # a third-party method keeps what no record of ours shows
         if isinstance(target, Resolved) and not target.detail:
             symbol = indexer.index.symbols.get(target.symbol)
-            if symbol is not None and symbol.kind in (FUNCTION, METHOD):
+            if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 callee = symbol.id
         if (
             not callee
@@ -759,7 +764,7 @@ def apply_writes(indexer: Resolver) -> None:
     symbols = indexer.index.symbols
     by_name: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
-        if symbol.kind in (FUNCTION, METHOD) and symbol.id in params:
+        if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and symbol.id in params:
             by_name[symbol.name].append(symbol.id)
     for ids in by_name.values():
         ids.sort()
@@ -790,7 +795,7 @@ def apply_writes(indexer: Resolver) -> None:
             target
             for e in found
             if (target := symbols.get(e.target)) is not None
-            and target.kind in (FUNCTION, METHOD, CLASS)
+            and target.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD, SymbolKind.CLASS)
         ]
         if any(t.id not in out.external_returns for t in ours):
             return False
@@ -807,9 +812,9 @@ def apply_writes(indexer: Resolver) -> None:
             target = symbols.get(e.target)
             if target is None or e.detail:
                 continue
-            if target.kind in (FUNCTION, METHOD):
+            if target.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 return None
-            if target.kind == CLASS:
+            if target.kind == SymbolKind.CLASS:
                 classes.append(target.id)
         return sorted(classes) or None
 
@@ -936,7 +941,7 @@ def apply_writes(indexer: Resolver) -> None:
                 out.handed.add((caller, c, held))
     module_variables: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
-        if symbol.kind == VARIABLE:
+        if symbol.kind == SymbolKind.VARIABLE:
             module_variables[symbol.module].append(symbol.id)
     for record in passes:
         caller, what = record[0], record[1]

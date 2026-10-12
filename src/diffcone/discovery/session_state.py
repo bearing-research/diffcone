@@ -47,17 +47,15 @@ from collections import defaultdict, deque
 from collections.abc import Iterable
 
 from diffcone.model import (
-    CLASS,
     EXTERNAL_WRITTEN,
     INSTALLED,
     INSTALLED_ANYWHERE,
-    METHOD,
-    MODULE,
     MUTATED_BY,
     REGISTERS,
-    UNRESOLVED_DYNAMIC,
     EdgeKind,
     SourceIndex,
+    SymbolKind,
+    UnresolvedKind,
     edge_mark,
     imports_anything,
 )
@@ -96,7 +94,7 @@ def plugin_object_hooks(index: SourceIndex, test_modules: set[str]) -> list[str]
     object pytest may register, called for every test."""
     out: list[str] = []
     for symbol_id, symbol in sorted(index.symbols.items()):
-        if symbol.kind != METHOD or not symbol.name.startswith("pytest_"):
+        if symbol.kind != SymbolKind.METHOD or not symbol.name.startswith("pytest_"):
             continue
         if symbol.name == "pytest_generate_tests" and symbol.module in test_modules:
             continue  # a test class parametrizing its own tests
@@ -145,7 +143,7 @@ def state_writing_roots(
     for ref in index.unresolved:
         if (ref.symbol, ref.kind, ref.name or ref.detail) in main_only:
             continue
-        if ref.kind == UNRESOLVED_DYNAMIC:
+        if ref.kind == UnresolvedKind.DYNAMIC:
             symbol = index.symbols.get(ref.symbol)
             if symbol is not None and (
                 imports_anything(ref.detail)
@@ -175,23 +173,23 @@ def state_writing_roots(
     while queue:
         current = queue.popleft()
         symbol = index.symbols[current]
-        if symbol.kind == MODULE:
+        if symbol.kind == SymbolKind.MODULE:
             continue
-        if symbol.kind == CLASS and current in seeds:
+        if symbol.kind == SymbolKind.CLASS and current in seeds:
             add(symbol.module)  # its body writes, when the module is imported
             continue
         for caller, detail in sorted(callers.get(current, ())):
             caller_symbol = index.symbols.get(caller)
             if caller_symbol is None:
                 continue
-            if caller_symbol.kind == CLASS and detail not in _INSTANCE_EDGES:
+            if caller_symbol.kind == SymbolKind.CLASS and detail not in _INSTANCE_EDGES:
                 add(caller_symbol.module)  # class-body code
             else:
                 add(caller)
         if not (symbol.name.startswith("__") and symbol.name.endswith("__")):
             for caller in sorted(by_name.get(symbol.name, ())):
                 caller_symbol = index.symbols.get(caller)
-                if caller_symbol is not None and caller_symbol.kind == CLASS:
+                if caller_symbol is not None and caller_symbol.kind == SymbolKind.CLASS:
                     add(caller_symbol.module)
                 else:
                     add(caller)

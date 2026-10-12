@@ -119,22 +119,14 @@ from diffcone.indexer import build_index
 from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ANY_MODULE,
-    CLASS,
     DYNAMIC_DEPENDENCY,
     EXTERNAL_WRITTEN,
-    FUNCTION,
     INSTALLED,
     INSTALLED_ANYWHERE,
-    METHOD,
-    MODULE,
     MUTATED_BY,
     REBINDS,
     REGISTERS,
     RUNS_SCRIPT,
-    UNRESOLVED_ATTRIBUTE,
-    UNRESOLVED_DYNAMIC,
-    UNRESOLVED_MODULE_ATTRIBUTE,
-    VARIABLE,
     WRITES,
     AnalysisError,
     Edge,
@@ -142,6 +134,8 @@ from diffcone.model import (
     SnapshotInfo,
     SourceIndex,
     Symbol,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
     attribute_reachable,
     edge_mark,
@@ -676,9 +670,9 @@ def _runs_at_import(change: SymbolChange) -> bool:
     revisions only binds a name (removing or rebinding it reaches its users
     through deletion and resolution edges)."""
     symbol = change.symbol
-    if symbol.kind in (MODULE, CLASS):
+    if symbol.kind in (SymbolKind.MODULE, SymbolKind.CLASS):
         return True
-    if symbol.kind == VARIABLE:
+    if symbol.kind == SymbolKind.VARIABLE:
         # Binding a literal runs nothing; a computed value does, and so does
         # an eagerly evaluated annotation that changed (definition_changed).
         if ChangeKind.DEFINITION_CHANGED in change.changes:
@@ -717,7 +711,7 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
         return symbol is not None and (
             symbol.id in index.decorator_symbols
             or (
-                symbol.kind == METHOD
+                symbol.kind == SymbolKind.METHOD
                 and symbol.name in ("__init__", "__new__", "__call__")
                 and symbol.container in index.decorator_symbols
             )
@@ -728,7 +722,11 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
         if edge.kind == EdgeKind.IMPORTS:
             imported[edge.source].add(edge.target)
     for ref in index.unresolved:
-        if ref.symbol in read and ref.name == "__doc__" and ref.kind == UNRESOLVED_MODULE_ATTRIBUTE:
+        if (
+            ref.symbol in read
+            and ref.name == "__doc__"
+            and ref.kind == UnresolvedKind.MODULE_ATTRIBUTE
+        ):
             # ``pkg.mod.__doc__`` as written, or through an alias (``from pkg
             # import mod``): one of the modules the reader or its module
             # imports.
@@ -853,7 +851,7 @@ def _newly_run_modules(
             continue
         symbol = change.symbol
         runs: dict[str, set[str]] = {"base": set(), "head": set()}
-        if symbol.kind == MODULE:
+        if symbol.kind == SymbolKind.MODULE:
             runs["base"] = _runtime_imports(change.base, base.modules)
             runs["head"] = _runtime_imports(change.head, head.modules)
             own = {label: {symbol.id} for label in runs}
@@ -1042,16 +1040,16 @@ def _runner_only_classes(
             continue
         for target in result.targets:
             entry = symbols.get(target.entry_symbol)
-            if entry is not None and entry.kind == METHOD and entry.container:
+            if entry is not None and entry.kind == SymbolKind.METHOD and entry.container:
                 runner.add(entry.container)
             for dep in target.lifecycle_dependencies:
                 owner = symbols.get(dep)
-                if owner is not None and owner.kind == CLASS:
+                if owner is not None and owner.kind == SymbolKind.CLASS:
                     runner.add(dep)
     if not runner:
         return set()
     for index in (base, head):
-        if any(u.kind != UNRESOLVED_DYNAMIC and u.name == "instance" for u in index.unresolved):
+        if any(u.kind != UnresolvedKind.DYNAMIC and u.name == "instance" for u in index.unresolved):
             return set()
 
     def within_runner(symbol_id: str) -> bool:
@@ -1257,13 +1255,16 @@ def plan_from_indexes(
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
     attribute_by_name: dict[str, list[str]] = defaultdict(list)
     module_nodes = {
-        s.id for index in (base, head) for s in index.symbols.values() if s.kind == MODULE
+        s.id
+        for index in (base, head)
+        for s in index.symbols.values()
+        if s.kind == SymbolKind.MODULE
     }
     runner_only = _runner_only_classes(base, head, discovered, union)
     reachable = _attribute_modules(base, head, targets, known_symbols)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
-        if symbol.kind != MODULE and not _is_dunder(symbol.name):
+        if symbol.kind != SymbolKind.MODULE and not _is_dunder(symbol.name):
             if _inside(symbol_id, runner_only, base, head):
                 continue  # only the test runner can hold an instance: see below
             symbols_by_name[symbol.name].append(symbol_id)
@@ -1295,7 +1296,7 @@ def plan_from_indexes(
     # computes what it imports sees any change.
     script_refs = sorted(base.script_refs | head.script_refs)
     for ref, revs in _union(base.unresolved, head.unresolved).items():
-        if ref.kind == UNRESOLVED_DYNAMIC and ref.detail.endswith(EXTERNAL_WRITTEN):
+        if ref.kind == UnresolvedKind.DYNAMIC and ref.detail.endswith(EXTERNAL_WRITTEN):
             key = (ref.symbol, ref.detail)
             writers = {*base.external_sites.get(key, ()), *head.external_sites.get(key, ())}
             if writers and writers <= isolated:
@@ -1303,7 +1304,7 @@ def plan_from_indexes(
                 # finds what the library defines, as with no writer at all.
                 pending_unresolved.append((ref, revs))
                 continue
-        if ref.kind == UNRESOLVED_DYNAMIC:
+        if ref.kind == UnresolvedKind.DYNAMIC:
             dynamic_symbols.setdefault(ref.symbol, revs)
             if ref.detail.startswith(RUNS_SCRIPT):
                 paths = sorted(p for s, p in script_refs if s == ref.symbol)
@@ -1598,7 +1599,7 @@ def plan_from_indexes(
     }
 
     def matched(ref: UnresolvedReference) -> tuple[str, ...]:
-        if ref.kind == UNRESOLVED_DYNAMIC:
+        if ref.kind == UnresolvedKind.DYNAMIC:
             return ()
         by_name = (
             affected_by_attribute
@@ -1810,7 +1811,9 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
 
     def callable_code(sid: str) -> bool:
         found = defined.get(sid)
-        return bool(found) and all(s.kind in (FUNCTION, METHOD) for s in found)
+        return bool(found) and all(
+            s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) for s in found
+        )
 
     isolated: set[str] = set()
     test_modules: set[str] = set()
@@ -1820,7 +1823,7 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         modules = {
             dep
             for dep in target.lifecycle_dependencies
-            if dep in defined and all(s.kind == MODULE for s in defined[dep])
+            if dep in defined and all(s.kind == SymbolKind.MODULE for s in defined[dep])
         }
         test_modules |= modules
         if callable_code(target.entry_symbol) and all(
@@ -1830,7 +1833,8 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         for dep in target.lifecycle_dependencies:
             found = defined.get(dep, [])
             if found and all(
-                s.kind in (FUNCTION, METHOD) and s.fixture_scope == "function" for s in found
+                s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and s.fixture_scope == "function"
+                for s in found
             ):
                 isolated.add(dep)
     referrers: dict[str, set[str]] = defaultdict(set)
@@ -1857,7 +1861,7 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         if all(s.fixture_scope == "function" for s in found):
             isolated.add(sid)
         elif all(s.fixture_scope == "" for s in found):
-            if all(s.name in _PER_TEST_HOOKS and s.kind == METHOD for s in found):
+            if all(s.name in _PER_TEST_HOOKS and s.kind == SymbolKind.METHOD for s in found):
                 called_by_runner.add(sid)
             candidates.append(sid)
     changed = True
@@ -1958,7 +1962,7 @@ def _on_unknown_value(
     can be a module only through ``SourceIndex.attribute_modules``: not a
     bare name, not a name looked up on a module, not in a module holding a
     module named at run time."""
-    if ref.kind != UNRESOLVED_ATTRIBUTE:
+    if ref.kind != UnresolvedKind.ATTRIBUTE:
         return False
     symbol = head.symbols.get(ref.symbol) or base.symbols.get(ref.symbol)
     return symbol is None or symbol.module not in any_module_readers
@@ -1977,7 +1981,7 @@ def _attribute_modules(
         for dep in (target.entry_symbol, *target.lifecycle_dependencies):
             symbol = head.symbols.get(dep) or base.symbols.get(dep)
             if symbol is not None:
-                found.add(symbol.id if symbol.kind == MODULE else symbol.module)
+                found.add(symbol.id if symbol.kind == SymbolKind.MODULE else symbol.module)
     for module in known_symbols:
         if module.rsplit(".", 1)[-1] == "conftest":
             found.add(module)
@@ -1993,7 +1997,7 @@ def _constructor_hooks(
     found: dict[str, list[str]] = defaultdict(list)
     for label, index in (("base", base), ("head", head)):
         symbol = index.symbols.get(class_id)
-        if symbol is None or symbol.kind != CLASS:
+        if symbol is None or symbol.kind != SymbolKind.CLASS:
             continue
         stack, seen = [class_id], {class_id}
         while stack:
@@ -2312,7 +2316,7 @@ def _check_roots_match(
         symbol.path
         for index in (base_index, head_index)
         for symbol in index.symbols.values()
-        if symbol.kind == MODULE
+        if symbol.kind == SymbolKind.MODULE
     ]
     for root in roots:
         directory = split_root(root)[0]

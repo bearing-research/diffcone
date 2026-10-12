@@ -28,7 +28,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from diffcone.cache import IndexCache
-from diffcone.model import UNRESOLVED_DYNAMIC
+from diffcone.model import (
+    UnresolvedKind,
+)
 from diffcone.planner import (
     Rule,
     plan,
@@ -244,11 +246,11 @@ def _without(p, drop) -> set[str]:
 
 
 def _is_dynamic(u) -> bool:
-    return u.kind == UNRESOLVED_DYNAMIC
+    return u.kind == UnresolvedKind.DYNAMIC
 
 
 def _is_name(u) -> bool:
-    return u.kind != UNRESOLVED_DYNAMIC
+    return u.kind != UnresolvedKind.DYNAMIC
 
 
 def _causes(p) -> dict[str, tuple[str, str]]:
@@ -354,7 +356,7 @@ def census_repo(slug: str, work: Path, count: int) -> dict:
                 # index, whether or not a commit reached it.
                 static: Counter = Counter()
                 for u in p.head_index.unresolved:
-                    if u.kind == UNRESOLVED_DYNAMIC:
+                    if u.kind == UnresolvedKind.DYNAMIC:
                         static.update(_seed_labels(repo, sha, p.head_index, u.symbol, seed_cache))
                 result["static"] = dict(static)
                 result["modules"] = len(p.head_index.modules)

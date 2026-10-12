@@ -21,11 +21,10 @@ from diffcone.indexer.scripts import (
 )
 from diffcone.indexer.syntax import IMPORT_ATTRIBUTION_DEPTH
 from diffcone.model import (
-    CLASS,
-    UNRESOLVED_ATTRIBUTE,
-    UNRESOLVED_DYNAMIC,
     Edge,
     EdgeKind,
+    SymbolKind,
+    UnresolvedKind,
     UnresolvedReference,
 )
 
@@ -57,7 +56,7 @@ class DynamicBounds(Resolver):
         for u in self.index.unresolved:
             if u.name and u.detail.startswith("super()."):
                 source = self.index.symbols.get(u.symbol)
-                while source is not None and source.kind != CLASS:
+                while source is not None and source.kind != SymbolKind.CLASS:
                     source = self.index.symbols.get(source.container or "")
                 if source is None:
                     unresolved_names.add(u.name)
@@ -138,7 +137,7 @@ class DynamicBounds(Resolver):
                         )
                     continue
                 self.out.unresolved.add(
-                    UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
+                    UnresolvedReference(pd.function, UnresolvedKind.DYNAMIC, "", pd.detail)
                 )
                 continue
             for name in dict.fromkeys(values):
@@ -152,12 +151,14 @@ class DynamicBounds(Resolver):
                 elif pd.kind == "format":
                     for attr in format_attribute_names(name):
                         self.out.unresolved.add(
-                            UnresolvedReference(pd.function, UNRESOLVED_ATTRIBUTE, attr, pd.detail)
+                            UnresolvedReference(
+                                pd.function, UnresolvedKind.ATTRIBUTE, attr, pd.detail
+                            )
                         )
                 elif pd.kind == "import":
                     if name.startswith("."):
                         self.out.unresolved.add(
-                            UnresolvedReference(pd.function, UNRESOLVED_DYNAMIC, "", pd.detail)
+                            UnresolvedReference(pd.function, UnresolvedKind.DYNAMIC, "", pd.detail)
                         )
                     else:
                         self._module_import_edge(pd.function, name)
@@ -167,7 +168,7 @@ class DynamicBounds(Resolver):
                             self.out.unresolved.add(
                                 UnresolvedReference(
                                     pd.function,
-                                    UNRESOLVED_ATTRIBUTE,
+                                    UnresolvedKind.ATTRIBUTE,
                                     part,
                                     f"getattr(..., {name!r})",
                                 )
@@ -179,7 +180,7 @@ class DynamicBounds(Resolver):
                     self.class_object_read(pd.function, pd.base + [name], pd.scope)
                     for extra in rest:
                         self.out.unresolved.add(
-                            UnresolvedReference(pd.function, UNRESOLVED_ATTRIBUTE, extra, chain)
+                            UnresolvedReference(pd.function, UnresolvedKind.ATTRIBUTE, extra, chain)
                         )
         for ref in self.out.attr_refs:
             bound = self._attribute_writes(ref.cls, ref.attr, writes, unresolved_names)
@@ -240,7 +241,7 @@ class DynamicBounds(Resolver):
         for caller, names in attributed:
             if names is None:
                 self.out.unresolved.add(
-                    UnresolvedReference(caller, UNRESOLVED_DYNAMIC, "", pd.detail)
+                    UnresolvedReference(caller, UnresolvedKind.DYNAMIC, "", pd.detail)
                 )
                 continue
             for name in dict.fromkeys(names):
@@ -259,7 +260,7 @@ class DynamicBounds(Resolver):
         for caller, values in attributed:
             if values is None:
                 self.out.unresolved.add(
-                    UnresolvedReference(caller, UNRESOLVED_DYNAMIC, "", pd.detail)
+                    UnresolvedReference(caller, UnresolvedKind.DYNAMIC, "", pd.detail)
                 )
                 continue
             for value in dict.fromkeys(values):
@@ -399,7 +400,7 @@ class DynamicBounds(Resolver):
         for w, (kind, value) in bound:
             if kind == "symbol":
                 symbol = self.index.symbols.get(value)
-                if symbol is None or symbol.kind != CLASS:
+                if symbol is None or symbol.kind != SymbolKind.CLASS:
                     return None
                 found.add(value)
             elif kind == "param":
