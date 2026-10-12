@@ -1237,8 +1237,17 @@ from a recording.</p>
   against the checked-out code rather than an installed copy.</li>
 <li>If <code>--command</code> uses a relative path (<code>.venv/bin/python -m pytest</code>), it is
   resolved against the current directory, then the repository.</li>
+<li>A temporary checkout gets your repository's copy of each git-ignored
+  Python module inside a package that the commit lacks, such as the
+  <code>_version.py</code> that setuptools-scm or hatch-vcs generate, so the package
+  can be imported. Ignored conftests and test files are not copied.</li>
 <li><code>--setup-command</code> runs a shell command in each temporary checkout before
-  its tests, for example to regenerate a <code>_version.py</code>.</li>
+  its tests, for whatever else a build generates (compiled extensions).</li>
+<li>pytest's cache plugin runs with an empty cache of its own: a configured
+  <code>--lf</code> or <code>--ff</code> doesn't narrow or reorder the suite, and your
+  <code>.pytest_cache</code> is left alone. If the cache can't be moved there, the
+  run is refused. Don't disable the plugin in <code>--command</code>
+  (<code>-p no:cacheprovider</code>) when your configuration or plugins need it.</li>
 </ul>
 
 
