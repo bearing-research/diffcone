@@ -775,71 +775,71 @@ def write_store(evidence: Evidence, directory: Path) -> Path:
     """Write atomically: a reader never sees half a store."""
     make_own_dir(directory)
     target = directory / store_name(evidence)
-    fd, tmp = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    os.close(fd)
-    try:
-        # Committed or rolled back, then closed even on an error: an open
-        # handle keeps Windows from removing the temporary file.
-        with contextlib.closing(sqlite3.connect(tmp)) as db, db:
-            db.executescript(
-                """
-                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
-                CREATE TABLE paths (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
-                CREATE TABLE sets (id INTEGER PRIMARY KEY, data BLOB NOT NULL);
-                CREATE TABLE tests (
-                    target TEXT PRIMARY KEY, symbols INTEGER NOT NULL,
-                    paths INTEGER NOT NULL, dirs INTEGER NOT NULL, flags INTEGER NOT NULL);
-                CREATE TABLE import_by (symbol TEXT NOT NULL, module TEXT NOT NULL);
-                """
-            )
-            meta = {
-                "format": STORE_FORMAT,
-                "commit": evidence.commit,
-                "source_roots": evidence.source_roots,
-                "environment": evidence.environment,
-                "environment_hash": evidence.environment_hash,
-                "environment_at_start": evidence.environment_at_start,
-                "command": evidence.command,
-                "created": evidence.created,
-                "import_phase": sorted(evidence.import_phase),
-                "hook_phase": sorted(evidence.hook_phase),
-                "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
-                "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
-                "import_flagged": sorted(evidence.import_flagged),
-                "preloaded": sorted(evidence.preloaded),
-                "case_insensitive": evidence.case_insensitive,
-                "reverse_checked": evidence.reverse_checked,
-                "advanced_from": evidence.advanced_from,
-                "full_commit": evidence.full_commit or evidence.commit,
-                "collected": sorted(evidence.collected) if evidence.collected is not None else None,
-            }
-            db.executemany(
-                "INSERT INTO meta VALUES (?, ?)", [(k, json.dumps(v)) for k, v in meta.items()]
-            )
-            db.executemany("INSERT INTO symbols VALUES (?, ?)", enumerate(evidence.symbols))
-            db.executemany("INSERT INTO paths VALUES (?, ?)", enumerate(evidence.paths))
-            set_ids: dict[int, int] = {}
-            rows = []
-            for name, record in evidence.tests.items():
-                ids = []
-                for s in (record.symbols, record.paths, record.dirs):
-                    if id(s) not in set_ids:
-                        set_ids[id(s)] = len(set_ids)
-                        db.execute("INSERT INTO sets VALUES (?, ?)", (set_ids[id(s)], _pack(s)))
-                    ids.append(set_ids[id(s)])
-                rows.append((name, *ids, record.flags))
-            db.executemany("INSERT INTO tests VALUES (?, ?, ?, ?, ?)", rows)
-            db.executemany(
-                "INSERT INTO import_by VALUES (?, ?)",
-                [(s, m) for s, modules in evidence.import_by.items() for m in sorted(modules)],
-            )
-        os.replace(tmp, target)
-    finally:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
+    # Written in a directory of its own beside the store, which goes with
+    # whatever is left in it when the write fails.
+    with tempfile.TemporaryDirectory(dir=directory, prefix=".writing-") as tmp:
+        path = Path(tmp) / target.name
+        # sqlite3's ``with`` commits or rolls back but never closes: closing()
+        # closes it before the directory goes (Windows can't remove an open file).
+        with contextlib.closing(sqlite3.connect(path)) as db, db:
+            _write_tables(db, evidence)
+        os.replace(path, target)
     evidence.location = target
     return target
+
+
+def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
+    db.executescript(
+        """
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE symbols (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE paths (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
+        CREATE TABLE sets (id INTEGER PRIMARY KEY, data BLOB NOT NULL);
+        CREATE TABLE tests (
+            target TEXT PRIMARY KEY, symbols INTEGER NOT NULL,
+            paths INTEGER NOT NULL, dirs INTEGER NOT NULL, flags INTEGER NOT NULL);
+        CREATE TABLE import_by (symbol TEXT NOT NULL, module TEXT NOT NULL);
+        """
+    )
+    meta = {
+        "format": STORE_FORMAT,
+        "commit": evidence.commit,
+        "source_roots": evidence.source_roots,
+        "environment": evidence.environment,
+        "environment_hash": evidence.environment_hash,
+        "environment_at_start": evidence.environment_at_start,
+        "command": evidence.command,
+        "created": evidence.created,
+        "import_phase": sorted(evidence.import_phase),
+        "hook_phase": sorted(evidence.hook_phase),
+        "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
+        "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
+        "import_flagged": sorted(evidence.import_flagged),
+        "preloaded": sorted(evidence.preloaded),
+        "case_insensitive": evidence.case_insensitive,
+        "reverse_checked": evidence.reverse_checked,
+        "advanced_from": evidence.advanced_from,
+        "full_commit": evidence.full_commit or evidence.commit,
+        "collected": sorted(evidence.collected) if evidence.collected is not None else None,
+    }
+    db.executemany("INSERT INTO meta VALUES (?, ?)", [(k, json.dumps(v)) for k, v in meta.items()])
+    db.executemany("INSERT INTO symbols VALUES (?, ?)", enumerate(evidence.symbols))
+    db.executemany("INSERT INTO paths VALUES (?, ?)", enumerate(evidence.paths))
+    set_ids: dict[int, int] = {}
+    rows = []
+    for name, record in evidence.tests.items():
+        ids = []
+        for s in (record.symbols, record.paths, record.dirs):
+            if id(s) not in set_ids:
+                set_ids[id(s)] = len(set_ids)
+                db.execute("INSERT INTO sets VALUES (?, ?)", (set_ids[id(s)], _pack(s)))
+            ids.append(set_ids[id(s)])
+        rows.append((name, *ids, record.flags))
+    db.executemany("INSERT INTO tests VALUES (?, ?, ?, ?, ?)", rows)
+    db.executemany(
+        "INSERT INTO import_by VALUES (?, ?)",
+        [(s, m) for s, modules in evidence.import_by.items() for m in sorted(modules)],
+    )
 
 
 def _read_only(path: Path) -> sqlite3.Connection:

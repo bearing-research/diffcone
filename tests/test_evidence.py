@@ -13,6 +13,7 @@ from dataclasses import replace
 
 import pytest
 
+from diffcone import evidence as evidence_module
 from diffcone.cli import main
 from diffcone.evidence import (
     FLAG_SUBPROCESS,
@@ -204,6 +205,21 @@ def test_the_store_round_trips(repo, tmp_path):
     assert again.import_phase == ev.import_phase
     assert again.import_paths == ev.import_paths
     assert [s.commit for s in list_stores(repo.path)] == [ev.commit]
+
+
+def test_a_store_write_that_fails_leaves_nothing_behind(repo, tmp_path, monkeypatch):
+    repo.commit(FILES)
+    ev = repo.collect()
+    stores = tmp_path / "stores"
+
+    def fail(db, evidence):
+        db.execute("CREATE TABLE meta (key TEXT)")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(evidence_module, "_write_tables", fail)
+    with pytest.raises(OSError, match="disk full"):
+        write_store(ev, stores)
+    assert list(stores.iterdir()) == []
 
 
 def test_collection_at_an_older_commit_uses_a_temporary_worktree(repo):
