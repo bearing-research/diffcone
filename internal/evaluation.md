@@ -2032,6 +2032,55 @@ commits, so the differences are run-to-run order dependence, which
 records of tests `8f11807` deleted, carried along unused; advancing now
 drops the record of a test that is no longer a target.
 
+## pandas: compiled edits at the module surface (item 18 spike, 2026-10-12)
+
+Roadmap item 18, from a recording on an ordinary build at `bc2fe1b`
+(v3.2.0.dev0-205; 501 s, 24 778 tests, 28 938 symbols; a baseline plan
+X -> X keeps 1 097 targets always selected: 842 without a record, 252 text
+code, 3 subprocess). `scripts/extension_spike.py` maps 103 compiled files
+to 45 extension modules (Cython's convention plus `meson.build`), follows
+`cimport`, `include` and quoted `#include`, takes the closure (modules
+importing or cimporting a changed one) and lists each module's surface by
+importing it. pandas sets `__module__ = "pandas"` on its public types, so a
+name counts as the module's own when its code was compiled from the
+module's files. Of the last 500 first-parent commits, 47 touch compiled
+sources; 2 change only build files the map cannot claim (select
+everything), 45 are measured.
+
+| selection (of 25 620 targets) | median | narrow commits |
+|---|---|---|
+| rules 1-4 as the evidence planner applies them | 99.9 % | 0 |
+| rule 1 alone (tests that executed a reader) | 88.8 % | 5 unflagged |
+| rule 2 by module touch, rule 3 everything | 100 % (mean 62.5 %) | 20 |
+
+Every closure that reaches `lib`, `hashtable`, `algos`, `internals` or
+`tslibs` has readers that run in collection hooks (`sanitize_array`,
+`Index._engine`), so 25 commits select everything under any variant. An
+import-time reader escalates through `pandas.core.config_init`'s option
+registry to everything, and the planner's cross-test state rule takes even
+unflagged selections to 99.9 %. `parsers` alone is 8.9 % under rule 1 or
+the module-touch rule (10 commits); `window.aggregations` 5.8 %, `sas`
+4.5 %, `sparse` 7.1 %.
+
+**Recall** against the line-traced oracle (a `profile`/`linetrace` build of
+`bc2fe1b`, 3 736 s, 254 592 cases) on 38 replayed commits (53 767
+expectations): the planned rule and the module-touch variant miss none.
+Rule 1 alone misses 100 tests on 6 commits, all on flagged commits: 80 get
+compiled objects from module-level parametrisation lists, 18 call a method
+on an instance by name, 2 are IPython-driven tests whose record is empty
+(audit E11). A full suite before and after three `parsers.pyx` commits (2,
+1 and 1 tests change outcome) and one `tokenizer.cpp` commit (none) found
+every changed test selected. The special-method check found one path
+rule 1 cannot see: `CategoricalDtype._hash_categories` caches a
+`hashing.pyx` result on a shared dtype, which a later test reads without
+running a reader; only the cross-test state rule covers it.
+
+Two findings outside item 18: this recording flags a process run during a
+hook (`pandas.tests.config.test_localization`), with which the evidence
+planner selects every test for any change (audit E12); and tests driven
+through the `ip` IPython fixture record two symbols and no flag (E11).
+`parsers.pyx` no longer needs a patch to be profiled (pandas e4456d1).
+
 ## pandas: Cython edits planned from a profiled build (25 commits)
 
 Roadmap item 7, stage 4. Evidence was recorded with `diffcone collect` at

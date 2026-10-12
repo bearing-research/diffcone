@@ -372,9 +372,10 @@ replaced them and are at commit `689bfc7`):
   does (pandas' engines' `get_loc`), and callers are every function that
   *names* it, which also covers functions taken as pointers (`period.pyx`'s
   `get_asfreq_func`).
-* *Profiling can crash.* `profile=True` makes `parsers.pyx` segfault on
-  constructing its `TextReader`; it had to be excluded
-  (`# cython: profile=False`). A module that cannot be profiled has no
+* *Profiling can crash.* `profile=True` made `parsers.pyx` segfault on
+  constructing its `TextReader` (fixed in pandas e4456d1, #70573, by
+  2026-10; item 18's spike profiled it at `bc2fe1b` unpatched); it had to
+  be excluded (`# cython: profile=False`). A module that cannot be profiled has no
   evidence, so its edits keep selecting everything, and `parsers.pyx` is
   the most edited Cython file.
 * *Size.* Of 86 commits in the last 500 that touch a compiled source or
@@ -1264,7 +1265,27 @@ which is the project's choice and visible in the report.
 
 ## 18. Compiled extensions planned at their Python surface (no profiled build)
 
-**Status.** Planned (2026-10-12). Measure first (the spike below), then
+**Status.** Measured (2026-10-12): no gain on pandas as specified, so not
+built (evaluation.md, "pandas: compiled edits at the module surface").
+Rules 1-4 as the evidence planner applies them select a median of 99.9 %
+of pandas' tests over 45 compiled-source commits, with no miss against the
+line-traced oracle. The boundary is not what fails: every closure reaching
+`lib`, `hashtable`, `algos`, `internals` or `tslibs` has readers that run
+in collection hooks, an import-time reader escalates through
+`pandas.core.config_init`'s option registry to everything, and the
+cross-test state rule reaches 99.9 % on its own. Rule 1 alone (88.8 %)
+misses 100 tests on 6 commits (objects from module-level parametrize
+lists, methods called by name on instances), so it is unsound. The one
+candidate left is a "module touch" variant of rule 2 (code naming the
+closure at import counts as the tests that executed any symbol of the
+importing module, plus its tests): no oracle miss, 20 of 45 commits
+narrowed (`parsers` 8.9 % on 10), but its median is still 100 % until the
+hook and escalation rules are more precise on pandas, so it waits on that
+work. `scripts/extension_spike.py` reruns everything (`scripts/extension_spike/spike.sh`).
+Also found: `parsers.pyx` no longer crashes when profiled (pandas
+e4456d1, #70573), so item 7's fine path now covers it.
+
+What was planned: measure first (the spike below), then
 build. Item 7 plans Cython edits at function level, but only from a
 recording made on a `profile=True` build: on an ordinary build every
 compiled edit selects everything (`unobserved_file_changed`), and that is
