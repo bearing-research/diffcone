@@ -415,7 +415,8 @@ replaced them and are at commit `689bfc7`):
 **Not covered.** `.pxi.in` templates, hand-written C and build files still
 select everything (edits outside function bodies are item 8). A module the
 store holds no Cython record of (built without profiling) selects
-everything for its edits.
+everything for its edits; item 18 would plan those, and C extensions, at
+the module's Python surface instead.
 
 **Trade-off.** Any miss here is a miss in compiled code, which coverage
 validation does not see. The rule ships only if the spike shows no miss,
@@ -1260,3 +1261,114 @@ which is the project's choice and visible in the report.
   counted, not an error; the JSON report carries the entries and the
   counts, and `diffcone report`'s share leaves them out;
 * the reference page for `diffcone.toml` documents it.
+
+## 18. Compiled extensions planned at their Python surface (no profiled build)
+
+**Status.** Planned (2026-10-12). Measure first (the spike below), then
+build. Item 7 plans Cython edits at function level, but only from a
+recording made on a `profile=True` build: on an ordinary build every
+compiled edit selects everything (`unobserved_file_changed`), and that is
+the build pandas' nightly recording uses (item 9). `parsers.pyx`, the most
+edited Cython file (14 of the 86 compiled-source commits), segfaults when
+profiled, and hand-written C extensions are not covered at all.
+
+**Idea: two granularities.** Whatever a compiled module does, Python code
+reaches it only through what the module exposes to Python: its functions,
+its types and their methods and attributes. So plan a compiled change at
+that boundary, without reading the C or Cython inside:
+
+* *Fine* (item 7, unchanged): a module the recording holds a profiled
+  record of, edited only in function bodies, selects the tests that
+  executed the changed functions.
+* *Coarse* (this item): every other compiled change selects the tests that
+  reached the changed extension module's Python surface. A missing
+  profiled record is no longer select-all.
+
+**Mechanism.**
+
+* *Unit: the extension module.* Every file built into it (`.pyx`, `.c`,
+  `.cpp`) and everything those include (`.pxd` through `cimport`, `.pxi`
+  through `include`, headers through `#include "..."`), followed by name;
+  a changed included file reaches every module that includes it,
+  transitively.
+* *Build map: which sources make which module.* Cython's convention
+  covers most: `pkg/mod.pyx` builds `pkg.mod`. Where that does not hold
+  (C extensions, several sources per module), read `meson.build`'s
+  `extension_module(name, sources...)` and `setup.py`'s
+  `Extension(name, sources=[...])` when written with literals; otherwise a
+  `diffcone.toml` `[[extension]]` table (`module`, `sources`) declares it.
+  A changed compiled file no module claims selects everything, as today.
+* *Compiled closure.* The changed modules, and every extension module that
+  `cimport`s or imports one of them, transitively: an object one of them
+  builds may come from the changed code (a `Timestamp` boxed inside
+  `tslib`).
+* *Surface: the names the closure exposes.* Recorded: at the end of the
+  session the recorder lists each loaded extension module whose file is in
+  the checkout, its public names, and for each type it defines the
+  attribute names its own `__dict__` holds (store format bump). Static
+  fallback when a module was not loaded: the Cython reader's `def`,
+  `cpdef`, `cdef class`, property and module-level names; for C, the
+  string names in `PyMethodDef`, `PyGetSetDef` and `PyMemberDef` tables.
+* *Planning (evidence mode).* A coarse compiled change reaches:
+  1. the tests that executed project Python code naming a closure module
+     or one of its surface names: a resolved reference
+     (`lib.maybe_convert_objects`), or an attribute read off a value of
+     unknown type whose name is a surface attribute name (`ts.normalize()`,
+     `obj.year`), by name match as static planning does;
+  2. code naming them that ran at import: escalated, as for any change
+     reaching import-time code (in pandas that is everything reaching
+     `lib`, as item 7 found);
+  3. code naming them that ran in a hook or during collection: everything
+     (`pytest_hook_changed`);
+  4. lookup sites that can see a closure module (the existing rule).
+
+  New rule `extension_surface` (not a fallback: each selection names the
+  module and the reference, like `dependency`).
+* *Special methods need no rule of their own.* `a + b` on an extension
+  type runs compiled code no name shows, but the object came from
+  somewhere: code the test ran called the closure (rule 1), a closure
+  module built it (it is in the closure), it was made at import (rule 2)
+  or during collection (rule 3). This is what the coarse unit buys over a
+  function-level boundary, where an operator on an object made elsewhere
+  would be a miss.
+
+**Assumptions, and their guards.** The build map and include graph are
+complete for the changed file (an unclaimed file selects everything); no
+project extension is loaded by a computed name (`ctypes`/`dlopen` of a
+project library is a file touch the recorder already records); a third
+party library calls a project extension only with a function or object
+the project handed it, which code the test ran named (rule 1).
+
+**Trade-off.** Coarser than item 7: every test reaching `parsers`, not
+only those that ran the changed function. Modules everything reaches
+(`lib`, `index`, `offsets`) select nearly everything either way, so the
+gain is in the narrow, often edited ones (`parsers`, `window.aggregations`,
+`tslib`, `testing`). Static mode is unchanged by this item (a compiled
+edit selects everything); the same surface could later serve it.
+
+**Spike (before any of the above is built).**
+
+1. *Prototype* (`scripts/extension_spike.py`): from a pandas index and a
+   recording made on an ordinary build, compute the coarse selection for a
+   compiled change: build map by convention plus `meson.build`, the
+   closure, the surface listed by importing the built modules, and the
+   tests that executed Python naming it.
+2. *Precision*: the share selected on the 86 compiled-source commits of
+   item 7 (the last 500 first-parent commits before `3f57341`), per
+   commit and per module, beside item 7's numbers (median 19 % on its 25
+   replayed commits, 2.7 % on 33 body-only commits) and today's 100 %.
+3. *Recall*: on item 7's 25 replayed commits, every test the line-traced
+   oracle (`scripts/cython_spike/recall.py`) shows executing an edited
+   function must be selected by the coarse rule; plus `diffcone validate`
+   outcomes on a few commits that touch `parsers` and a C source.
+4. *Reach of the rules*: how many commits the build map cannot claim (C
+   and build-file edits), and how many selections come from each rule.
+
+**Done when.** The spike has run and is recorded in
+`internal/evaluation.md`. If the coarse rule shows no miss against the
+oracle and a real gain over select-all on ordinary builds: stages for the
+build map and include graph, the surface record, the planning rule (with
+`[[extension]]` declarations), each with scenarios on a fixture extension
+(Cython and C) and the docs ("Compiled code" in `guides/evidence.md`,
+the rule in `reference/report.md`). If not, the gap is measured and the
+item closes as measured and left alone.
