@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +16,15 @@ import pytest
 
 from diffcone import execution
 from diffcone.cli import main
-from diffcone.execution import build_command, parse_outcome_lines, run_selected, validate_pytest
+from diffcone.execution import (
+    build_command,
+    parse_outcome_lines,
+    run_selected,
+    validate_pytest,
+    worktree_mismatch,
+)
 from diffcone.snapshot import GitError
-from diffcone.testing import asv_target, changes, py_target
+from diffcone.testing import FixtureRepo, asv_target, changes, py_target, rules
 
 # Symlinks, ``sh`` and shell scripts as commands: POSIX only.
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX only")
@@ -1530,3 +1538,519 @@ def test_read_coverage_contexts_reads_parallel_parts(tmp_path):
     contexts = read_coverage_contexts(db, root, set())
     assert set(contexts) == {"tests/test_m.py::test_a", "tests/test_m.py::test_b"}
     assert all(2 in lines["mod.py"] for lines in contexts.values())
+
+
+# --------------------------------------------------------------------------- run: plan and output
+
+
+PYTEST_NO_CACHE = f"{sys.executable} -m pytest -p no:cacheprovider"
+CALC = {
+    "calc/__init__.py": "",
+    "calc/ops.py": "def add(a, b):\n    return a + b\n\n\ndef other():\n    return 1\n",
+    "tests/__init__.py": "",
+    "tests/test_ops.py": (
+        "import os\n\nfrom calc.ops import add, other\n\n\n"
+        "def test_x():\n    if os.environ.get('FLAG') == 'on':\n        assert other() == 1\n\n\n"
+        "def test_add():\n    assert add(1, 2) == 3\n"
+    ),
+}
+
+
+PY = sys.executable
+DIFFCONE = shutil.which("diffcone", path=str(Path(sys.executable).parent)) or str(
+    Path(sys.executable).parent / "diffcone"
+)
+
+
+ADD_OPS = "def add(a, b):\n    return a + b\n"
+ADD_OPS_BROKEN = "def add(a, b):\n    return a + b + 1\n"
+TEST_ADD_OPS = "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+
+
+FILES = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": ADD_OPS,
+    "tests/__init__.py": "",
+    "tests/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+    ),
+    "benchmarks/asv.conf.json": '{"benchmark_dir": "benchmarks"}\n',
+    "benchmarks/benchmarks/__init__.py": "",
+    "benchmarks/benchmarks/bench_ops.py": (
+        "from pkg.ops import add\n\n\n"
+        "class Ops:\n    def time_add(self):\n        return add(1, 1)\n"
+    ),
+}
+
+
+def _cli(repo: FixtureRepo, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [DIFFCONE, *args], cwd=cwd or repo.path, capture_output=True, text=True, check=False
+    )
+
+
+def test_r16_run_output_is_the_plan_that_ran(repo, tmp_path, capsys):
+    base = repo.commit({**CALC})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("return a + b", "return b + a")})
+    out = tmp_path / "plan.json"
+    code = main(["run", "--repo", str(repo.path), "--base", base, "--head", head,
+                 "--discover", "pytest", "--command", PYTEST_NO_CACHE, "-o", str(out)])  # fmt: skip
+    assert code == 0, capsys.readouterr().err
+    data = json.loads(out.read_text())
+    assert data["selected_targets"]
+
+
+@posix_only
+def test_r2_a_symlinked_repo_path_selects_the_right_tests(repo, tmp_path, capfd):
+    base = repo.commit({**CALC})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "b + a")})
+    link = tmp_path / "link"
+    link.symlink_to(repo.path)
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(link),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST_NO_CACHE,
+            "--",
+            "-q",
+        ]
+    )
+    out = capfd.readouterr()
+    assert code == 0, out.err
+    assert "1 passed" in out.out and "did not collect" not in out.err
+
+
+def test_r8_doctests_asked_for_after_the_separator_are_planned_and_run(repo, capfd):
+    base = repo.commit(
+        {
+            **CALC,
+            "calc/ops.py": CALC["calc/ops.py"].replace(
+                "def other():\n", "def other():\n    '''\n    >>> other()\n    1\n    '''\n"
+            ),
+        }
+    )
+    ops = repo.git("show", "HEAD:calc/ops.py")
+    head = repo.commit({"calc/ops.py": ops.replace("    return 1", "    return 2")})
+    code = main(
+        [
+            "run",
+            "--repo",
+            str(repo.path),
+            "--base",
+            base,
+            "--head",
+            head,
+            "--discover",
+            "pytest",
+            "--command",
+            PYTEST_NO_CACHE,
+            "--",
+            "-q",
+            "--doctest-modules",
+        ]
+    )
+    out = capfd.readouterr()
+    assert code == 1, out.err  # the doctest ran, and failed
+    assert "calc.ops.other" in out.out
+
+
+def test_r8_unknown_collected_tests_are_run_not_dropped(repo, capsys):
+    from diffcone.execution import run_selected
+
+    base = repo.commit(CALC)
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "b + a")})
+    plan = repo.plan(
+        base, head, [py_target("tests/test_ops.py::test_add", "tests.test_ops.test_add")]
+    )
+    result = run_selected(plan, "pytest", cwd=repo.path, command=PYTEST_NO_CACHE, extra=["-q"])
+    assert result.unknown == ["tests/test_ops.py::test_x"]
+
+
+def test_r16_run_names_the_option_that_kept_selected_tests_out(repo):
+    """``addopts = --lf`` with a last-failed cache makes pytest skip the
+    files of tests that passed last time: a selected test is then not
+    collected, and the message names the option and where it is set
+    instead of blaming discovery alone."""
+    base = repo.commit(
+        {
+            "pytest.ini": "[pytest]\naddopts = --lf\n",
+            "pkg/__init__.py": "",
+            "pkg/ops.py": ADD_OPS,
+            "tests/__init__.py": "",
+            "tests/test_a.py": TEST_ADD_OPS,
+            "tests/test_b.py": (
+                "import os\n\nfrom pkg.ops import add\n\n\ndef test_b():\n"
+                "    assert os.environ.get('FLAKY') != '1'\n    assert add(2, 2) == 4\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/ops.py": "def add(a, b):\n    return b + a\n"})
+    # A full run leaves test_b in the last-failed cache; test_a passed.
+    proc = subprocess.run(
+        [PY, "-m", "pytest", "-q"],
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "FLAKY": "1"},
+    )
+    assert "1 failed, 1 passed" in proc.stdout, proc.stdout
+    proc = _cli(
+        repo,
+        "run",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--command",
+        PYTEST,
+        "--",
+        "-q",
+    )
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "did not collect 1 selected target(s)" in proc.stderr
+    assert "tests/test_a.py::test_add" in proc.stderr
+    assert "--lf (pytest.ini: addopts)" in proc.stderr and "-o addopts=" in proc.stderr
+    assert rules(
+        repo.plan(base, head, [], discover_runners=["pytest"]), "tests/test_a.py::test_add"
+    )
+
+
+def test_an_evidence_dry_run_prints_a_command_without_the_recorder(repo):
+    from diffcone.execution import PLUGIN, run_with_evidence
+
+    base = repo.commit(FILES)
+    head = repo.commit({"pkg/ops.py": ADD_OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    plan.evidence = {"environment_hash": "0" * 16}
+
+    def static_plan():
+        raise AssertionError("a dry run checks nothing, so it never falls back")
+
+    ran = run_with_evidence(
+        plan, static_plan, cwd=repo.path, command=PYTEST, extra=["-x"], dry_run=True
+    )
+    # The recorder is importable only in diffcone's own run: the printed
+    # command is the one a user can run.
+    assert PLUGIN not in ran.result.command
+    assert ran.result.command == [*PYTEST.split(), "-x", "tests/test_ops.py::test_add"]
+    assert ran.result.returncode is None and not ran.environment_checked
+
+
+# --------------------------------------------------------------------------- run: a changed tree
+
+
+def _write(repo: FixtureRepo, rel: str, content: str) -> None:
+    path = repo.path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, "utf-8", newline="")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a file: URL submodule")
+def test_r2_mismatch_check_covers_every_file_the_plan_selects_on(repo, tmp_path):
+    """``run`` of a committed plan refuses any working-tree difference the
+    planner would have selected on: a data file or configuration under
+    the roots, the runners' configuration, build inputs and the
+    declarations file anywhere, a dirty submodule; not a README, not
+    bytecode. The message names the files."""
+    sub = FixtureRepo(tmp_path / "sub")
+    sub.commit({"data.txt": "one\n"})
+    repo.commit(
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/ops.py": ADD_OPS,
+            "tests/__init__.py": "",
+            "tests/test_ops.py": TEST_ADD_OPS,
+            "tests/data.json": '{"v": 1}\n',
+            "pytest.ini": "[pytest]\npythonpath = src\n",
+            "requirements.txt": "pytest\n",
+            "README.md": "readme\n",
+        }
+    )
+    repo.git("-c", "protocol.file.allow=always", "submodule", "add", str(sub.path), "tests/vendor")
+    base = repo.commit({}, "add submodule")
+    head = repo.commit({"src/pkg/ops.py": ADD_OPS_BROKEN})
+    args = [
+        "run",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--source-root",
+        "src",
+        "--source-root",
+        "tests",
+        "--command",
+        PYTEST,
+        "--dry-run",
+    ]
+    assert _cli(repo, *args).returncode == 0
+
+    def refused(*paths: str) -> None:
+        proc = _cli(repo, *args)
+        assert proc.returncode == 2, proc.stderr
+        assert "would select on" in proc.stderr
+        for path in paths:
+            assert path in proc.stderr, proc.stderr
+        assert _cli(repo, *args, "--allow-mismatched-worktree").returncode == 0
+
+    # A data file under the roots (the planner selects everything on it).
+    _write(repo, "tests/data.json", '{"v": 2}\n')
+    refused("tests/data.json")
+    repo.git("checkout", "--", "tests/data.json")
+    # The runner's configuration and a build input, outside every root.
+    _write(repo, "pytest.ini", "[pytest]\npythonpath = src\naddopts = -q\n")
+    _write(repo, "requirements.txt", "pytest\nnumpy\n")
+    _write(repo, "diffcone.toml", "")
+    refused("pytest.ini", "requirements.txt", "diffcone.toml")
+    repo.git("checkout", "--", "pytest.ini", "requirements.txt")
+    (repo.path / "diffcone.toml").unlink()
+    # Edits inside a submodule under the roots, which git diff does not show.
+    _write(repo, "tests/vendor/data.txt", "two\n")
+    refused("tests/vendor")
+    subprocess.run(
+        ["git", "checkout", "--", "data.txt"], cwd=repo.path / "tests/vendor", check=True
+    )
+    _write(repo, "tests/vendor/new.txt", "x\n")
+    refused("tests/vendor")
+    (repo.path / "tests/vendor/new.txt").unlink()
+    # What nobody runs does not count.
+    _write(repo, "README.md", "changed\n")
+    _write(repo, "src/pkg/__pycache__/ops.cpython-313.pyc", "")
+    _write(repo, ".diffcone/notes", "")
+    assert _cli(repo, *args).returncode == 0
+
+
+# A small project: one test and one benchmark on separate code, so a plan
+# that selects both selected everything.
+SPLIT_TREE = {
+    "src/pkg/__init__.py": "",
+    "src/pkg/ops.py": "def add(a, b):\n    return a + b\n",
+    "src/pkg/other.py": "def helper():\n    return 1\n",
+    "tests/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    ),
+    "benchmarks/bench_other.py": (
+        "from pkg.other import helper\n\n\ndef time_helper():\n    helper()\n"
+    ),
+}
+SPLIT_TARGETS = [
+    py_target("tests/test_ops.py::test_add", "tests.test_ops.test_add"),
+    asv_target("bench_other.time_helper", "benchmarks.bench_other.time_helper"),
+]
+# Prefixed, so modules keep the names they have under the root ".".
+SPLIT_ROOTS = ["src", "tests=tests", "benchmarks=benchmarks"]
+
+
+def test_idx6_run_sees_a_flagged_python_file_edited_on_disk(repo):
+    """``run`` refuses to execute a tree other than the one planned; git diff
+    does not look at a flagged file, so the check let it through."""
+    head = repo.commit(SPLIT_TREE)
+    repo.git("update-index", "--assume-unchanged", "src/pkg/ops.py")
+    plan = repo.plan("HEAD", head, SPLIT_TARGETS, source_roots=SPLIT_ROOTS)
+    assert worktree_mismatch(repo.path, plan) is None
+    (repo.path / "src/pkg/ops.py").write_text("def add(a, b):\n    return a - b\n")
+    assert "src/pkg/ops.py" in (worktree_mismatch(repo.path, plan) or "")
+
+
+def test_idx8_run_sees_a_non_ascii_python_file_edited_on_disk(repo):
+    head = repo.commit({**SPLIT_TREE, "src/pkg/é.py": "x = 1\n"})
+    plan = repo.plan("HEAD", head, SPLIT_TARGETS, source_roots=SPLIT_ROOTS)
+    assert worktree_mismatch(repo.path, plan) is None
+    (repo.path / "src/pkg/é.py").write_text("x = 2\n")
+    assert "src/pkg/é.py" in (worktree_mismatch(repo.path, plan) or "")
+
+
+def test_q18_a_non_ascii_name_is_filtered_and_a_rename_is_two_changes(repo):
+    from diffcone.execution import _dirty
+
+    config = '{"benchmark_dir": "benchmarks", "results_dir": "résultats"}\n'
+    files = {**FILES, "benchmarks/asv.conf.json": config}
+    repo.commit({**files, "pkg/é.py": "X = 1\n", "pkg/old.py": "Y = 1\n"})
+    # Untracked bytecode and ASV output under a non-ASCII name: nothing that
+    # runs, so the tree is clean (git quoted the name, and the quote defeated
+    # both filters).
+    (repo.path / "pkg" / "é.pyc").write_bytes(b"")
+    results = repo.path / "benchmarks" / "résultats" / "machine.json"
+    results.parent.mkdir()
+    results.write_text("{}")
+    assert _dirty(repo.path) == []
+    # A tracked non-ASCII file edited is named as git stores it.
+    (repo.path / "pkg" / "é.py").write_text("X = 2\n")
+    assert _dirty(repo.path) == ["pkg/é.py"]
+    repo.git("checkout", "--", "pkg/é.py")
+    # A rename: the new name and the original, not "old -> new".
+    repo.git("mv", "pkg/old.py", "pkg/new.py")
+    assert sorted(_dirty(repo.path)) == ["pkg/new.py", "pkg/old.py"]
+
+
+# --------------------------------------------------------------------------- validate: outcomes
+
+
+def test_r5_validate_sees_outcomes_whatever_the_projects_verbosity(repo, capsys):
+    from diffcone.execution import validate_pytest
+
+    base = repo.commit({**CALC, "pyproject.toml": '[tool.pytest.ini_options]\naddopts = "-q"\n'})
+    head = repo.commit({"calc/ops.py": CALC["calc/ops.py"].replace("a + b", "a + b + 1")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    result = validate_pytest(plan, repo=repo.path, command=PYTEST_NO_CACHE)
+    changed = {o.runner_id for o in result.outcomes if o.changed}
+    assert changed == {"tests/test_ops.py::test_add"}
+
+
+def test_validate_reports_the_command_that_ran_without_the_obsolete_v(repo):
+    from diffcone.execution import validate_pytest
+
+    base = repo.commit(FILES)
+    head = repo.commit({"pkg/ops.py": ADD_OPS.replace("a + b", "b + a")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST)
+    assert v.ok
+    assert v.command[: len(PYTEST.split())] == PYTEST.split()
+    assert "-v" not in v.command
+    assert v.command[v.command.index("diffcone_select") - 1] == "-p"
+
+
+SHARED_STATE = {
+    "pkg/__init__.py": "",
+    "pkg/ops.py": "def compute():\n    return 1\n",
+    "tests/__init__.py": "",
+    "tests/shared.py": "STATE = {}\n",
+    "tests/test_0_broken.py": "def test_0():\n    assert False\n",
+    "tests/test_a.py": (
+        "from pkg.ops import compute\nfrom tests import shared\n\n\n"
+        "def test_a():\n    shared.STATE['v'] = compute()\n"
+    ),
+    "tests/test_b.py": (
+        "from tests import shared\n\n\ndef test_b():\n    assert shared.STATE.get('v', 1) == 1\n"
+    ),
+}
+
+
+def _validate(repo: FixtureRepo, base: str, head: str) -> subprocess.CompletedProcess:
+    return _cli(
+        repo,
+        "validate",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--command",
+        PYTEST,
+        "--format",
+        "json",
+    )
+
+
+@pytest.mark.parametrize("addopts", ["-x", "--maxfail=1"])
+def test_r3_validate_runs_the_whole_suite_despite_a_configured_early_stop(repo, addopts):
+    """A test failing at both snapshots with ``-x`` in ``addopts`` used to
+    stop both suites before the test whose outcome changed, and the oracle
+    said OK. The whole suite runs (``--maxfail=0`` last on the command
+    line), so the miss is reported."""
+    base = repo.commit({**SHARED_STATE, "pytest.ini": f"[pytest]\naddopts = {addopts}\n"})
+    head = repo.commit({"pkg/ops.py": "def compute():\n    return 2\n"})
+    proc = _validate(repo, base, head)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    verdict = json.loads(proc.stdout)
+    assert [o["runner_id"] for o in verdict["missed"]] == ["tests/test_b.py::test_b"]
+
+
+def test_r3_validate_refuses_a_suite_that_stopped_before_reporting_every_test(repo):
+    """A session that stops in a way no command-line option overrides (a
+    conftest setting ``maxfail``) reports outcomes for fewer tests than it
+    collected: refused (exit 2), never compared."""
+    conftest = "def pytest_configure(config):\n    config.option.maxfail = 1\n"
+    base = repo.commit({**SHARED_STATE, "conftest.py": conftest})
+    head = repo.commit({"pkg/ops.py": "def compute():\n    return 2\n"})
+    proc = _validate(repo, base, head)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "stopped early" in proc.stderr
+    assert "collected 3 test(s) but reported outcomes for 1" in proc.stderr
+
+
+# --------------------------------------------------------------------------- commands and node ids
+
+
+def test_ci8_a_resolved_command_is_joined_as_windows_reads_it(monkeypatch):
+    from diffcone import execution
+
+    monkeypatch.setattr(execution.os, "name", "nt")
+    joined = execution.join_command([r"C:\Program Files\venv\python.exe", "-m", "pytest"])
+    assert joined == r'"C:\Program Files\venv\python.exe" -m pytest'
+    assert "'" not in execution.join_command([r"C:\a b\python.exe"])
+
+
+def test_resolve_command_reads_a_forward_slash_path_on_windows(tmp_path, monkeypatch):
+    from diffcone import execution
+
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(execution.os, "sep", "\\")
+    resolved = execution.resolve_command(".venv/bin/python -m pytest", tmp_path / "elsewhere")
+    assert resolved is not None
+    assert execution.split_command(resolved) == [str(python), "-m", "pytest"]
+    # A bare program name is looked up on PATH, as before.
+    assert execution.resolve_command("python -m pytest", tmp_path) == "python -m pytest"
+
+
+def test_the_three_fold_nodeid_copies_agree():
+    from diffcone import collect, execution, selection
+
+    ids = [
+        "tests/test_a.py::test_x",
+        "tests/test_a.py::test_x[1]",
+        "tests/test_a.py::TestK::test_m[a-b]",
+        "tests/test_o.py::test_choice[choices4-[TEXT: a|b]]",
+        "tests/test_o.py::test_[weird]name[1]",
+        "tests/test_o.py::test_x[1]extra",
+        "tests/test_o.py",
+    ]
+    for nodeid in ids:
+        folded = execution.fold_nodeid(nodeid)
+        assert collect.fold_nodeid(nodeid) == folded, nodeid
+        assert selection.fold_nodeid(nodeid) == folded, nodeid
+
+
+def test_outcomes_are_written_as_reports_come_in_through_one_handle(tmp_path, monkeypatch):
+    from diffcone import selection
+
+    monkeypatch.setattr(selection, "OUTCOMES", str(tmp_path))
+    monkeypatch.setattr(selection, "_outcomes", None)
+    opened = []
+    real_open = open
+
+    def counting_open(*args, **kwargs):
+        opened.append(args[0])
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    report = SimpleNamespace(when="call", outcome="passed", passed=True, failed=False)
+    for name in ("t.py::a", "t.py::b"):
+        selection.pytest_runtest_logreport(SimpleNamespace(**vars(report), nodeid=name))
+        # Written through at once: a process that crashes later keeps it.
+        written = (tmp_path / f"outcomes-{os.getpid()}").read_text("utf-8")
+        assert written.endswith(f"{name}\tPASSED\n")
+    assert len([p for p in opened if "outcomes-" in str(p)]) == 1
+    handle = selection._outcomes
+    selection.pytest_sessionfinish(None)
+    assert handle is not None and handle.closed and selection._outcomes is None
+    assert (tmp_path / f"outcomes-{os.getpid()}").read_text("utf-8").splitlines() == [
+        "t.py::a\tPASSED",
+        "t.py::b\tPASSED",
+    ]
