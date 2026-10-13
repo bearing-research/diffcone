@@ -88,8 +88,13 @@ LAUNCHERS = (("uv", ("run",)),)
 # where it runs; an editable one runs from the checkout and is recorded; a
 # Python process they start (a build backend) is followed if it recorded.
 # ``uv build`` (which reads the checkout for its artifacts), ``uv run``,
-# ``uv tool run`` and ``uvx`` are not here.
+# ``uv tool run`` and ``uvx`` are not here. ``ninja`` is the build tool an
+# editable meson-python install runs as the project is imported, to rebuild
+# compiled extensions from the checkout's sources (pandas): it runs no
+# Python of the project, and a change to those sources is planned by the
+# compiled-source rules; a Python process it starts (Cython) is followed.
 TOOLS = (
+    ("ninja", ()),
     ("uv", ("sync",)),
     ("uv", ("lock",)),
     ("uv", ("venv",)),

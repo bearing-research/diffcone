@@ -1149,6 +1149,8 @@ def test_rec1_a_pytest_process_started_outside_every_test_is_its_own_record(repo
         (["/usr/bin/locale"], False),
         (["locale", "-m"], False),
         (["locale", "-k", "LC_TIME"], True),
+        (["/repo/.venv/bin/ninja"], False),
+        (["ninja", "-C", "build/cp313"], False),
         (["file", "-b", "data/table.bin"], True),
         (["file", "-b", "/repo/data/table.bin"], True),
         (["ldconfig"], True),

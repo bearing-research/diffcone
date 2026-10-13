@@ -333,7 +333,8 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 - A test module listing the machine's locales while pytest collected it
   (`locale -a`, as pandas' locale tests do) made every change select every
   test. Listing locales runs no Python, and no longer counts as a process
-  the recording can't follow.
+  the recording can't follow. Nor does `ninja`, which an editable
+  meson-python install (pandas) runs on import to rebuild compiled code.
 - Before Python 3.14, a test that had a library evaluate string
   annotations (`from __future__ import annotations`, forward references)
   through `typing.get_type_hints`, as pydantic and FastAPI do, recorded
