@@ -1436,6 +1436,31 @@ the same whoever runs `W` first and whenever; nothing outside `W` can see
 whether it was computed yet; a change to `W` (or to the definitions its
 value reads) is a change like any other.
 
+**Progress.** Rule 1 landed (c424487): a pandas docstring-only replay
+went from 99.9 % to 94.1 %. Rule 2 landed (b9dc444): the `_pkg_dir`
+chain is gone from pandas' code-commit plans, which still select 100 %
+through other chains. What remains, with how many of the 40 fallbacks of
+the `b693e2e54f` replay name each:
+* *Writes that are not* (precision bugs, no trade-off): `DataFrame._repr_html_`
+  "writes into" `pandas._config.config._global_config` though its code
+  only reads options (20); a module constant handed to a name-matched
+  callee counts as written (`maybe_convert_dtype` -> `DT64NS_DTYPE` through
+  `data.astype(...)` on a value of unknown type, 7; `is_integer = lib.is_integer`,
+  6). Find why each is a write, and fix the misclassification.
+* *Real import-time registries* (`register_extension_dtype` -> `_registry`
+  7, `register_option` -> `_registered_options` 3, `deprecate_option` 1):
+  written at import, read by every test. A change that runs a registering
+  call differently can change what tests see; narrowing needs a rule for
+  what a registry entry depends on.
+* *Lookup sites run at collection* (`pandas.util._decorators.deprecate_nonkeyword_arguments`
+  sees the changed module, 21; ten more, 1 each).
+* *State shared between tests* (docstring replay, rule 3 to sketch): code
+  that "can run" a changed function and "stores into" `_global_config`
+  makes every later reader of an option an observer, though the stored
+  values (option settings) do not come from the change. The rule was made
+  for caches (`_CACHE[k] = compute(k)`); it should follow the stored value,
+  not the function's call tree.
+
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind
 whatever still selects everything. Further patterns get their own entry
