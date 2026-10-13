@@ -1827,6 +1827,13 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   counts as handed to unknown code. When that module could reach <code>gc</code>,
   every test that ran the fixture counted as able to look up anything, so
   a docstring edit selected every test.</li>
+<li>A module variable filled once by one function and then only read (a
+  lazily computed constant such as pandas' <code>_pkg_dir</code> in
+  <code>find_stack_level</code>) no longer counts as state that function writes for
+  later tests: the value is the same whoever computes it first, so a
+  change that only makes the function run earlier or later reaches nothing
+  through it. A change to the function itself, or a reader outside it,
+  still counts.</li>
 <li>A test that failed or errored while it was recorded is always selected:
   its recording stops where it failed, so where it passes (a flaky failure,
   a different environment) it can run code the recording never saw.
