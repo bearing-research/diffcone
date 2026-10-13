@@ -1117,3 +1117,174 @@ def test_evp6_which_def_headers_run_no_project_code(repo):
     index = build_index(read_snapshot(repo.path, "HEAD", ["."]))
     quiet = {s.name for s in index.symbols.values() if s.module == "pkg.mod" and s.quiet_header}
     assert quiet == {"plain", "with_params", "test_marked", "cached"}
+
+
+# --------------------------------------------------------- lazily initialised constants
+# diffcone.indexer.lazy: ``global V; if V is None: V = <pure value>`` in the
+# one function that writes V.
+
+LAZY_PANDAS = """\
+import os
+
+_pkg_dir: str | None = None
+_test_dir = None
+
+
+def find_stack_level():
+    global _pkg_dir, _test_dir
+    if _pkg_dir is None or _test_dir is None:
+        import pkg as pd
+
+        _pkg_dir = os.path.dirname(pd.__file__) + os.sep
+        _test_dir = os.path.join(_pkg_dir, "tests") + os.sep
+    return _pkg_dir, _test_dir
+"""
+LAZY_SINGLE = """\
+import re
+
+_RE = None
+
+
+def matcher():
+    global _RE
+    if _RE is None:
+        _RE = re.compile("a+", re.IGNORECASE)
+    return _RE
+"""
+LAZY_BOTH = {
+    "pkg.m._pkg_dir": "pkg.m.find_stack_level",
+    "pkg.m._test_dir": "pkg.m.find_stack_level",
+}
+LAZY_RE = {"pkg.m._RE": "pkg.m.matcher"}
+
+
+def _lazy_value(value: str, imports: str = "import os") -> str:
+    return LAZY_SINGLE.replace('re.compile("a+", re.IGNORECASE)', value).replace(
+        "import re", imports
+    )
+
+
+LAZY_CASES: dict[str, tuple[str, dict[str, str], dict[str, str]]] = {
+    "pandas": (LAZY_PANDAS, {}, LAZY_BOTH),
+    "single": (LAZY_SINGLE, {}, LAZY_RE),
+    "a builtin": (_lazy_value("tuple(sorted(['b', 'a']))"), {}, LAZY_RE),
+    "a fixed value's method": (_lazy_value("os.sep.join(['a', 'b'])"), {}, LAZY_RE),
+    "the module's own file": (_lazy_value("os.path.dirname(__file__)"), {}, LAZY_RE),
+    "read through the module": (
+        LAZY_SINGLE,
+        {"pkg/other.py": "import pkg.m\n\n\ndef f():\n    return pkg.m._RE\n"},
+        LAZY_RE,
+    ),
+    # The partner's value reads a parameter or a local: it is none, and the
+    # guard naming it makes the other none either.
+    "a parameter": (
+        LAZY_PANDAS.replace("find_stack_level():", "find_stack_level(sub):").replace(
+            '"tests"', "sub"
+        ),
+        {},
+        {},
+    ),
+    "a local": (
+        LAZY_PANDAS.replace("import pkg as pd\n", "import pkg as pd\n        s = 't'\n").replace(
+            '"tests"', "s"
+        ),
+        {},
+        {},
+    ),
+    "a project function": (
+        _lazy_value("make()") + "\n\ndef make():\n    return 1\n",
+        {},
+        {},
+    ),
+    "the environment": (_lazy_value("os.environ.get('X')"), {}, {}),
+    "the working directory": (_lazy_value("os.path.abspath('x')"), {}, {}),
+    "an imported external function": (_lazy_value("getcwd()", "from os import getcwd"), {}, {}),
+    "a lambda": (_lazy_value("(lambda: 1)()"), {}, {}),
+    "a comprehension": (_lazy_value("[c for c in 'ab']"), {}, {}),
+    "a project attribute": (
+        LAZY_PANDAS.replace("pd.__file__", "pd.HOME"),
+        {"pkg/__init__.py": "HOME = 'x'\n"},
+        {},
+    ),
+    "a dunder the project binds": (LAZY_PANDAS, {"pkg/__init__.py": "__file__ = 'x'\n"}, {}),
+    "a nested reader": (
+        LAZY_SINGLE
+        + "\n\ndef outer():\n    def inner():\n        return _RE\n\n    return inner\n",
+        {},
+        {},
+    ),
+    "a reader in its module": (LAZY_SINGLE + "\n\ndef other():\n    return _RE\n", {}, {}),
+    "a module-level read": (LAZY_SINGLE + "\nCOPY = _RE\n", {}, {}),
+    "a class-body read": (LAZY_SINGLE + "\n\nclass K:\n    r = _RE\n", {}, {}),
+    "its name in a string": (LAZY_SINGLE + "\n__all__ = ['_RE']\n", {}, {}),
+    "globals() in its module": (
+        LAZY_SINGLE + "\n\ndef put(n, v):\n    globals()[n] = v\n",
+        {},
+        {},
+    ),
+    "sys.modules in its module": (
+        LAZY_SINGLE
+        + "\nimport sys\n\n\ndef put(n, v):\n    setattr(sys.modules[__name__], n, v)\n",
+        {},
+        {},
+    ),
+    "an augmented store": (
+        LAZY_SINGLE.replace("    return _RE\n", "    _RE += 'x'\n    return _RE\n"),
+        {},
+        {},
+    ),
+    "a store in the else branch": (
+        LAZY_SINGLE.replace("    return _RE\n", "    else:\n        _RE = None\n    return _RE\n"),
+        {},
+        {},
+    ),
+    "a del": (LAZY_SINGLE.replace("    return _RE\n", "    del _RE\n"), {}, {}),
+    "a guard on another name": (LAZY_SINGLE.replace("if _RE is None:", "if re is None:"), {}, {}),
+    "a truthiness guard": (LAZY_SINGLE.replace("if _RE is None:", "if not _RE:"), {}, {}),
+    "a guard over a non-candidate": (
+        LAZY_SINGLE.replace("global _RE", "global _RE, _N").replace(
+            "if _RE is None:", "if _RE is None or _N is None:"
+        )
+        + "\n_N = 0\n",
+        {},
+        {},
+    ),
+    "a second binding at module level": (LAZY_SINGLE + "\n_RE = None\n", {}, {}),
+    "a second function writing it": (
+        LAZY_SINGLE + "\n\ndef reset():\n    global _RE\n    _RE = None\n",
+        {},
+        {},
+    ),
+    "a star import": (
+        LAZY_SINGLE.replace("import re\n", "import re\nfrom os import *\n").replace('"a+"', "sep"),
+        {},
+        {},
+    ),
+    "written through the module": (
+        LAZY_SINGLE,
+        {"pkg/other.py": "import pkg.m\n\n\ndef f():\n    pkg.m._RE = 1\n"},
+        {},
+    ),
+    "written by setattr": (
+        LAZY_SINGLE,
+        {"pkg/other.py": "import pkg.m\n\n\ndef f():\n    setattr(pkg.m, '_RE', 1)\n"},
+        {},
+    ),
+    "changed in place elsewhere": (
+        LAZY_SINGLE,
+        {"pkg/other.py": "import pkg.m\n\n\ndef f():\n    pkg.m._RE.flags = 1\n"},
+        {},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(LAZY_CASES))
+def test_lazy_constants(case):
+    """A lazy constant needs the shape (one ``None`` binding, one guarded
+    store in one function, nothing else naming it in its module), a value
+    reading only what is fixed for the process, and no other writer. Code
+    elsewhere reading it is the planners' concern: it is followed as a
+    reader of the fill."""
+    source, extra, want = LAZY_CASES[case]
+    idx = index({"pkg/__init__.py": "", "pkg/m.py": source, **extra})
+    assert idx.lazy_constants == want

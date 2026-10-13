@@ -984,6 +984,112 @@ def test_l6_an_object_from_anywhere_changed_may_be_any_variable(repo, body):
     assert selected(plan) == BOTH
 
 
+# ------------------------------------------------------------- lazily initialised constants
+# ``global V; if V is None: V = <pure value>`` in the one function reading V
+# (diffcone.indexer.lazy): the writer computes the same value whoever runs it
+# first, so code calling it earlier or later changes nothing it reads.
+
+LAZY_EXC = """\
+import os
+
+_pkg_dir: str | None = None
+_test_dir = None
+
+
+def find_stack_level():
+    global _pkg_dir, _test_dir
+    if _pkg_dir is None or _test_dir is None:
+        import pkg as pd
+
+        _pkg_dir = os.path.dirname(pd.__file__) + os.sep
+        _test_dir = os.path.join(_pkg_dir, "tests") + os.sep
+    return len(_pkg_dir) + len(_test_dir)
+"""
+LAZY = {
+    **BASE,
+    "pkg/exc.py": LAZY_EXC,
+    "pkg/a.py": (
+        "from pkg.exc import find_stack_level\n\n\ndef warn_a():\n    return find_stack_level()\n"
+    ),
+    "pkg/b.py": (
+        "from pkg.exc import find_stack_level\n\n\ndef warn_b():\n    return find_stack_level()\n"
+    ),
+    "pkg/config.py": "from pkg.a import warn_a\n\nLEVEL = warn_a()\n",
+    "tests/test_a.py": "from pkg.a import warn_a\n\n\ndef test_a():\n    assert warn_a()\n",
+    "tests/test_b.py": "from pkg.b import warn_b\n\n\ndef test_b():\n    assert warn_b()\n",
+    "tests/test_config.py": (
+        "from pkg.config import LEVEL\n\n\ndef test_config():\n    assert LEVEL\n"
+    ),
+}
+LAZY_BENCHES = [
+    asv_target("bench.time_a", "pkg.a.warn_a"),
+    asv_target("bench.time_b", "pkg.b.warn_b"),
+]
+LAZY_CHANGES = {
+    # A caller of the writer changed: it may now call it earlier or later.
+    "caller body": ("pkg/a.py", "return find_stack_level()", "return find_stack_level() + 0"),
+    # Import-time code that can run the writer changed.
+    "import-time call": ("pkg/config.py", "LEVEL = warn_a()", "LEVEL = warn_a() + 1"),
+}
+LAZY_SELECTED = {
+    "caller body": {"tests/test_a.py::test_a", "tests/test_config.py::test_config", "bench.time_a"},
+    "import-time call": {"tests/test_config.py::test_config"},
+}
+LAZY_OUTSIDE_READER = (
+    "import pkg.exc as pue\n\n\ndef test_dir():\n    pue.find_stack_level()\n"
+    "    assert pue._pkg_dir\n"
+)
+
+
+def _lazy_plan(repo, files, change):
+    base = repo.commit(files)
+    path, old, new = LAZY_CHANGES[change]
+    head = repo.commit({path: files[path].replace(old, new)})
+    return repo.plan(base, head, LAZY_BENCHES, discover_runners=["pytest"])
+
+
+@pytest.mark.parametrize("change", sorted(LAZY_CHANGES))
+def test_a_lazy_constant_filled_earlier_or_later_reaches_no_reader(repo, change):
+    """pandas' ``find_stack_level``: a change to code that can run it (a
+    caller's body, import-time code) used to reach every caller of it
+    through ``_pkg_dir``, which only it reads; that value is the same
+    whoever computes it first, so only what the change itself reaches is
+    selected."""
+    plan = _lazy_plan(repo, LAZY, change)
+    assert selected(plan) == LAZY_SELECTED[change]
+
+
+@pytest.mark.parametrize("change", sorted(LAZY_CHANGES))
+def test_a_lazy_constant_read_outside_its_writer_still_reaches_its_callers(repo, change):
+    """Guard: code other than the writer reading the variable may read it
+    before the writer ever ran, so filling it earlier or later is seen
+    there; the write is followed as before (the writer is a reader again
+    in static planning, which reaches every caller of it)."""
+    files = {**LAZY, "tests/test_dir.py": LAZY_OUTSIDE_READER}
+    plan = _lazy_plan(repo, files, change)
+    assert selected(plan) == LAZY_SELECTED[change] | {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "tests/test_dir.py::test_dir",
+        "bench.time_a",
+        "bench.time_b",
+    }
+
+
+def test_a_change_to_the_lazy_constants_writer_reaches_its_callers(repo):
+    """A change to the writer itself is planned as any change."""
+    base = repo.commit(LAZY)
+    head = repo.commit({"pkg/exc.py": LAZY_EXC.replace('"tests"', '"test"')})
+    plan = repo.plan(base, head, LAZY_BENCHES, discover_runners=["pytest"])
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "tests/test_config.py::test_config",
+        "bench.time_a",
+        "bench.time_b",
+    }
+
+
 # ---------------------------------------------------- process state written by hooks and collection
 # Code a hook runs, or a collected module runs at import, runs before any
 # test: what it writes into the process (an environment variable,

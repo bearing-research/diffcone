@@ -475,6 +475,9 @@ def _facts_to_dict(
         "uses": [r.to_list() for r in scope.uses],
         "containers": sorted(scope.containers),
         "literal_sources": {k: list(v) for k, v in scope.literal_sources.items()},
+        "lazy": {
+            k: [w, list(n), list(d)] for k, (w, n, d) in sorted(scope.lazy_candidates.items())
+        },
         "symbols": [dict(vars(s)) for s in symbols],  # flat and frozen: no deep copy needed
         "classes": [
             {

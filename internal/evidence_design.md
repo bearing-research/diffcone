@@ -601,6 +601,23 @@ selection or states something the tables left implicit; none narrows it.
   change did); it reaches none now. Writes made through a callback no
   reference shows (a function handed to a library that calls it later)
   are outside this, as they are for `_import_writes` (W4).
+* **A lazily initialised constant is no state its writer reads** (roadmap
+  item 19, rule 2). pandas' `find_stack_level` fills `_pkg_dir` once
+  (`if _pkg_dir is None: _pkg_dir = os.path.dirname(pd.__file__) +
+  os.sep`) and runs in a hook and during collection; any changed
+  import-time code that could call it "wrote" `_pkg_dir`, whose reader
+  `find_stack_level` ran outside every test, so every code commit selected
+  everything. For a variable the index finds to be a lazy constant of its
+  one writer (`SourceIndex.lazy_constants`, design.md and
+  `indexer/lazy.py`: the value reads nothing a run could see differently,
+  and no other code writes it), the writer is left out of the readers of
+  its fill, in `_import_writes` and `_stored_results` (`_lazy_writer`): it
+  computes the same value whoever runs it first, so a fill at import, in a
+  hook or in an earlier test leaves nothing it reads differently. Other
+  code reading the variable (a test reading `pue._pkg_dir`, a read by its
+  name) may read it before the writer ran and is followed as before, as
+  are the lookup sites that can see the module. A change to the writer
+  itself is planned as any change, and keeps it a reader.
 * **Reflection sites.** An unbounded lookup is not the only way to observe
   names. Code can also enumerate them (`dir`, `vars`, `__dict__`,
   `inspect.getmembers`), test for them (`hasattr`), or read signatures

@@ -2692,6 +2692,117 @@ def test_r22_a_cache_outside_a_module_variable_reaches_every_reader(repo, files)
     assert selected(plan) == {READER_C, BENCH_OTHER.runner_id}
 
 
+# A lazily initialised constant (pandas' ``find_stack_level``: ``global
+# _pkg_dir; if _pkg_dir is None: _pkg_dir = os.path.dirname(pd.__file__)``)
+# holds the same value whoever fills it first: running its writer at import
+# or in a hook changes nothing the writer later reads.
+LAZY_EXC = """\
+import os
+
+_pkg_dir: str | None = None
+_test_dir = None
+
+
+def find_stack_level():
+    global _pkg_dir, _test_dir
+    if _pkg_dir is None or _test_dir is None:
+        import pkg as pd
+
+        _pkg_dir = os.path.dirname(pd.__file__) + os.sep
+        _test_dir = os.path.join(_pkg_dir, "tests") + os.sep
+    return len(_pkg_dir) + len(_test_dir)
+"""
+LAZY_HOOK = (
+    "def pytest_configure(config):\n    from pkg.warn import deprecate\n\n    deprecate('c')\n"
+)
+LAZY_FILES = {
+    **BASE,
+    "pkg/exc.py": LAZY_EXC,
+    "pkg/warn.py": (
+        "from pkg.exc import find_stack_level\n\n\ndef deprecate(msg):\n"
+        "    return find_stack_level()\n"
+    ),
+    "pkg/core.py": "from pkg.warn import deprecate\n\nLEVEL = deprecate('x')\n",
+    "conftest.py": LAZY_HOOK,
+    "tests/test_core.py": "from pkg.core import LEVEL\n\n\ndef test_level():\n    assert LEVEL\n",
+    "tests/test_stack.py": (
+        "from pkg.warn import deprecate\n\n\ndef test_stack():\n    assert deprecate('y')\n"
+    ),
+}
+LEVEL_ID, STACK_ID = "tests/test_core.py::test_level", "tests/test_stack.py::test_stack"
+DEPRECATE_BENCH = asv_target("bench_warn.time_deprecate", "pkg.warn.deprecate")
+_FILL = '        _test_dir = os.path.join(_pkg_dir, "tests") + os.sep\n'
+# What makes the variables no lazy constants: each keeps the old plan.
+NOT_LAZY = {
+    "value from a parameter": {
+        "pkg/exc.py": LAZY_EXC.replace(
+            "find_stack_level():", "find_stack_level(sub='tests'):"
+        ).replace('"tests") + os.sep', "sub) + os.sep")
+    },
+    "read outside the writer": {
+        "pkg/exc.py": LAZY_EXC + "\n\ndef pkg_dir():\n    return _pkg_dir\n",
+        "conftest.py": LAZY_HOOK + "    from pkg.exc import pkg_dir\n\n    pkg_dir()\n",
+    },
+    "store without the guard": {
+        "pkg/exc.py": LAZY_EXC.replace(_FILL, "").replace(
+            "    return len",
+            "    _test_dir = os.path.join(_pkg_dir, 'tests') + os.sep\n    return len",
+        )
+    },
+    "a second writer": {
+        "pkg/exc.py": LAZY_EXC + "\n\ndef reset():\n    global _test_dir\n    _test_dir = None\n"
+    },
+    "a project attribute": {
+        "pkg/__init__.py": "HOME = __file__\n",
+        "pkg/exc.py": LAZY_EXC.replace("pd.__file__", "pd.HOME"),
+    },
+    "deleted": {
+        "pkg/exc.py": LAZY_EXC + "\n\ndef clear():\n    global _pkg_dir\n    del _pkg_dir\n"
+    },
+}
+
+
+def _lazy_evidence_plan(repo, files):
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/core.py": files["pkg/core.py"].replace("'x'", "'xy'")})
+    return _evidence_plan(repo, base, head, evidence, [DEPRECATE_BENCH])
+
+
+def test_a_lazy_constant_filled_in_a_hook_is_no_state_for_later_tests(repo):
+    """pandas: changed import-time code can run ``find_stack_level``, which
+    a hook also ran. Its ``_pkg_dir`` used to count as state the hook left
+    for every later test; the value is the same whoever computes it first,
+    and only ``find_stack_level`` reads it, so only the change's own readers
+    are selected (statically too: not the benchmark of ``deprecate``)."""
+    plan = _lazy_evidence_plan(repo, LAZY_FILES)
+    assert selected(plan) == {LEVEL_ID}
+
+
+def test_a_test_reading_a_lazy_constant_sees_when_it_was_filled(repo):
+    """A test reading the variable itself may read it before or after the
+    writer ran: it is selected (and the benchmark, statically)."""
+    files = {
+        **LAZY_FILES,
+        "tests/test_dir.py": (
+            'import pkg.exc\n\n\ndef test_dir():\n    assert pkg.exc._pkg_dir != ""\n'
+        ),
+    }
+    plan = _lazy_evidence_plan(repo, files)
+    assert selected(plan) == {LEVEL_ID, "tests/test_dir.py::test_dir", DEPRECATE_BENCH.runner_id}
+
+
+@pytest.mark.parametrize("case", sorted(NOT_LAZY))
+def test_a_variable_that_is_no_lazy_constant_stays_state(repo, case):
+    """Guard: a value computed from a parameter or a project attribute, a
+    read outside the writer that ran in the hook, a store without the
+    ``is None`` guard, a second writer, a ``del``: what the hook left may
+    differ for a later test, so every test is selected as before."""
+    plan = _lazy_evidence_plan(repo, {**LAZY_FILES, **NOT_LAZY[case]})
+    assert selected(plan) == {LEVEL_ID, STACK_ID, DEPRECATE_BENCH.runner_id, ADD, MUL}
+    assert "pytest_hook_changed" in rules(plan, STACK_ID)
+
+
 # --------------------------------------------------------------------------- hooks and plugins
 
 

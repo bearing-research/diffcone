@@ -53,6 +53,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 49: SourceIndex.lazy_constants (indexer/lazy.py; roadmap item 19, rule 2);
 # 48: Symbol.annotation_names (what a function's annotations can read; E7);
 # 47: a name bound to modules reads off them (indexer/aliases.py), and a
 # module followed through a name is one a value of unknown type may be;
@@ -86,7 +87,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 48
+INDEX_FORMAT = 49
 
 
 def _indexer_fingerprint() -> str:
@@ -190,6 +191,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "handed": sorted(list(h) for h in index.handed),
         "memoized": sorted(index.memoized),
         "decorations": sorted(list(d) for d in index.decorations),
+        "lazy_constants": dict(sorted(index.lazy_constants.items())),
         "cython": {
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
@@ -246,6 +248,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         handed={(a, b, c) for a, b, c in data["handed"]},
         memoized=set(data["memoized"]),
         decorations={(a, b) for a, b in data["decorations"]},
+        lazy_constants=dict(data["lazy_constants"]),
         cython={
             path: CythonModule(
                 path,

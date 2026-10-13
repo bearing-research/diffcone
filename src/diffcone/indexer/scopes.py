@@ -107,6 +107,11 @@ class ModuleScope:
     # function or method, or nothing to name).
     literal_pristine: dict[str, tuple[str, ...] | None] = field(default_factory=dict)
     literal_writers: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Lazy-constant candidates (diffcone.indexer.lazy): variable name ->
+    # (writer, the candidates it names, dotted reads); decided after pass 2.
+    lazy_candidates: dict[str, tuple[str, tuple[str, ...], tuple[str, ...]]] = field(
+        default_factory=dict
+    )
     # Module cache bookkeeping: the content key of the file and the digest
     # of everything other modules' resolution may read from this one.
     cache_key: str | None = None

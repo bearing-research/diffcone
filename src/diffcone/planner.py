@@ -27,7 +27,12 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
   reaches those sites too. A writer that is isolated test code (it runs only
   inside one test: ``isolated_test_code``, the isolation assumption) is no
   writer for the other tests, which do not see what it stores: its edge is
-  dropped. ``rebinds`` (``mod.X = v``) carries only a
+  dropped. So is the edge of a lazily initialised constant to its one
+  writer (``global V; if V is None: V = <pure value>``:
+  ``SourceIndex.lazy_constants``) when nothing but the writer depends on
+  the variable: the writer computes the same value whoever runs it first,
+  so running it earlier or later leaves nothing anyone reads
+  (_drop_lazy_writes). ``rebinds`` (``mod.X = v``) carries only a
   structural impact (a deletion, a redefinition). ``registers`` (registry
   -> what it holds) carries any impact as REGISTERED: code that later
   calls the registry is affected, a module (whose import-time code
@@ -875,6 +880,43 @@ def _newly_run_modules(
     return found
 
 
+def _drop_lazy_writes(graph: _Graph, base: SourceIndex, head: SourceIndex) -> None:
+    """A lazily initialised constant's fill is no write for planning when
+    its writer is the only code depending on it (diffcone.indexer.lazy):
+    the writer computes the same value whoever runs it first and whenever,
+    so running it earlier or later (code calling it changed, import-time
+    code now calls it) changes nothing anyone reads, and a change to the
+    writer itself reaches what depends on the writer directly. The
+    ``mutated_by`` edge goes, at both revisions' agreement (a constant at
+    each revision that has the variable), unless anything else in the graph
+    depends on the variable: a reference, a read by its name that may be it
+    (a name match), a declared edge, a target's lifecycle dependency."""
+    found: dict[str, str] = {}
+    for var, writer in sorted({**head.lazy_constants, **base.lazy_constants}.items()):
+        if all(
+            index.lazy_constants.get(var) == writer
+            for index in (base, head)
+            if var in index.symbols
+        ) and all(
+            source == writer
+            # The pseudo-node of the name, when nothing reads by that name.
+            or (_is_name_node(source) and not graph.reverse.get(source))
+            for source, _, _ in graph.reverse.get(var, ())
+        ):
+            found[var] = writer
+    for var, writer in found.items():
+        graph.forward[var] = [
+            item
+            for item in graph.forward.get(var, [])
+            if not (item[0] == writer and edge_mark(item[1]) == MUTATED_BY)
+        ]
+        graph.reverse[writer] = [
+            item
+            for item in graph.reverse.get(writer, [])
+            if not (item[0] == var and edge_mark(item[1]) == MUTATED_BY)
+        ]
+
+
 # ``calls:Y``: Y may now be called differently (see _add_caller_effects).
 CALLS = "calls:"
 CALLER = "caller"
@@ -1380,6 +1422,7 @@ def plan_from_indexes(
                         target=target.node_id,
                     )
                 )
+    _drop_lazy_writes(graph, base, head)
     _add_caller_effects(graph, module_nodes)
     graph.freeze()
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]

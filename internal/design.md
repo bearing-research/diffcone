@@ -422,6 +422,40 @@ Further rules (pre-release audit, round 2):
   a fixture of that name in the module: `indexer/patches.py`, R27; an
   override in another module is not seen). A cache filled by project code a test calls
   is still planned (W7).
+* A lazily initialised constant (`indexer/lazy.py`, roadmap item 19):
+  pandas' `find_stack_level` does `global _pkg_dir, _test_dir; if _pkg_dir
+  is None or _test_dir is None: import pandas as pd; _pkg_dir =
+  os.path.dirname(pd.__file__) + os.sep; ...`. Its `mutated_by` edges made
+  every change to code that can call it (a caller's body through `calls:`,
+  import-time code through `_import_call_effects`) reach the variables and
+  through them `find_stack_level`, its only reader, and every caller of
+  it. A module variable `V` is a lazy constant of the module-level
+  function `W` (`SourceIndex.lazy_constants`) when the module binds it once
+  at its top level to `None`; every other occurrence of the name in the
+  module is in `W`'s own scope (`global V`, reads, and one single-target
+  store directly in the body of an `if V is None:` or of an `or` of such
+  tests over constants of the same `W`; no `del`, augmented or other
+  binding, no string spelling the name, no `globals()`/`vars()`/`exec`/
+  `__dict__`/`sys.modules` in the module); the value reads only builtins
+  that compute from their arguments, other constants of `W`, imports
+  (module level or `W`'s own) of an in-scope module or its
+  `__file__`/`__name__`/`__package__` (when it binds no such name), and
+  values fixed for the process or pure functions outside the index
+  (`os.sep`, `os.path.dirname`, `sys.platform`, `re.compile`; not
+  `os.environ`, `os.getcwd`, `os.path.abspath`); no parameter or local of
+  `W`; and nothing but `W` writes it (no other `mutated_by`, `registers`,
+  `rebinds` or `writes` edge). Candidates are pass-1 facts (cached with
+  the module); the decision runs over the whole index after pass 2. Then
+  `W` computes the same value whoever runs it first and whenever, so
+  whether an earlier run filled `V` is invisible to `W`. Static planning
+  drops the edge `V -> W` when nothing but `W` depends on `V` (no other
+  reference, no read by its name that a name match may resolve to it, no
+  declared edge or lifecycle dependency): a change to code calling `W`
+  no longer reaches `V`, and a change to `W` reaches what depends on `W`
+  directly. Code other than `W` reading `V` may read it before `W` ever
+  ran, so it keeps the edge. Evidence planning keeps the edge and leaves
+  only `W` out of the readers of the fill, whatever else reads `V`
+  (`evidence_plan._lazy_writer`), unless `W` itself changed.
 * Writes through a parameter or a receiver (`indexer/writes.py`). A
   function that changes a parameter in place (an item or attribute
   assigned, augmented or deleted, `p += [x]`, a container mutator on it or
