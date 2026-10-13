@@ -1822,6 +1822,11 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 </ul>
 <h4 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h4>
 <ul>
+<li>A module stored into pytest's <code>doctest_namespace</code> (pandas' autouse
+  <code>add_doctest_imports</code> does <code>doctest_namespace["pd"] = pd</code>) no longer
+  counts as handed to unknown code. When that module could reach <code>gc</code>,
+  every test that ran the fixture counted as able to look up anything, so
+  a docstring edit selected every test.</li>
 <li>A test that failed or errored while it was recorded is always selected:
   its recording stops where it failed, so where it passes (a flaky failure,
   a different environment) it can run code the recording never saw.
