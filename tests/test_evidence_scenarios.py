@@ -4106,3 +4106,34 @@ def test_q17_a_build_script_still_selects_everything(repo, path, extra):
     head = repo.commit({path: "def make():\n    x = 1\n    return x\n"})
     plan = _evidence_plan(repo, base, head, evidence)
     assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
+
+
+# --------------------------------------------------------------------------- doctest namespace
+
+
+def test_an_autouse_doctest_namespace_fixture_does_not_make_every_test_a_lookup(repo):
+    """pandas' shape (roadmap item 19): an autouse fixture stores the package,
+    which imports ``gc``, into pytest's ``doctest_namespace``. Every test runs
+    it; it was an object-graph walker, a lookup site that can see every test
+    module, so a name added to one test module selected every test."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "pkg/__init__.py": "import gc  # noqa: F401\n\nfrom pkg.ops import add  # noqa\n",
+        "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+        "tests/__init__.py": "",
+        "tests/conftest.py": (
+            "import pytest\n\nimport pkg as pd\n\n\n@pytest.fixture(autouse=True)\n"
+            "def add_doctest_imports(doctest_namespace):\n    doctest_namespace['pd'] = pd\n"
+        ),
+        "tests/test_a.py": "def test_a():\n    pass\n",
+        "tests/test_b.py": (
+            "from pkg.ops import add\n\n\ndef test_b():\n    assert add(1, 2) == 3\n"
+        ),
+    }
+    base = repo.commit(files)
+    ev = repo.collect()
+    head = repo.commit(
+        {"tests/test_a.py": files["tests/test_a.py"] + "\n\ndef helper():\n    pass\n"}
+    )
+    plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=ev)
+    assert "tests/test_b.py::test_b" not in selected(plan)

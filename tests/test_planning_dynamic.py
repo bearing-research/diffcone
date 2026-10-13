@@ -3160,3 +3160,53 @@ def test_r19_builtins_reading_dunders_only_hand_nothing_on(repo, body):
     )
     plan = _plan(repo, base, repo.commit({"pkg/mod.py": WRITER.format(n=2)}), T_X, T_C)
     assert selected(plan) == set()
+
+
+# ---------------------------------------------------------------------- doctest namespace
+# pytest's ``doctest_namespace`` is a dict its doctest runner reads: storing a
+# module into it hands nothing on (roadmap item 19).
+
+GRAPH_PKG = {
+    "pkg/__init__.py": "import gc  # noqa: F401\n\nfrom pkg.ops import add  # noqa: F401\n",
+    "pkg/ops.py": "def add(a, b):\n    return a + b\n",
+    "tests/__init__.py": "",
+    "tests/test_x.py": "def test_x():\n    pass\n",
+}
+
+
+def _graph_handles(repo, conftest: str) -> set[str]:
+    from diffcone.model import GRAPH_HANDLE
+
+    repo.commit({**GRAPH_PKG, "tests/conftest.py": conftest})
+    index = build_index(read_snapshot(repo.path, "HEAD", source_roots=["."]))
+    return {symbol for symbol, detail in index.reflection if detail == GRAPH_HANDLE}
+
+
+DOCTEST_FIXTURE = (
+    "import pytest\n\nimport pkg as pd\n\n\n@pytest.fixture(autouse=True)\n"
+    "def add_doctest_imports(doctest_namespace):\n    doctest_namespace['pd'] = pd\n"
+)
+
+
+def test_a_store_into_doctest_namespace_hands_nothing_on(repo):
+    """pandas' ``add_doctest_imports``: ``pkg`` imports ``gc``, so handing it
+    on hands on the object-graph walker; storing it into pytest's
+    ``doctest_namespace`` does not. Before: the fixture was a graph handle."""
+    assert _graph_handles(repo, DOCTEST_FIXTURE) == set()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Handed to code nothing bounds: still a graph handle.
+        "    register(pd)\n",
+        # Rebound to another object first: a store into that object.
+        "    doctest_namespace = REGISTRY\n    doctest_namespace['pd'] = pd\n",
+    ],
+)
+def test_a_module_handed_elsewhere_from_a_doctest_fixture_still_is(repo, body):
+    conftest = (
+        "import pytest\n\nimport pkg as pd\nfrom other import register, REGISTRY\n\n\n"
+        "@pytest.fixture(autouse=True)\ndef add_doctest_imports(doctest_namespace):\n" + body
+    )
+    assert _graph_handles(repo, conftest) == {"tests.conftest.add_doctest_imports"}

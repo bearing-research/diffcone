@@ -1923,10 +1923,42 @@ class _Scanner:
                 # the object holds changed in place.
                 self._emit(node, targets, sources, chain, MUT)
                 return
+            if self._into_doctest_namespace(node):
+                return
             kind = classify(node, self.parents, self._builtin)
             if kind != READ:
                 self._emit(node, targets, sources, chain, kind)
             return
+
+    def _into_doctest_namespace(self, node: ast.AST) -> bool:
+        """Whether ``node`` is the value stored into pytest's
+        ``doctest_namespace`` (``doctest_namespace["pd"] = pd`` in a test or
+        fixture with that parameter): no hand-on. The dict is pytest's;
+        its doctest runner reads it, and doctests are text code (always
+        selected); project code reading from it requests the fixture and
+        reads names off it in code the index records."""
+        p = self.parents.get(id(node))
+        if not (isinstance(p, ast.Assign) and p.value is node and p.targets):
+            return False
+        scope = self._scope_of(node)
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        params = {
+            a.arg for a in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs)
+        }
+        if "doctest_namespace" not in params or any(
+            isinstance(n, ast.Name)
+            and n.id == "doctest_namespace"
+            and not isinstance(n.ctx, ast.Load)
+            for n in ast.walk(scope)
+        ):
+            return False  # not the parameter, or rebound to another object
+        return all(
+            isinstance(t, ast.Subscript)
+            and isinstance(t.value, ast.Name)
+            and t.value.id == "doctest_namespace"
+            for t in p.targets
+        )
 
     def _item_changed(self, node: ast.AST) -> bool:
         """Whether an item of ``node`` (``node[k]``, its items and their

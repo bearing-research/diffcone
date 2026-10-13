@@ -324,6 +324,11 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 
 #### Execution evidence
 
+- A module stored into pytest's `doctest_namespace` (pandas' autouse
+  `add_doctest_imports` does `doctest_namespace["pd"] = pd`) no longer
+  counts as handed to unknown code. When that module could reach `gc`,
+  every test that ran the fixture counted as able to look up anything, so
+  a docstring edit selected every test.
 - A test that failed or errored while it was recorded is always selected:
   its recording stops where it failed, so where it passes (a flaky failure,
   a different environment) it can run code the recording never saw.

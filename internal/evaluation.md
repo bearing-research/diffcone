@@ -2032,6 +2032,27 @@ commits, so the differences are run-to-run order dependence, which
 records of tests `8f11807` deleted, carried along unused; advancing now
 drops the record of a test that is no longer a target.
 
+## pandas: evidence plans after E11-E13 (roadmap item 19, 2026-10-12)
+
+pandas recorded at `bc2fe1b` with E11-E13 (24 778 tests, 266 s; diffcone
+run from its own environment's binary, no `VIRTUAL_ENV` leak): no flag
+outside every test, no subprocess flag, no test failed. The 8 most recent
+first-parent commits before `bc2fe1b` that change only `.py` files under
+`pandas/` (at least one outside `pandas/tests`) were each reverted onto
+`bc2fe1b` and planned from the recording (about 15 minutes per plan):
+
+| commit | kind | selected |
+|---|---|---|
+| 4c5953e8b3, bb48902271, 50abccd92e, 34078c91ae | docstring only | 99.9 % (`executed_reader`, `lookup_site`; no fallback) |
+| b693e2e54f, 9f8d4a817d, e9b71cd02e, 8e3f50d9bf | code | 100 % (`pytest_hook_changed`) |
+
+The docstring plans select through `pandas.conftest.add_doctest_imports`
+(autouse; `doctest_namespace["pd"] = pd` hands on a module from which
+`gc` is reachable, so every test is an object-graph lookup site); the code
+plans through `pandas.util._exceptions.find_stack_level`, whose lazily
+initialised `_pkg_dir` counts as state written by changed import-time code
+and read during collection. Roadmap item 19 narrows both.
+
 ## pandas: compiled edits at the module surface (item 18 spike, 2026-10-12)
 
 Roadmap item 18, from a recording on an ordinary build at `bc2fe1b`

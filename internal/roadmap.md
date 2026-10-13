@@ -1393,3 +1393,58 @@ build map and include graph, the surface record, the planning rule (with
 (Cython and C) and the docs ("Compiled code" in `guides/evidence.md`,
 the rule in `reference/report.md`). If not, the gap is measured and the
 item closes as measured and left alone.
+
+## 19. Evidence-mode precision on pandas
+
+**Status.** In progress (2026-10-12). With the recorder issues E11-E13
+fixed, a pandas recording has no flag outside tests, yet evidence plans of
+real changes still select about everything: 8 recent commits that change
+only Python files, each reverted onto the recorded commit `bc2fe1b` and
+planned from the recording, select 99.9 % (4 docstring-only commits) and
+100 % (4 code commits; evaluation.md, "pandas: evidence plans after
+E11-E13"). Two patterns account for all of it; each is a narrowing, so
+each needs its soundness argument and scenarios that fail on the old code.
+
+**1. A store into pytest's `doctest_namespace` hands nothing on.**
+pandas' autouse `add_doctest_imports` does `doctest_namespace["pd"] = pd`.
+Handing the `pandas` module to an unknown receiver counts as handing on
+every module reachable from it as an attribute, and one of them imports
+`gc`, so the fixture is an object-graph walker (`GRAPH_HANDLE`), and every
+test that ran it is a lookup site that can see any module: 99.9 % on a
+docstring edit. *Mechanism:* a subscript store into a parameter named
+`doctest_namespace` of a pytest test or fixture is not an escape of the
+stored value. *Why sound:* the receiver is a dict pytest owns; pytest's
+doctest runner reads it, and doctests are text code (always selected);
+any project code that reads the dict (a fixture or test requesting
+`doctest_namespace`) reads names off it in its own code, which the index
+records as the reads they are.
+
+**2. A lazily initialised constant is not shared state.** pandas'
+`find_stack_level` does `global _pkg_dir; if _pkg_dir is None: _pkg_dir =
+os.path.dirname(pd.__file__) + os.sep`. Changed import-time code "can run
+`find_stack_level`, which writes `_pkg_dir`", whose reader ran during
+collection, so the hook rule selects everything: 100 % on every code
+commit. *Mechanism:* a module variable `V` is a lazy constant when it is
+bound to `None` at module level and every other write is in one function
+`W`, inside an `if V is None` guard (or `if V is None or ...` over lazy
+constants of the same `W`), assigning a value that uses none of `W`'s
+parameters and reads no variable the project writes; and every read of
+`V` is in `W`. A write to a lazy constant does not count as a write
+(`mutated_by`/`_import_writes`/the state rules) for any change but a
+change to `W` itself or to what its value reads. *Why sound:* the value is
+the same whoever runs `W` first and whenever; nothing outside `W` can see
+whether it was computed yet; a change to `W` (or to the definitions its
+value reads) is a change like any other.
+
+**Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
+from item 18; about 15 minutes per plan) and list the next pattern behind
+whatever still selects everything. Further patterns get their own entry
+here before they are changed. Also in view: a pandas plan takes about 15
+minutes (item 4).
+
+**Done when.** Both rules land with scenarios (pytest and ASV targets)
+that fail on the old code and guard cases that stay selected (a fixture
+reading back from `doctest_namespace`; a lazy value computed from a
+parameter, read outside `W`, or written without the guard); the replays
+are re-measured and recorded in evaluation.md; any further pattern found
+is sketched here.
