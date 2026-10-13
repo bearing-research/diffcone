@@ -105,6 +105,14 @@ code whose decorator keeps its result (``SourceIndex.memoized``:
 dependencies differ between C and either snapshot is selected
 (``lifecycle_changed``).
 
+Neither rule counts a lazily initialised constant's own writer as a reader
+of its fill (``SourceIndex.lazy_constants``: ``global V; if V is None: V =
+<pure value>`` in the one function writing ``V``; ``_lazy_writer``): it
+computes the same value whoever runs it first, so code running it at
+import, in a hook or in an earlier test leaves nothing it reads. Other code
+reading ``V`` is followed as before; a change to the writer is planned as
+any change.
+
 A module a change newly imports, or no longer imports (an import a
 module's top-level code or a function's body gains or loses, with the
 imported module's import closure, less what the importing module's
@@ -775,6 +783,13 @@ class _Observers:
                 self._decorated_by[decorated].add(decorator)
         self._stored_seen: set[str] = set()
         self._change_by_id = {c.id: c for c in self.changes}
+        # Lazily initialised constants (diffcone.indexer.lazy) at both
+        # revisions: variable -> the one function that fills it.
+        self.lazy_constants = {
+            var: writer
+            for var, writer in sorted(c_index.lazy_constants.items())
+            if var not in other.symbols or other.lazy_constants.get(var) == writer
+        }
         self.declarations = declarations
         # Cython name -> the Cython functions at C that mention it (lazily).
         self._cython_mentions: dict[str, list[tuple[str, CythonFunction]]] | None = None
@@ -1179,7 +1194,14 @@ class _Observers:
                 f"read what an earlier one stored ({why.detail})"
             )
             self._observe(variable, Rule.EXECUTED_READER, label, change)
-            self._readers(variable, change, label, in_tests=True, content_only=True)
+            self._readers(
+                variable,
+                change,
+                label,
+                in_tests=True,
+                content_only=True,
+                exclude=self._lazy_writer(variable, writer),
+            )
             self._sites(self.symbols[variable], change, label, in_tests=True)
         # Storing or memoised code anywhere in the chain, every round: what a
         # store derives from may have joined the chain only now.
@@ -1968,6 +1990,7 @@ class _Observers:
         *,
         in_tests: bool = False,
         content_only: bool = False,
+        exclude: frozenset[str] = frozenset(),
     ) -> None:
         """``in_tests``: what changed is what code running inside the tests
         stored (``_stored_results``), which no import or hook that ran before
@@ -1976,7 +1999,8 @@ class _Observers:
         holds changed in place (code writing into it ran differently), so
         code that only empties or adds to it (``X.clear()``) reads nothing
         that changed. Code rebinding it from another module (``mod.X = v``)
-        reads nothing of it unless it was deleted."""
+        reads nothing of it unless it was deleted. ``exclude``: readers that
+        cannot see the change (``_lazy_writer``)."""
         readers = set(self.readers_of.get(target, ()))
         if content_only:
             readers -= self.write_sites.get(target, set())
@@ -2004,6 +2028,7 @@ class _Observers:
                 )
             readers |= matched
         readers.discard(target)
+        readers -= exclude
         for reader in sorted(readers):
             own = change is not None and target == change.id
             self._reader(
@@ -2312,9 +2337,28 @@ class _Observers:
                 self._followed.add(variable)
                 why = f"{label}; it can run {current}, which writes into {variable}"
                 self._observe(variable, Rule.EXECUTED_READER, f"{variable}: {why}", change)
-                self._readers(variable, change, why, content_only=True)
+                self._readers(
+                    variable,
+                    change,
+                    why,
+                    content_only=True,
+                    exclude=self._lazy_writer(variable, current),
+                )
                 self._sites(written, change, why, at_import=True)
             stack.extend(sorted(self.calls.get(current, ()), reverse=True))
+
+    def _lazy_writer(self, variable: str, writer: str) -> frozenset[str]:
+        """``writer`` when ``variable`` is a lazily initialised constant it
+        fills (``SourceIndex.lazy_constants``) and it did not change: it
+        computes the same value whoever runs it first and whenever, so its
+        own reads of the variable cannot tell whether an earlier run (at
+        import, in a hook, in an earlier test) filled it. Other code reading
+        the variable can (it may read it before the writer ever ran) and is
+        followed as before; a change to the writer itself is planned as any
+        change."""
+        if self.lazy_constants.get(variable) == writer and writer not in self._change_by_id:
+            return frozenset({writer})
+        return frozenset()
 
     def _constructors(self, cls: str) -> list[str]:
         """What calling or creating ``cls`` can run: the constructors,

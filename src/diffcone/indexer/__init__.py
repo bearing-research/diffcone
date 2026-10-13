@@ -35,7 +35,10 @@ Supported subset (see internal/design.md):
   parameter, a literal or a symbol as well; any other write leaves the
   attribute unbounded;
 * in-place writes of a module variable, directly or through a parameter or
-  receiver the callee writes (``writes.py``);
+  receiver the callee writes (``writes.py``); a variable filled once by the
+  one function writing it, with a value nothing can see differently
+  (``global V; if V is None: V = os.path.dirname(pkg.__file__)``), is a
+  lazy constant (``lazy.py``);
 * project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
   ``-c CODE``, and a Python command whose program cannot be named
   (``scripts.py``); a module loaded from a file by path

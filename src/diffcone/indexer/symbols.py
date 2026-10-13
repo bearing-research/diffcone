@@ -34,6 +34,7 @@ from diffcone.indexer.definitions import (
     _variable_statements,
     statement_layout,
 )
+from diffcone.indexer.lazy import candidates as lazy_candidates
 from diffcone.indexer.literals import (
     _collect_literal_bindings,
     _collect_store_names,
@@ -176,6 +177,14 @@ class FirstPass(IndexerState):
             scope.tree, scope.name, scope.is_package, make_evaluator(scope.literal_names)
         )
         scope.uses = tuple(sorted(found.records, key=UseRecord.to_list))
+        scope.lazy_candidates = lazy_candidates(
+            scope.tree,
+            scope.name,
+            scope.is_package,
+            scope.imports,
+            scope.alt_imports,
+            bool(scope.star_imports),
+        )
         imports = tuple(sorted(_canonical_imports(scope)))
         layout = _import_layout(scope)
         # A variable statement is its own symbol, so it leaves the module's

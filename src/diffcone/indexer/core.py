@@ -20,6 +20,7 @@ from diffcone.indexer.facts import (
     _tuples,
     symbol_from_dict,
 )
+from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import literal_base, literal_keys
 from diffcone.indexer.references import SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
@@ -50,6 +51,7 @@ from diffcone.model import (
     INSTALLED,
     INSTALLED_ANYWHERE,
     MUTATED_BY,
+    REBINDS,
     REGISTERS,
     WRITES,
     Edge,
@@ -203,6 +205,7 @@ class Indexer(DynamicBounds):
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
+        self._lazy_constants()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -231,6 +234,54 @@ class Indexer(DynamicBounds):
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
+
+    def _lazy_constants(self) -> None:
+        """Decide which pass-1 lazy-constant candidates are lazy constants
+        (``SourceIndex.lazy_constants``, diffcone.indexer.lazy) over the
+        whole index: computed from cached facts and edges alone, so a cold
+        and a warm build agree. A variable some code other than its
+        candidate writer writes (a ``mutated_by`` edge to other code,
+        anything registered into it, a ``rebinds``/``writes`` reference from
+        other code) is none."""
+        found: list[tuple[str, str, str, str, tuple[str, tuple[str, ...], tuple[str, ...]]]] = []
+        for module, scope in sorted(self.scopes.items()):
+            for name, candidate in sorted(scope.lazy_candidates.items()):
+                var, writer = scope.variables.get(name), scope.members.get(candidate[0])
+                if var is None or writer is None:
+                    continue
+                var_symbol, writer_symbol = (
+                    self.index.symbols.get(var),
+                    self.index.symbols.get(writer),
+                )
+                if (
+                    var_symbol is None
+                    or var_symbol.kind != SymbolKind.VARIABLE
+                    or writer_symbol is None
+                    or writer_symbol.kind != SymbolKind.FUNCTION
+                ):
+                    continue
+                found.append((module, name, var, writer, candidate))
+        if not found:
+            return
+        writer_of = {var: writer for _, _, var, writer, _ in found}
+        other_writes: set[str] = set()
+        for edge in self.index.edges:
+            writer = writer_of.get(edge.source)
+            if writer is not None and edge.kind != EdgeKind.DEFINED_IN:
+                if not (edge.detail == MUTATED_BY and edge.target == writer):
+                    other_writes.add(edge.source)
+            writer = writer_of.get(edge.target)
+            if (
+                writer is not None
+                and edge.source != writer
+                and edge.kind == EdgeKind.REFERENCES
+                and edge.detail in (WRITES, REBINDS, SETITEM)
+            ):
+                other_writes.add(edge.target)
+        bindings = {m: s.bindings | set(s.imports) for m, s in self.scopes.items()}
+        self.index.lazy_constants = decide_lazy_constants(
+            found, self.index.modules, bindings, other_writes
+        )
 
     def _write_only_references(self) -> None:
         """Settle the references that only change a module variable
@@ -463,6 +514,7 @@ class Indexer(DynamicBounds):
         uses = tuple(UseRecord.from_list(r) for r in record["uses"])
         containers = frozenset(record["containers"])
         literal_sources = {k: tuple(v) for k, v in record["literal_sources"].items()}
+        lazy = {k: (str(w), tuple(n), tuple(d)) for k, (w, n, d) in record["lazy"].items()}
         env_digest = str(record["env"])
         symbols = [symbol_from_dict(data) for data in record["symbols"]]
         classes: dict[str, ClassScope] = {}
@@ -492,6 +544,7 @@ class Indexer(DynamicBounds):
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
         scope.uses, scope.containers = uses, containers
         scope.literal_sources = literal_sources
+        scope.lazy_candidates = lazy
         scope.env_digest = env_digest
         for symbol in symbols:
             self._add_symbol(symbol)

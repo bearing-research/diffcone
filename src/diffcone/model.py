@@ -490,6 +490,13 @@ class SourceIndex:
     # follows it as a caller (``_stored_results``); static planning does
     # not use it.
     decorations: set[tuple[str, str]] = field(default_factory=set)
+    # Lazily initialised constants: module variable -> the one function
+    # that fills it (``global V; if V is None: V = <pure expr>``;
+    # diffcone.indexer.lazy). That function computes the same value whoever
+    # runs it first, so its own reads of the variable cannot tell whether an
+    # earlier run filled it: the planners do not count running it as a write
+    # its own reads see (other code naming the variable still does).
+    lazy_constants: dict[str, str] = field(default_factory=dict)
 
     @property
     def revision(self) -> str:
