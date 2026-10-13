@@ -2362,3 +2362,74 @@ def test_r27_pytests_monkeypatch_in_a_test_is_undone(repo):
     head = repo.commit({"pkg/impl.py": "def make():\n    return 2\n"})
     plan = _discovered_plan(repo, base, head)
     assert selected(plan) == {"tests/test_a.py::test_a"}
+
+
+# ------------------------------------------------------------------------ builtins called
+# A builtin called by its own name is no function of ours: ``map(f, xs)``
+# is not a project method named ``map``. The higher-order ones call ``f``
+# on the items (roadmap item 19: pandas' ``validate_header_arg`` "wrote"
+# ``is_integer`` through ``Styler.map``).
+
+STYLER = (
+    "class Styler:\n    def __init__(self):\n        self.done = []\n\n"
+    "    def map(self, func):\n        self.done.append(func)\n        return self\n"
+)
+INFERENCE = "def _is_integer(x):\n    return isinstance(x, int)\n\n\nis_integer = _is_integer\n"
+VALIDATE = (
+    "from pkg.inference import is_integer\n\n\ndef validate(header):\n"
+    "    return all(map(is_integer, header))\n"
+)
+BUILTIN_FILES = {
+    "pkg/__init__.py": "",
+    "pkg/style.py": STYLER,
+    "pkg/inference.py": INFERENCE,
+    "pkg/io.py": VALIDATE,
+    "tests/__init__.py": "",
+    "tests/test_io.py": (
+        "from pkg.io import validate\n\n\ndef test_validate():\n    assert validate([1, 2])\n"
+    ),
+    "tests/test_inference.py": (
+        "from pkg.inference import is_integer\n\n\ndef test_is_integer():\n"
+        "    assert is_integer(3)\n"
+    ),
+}
+
+
+def _mutated_by(repo, variable):
+    index = build_index(read_snapshot(repo.path, "HEAD", source_roots=["."]))
+    return {e.target for e in index.edges if e.source == variable and e.detail == "mutated_by"}
+
+
+def test_a_function_handed_to_the_builtin_map_is_not_written(repo):
+    repo.commit(BUILTIN_FILES)
+    assert _mutated_by(repo, "pkg.inference.is_integer") == set()
+
+
+def test_a_change_to_a_map_caller_does_not_reach_the_mapped_functions_readers(repo):
+    base = repo.commit(BUILTIN_FILES)
+    head = repo.commit({"pkg/io.py": VALIDATE.replace("all(", "bool(all(").replace("))", ")))")})
+    plan = repo.plan(base, head, [BENCH_INFERENCE], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_io.py::test_validate"}
+
+
+BENCH_INFERENCE = asv_target(
+    "benchmarks.TimeInference.time_is_integer", "pkg.inference._is_integer"
+)
+
+
+@pytest.mark.parametrize(
+    "call", ["map(fill, REGS)", "filter(fill, REGS)", "sorted(REGS, key=fill)"]
+)
+def test_a_function_a_higher_order_builtin_calls_on_items_writes_them(repo, call):
+    """``map(fill, REGS)`` calls ``fill`` on each item, and ``fill`` writes
+    its parameter: what ``REGS`` holds changes, by ``setup``."""
+    repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/reg.py": (
+                "REGS = [{}]\n\n\ndef fill(d):\n    d['k'] = 1\n    return d\n\n\n"
+                f"def setup():\n    return list({call})\n"
+            ),
+        }
+    )
+    assert "pkg.reg.setup" in _mutated_by(repo, "pkg.reg.REGS")

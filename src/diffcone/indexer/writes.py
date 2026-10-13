@@ -78,7 +78,7 @@ from typing import TYPE_CHECKING
 
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.scopes import External, ModuleNode, Resolved, Scope
-from diffcone.indexer.syntax import _flatten_chain
+from diffcone.indexer.syntax import BUILTIN_NAMES, _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
     DERIVED_ANY,
@@ -557,6 +557,16 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
                 _store(collector, func.value, arg)
         else:
             _computed_pass(collector, node, parts)
+    if (
+        isinstance(func, ast.Name)
+        and func.id in BUILTIN_NAMES
+        and indexer.resolve_chain([func.id], collector.scope) is None
+    ):
+        # The builtin itself (nothing of the project binds the name): it is
+        # no function of ours, whatever methods of that name the project has
+        # (``map(is_integer, header)`` is not ``Styler.map``).
+        _builtin_call(collector, node, func.id)
+        return
     passes: list[tuple[str, ast.expr]] = []  # (slot, argument)
     for i, arg in enumerate(node.args):
         if isinstance(arg, ast.Starred):
@@ -687,6 +697,36 @@ def _dict_receiver(collector: _ReferenceCollector, expr: ast.expr) -> None:
         and expr.args
     ):
         _write(collector, expr.args[0])
+
+
+def _builtin_call(collector: _ReferenceCollector, node: ast.Call, name: str) -> None:
+    """A builtin runs no function of ours on what it is handed, except the
+    higher-order ones, which call a function they are handed on the items:
+    ``map(f, xs, ys)`` calls ``f(x, y)``, ``filter(f, xs)`` ``f(x)``,
+    ``sorted(xs, key=f)``, ``min``/``max(..., key=f)`` ``f(x)``. That call
+    is recorded as one of ``f`` with the iterables (an item written is what
+    the iterable holds, changed)."""
+    if name in ("map", "filter"):
+        if not node.args or any(isinstance(a, ast.Starred) for a in node.args):
+            return
+        function, items = node.args[0], list(node.args[1:])
+    elif name in ("sorted", "min", "max"):
+        key = next((kw.value for kw in node.keywords if kw.arg == "key"), None)
+        if key is None or any(isinstance(a, ast.Starred) for a in node.args):
+            return
+        function, items = key, list(node.args)
+    else:
+        return
+    if name in ("min", "max") and len(items) > 1:
+        calls = [[item] for item in items]  # ``min(a, b, key=f)``: f(a), f(b)
+    elif name == "map":
+        calls = [items]
+    else:
+        calls = [[item] for item in items[:1]]
+    for args in calls:
+        call = ast.Call(func=function, args=args, keywords=[])
+        ast.copy_location(call, node)
+        observe_call(collector, call, _flatten_chain(function))
 
 
 def _handed(collector: _ReferenceCollector, expr: ast.expr, *, modules: bool = True) -> str | None:

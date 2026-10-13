@@ -1461,6 +1461,34 @@ the `b693e2e54f` replay name each:
   for caches (`_CACHE[k] = compute(k)`); it should follow the stored value,
   not the function's call tree.
 
+**3. Code run while pytest collects a test module belongs to that module.**
+On pandas 347 symbols run outside every test and every import (the "hook
+phase"): mostly `pandas.io.formats` (70), dtypes (49), indexes (47) and
+arrays (31): pytest building the ids of parametrized tests (`repr` of the
+values) and evaluating marks while it collects each module. Every chain
+behind the code-commit replays ends in one of them (`pprint_thing`,
+`MultiIndex.get_loc`, `Index.__getitem__`, ...), and the hook rule makes
+any of them select everything. *Mechanism:* the recorder notes the test
+module (or other collector) pytest is collecting (a `pytest_make_collect_report`
+wrapper keeps a stack of collector files) and records code run outside
+every test while a collector is on the stack, and no import running, as
+run during that collector's collection (`collect_by`, beside `import_by`;
+store format bump). Planning treats `collect_by` like `import_by` for a
+test module: a changed symbol, or a reader of a change, that ran only
+while collecting test modules `M...` selects the tests collected from
+`M...` (and what static planning reaches from the change), and what it may
+have written goes through `_import_writes` as for import-time code. Code
+run outside every collector (`pytest_configure`, `pytest_sessionstart`,
+`pytest_collection_modifyitems`, `pytest_collection_finish`, fixtures'
+session setup outside tests) stays in `hook_phase` and keeps selecting
+everything. *Why sound:* what code run while collecting `M` can change is
+`M`'s items (their ids, parameters, marks, whether they are collected at
+all) and state it writes; the first reaches only `M`'s tests, the second
+is followed by the write rules, as for code run while `M` was imported.
+A conftest `pytest_generate_tests` runs while each module is collected, so
+its code is attributed to each of them; a change to the hook function
+itself is a hook change (everything), as now.
+
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind
 whatever still selects everything. Further patterns get their own entry
