@@ -10,12 +10,16 @@ observed by"), and a test is selected when its record meets E:
 
 * a function body: the function itself; if it ran during an import, the
   importing module's import-time state may differ, so that module is
-  escalated (below). Code that ran outside every test and every import
-  (hooks, collection) is escalated itself. Either may also have written
-  into another module's state, which tests read without running it: the
-  variables written in place by what it can call are changed values
-  (``_import_writes``), and so are those of a changed variable
-  statement, class body or ``def`` header that runs code;
+  escalated (below). If it ran while pytest collected a test module
+  (``Evidence.collect_by``: parameter ids, ``ids=`` callables,
+  ``pytest_generate_tests``), the tests collected from that module's file
+  are selected (``_collected``, rule ``collection_code``). Code that ran
+  outside every test, import and such collection (hooks) selects
+  everything (below). Each may also have written into another module's
+  state, which tests read without running it: the variables written in
+  place by what it can call are changed values (``_import_writes``), and
+  so are those of a changed variable statement, class body or ``def``
+  header that runs code;
 * a function's signature, defaults, decorators or annotations: also its
   readers (resolved references and name matches, one hop), the lookup and
   reflection sites that can see its namespace, and escalation when the
@@ -65,9 +69,11 @@ observed by"), and a test is selected when its record meets E:
 * a non-Python file, or any file outside the source roots (read from a
   git diff, since the index holds only the roots): the tests that touched
   it or a directory above it (one listed, for an added or deleted file);
-  touched while a module was imported, that module is escalated.
-  Everything when it was touched outside every test and import (a hook,
-  collection), or is compiled source, build, dependency or pytest
+  touched while a module was imported, that module is escalated; while
+  pytest collected a test module, that module's tests are selected and the
+  code that ran then is followed as if it had changed. Everything when it
+  was touched outside every test, import and test module (a hook), or is
+  compiled source, build, dependency or pytest
   configuration (``build_input``), or a ``conftest.py`` outside the
   roots. A Python source file is data to the tests that opened it as a
   file (``inspect.getsource``) too; a module's file selects everything
@@ -90,11 +96,18 @@ observed by"), and a test is selected when its record meets E:
   ``pytest_*`` function anywhere (a hook) and a conftest's
   ``collect_ignore`` or ``collect_ignore_glob`` (what pytest collects).
 
-Code that ran at C in a hook or during collection, changed or reading a
-change, selects everything: what a hook leaves behind (an environment
-variable) reaches tests no static path leads to; a test's or fixture's own
-``ids=`` callable is the exception (``_collects_itself``). A lookup site in E
-is a reader too, followed into the import or hook that ran it. Once E is
+Code that ran at C in a hook, changed or reading a change, selects
+everything: what a hook leaves behind (an environment variable) reaches
+tests no static path leads to; a test's or fixture's own ``ids=`` callable
+is the exception (``_collects_itself``). Code that ran only while pytest
+collected test modules (and in no hook) selects those modules' tests, and
+what it writes is followed as for code run at import; it counts as a hook's
+when the code that ran it then, or what that code can run, writes
+process-global state or can reach pytest's session-wide objects (a
+``pytest_*`` hook handed the config, code reading ``.config``,
+``.session``, ``.stash`` or ``.pluginmanager``: ``_collection_reach``). A
+lookup site in E is a reader too, followed into the import, collection or
+hook that ran it. Once E is
 built, the variables written in place by code that can run a member of E
 (a cache an earlier test filled) are changed values for the code reading
 them inside tests (``_stored_results``); code in that chain storing
@@ -186,6 +199,7 @@ from diffcone.cython import (
 from diffcone.declarations import Declaration
 from diffcone.discovery import DiscoveryResult
 from diffcone.evidence import (
+    COLLECTED,
     FLAG_FAILED,
     FLAG_SUBPROCESS,
     FLAG_TEXT,
@@ -264,6 +278,12 @@ CHILD_PROGRAMS = (RUNS_PROGRAM, RUNS_SCRIPT)
 # Module-level names in a conftest that pytest reads to decide what to load
 # or collect at all.
 PYTEST_COLLECTION_NAMES = frozenset({"pytest_plugins", "collect_ignore", "collect_ignore_glob"})
+
+# Attributes through which code reaches pytest's session-wide objects (the
+# config, its stash and cache, the plugin manager): read off a node, a
+# ``metafunc`` or a request, they let code run while one module is collected
+# leave state for hooks that act on every test.
+SESSION_ATTRIBUTES = frozenset({"config", "session", "stash", "pluginmanager"})
 
 # Attributes that hand out objects without naming them: a class's
 # subclasses, a function's or frame's globals, a closure cell, the objects
@@ -809,6 +829,18 @@ class _Observers:
         )
         self._forward_of: dict[frozenset[str], frozenset[str]] = {}
         self._symbols_named: dict[str, set[str]] | None = None
+        # Code that writes process-global state (indexer/process.py), and
+        # for code run while pytest collected a test module (``_collected``):
+        # per symbol and the modules it ran for, what the code running it
+        # then can run and why that is a hook's doing (``_collection_reach``);
+        # the test modules' code that ran then, by module; and the code that
+        # can reach pytest's session-wide objects (``_session_code``).
+        self._process_writers = {s for index in (c_index, other) for s, _ in index.process_writes}
+        self._collection_reach_of: dict[
+            tuple[str, tuple[str, ...]], tuple[frozenset[str], str | None]
+        ] = {}
+        self._collected_code_of: dict[str, list[str]] | None = None
+        self._session_code_found: set[str] | None = None
         # The same, for an attribute read off a value of unknown type (W20).
         self._attribute_named: dict[str, set[str]] = {}
 
@@ -928,7 +960,12 @@ class _Observers:
         ev = self.evidence
         if code in ev.annotations_only:
             return False
-        return code in ev.import_phase or code in ev.import_by or code in ev.hook_phase
+        return (
+            code in ev.import_phase
+            or code in ev.import_by
+            or code in ev.collect_by
+            or code in ev.hook_phase
+        )
 
     def _only_in_tests(self, code: Iterable[str]) -> bool:
         """Whether what ``code`` does (writes, obtains, hands on) serves only
@@ -1712,7 +1749,8 @@ class _Observers:
         it is never a test's own collection code (``_collects_itself``) nor
         a node static planning can be seeded from, so having run in a hook
         or during collection always selects everything."""
-        if self.evidence.import_by.get(symbol_id_):
+        collected = self.evidence.collect_by.get(symbol_id_, frozenset())
+        if self.evidence.import_by.get(symbol_id_) or collected:
             self._cython_writes(symbol_id_, label, recorded)
         for module in sorted(self.evidence.import_by.get(symbol_id_, ())):
             if module.startswith(UNINDEXED_MODULE):
@@ -1727,6 +1765,13 @@ class _Observers:
                 Rule.UNOBSERVED_FILE,
                 f"{label}: {symbol_id_} ran outside every test (a hook or collection)",
             )
+        else:
+            # Run while pytest collected a test module (the Python side:
+            # ``_collected``): that module's tests.
+            for module in sorted(collected):
+                self._collected_tests(
+                    module, None, f"{symbol_id_} ran while pytest collected {module} at C; {label}"
+                )
 
     def _cython_writes(self, symbol_id_: str, label: str, recorded: set[str]) -> None:
         """A changed Cython function that ran while a module was imported
@@ -2164,10 +2209,11 @@ class _Observers:
         self, symbol_id: str, change: SymbolChange | None, label: str, *, read: str | None = None
     ) -> None:
         """Code that ran at C while a module was imported built that module's
-        import-time state; code that ran outside every test and import ran in
-        a hook or during collection. Either may also have written into
-        another module's state, which every later test reads
-        (``_import_writes``).
+        import-time state; code that ran while pytest collected a test module
+        decided that module's tests (``_collected``); code that ran outside
+        every test, import and such collection ran in a hook. Each may also
+        have written into another module's state, which every later test
+        reads (``_import_writes``).
 
         A symbol whose only code that ran there was its annotations'
         (``__annotate__``, Python 3.14) ran none of its body there: a change
@@ -2183,7 +2229,9 @@ class _Observers:
                     return
             elif not self._annotations_read(symbol_id, read):
                 return
-        if ev.import_by.get(symbol_id) or symbol_id in ev.hook_phase:
+        hook = symbol_id in ev.hook_phase
+        collected = ev.collect_by.get(symbol_id, frozenset())
+        if ev.import_by.get(symbol_id) or hook or collected:
             self._import_writes(
                 [symbol_id], change, f"{symbol_id} ran outside every test at C; {label}"
             )
@@ -2198,24 +2246,171 @@ class _Observers:
                 self._escalate_module(
                     module, f"{symbol_id} ran while {module} was imported; {label}"
                 )
-        if symbol_id in self.evidence.hook_phase:
-            if not self._collects_itself(symbol_id):
-                # A hook (or code it reaches without a static path: a plugin
-                # object's method, a callback) runs once per session, before
-                # or between the tests, and what it leaves behind (an
-                # environment variable, a mark on an item, another library's
-                # state) reaches tests that run none of its code.
-                self._select_all(
-                    Rule.PYTEST_HOOK,
-                    f"{label}: {symbol_id} ran outside every test at C (in a pytest hook or "
-                    "during collection), and what it does there can reach any later test",
-                )
-                return
+        if not (hook or collected):
+            return
+        if self._collects_itself(symbol_id):
             reason = f"{symbol_id} ran outside every test (a hook or collection); {label}"
             if change is not None and symbol_id == change.id:
                 self._escalate_change(change, reason)
             elif symbol_id not in self.seed_nodes:
                 self.seed_nodes[symbol_id] = reason
+        elif hook:
+            # A hook (or code it reaches without a static path: a plugin
+            # object's method, a callback) runs once per session, before or
+            # between the tests, and what it leaves behind (an environment
+            # variable, a mark on an item, another library's state) reaches
+            # tests that run none of its code. Having run in a hook outweighs
+            # having run while a test module was collected too.
+            self._select_all(
+                Rule.PYTEST_HOOK,
+                f"{label}: {symbol_id} ran outside every test at C (in a pytest hook, or "
+                "while pytest collected what is no test module of the index), and what it "
+                "does there can reach any later test",
+            )
+        else:
+            self._collected(symbol_id, change, label, collected)
+
+    def _collected(
+        self, symbol_id: str, change: SymbolChange | None, label: str, modules: Iterable[str]
+    ) -> None:
+        """``symbol_id`` (changed, or reading a change) ran at C while pytest
+        collected the test modules ``modules`` (``Evidence.collect_by``), and
+        in no hook: building their parameters' ids, an ``ids=`` callable,
+        ``pytest_generate_tests`` (roadmap item 19, rule 3). What it can
+        change there is those modules' tests (their parameters, ids and
+        marks, whether they are collected), which are selected, and state
+        written then: into variables, by what it can run (``_import_writes``,
+        from ``_import_effect``) and by the code that ran it, with its result
+        (``_stored_results``, which follows every member of E back to its
+        callers); and onto an external module that a lookup may find
+        (``_collection_sites``).
+
+        Code that ran then and can run it (``_collection_reach``: the code
+        between pytest and it, a ``pytest_generate_tests`` and its helpers)
+        can pass its result on. It counts as a hook's after all (everything
+        is selected) when that code, or what it can run, writes process-global
+        state (``os.environ``, warning filters: indexer/process.py), which
+        every later test sees, or can reach pytest's session-wide objects
+        (``_session_code``), where it can leave state for the hooks acting on
+        every test."""
+        modules = sorted(modules)
+        reach, hooky = self._collection_reach(symbol_id, modules)
+        if hooky is not None:
+            self._select_all(
+                Rule.PYTEST_HOOK,
+                f"{label}: {symbol_id} ran while pytest collected {modules[0]} at C, and {hooky}",
+            )
+            return
+        self._collection_sites(symbol_id, reach, change, label)
+        for module in modules:
+            self._collected_tests(
+                module,
+                change,
+                f"{symbol_id} ran while pytest collected {module} at C, which decides its "
+                f"tests (their parameters, ids and marks); {label}",
+            )
+
+    def _collected_tests(self, module: str, change: SymbolChange | None, why: str) -> None:
+        """Select the tests collected from ``module``'s file."""
+        path = self.test_code.path_of_module.get(module)
+        for test in self.test_code.tests_by_file.get(path, ()) if path is not None else ():
+            self.direct.setdefault(
+                test,
+                Reason(
+                    Rule.COLLECTION,
+                    why,
+                    (),
+                    change.id if change is not None else None,
+                    change.changes if change is not None else (),
+                ),
+            )
+
+    def _collection_reach(
+        self, symbol_id: str, modules: list[str]
+    ) -> tuple[frozenset[str], str | None]:
+        """What code that ran at C while pytest collected ``modules``, and
+        can run ``symbol_id`` (or is it), can run in turn (``_forward``), and
+        why that is a hook's doing (``_collected``), or None."""
+        key = (symbol_id, tuple(modules))
+        found = self._collection_reach_of.get(key)
+        if found is not None:
+            return found
+        upstream = {symbol_id}
+        for module in modules:
+            for code in self._collected_code(module):
+                if code not in upstream and symbol_id in self._forward([code]):
+                    upstream.add(code)
+        reach = frozenset().union(*(self._forward([code]) for code in sorted(upstream)))
+        why: str | None = None
+        writers = sorted(reach & self._process_writers)
+        session = sorted(reach & self._session_code())
+        if writers:
+            why = (
+                f"code run then can run {writers[0]}, which writes process-global state that "
+                "every later test sees"
+            )
+        elif session:
+            why = (
+                f"code run then can run {session[0]}, which can reach pytest's session-wide "
+                "objects (a hook handed the config, or code reading .config, .session, .stash "
+                "or .pluginmanager) and leave state there for hooks acting on every test"
+            )
+        self._collection_reach_of[key] = (reach, why)
+        return reach, why
+
+    def _session_code(self) -> set[str]:
+        """Code that can reach pytest's session-wide objects: a ``pytest_*``
+        function or method (pytest hands hooks the config or the session)
+        other than ``pytest_generate_tests`` (handed only a ``metafunc``,
+        which leads there through the attributes below), and code reading
+        one of ``SESSION_ATTRIBUTES`` off a value (``metafunc.config``,
+        ``request.session``)."""
+        if self._session_code_found is None:
+            found = {
+                sid
+                for sid, symbol in self.symbols.items()
+                if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+                and symbol.name.startswith("pytest_")
+                and symbol.name != "pytest_generate_tests"
+            }
+            for index in (self.c, self.other):
+                for ref in index.unresolved:
+                    if ref.kind in ATTRIBUTE_KINDS and ref.name in SESSION_ATTRIBUTES:
+                        found.add(ref.symbol)
+            self._session_code_found = found
+        return self._session_code_found
+
+    def _collection_sites(
+        self, symbol_id: str, reach: frozenset[str], change: SymbolChange | None, label: str
+    ) -> None:
+        """The lookups on an external module the project writes to that code
+        run while a test module was collected (``reach``: what the code
+        running ``symbol_id`` then can run) can make write there, for every
+        later test (``import_sites``, as ``_seeing_sites`` takes them for
+        code running at import), join E and are followed as readers."""
+        opaque = bool(reach & self._opaque_callers)
+        for (site, _kind), writers in self.import_sites.items():
+            if site not in self.symbols or not (opaque or reach & writers):
+                continue
+            self._observe(
+                site,
+                Rule.LOOKUP_SITE,
+                f"{site} looks names up on an external module that code run while pytest "
+                f"collected a test module, with {symbol_id}, may write to; {label}",
+                change,
+            )
+            if (site, False) not in self._sites_followed:
+                self._sites_followed.add((site, False))
+                self._pending_sites.append((site, change, f"{label}, seen by {site}", False))
+
+    def _collected_code(self, module: str) -> list[str]:
+        """The symbols that ran at C while pytest collected ``module``."""
+        if self._collected_code_of is None:
+            self._collected_code_of = defaultdict(list)
+            for symbol, modules in sorted(self.evidence.collect_by.items()):
+                for m in modules:
+                    self._collected_code_of[m].append(symbol)
+        return self._collected_code_of.get(module, [])
 
     def _annotations_read(self, symbol_id: str, read: str | None) -> bool:
         """Whether evaluating ``symbol_id``'s annotations at C can read
@@ -2648,8 +2843,18 @@ class _Observers:
                     self._select_all(
                         Rule.UNOBSERVED_FILE,
                         f"{path} {what}, and project code touched {where} outside every test "
-                        "and outside any import it could be credited to (a hook or collection)",
+                        "and outside any import or test module it could be credited to (a hook)",
                     )
+                elif module.startswith(COLLECTED):
+                    # Read while pytest collected a test module: by code that
+                    # ran then, which may now do otherwise.
+                    collected = module[len(COLLECTED) :]
+                    why = (
+                        f"{path} {what}, and {where} was touched while pytest collected {collected}"
+                    )
+                    self._collected_tests(collected, None, why)
+                    for symbol in self._collected_code(collected):
+                        self._import_effect(symbol, None, why)
                 else:
                     self._escalate_module(
                         module,

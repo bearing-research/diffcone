@@ -289,6 +289,17 @@ everything.
     [Static discovery](reference/discovery.md#pytest) lists what is
     recognised.
 
+**With a recording, code run while pytest collects a file reaches that file's tests.**
+:   Building parameter ids, an `ids=` function and `pytest_generate_tests`
+    decide the tests of the file pytest is collecting, so a change there
+    selects that file's tests and whoever reads what the code stored. Code
+    that pytest hands its objects to can also leave something for hooks
+    that act on every test. That is recognised when the code, or what ran
+    it, reads `.config`, `.session`, `.stash` or `.pluginmanager`, or is a
+    hook other than `pytest_generate_tests`, and then every test is
+    selected. Something left on another pytest object (`metafunc.function`,
+    a node's attributes) for a later hook to act on is not.
+
 ## Reading files
 
 **A file that doesn't parse selects everything.**

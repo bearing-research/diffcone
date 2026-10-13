@@ -131,12 +131,21 @@ report:
   belong to and the classes and functions they name.
 - Code that background threads are running while a test runs is credited
   to that test.
-- Code that ran outside every test, in a pytest hook or while pytest
-  collected, can affect any test: a change to it, or to what it reads,
-  selects every test, and so does a change to `pytest_plugins`. Reading a
-  function's annotations there (as pytest does on Python 3.14) is not
-  running the function: only a change to the annotations, or to what they
-  name, counts.
+- Code that ran while pytest collected a test file (building the ids of
+  parametrized tests, an `ids=` function, a `pytest_generate_tests` hook
+  and what it calls) decides that file's tests: a change to it, or to what
+  it reads, selects the tests of every file it ran for, and the tests
+  reading anything it stored. So does a change to a file read then. It
+  counts as a hook's (below) when what ran it, or what that can run, sets
+  something for the whole process, such as an environment variable, or
+  reaches pytest's configuration or session.
+- Code that ran outside every test in a pytest hook (`pytest_configure`,
+  `pytest_collection_modifyitems`, the collection of a directory) can
+  affect any test: a change to it, or to what it reads, selects every
+  test, and so does a change to `pytest_plugins`. Reading a function's
+  annotations there (as pytest does on Python 3.14) is not running the
+  function: only a change to the annotations, or to what they name,
+  counts.
 - Changes to compiled sources (except [Cython](#cython) with a profiled
   recording), build files, dependencies and configuration select every
   test.

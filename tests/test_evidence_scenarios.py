@@ -2987,10 +2987,228 @@ def test_w5_a_tests_own_ids_callable_reaches_only_that_test(repo):
         }
     )
     evidence = repo.collect()
-    assert any(s.startswith("tests.test_ids.test_ids") for s in evidence.hook_phase)
+    assert evidence.collect_by["tests.test_ids.test_ids"] == {"tests.test_ids"}
     head = repo.commit({"tests/test_ids.py": IDS_TEST.replace("n > 0", "n >= 1")})
     plan = _noop_plan(repo, base, head, evidence)
     assert selected(plan) == {"tests/test_ids.py::test_ids"}
+
+
+# ------------------------------------------------------------------- code run while collecting
+
+# What pytest runs while it collects a test module (roadmap item 19, rule 3):
+# ``ids=`` callables, a conftest's ``pytest_generate_tests`` and what they
+# call. ``label`` builds ids only; ``noted`` also stores into ``SEEN``, which
+# ``test_b`` reads; ``cases`` gives ``test_a``'s ``case`` parameter;
+# ``order_key`` runs in a session hook.
+COLLECTION_FMT = """\
+import os
+
+SEEN = []
+
+
+def label(n):
+    return f"n{n}"
+
+
+def noted(n):
+    SEEN.append(n)
+    return f"n{n}"
+
+
+def seen():
+    return list(SEEN)
+
+
+def exported(n):
+    os.environ["LAST_ID"] = str(n)
+    return f"n{n}"
+
+
+def cases():
+    return [1, 2]
+
+
+def cases_for(metafunc):
+    return [1, 2] if metafunc.config.getoption("verbose") > -9 else [1]
+
+
+def order_key(item):
+    return item.nodeid
+"""
+COLLECTION_CONFTEST = """\
+from pkg.fmt import cases, order_key
+
+
+def pytest_generate_tests(metafunc):
+    if "case" in metafunc.fixturenames:
+        metafunc.parametrize("case", cases())
+
+
+def pytest_collection_modifyitems(items):
+    items.sort(key=order_key)
+"""
+COLLECTION_A = """\
+import pytest
+
+from pkg.fmt import exported, label, noted
+
+
+@pytest.mark.parametrize("n", [1, 2], ids=label)
+def test_label(n):
+    assert n > 0
+
+
+@pytest.mark.parametrize("n", [1, 2], ids=noted)
+def test_noted(n):
+    assert n > 0
+
+
+@pytest.mark.parametrize("n", [1, 2], ids=exported)
+def test_exported(n):
+    assert n > 0
+
+
+def test_case(case):
+    assert case > 0
+"""
+COLLECTION_B = """\
+import os
+
+from pkg.fmt import seen
+
+
+def test_seen():
+    assert isinstance(seen(), list)
+
+
+def test_env():
+    assert os.environ.get("LAST_ID", "2") in "12"
+
+
+def test_plain():
+    pass
+"""
+LABEL_BENCH = asv_target("bench_fmt.time_label", "benchmarks.bench_fmt.time_label")
+COLLECTION_FILES = {
+    **NOOP_BASE,
+    "pkg/fmt.py": COLLECTION_FMT,
+    "tests/conftest.py": COLLECTION_CONFTEST,
+    "tests/test_a.py": COLLECTION_A,
+    "tests/test_b.py": COLLECTION_B,
+    "benchmarks/bench_fmt.py": "from pkg.fmt import label\n\n\ndef time_label():\n    label(1)\n",
+}
+TESTS_A = {
+    "tests/test_a.py::test_label",
+    "tests/test_a.py::test_noted",
+    "tests/test_a.py::test_exported",
+    "tests/test_a.py::test_case",
+}
+SEEN_ID = "tests/test_b.py::test_seen"
+TESTS_B = {SEEN_ID, "tests/test_b.py::test_env", "tests/test_b.py::test_plain"}
+
+
+def _collection_plan(repo, change, conftest=COLLECTION_CONFTEST):
+    base = repo.commit({**COLLECTION_FILES, "tests/conftest.py": conftest})
+    evidence = repo.collect()
+    head = repo.commit(change)
+    return evidence, repo.plan(
+        base,
+        head,
+        [NOOP_BENCH, LABEL_BENCH],
+        discover_runners=["pytest"],
+        evidence=evidence,
+    )
+
+
+def test_code_that_built_one_modules_test_ids_selects_that_modules_tests(repo):
+    """``label`` ran only while pytest built the ids of ``test_a``'s tests:
+    its change can change those tests (their ids, which parameters run) and
+    nothing that runs for another module, so ``test_b`` keeps its record.
+    Before, code run while collecting counted as a hook's and selected
+    everything."""
+    evidence, plan = _collection_plan(
+        repo,
+        {"pkg/fmt.py": COLLECTION_FMT.replace('f"n{n}"\n\n\ndef noted', 'f"N{n}"\n\n\ndef noted')},
+    )
+    assert evidence.collect_by["pkg.fmt.label"] == {"tests.test_a"}
+    assert "pkg.fmt.label" not in evidence.hook_phase
+    assert selected(plan) == TESTS_A | {LABEL_BENCH.runner_id}
+    assert rules(plan, "tests/test_a.py::test_case") == {"collection_code"}
+    assert NOOP_BENCH.runner_id in unselected(plan)
+
+
+def test_code_run_by_a_session_hook_still_selects_everything(repo):
+    """``order_key`` runs in ``pytest_collection_modifyitems``, after every
+    module is collected: what a hook does reaches every test."""
+    evidence, plan = _collection_plan(
+        repo, {"pkg/fmt.py": COLLECTION_FMT.replace("item.nodeid", "str(item.nodeid)")}
+    )
+    assert "pkg.fmt.order_key" in evidence.hook_phase
+    assert "pkg.fmt.order_key" not in evidence.collect_by
+    assert selected(plan) == TESTS_A | TESTS_B
+    assert rules(plan, "tests/test_b.py::test_plain") == {"pytest_hook_changed"}
+
+
+def test_state_written_while_collecting_reaches_its_readers(repo):
+    """``noted`` stores into ``SEEN`` while ``test_a`` is collected, and
+    ``test_b`` reads it through ``seen()``, never running ``noted``: its
+    change reaches ``test_b::test_seen`` as well as ``test_a``'s tests."""
+    evidence, plan = _collection_plan(
+        repo, {"pkg/fmt.py": COLLECTION_FMT.replace("SEEN.append(n)", "SEEN.append(n * 1)")}
+    )
+    assert evidence.collect_by["pkg.fmt.noted"] == {"tests.test_a"}
+    assert selected(plan) == TESTS_A | {SEEN_ID}
+    assert rules(plan, SEEN_ID) == {"executed_reader"}
+
+
+def test_process_state_written_while_collecting_selects_everything(repo):
+    """``exported`` sets an environment variable while ``test_a`` is
+    collected; any later test may read it without a static path (``test_b``
+    does): written to the process, it is a hook's doing."""
+    evidence, plan = _collection_plan(
+        repo, {"pkg/fmt.py": COLLECTION_FMT.replace("str(n)\n", "str(n + 0)\n")}
+    )
+    assert evidence.collect_by["pkg.fmt.exported"] == {"tests.test_a"}
+    assert selected(plan) == TESTS_A | TESTS_B
+    assert "pytest_hook_changed" in rules(plan, "tests/test_b.py::test_env")
+
+
+def test_a_generate_tests_helper_reaches_the_module_it_parametrizes(repo):
+    """The conftest's ``pytest_generate_tests`` runs for every module, and
+    calls ``cases`` only for ``test_a``, whose ``case`` parameter it gives:
+    a change to which parameters ``test_a`` gets selects ``test_a``'s tests."""
+    evidence, plan = _collection_plan(
+        repo,
+        {
+            "pkg/fmt.py": COLLECTION_FMT.replace(
+                "return [1, 2]\n\n\ndef cases_for", "return [1, 2, 3]\n\n\ndef cases_for"
+            )
+        },
+    )
+    assert evidence.collect_by["pkg.fmt.cases"] == {"tests.test_a"}
+    assert evidence.collect_by["tests.conftest.pytest_generate_tests"] == {
+        "tests.test_a",
+        "tests.test_b",
+    }
+    assert selected(plan) == TESTS_A
+    assert rules(plan, "tests/test_a.py::test_label") == {"collection_code"}
+
+
+def test_a_generate_tests_helper_handed_the_session_selects_everything(repo):
+    """``cases_for`` is handed the ``metafunc`` and reads its ``config``:
+    through it, code run while one module is collected can leave state for
+    the hooks acting on every test, so it counts as a hook's."""
+    conftest = COLLECTION_CONFTEST.replace("cases, order_key", "cases_for, order_key").replace(
+        "cases())", "cases_for(metafunc))"
+    )
+    evidence, plan = _collection_plan(
+        repo,
+        {"pkg/fmt.py": COLLECTION_FMT.replace("else [1]", "else [2]")},
+        conftest=conftest,
+    )
+    assert evidence.collect_by["pkg.fmt.cases_for"] == {"tests.test_a"}
+    assert selected(plan) == TESTS_A | TESTS_B
+    assert rules(plan, "tests/test_b.py::test_plain") == {"pytest_hook_changed"}
 
 
 PLUGIN_OBJECT = """\

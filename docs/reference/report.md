@@ -131,6 +131,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `touched_file` | | The test read a file that changed. |
 | `changed_target` | | The test's own code, or its class or module, changed. |
 | `test_scope` | | Test code it shares a scope with changed (a mark, fixture or parameter). |
+| `collection_code` | | pytest ran changed code, or code that reads something that changed, while it collected the test's file in the recording (building parameter ids, an `ids=` function, `pytest_generate_tests`): that code decides the file's tests, their parameters, ids and marks. |
 | `escalated` | | The change can't be judged from a recording (code that runs on import, or a module imported before the recorder started), so it was planned from the code. |
 | `cython_caller` | | The test ran Cython code that calls a changed function the recording can't see. |
 | `lookup_site` | yes | The test looked a name up dynamically where something the lookup can see changed: a name added or removed, a definition or a value. |
@@ -138,8 +139,8 @@ With execution evidence, the rules name what the recorded run observed:
 | `unstable` | yes | The test's recordings differed between runs. |
 | `subprocess` | yes | The test started a process the recording can't follow, or ran while one was still running. As a fallback for every test: such a process was started outside any test (a hook, collection, or an import outside the roots). |
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |
-| `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook (or collection) ran in the recording changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
-| `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files. |
+| `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook ran in the recording (or that ran while pytest collected a file, and could change the whole process or pytest's session) changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
+| `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files. |
 | `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported, or such a file changed and was imported before the recorder started. |
 
 ## Exit codes

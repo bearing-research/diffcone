@@ -2395,7 +2395,8 @@ is implemented. In short:
   (`src/diffcone/collect.py`, Python 3.12+ `sys.monitoring`). The recorder
   keeps, per test (parameter cases folded), the symbols executed and the
   repository paths opened, `stat`ed or listed. Outside tests it keeps what
-  imports, collection and hooks ran, and which module's import ran it. The
+  imports, collection and hooks ran, which module's import ran it, and
+  which test module pytest was collecting when it ran (`collect_by`). The
   store is `.diffcone/evidence/<commit>-<environment>.sqlite`. Collection
   refuses a dirty tree, an installed copy of the project, a crashed worker
   and any error inside the recorder.
@@ -2409,15 +2410,20 @@ is implemented. In short:
   with explicit `Seeds`, without dynamic pseudo-seeds), and so does any
   change in a module imported before the recorder started
   (`preloaded_modules`: a `.pth` file, `python -S`; a changed file outside
-  the source roots among them selects everything).
+  the source roots among them selects everything). What ran while pytest
+  collected a test module selects that module's tests (`collection_code`),
+  unless the code that ran it then can write process-global state or reach
+  pytest's session, which makes it a hook's.
 * A pytest target is always selected, whatever E says, when:
   - it has no record, or its record is unstable, started a subprocess or
     ran code compiled from text no file holds, such as a doctest
     (`no_evidence`, `unstable`, `subprocess`, `text_code`);
   - its entry or a container of it changed (`changed_target`);
   - a conftest or fixture change puts it in scope (`test_scope`);
-  - a hook, compiled source or configuration file changed
-    (`pytest_hook_changed`, `unobserved_file_changed`).
+  - pytest collected its module running changed code or code reading a
+    change (`collection_code`);
+  - a hook, compiled source or configuration file changed, or code a hook
+    ran (`pytest_hook_changed`, `unobserved_file_changed`).
 * ASV targets, which have no evidence, keep their static decision.
 
 The index carries fields only evidence mode reads (`model.SourceIndex`

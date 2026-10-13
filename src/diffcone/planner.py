@@ -206,6 +206,10 @@ class Rule(StrEnum):
     LOOKUP_SITE = "lookup_site"
     TOUCHED_FILE = "touched_file"
     TEST_SCOPE = "test_scope"
+    # Evidence: the test's module was being collected when the recorded run
+    # ran a changed function or code reading a change (parameter ids, an
+    # ``ids=`` callable, ``pytest_generate_tests``; roadmap item 19, rule 3).
+    COLLECTION = "collection_code"
     CHANGED_TARGET = "changed_target"
     NO_EVIDENCE = "no_evidence"
     UNSTABLE = "unstable"

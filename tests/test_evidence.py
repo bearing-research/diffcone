@@ -1061,7 +1061,11 @@ def test_e7_a_symbol_is_annotations_only_only_if_every_source_says_so():
 
     def source(only, hook):
         return SimpleNamespace(
-            annotations_only=set(only), import_phase=set(hook), hook_phase=set(hook), import_by={}
+            annotations_only=set(only),
+            import_phase=set(hook),
+            hook_phase=set(hook),
+            import_by={},
+            collect_by={},
         )
 
     merged = evidence_module._annotations_only(
