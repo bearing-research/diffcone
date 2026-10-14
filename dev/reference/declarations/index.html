@@ -737,6 +737,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#files-to-leave-out-of-the-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Files to leave out of the analysis
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-can-go-wrong" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -887,6 +898,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Tests to run on every change
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-to-leave-out-of-the-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Files to leave out of the analysis
       </span>
     </span>
   </a>
@@ -1078,6 +1100,37 @@ flags it with <code>MATCHES NOTHING</code>, and the JSON report gives <code>"mat
 diffcone can't tell a mistyped pattern (<code>test/e2e/*</code>) from one a job
 legitimately skips, so check the count when you add an entry or move
 tests.</p>
+<h2 id="files-to-leave-out-of-the-analysis">Files to leave out of the analysis<a class="headerlink" href="#files-to-leave-out-of-the-analysis" title="Permanent link">&para;</a></h2>
+<p>Some projects keep <code>.py</code> files that are not meant to be imported, and
+some of them are not even valid Python: test cases for a formatter or a
+linter, say. diffcone can't analyse such a file, so every plan selects
+every test, and <code>diffcone collect</code> refuses to record. List them under
+<code>[index]</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[index]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">exclude</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">"tests/data/**"</span><span class="p">]</span>
+</code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>exclude</code></td>
+<td>A list of patterns on file paths from the repository root. <code>*</code> matches any characters, <code>/</code> included; <code>?</code> and <code>[...]</code> work as in shell patterns.</td>
+</tr>
+</tbody>
+</table>
+<p>A <code>.py</code> file that matches is treated like any other file diffcone doesn't
+analyse, a data file, say. A change to it makes a plan without a
+recording select every test. With a recording, it selects the tests that
+read the file or ran its code. The report lists each snapshot's patterns
+(<code>analysis.base.excluded</code>, <code>analysis.head.excluded</code>).</p>
+<p>Don't exclude a file pytest collects tests from, or a <code>conftest.py</code>: its
+tests can't be targets, so the plan says discovery is incomplete, and the
+tests under an excluded <code>conftest.py</code> are always selected.</p>
 <h2 id="what-can-go-wrong">What can go wrong<a class="headerlink" href="#what-can-go-wrong" title="Permanent link">&para;</a></h2>
 <p>Declarations can only add dependencies or selected tests, so they can only
 make diffcone select more tests, never fewer.</p>
@@ -1086,6 +1139,8 @@ code. These are reported as an analysis error:</p>
 <ul>
 <li>a declaration that names something that doesn't exist;</li>
 <li>an <code>always_run</code> entry without <code>targets</code>, or with an unknown <code>runner</code>;</li>
+<li>an <code>[index]</code> table that isn't a table, or an <code>exclude</code> that isn't a list
+  of non-empty patterns;</li>
 <li>an unknown key;</li>
 <li>a file that doesn't parse;</li>
 <li>a file that is there but can't be read (left unmerged by a conflicted
