@@ -1562,19 +1562,16 @@ the last baseline (`evidence_table.py NEW BASELINE`).
 E21-E26 shipped (evaluation.md, "Evidence corpus after E21-E26": 83.5 %
 -> 68.8 % of the corpus, strata unchanged). What is left:
 
-*Readers of whatever they are handed, at import (E31).* E23 dropped the
-modules the recording never imported; a frame or `__code__` reader still
-sees every imported module, and where it runs at import of a module every
-test imports (`jinja2.utils.internalcode`, `boltons.typeutils.
-make_sentinel`), any change escalates that module and with it every test.
-*Mechanism (to measure first):* the recorder keeps, for each run of such a
-reader, what reached it: the modules on the stack (a frame reader can
-walk only those) and the function it was handed (`f.__code__` reads that
-function's code); planning takes those as its seeing sites. *Trade-off:*
-none if the record is complete; a reader that stores the frame or code
-for later must keep the wide reading. *Done when* boltons' and jinja's
-chains end, with regression tests for a frame reader that sees its caller
-and one that stores what it saw.
+*Readers of whatever they are handed, at import (E31): measured, not
+worth it.* The two readers named are narrower than an unbounded lookup:
+`f.__code__` (with `__defaults__`, `__kwdefaults__`) reads a function
+object and sees only a change to a function's definition, and `name in
+sys.modules` sees only which modules are imported. A spike (branch `e31`,
+not merged) bounds both; re-planned, every boltons and jinja pair selects
+what it did: the chains move on to `namedlist`'s `exec` of generated text
+and to code run while a test module is imported (the import trade-off,
+kept). pandas' lookup sites are `getattr(obj, name)` readers. Revisit only
+if a project's plans end at one of these two readers.
 
 *The import trade-off (needs the user's decision).* E27 and E28 are
 changes that run at import or configure the run: an edit to a test
