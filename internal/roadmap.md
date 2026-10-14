@@ -1489,6 +1489,54 @@ A conftest `pytest_generate_tests` runs while each module is collected, so
 its code is attributed to each of them; a change to the hook function
 itself is a hook change (everything), as now.
 
+**Rule 3 landed** (f489fab, store format 6): on pandas, 340 of the 347
+hook-phase symbols are now credited to the test module being collected.
+The plans did not move (evaluation.md, "pandas: evidence plans after
+E11-E13"): rule 3 keeps a hook's reach for collection code that can run a
+process-global write, and on pandas every such code can.
+
+**What rule 3 left** (each a narrowing that needs its own decision):
+* *Writes put back on exit.* `set_locale` saves the locale, sets it in a
+  `try`, and restores it in `finally`; `assert_produces_warning` and two
+  more do the same through `warnings.catch_warnings()` around a `yield`.
+  The catalogue (indexer/process.py) counts each as a write that later
+  code sees. *Mechanism:* a state call inside a `try` whose `finally` calls
+  it again with the value saved just before the `try` (`saved =
+  locale.setlocale(cat)`, a one-argument query; `old = numpy.seterr(...)`,
+  which returns the old settings) is no write. Around a `yield` the state
+  stays changed while the generator is suspended, which for a
+  `@contextmanager` is the caller's `with` body, so the writer is then
+  each caller whose `with` body itself suspends, and any use that is not a
+  `with`. `locale.setlocale(cat)` with one argument is a query in any case.
+* *Test functions in a library function's reach.* The forward reach of
+  collection code includes test functions (`test_bad_version`, which
+  patches `sys.modules`) through names matched on receivers of unknown
+  type. Library code reaches a test function only through an object a
+  test hands it; find the edge that brings them in, and whether a test
+  function can be left out of a name match from code outside test code.
+* *A namespace change seen by library lookup sites.* A deleted test
+  function counts as seen by `pandas.core.dtypes.missing._isna` and other
+  lookup sites that ran during collection. Find why those sites can see a
+  test module's namespace.
+* *A module change that only changes the names it binds.* `b693e2e54f`
+  drops one name from a `from pandas.core.dtypes.cast import ...` that
+  still imports that module, and deletes an undecorated function. The
+  module's import-time code is escalated to static planning, where a change
+  that runs at import reaches every transitive importer (the trade-off in
+  design.md). What changed is only which names the module binds; their
+  readers are the resolved references and the lookup sites on the module.
+  Planning such a change through its names, not as changed import-time
+  code, moves that trade-off for evidence plans, so it waits for a
+  decision.
+* *Text code flagged in the hook phase now and then* (strata, seen once in
+  two recordings of the same code: evaluation.md, "strata on Python 3.13
+  and 3.14"). Some library compiles text the first time a process uses
+  it; when that first time falls outside every test and import, the
+  recording selects everything for every change. *Mechanism:* first find
+  the source (record with a stack logged where `_flag` marks the hook
+  phase, until it recurs); if it is a library's own fixed template, it is
+  exempt as `typing` and `annotationlib` are.
+
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind
 whatever still selects everything. Further patterns get their own entry
