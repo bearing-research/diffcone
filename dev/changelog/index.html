@@ -1576,6 +1576,11 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   <code>indirect</code> parameter, another decorator on the test, or a parametrize
   on its class or in <code>pytestmark</code> keeps the old rule.</li>
 <li>Indexing a very long function is no longer quadratic in its calls.</li>
+<li>Editing the docstring of a method under <code>@classmethod</code>, <code>@staticmethod</code>
+  or <code>@property</code> no longer counts as code run at import (which selected
+  every test importing the module): these builtins only copy the
+  docstring. Code that reads the docstring is still selected, and so is a
+  project decorator with one of those names.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <h4 id="static-analysis">Static analysis<a class="headerlink" href="#static-analysis" title="Permanent link">&para;</a></h4>
@@ -2102,6 +2107,22 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 <li>Editing an ordinary module named <code>build.py</code> (not at the repository root
   or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects the tests that ran it,
   as static planning does, instead of every test.</li>
+<li>Recordings no longer select every test for every change when pytest
+  plugins or test helpers ask the machine or the repository something
+  outside the tests: <code>git</code> reporting the commit, branch, remote or
+  configuration (pytest-benchmark does as it starts) and <code>ps</code>
+  (shellingham's shell detection) join <code>uname</code> and <code>locale</code>. A <code>git</code>
+  command that prints a file or writes still counts.</li>
+<li>Running the suite under coverage (<code>--cov</code> in <code>addopts</code>) no longer makes
+  every source file look read by the module importing it: coverage
+  resolving a file it is about to measure is nobody's read.</li>
+<li>Tests that build URLs with werkzeug (every Flask app) no longer count as
+  running code compiled from text, which selected them for every change.</li>
+<li>A change to a module no test imports (a Sphinx <code>docs/conf.py</code>) no
+  longer reaches code that looks names up on whatever it is handed (a
+  frame's globals, a function's <code>__code__</code>, <code>sys.modules</code>), which selected
+  every test importing that code. A module imported by any test, even
+  inside one, or by an import added in the same change, still does.</li>
 </ul>
 <h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
 <ul>
