@@ -1509,7 +1509,7 @@ may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
 <p>Upgrading from 0.3.0: make your execution-evidence recordings again. The
-store format is now 5 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
+store format is now 6 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
 recording, naming one is an error, and the <code>run</code> action plans from the
 code until <code>record</code> makes a new one. Expect plans to select more tests
 than 0.3.0 did: most of the changes below close cases where diffcone
@@ -1834,6 +1834,16 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   change that only makes the function run earlier or later reaches nothing
   through it. A change to the function itself, or a reader outside it,
   still counts.</li>
+<li>Code that ran while pytest collected a test file (building the ids of
+  parametrized tests, an <code>ids=</code> function, <code>pytest_generate_tests</code> and what
+  it calls) now selects that file's tests when it changes, and the tests
+  reading what it stored, instead of every test; so does a change to a
+  file read then. It still selects every test when what ran it can set
+  something for the whole process (an environment variable) or reaches
+  pytest's configuration or session (<code>.config</code>, <code>.session</code>, <code>.stash</code>,
+  <code>.pluginmanager</code>, another hook). Code run by session hooks
+  (<code>pytest_configure</code>, <code>pytest_collection_modifyitems</code>) selects every test
+  as before.</li>
 <li>A test that failed or errored while it was recorded is always selected:
   its recording stops where it failed, so where it passes (a flaky failure,
   a different environment) it can run code the recording never saw.

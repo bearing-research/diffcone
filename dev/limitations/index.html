@@ -1336,6 +1336,16 @@ A collection hook may do the same. That can change what any later test
 sees, so such code is a dependency of every test.
 <a href="../reference/discovery/#pytest">Static discovery</a> lists what is
 recognised.</dd>
+<dt><strong>With a recording, code run while pytest collects a file reaches that file's tests.</strong></dt>
+<dd>Building parameter ids, an <code>ids=</code> function and <code>pytest_generate_tests</code>
+decide the tests of the file pytest is collecting, so a change there
+selects that file's tests and whoever reads what the code stored. Code
+that pytest hands its objects to can also leave something for hooks
+that act on every test. That is recognised when the code, or what ran
+it, reads <code>.config</code>, <code>.session</code>, <code>.stash</code> or <code>.pluginmanager</code>, or is a
+hook other than <code>pytest_generate_tests</code>, and then every test is
+selected. Something left on another pytest object (<code>metafunc.function</code>,
+a node's attributes) for a later hook to act on is not.</dd>
 </dl>
 <h2 id="reading-files">Reading files<a class="headerlink" href="#reading-files" title="Permanent link">&para;</a></h2>
 <dl>

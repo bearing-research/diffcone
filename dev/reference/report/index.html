@@ -1405,6 +1405,11 @@ selected the target to be safe.</p>
 <td>Test code it shares a scope with changed (a mark, fixture or parameter).</td>
 </tr>
 <tr>
+<td><code>collection_code</code></td>
+<td></td>
+<td>pytest ran changed code, or code that reads something that changed, while it collected the test's file in the recording (building parameter ids, an <code>ids=</code> function, <code>pytest_generate_tests</code>): that code decides the file's tests, their parameters, ids and marks.</td>
+</tr>
+<tr>
 <td><code>escalated</code></td>
 <td></td>
 <td>The change can't be judged from a recording (code that runs on import, or a module imported before the recorder started), so it was planned from the code.</td>
@@ -1442,12 +1447,12 @@ selected the target to be safe.</p>
 <tr>
 <td><code>pytest_hook_changed</code></td>
 <td>yes</td>
-<td>A pytest hook or what decides what pytest loads changed, or code that a hook (or collection) ran in the recording changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test.</td>
+<td>A pytest hook or what decides what pytest loads changed, or code that a hook ran in the recording (or that ran while pytest collected a file, and could change the whole process or pytest's session) changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test.</td>
 </tr>
 <tr>
 <td><code>unobserved_file_changed</code></td>
 <td>yes</td>
-<td>A change the recording can't attribute to tests: code that ran outside every test (a hook, collection), a <code>conftest.py</code> outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files.</td>
+<td>A change the recording can't attribute to tests: code that ran outside every test (a hook), a <code>conftest.py</code> outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files.</td>
 </tr>
 <tr>
 <td><code>unindexed_import</code></td>
