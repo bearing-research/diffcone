@@ -793,6 +793,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="[Unreleased]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -819,7 +836,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fixed" class="md-nav__link">
+  <a href="#fixed_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Fixed
@@ -1183,6 +1200,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="[Unreleased]">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1209,7 +1243,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#fixed" class="md-nav__link">
+  <a href="#fixed_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Fixed
@@ -1530,6 +1564,15 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>On Windows, the recorder no longer treats a system query (<code>locale -a</code>,
+  <code>git rev-parse</code> and the other read-only <code>git</code> queries, <code>ps</code>, <code>uname</code>) as
+  a process it cannot follow. It did, so a recording of a suite that runs
+  one outside every test (pandas' locale tests at import, pytest-benchmark
+  in every run) planned every change as select-everything there. POSIX
+  was not affected.</li>
+</ul>
 <h2 id="040-2026-10-14"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.4.0">0.4.0</a> - 2026-10-14<a class="headerlink" href="#040-2026-10-14" title="Permanent link">&para;</a></h2>
 <p>Upgrading from 0.3.0: make your execution-evidence recordings again. The
 store format is now 6 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
@@ -1605,7 +1648,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   docstring. Code that reads the docstring is still selected, and so is a
   project decorator with one of those names.</li>
 </ul>
-<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<h3 id="fixed_1">Fixed<a class="headerlink" href="#fixed_1" title="Permanent link">&para;</a></h3>
 <h4 id="static-analysis">Static analysis<a class="headerlink" href="#static-analysis" title="Permanent link">&para;</a></h4>
 <ul>
 <li>A change to a dependency, build or CI file outside the source roots
