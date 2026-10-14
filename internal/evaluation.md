@@ -1485,6 +1485,38 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   open. A recording that lands there plans every change as select-all
   until it is recorded again.
 
+## The import trade-off under evidence: measured (2026-10-14)
+
+Roadmap item 20, E27/E28. An escalated change is planned twice, by the
+evidence planner (its module's symbols, the lookup sites that see it, what
+its import-time code writes) and by the static planner from it as a seed,
+whose import rule reaches every importer; for test code, also every test,
+through the session-wide dependencies discovery adds for code run at
+collection (`session_state.py`). A spike (branch `e27spike`,
+`DIFFCONE_SPIKE`) drops the static half, and stops counting CI files as
+build inputs.
+
+| variant | evidence tests broken | corpus selected (48 pairs) |
+|---|---|---|
+| main | 0 | 19 431 of 28 247 |
+| no static seeds in test code, CI files not build inputs | 6 | 19 304 (arrow -127; misses 0) |
+| no static seeds anywhere | 20 | not run |
+
+* The broken tests are audit findings the static half fixed: with test
+  seeds dropped, a conftest or test module writing shared state at import
+  (W4 through an argument or receiver, W12 `os.environ`, W15 in a
+  function), a fixture's scope changed in a conftest, and an annotation
+  change (E7). With all seeds dropped, also R28, Q3, E8/E9, EVP2, EVP6
+  and the library's own import-time writes.
+* The corpus barely moves: in each pair that selects everything, something
+  else does too. more-itertools' edits are to `tests/test_more.py`, whose
+  own scope is most of the suite; the release commits also touch
+  `pyproject.toml` or `uv.lock`; flask, jinja and typer change library
+  code that runs at import; boltons and jinja go through E31.
+* So keeping the trade-off costs this corpus 0.4 points, and the variant
+  that would save them misses six known cases. Corpus replays reuse the
+  recordings (`REPLAY=1 evidence-corpus-one.sh`).
+
 ## Evidence corpus after E21-E26 (2026-10-14)
 
 The same 48 pairs, recorded and planned with the fixes for E21-E26 (branch

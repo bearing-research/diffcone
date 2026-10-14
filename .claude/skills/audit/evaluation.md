@@ -129,6 +129,9 @@ them one after another, and never beside another heavy job (a pandas
 recording or plan, the full gate): the machine has 16 GB. black is not in
 the set: its test data holds deliberately invalid `.py` files under the
 source root, and `collect` refuses a checkout with analysis errors.
+For a change to planning alone, `REPLAY=1` keeps the recordings the last
+run left in each clone and only replans and validates (made by that run's
+recorder: re-record after any recorder change).
 
 Why a plan selects what it does is not in the corpus report: plan one pair
 from its recording (`diffcone plan --repo $E/repos/NAME --base C^ --head C

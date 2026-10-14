@@ -13,7 +13,8 @@
 # (evaluation.md, "Evidence corpus"). The clone is checked out at each
 # parent while recording (its env is an editable install of the clone) and
 # put back after; old recordings are removed first, so each run records
-# anew with TREE's recorder.
+# anew with TREE's recorder. REPLAY=1 keeps the recordings a previous run
+# made and only replans and validates: for a change to planning alone.
 : "${E:?set E to the evaluation work directory}"
 name=${1:?usage: evidence-corpus-one.sh NAME TREE OUTDIR}
 T=$(cd "${2:?usage: evidence-corpus-one.sh NAME TREE OUTDIR}" && pwd)
@@ -41,9 +42,10 @@ for c in $(git -C "$R" rev-list --first-parent HEAD); do
 done
 [ ${#py[@]} -gt 0 ] || { echo "no Python-changing commit in reach" > "$O/$name.log"; exit 2; }
 base=$(git -C "$R" rev-parse "${py[${#py[@]}-1]}^")
-rm -f "$R"/.diffcone/evidence/*.sqlite
+[[ ${REPLAY:-} == 1 ]] || rm -f "$R"/.diffcone/evidence/*.sqlite
 : > "$O/$name.collect.log"
 for c in "${py[@]}"; do
+  [[ ${REPLAY:-} == 1 ]] && break
   git -C "$R" checkout -q --detach "$c^" || break
   echo "== $(git -C "$R" rev-parse --short HEAD)" >> "$O/$name.collect.log"
   PATH="$R/.venv/bin:$PATH" timeout 3600 uv run --project "$T" diffcone collect --repo "$R" \

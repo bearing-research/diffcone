@@ -1583,6 +1583,18 @@ CI workflows. E27 is item 19's "a module change that only changes the
 names it binds" seen from the test side. Any narrowing there moves the
 documented trade-off, so it waits for a decision.
 
+*Measured (2026-10-14, spike branch `e27spike`, not merged; evaluation.md,
+"The import trade-off under evidence: measured").* Dropping the static
+half of escalation for test code saves 127 of 19 431 selected tests in the
+corpus (arrow only), and with CI files no longer build inputs nothing more:
+the same pairs select everything through their test module's own scope,
+`pyproject.toml` or `uv.lock`, library import-time code or E31. It breaks
+6 regression tests (W4, W12, W15, a fixture's scope, E7: test code that
+writes shared state at import); dropping it everywhere breaks 20. A
+precise variant (drop a test module's seed only when what its import-time
+code can run writes nothing outside it) would save at most the same 127.
+Recommendation: keep the trade-off; precision effort goes to E31.
+
 *Usability.* E29: a way to keep files out of the index (black's invalid
 test data); E30: `collect` warns when the recorded node ids match none of
 the discovered targets.
