@@ -11,7 +11,7 @@ cov=(--coverage); [[ ${4:-} == --outcome-only ]] && cov=()
 R=$E/repos/$name
 mkdir -p "$O"
 roots=(--source-root .); [ -d "$R/src" ] && roots=(--source-root src --source-root .)
-cmd="$R/.venv/bin/python -m pytest --rootdir=$R"  # see evidence-corpus-one.sh
+cmd="$R/.venv/bin/python -m pytest --rootdir=."  # see evidence-corpus-one.sh
 [[ $name == pre-commit ]] && cmd="$cmd --ignore=tests/languages"
 # The clones are shallow: start from the furthest ancestor that exists.
 n=40; while [ $n -gt 6 ] && ! git -C "$R" rev-parse -q --verify "HEAD~$n" >/dev/null; do n=$((n-1)); done

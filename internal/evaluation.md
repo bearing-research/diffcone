@@ -1525,7 +1525,11 @@ shows which tests executed changed code). Python 3.13.
   repository with no pytest configuration of its own (more-itertools) took
   diffcone's `pyproject.toml` as pytest's rootdir, and every recorded node
   id (`.spike/repos/more-itertools/tests/...`) matched no target: every
-  test had no evidence, silently (E30). The scripts now pass `--rootdir`.
+  test had no evidence, silently (E30). The scripts now pass
+  `--rootdir=.`: relative, since diffcone runs pytest in the checkout under
+  test, and validation runs in temporary worktrees (an absolute path to the
+  clone made flask's validation collect the clone's files: "suite did not
+  run"). Re-run with it, main selects the same numbers as above.
 
 ## Corpus evaluation on 0.4.0's code (2026-10-12)
 
