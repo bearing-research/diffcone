@@ -9,7 +9,7 @@ selection rules.
 ## [Unreleased]
 
 Upgrading from 0.3.0: make your execution-evidence recordings again. The
-store format is now 5 (0.3.0 wrote 1): `--evidence auto` skips an older
+store format is now 6 (0.3.0 wrote 1): `--evidence auto` skips an older
 recording, naming one is an error, and the `run` action plans from the
 code until `record` makes a new one. Expect plans to select more tests
 than 0.3.0 did: most of the changes below close cases where diffcone
@@ -336,6 +336,16 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   change that only makes the function run earlier or later reaches nothing
   through it. A change to the function itself, or a reader outside it,
   still counts.
+- Code that ran while pytest collected a test file (building the ids of
+  parametrized tests, an `ids=` function, `pytest_generate_tests` and what
+  it calls) now selects that file's tests when it changes, and the tests
+  reading what it stored, instead of every test; so does a change to a
+  file read then. It still selects every test when what ran it can set
+  something for the whole process (an environment variable) or reaches
+  pytest's configuration or session (`.config`, `.session`, `.stash`,
+  `.pluginmanager`, another hook). Code run by session hooks
+  (`pytest_configure`, `pytest_collection_modifyitems`) selects every test
+  as before.
 - A test that failed or errored while it was recorded is always selected:
   its recording stops where it failed, so where it passes (a flaky failure,
   a different environment) it can run code the recording never saw.

@@ -39,6 +39,11 @@ from diffcone.model import (
     SymbolKind,
 )
 
+# 6: code run while pytest collected a test module or class (``collect_by``),
+# and paths touched then (``COLLECTED`` among ``import_paths``), apart from
+# the hook phase, which no longer holds them: an earlier store would plan
+# every collection-time change as a hook's, soundly, but its records would
+# disagree with an advanced store's.
 # 5: tests that failed or errored when recorded (FLAG_FAILED), and
 # ``VIRTUAL_ENV`` in the environment.
 # 4: the symbols that ran outside every test only through their annotations
@@ -51,7 +56,7 @@ from diffcone.model import (
 # window are folded into the phase that made them, and what no record
 # shows there is kept (``import_flagged``); inert probes are accounted;
 # text code is flagged.
-STORE_FORMAT = 5
+STORE_FORMAT = 6
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -67,6 +72,9 @@ EVIDENCE_DIR = Path(".diffcone") / "evidence"
 # An import run by a module outside the source roots: nothing static can say
 # who observes what it built.
 UNINDEXED_MODULE = "path:"
+# A path touched while pytest collected a test module (``COLLECTED`` + the
+# module) among the modules of ``import_paths`` and ``import_dirs``.
+COLLECTED = "collect:"
 
 
 class EvidenceError(Exception):
@@ -103,8 +111,14 @@ class Evidence:
     # Symbol -> the modules whose import ran it (``path:<file>`` for a module
     # outside the index).
     import_by: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Symbol -> the test modules (of the index) pytest was collecting when it
+    # ran, with no import running: parameter ids, ``ids=`` callables,
+    # ``pytest_generate_tests`` (roadmap item 19, rule 3).
+    collect_by: dict[str, frozenset[str]] = field(default_factory=dict)
     # Symbols executed outside every test window while no import was running
-    # (session hooks, collection, pytest_generate_tests).
+    # and no test module or class of the index was being collected (session
+    # hooks, ``pytest_collection_modifyitems``, a directory's collection, a
+    # collected file the index does not hold).
     hook_phase: frozenset[str] = frozenset()
     # Symbols in the phases above whose only code that ran there was their
     # annotations' (Python 3.14 evaluates annotations lazily, in a code
@@ -113,14 +127,15 @@ class Evidence:
     # was (``evidence_plan``).
     annotations_only: frozenset[str] = frozenset()
     # Paths project code opened or stat'ed outside every test window
-    # -> the modules being imported then ("" for none: a hook or collection;
-    # ``path:<file>`` for a module outside the index).
+    # -> the modules being imported then ("" for none: a hook; ``path:<file>``
+    # for a module outside the index; ``collect:<module>`` while pytest
+    # collected that test module).
     import_paths: dict[str, frozenset[str]] = field(default_factory=dict)
     import_dirs: dict[str, frozenset[str]] = field(default_factory=dict)  # listed, likewise
     # The modules whose import ran what no record shows (a process no record
     # follows, text code), ``path:<file>`` for one outside the index, and ""
-    # for code outside every import (a hook, collection): any change may
-    # reach what that phase built.
+    # for code outside every import (a hook, collection of any kind): any
+    # change may reach what that phase built.
     import_flagged: frozenset[str] = frozenset()
     # The modules imported before the recorder started (a ``.pth`` file, a
     # ``-p`` plugin when its ``sitecustomize`` could not run), whose
@@ -292,6 +307,7 @@ class _Raw:
     case_insensitive: bool = False
     # The environment a process started in, when its run changed it.
     environment_at_start: dict | None = None
+    collect_by: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     # A shared fixture (by key) -> what its setup ran in any process, and
     # the shared fixtures each test used.
     fixtures: dict[str, tuple[set[str], set[str], set[str], int]] = field(default_factory=dict)
@@ -322,7 +338,7 @@ def _annotations_only(sources: list[_Raw] | list[Evidence]) -> frozenset[str]:
     code: set[str] = set()
     for s in sources:
         only |= s.annotations_only
-        outside = set(s.import_phase) | set(s.hook_phase) | set(s.import_by)
+        outside = set(s.import_phase) | set(s.hook_phase) | set(s.import_by) | set(s.collect_by)
         code |= outside - s.annotations_only
     return frozenset(only - code)
 
@@ -442,9 +458,14 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         canonical = owners.canonical if folds else _same
 
         def module_of(module_path: str, canonical=canonical) -> str:
-            """The module a recorded module path names; "" for none."""
+            """The module a recorded module path names; "" for none. A
+            collector's file (``/<file>``) is ``collect:<module>``, or "" (a
+            hook's) for a file the index does not hold."""
             if not module_path:
                 return ""
+            if module_path.startswith("/"):
+                module = owners.module_of_path.get(canonical(module_path[1:]))
+                return COLLECTED + module if module is not None else ""
             module = owners.module_of_path.get(canonical(module_path))
             return module if module is not None else UNINDEXED_MODULE + module_path
 
@@ -494,6 +515,19 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             outside(int(key))
             for module_path in modules:
                 raw.import_by[symbol].add(module_of(module_path))
+        # Run while pytest collected a test module or class: credited to its
+        # module, or to the hook phase for a file the index does not hold.
+        for key, files in data["collect_by"].items():
+            symbol = symbol_of[int(key)]
+            if symbol is None:
+                continue  # a file outside the index: in import_phase, above
+            outside(int(key))
+            for file in files:
+                module = owners.module_of_path.get(canonical(file))
+                if module is not None:
+                    raw.collect_by[symbol].add(module)
+                else:
+                    raw.hook_phase.add(symbol)
         # A process started outside every test window ran as part of the
         # phase that started it: what it ran is that import's (or, with no
         # import running, a hook's), and what no record shows flags it.
@@ -806,6 +840,7 @@ def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
         "hook_phase": frozenset().union(*(s.hook_phase for s in sources)),
         "annotations_only": _annotations_only(sources),
         "import_by": _merged(s.import_by for s in sources),
+        "collect_by": _merged(s.collect_by for s in sources),
         "import_paths": _merged(s.import_paths for s in sources),
         "import_dirs": _merged(s.import_dirs for s in sources),
         "import_flagged": frozenset().union(*(s.import_flagged for s in sources)),
@@ -867,6 +902,7 @@ def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
             target TEXT PRIMARY KEY, symbols INTEGER NOT NULL,
             paths INTEGER NOT NULL, dirs INTEGER NOT NULL, flags INTEGER NOT NULL);
         CREATE TABLE import_by (symbol TEXT NOT NULL, module TEXT NOT NULL);
+        CREATE TABLE collect_by (symbol TEXT NOT NULL, module TEXT NOT NULL);
         """
     )
     meta = {
@@ -909,6 +945,10 @@ def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
         "INSERT INTO import_by VALUES (?, ?)",
         [(s, m) for s, modules in evidence.import_by.items() for m in sorted(modules)],
     )
+    db.executemany(
+        "INSERT INTO collect_by VALUES (?, ?)",
+        [(s, m) for s, modules in evidence.collect_by.items() for m in sorted(modules)],
+    )
 
 
 def _read_only(path: Path) -> sqlite3.Connection:
@@ -946,6 +986,9 @@ def load_store(path: Path) -> Evidence:
         import_by: dict[str, set[str]] = defaultdict(set)
         for symbol, module in db.execute("SELECT symbol, module FROM import_by"):
             import_by[symbol].add(module)
+        collect_by: dict[str, set[str]] = defaultdict(set)
+        for symbol, module in db.execute("SELECT symbol, module FROM collect_by"):
+            collect_by[symbol].add(module)
         evidence = Evidence(
             commit=meta["commit"],
             source_roots=meta["source_roots"],
@@ -961,6 +1004,7 @@ def load_store(path: Path) -> Evidence:
             hook_phase=frozenset(meta["hook_phase"]),
             annotations_only=frozenset(meta.get("annotations_only", ())),
             import_by={s: frozenset(m) for s, m in import_by.items()},
+            collect_by={s: frozenset(m) for s, m in sorted(collect_by.items())},
             import_paths={p: frozenset(m) for p, m in meta["import_paths"].items()},
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
             import_flagged=frozenset(meta["import_flagged"]),

@@ -1471,6 +1471,19 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   `touched_file` 18 -> 7 and 8 (a test's own file is no longer in its
   record); `executed_changed` stays 403 on both, so crediting what
   annotations read added no selection here.
+* Rule 3 of item 19 (2026-10-13, 3.13, store format 6): 658 of 6 231 with
+  no fallback against main's 659 (format 5). The one test apart started
+  a process that main's recording flagged and this one did not; the flag
+  comes and goes between recordings of the same code. So does `text_code`:
+  of two recordings with the rule 3 recorder, one flagged text code run
+  outside every test and import, which selected all 6 231
+  (`subprocess`, "ran … outside any import (a hook or collection)"), and
+  the tests that count as running text code differ between recordings
+  (`test_context_manager` of one scanner or another). Something compiles
+  text the first time a process uses it, and the hook phase is sometimes
+  that first time; the run that hit it was not traced, so the source is
+  open. A recording that lands there plans every change as select-all
+  until it is recorded again.
 
 ## Corpus evaluation on 0.4.0's code (2026-10-12)
 
@@ -2052,6 +2065,31 @@ The docstring plans select through `pandas.conftest.add_doctest_imports`
 plans through `pandas.util._exceptions.find_stack_level`, whose lazily
 initialised `_pkg_dir` counts as state written by changed import-time code
 and read during collection. Roadmap item 19 narrows both.
+
+After rules 1-3 (2026-10-13; re-recorded with the rule 3 recorder, `-n 4`,
+764 s, store format 6): of 347 symbols run outside every test and import,
+340 now ran while pytest collected one of 206 test modules (`collect_by`)
+and 7 remain in the hook phase. The plans:
+
+| commit | change | selected | what selects |
+|---|---|---|---|
+| bb48902271 | docstring | 94.0 % | `executed_reader` (18 916), `lookup_site` (4 327); no fallback |
+| 9f8d4a817d | one method body | 100 % | 34 fallbacks `pytest_hook_changed` |
+| e9b71cd02e | signatures of `DataFrame` reductions | 100 % | 41 fallbacks `pytest_hook_changed` |
+| b693e2e54f | an import name removed, a function deleted | 100 % | 34 fallbacks `pytest_hook_changed`; `escalated` on every test |
+
+Every fallback ends the same way: a reader of the change ran while pytest
+collected a test module, and the code that ran then "can run"
+`pandas._config.localization.set_locale`, a process-global write, so rule
+3 counts it as a hook's. A diagnostic plan of `b693e2e54f` that never
+counts collection code as a hook's lists, for each of the 31 such
+symbols, a forward reach of 7 415-7 634 symbols holding the same 8
+process writers: 4 context managers that put the state back on exit
+(`set_locale`, `assert_produces_warning`, `patch_pickle`,
+`suppress_pyarrow_values_warning`) and 4 test functions reached by name.
+That plan is still 100 %: the module-level change escalates
+`pandas.core.apply` to static planning, whose import rule reaches every
+test. The chains are sketched under item 19 ("What rule 3 left").
 
 ## pandas: compiled edits at the module surface (item 18 spike, 2026-10-12)
 

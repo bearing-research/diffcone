@@ -83,6 +83,7 @@ folds parameter cases:
 | `X(T)` | symbols executed during T's setup, call and teardown | `sys.monitoring` `PY_START` (Python 3.12+), disabled per code object after its first hit and re-armed per test with `restart_events()`; `PY_RESUME` and `PY_THROW` (a generator or coroutine re-entered in a later test, by `next`, `.throw()` or `.close()`) |
 | fixture shares | setup/teardown symbols of every non-function-scoped fixture instance, credited to *every* test that uses it, not just the first | a hookwrapper on `pytest_fixture_setup` records each instance's setup window, re-arming the tracer as it opens (code the test already ran is otherwise disabled and would be missing from the fixture's window); teardown windows are still to be designed. A test is credited with every fixture it *activated*, read from its request during teardown (`request.getfixturevalue` included, which `item.fixturenames` misses). Each process writes its fixture windows and each test the fixtures it used, so the fold credits a test with what the same fixture ran in *any* process: a session fixture that xdist workers compute once (a file lock and a cache file) runs its work in one worker only |
 | `X_import` | symbols executed outside every test window (imports, collection, conftest bodies, session hooks) | the same tracer, outside windows |
+| phases outside the tests | for each symbol of `X_import`, the modules whose import ran it (`import_by`); the test modules pytest was collecting when it ran with no import running (`collect_by`: parameter ids, `ids=` callables, `pytest_generate_tests`; roadmap item 19, rule 3); and the rest, run with neither (`hook_phase`: session hooks, `pytest_collection_modifyitems`, a directory's or package's collection, a collected file the index does not hold) | the import stack from `<module>` code's start and return; a `pytest_make_collect_report` wrapper keeps the stack of collectors, the file of a `Module` or `Class` (a doctest module included) and nothing for any other collector, and re-arms the tracer as each opens and closes, as an import does |
 | import attribution | for each symbol run by an import, which modules' imports ran it (the innermost module whose top-level code was running) | a stack of modules pushed at a `<module>` code object's `PY_START` and popped at its `PY_RETURN` (a local event) or `PY_UNWIND` (an import that raises, such as `pytest.importorskip` at module level); events re-armed at each push and pop |
 | `F(T)` | repository files T opened | an audit hook on `open` (`sys.addaudithook`), `sqlite3.connect` (a `file:` URI parsed to its path) and `ctypes.dlopen` (C code opens those files), wrappers of `os.stat`, `os.lstat`, `os.fstat`, `os.access`, `os.readlink`; each path also under its real path when a symlink is on the way (`child.RealPaths`: a linked directory, a link to a file; directories memoised, the memo dropped after `os.symlink`/`rename`/`remove`/`rmdir`/`link`), so the file really read matches; a path relative to a directory descriptor (`dir_fd=`, `os.listdir(fd)`, `os.scandir(fd)`, `os.fstat`) resolved through the descriptors `os.open` returned (kept through `dup`, dropped at `close`, checked with `samestat` against the file they name), and the test flagged (`FLAG_SUBPROCESS`) when one cannot be resolved; a directory listed with `os.scandir` (`os.walk`, `glob`, `pathlib`) also recorded with the `child.SCANNED` suffix, since `DirEntry.stat()`/`is_file()` raise no event: an edit to a direct entry then selects the test (audit round 5, R29); paths with `/` on every platform, respelled as the index spells them when the recording's file system folds case (`tests/Data/X.TXT` is `tests/data/x.txt`; a path the index does not know matches a changed one in any spelling). A changed `.py` file T opened (read as data: `exec(open(...).read())`, `inspect.getsource`) selects T like a data file; a module's stat of its *own* file while it is imported (`Path(__file__).resolve()`) is recorded as a name seen, like a listing, so it counts when the file is added or deleted, not when it is edited; every other stat of a `.py` file counts as reading it (`inspect.getsource` only stats a file linecache already holds) |
 | children | what the Python processes T started through `subprocess.Popen` ran, and those still running when T's window opened (POSIX; roadmap item 15); a process started outside every window (at import, in a hook) is folded into that phase instead: what it ran is the import's, or a hook's | `Popen._execute_child` wrapped; the child records itself from a `sitecustomize` beside the plugin (`child.py`; the plugin's directory comes first on `PYTHONPATH`, and a project's own `sitecustomize` is chained) into `children/<ppid>/<pid>-<start>.jsonl`, and the fold resolves each spawn to its records (the process itself, or a launcher's Python child that ran its command), recursively; liveness by `os.kill(pid, 0)` over the spawn's tree at each window open. A spawn of a pytest process of the same recording (an xdist worker) resolves to its own process record |
@@ -361,8 +362,9 @@ selection or states something the tables left implicit; none narrows it.
     plugin fixture may read a file for the test;
   - outside every window, an event counts only when project code is on the
     stack. It is credited to the module being imported (a parametrize list
-    globbed at import escalates that module), or to no module when it
-    happens in a hook, which selects everything;
+    globbed at import escalates that module), to the test module pytest is
+    collecting (an `ids=` callable reading a file: its tests are selected),
+    or to no module when it happens in a hook, which selects everything;
   - what an environment kept inside the checkout owns (under
     `sys.prefix` and its kin: its scripts, `lib/pythonX.Y/`, `pyvenv.cfg`)
     is not project code, as `site-packages` is not: `uv run pytest` runs
@@ -395,8 +397,8 @@ selection or states something the tables left implicit; none narrows it.
   reach is its own tests (their lifecycle dependency on it) and its
   importers. The spike credited only the tests that executed M's code, which
   missed another test module importing a value M built. Code that ran
-  outside any test and outside any import (session hooks, collection) is
-  escalated itself. The record closes when the session finishes, after
+  while pytest collected a test module, or in a hook, is the next two
+  points'. The record closes when the session finishes, after
   session fixtures are torn down: code that runs later (terminal summary,
   unconfigure) runs after every test, so no outcome depends on it, and
   pytest-xdist kills a worker that has not exited ten seconds after it
@@ -470,16 +472,42 @@ selection or states something the tables left implicit; none narrows it.
   1 275 without). What a test stores is read only while tests run, so these
   readers are observed, not followed into imports and hooks. A module
   imported inside a test that reads it is in that test's record.
-* **Code that ran outside every test** (W5). Code that ran at C in a hook or
-  during collection (`hook_phase`), changed or reading a change, selects
-  every test (`pytest_hook_changed`): a hook runs once per session, before
-  or between the tests, and what it leaves (an environment variable, a mark
-  on an item, another library's state) reaches tests that run none of its
-  code, while static escalation finds only those it has a path to (none for
-  a registered plugin object's method, only the tests under it for a
-  path-scoped hook such as `pytest_generate_tests`). The exception is a
-  test's or fixture's own code that pytest runs to collect it (`ids=`
-  callables), which reaches only that test or fixture's users. Another is
+* **Code run while pytest collects a test module** (roadmap item 19, rule
+  3). Code that ran at C while pytest made the collect report of a test
+  module or class, with no import running and in no hook (`collect_by`:
+  building parameter ids, which calls `repr`, `__name__` and `ids=`
+  callables, and a conftest's `pytest_generate_tests` with its helpers,
+  credited to every module it ran for), changed or reading a change,
+  selects the tests collected from those modules' files
+  (`collection_code`): what it can change there is those tests (their ids
+  and parameters, their marks, whether they are collected at all). What it
+  writes is followed as for code run at import (`_import_writes`, the
+  lookups on an external module it can make write there), and what the
+  code that ran it stored with its result as for any member of E
+  (`_stored_results`). It is a hook's after all, and selects everything,
+  when the code that ran it then (the code between pytest and it: a
+  `pytest_generate_tests`, a helper) or what that code can run writes
+  process-global state (`os.environ`, warning filters), which every later
+  test sees, or can reach pytest's session-wide objects, where it can
+  leave state for the hooks acting on every test: a `pytest_*` function
+  other than `pytest_generate_tests` (pytest hands it the config or the
+  session), or code reading `.config`, `.session`, `.stash` or
+  `.pluginmanager` off a value. A file project code touched then selects
+  the module's tests, and the code that ran then is followed as if it had
+  changed. On pandas, 347 symbols ran outside every test and import, almost
+  all while pytest built parameter ids; every code-commit chain ended in
+  one of them, and the hook rule made each select everything.
+* **Code that ran outside every test** (W5). Code that ran at C in a hook
+  (`hook_phase`: outside every test, import and test module's collection),
+  changed or reading a change, selects every test (`pytest_hook_changed`):
+  a hook runs once per session, before or between the tests, and what it
+  leaves (an environment variable, a mark on an item, another library's
+  state) reaches tests that run none of its code, while static escalation
+  finds only those it has a path to (none for a registered plugin object's
+  method). Having run in a hook outweighs having run while a module was
+  collected. The exception is a test's or fixture's own code that pytest
+  runs to collect it (`ids=` callables), which reaches only that test or
+  fixture's users. Another is
   a function whose only code that ran outside every test, at import or in
   a hook, was its annotations' (`__annotate__`, Python 3.14, which
   `inspect.signature` runs: pytest while collecting, frameworks at

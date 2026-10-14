@@ -65,11 +65,20 @@ What it records, per test (parameter cases folded into their function, as
 
 Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
-module whose top-level code was running (``import_by``); and the code that
-ran outside every window while no import was running (hooks, collection).
+module whose top-level code was running (``import_by``); for code run while
+pytest made the collect report of a test module or class (a
+``pytest_make_collect_report`` wrapper keeps the stack, ``collecting``)
+with no import running, the checkout file collected (``collect_by``:
+parameter ids, ``ids=`` callables, ``pytest_generate_tests`` for that
+module); and the code that ran outside every window, every import and
+every such collector (``hook_phase``: session hooks,
+``pytest_collection_modifyitems``, a directory's or package's collection).
 A process started there is part of that phase (``import_spawns``, folded
 into it), and what no record shows there flags the phase
-(``import_flagged``: the module being imported, "" for none).
+(``import_flagged``: the module being imported, "" for none, while a
+collector is on the stack too). A path project code touches while a collector is on the stack
+is credited to it, as ``/<file>`` among the modules of ``import_paths``
+and ``import_dirs`` (a checkout-relative path never starts with ``/``).
 ``functools`` caches of project code are cleared before each test so a
 value one test computed is recomputed, and recorded, by the next.
 
@@ -300,8 +309,16 @@ table: list[list] = []
 active: list[dict] = []  # open windows, innermost last
 importing: list[str] = []  # modules whose top-level code is running, innermost last
 import_by: dict[int, set[str]] = {}
+# The collectors pytest is making a collect report of, innermost last: the
+# checkout file of a test module or class, None for any other collector (the
+# session, a directory, a package, a file of another kind), which credits
+# what runs then to no collector (the hook phase).
+collecting: list[str | None] = []
+collect_by: dict[int, set[str]] = {}  # ran while collecting these files, no import running
 finished = False  # the process record is written
-hook_codes: set[int] = set()  # ran outside every test window with no import running
+# Ran outside every test window with no import running and no test module
+# or class being collected.
+hook_codes: set[int] = set()
 # Opened or stat'ed, and listed, by project code outside every test window.
 import_paths: dict[str, set[str]] = {}
 import_dirs: dict[str, set[str]] = {}
@@ -384,9 +401,29 @@ def _credit_rows(rows: list, paths: list) -> None:
             if importing:
                 import_by.setdefault(i, set()).add(importing[-1])
             else:
-                hook_codes.add(i)
+                _outside(i)
     for rel in paths:
         _touch(os.path.join(_root, rel))
+
+
+def _outside(i: int) -> None:
+    """Code ``i`` ran outside every test window with no import running:
+    while pytest collected a test module or class (``collect_by``), or in
+    the hook phase."""
+    where = collecting[-1] if collecting else None
+    if where:
+        collect_by.setdefault(i, set()).add(where)
+    else:
+        hook_codes.add(i)
+
+
+def _phase() -> str:
+    """The phase a path touched outside every test window belongs to: the
+    module being imported, ``/<file>`` for a collector, "" for none."""
+    if importing:
+        return importing[-1]
+    where = collecting[-1] if collecting else None
+    return "/" + where if where else ""
 
 
 def _code_index(code, rel: str) -> int:
@@ -507,7 +544,7 @@ def _on_start(code, offset):
         for w in _windows():
             w["codes"].add(i)
         if not active and not importing and code.co_name != "<module>":
-            hook_codes.add(i)
+            _outside(i)
         if code.co_name == "<module>":
             # Credit what this import runs to this module: watch for its end,
             # and re-arm so code that already ran elsewhere is seen again.
@@ -531,6 +568,8 @@ def _on_resume(code, offset):
         i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
+        if not active and not importing and collecting and collecting[-1]:
+            collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as exc:
         _error("PY_RESUME", exc)
     return mon.DISABLE
@@ -548,6 +587,8 @@ def _on_throw(code, offset, exc):
             i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
+        if not active and not importing and collecting and collecting[-1]:
+            collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as err:
         _error("PY_THROW", err)
 
@@ -680,12 +721,14 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
             w["dirs" if listing else "paths"].update(spellings)
     elif actor in ("project", "library"):
         # Outside every test: project code at import (a parametrize list
-        # globbed from a directory) or in a hook, or a library's top level
-        # run by such an import (or by a plugin's: a hook's), credited to the
-        # module being imported ("" for none).
+        # globbed from a directory), while a test module is collected or in
+        # a hook, or a library's top level run by such an import (or by a
+        # plugin's: a hook's), credited to the module being imported, the
+        # collector (``/<file>``), or "" for none.
         seen = import_dirs if listing else import_paths
+        phase = _phase()
         for spelling in spellings:
-            seen.setdefault(spelling, set()).add(importing[-1] if importing else "")
+            seen.setdefault(spelling, set()).add(phase)
 
 
 _inert_pending = False
@@ -1302,6 +1345,39 @@ def pytest_collection_modifyitems(session, config, items):
     return result
 
 
+def _collector_file(collector) -> str | None:
+    """The checkout file of a test module or class pytest is collecting
+    (``Module``, ``Class``, a doctest module: every item it yields has that
+    file in its node id), else None (the session, a directory, a package,
+    another plugin's file collector, a file outside the checkout)."""
+    if not isinstance(collector, (pytest.Module, pytest.Class)):
+        return None
+    path = getattr(collector, "path", None)
+    if path is None:
+        return None
+    return _relative(os.path.abspath(os.fspath(path))) or None
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_make_collect_report(collector):
+    # Outermost, so other plugins' wrappers run inside it. Re-armed as it
+    # opens and closes, as for an import: code another collector (or a hook)
+    # ran already is disabled and would be missed.
+    if not recording:
+        return (yield)
+    try:
+        collecting.append(_collector_file(collector))
+    except Exception as exc:
+        _error("make_collect_report", exc)
+        collecting.append(None)
+    mon.restart_events()
+    try:
+        return (yield)
+    finally:
+        collecting.pop()
+        mon.restart_events()
+
+
 def pytest_collection_finish(session):
     if not recording:
         return
@@ -1505,6 +1581,9 @@ def _finish():
         # What the environments inside the checkout own, which nothing records.
         "environments": list(ENVIRONMENTS),
         "import_by": {str(k): sorted(v) for k, v in import_by.items()},
+        # Code run while pytest collected a test module or class, with no
+        # import running -> the checkout files collected.
+        "collect_by": {str(k): sorted(v) for k, v in collect_by.items()},
         "hook_phase": sorted(hook_codes),
         "preloaded": preloaded,
         "outside_modules": sorted(outside),

@@ -1187,6 +1187,162 @@ def test_e12_a_test_module_listing_locales_at_import_does_not_widen_plans(repo):
     assert selected(other) == {OTHER_ID}
 
 
+# Code pytest runs while it collects a test module (roadmap item 19, rule 3):
+# the ids of its parameters (an ``ids=`` callable, a value's ``repr``) and a
+# conftest's ``pytest_generate_tests``, apart from the session's hooks.
+COLLECTING_FMT = """\
+from pathlib import Path
+
+
+class Value:
+    def __init__(self, n):
+        self.n = n
+
+    def __repr__(self):
+        return f"V{self.n}"
+
+
+def label(n):
+    return f"n{n}"
+
+
+def labels_from_file(n):
+    text = (Path(__file__).parent.parent / "tests" / "ids.txt").read_text()
+    return text.split()[n]
+
+
+def cases():
+    return [1, 2]
+
+
+def order_key(item):
+    return item.nodeid
+
+
+def configured():
+    return 1
+"""
+COLLECTING_CONFTEST = """\
+from pkg.fmt import cases, configured, order_key
+
+
+def pytest_configure(config):
+    configured()
+
+
+def pytest_generate_tests(metafunc):
+    if "case" in metafunc.fixturenames:
+        metafunc.parametrize("case", cases())
+
+
+def pytest_collection_modifyitems(items):
+    items.sort(key=order_key)
+"""
+COLLECTING_A = """\
+import pytest
+
+from pkg.fmt import Value, label, labels_from_file
+
+
+@pytest.mark.parametrize("v", [Value(1), Value(2)], ids=repr)
+def test_value(v):
+    assert v.n > 0
+
+
+@pytest.mark.parametrize("n", [0, 1], ids=label)
+def test_label(n):
+    assert n >= 0
+
+
+@pytest.mark.parametrize("n", [0, 1], ids=labels_from_file)
+def test_file_ids(n):
+    assert n >= 0
+
+
+def test_case(case):
+    assert case > 0
+"""
+COLLECTING_B = "def test_case(case):\n    assert case > 0\n\n\ndef test_plain():\n    pass\n"
+COLLECTING = {
+    **IGNORE,
+    "pkg/__init__.py": "",
+    "pkg/fmt.py": COLLECTING_FMT,
+    "tests/__init__.py": "",
+    "tests/conftest.py": COLLECTING_CONFTEST,
+    "tests/ids.txt": "first second\n",
+    "tests/test_a.py": COLLECTING_A,
+    "tests/test_b.py": COLLECTING_B,
+}
+COLLECTING_A_IDS = {
+    "tests/test_a.py::test_value",
+    "tests/test_a.py::test_label",
+    "tests/test_a.py::test_file_ids",
+    "tests/test_a.py::test_case",
+}
+COLLECTING_B_IDS = {"tests/test_b.py::test_case", "tests/test_b.py::test_plain"}
+
+
+@needs_monitoring
+def test_code_run_while_a_test_module_is_collected_is_credited_to_it(repo):
+    """What pytest runs while it collects ``tests/test_a.py`` (the ``repr``
+    of a parameter value and an ``ids=`` callable building the ids) is
+    recorded against that module, not as a hook's; ``pytest_generate_tests``
+    in the conftest runs for each module it parametrizes, and what it runs
+    for both is credited to both. What the session's own hooks run
+    (``pytest_configure``, ``pytest_collection_modifyitems``) stays in the
+    hook phase. A file read while the module is collected is credited to
+    the module: its edit selects what the code run then decides, which,
+    for ``pytest_generate_tests`` and ``cases``, is ``test_b``'s tests too."""
+    base = repo.commit(COLLECTING)
+    evidence = repo.collect()
+    assert evidence.collect_by["pkg.fmt.Value.__repr__"] == {"tests.test_a"}
+    assert evidence.collect_by["pkg.fmt.label"] == {"tests.test_a"}
+    assert evidence.collect_by["pkg.fmt.cases"] == {"tests.test_a", "tests.test_b"}
+    assert evidence.collect_by["tests.conftest.pytest_generate_tests"] == {
+        "tests.test_a",
+        "tests.test_b",
+    }
+    for symbol in ("pkg.fmt.Value.__repr__", "pkg.fmt.label", "pkg.fmt.cases"):
+        assert symbol not in evidence.hook_phase
+    assert {"pkg.fmt.order_key", "pkg.fmt.configured"} <= evidence.hook_phase
+    assert not {"pkg.fmt.order_key", "pkg.fmt.configured"} & set(evidence.collect_by)
+    assert evidence.import_by["pkg.fmt.Value.__init__"] == {"tests.test_a"}
+    assert evidence.import_paths["tests/ids.txt"] == {"collect:tests.test_a"}
+    head = repo.commit({"tests/ids.txt": "one two\n"})
+    plan = _plan(repo, base, head, evidence)
+    assert selected(plan) == COLLECTING_A_IDS | COLLECTING_B_IDS
+    assert rules(plan, "tests/test_b.py::test_plain") == {"collection_code"}
+
+
+@needs_monitoring
+def test_a_file_read_while_a_test_module_is_collected_selects_that_modules_tests(repo):
+    """An ``ids=`` callable reads ``tests/ids.txt`` while pytest collects
+    ``tests/test_a.py``: an edit of the file changes that module's test ids,
+    and nothing that runs for another module, so ``tests/test_b.py`` keeps
+    its record (before: every test, as for a file a hook read)."""
+    files = {
+        **IGNORE,
+        "pkg/__init__.py": "",
+        "pkg/fmt.py": COLLECTING_FMT,
+        "tests/__init__.py": "",
+        "tests/ids.txt": "first second\n",
+        "tests/test_a.py": (
+            "import pytest\n\nfrom pkg.fmt import labels_from_file\n\n\n"
+            '@pytest.mark.parametrize("n", [0, 1], ids=labels_from_file)\n'
+            "def test_file_ids(n):\n    assert n >= 0\n\n\n"
+            "def test_plain():\n    pass\n"
+        ),
+        "tests/test_b.py": "def test_plain():\n    pass\n",
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    assert evidence.import_paths["tests/ids.txt"] == {"collect:tests.test_a"}
+    head = repo.commit({"tests/ids.txt": "one two\n"})
+    plan = _plan(repo, base, head, evidence)
+    assert selected(plan) == {"tests/test_a.py::test_file_ids", "tests/test_a.py::test_plain"}
+    assert rules(plan, "tests/test_a.py::test_plain") == {"collection_code"}
+
+
 # --------------------------------------------------------------------------- child processes
 
 
