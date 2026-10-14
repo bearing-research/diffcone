@@ -291,6 +291,28 @@ def test_a_suite_that_runs_an_installed_copy_is_refused(repo, tmp_path):
 
 
 @needs_monitoring
+def test_e30_collect_warns_when_no_recorded_test_is_a_target(repo, capsys):
+    """pytest takes a configuration file in a directory above a repository
+    that has none as its rootdir, and every recorded node id carries the
+    repository's own directory: plans then find no record for any test,
+    silently. ``collect`` says so."""
+    repo.commit(FILES)
+    command = f"{sys.executable} -m pytest"
+
+    def collect(command: str) -> str:
+        argv = ["collect", "--repo", str(repo.path), "--command", command, "--no-cache"]
+        assert main(argv) == 0
+        return capsys.readouterr().err
+
+    assert "none of the" not in collect(command)
+    (repo.path.parent / "pytest.ini").write_text("[pytest]\n")
+    err = collect(command)
+    assert "none of the 8 recorded tests (e.g. repo/tests/" in err
+    assert "pass --rootdir=. in --command" in err
+    assert "none of the" not in collect(f"{command} --rootdir=.")
+
+
+@needs_monitoring
 def test_collect_and_evidence_commands(repo, capsys):
     repo.commit(FILES)
     command = f"{sys.executable} -m pytest"

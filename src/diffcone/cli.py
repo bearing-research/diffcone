@@ -55,6 +55,7 @@ from diffcone.evidence import (
     FLAG_TEXT,
     FLAG_UNSTABLE,
     UNINDEXED_MODULE,
+    Evidence,
     EvidenceError,
     environment_differences,
     find_store,
@@ -654,8 +655,48 @@ def _collect(args: argparse.Namespace) -> int:
         ]
         for line in lines[:8]:
             print(f"  {line}", file=sys.stderr)
+    unmatched = _records_matching_no_target(args, ev, cache)
+    if unmatched:
+        print(f"diffcone: warning: {unmatched}", file=sys.stderr)
     print(str(result.store))
     return 0
+
+
+def _records_matching_no_target(
+    args: argparse.Namespace, ev: Evidence, cache: IndexCache | None
+) -> str | None:
+    """Plans find a test's record by its node id, as static discovery names
+    the test at the commit (audit E30). With pytest's rootdir above the
+    repository (a configuration file in a parent directory, the repository
+    having none), every recorded id carries the extra path and none is
+    found: the recording is written, and every plan selects every test as
+    unrecorded. The same discovery ``plan`` runs, at the recorded commit."""
+    if not ev.tests:
+        return None
+    repo = Path(args.repo)
+    roots = args.source_roots or ["."]
+    index, snapshot = _index_snapshot(repo, ev.commit, roots, with_config=True, cache=cache)
+    assert snapshot is not None  # with_config always reads the snapshot
+    options = _discovery_options(args)
+    found = (
+        cache.discovery.load(snapshot.commit, roots, "pytest", options)
+        if cache is not None
+        else None
+    )
+    if found is None:
+        found = discover("pytest", snapshot, index, options)
+        if cache is not None:
+            cache.discovery.store(found, snapshot.commit, roots, options)
+    targets = {t.runner_id for t in found.targets}
+    if not targets or targets & ev.tests.keys():
+        return None
+    return (
+        f"none of the {len(ev.tests)} recorded tests (e.g. {min(ev.tests)}) is among the "
+        f"{len(targets)} tests discovered at {ev.commit[:12]} (e.g. {min(targets)}), so "
+        "plans will find no record for any test and select them all. pytest's rootdir is "
+        "likely outside the repository (a configuration file in a directory above it): "
+        "pass --rootdir=. in --command, or give the repository a pytest configuration"
+    )
 
 
 def _report(args: argparse.Namespace) -> int:

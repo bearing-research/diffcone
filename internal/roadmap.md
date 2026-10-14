@@ -1593,8 +1593,8 @@ code can run writes nothing outside it) would save at most the same 127.
 Recommendation: keep the trade-off; precision effort goes to E31.
 
 *Usability.* E29: a way to keep files out of the index (black's invalid
-test data); E30: `collect` warns when the recorded node ids match none of
-the discovered targets.
+test data). (E30, `collect` warning when no recorded test is a discovered
+target, shipped.)
 
 **Done when** the evidence corpus re-run shows each finding's suite
 selecting less, with no miss, and strata and pandas no worse; the item

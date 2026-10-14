@@ -8,6 +8,13 @@ selection rules.
 
 ## [Unreleased]
 
+### Execution evidence
+
+- `collect` warns when none of the tests it recorded is among the tests
+  discovered at that commit: pytest's rootdir lies outside the repository
+  (a configuration file in a directory above it), so plans would find no
+  recording for any test and select them all.
+
 ### Fixed
 
 - On Windows, the recorder no longer treats a system query (`locale -a`,

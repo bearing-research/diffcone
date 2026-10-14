@@ -40,6 +40,14 @@ the code in it couldn't be matched to what the tests ran. If pytest stops
 early (an interrupt, an internal error, a usage error), nothing is
 written.
 
+Plans find each test's recording by its pytest node ID. If your
+repository has no pytest configuration and a directory above it has one,
+pytest takes that directory as its rootdir and every node ID starts with
+the path to your repository, so plans find no recording for any test.
+`collect` warns when none of the recorded tests matches a test it
+discovers; add `--rootdir=.` to the command, or give the repository a
+pytest configuration of its own.
+
 A recording made by an earlier version of diffcone may not be readable by
 a later one. `diffcone evidence` and `--evidence auto` then skip it (so
 `auto` fails with "no evidence recording" if it was the only one), and
