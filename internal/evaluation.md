@@ -1485,6 +1485,48 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   open. A recording that lands there plans every change as select-all
   until it is recorded again.
 
+## Evidence corpus: eight small suites (2026-10-13)
+
+The first check of evidence plans beyond strata and pandas, and the baseline
+for later evidence changes (the audit skill's "Evidence corpus"). Main at
+6352f4a; for each repository, the last 6 first-parent commits that change a
+`.py` file, each planned from a recording of its own base and validated by
+`diffcone corpus --evidence auto --coverage` (both suites run; coverage
+shows which tests executed changed code). Python 3.13.
+
+| repo (HEAD) | selected | mean savings | what selects everything |
+|---|---|---|---|
+| marshmallow (d08471b178) | 1 891 of 3 877 | 51 % | E24, and the registry chain below |
+| more-itertools (737c261c21) | 2 013 of 4 600 | 56 % | test-module edits (E27), a release commit (E28) |
+| flask (d086db856b) | 2 152 of 2 232 | 4 % | E22 (332 of 372 tests always), E27 |
+| arrow (2224255c4a) | 4 170 of 4 170 | 0 % | E26 |
+| boltons (4e5faa3d7e) | 2 468 of 2 468 | 0 % | E23, E27 |
+| jinja (5ef70112a1) | 4 062 of 4 062 | 0 % | E23, E28 |
+| pluggy (6995073de5) | 1 037 of 1 037 | 0 % | E21; pluggy is also pytest's own dependency, imported before the recorder |
+| typer (b15210b71a) | 5 801 of 5 801 | 0 % | E25, E27 |
+
+* **No miss**: 48 pairs, no outcome change or test that executed changed
+  code went unselected.
+* **Precision is poor**: on six of the eight a recording selects nearly
+  everything for any change. Each cause is a finding (`internal/audit.md`,
+  "Found by the evidence corpus", E21-E30). They are of three kinds:
+  something the recorder cannot follow ran outside every test (E21, E22,
+  E25, E26); a reader taken to see more than it can (E23, E24); and a
+  change that runs at import, escalated to static planning, whose import
+  rule reaches every test (E27, E28). In marshmallow the escalated chains
+  end in `class_registry.register`, which every schema class runs at
+  import, writing a registry its lookups read.
+* black is not in the set: its test data holds deliberately invalid `.py`
+  files, and `collect` refuses a checkout with analysis errors (E29).
+* One recording for all six pairs instead of one per pair selected the
+  same or more everywhere (boltons, jinja, typer identical): each later
+  pair carried every earlier change. The script records per pair.
+* The clones live under `.spike/` inside a checkout of diffcone. A
+  repository with no pytest configuration of its own (more-itertools) took
+  diffcone's `pyproject.toml` as pytest's rootdir, and every recorded node
+  id (`.spike/repos/more-itertools/tests/...`) matched no target: every
+  test had no evidence, silently (E30). The scripts now pass `--rootdir`.
+
 ## Corpus evaluation on 0.4.0's code (2026-10-12)
 
 The checks re-run on main after round 5 and the docs pass (312bce1), with

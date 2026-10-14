@@ -1549,3 +1549,51 @@ reading back from `doctest_namespace`; a lazy value computed from a
 parameter, read outside `W`, or written without the guard); the replays
 are re-measured and recorded in evaluation.md; any further pattern found
 is sketched here.
+
+## 20. Evidence-mode precision on small libraries (evidence corpus)
+
+The evidence corpus (evaluation.md, "Evidence corpus: eight small
+suites") found no miss in 48 pairs, and almost no savings: six of eight
+suites select nearly everything for any change. The causes are audit
+E21-E30. Each narrowing below needs a regression test that fails on the
+old code, and a re-run of the evidence corpus, strata and pandas against
+the last baseline (`evidence_table.py NEW BASELINE`).
+
+*Recorder: what ran outside the tests that no record shows.*
+* E21: `git` queries that read the repository's metadata (`rev-parse`,
+  `config --get`/`--local <key>` with no value, `describe`, `show -s`,
+  `log`) as `child.system_query`. They run no Python, and what they
+  report is the commit, which no plan models. Not `git show <rev>:<path>`
+  or anything that writes.
+* E22: werkzeug's routing (`werkzeug.routing.rules`) among
+  `TEXT_GENERATORS`. Check first that the generated builder reads only
+  what it is handed (converters, defaults) and that project code it calls
+  is recorded as it runs.
+* E25: find the process typer's `_get_shell_name` starts; a system query
+  if it is one (`ps`).
+* E26: a stat or open whose stack holds coverage.py's tracer
+  (`coverage.inorout.should_trace` and the collector) is no read of the
+  project's, like `_metadata_scan`.
+
+*Planning: readers that see too much.*
+* E23: a reader of `__code__` or of frames sees, at most, the functions it
+  was handed and the modules on the stack when it ran: the module being
+  imported and its importers, from the recording's `import_by`. Not
+  `docs/conf.py`.
+* E24: `classmethod` and `staticmethod` (and `property`, which copies the
+  getter's docstring only for a later reader, a docstring reader the
+  planner already models) read nothing of the function at decoration.
+
+*The import trade-off (needs the user's decision).* E27 and E28 are
+changes that run at import or configure the run: an edit to a test
+module, and release commits that touch `pyproject.toml`, `uv.lock` and
+CI workflows. E27 is item 19's "a module change that only changes the
+names it binds" seen from the test side. Any narrowing there moves the
+documented trade-off, so it waits for a decision.
+
+*Usability.* E29: a way to keep files out of the index (black's invalid
+test data); E30: `collect` warns when the recorded node ids match none of
+the discovered targets.
+
+**Done when** the evidence corpus re-run shows each finding's suite
+selecting less, with no miss, and strata and pandas no worse.

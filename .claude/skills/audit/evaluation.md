@@ -1,4 +1,4 @@
-# Validating a round: strata, census, checks, corpus
+# Validating a round: strata, census, checks, corpus, evidence corpus
 
 The scripts are in `eval/` beside this file. They build and read a work
 directory `E` (an environment variable; put it in the session scratchpad,
@@ -102,3 +102,44 @@ findings to reproduce. Tests "outside the target list" in a plan whose
 discovery said so (exit 3) are not misses. A repository whose validation
 can't run (an error before outcomes) is a finding about `validate` until
 shown to be the project's own problem.
+
+## Evidence corpus (recall and precision of evidence plans; run for every evidence or recorder change)
+
+The census and the corpus above check static plans. Evidence plans
+(`--evidence`) are checked on strata and on this set of small suites,
+each recorded and replayed with `diffcone corpus --evidence auto --coverage`:
+
+```bash
+export E; cd .claude/skills/audit/eval
+for n in flask jinja marshmallow pluggy typer boltons arrow more-itertools; do
+  ./evidence-corpus-one.sh $n <tree> $E/evcorpus/<name>   # one at a time
+done
+python3 evidence_table.py $E/evcorpus/<name> [$E/evcorpus/<baseline name>]
+```
+
+`evidence-corpus-one.sh` finds the last 6 first-parent commits that
+change a `.py` file and records the suite at each one's parent with the
+tree's recorder (in the clone itself, since its env is an editable install
+of it; the clone is put back after), then validates those commits, each
+planned from the recording of its own base, as on a CI whose main records
+every commit. (One recording for all six makes each later pair carry every
+earlier change, and the numbers say little about any one change.) About
+5-30 minutes per repository (typer's coverage runs are the slowest); run
+them one after another, and never beside another heavy job (a pandas
+recording or plan, the full gate): the machine has 16 GB. black is not in
+the set: its test data holds deliberately invalid `.py` files under the
+source root, and `collect` refuses a checkout with analysis errors.
+
+Why a plan selects what it does is not in the corpus report: plan one pair
+from its recording (`diffcone plan --repo $E/repos/NAME --base C^ --head C
+--discover pytest --evidence auto --format json`) and count the selected
+targets' `rules`; `analysis.evidence.escalated_modules` and the reasons'
+`detail` name the chains.
+
+Read the table: any **missed** above 0 is a finding to reproduce (a test
+whose outcome changed, or that executed changed code, unselected). A
+selection that grew against the baseline needs an explanation by rule;
+"hook flagged" means the recording selects everything for every change
+(something ran outside every test that no record shows; the collect log
+says what), which is a precision finding of its own. The last baseline is
+in `internal/evaluation.md`.

@@ -126,6 +126,10 @@ Follow `evaluation.md`. At minimum:
 - **corpus**: `diffcone corpus --coverage` over the last 6 Python-changing
   commits of every repository with a working environment. Any missed
   outcome change or coverage-affected test not selected is a finding.
+- **evidence corpus**: record and replay the evidence-corpus set
+  (`evidence-corpus-one.sh`, one repository at a time) with the new main
+  and compare with the last baseline (`evidence_table.py`). Any miss is a
+  finding; a selection that grew needs an explanation by rule.
 
 New findings get ids in a "Found by the evaluation" section of
 `internal/audit.md` and go through phases 3-4. Record the results in
