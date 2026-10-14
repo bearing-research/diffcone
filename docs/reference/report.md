@@ -66,6 +66,7 @@ started in, so the recorded tests changed it).
 | `kind` | `commit`, `index` or `worktree`. |
 | `uncommitted` | `true` for `INDEX` and `WORKTREE`. |
 | `description` | A readable summary, as the text report prints it. |
+| `excluded` | The `[index] exclude` patterns of the snapshot's `diffcone.toml` (see [diffcone.toml](declarations.md)); empty when there are none. |
 
 ## Changed symbols
 

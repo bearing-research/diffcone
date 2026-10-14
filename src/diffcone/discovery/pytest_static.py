@@ -51,7 +51,8 @@ Collected:
   it (entries that exist; none falls back to the rootdir), made prefix-free
   as pytest makes them unless ``--keep-duplicates``; a file named there is
   collected whatever ``python_files`` says; a test file pytest would collect
-  outside the source roots is reported (``test_file_outside_roots``);
+  outside the source roots, or kept out of the analysis by ``diffcone.toml``'s
+  ``[index] exclude``, is reported (``test_file_outside_roots``);
 * below an initial path, never at or above one, what pytest's own
   ``pytest_ignore_collect`` skips: ``--ignore``, ``--ignore-glob``,
   ``norecursedirs`` (each directory below the initial path) and
@@ -90,7 +91,7 @@ Collected:
   one, whatever ignores say; while collecting, those of the directories its
   walk reaches;
 * a ``conftest.py`` outside the source roots is reported
-  (``conftest_outside_roots``) and is an unknown dependency
+  (``conftest_outside_roots``; an excluded one too) and is an unknown dependency
   (``conftest:<path>``) of every test under it, so those tests are always
   selected; a plugin module in the repository the source roots do not name
   is reported (``plugin_outside_roots``) and is an unknown dependency
@@ -243,7 +244,7 @@ import tomllib
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import PurePosixPath
 from typing import Any, NamedTuple, TypeVar
 
@@ -968,6 +969,26 @@ def _prefix_free(paths: tuple[str, ...]) -> tuple[str, ...]:
             continue
         kept.append(paths[i])
     return tuple(kept)
+
+
+def _excluded(path: str, snapshot: Snapshot) -> bool:
+    """Whether ``diffcone.toml``'s ``[index] exclude`` keeps ``path`` out of
+    the analysis (it is read as an other file then, not outside the roots)."""
+    return any(fnmatchcase(path, pattern) for pattern in snapshot.info.excluded)
+
+
+def _unread_because(path: str, snapshot: Snapshot) -> str:
+    if _excluded(path, snapshot):
+        return "diffcone.toml's [index] exclude keeps it out of the analysis"
+    return "it is outside the source roots"
+
+
+def _unread_remedy(path: str, snapshot: Snapshot) -> str:
+    if _excluded(path, snapshot):
+        return "narrow the exclude pattern that matches it"
+    return (
+        "add a source root that contains it (for a src layout: --source-root src --source-root .)"
+    )
 
 
 def _parent_dir(path: str) -> str:
@@ -3198,9 +3219,8 @@ def discover_pytest(
                 DiscoveryNote(
                     RUNNER,
                     "test_file_outside_roots",
-                    f"{path}: pytest collects it, but it is outside the source roots, so its "
-                    "tests are not targets; add a source root that contains it (for a src "
-                    "layout: --source-root src --source-root .)",
+                    f"{path}: pytest collects it, but {_unread_because(path, snapshot)}, so its "
+                    f"tests are not targets; {_unread_remedy(path, snapshot)}",
                     path,
                 )
             )
@@ -3238,9 +3258,9 @@ def discover_pytest(
             DiscoveryNote(
                 RUNNER,
                 "conftest_outside_roots",
-                f"{path}: pytest loads it, but it is outside the source roots, so what it "
-                "defines is unknown and every test under it is always selected; add a source "
-                "root that contains it (for a src layout: --source-root src --source-root .)",
+                f"{path}: pytest loads it, but {_unread_because(path, snapshot)}, so what it "
+                "defines is unknown and every test under it is always selected; "
+                f"{_unread_remedy(path, snapshot)}",
                 path,
             )
         )
@@ -3581,8 +3601,9 @@ def _collect_doctests(
                 DiscoveryNote(
                     RUNNER,
                     "test_file_outside_roots",
-                    f"{path}: --doctest-modules collects its docstrings, but it is outside the "
-                    "source roots, so they are not targets; add a source root that contains it",
+                    f"{path}: --doctest-modules collects its docstrings, but "
+                    f"{_unread_because(path, snapshot)}, so they are not targets; "
+                    f"{_unread_remedy(path, snapshot)}",
                     path,
                 )
             )

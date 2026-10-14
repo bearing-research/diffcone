@@ -1485,6 +1485,20 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   open. A recording that lands there plans every change as select-all
   until it is recorded again.
 
+## black with `[index] exclude` (E29, 2026-10-14)
+
+black keeps 303 `.py` files under `tests/data`, some deliberately invalid.
+On a scratch branch of the corpus clone (11cff13) with `diffcone.toml`
+excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
+
+| | before | with the exclusion |
+|---|---|---|
+| static plan | degraded, 6 analysis errors, 303 of 303 | complete, 303 of 303 (`dynamic_reference`) |
+| `collect` | refused (analysis errors) | 303 tests recorded, 50 starting a subprocess |
+| evidence plan | none | complete, 201 of 303 (`executed_reader` 158, `subprocess` 50) |
+
+black can now join the evidence corpus.
+
 ## The import trade-off under evidence: measured (2026-10-14)
 
 Roadmap item 20, E27/E28. An escalated change is planned twice, by the

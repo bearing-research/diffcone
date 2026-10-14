@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from diffcone.cli import main
-from diffcone.evidence import load_store
+from diffcone.evidence import EvidenceError, load_store
 from diffcone.testing import (
     asv_target,
     reason,
@@ -4556,3 +4556,27 @@ def test_an_autouse_doctest_namespace_fixture_does_not_make_every_test_a_lookup(
     )
     plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=ev)
     assert "tests/test_b.py::test_b" not in selected(plan)
+
+
+def test_e29_an_excluded_file_is_planned_from_who_read_it(repo):
+    """``collect`` refuses a checkout holding a ``.py`` file it cannot
+    analyse (black's test data); excluded, the file is data, and a change
+    to it selects the tests that read it."""
+    files = {
+        **BASE,
+        "tests/data/case.py": "def broken(:\n",
+        "tests/test_data.py": (
+            "from pathlib import Path\n\n\ndef test_reads():\n"
+            "    assert (Path(__file__).parent / 'data' / 'case.py').read_text()\n"
+        ),
+    }
+    repo.commit(files)
+    with pytest.raises(EvidenceError):
+        repo.collect()
+    base, ev = _collected(repo, {"diffcone.toml": '[index]\nexclude = ["tests/data/*"]\n'})
+    head = repo.commit({"tests/data/case.py": "def broken(:\n    x\n"})
+    plan = _plan(repo, base, head, ev)
+    # The benchmarks have no evidence: planned statically, a file the index
+    # does not read selects them.
+    assert selected(plan) == {"tests/test_data.py::test_reads"} | BENCHES
+    assert rules(plan, "tests/test_data.py::test_reads") == {"touched_file"}

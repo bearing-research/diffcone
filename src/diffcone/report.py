@@ -72,6 +72,8 @@ def snapshot_to_dict(info: SnapshotInfo) -> dict[str, Any]:
         "kind": info.kind,
         "uncommitted": not info.committed,
         "description": info.description,
+        # ``diffcone.toml``'s ``[index] exclude``: .py files read as other files.
+        "excluded": list(info.excluded),
     }
 
 
@@ -199,6 +201,9 @@ def to_text(plan: Plan) -> str:
     lines.append(f"source roots: {', '.join(plan.source_roots)}")
     lines.append(f"base: {plan.base.description}")
     lines.append(f"head: {plan.head.description}")
+    for side, info in (("base", plan.base), ("head", plan.head)):
+        if info.excluded:
+            lines.append(f"{side} excludes from the analysis: {', '.join(info.excluded)}")
     lines.append(f"scope: {plan.scope_statement}")
     lines.append(f"status: {'DEGRADED' if plan.degraded else 'complete'}")
     if plan.evidence is not None:

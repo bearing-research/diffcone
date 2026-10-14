@@ -8,6 +8,16 @@ selection rules.
 
 ## [Unreleased]
 
+### Planning
+
+- `diffcone.toml` takes `[index] exclude`, patterns for `.py` files to
+  leave out of the analysis (deliberately invalid test data, as in a
+  formatter's or a linter's test suite). A matching file is read as a data
+  file: plans no longer degrade, `collect` records the checkout, and a
+  change to one selects everything in a plan without a recording and the
+  tests that read it or ran its code in one with. The report lists each
+  snapshot's patterns (`analysis.<side>.excluded`).
+
 ### Execution evidence
 
 - `collect` warns when none of the tests it recorded is among the tests

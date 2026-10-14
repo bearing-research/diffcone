@@ -334,6 +334,9 @@ class SnapshotInfo:
     commit: str
     kind: SnapshotKind = SnapshotKind.COMMIT
     description: str = ""
+    # The patterns of the ``[index] exclude`` list in the snapshot's own
+    # ``diffcone.toml``: the ``.py`` files they match were read as other files.
+    excluded: tuple[str, ...] = ()
 
     @property
     def committed(self) -> bool:

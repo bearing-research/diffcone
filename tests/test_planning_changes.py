@@ -1026,6 +1026,64 @@ def test_pln4_python_build_and_startup_scripts_under_a_root(repo, path):
     assert rules(plan, "tests/test_ops.py::test_add") == {"unanalysed_file_changed"}
 
 
+EXCLUDE = '[index]\nexclude = ["tests/data/**"]\n'
+INVALID = "def broken(:\n"
+ADD_CHANGED = {"src/pkg/ops.py": "def add(a, b):\n    return b + a\n"}
+
+
+def test_e29_an_excluded_file_is_read_as_an_other_file(repo):
+    """Deliberately invalid ``.py`` files under a root (black's test data)
+    degrade every plan; excluded, they are files the index does not read:
+    no analysis error, and a change to one selects everything."""
+    files = {**TREE, "tests/data/case.py": INVALID}
+    base = repo.commit(files)
+    head = repo.commit(ADD_CHANGED)
+    assert repo.plan(base, head, TARGETS, source_roots=["src", "."]).degraded
+    base = repo.commit({"diffcone.toml": EXCLUDE})
+    head = repo.commit({"src/pkg/ops.py": TREE["src/pkg/ops.py"]})
+    plan = repo.plan(base, head, TARGETS, source_roots=["src", "."])
+    assert not plan.degraded
+    assert selected(plan) == {"tests/test_ops.py::test_add"}
+    assert plan.base.excluded == plan.head.excluded == ("tests/data/**",)
+    edited = repo.commit({"tests/data/case.py": INVALID + "x\n"})
+    plan = repo.plan(head, edited, TARGETS, source_roots=["src", "."])
+    assert not plan.degraded
+    assert selected(plan) == EVERYTHING
+    assert rules(plan, "tests/test_ops.py::test_add") == {"unanalysed_file_changed"}
+    assert (
+        "tests/data/case.py"
+        in reason(plan, "bench_other.time_helper", "unanalysed_file_changed").detail
+    )
+
+
+def test_e29_excluding_a_module_selects_everything(repo):
+    """Patterns that differ between the snapshots move a module out of the
+    analysis on one side: a deleted module there, a new unread file here."""
+    base = repo.commit(TREE)
+    head = repo.commit({"diffcone.toml": '[index]\nexclude = ["src/pkg/other.py"]\n'})
+    plan = repo.plan(base, head, TARGETS, source_roots=["src", "."])
+    assert selected(plan) == EVERYTHING
+    assert "unanalysed_file_changed" in rules(plan, "tests/test_ops.py::test_add")
+
+
+@pytest.mark.parametrize(
+    ("toml", "problem"),
+    [
+        ('[index]\nexclude = "tests/data/**"\n', "must be a list of non-empty patterns"),
+        ('[index]\nexclude = [""]\n', "must be a list of non-empty patterns"),
+        ('[index]\nexclud = ["tests/data/**"]\n', "unknown key(s) exclud"),
+        ("index = 1\n", "must be a table"),
+    ],
+)
+def test_e29_a_malformed_exclude_is_an_analysis_error(repo, toml, problem):
+    base = repo.commit({**TREE, "diffcone.toml": toml})
+    head = repo.commit(ADD_CHANGED)
+    plan = repo.plan(base, head, TARGETS, source_roots=["src", "."])
+    assert plan.degraded
+    assert selected(plan) == EVERYTHING
+    assert any(e.path == "diffcone.toml" and problem in e.message for e in plan.errors)
+
+
 def test_pln4_build_py_counts_beside_a_project_file(repo):
     """``build.py`` is a build script beside a ``pyproject.toml`` (poetry's
     ``build`` setting); elsewhere it is an ordinary module, planned as one."""

@@ -4001,3 +4001,26 @@ def test_l1_a_too_deep_doctest_or_timeraw_snippet_is_unread(repo):
     found = run_discovery(repo, rev, "asv")
     raw = next(t for t in found.targets if t.runner_id == "raw.timeraw_x")
     assert any("timeraw" in d for d in raw.lifecycle_dependencies)
+
+
+def test_e29_an_excluded_test_file_is_reported_as_not_read(repo):
+    """A file pytest collects that ``[index] exclude`` keeps out of the
+    analysis has no targets: discovery is incomplete, and the note names the
+    exclusion rather than the source roots. An excluded conftest is an
+    unknown dependency of the tests under it."""
+    rev = repo.commit(
+        {
+            "diffcone.toml": '[index]\nexclude = ["tests/data/**", "tests/sub/conftest.py"]\n',
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tests/data/test_case.py": "def test_case():\n    pass\n",
+            "tests/sub/conftest.py": "",
+            "tests/sub/test_s.py": "def test_s():\n    pass\n",
+        }
+    )
+    result = _discovered(repo, rev)
+    assert {n.kind for n in result.incomplete} == {"test_file_outside_roots"}
+    notes = {n.path: n.detail for n in result.notes}
+    assert "[index] exclude keeps it out" in notes["tests/data/test_case.py"]
+    assert "narrow the exclude pattern" in notes["tests/sub/conftest.py"]
+    assert "tests/data/test_case.py::test_case" not in {t.runner_id for t in result.targets}
+    assert "conftest:tests/sub/conftest.py" in _deps(result, "tests/sub/test_s.py::test_s")

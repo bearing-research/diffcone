@@ -1590,11 +1590,11 @@ the same pairs select everything through their test module's own scope,
 writes shared state at import); dropping it everywhere breaks 20. A
 precise variant (drop a test module's seed only when what its import-time
 code can run writes nothing outside it) would save at most the same 127.
-Recommendation: keep the trade-off; precision effort goes to E31.
+Kept (recommended; the user went on to E31, which was then measured and
+left too).
 
-*Usability.* E29: a way to keep files out of the index (black's invalid
-test data). (E30, `collect` warning when no recorded test is a discovered
-target, shipped.)
+*Usability.* E29 (`[index] exclude`) and E30 (a `collect` warning when no
+recorded test is a discovered target) shipped.
 
 **Done when** the evidence corpus re-run shows each finding's suite
 selecting less, with no miss, and strata and pandas no worse; the item

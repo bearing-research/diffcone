@@ -13,7 +13,7 @@ import pytest
 
 from diffcone.cli import main
 from diffcone.report import to_dict, to_text
-from diffcone.snapshot import read_snapshot
+from diffcone.snapshot import INDEX, WORKTREE, read_snapshot
 from diffcone.testing import (
     FixtureRepo,
     asv_target,
@@ -144,6 +144,7 @@ def test_plan_against_worktree_and_index(repo):
         "kind": "worktree",
         "uncommitted": True,
         "description": plan.head.description,
+        "excluded": [],
     }
     assert report["analysis"]["scope"]["analyzed"].startswith("UNCOMMITTED state was analyzed")
     assert report["analysis"]["base"]["kind"] == "commit"
@@ -687,3 +688,27 @@ def test_r10_a_tracked_file_replaced_by_a_directory_on_disk(repo):
     detail = reason(plan, "tests/test_data.py::test_data", "unanalysed_file_changed").detail
     assert "tests/data" in detail
     assert not plan.errors
+
+
+EXCLUDE = '[index]\nexclude = ["tests/data/**"]\n'
+INVALID = "def broken(:\n"
+
+
+def test_e29_each_snapshot_kind_reads_its_own_exclusions(repo):
+    """black keeps deliberately invalid ``.py`` files under its test data;
+    ``diffcone.toml``'s ``[index] exclude`` reads them as other files, by the
+    blob id git gives them, in a commit, the index and the working tree."""
+    path = "tests/data/case.py"
+    repo.commit({"pkg/__init__.py": "", path: INVALID, "diffcone.toml": EXCLUDE})
+    snapshots = [read_snapshot(repo.path, rev, ["."]) for rev in ("HEAD", INDEX, WORKTREE)]
+    blob = repo.git("rev-parse", f"HEAD:{path}")
+    for snap in snapshots:
+        assert path not in snap.files and "pkg/__init__.py" in snap.files
+        assert snap.other_files[path] == blob
+        assert snap.info.excluded == ("tests/data/**",)
+        assert not snap.errors
+    # The working tree's own file decides for the working tree.
+    (repo.path / "diffcone.toml").write_text("")
+    worktree = read_snapshot(repo.path, WORKTREE, ["."])
+    assert path in worktree.files and worktree.info.excluded == ()
+    assert read_snapshot(repo.path, "HEAD", ["."]).info.excluded == ("tests/data/**",)

@@ -17,6 +17,12 @@ Three kinds of snapshot can be read, and every one says what it is:
 
 The last two are always reported as uncommitted state on top of ``HEAD``.
 
+Each kind reads ``diffcone.toml`` as that snapshot has it, and its
+``[index] exclude`` patterns (fnmatch on repository paths, ``*`` crossing
+``/``) keep the ``.py`` files they match out of the analysis: they are read
+as other files, by a blob id of their content (``read_snapshot``). A
+malformed list is a snapshot error, never an empty one.
+
 Every snapshot also records the git mode of each entry under the roots that
 is not a plain file (``file_modes``: executable, symlink, submodule), so a
 ``chmod +x`` of a script a test runs by path is a change.
@@ -24,11 +30,14 @@ is not a plain file (``file_modes``: executable, symlink, submodule), so a
 
 from __future__ import annotations
 
+import hashlib
 import os
 import posixpath
 import subprocess
+import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from diffcone.cython import is_cython
@@ -932,10 +941,81 @@ def read_snapshot(
     only discovery needs them, so the base snapshot skips the extra work.
     """
     if revision == WORKTREE:
-        return read_worktree_snapshot(repo, source_roots, with_config=with_config)
-    if revision == INDEX:
-        return read_index_snapshot(repo, source_roots, with_config=with_config)
-    return read_commit_snapshot(repo, revision, source_roots, with_config=with_config)
+        snapshot = read_worktree_snapshot(repo, source_roots, with_config=with_config)
+    elif revision == INDEX:
+        snapshot = read_index_snapshot(repo, source_roots, with_config=with_config)
+    else:
+        snapshot = read_commit_snapshot(repo, revision, source_roots, with_config=with_config)
+    _exclude(repo, snapshot)
+    return snapshot
+
+
+PROJECT_FILE = "diffcone.toml"
+
+
+def read_root_file(repo: Path, revision: str, name: str) -> bytes | None:
+    """A file at the repository root as the snapshot ``revision`` has it (a
+    commit, ``INDEX`` or ``WORKTREE``), or None when it is absent. A file
+    that is there but cannot be read raises (OSError, GitError): treating a
+    failure as an absence could narrow a plan."""
+    if revision == WORKTREE:
+        path = repo / name
+        return path.read_bytes() if path.is_file() else None
+    commit = "" if revision == INDEX else resolve_commit(repo, revision)
+    if not has_entry(repo, revision if revision == INDEX else commit, name):
+        return None
+    return read_files(repo, commit, [name], label=revision)[name]
+
+
+def _exclusions(raw: bytes) -> tuple[tuple[str, ...], list[str]]:
+    """The ``[index] exclude`` patterns of a ``diffcone.toml``, and what is
+    wrong with them. A file that does not parse is reported by the
+    declarations reader (an analysis error there), so it excludes nothing
+    here."""
+    try:
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return (), []
+    table = data.get("index")
+    if table is None:
+        return (), []
+    where = f"{PROJECT_FILE}: [index]"
+    if not isinstance(table, dict):
+        return (), [f"{where} must be a table"]
+    unknown = sorted(set(table) - {"exclude"})
+    if unknown:
+        return (), [f"{where} has unknown key(s) {', '.join(unknown)}"]
+    patterns = table.get("exclude", [])
+    if not isinstance(patterns, list) or not all(isinstance(p, str) and p for p in patterns):
+        return (), [f"{where} exclude must be a list of non-empty patterns"]
+    return tuple(patterns), []
+
+
+def _exclude(repo: Path, snapshot: Snapshot) -> None:
+    """Move the ``.py`` files the snapshot's ``[index] exclude`` matches from
+    ``files`` to ``other_files``. Their id is git's blob id of the content
+    read, the same whatever kind of snapshot read it, so a file compares
+    equal across a commit and the working tree unless a filter (line
+    endings) changes it, which can only widen a plan."""
+    try:
+        raw = read_root_file(repo, snapshot.revision, PROJECT_FILE)
+    except (OSError, GitError):
+        # Reported, as for a file that does not parse, by the declarations
+        # reader: an analysis error, so the plan degrades without its
+        # exclusions too.
+        return
+    if raw is None:
+        return
+    patterns, problems = _exclusions(raw)
+    snapshot.errors.extend(AnalysisError(snapshot.revision, PROJECT_FILE, p) for p in problems)
+    if not patterns:
+        return
+    snapshot.info = replace(snapshot.info, excluded=patterns)
+    for path in [p for p in snapshot.files if any(fnmatchcase(p, pat) for pat in patterns)]:
+        content = snapshot.files.pop(path)
+        header = b"blob %d\0" % len(content)
+        snapshot.other_files[path] = hashlib.sha1(header + content).hexdigest()  # noqa: S324
+    snapshot.other_files = dict(sorted(snapshot.other_files.items()))
 
 
 def module_name_for(path: str, source_roots: list[str]) -> str | None:

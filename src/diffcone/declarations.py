@@ -41,9 +41,9 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from diffcone.snapshot import INDEX, WORKTREE, GitError, has_entry, read_files, resolve_commit
+from diffcone.snapshot import PROJECT_FILE, GitError, read_root_file
 
-FILENAME = "diffcone.toml"
+FILENAME = PROJECT_FILE
 
 
 @dataclass(frozen=True, order=True)
@@ -92,22 +92,11 @@ class Unreadable(Exception):
 
 def read_file(repo: Path, revision: str) -> bytes | None:
     """``diffcone.toml`` as the given snapshot has it, or None when absent."""
-    if revision == WORKTREE:
-        path = repo / FILENAME
-        if not path.is_file():
-            return None
-        try:
-            return path.read_bytes()
-        except OSError as exc:
-            raise Unreadable(f"{FILENAME}: {exc}") from exc
     try:
-        commit = "" if revision == INDEX else resolve_commit(repo, revision)
-        if not has_entry(repo, revision if revision == INDEX else commit, FILENAME):
-            return None  # not in this snapshot: the ordinary case
+        return read_root_file(repo, revision, FILENAME)
+    except (OSError, GitError) as exc:
         # There, so a failure to read it (an unmerged entry, a missing
         # object) is not an absence.
-        return read_files(repo, commit, [FILENAME], label=revision)[FILENAME]
-    except GitError as exc:
         raise Unreadable(f"{FILENAME}: {exc}") from exc
 
 
@@ -118,7 +107,8 @@ def parse(raw: bytes) -> Declared:
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         return Declared(problems=[f"{FILENAME}: {exc}"])
     out = Declared()
-    unknown_tables = sorted(set(data) - {"edges", "always_run"})
+    # ``[index]`` is the snapshot reader's (which files it analyses).
+    unknown_tables = sorted(set(data) - {"edges", "always_run", "index"})
     if unknown_tables:
         # A singular ``[[edge]]`` or a capitalisation slip would otherwise
         # declare nothing at all, quietly.

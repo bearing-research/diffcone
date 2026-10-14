@@ -87,7 +87,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 49
+INDEX_FORMAT = 50
 
 
 def _indexer_fingerprint() -> str:
@@ -211,7 +211,11 @@ def index_from_dict(data: dict) -> SourceIndex:
     symbols = {s.id: s for s in map(symbol_from_dict, data["symbols"])}
     return SourceIndex(
         snapshot=SnapshotInfo(
-            **data["snapshot"] | {"kind": SnapshotKind(data["snapshot"]["kind"])}
+            **data["snapshot"]
+            | {
+                "kind": SnapshotKind(data["snapshot"]["kind"]),
+                "excluded": tuple(data["snapshot"]["excluded"]),
+            }
         ),
         modules=set(data["modules"]),
         symbols=symbols,

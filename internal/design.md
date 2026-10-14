@@ -2210,6 +2210,28 @@ report lists the entries (`always_run`) and counts the matched targets
 job's selected share. `collect` still runs them: in the CI setups its run
 is also the full test run of a push.
 
+`[index] exclude` (audit E29) is a list of `fnmatch` patterns on repository
+paths whose `.py` files the snapshot reader keeps out of the analysis:
+deliberately invalid test data (black's), which would otherwise be an
+analysis error in every plan and make `collect` refuse the checkout. Unlike
+the declarations it is read by `snapshot.read_snapshot`, from the snapshot
+being read (a commit, the index or the working tree), and a matching file
+joins `other_files` under git's blob id of its content, so the rules for a
+file the index does not read apply unchanged: a change selects everything
+statically (`unanalysed_file_changed`), and under evidence the tests that
+touched the file or ran its code (the recorder records any file of the
+checkout; code from a file the index lacks folds as a touched path, and
+outside every test into the hook phase). Nothing narrows on the project's
+word: an excluded file is only planned less precisely. Patterns that
+differ between the snapshots move files between the module table and the
+other files, which selects everything without a rule of its own. An
+excluded test file or conftest gets the discovery notes of one outside the
+roots, naming the exclusion. A malformed table is a snapshot error, so the
+plan degrades; a file that does not parse excludes nothing there, the
+declarations reader reporting it. The report gives each snapshot's patterns
+(`analysis.<side>.excluded`), and `INDEX_FORMAT` carries them in the
+cached index.
+
 Telling diffcone that a dynamic reference reaches *only* certain modules is
 the opposite trade (it narrows on the project's authority) and is not
 implemented; see the roadmap.

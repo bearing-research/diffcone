@@ -62,6 +62,33 @@ diffcone can't tell a mistyped pattern (`test/e2e/*`) from one a job
 legitimately skips, so check the count when you add an entry or move
 tests.
 
+## Files to leave out of the analysis
+
+Some projects keep `.py` files that are not meant to be imported, and
+some of them are not even valid Python: test cases for a formatter or a
+linter, say. diffcone can't analyse such a file, so every plan selects
+every test, and `diffcone collect` refuses to record. List them under
+`[index]`:
+
+```toml
+[index]
+exclude = ["tests/data/**"]
+```
+
+| Key | Description |
+|---|---|
+| `exclude` | A list of patterns on file paths from the repository root. `*` matches any characters, `/` included; `?` and `[...]` work as in shell patterns. |
+
+A `.py` file that matches is treated like any other file diffcone doesn't
+analyse, a data file, say. A change to it makes a plan without a
+recording select every test. With a recording, it selects the tests that
+read the file or ran its code. The report lists each snapshot's patterns
+(`analysis.base.excluded`, `analysis.head.excluded`).
+
+Don't exclude a file pytest collects tests from, or a `conftest.py`: its
+tests can't be targets, so the plan says discovery is incomplete, and the
+tests under an excluded `conftest.py` are always selected.
+
 ## What can go wrong
 
 Declarations can only add dependencies or selected tests, so they can only
@@ -72,6 +99,8 @@ code. These are reported as an analysis error:
 
 - a declaration that names something that doesn't exist;
 - an `always_run` entry without `targets`, or with an unknown `runner`;
+- an `[index]` table that isn't a table, or an `exclude` that isn't a list
+  of non-empty patterns;
 - an unknown key;
 - a file that doesn't parse;
 - a file that is there but can't be read (left unmerged by a conflicted
