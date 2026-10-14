@@ -7,9 +7,9 @@ from a **tree**: a checkout of the commit under test, or an export of it so
 later commits don't move it:
 
 ```bash
-REPO=$(git rev-parse --show-toplevel); E=$S/eval; mkdir -p $E/trees/main $E/trees/v0.3.0
+REPO=$(git rev-parse --show-toplevel); E=$S/eval; mkdir -p $E/trees/main $E/trees/v0.4.0
 git -C "$REPO" archive main | tar -x -C $E/trees/main
-git -C "$REPO" archive v0.3.0 | tar -x -C $E/trees/v0.3.0  # the last release, for comparison
+git -C "$REPO" archive v0.4.0 | tar -x -C $E/trees/v0.4.0  # the last release, for comparison
 ```
 
 Results go into `internal/evaluation.md` as a dated section, newest first,
@@ -58,9 +58,9 @@ closed miss, a new rule's cost). The last measurement is in
 ## Census (static precision)
 
 ```bash
-eval/census.sh $E/trees/v0.3.0 v0.3.0   # first run clones into $E/census-work
+eval/census.sh $E/trees/v0.4.0 v0.4.0   # first run clones into $E/census-work
 eval/census.sh $E/trees/main main
-python3 eval/census_compare.py $E/census-v0.3.0.json $E/census-main.json
+python3 eval/census_compare.py $E/census-v0.4.0.json $E/census-main.json
 ```
 
 Plans 8 commits of each of the 42 census repositories without running

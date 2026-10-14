@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
-      - uses: bearing-research/diffcone/actions/record@v0.3.0
+      - uses: bearing-research/diffcone/actions/record@v0.4.0
         id: record
         with:
           key-prefix: diffcone-ubuntu
@@ -73,7 +73,7 @@ jobs:
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
-      - uses: bearing-research/diffcone/actions/run@v0.3.0
+      - uses: bearing-research/diffcone/actions/run@v0.4.0
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
@@ -125,7 +125,7 @@ write JUnit XML (`--junitxml=full.xml`) and upload it, then add:
         with:
           name: diffcone-results
           path: diffcone-results
-      - uses: bearing-research/diffcone/actions/check@v0.3.0
+      - uses: bearing-research/diffcone/actions/check@v0.4.0
         with:
           full: full/full.xml
 ```
@@ -166,7 +166,7 @@ jobs:
       - run: uv sync --locked
       - if: github.event_name == 'push'
         id: record
-        uses: bearing-research/diffcone/actions/record@v0.3.0
+        uses: bearing-research/diffcone/actions/record@v0.4.0
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
@@ -174,7 +174,7 @@ jobs:
           check: true
           fail-on-test-failure: true
       - if: github.event_name == 'pull_request'
-        uses: bearing-research/diffcone/actions/run@v0.3.0
+        uses: bearing-research/diffcone/actions/run@v0.4.0
         with:
           key-prefix: diffcone-ubuntu
           command: uv run python -m pytest
@@ -247,7 +247,7 @@ jobs:
   report:
     runs-on: ubuntu-latest
     steps:
-      - uses: bearing-research/diffcone/actions/report@v0.3.0
+      - uses: bearing-research/diffcone/actions/report@v0.4.0
         with:
           workflow: tests.yml
 ```
@@ -298,7 +298,7 @@ Issues posted elsewhere name the repository the runs came from, and each
 repository gets its own report issue.
 
 ```yaml
-      - uses: bearing-research/diffcone/actions/report@v0.3.0
+      - uses: bearing-research/diffcone/actions/report@v0.4.0
         with:
           repository: my-org/my-project
           workflow: tests.yml

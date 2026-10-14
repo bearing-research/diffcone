@@ -8,6 +8,8 @@ selection rules.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-14
+
 Upgrading from 0.3.0: make your execution-evidence recordings again. The
 store format is now 6 (0.3.0 wrote 1): `--evidence auto` skips an older
 recording, naming one is an error, and the `run` action plans from the
@@ -799,6 +801,7 @@ The first release.
   `actions/check`) to record nightly on the default branch and plan, run
   and check each pull request against it; see `docs/ci.md`.
 
+[0.4.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.4.0
 [0.3.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.2.0
 [0.1.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.1.0

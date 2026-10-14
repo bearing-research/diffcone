@@ -1,6 +1,6 @@
 """Selected tests per census project across versions; mean selection over plans.
 
-    census_compare.py E/census-v0.3.0.json E/census-main.json ...
+    census_compare.py E/census-v0.4.0.json E/census-main.json ...
 
 Each file is `scripts/census.py run -o` output named census-<label>.json;
 only commits planned by every version are compared."""
