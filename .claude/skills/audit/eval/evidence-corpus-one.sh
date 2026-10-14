@@ -21,10 +21,13 @@ O=${3:?usage: evidence-corpus-one.sh NAME TREE OUTDIR}
 R=$E/repos/$name
 mkdir -p "$O"
 roots=(--source-root .); [ -d "$R/src" ] && roots=(--source-root src --source-root .)
-# --rootdir: a repository with no pytest configuration of its own would
+# --rootdir=.: a repository with no pytest configuration of its own would
 # otherwise take the first one above it (E inside a checkout of diffcone
-# finds diffcone's), and its node ids would match no target.
-cmd="$R/.venv/bin/python -m pytest --rootdir=$R"
+# finds diffcone's), and its node ids would match no target. Relative, as
+# diffcone runs pytest in the checkout under test (the clone to record,
+# a temporary worktree to validate): an absolute path to the clone would
+# make validation collect the clone's files.
+cmd="$R/.venv/bin/python -m pytest --rootdir=."
 [[ $name == pre-commit ]] && cmd="$cmd --ignore=tests/languages"
 branch=$(git -C "$R" rev-parse --abbrev-ref HEAD)
 head=$(git -C "$R" rev-parse HEAD)
