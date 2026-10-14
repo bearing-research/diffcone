@@ -841,6 +841,9 @@ class _Observers:
         ] = {}
         self._collected_code_of: dict[str, list[str]] | None = None
         self._session_code_found: set[str] | None = None
+        # Every symbol the recording ran, in any phase or process; a module's
+        # top-level code counts as its module symbol (``_never_imported``).
+        self._ran_at_c: frozenset[str] | None = None
         # The same, for an attribute read off a value of unknown type (W20).
         self._attribute_named: dict[str, set[str]] = {}
 
@@ -951,6 +954,34 @@ class _Observers:
             graph = self.bases if direction == BASES else self.subclasses
             found = self._related_of[key] = frozenset(_closure([cls], graph))
         return found
+
+    def _never_imported(self, module: str) -> bool:
+        """Whether ``module`` is a Python module of the index, not test code,
+        whose top-level code ran nowhere in the recording: not during an
+        import, collection or a hook, not inside a test (a lazy import), not
+        in a process a test started (its records fold into the test's), and
+        not before the recorder started (``preloaded``). No object of it
+        existed at C. Not a Cython module, a module outside the index, or
+        test code, which have their own rules."""
+        symbol = self.c.symbols.get(module)
+        if (
+            symbol is None
+            or symbol.kind != SymbolKind.MODULE
+            or not symbol.path.endswith(".py")
+            or self.test_code.is_test_code(module)
+        ):
+            return False
+        if self._ran_at_c is None:
+            ev = self.evidence
+            self._ran_at_c = (
+                frozenset(ev.symbols)
+                | ev.import_phase
+                | ev.import_by.keys()
+                | ev.collect_by.keys()
+                | ev.hook_phase
+                | ev.preloaded
+            )
+        return module not in self._ran_at_c
 
     def _ran_outside_tests(self, code: str) -> bool:
         """Whether ``code`` (a symbol) ran at C outside every test: during
@@ -2694,7 +2725,12 @@ class _Observers:
         # Only code that imports it, or is handed it (below), can look a
         # module-level name up on it.
         module_name = test and (symbol.kind == SymbolKind.MODULE or symbol.container == namespace)
-        for site, kind in self.sites:
+        # A module no code of the recording imported held no object a lookup
+        # at C could find (audit E23: ``docs/conf.py``, seen by every frame
+        # reader); at the head only an import added elsewhere can bring it in,
+        # a change planned on its own.
+        never_imported = self._never_imported(namespace)
+        for site, kind in [] if never_imported else self.sites:
             site_symbol = self.symbols.get(site)
             if site_symbol is None:
                 continue

@@ -169,6 +169,14 @@ own tests plus static reach, not to every lookup site. Without that, one
 unbounded import in pandas (`_get_plot_backend`) made every escalation
 select everything.
 
+No lookup site sees a module the recording never imported (audit E23): a
+Python module of the index, not test code, whose top-level code ran in no
+phase, test or child process and was not `preloaded` held no object at C
+for a frame's globals, a `__code__` or `sys.modules` to find, and at the
+head only an import added elsewhere can bring it in, which is a change
+planned on its own. Without that, a constant changed in `docs/conf.py`
+reached every frame reader that ran at import (jinja, boltons).
+
 **Compiled code.** A `.pyx` change is invisible to a Python tracer unless
 the extension is built with Cython's `profile=True` directive, whose
 functions raise the same `PY_START` events as Python code (roadmap items 7

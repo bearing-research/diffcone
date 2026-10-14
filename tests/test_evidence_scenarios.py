@@ -3891,6 +3891,96 @@ def test_r7_evidence_reaches_a_reader_through_a_parameter(repo):
     assert selected(plan) == {"tests/test_a.py::test_a"}
 
 
+FRAMES = """\
+import sys
+
+CODES = set()
+
+
+def internal(f):
+    CODES.add(f.__code__)
+    return f
+
+
+def caller_known():
+    name = sys._getframe(1).f_globals.get("__name__")
+    return name in sys.modules
+"""
+
+FRAMED_WORK = """\
+from pkg.frames import caller_known, internal
+
+KNOWN = caller_known()
+
+
+@internal
+def handle(x):
+    return x + 1
+"""
+
+T_FRAMED = "from pkg.work import handle\n\n\ndef test_work():\n    assert handle(1) == 2\n"
+
+
+@pytest.mark.parametrize(
+    ("extra", "head_work", "widens"),
+    [
+        ({}, None, False),
+        (
+            {
+                "tests/test_conf.py": (
+                    "import docs.conf\n\n\ndef test_conf():\n    assert docs.conf\n"
+                )
+            },
+            None,
+            True,
+        ),
+        (
+            {
+                "tests/test_lazy.py": (
+                    "def test_lazy():\n    import docs.conf\n\n    assert docs.conf.release\n"
+                )
+            },
+            None,
+            True,
+        ),
+        ({}, "import docs.conf\n" + FRAMED_WORK, True),
+    ],
+    ids=[
+        "never imported",
+        "imported by a test module",
+        "imported inside a test",
+        "imported at the head",
+    ],
+)
+def test_e23_a_module_no_test_imported_is_seen_by_no_lookup(repo, extra, head_work, widens):
+    """A frame's globals (boltons' ``make_sentinel``) or a function's
+    ``__code__`` (jinja's ``internalcode``) is a lookup on an object from
+    anywhere, taken to see every module's names: a constant changed in
+    ``docs/conf.py``, which no test imports, escalated the importer of the
+    code that read a frame and selected every test. A module whose
+    top-level code ran nowhere in the recording held no object then; one a
+    test imports, even inside the test, still counts, and so does one an
+    import added at the head brings in."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "pkg/__init__.py": "",
+        "tests/__init__.py": "",
+        "pkg/frames.py": FRAMES,
+        "pkg/work.py": FRAMED_WORK,
+        "docs/conf.py": 'release = "1.0"\n',
+        "tests/test_work.py": T_FRAMED,
+        **extra,
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    change = {"docs/conf.py": 'release = "2.0"\n'}
+    if head_work is not None:
+        change["pkg/work.py"] = head_work
+    head = repo.commit(change)
+    plan = repo.plan(base, head, [], discover_runners=["pytest"], evidence=evidence)
+    assert ("tests/test_work.py::test_work" in selected(plan)) is widens
+
+
 # --------------------------------------------------------------------------- class definitions
 
 

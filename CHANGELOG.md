@@ -621,6 +621,11 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   resolving a file it is about to measure is nobody's read.
 - Tests that build URLs with werkzeug (every Flask app) no longer count as
   running code compiled from text, which selected them for every change.
+- A change to a module no test imports (a Sphinx `docs/conf.py`) no
+  longer reaches code that looks names up on whatever it is handed (a
+  frame's globals, a function's `__code__`, `sys.modules`), which selected
+  every test importing that code. A module imported by any test, even
+  inside one, or by an import added in the same change, still does.
 
 ### CI
 
