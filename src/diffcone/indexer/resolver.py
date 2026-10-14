@@ -17,6 +17,7 @@ from diffcone.indexer.definitions import (
     _canonical_names,
     _chain_names,
     _class_attributes,
+    _copies_docstring_only,
     _flatten_chain,
     _future_annotations,
     _has_decorator,
@@ -764,10 +765,15 @@ class Resolver(FirstPass):
         it decorates: one that resolves to nothing visible (external,
         unresolved, a value), or in-scope code that reads ``__doc__`` (the
         decorator itself, a factory whose wrapper does, a class's
-        ``__init__``/``__new__``/``__call__``). Known inert ones never do."""
+        ``__init__``/``__new__``/``__call__``). Known inert ones never do,
+        nor do the builtins that only copy it (``classmethod``,
+        ``staticmethod``, ``property``)."""
         stars = self._star_bases(module)
         for dec in decorators:
-            if _is_inert_decorator(dec, module, _header_names(where), stars):
+            shadowed = _header_names(where)
+            if _is_inert_decorator(dec, module, shadowed, stars) or _copies_docstring_only(
+                dec, module, shadowed, stars
+            ):
                 continue
             target = dec.func if isinstance(dec, ast.Call) else dec
             parts = _flatten_chain(target)

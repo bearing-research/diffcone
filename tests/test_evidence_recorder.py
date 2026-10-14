@@ -1155,6 +1155,31 @@ def test_rec1_a_pytest_process_started_outside_every_test_is_its_own_record(repo
         (["file", "-b", "/repo/data/table.bin"], True),
         (["ldconfig"], True),
         (["make", "data"], True),
+        # E25: shellingham's shell detection (typer's tests, at import).
+        (["ps", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "args="], False),
+        # E21: pytest-benchmark tags benchmarks with the commit as it adds
+        # its options; git reporting on the repository, not its files.
+        (["git", "rev-parse", "--git-dir"], False),
+        (["/usr/bin/git", "rev-parse", "--abbrev-ref", "HEAD"], False),
+        (["git", "config", "--local", "remote.origin.url"], False),
+        (["git", "config", "--get", "user.name"], False),
+        (["git", "config", "--list"], False),
+        (["git", "describe", "--dirty", "--always", "--long", "--abbrev=40"], False),
+        (["git", "show", "-s", '--pretty=format:"%aI"'], False),
+        (["git", "-C", "/opt/repo", "rev-parse", "HEAD"], False),
+        (["git", "--version"], False),
+        (["git", "show", "HEAD:pkg/data.txt"], True),
+        (["git", "show", "-s", "HEAD:pkg/data.txt"], True),
+        (["git", "rev-parse", "HEAD:pkg/data.txt"], True),
+        (["git", "show", "HEAD"], True),
+        (["git", "show", "-s", "--ext-diff", "HEAD"], True),
+        (["git", "config", "user.name", "someone"], True),
+        (["git", "config", "--unset", "user.name"], True),
+        (["git", "config", "set", "user.name", "someone"], True),
+        (["git", "-c", "core.pager=cat", "rev-parse", "HEAD"], True),
+        (["git", "status"], True),
+        (["git", "log", "-p"], True),
+        (["git"], True),
     ],
 )
 def test_rec1_a_system_query_outside_every_test_is_no_problem(tmp_path, argv, problem):
@@ -1185,6 +1210,133 @@ def test_e12_a_test_module_listing_locales_at_import_does_not_widen_plans(repo):
     handled, other = _plans(repo, files, HANDLED, OTHER_CHANGED)
     assert "tests/test_loc.py::test_loc" not in selected(handled) | selected(other)
     assert selected(other) == {OTHER_ID}
+
+
+WORK_ID = "tests/test_work.py::test_work"
+T_WORK = "from pkg.work import handle\n\n\ndef test_work():\n    assert handle(1) == 2\n"
+
+
+@needs_monitoring
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
+@pytest.mark.parametrize(
+    ("queries", "widens"),
+    [
+        (
+            "['git', 'rev-parse', '--git-dir'], ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], "
+            "['git', 'config', '--local', 'remote.origin.url'], "
+            "['git', 'describe', '--dirty', '--always', '--long'], "
+            "['git', 'show', '-s', '--pretty=format:%aI']",
+            False,
+        ),
+        ("['git', 'show', 'HEAD:pkg/other.py']", True),
+    ],
+    ids=["reports on the repository", "prints a file"],
+)
+def test_e21_git_asking_about_the_repository_in_a_hook_does_not_widen_plans(repo, queries, widens):
+    """pytest-benchmark's ``pytest_addoption`` asks git for the commit, the
+    branch, the remote and the dates, in every run and outside every test:
+    a process no record follows in the hook phase, so every change of any
+    project with pytest-benchmark installed selected every test (pluggy).
+    Those queries print no file of the checkout. One that prints a file
+    (``git show HEAD:<path>``) still widens."""
+    conftest = (
+        "import subprocess\n\n\ndef pytest_configure(config):\n"
+        f"    for argv in ({queries},):\n"
+        "        subprocess.run(argv, capture_output=True)\n"
+    )
+    files = {**BASE, "tests/conftest.py": conftest, "tests/test_work.py": T_WORK}
+    (other,) = _plans(repo, files, OTHER_CHANGED)
+    assert (WORK_ID in selected(other)) is widens
+    assert OTHER_ID in selected(other)
+
+
+TRACER = """\
+import os
+
+
+def should_trace(filename):
+    os.stat(filename)
+    return True
+
+
+def report(filename):
+    with open(filename) as f:
+        return len(f.read())
+"""
+
+
+@needs_monitoring
+def test_e26_a_coverage_tracer_resolving_a_file_is_no_read(repo, tmp_path, monkeypatch):
+    """With coverage measuring the run (arrow's ``addopts`` carry
+    ``--cov``), coverage's tracer resolves each source file as its code
+    first runs (``InOrOut.should_trace``, a ``stat`` via ``realpath``):
+    while the importer is still importing it, so the recorder took it for
+    that import reading the file, and every edit to it selected every test
+    importing the package. A read coverage makes for a test (its reporting
+    API reading a source file) still counts."""
+    site = tmp_path / "site"
+    (site / "vendor" / "coverage").mkdir(parents=True)
+    (site / "vendor" / "__init__.py").write_text("")
+    (site / "vendor" / "coverage" / "__init__.py").write_text("")
+    (site / "vendor" / "coverage" / "inorout.py").write_text(TRACER)
+    monkeypatch.setenv("PYTHONPATH", str(site))
+    init = (
+        "import os\n\nfrom vendor.coverage.inorout import should_trace\n\n"
+        "should_trace(os.path.join(os.path.dirname(__file__), 'other.py'))\n"
+    )
+    report = (
+        "import os\n\nimport pkg\nfrom vendor.coverage.inorout import report\n\n\n"
+        "def test_report():\n"
+        "    assert report(os.path.join(os.path.dirname(pkg.__file__), 'other.py'))\n"
+    )
+    files = {
+        **BASE,
+        "pkg/__init__.py": init,
+        "tests/test_work.py": T_WORK,
+        "tests/test_report.py": report,
+    }
+    (other,) = _plans(repo, files, OTHER_CHANGED)
+    assert selected(other) == {OTHER_ID, "tests/test_report.py::test_report"}
+
+
+GENERATED = """\
+def build(target):
+    code = compile("def b(x):\\n    return x.g()\\n", "<generated>", "exec")
+    names = {}
+    exec(code, {}, names)
+    return names["b"](target)
+"""
+
+
+@needs_monitoring
+@pytest.mark.parametrize(
+    ("module", "flagged"),
+    [("werkzeug/routing/rules.py", False), ("vendor/gen.py", True)],
+    ids=["werkzeug's URL builder", "another library's text"],
+)
+def test_e22_werkzeug_url_builders_are_no_text_code(repo, tmp_path, monkeypatch, module, flagged):
+    """werkzeug compiles each URL rule's builder from text it generates
+    (``Rule._get_func_code``), run with empty globals on the rule and the
+    values it is passed; nearly every flask test builds URLs, so 332 of
+    372 counted as running text code and were always selected. Text another
+    library runs that names something is still text code."""
+    site = tmp_path / "site"
+    path = site / module
+    path.parent.mkdir(parents=True)
+    for parent in path.relative_to(site).parents:
+        if parent != Path("."):
+            (site / parent / "__init__.py").write_text("")
+    path.write_text(GENERATED)
+    monkeypatch.setenv("PYTHONPATH", str(site))
+    dotted = module.removesuffix(".py").replace("/", ".")
+    test = (
+        f"from {dotted} import build\n\nfrom pkg import other\n\n\n"
+        "def test_route():\n    assert build(other) == 1\n"
+    )
+    files = {**BASE, "tests/test_work.py": T_WORK, "tests/test_route.py": test}
+    (handled,) = _plans(repo, files, HANDLED)
+    assert ("tests/test_route.py::test_route" in selected(handled)) is flagged
+    assert WORK_ID in selected(handled)
 
 
 # Code pytest runs while it collects a test module (roadmap item 19, rule 3):

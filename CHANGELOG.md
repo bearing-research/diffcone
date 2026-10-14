@@ -77,6 +77,11 @@ New discovery notes: `unparsable_config` (discovery incomplete),
   `indirect` parameter, another decorator on the test, or a parametrize
   on its class or in `pytestmark` keeps the old rule.
 - Indexing a very long function is no longer quadratic in its calls.
+- Editing the docstring of a method under `@classmethod`, `@staticmethod`
+  or `@property` no longer counts as code run at import (which selected
+  every test importing the module): these builtins only copy the
+  docstring. Code that reads the docstring is still selected, and so is a
+  project decorator with one of those names.
 
 ### Fixed
 
@@ -605,6 +610,17 @@ New discovery notes: `unparsable_config` (discovery incomplete),
 - Editing an ordinary module named `build.py` (not at the repository root
   or beside `pyproject.toml`/`setup.cfg`) selects the tests that ran it,
   as static planning does, instead of every test.
+- Recordings no longer select every test for every change when pytest
+  plugins or test helpers ask the machine or the repository something
+  outside the tests: `git` reporting the commit, branch, remote or
+  configuration (pytest-benchmark does as it starts) and `ps`
+  (shellingham's shell detection) join `uname` and `locale`. A `git`
+  command that prints a file or writes still counts.
+- Running the suite under coverage (`--cov` in `addopts`) no longer makes
+  every source file look read by the module importing it: coverage
+  resolving a file it is about to measure is nobody's read.
+- Tests that build URLs with werkzeug (every Flask app) no longer count as
+  running code compiled from text, which selected them for every change.
 
 ### CI
 

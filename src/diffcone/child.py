@@ -119,12 +119,18 @@ def system_query(argv: list[str] | None) -> bool:
     call them as they start, outside every test. Also ``locale``, ``locale
     -a`` and ``locale -m``, which list the machine's locales and character
     maps: projects testing locale handling ask at import (pandas'
-    ``get_locales``, while its test modules are collected)."""
+    ``get_locales``, while its test modules are collected). ``ps``, which
+    lists processes (shellingham's shell detection, run at import by
+    typer's tests). And ``git`` asking about the repository rather than its
+    files (``git_query``: pytest-benchmark tags benchmarks with the commit
+    as it adds its options, in every run)."""
     if not argv:
         return False
-    name = os.path.basename(argv[0]).lower()
-    if name == "uname":
+    name = os.path.basename(argv[0]).lower().removesuffix(".exe")
+    if name in ("uname", "ps"):
         return True
+    if name == "git":
+        return git_query(argv[1:])
     if name == "ldconfig":
         return argv[1:] == ["-p"]
     if name == "locale":
@@ -136,6 +142,57 @@ def system_query(argv: list[str] | None) -> bool:
             and os.path.isabs(argv[2])
             and bool(INTERPRETER.fullmatch(os.path.basename(argv[2])))
         )
+    return False
+
+
+# ``git config`` options that read: where to look, and what to print.
+_CONFIG_READS = frozenset(
+    {"--local", "--global", "--system", "--worktree", "--get", "--get-all", "--list", "-l"}
+)
+_CONFIG_LISTS = frozenset({"--list", "-l"})
+
+
+def git_query(args: list[str]) -> bool:
+    """Whether ``git <args>`` only reports on the repository: its refs and
+    commits (``rev-parse``, ``describe``, ``show -s``), its configuration
+    (``config`` reading one key or listing them) or its version. None of
+    these prints a file's contents or writes anything; what they report is
+    the commit (and ``describe --dirty``, whether the tree differs from it),
+    which no plan models. Not counted: a revision naming a path
+    (``HEAD:pkg/data.txt``, the file's contents or its blob id), ``show``
+    without ``-s`` (a diff, which can run an external diff or textconv
+    program), any write, and options before the command other than ``-C
+    <dir>`` and ``--no-pager`` (``-c`` can set a program to run)."""
+    rest = list(args)
+    while rest and rest[0].startswith("-"):
+        if rest[0] == "-C" and len(rest) > 1:
+            rest = rest[2:]
+        elif rest[0] == "--no-pager":
+            rest = rest[1:]
+        elif rest[0] == "--version" and len(rest) == 1:
+            return True
+        else:
+            return False
+    if not rest:
+        return False
+    command, options = rest[0], rest[1:]
+    flags = [a for a in options if a.startswith("-")]
+    names = [a for a in options if not a.startswith("-")]
+    if any(":" in a for a in names):
+        return False
+    if command in ("rev-parse", "describe"):
+        return True
+    if command == "show":
+        return ("-s" in flags or "--no-patch" in flags) and not (
+            {"--ext-diff", "--textconv"} & set(flags)
+        )
+    if command == "config":
+        if names[:1] in (["get"], ["list"]):  # git 2.46: ``git config get <key>``
+            names = names[1:]
+            flags = flags + (["--list"] if options[:1] == ["list"] else [])
+        if not set(flags) <= _CONFIG_READS:
+            return False
+        return len(names) == (0 if _CONFIG_LISTS & set(flags) else 1)
     return False
 
 
@@ -765,14 +822,29 @@ def _on_throw(code, offset, exc):
         _on_code(code, offset)
 
 
+def tracer(code: Any) -> bool:
+    """Whether ``code`` is a coverage tracer deciding whether to measure a
+    file (coverage.py's ``InOrOut.should_trace``, which every core calls as
+    a file's code first runs). It resolves the file's path (``realpath``,
+    a ``stat`` of the source file) for coverage's own data, on behalf of no
+    code of the project, while that code is running: an import in
+    progress, or a test."""
+    return code.co_name == "should_trace" and code.co_filename.endswith(
+        os.path.join("coverage", "inorout.py")
+    )
+
+
 def _actor() -> str:
     """As ``collect._actor``: ``import`` only when the import system itself
-    touched the path, not a library's top level that an import ran."""
+    touched the path, not a library's top level that an import ran;
+    ``tracer`` for a coverage tracer."""
     frame = sys._getframe(2)
     module = False
     while frame is not None:
         code = frame.f_code
         name = code.co_filename
+        if tracer(code):
+            return "tracer"
         if name.startswith("<frozen importlib") and code.co_name not in DATA_READERS:
             if not module:
                 return "import"
@@ -827,7 +899,7 @@ def _touch(path: Any, listing: bool = False, scanned: bool = False) -> None:
         return
     absolute = os.path.abspath(path)
     rel = _relative(absolute)
-    if rel is None or _metadata_scan(absolute) or _actor() == "import":
+    if rel is None or _metadata_scan(absolute) or _actor() in ("import", "tracer"):
         return
     kind = "d" if listing else "p"
     for found in {rel, _relative(_real(absolute))}:
@@ -889,15 +961,19 @@ _text_seen: set[str] = set()
 # Modules that run text they generate themselves from a definition, reading
 # only names they put in its namespace (``collections.namedtuple``,
 # dataclasses, attrs' generated methods, ``unittest.mock``'s
-# signature-checking wrappers for ``autospec``), or text from pytest's
-# command line (``-m``/``-k`` expressions, matched against marks and names).
-# Annotation evaluators come first (``annotation_reads``).
+# signature-checking wrappers for ``autospec``, werkzeug's URL builders:
+# a function from each rule's parts, run with empty globals, reading only
+# the rule and values it is passed and calling the rule's converters, whose
+# project code is recorded as it runs), or text from pytest's command line
+# (``-m``/``-k`` expressions, matched against marks and names). Annotation
+# evaluators come first (``annotation_reads``).
 TEXT_GENERATORS = (
     "collections",
     "dataclasses",
     "attr",
     "unittest.mock",
     "_pytest.mark",
+    "werkzeug.routing",
 )
 # pytest evaluates a string ``skipif``/``xfail`` condition in the test
 # module's globals (``evaluate_condition``): text code only when it may read

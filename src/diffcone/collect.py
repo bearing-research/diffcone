@@ -630,12 +630,16 @@ def _actor() -> str:
     A library's top-level code run by an import (matplotlib reading
     ``./matplotlibrc``) is not the import system: the touch belongs to
     whoever imported the library, ``project`` when project code is above,
-    else ``library``, which outside every test counts as a hook's touch."""
+    else ``library``, which outside every test counts as a hook's touch.
+    ``tracer`` when a coverage tracer resolved the file it is about to
+    measure (``child.tracer``): no one's read, in a test or out."""
     frame = sys._getframe(2)
     module = imported = False
     while frame is not None:
         code = frame.f_code
         name = code.co_filename
+        if child.tracer(code):
+            return "tracer"
         if name.startswith("<frozen importlib") and code.co_name not in DATA_READERS:
             if not module:
                 return "import"
@@ -704,7 +708,7 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
     if rel is None or _metadata_scan(absolute):
         return
     actor = _actor()
-    if actor == "import":
+    if actor in ("import", "tracer"):
         return
     if own_source and not active and importing and importing[-1] == rel:
         listing = True

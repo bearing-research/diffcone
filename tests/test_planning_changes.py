@@ -130,6 +130,57 @@ def test_f1_a_decorator_that_never_reads_docstrings_keeps_doc_edits_free(repo):
     assert selected(plan) == set()
 
 
+@pytest.mark.parametrize(
+    ("prelude", "decorator", "use", "reads"),
+    [
+        ("", "classmethod", "C.f()", False),
+        ("", "staticmethod", "C.f()", False),
+        ("", "property", "C().f", False),
+        ("import builtins\n\n\n", "builtins.classmethod", "C.f()", False),
+        ("from pkg.deco import classmethod\n\n\n", "classmethod", "C.f()", True),
+        ("", "classmethod", "C.f.__doc__", True),
+    ],
+    ids=[
+        "classmethod",
+        "staticmethod",
+        "property",
+        "builtins.classmethod",
+        "a project decorator named classmethod",
+        "a test reading the docstring",
+    ],
+)
+def test_e24_builtin_decorators_that_copy_a_docstring_do_not_read_it(
+    repo, prelude, decorator, use, reads
+):
+    """``classmethod``, ``staticmethod`` and ``property`` copy the docstring
+    onto what they return and compute nothing from it: a docstring edit of
+    a method they decorate runs nothing at import (marshmallow's
+    ``SchemaMeta.get_declared_fields`` selected every test). A project
+    decorator of the same name may read it; a test reading the docstring
+    still notices."""
+    deco = "def classmethod(f):\n    f.__doc__.format()\n    return f\n"
+    a = (
+        f"{prelude}class C:\n    @{decorator}\n    def f(*args):\n"
+        '        """{doc}"""\n        return 1\n'
+    )
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/deco.py": deco,
+            "pkg/a.py": a.replace("{doc}", "Old."),
+            "tests/__init__.py": "",
+            "tests/test_a.py": f"from pkg.a import C\n\n\ndef test_f():\n    assert {use}\n",
+            "tests/test_b.py": "import pkg.a\n\n\ndef test_b():\n    assert pkg.a\n",
+        }
+    )
+    head = repo.commit({"pkg/a.py": a.replace("{doc}", "New, longer.")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    expected = {"tests/test_a.py::test_f"} if use.endswith("__doc__") else set()
+    if reads and not use.endswith("__doc__"):
+        expected = {"tests/test_a.py::test_f", "tests/test_b.py::test_b"}
+    assert selected(plan) == expected
+
+
 def test_f1_a_decorator_the_analysis_cannot_see_may_read_it(repo):
     a = 'import click\n\n\n@click.command()\ndef cli():\n    """{doc}"""\n    return 1\n'
     base = repo.commit(

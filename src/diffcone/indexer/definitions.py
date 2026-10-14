@@ -299,6 +299,29 @@ _INERT_DECORATORS = frozenset(
 )
 
 
+# Builtin decorators that copy the docstring onto the object they return
+# (``__doc__``, for whoever reads it there, a docstring reader the planner
+# models like one of the function's) and compute nothing from it.
+_DOC_COPYING_DECORATORS = frozenset(
+    name
+    for builtin in ("classmethod", "staticmethod", "property")
+    for name in (builtin, f"builtins.{builtin}")
+)
+
+
+def _copies_docstring_only(
+    node: ast.expr,
+    scope: ModuleScope,
+    shadowed: Collection[str] = (),
+    stars: StarBases | None = None,
+) -> bool:
+    """``classmethod``, ``staticmethod`` and ``property``, the builtins
+    themselves (resolved as _is_inert_decorator does: a project name
+    ``property`` may do anything)."""
+    names = _canonical_names(node, scope, shadowed, stars)
+    return names is not None and names <= _DOC_COPYING_DECORATORS
+
+
 def _is_inert_decorator(
     node: ast.expr,
     scope: ModuleScope,

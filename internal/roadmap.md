@@ -1576,10 +1576,25 @@ the last baseline (`evidence_table.py NEW BASELINE`).
   project's, like `_metadata_scan`.
 
 *Planning: readers that see too much.*
-* E23: a reader of `__code__` or of frames sees, at most, the functions it
-  was handed and the modules on the stack when it ran: the module being
-  imported and its importers, from the recording's `import_by`. Not
-  `docs/conf.py`.
+* E23: a lookup on an object from anywhere (a frame's globals, a
+  function's `__code__`, `getattr` on a value) is taken to see every
+  module's names, including a module no test ever imports
+  (`docs/conf.py`). *Mechanism:* the recording knows every module whose
+  top-level code ran, in any phase or process (its module symbol among
+  the executed symbols, or `preloaded`). An object from a module that was
+  never imported did not exist at C, so no lookup at C could find it; at
+  the head it can exist only through an import added elsewhere, which is
+  a change of its own and planned as one. So in `_seeing_sites`, a
+  namespace that is a Python module of the index, not test code, and
+  never imported in the recording has no seeing sites. Not for a module
+  outside the index, a Cython module, or a module the recording read as
+  a file (`exec(open(...))`, which the touched-path rules plan). *Trade-
+  off:* none for soundness if the import record is complete; it relies on
+  the recorder seeing every `<module>` code object, which it already must
+  for `import_by`. *Done when* jinja's and boltons' chains through
+  `docs.conf` are gone, with regression tests: a never-imported module's
+  change seen by a frame reader selects nothing; imported at collection,
+  inside one test, or newly imported at the head, it still selects.
 * E24: `classmethod` and `staticmethod` (and `property`, which copies the
   getter's docstring only for a later reader, a docstring reader the
   planner already models) read nothing of the function at decoration.

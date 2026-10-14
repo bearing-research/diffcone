@@ -166,8 +166,9 @@ reached through imports but is not what a reorder is.
 The docstring is excluded from every body hash and hashed on its own:
 a docstring-only edit is reported as `docstring_changed` and carries no
 impact, except where code runs or reads it. A function under a decorator
-that is not known inert, or a class with decorators or keywords (a
-metaclass), has its docstring in its definition hash: the decorator
+that is not known inert (nor `classmethod`, `staticmethod` or `property`,
+which only copy it onto what they return), or a class with decorators or
+keywords (a metaclass), has its docstring in its definition hash: the decorator
 receives it at import (pandas' `@doc` formats it, and a bad placeholder
 breaks every importer). A module whose own code names `__doc__`
 (`ArgumentParser(description=__doc__)`) has its docstring in its body hash.
