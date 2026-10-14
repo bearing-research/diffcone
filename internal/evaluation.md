@@ -1485,6 +1485,37 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   open. A recording that lands there plans every change as select-all
   until it is recorded again.
 
+## Evidence corpus after E21-E26 (2026-10-14)
+
+The same 48 pairs, recorded and planned with the fixes for E21-E26 (branch
+`evprec`), against the baseline below re-run on main (2b19ca0) with the
+relative `--rootdir` (`evidence_table.py evprec main`).
+
+| repo | main | E21-E26 | the pairs that moved |
+|---|---|---|---|
+| marshmallow | 1 891 of 3 877 (51 %) | 1 205 (69 %) | docstring edits of `@classmethod`s select nothing (E24) |
+| more-itertools | 2 013 of 4 600 (56 %) | 2 013 | none |
+| flask | 2 152 of 2 232 (4 %) | 1 525 (32 %) | docstring edits select 12 and 25 of 372, not all (E22) |
+| arrow | 4 170 of 4 170 (0 %) | 2 839 (31 %) | a `humanize` edit selects 49 of 708 (E26) |
+| boltons | 2 468 of 2 468 | 2 468 | none: the chains now run through `make_sentinel` (E31) |
+| jinja | 4 062 of 4 062 | 2 708 (33 %) | the two `docs/conf.py` edits select nothing (E23) |
+| pluggy | 1 037 of 1 037 | 1 037 | none |
+| typer | 5 801 of 5 801 | 5 636 (3 %) | `__version__` edits select 883 and 887, not all (E25) |
+| total | 23 594 of 28 247 (83.5 %) | 19 431 (68.8 %) | |
+
+* **No miss** in either run.
+* strata: 658 of 6 231, as on main (re-recorded with the branch). pandas,
+  the four item 19 replays planned from the rule 3 recording (the
+  recorder fixes don't apply to it; the planning ones do): 94.0 %, then
+  100 % with 34, 41 and 34 `pytest_hook_changed` fallbacks, as before.
+* What still selects everything, from the plans' rules: test-module edits
+  and release commits (E27, E28: the import trade-off, which waits for a
+  decision); changes to import-time code of a module every test imports
+  (`arrow.arrow`'s signatures, `typer._click.core`, a locale class body):
+  the same trade-off, from the library's side; readers of whatever they
+  are handed that run at import (E31); and in pluggy, the hook phase,
+  since pytest imports pluggy before the recorder starts.
+
 ## Evidence corpus: eight small suites (2026-10-13)
 
 The first check of evidence plans beyond strata and pandas, and the baseline

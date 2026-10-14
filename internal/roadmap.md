@@ -1555,49 +1555,26 @@ is sketched here.
 The evidence corpus (evaluation.md, "Evidence corpus: eight small
 suites") found no miss in 48 pairs, and almost no savings: six of eight
 suites select nearly everything for any change. The causes are audit
-E21-E30. Each narrowing below needs a regression test that fails on the
+E21-E31. Each narrowing below needs a regression test that fails on the
 old code, and a re-run of the evidence corpus, strata and pandas against
 the last baseline (`evidence_table.py NEW BASELINE`).
 
-*Recorder: what ran outside the tests that no record shows.*
-* E21: `git` queries that read the repository's metadata (`rev-parse`,
-  `config --get`/`--local <key>` with no value, `describe`, `show -s`,
-  `log`) as `child.system_query`. They run no Python, and what they
-  report is the commit, which no plan models. Not `git show <rev>:<path>`
-  or anything that writes.
-* E22: werkzeug's routing (`werkzeug.routing.rules`) among
-  `TEXT_GENERATORS`. Check first that the generated builder reads only
-  what it is handed (converters, defaults) and that project code it calls
-  is recorded as it runs.
-* E25: find the process typer's `_get_shell_name` starts; a system query
-  if it is one (`ps`).
-* E26: a stat or open whose stack holds coverage.py's tracer
-  (`coverage.inorout.should_trace` and the collector) is no read of the
-  project's, like `_metadata_scan`.
+E21-E26 shipped (evaluation.md, "Evidence corpus after E21-E26": 83.5 %
+-> 68.8 % of the corpus, strata unchanged). What is left:
 
-*Planning: readers that see too much.*
-* E23: a lookup on an object from anywhere (a frame's globals, a
-  function's `__code__`, `getattr` on a value) is taken to see every
-  module's names, including a module no test ever imports
-  (`docs/conf.py`). *Mechanism:* the recording knows every module whose
-  top-level code ran, in any phase or process (its module symbol among
-  the executed symbols, or `preloaded`). An object from a module that was
-  never imported did not exist at C, so no lookup at C could find it; at
-  the head it can exist only through an import added elsewhere, which is
-  a change of its own and planned as one. So in `_seeing_sites`, a
-  namespace that is a Python module of the index, not test code, and
-  never imported in the recording has no seeing sites. Not for a module
-  outside the index, a Cython module, or a module the recording read as
-  a file (`exec(open(...))`, which the touched-path rules plan). *Trade-
-  off:* none for soundness if the import record is complete; it relies on
-  the recorder seeing every `<module>` code object, which it already must
-  for `import_by`. *Done when* jinja's and boltons' chains through
-  `docs.conf` are gone, with regression tests: a never-imported module's
-  change seen by a frame reader selects nothing; imported at collection,
-  inside one test, or newly imported at the head, it still selects.
-* E24: `classmethod` and `staticmethod` (and `property`, which copies the
-  getter's docstring only for a later reader, a docstring reader the
-  planner already models) read nothing of the function at decoration.
+*Readers of whatever they are handed, at import (E31).* E23 dropped the
+modules the recording never imported; a frame or `__code__` reader still
+sees every imported module, and where it runs at import of a module every
+test imports (`jinja2.utils.internalcode`, `boltons.typeutils.
+make_sentinel`), any change escalates that module and with it every test.
+*Mechanism (to measure first):* the recorder keeps, for each run of such a
+reader, what reached it: the modules on the stack (a frame reader can
+walk only those) and the function it was handed (`f.__code__` reads that
+function's code); planning takes those as its seeing sites. *Trade-off:*
+none if the record is complete; a reader that stores the frame or code
+for later must keep the wide reading. *Done when* boltons' and jinja's
+chains end, with regression tests for a frame reader that sees its caller
+and one that stores what it saw.
 
 *The import trade-off (needs the user's decision).* E27 and E28 are
 changes that run at import or configure the run: an edit to a test
@@ -1611,4 +1588,5 @@ test data); E30: `collect` warns when the recorded node ids match none of
 the discovered targets.
 
 **Done when** the evidence corpus re-run shows each finding's suite
-selecting less, with no miss, and strata and pandas no worse.
+selecting less, with no miss, and strata and pandas no worse; the item
+leaves the roadmap when E27-E31 are shipped or decided against.
