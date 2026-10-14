@@ -1808,6 +1808,31 @@ def test_a_uv_query_by_its_windows_name_is_inert(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("command_line", "inert"),
+    [
+        ("locale -a", True),
+        ("git rev-parse --abbrev-ref HEAD", True),
+        ("git describe --dirty --always --long", True),
+        ("git show HEAD:pkg/other.py", False),
+        ('git show "HEAD:pkg/my file.py"', False),
+        ("locale -a extra", False),
+    ],
+)
+def test_a_system_query_on_windows_is_inert(monkeypatch, command_line, inert):
+    """Windows raises ``subprocess.Popen`` with the command line
+    ``list2cmdline`` built, and no spawn accounting judges it there: the
+    system queries a POSIX child is judged by (``locale -a``, git asking
+    about the repository) were flagged, so every change selected every test
+    importing pandas' locale tests or running pytest-benchmark."""
+    from diffcone import collect
+
+    monkeypatch.setattr(collect.os, "name", "nt")
+    program = command_line.split()[0]
+    event = (program, command_line, None, None)
+    assert collect._inert_probe("subprocess.Popen", event) is inert
+
+
 @needs_monitoring
 def test_a_program_named_like_python_is_not_an_interpreter(repo):
     chosen = _evidence_selects(

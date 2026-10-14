@@ -8,6 +8,15 @@ selection rules.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the recorder no longer treats a system query (`locale -a`,
+  `git rev-parse` and the other read-only `git` queries, `ps`, `uname`) as
+  a process it cannot follow. It did, so a recording of a suite that runs
+  one outside every test (pandas' locale tests at import, pytest-benchmark
+  in every run) planned every change as select-everything there. POSIX
+  was not affected.
+
 ## [0.4.0] - 2026-10-14
 
 Upgrading from 0.3.0: make your execution-evidence recordings again. The

@@ -838,9 +838,12 @@ def _inert_probe(event: str, args: tuple) -> bool:
     snippet that imports only built-in modules and names nothing that loads
     code, with no environment pointing it at other code (``python -c
     "import sys; print(sys.version_info)"``, how tools probe an interpreter's
-    version); or one of ``_INERT_QUERIES`` (``uv python list``). Anything
-    else (``-m``, a script, another program, ``os.system``) may run project
-    code where this process cannot see it."""
+    version); one of ``_INERT_QUERIES`` (``uv python list``); or a program
+    asking about the machine or the repository (``child.system_query``:
+    ``locale -a``, ``git rev-parse``), which on POSIX the spawn accounting
+    judges by the same rule and on Windows only this does. Anything else
+    (``-m``, a script, another program, ``os.system``) may run project code
+    where this process cannot see it."""
     executable = env = None
     if event == "subprocess.Popen":
         executable, argv = args[0], args[1] if len(args) > 1 else None
@@ -879,6 +882,8 @@ def _inert_probe(event: str, args: tuple) -> bool:
         tool_name == tool and tuple(argv[1 : 1 + len(start)]) == start
         for tool, start in _INERT_QUERIES
     ):
+        return True
+    if runs.lower().removesuffix(".exe") == tool_name and child.system_query(argv):
         return True
     if not (_INTERPRETER.fullmatch(name) or program == sys.executable):
         return False
