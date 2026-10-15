@@ -294,6 +294,30 @@ def test_the_rerun_misses_are_the_confirmed_ones(tmp_path):
     assert report.unlisted_misses == 0
 
 
+def test_only_what_the_report_reads_of_a_plan_is_kept(tmp_path):
+    """A plan from a recording explains each of its targets: strata's are
+    78 MB of JSON, and a day of them held whole stopped the nightly report's
+    runner. The report keeps the counts, the evidence and each unselected
+    target's reason, and reports the same."""
+    plan = _plan(1, 3, unselected=[("tests/t.py::b", "no change reaches it")])
+    plan["selected_targets"] = [{"runner_id": "tests/t.py::a", "rules": ["executed_changed"]}]
+    plan["dependency_explanations"] = [{"reasons": [{"detail": "x" * 1000}]}]
+    plan["unselected_targets"][0]["rules"] = ["none"]
+    _run(
+        tmp_path,
+        1,
+        "pull_request",
+        "1" * 40,
+        {"diffcone-unit-linux": {"context.json": _pr(), "ran.json": plan}},
+    )
+    (art,) = ci_report.load(tmp_path)
+    assert art.plan == {
+        "analysis": {"counts": {"targets": 3, "selected": 1}, "evidence": {"commit": "e" * 40}},
+        "unselected_targets": [{"runner_id": "tests/t.py::b", "reason": "no change reaches it"}],
+    }
+    assert ci_report.build([art]).cells[0].selected_shares == [1 / 3]
+
+
 def test_an_artifact_downloaded_without_its_directory(tmp_path):
     """gh run download -n NAME extracts into the directory itself: refused,
     not read as a run without results."""

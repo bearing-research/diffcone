@@ -123,6 +123,36 @@ def _read(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _plan_read(plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The parts of a plan the report reads: its counts, whether it was
+    planned from a recording and why not, and each unselected target's
+    reason. A plan from a recording explains every target, so a large suite
+    writes tens of megabytes of it; held whole for every artifact of a day of
+    runs it outgrew the runner's memory. Anything not shaped as ``run``
+    writes it is kept as it is, for ``build`` to count as malformed."""
+    if plan is None:
+        return None
+    out: dict[str, Any] = {}
+    analysis = plan.get("analysis")
+    if isinstance(analysis, dict):
+        out["analysis"] = {"counts": analysis.get("counts"), "evidence": analysis.get("evidence")}
+    elif "analysis" in plan:
+        out["analysis"] = analysis
+    if "evidence_not_used" in plan:
+        out["evidence_not_used"] = plan["evidence_not_used"]
+    unselected = plan.get("unselected_targets")
+    if isinstance(unselected, list):
+        out["unselected_targets"] = [
+            {"runner_id": t.get("runner_id"), "reason": t.get("reason")}
+            if isinstance(t, dict)
+            else t
+            for t in unselected
+        ]
+    elif "unselected_targets" in plan:
+        out["unselected_targets"] = unselected
+    return out
+
+
 def load(directory: str | Path) -> list[Artifact]:
     root = Path(directory)
     if not root.is_dir():
@@ -145,7 +175,7 @@ def load(directory: str | Path) -> list[Artifact]:
                     name=art.name,
                     run=run,
                     context=_read(art / "context.json"),
-                    plan=_read(art / "ran.json") or _read(art / "plan.json"),
+                    plan=_plan_read(_read(art / "ran.json") or _read(art / "plan.json")),
                     verdict=_read(art / "verdict.json"),
                     rerun=_read(art / "rerun-verdict.json"),
                 )

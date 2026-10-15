@@ -27,6 +27,10 @@ selection rules.
 
 ### Fixed
 
+- `diffcone report` (and the `report` action) kept every plan it read
+  whole. A plan made from a recording explains each target, tens of
+  megabytes for a large suite, so a day of such plans could exhaust the
+  runner's memory and stop the report. It keeps only what it reads.
 - On Windows, the recorder no longer treats a system query (`locale -a`,
   `git rev-parse` and the other read-only `git` queries, `ps`, `uname`) as
   a process it cannot follow. It did, so a recording of a suite that runs
