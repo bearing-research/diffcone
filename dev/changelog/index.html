@@ -1627,6 +1627,10 @@ selection rules.</p>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
+<li><code>diffcone report</code> (and the <code>report</code> action) kept every plan it read
+  whole. A plan made from a recording explains each target, tens of
+  megabytes for a large suite, so a day of such plans could exhaust the
+  runner's memory and stop the report. It keeps only what it reads.</li>
 <li>On Windows, the recorder no longer treats a system query (<code>locale -a</code>,
   <code>git rev-parse</code> and the other read-only <code>git</code> queries, <code>ps</code>, <code>uname</code>) as
   a process it cannot follow. It did, so a recording of a suite that runs
