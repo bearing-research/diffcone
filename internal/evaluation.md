@@ -1485,6 +1485,35 @@ which planned 6 231 of 6 231 where the round-5 baseline (3.13) was 960.
   open. A recording that lands there plans every change as select-all
   until it is recorded again.
 
+## strata's CI on 0.4.0: definition changes select everything (2026-10-15)
+
+strata moved its actions to v0.4.0 (strata PR #1180). The first push
+recorded all 13 jobs; the next (892eab9 -> 8e01142) was checked against
+them (0 misses) and, like the one pull request since, selected every test
+in every job. Reproduced locally from a recording at 892eab9 (6 408 tests,
+the CI's roots and arguments): 6 418 of 6 418, 8 `pytest_hook_changed`
+fallbacks.
+
+The change is small (`notebook/ws.py`, `ws_payloads.py`, and
+`mcp_server._agent_note`, whose deferred annotations changed). An
+annotation change, like any definition change or added name, reaches the
+lookup and reflection sites that can see its module; strata runs many such
+generic readers outside every test (at import or while pytest collects),
+and code run there can reach process-global writers, so each counts as a
+hook's. The first readers: `strata.__getattr__` (the lazy-export table,
+which 8 generic module writers might change, though none runs outside a
+test) and `logging.configure_logging` (`getattr(logging, level)`, whose
+writers include three module loaders that run at import:
+`harness._load_local_module`, `pool_worker._load_local_module`,
+`sql.drivers.register_default_adapters`, each an `escape *` only because of
+callers or table writers that run in tests). Upper bound, spike branch
+`e32spike`: with those four writers and that site removed, still 6 418:
+the chains move on to `ws._handler_args` (`inspect.signature` on each
+dispatch handler at import) and `_load_local_module` as a site. Not
+pursued change by change; a week of nightly reports will show how often
+strata's changes take this path (body-only changes do not consult sites:
+an earlier pair selected 658 of 6 231).
+
 ## black with `[index] exclude` (E29, 2026-10-14)
 
 black keeps 303 `.py` files under `tests/data`, some deliberately invalid.
