@@ -1606,7 +1606,7 @@ Since strata dropped its lazy package root (2026-10-15), 493 of 521
 pull-request job plans selected every test; only changes with no Python
 in them (frontend, Docker) selected less. Reproduced on a local recording
 at d72777c9 with one body edit to `strata.cache.disk.DiskCache.put`:
-6580 of 6580 (audit E32-E34).
+6580 of 6580 (audit E32-E35).
 
 *A decorator's registration read as a stored result (E32).*
 `_stored_results` follows, for each function that can run a changed one,
@@ -1632,15 +1632,38 @@ function, not what calling it computes.
   too, and the import rules follow a change to it. What calling the
   function stores is a body write, still followed. A pair any other origin
   also makes is followed.
-- Measured (spike branch `loaderspike`, approximated by "the variable also
-  registers the writer"): 6580 -> 2922. What is left are real caches
-  (`CachedFetcher` storing what `DiskCache.put` helps compute).
-- Done when: regression tests (a router decorator: a reader of the router
-  that calls nothing is not selected, one that calls the endpoint is; a
-  decorator calling changed code at import keeps its readers; a body that
-  also writes the registry keeps them), the evidence corpus replayed with
-  no miss and no suite worse, strata's real pull-request pairs replanned,
-  pandas no worse.
+- Built on branch `e32` (not merged): the 35 writes into
+  `strata.notebook.routes.router` are a definition's alone (a `put`
+  decorator resolves by name to methods that write `self`). Re-planned,
+  the same edit still selects 6580: the chain moves on to the other
+  in-place writes (E35). Merge it with E35, or not at all; it saves
+  nothing on its own.
+- Done when (with E35): regression tests (a router decorator: a reader of
+  the router that calls nothing is not selected, one that calls the
+  endpoint is; a decorator calling changed code at import keeps its
+  readers; a body that also writes the registry keeps them), the evidence
+  corpus replayed with no miss and no suite worse, strata's real
+  pull-request pairs replanned, pandas no worse.
+
+*In-place writes followed without asking what they store (E35).* The
+module-variable half of `_stored_results` follows every variable that
+code able to run a changed function writes in place, whatever it puts
+there; its other half (stores into attributes, `SourceIndex.stores`)
+follows only a value derived from that code (`_derives_from_chain`). For
+the `DiskCache.put` edit it follows 28 variables: task sets
+(`worker_connect._TASKS`), locks, flags (`logging._configured`),
+singletons (`transforms.runner._runner`, `server.app`), a log ring
+buffer; almost none can hold what `DiskCache.put` computes.
+
+- Mechanism (to sketch in full before building): record what each
+  in-place write of a module variable puts there, as `stores` records
+  for attributes (the `_derived` of the stored value), and follow a
+  variable only when that derives from the chain, or from what nothing
+  bounds. A write that empties or rebinds to a literal stores nothing
+  computed.
+- Upper bound (spike `loaderspike`, the module-variable half switched
+  off): 6580 -> 2922; what is left are real caches (`CachedFetcher`
+  storing what `DiskCache.put` helps compute) and lookup sites.
 
 *An install's file read as a table (E33).* A module loaded from a literal
 file and installed in `sys.modules` (`_load_local_module("serializer.py",
@@ -1657,5 +1680,5 @@ strata's in-process servers finishing a response, or evicting, after a
 test's window closed. Which code lands there depends on timing (in CI
 `DiskCache.put`, locally not). Counting it as hook code is sound, since a
 thread a test left running can leave state for later tests, but coarse:
-any change to such code selects everything. Not planned until E32 has
+any change to such code selects everything. Not planned until E35 has
 shipped and the nightly data shows how often it decides a plan.
