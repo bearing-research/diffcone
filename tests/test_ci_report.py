@@ -963,6 +963,32 @@ def test_ci5_a_rerun_restores_its_own_commits_recording_first():
     assert 'merge-base --is-ancestor "$commit" HEAD^1' in plan
 
 
+@posix_only
+def test_a_shallow_checkout_is_deepened_by_depth_not_deepen(repo, tmp_path):
+    # GitHub serves --deepen only from a commit a ref still points at: a
+    # pull request's merge commit, once replaced (a re-run checks out its
+    # first attempt's), deepens to nothing and the base never resolves.
+    run = _step("run", "Plan and run")
+    record = _step("record", "Plan the commit's change")
+    fetches = [line for line in (run + record).splitlines() if "git fetch" in line]
+    assert fetches and not any("--deepen" in line for line in fetches)
+    assert 'git fetch --quiet --depth=2 origin "$head"' in record
+    # The run action's block deepens a depth-1 clone until the base is there.
+    block = run[run.index("# A shallow checkout") : run.index("cp .diffcone/baseline.xml")]
+    repo.commit({"a.py": "x = 1\n"})
+    repo.commit({"a.py": "x = 2\n"})
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth=1", f"file://{repo.path}", str(clone)], check=True
+    )
+    assert _bash('git rev-parse --verify --quiet "HEAD^1^{commit}"', clone).returncode != 0
+    assert _bash(block, clone, {"BASE": "HEAD^1"}).returncode == 0
+    assert _bash('git rev-parse --verify --quiet "HEAD^1^{commit}"', clone).returncode == 0
+    # A base still missing is not blamed on the recording.
+    retry = run[run.index('if [ "$rc" -eq 2 ] && [ ${#evidence[@]} -gt 0 ]') :]
+    assert 'git rev-parse --verify --quiet "$BASE^{commit}"' in retry.split("then", 1)[0]
+
+
 OPS = "def add(a, b):\n    return a + b\n"
 FILES = {
     "pkg/__init__.py": "",

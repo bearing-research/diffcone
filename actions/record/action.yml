@@ -112,9 +112,10 @@ runs:
           exit 0
         fi
         cp .diffcone/baseline.xml "$RESULTS/previous.xml"
-        # A shallow checkout lacks the first parent.
+        # A shallow checkout lacks the first parent (--depth, not --deepen:
+        # see the run action).
         git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null \
-          || git fetch --quiet --deepen=1 origin "$head" 2>/dev/null || true
+          || git fetch --quiet --depth=2 origin "$head" 2>/dev/null || true
         if ! git rev-parse --verify --quiet "HEAD^1^{commit}" >/dev/null; then
           echo "::notice::the commit has no parent to compare with; not checking this push"
           echo "the commit has no parent" > "$RESULTS/check-note"

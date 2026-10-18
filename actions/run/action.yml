@@ -107,9 +107,13 @@ runs:
         PY
         }
         # A shallow checkout (actions/checkout's default depth 1) lacks the
-        # base: deepen it until the base resolves.
+        # base: deepen it until the base resolves. With --depth, not
+        # --deepen: GitHub deepens only from a commit a ref still points at,
+        # and a pull request's merge commit is replaced when the pull request
+        # moves (a re-run checks out its first attempt's).
         if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-          git fetch --quiet --deepen=1 origin "$(git rev-parse HEAD)" 2>/dev/null || true
+          depth=$(( $(git rev-list --count HEAD | tr -d '\r') + 1 ))
+          git fetch --quiet --depth="$depth" origin "$(git rev-parse HEAD)" 2>/dev/null || true
           git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
             || git fetch --quiet --depth=1 origin "$BASE" 2>/dev/null || true
         fi
@@ -121,7 +125,8 @@ runs:
         diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
           "${evidence[@]}" --command "$COMMAND" -o diffcone-results/plan.json -- "${args[@]}" \
           || rc=$?
-        if [ "$rc" -eq 2 ] && [ ${#evidence[@]} -gt 0 ]; then
+        if [ "$rc" -eq 2 ] && [ ${#evidence[@]} -gt 0 ] \
+          && git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
           # A recording diffcone cannot use here (other source roots, an
           # older store format): plan from the code instead.
           echo "::warning::the restored recording could not be used; planning statically"

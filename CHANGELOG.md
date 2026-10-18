@@ -27,6 +27,13 @@ selection rules.
 
 ### Fixed
 
+- The `run` and `record` actions deepen a shallow checkout with an
+  absolute depth. They used `git fetch --deepen`, which GitHub serves only
+  from a commit a branch or pull request still points at: a re-run, or a
+  run whose pull request had moved on, checked out a merge commit since
+  replaced, the base never arrived and the job failed with no plan (and
+  blamed the recording). A base still missing is no longer reported as an
+  unusable recording.
 - `diffcone report` (and the `report` action) kept every plan it read
   whole. A plan made from a recording explains each target, tens of
   megabytes for a large suite, so a day of such plans could exhaust the
