@@ -1599,3 +1599,63 @@ recorded test is a discovered target) shipped.
 **Done when** the evidence corpus re-run shows each finding's suite
 selecting less, with no miss, and strata and pandas no worse; the item
 leaves the roadmap when E27-E31 are shipped or decided against.
+
+## 21. Body changes on strata select everything (strata trial, 2026-10-18)
+
+Since strata dropped its lazy package root (2026-10-15), 493 of 521
+pull-request job plans selected every test; only changes with no Python
+in them (frontend, Docker) selected less. Reproduced on a local recording
+at d72777c9 with one body edit to `strata.cache.disk.DiskCache.put`:
+6580 of 6580 (audit E32-E34).
+
+*A decorator's registration read as a stored result (E32).*
+`_stored_results` follows, for each function that can run a changed one,
+the variables it writes in place: what it computed may be kept there for
+later tests. `@router.put("/x")` on an endpoint is such a write (a
+mutating call on `router`, attributed to the function because decorators
+are part of its definition), so a body change of anything an endpoint can
+run reaches every reader of the router, and through the app every test.
+But the decorator runs when the `def` does, at import, and stores the
+function, not what calling it computes.
+
+- Mechanism: the reference walker flags the walk of a function's
+  decorators and defaults (`definition`; not annotations or type-parameter
+  bounds, which may be evaluated later). A direct in-place write made
+  there is recorded in `definition_mutations`, every other origin (the
+  body, writes through a parameter, use records) in `other_mutations`;
+  the edges are emitted as before, so static planning is unchanged.
+  `SourceIndex.definition_writes` keeps the pairs only a definition makes.
+  `_stored_results` skips a write that is definition-only in every index
+  holding it. `INDEX_FORMAT` bump.
+- Why it is sound: a definition runs at import (or at a reload). Code a
+  decorator runs then is recorded in `import_by`, inside a test window
+  too, and the import rules follow a change to it. What calling the
+  function stores is a body write, still followed. A pair any other origin
+  also makes is followed.
+- Measured (spike branch `loaderspike`, approximated by "the variable also
+  registers the writer"): 6580 -> 2922. What is left are real caches
+  (`CachedFetcher` storing what `DiskCache.put` helps compute).
+- Done when: regression tests (a router decorator: a reader of the router
+  that calls nothing is not selected, one that calls the endpoint is; a
+  decorator calling changed code at import keeps its readers; a body that
+  also writes the registry keeps them), the evidence corpus replayed with
+  no miss and no suite worse, strata's real pull-request pairs replanned,
+  pandas no worse.
+
+*An install's file read as a table (E33).* A module loaded from a literal
+file and installed in `sys.modules` (`_load_local_module("serializer.py",
+"_nb_serializer")`) carries a `>module` source naming that file's module.
+`changed()` takes it for a table name, and once any code may change any
+table (strata's unpickling), the install counts as "any module", so every
+getattr on a library module sees everything. Fix while there (skip `>`
+sources); it changes no plan here, since `register_default_adapters`
+keeps those sites live through a real table.
+
+*Work of other threads outside every test window (E34).* The recorder
+puts code any thread runs while no window is open in the hook phase:
+strata's in-process servers finishing a response, or evicting, after a
+test's window closed. Which code lands there depends on timing (in CI
+`DiskCache.put`, locally not). Counting it as hook code is sound, since a
+thread a test left running can leave state for later tests, but coarse:
+any change to such code selects everything. Not planned until E32 has
+shipped and the nightly data shows how often it decides a plan.
