@@ -1627,6 +1627,13 @@ selection rules.</p>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
+<li>The <code>run</code> and <code>record</code> actions deepen a shallow checkout with an
+  absolute depth. They used <code>git fetch --deepen</code>, which GitHub serves only
+  from a commit a branch or pull request still points at: a re-run, or a
+  run whose pull request had moved on, checked out a merge commit since
+  replaced, the base never arrived and the job failed with no plan (and
+  blamed the recording). A base still missing is no longer reported as an
+  unusable recording.</li>
 <li><code>diffcone report</code> (and the <code>report</code> action) kept every plan it read
   whole. A plan made from a recording explains each target, tens of
   megabytes for a large suite, so a day of such plans could exhaust the
