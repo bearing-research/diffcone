@@ -451,7 +451,9 @@ Further rules (pre-release audit, round 2):
   whether an earlier run filled `V` is invisible to `W`. Static planning
   drops the edge `V -> W` when nothing but `W` depends on `V` (no other
   reference, no read by its name that a name match may resolve to it, no
-  declared edge or lifecycle dependency): a change to code calling `W`
+  declared edge or lifecycle dependency, one every target of a runner
+  shares included, which the graph holds no edge for: audit T3): a change
+  to code calling `W`
   no longer reaches `V`, and a change to `W` reaches what depends on `W`
   directly. Code other than `W` reading `V` may read it before `W` ever
   ran, so it keeps the edge. Evidence planning keeps the edge and leaves
@@ -2221,7 +2223,9 @@ file the index does not read apply unchanged: a change selects everything
 statically (`unanalysed_file_changed`), and under evidence the tests that
 touched the file or ran its code (the recorder records any file of the
 checkout; code from a file the index lacks folds as a touched path, and
-outside every test into the hook phase). Nothing narrows on the project's
+outside every test into the hook phase), or everything when its code ran
+inside a test (`Evidence.test_window_code`, audit T2): the module was
+imported there, and later tests use it from `sys.modules` unseen. Nothing narrows on the project's
 word: an excluded file is only planned less precisely. Patterns that
 differ between the snapshots move files between the module table and the
 other files, which selects everything without a rule of its own. An

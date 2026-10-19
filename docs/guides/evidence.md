@@ -104,8 +104,13 @@ report:
   classes, in closures, in function attributes and in `cached_property`.
   `functools.cache` and `lru_cache` are cleared before each test instead.
   Caches kept by an unknown memoising decorator, or filled through a
-  method of an object whose type diffcone can't tell, are not seen (see
+  method of an object whose type diffcone can't tell, are not seen, nor
+  is what the recorder can't watch: files opened by compiled code, state
+  kept on disk between tests (see
   [limitations](../limitations.md#state-shared-between-tests)).
+- A module your index doesn't read (outside the source roots, or kept out
+  with `[index] exclude`) that a test imports: a later test may use it
+  without running a line of it, so a change to it selects every test.
 - Tests with no recording (new tests, for example), tests whose
   recording was unstable, and tests that failed or errored while they were
   recorded are always selected: a failing test's recording stops where it

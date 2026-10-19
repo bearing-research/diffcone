@@ -53,6 +53,7 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 52: SourceIndex.write_values, call_values removed again (audit T1);
 # 51: SourceIndex.write_values, call_values (what in-place writes store and calls
 #     hand on; E32, E35, E36);
 # 50: SnapshotInfo.excluded (diffcone.toml [index] exclude; E29);
@@ -90,7 +91,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 51
+INDEX_FORMAT = 52
 
 
 def _indexer_fingerprint() -> str:
@@ -190,8 +191,6 @@ def index_to_dict(index: SourceIndex) -> dict:
         "script_refs": sorted(list(r) for r in index.script_refs),
         "process_writes": sorted(list(w) for w in index.process_writes),
         "main_guarded": sorted(list(m) for m in index.main_guarded),
-        "write_values": sorted([v, w, sorted(d)] for (v, w), d in index.write_values.items()),
-        "call_values": sorted([f, n, sorted(d)] for (f, n), d in index.call_values.items()),
         "stores": sorted(list(s) for s in index.stores),
         "handed": sorted(list(h) for h in index.handed),
         "memoized": sorted(index.memoized),
@@ -253,8 +252,6 @@ def index_from_dict(data: dict) -> SourceIndex:
         script_refs={(s, p) for s, p in data["script_refs"]},
         process_writes={(s, w) for s, w in data["process_writes"]},
         main_guarded={(a, b, c) for a, b, c in data["main_guarded"]},
-        write_values={(v, w): frozenset(d) for v, w, d in data["write_values"]},
-        call_values={(f, n): frozenset(d) for f, n, d in data["call_values"]},
         stores={(a, b, c) for a, b, c in data["stores"]},
         handed={(a, b, c) for a, b, c in data["handed"]},
         memoized=set(data["memoized"]),

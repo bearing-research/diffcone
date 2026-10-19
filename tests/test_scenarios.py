@@ -330,6 +330,40 @@ def test_e37_a_dependency_every_target_carries_is_one_edge_in_the_graph(repo, mo
     assert path_ids(reason(plan, "b.time_f")) == ["target:asv:b.time_f", "benchmarks.bench.setup"]
 
 
+LAZY_ROOT = (
+    "import os\n\n_ROOT = None\n\n\ndef root():\n    global _ROOT\n    if _ROOT is None:\n"
+    "        _ROOT = os.path.dirname(__file__)\n    return _ROOT\n"
+)
+
+
+def test_t3_a_lazy_constant_every_target_shares_keeps_its_writer(repo):
+    """``pkg.data._ROOT`` is filled lazily by ``root()``, and the one ASV
+    target depends on the variable itself: a dependency every target of its
+    runner shares, which the graph holds no edge for (audit E37). The fill
+    is still a write the target reads, so a change to ``root()`` selects it
+    (audit T3); the pytest target, which depends on neither, is not."""
+    base = repo.commit(
+        {
+            "pkg/__init__.py": "",
+            "pkg/data.py": LAZY_ROOT,
+            "benchmarks/bench.py": "def time_x():\n    pass\n",
+            "tests/test_a.py": "def test_one():\n    pass\n",
+        }
+    )
+    targets = [
+        asv_target("bench.time_x", "benchmarks.bench.time_x", "pkg.data._ROOT"),
+        py_target("t::test_one", "tests.test_a.test_one"),
+    ]
+    head = repo.commit({"pkg/data.py": LAZY_ROOT.replace("os.path.dirname", "os.path.basename")})
+    plan = repo.plan(base, head, targets)
+    assert selected(plan) == {"bench.time_x"}
+    assert path_ids(reason(plan, "bench.time_x")) == [
+        "target:asv:bench.time_x",
+        "pkg.data._ROOT",
+        "pkg.data.root",
+    ]
+
+
 def test_deleted_function_and_redirected_dependency(repo):
     base = repo.commit(
         {

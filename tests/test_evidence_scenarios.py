@@ -9,6 +9,7 @@ selection. Assertions check exact target sets and the rules behind them.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 import subprocess
 import sys
@@ -1722,7 +1723,11 @@ def test_r(fast):
         # The fixture's body runs in the tests that use it, which the
         # recording saw: a changed parameter list changes nothing it does.
         ("", False),
-        ('(scope="module")', False),
+        # A module-scoped fixture is no test's own code, and it may read the
+        # module's changed state: what the writer it calls stores, a later
+        # test may read (audit T1: every write of the code the chain calls
+        # counts, ``set_mode("fast")`` included).
+        ('(scope="module")', True),
         # Its decorator's argument calls the writer as the module is
         # imported: what that writes reaches every reader.
         ('(params=[set_mode("fast")])', True),
@@ -1743,7 +1748,8 @@ def test_evp6_a_fixture_body_is_not_import_time_code(repo, fixture_args, readers
     plan = _evidence_plan(repo, base, head, ev)
     assert {A_ID, "tests/test_a.py::test_r"} <= selected(plan)
     # (test_b may be selected for its own reasons: the recording saw it stat
-    # tests/test_a.py.) Only the decorator's call reaches it as a reader.
+    # tests/test_a.py.) The decorator's call reaches it as a reader, and so
+    # does the writer a module-scoped fixture calls.
     (b,) = [d for d in plan.decisions if d.target.runner_id == B_ID]
     assert ("executed_reader" in {r.rule for r in b.reasons}) is readers
 
@@ -2480,8 +2486,8 @@ def test_w7_a_module_cache_filled_by_an_earlier_test(repo, lib, uses, edit):
     )
 
 
-# What ``get`` writes into ``_SEEN`` (audit E35): only a value derived from
-# code that can run ``compute`` may hold what it computed for a later test.
+# What ``get`` writes into ``_SEEN``: whatever it stores, a later test may
+# read what an earlier one left there (audit T1, which took back E35).
 SEEN_LIB = """\
 _SEEN = {{}}
 
@@ -2513,30 +2519,30 @@ SEEN_TESTS = {
 
 
 @pytest.mark.parametrize(
-    "write, stored",
+    "write",
     [
-        ('    _SEEN["k"] = True', False),
-        ("    _SEEN.clear()", False),
-        ('    _SEEN.setdefault("k", [])', False),
-        ("    _SEEN[k] = True", False),
-        ('    _fill(_SEEN, "k")', False),
-        ("    _fill(_SEEN, compute(k))", True),
-        ('    _mark("k")', False),
-        ("    _mark(compute(k))", True),
-        ("    _mark(k)", False),
-        ("    _SEEN[k] = compute(k)", True),
-        ("    _SEEN[compute(k)] = True", True),
-        ("    v = compute(k)\n    _SEEN[k] = v", True),
-        ("    if compute(k) > 2:\n        _SEEN[k] = True", True),
-        ("    for x in range(compute(k)):\n        _SEEN[x] = True", True),
-        ("    with open(str(compute(k))) as f:\n        _SEEN[k] = f", True),
-        ("    _SEEN.update({k: compute(k)})", True),
-        ("    _SEEN.update(k=get)", True),
-        ('    compute(k)\n    _SEEN["k"] = True', True),
-        ('    if compute(k) > 2:\n        return 0\n    _SEEN["k"] = True', True),
-        ('    try:\n        compute(k)\n    except ValueError:\n        _SEEN["k"] = True', True),
-        ('    compute(k) and _SEEN.setdefault("k", 1)', True),
-        ('    for _ in range(2):\n        _SEEN["k"] = True\n        compute(k)', True),
+        '    _SEEN["k"] = True',
+        "    _SEEN.clear()",
+        '    _SEEN.setdefault("k", [])',
+        "    _SEEN[k] = True",
+        '    _fill(_SEEN, "k")',
+        "    _fill(_SEEN, compute(k))",
+        '    _mark("k")',
+        "    _mark(compute(k))",
+        "    _mark(k)",
+        "    _SEEN[k] = compute(k)",
+        "    _SEEN[compute(k)] = True",
+        "    v = compute(k)\n    _SEEN[k] = v",
+        "    if compute(k) > 2:\n        _SEEN[k] = True",
+        "    for x in range(compute(k)):\n        _SEEN[x] = True",
+        "    with open(str(compute(k))) as f:\n        _SEEN[k] = f",
+        "    _SEEN.update({k: compute(k)})",
+        "    _SEEN.update(k=get)",
+        '    compute(k)\n    _SEEN["k"] = True',
+        '    if compute(k) > 2:\n        return 0\n    _SEEN["k"] = True',
+        '    try:\n        compute(k)\n    except ValueError:\n        _SEEN["k"] = True',
+        '    compute(k) and _SEEN.setdefault("k", 1)',
+        '    for _ in range(2):\n        _SEEN["k"] = True\n        compute(k)',
     ],
     ids=[
         "a literal",
@@ -2563,29 +2569,25 @@ SEEN_TESTS = {
         "in a loop calling it",
     ],
 )
-def test_e35_a_variable_written_by_the_chain_holds_only_what_derives_from_it(repo, write, stored):
-    """``get`` can run ``compute`` and writes ``_SEEN``; ``test_s`` reads
-    ``_SEEN`` through ``seen`` and runs nothing of ``compute``. A store of
-    what does not derive from the chain holds nothing ``compute`` changes;
-    a parameter is what the test handed, and code the function runs before
-    the write (a call that raises, an early return) decides whether it is
-    made."""
+def test_t1_a_variable_written_by_the_chain_is_followed_whatever_it_stores(repo, write):
+    """``get`` can run ``compute`` and writes ``_SEEN``, itself or through
+    a helper it calls; ``test_s`` reads ``_SEEN`` through ``seen`` and runs
+    nothing of ``compute``. Every write counts, whatever it stores: which
+    stores hold nothing of the change cannot be told statically without
+    missing some that do (``test_t1_a_store_the_chain_makes_reaches_its_readers``)."""
     lib = SEEN_LIB.format(write)
     base = repo.commit({**NOOP_BASE, **SEEN_TESTS, "pkg/lib.py": lib})
     evidence = repo.collect()
     head = repo.commit({"pkg/lib.py": lib.replace("return k * 2", "return k + k")})
     plan = _noop_plan(repo, base, head, evidence)
-    expected = {"tests/test_a.py::test_a"}
-    if stored:
-        expected.add("tests/test_s.py::test_s")
-    assert selected(plan) == expected
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_s.py::test_s"}
 
 
 @pytest.mark.parametrize("caller", ["get(compute(k))", "get(k + 1)"])
-def test_e35_a_parameter_holds_what_a_caller_in_the_chain_computed(repo, caller):
-    """``get`` stores its parameter; ``twice`` hands it ``compute``'s result,
-    so what ``_SEEN`` holds may change with ``compute``. Handed ``k + 1``,
-    it holds what the test computed."""
+def test_t1_a_parameter_stored_by_the_chain_is_followed(repo, caller):
+    """``get`` stores its parameter, and ``twice``, which calls it, can run
+    ``compute``: what ``_SEEN`` holds is followed whatever ``twice`` hands
+    it."""
     lib = SEEN_LIB.format("    _SEEN[k] = True") + f"\n\ndef twice(k):\n    return {caller}\n"
     tests = {
         **SEEN_TESTS,
@@ -2597,10 +2599,121 @@ def test_e35_a_parameter_holds_what_a_caller_in_the_chain_computed(repo, caller)
     evidence = repo.collect()
     head = repo.commit({"pkg/lib.py": lib.replace("return k * 2", "return k + k")})
     plan = _noop_plan(repo, base, head, evidence)
-    expected = {"tests/test_a.py::test_a"}
-    if caller == "get(compute(k))":
-        expected.add("tests/test_s.py::test_s")
-    assert selected(plan) == expected
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_s.py::test_s"}
+
+
+# Each a way a store the chain makes holds what changed that no reading of
+# the stored value can see (audit T1): ``test_a`` fills the state, ``test_b``
+# reads it later without running what filled it, and the edit changes what
+# ``test_b`` reads under pytest.
+T1_COMPUTE = "_CACHE = {}\n\n\ndef compute(k):\n    return k * 2\n\n\n"
+T1_PEEK = "\n\ndef peek():\n    return _CACHE.get('x')\n"
+T1_DOUBLE = ("k * 2", "k * 3")
+T1_STORES = {
+    "the changed function's own literal": (
+        "_CACHE = {}\n\n\ndef get(k):\n    _CACHE['x'] = 4\n" + T1_PEEK,
+        ("= 4", "= 5"),
+    ),
+    "a literal key of the changed function": (
+        "_FLAGS = {}\n\n\ndef get(k):\n    _FLAGS['mode'] = 'fast'\n\n\n"
+        "def peek():\n    return _FLAGS.get('mode')\n",
+        ("'fast'", "'slow'"),
+    ),
+    "a literal the changed function hands a helper": (
+        "_SEEN = set()\n\n\ndef _note(v):\n    _SEEN.add(v)\n\n\n"
+        "def get(k):\n    _note('v1')\n\n\ndef peek():\n    return sorted(_SEEN)\n",
+        ("'v1'", "'v2'"),
+    ),
+    "a changed constant": (
+        "RATE = 2\n_CACHE = {}\n\n\ndef get(k):\n    _CACHE['x'] = k * RATE\n" + T1_PEEK,
+        ("RATE = 2", "RATE = 3"),
+    ),
+    "a changed class attribute": (
+        "_CACHE = {}\n\n\nclass Config:\n    SIZE = 4\n\n\n"
+        "def get(k):\n    _CACHE['x'] = Config.SIZE\n" + T1_PEEK,
+        ("SIZE = 4", "SIZE = 5"),
+    ),
+    "a variable holding the function": (
+        T1_COMPUTE + "_FN = compute\n\n\ndef get(k):\n    _CACHE['x'] = _FN(k)\n" + T1_PEEK,
+        T1_DOUBLE,
+    ),
+    "a dispatch table": (
+        T1_COMPUTE
+        + "_HANDLERS = {'c': compute}\n\n\ndef get(k):\n    _CACHE['x'] = _HANDLERS['c'](k)\n"
+        + T1_PEEK,
+        T1_DOUBLE,
+    ),
+    "a partial": (
+        "import functools\n\n" + T1_COMPUTE + "_DOUBLE = functools.partial(compute)\n\n\n"
+        "def get(k):\n    _CACHE['x'] = _DOUBLE(k)\n" + T1_PEEK,
+        T1_DOUBLE,
+    ),
+    "super()": (
+        "_CACHE = {}\n\n\nclass Base:\n    def compute(self, k):\n        return k * 2\n\n\n"
+        "class Cached(Base):\n    def compute(self, k):\n        _CACHE['x'] = super().compute(k)\n"
+        "        return _CACHE['x']\n\n\ndef get(k):\n    return Cached().compute(k)\n" + T1_PEEK,
+        T1_DOUBLE,
+    ),
+    "heapq.heappush": (
+        "import heapq\n\n"
+        + T1_COMPUTE
+        + "_Q = []\n\n\ndef get(k):\n    if not _Q:\n        heapq.heappush(_Q, compute(k))\n\n\n"
+        "def peek():\n    return _Q[0]\n",
+        T1_DOUBLE,
+    ),
+    "operator.setitem": (
+        "import operator\n\n"
+        + T1_COMPUTE
+        + "def get(k):\n    operator.setitem(_CACHE, 'x', compute(k))\n"
+        + T1_PEEK,
+        T1_DOUBLE,
+    ),
+    "setattr on a module variable": (
+        "import types\n\n" + T1_COMPUTE + "_NS = types.SimpleNamespace()\n\n\n"
+        "def get(k):\n    if not hasattr(_NS, 'v'):\n        setattr(_NS, 'v', compute(k))\n\n\n"
+        "def peek():\n    return _NS.v\n",
+        T1_DOUBLE,
+    ),
+    "filled through a local after setdefault": (
+        T1_COMPUTE
+        + "def get(k):\n    d = _CACHE.setdefault('x', {})\n    d['v'] = compute(k)\n\n\n"
+        "def peek():\n    return _CACHE['x']['v']\n",
+        T1_DOUBLE,
+    ),
+    "__init__ registering self first": (
+        "_ALL = []\n\n\ndef compute(k):\n    return k * 2\n\n\n"
+        "class Thing:\n    def __init__(self, v):\n        _ALL.append(self)\n"
+        "        self.v = v\n\n\n"
+        "def get(k):\n    return Thing(compute(k)).v\n\n\ndef peek():\n    return _ALL[0].v\n",
+        T1_DOUBLE,
+    ),
+    "a callee's literal under a branch on the result": (
+        "_SEEN = {}\n\n\ndef compute(k):\n    return k * 2\n\n\n"
+        "def _mark():\n    _SEEN['big'] = True\n\n\n"
+        "def get(k):\n    if compute(k) > 5:\n        _mark()\n\n\n"
+        "def peek():\n    return 'big' in _SEEN\n",
+        T1_DOUBLE,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(T1_STORES))
+def test_t1_a_store_the_chain_makes_reaches_its_readers(repo, case):
+    """Under real pytest each edit changes what ``test_b`` reads, though
+    ``test_b`` runs nothing that changed: ``test_a`` left it in the state
+    (audit T1)."""
+    lib, edit = T1_STORES[case]
+    assert edit[0] in lib
+    tests = {
+        "pkg/lib.py": lib,
+        "tests/test_a.py": "from pkg.lib import get\n\n\ndef test_a():\n    get(2)\n",
+        "tests/test_b.py": "from pkg.lib import peek\n\n\ndef test_b():\n    peek()\n",
+    }
+    base = repo.commit({**NOOP_BASE, **tests})
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace(*edit)})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_b.py::test_b"}
 
 
 ROUTING = """\
@@ -2647,21 +2760,21 @@ ROUTER_TESTS = {
 
 
 @pytest.mark.parametrize(
-    "edit, decorator, body, readers",
+    "edit, decorator, body",
     [
-        ("compute", "'/x'", "", False),
-        ("path", "path()", "", True),
-        ("compute", "'/x'", "    router.put(str(compute(k)))(endpoint)\n", True),
+        ("compute", "'/x'", ""),
+        ("path", "path()", ""),
+        ("compute", "'/x'", "    router.put(str(compute(k)))(endpoint)\n"),
     ],
     ids=["a body change", "the decorator's own call changed", "the body registers too"],
 )
-def test_e32_a_decorators_registration_is_no_stored_result(repo, edit, decorator, body, readers):
-    """``@router.put('/x')`` writes ``router`` when the ``def`` runs, at
-    import, and stores the function: a body change of what ``endpoint``
-    runs reaches the tests that run it (``test_a``, ``test_c`` through the
-    router), not ``test_r``, which only reads the router. A change to code
-    the decorator runs reaches it through the import rules, and a body
-    that writes the router too stores what it computes."""
+def test_t1_a_decorators_registration_is_a_write_of_the_chain(repo, edit, decorator, body):
+    """``@router.put('/x')`` writes ``router`` when the ``def`` runs and
+    stores the function. ``endpoint`` can run ``compute`` and writes the
+    router (its decorator does), so ``test_r``, which only reads the
+    router, is selected with the tests that run ``endpoint`` (``test_a``,
+    ``test_c`` through the router): telling a write a decorator makes at
+    import from one the body makes is not attempted (audit T1)."""
     lib = "def compute(k):\n    return k * 2\n"
     files = {
         **NOOP_BASE,
@@ -2679,10 +2792,11 @@ def test_e32_a_decorators_registration_is_no_stored_result(repo, edit, decorator
     )
     head = repo.commit(changed)
     plan = _noop_plan(repo, base, head, evidence)
-    expected = {"tests/test_a.py::test_a", "tests/test_c.py::test_c"}
-    if readers:
-        expected.add("tests/test_r.py::test_r")
-    assert selected(plan) == expected
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_c.py::test_c",
+        "tests/test_r.py::test_r",
+    }
 
 
 HANDLER_TABLES = (
@@ -4864,3 +4978,51 @@ def test_e29_an_excluded_file_is_planned_from_who_read_it(repo):
     # does not read selects them.
     assert selected(plan) == {"tests/test_data.py::test_reads"} | BENCHES
     assert rules(plan, "tests/test_data.py::test_reads") == {"touched_file"}
+
+
+LAZY_CONSTS = {
+    "test_a1.py": "def test_a1():\n    from {0} import consts\n    assert consts.LIMIT\n",
+    "test_a2.py": "def test_a2():\n    from {0} import consts\n    assert consts.LIMIT == 3\n",
+    "test_other.py": "def test_other():\n    pass\n",
+}
+
+
+@pytest.mark.parametrize("where", ["excluded", "outside the roots"])
+def test_t2_a_module_the_index_lacks_imported_inside_a_test_selects_everything(repo, where):
+    """``test_a1`` imports ``consts`` first and runs its code; ``test_a2``
+    finds it in ``sys.modules`` and runs none of it, yet reads ``LIMIT``,
+    and nothing in the index says so: the file is excluded, or outside the
+    source roots. A change to it selects every test (audit T2), where a
+    file the tests only read as data selects its readers
+    (``test_e29_an_excluded_file_is_planned_from_who_read_it``)."""
+    if where == "excluded":
+        files = {
+            **BASE,
+            "diffcone.toml": '[index]\nexclude = ["tests/consts.py"]\n',
+            "tests/consts.py": "LIMIT = 3\n",
+            **{f"tests/{n}": t.format("tests") for n, t in LAZY_CONSTS.items()},
+        }
+        path, targets, kwargs = "tests/consts.py", ASV, {}
+    else:
+        files = {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "pytest.ini": "[pytest]\npythonpath = .\n",
+            "tools/__init__.py": "",
+            "tools/consts.py": "LIMIT = 3\n",
+            **{f"tests/{n}": t.format("tools") for n, t in LAZY_CONSTS.items()},
+        }
+        path, targets, kwargs = "tools/consts.py", [], {"source_roots": ["tests"]}
+    base = repo.commit(files)
+    evidence = repo.collect(**kwargs)
+    head = repo.commit({path: "LIMIT = 4\n"})
+    plan = repo.plan(base, head, targets, discover_runners=["pytest"], evidence=evidence, **kwargs)
+    tests = {f"tests/{n}::{n[:-3]}" for n in LAZY_CONSTS}
+    if where == "excluded":
+        tests |= {ADD, MUL} | BENCHES
+    assert selected(plan) == tests
+    assert any(f.rule == "unindexed_import" and path in f.detail for f in plan.fallbacks)
+    # A store that did not record which such files ran code in a test: any
+    # one a test touched may have been imported there.
+    unknown = dataclasses.replace(evidence, test_window_code=None)
+    plan = repo.plan(base, head, targets, discover_runners=["pytest"], evidence=unknown, **kwargs)
+    assert selected(plan) == tests

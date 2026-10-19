@@ -145,7 +145,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |
 | `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook ran in the recording (or that ran while pytest collected a file, and could change the whole process or pytest's session) changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
 | `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files. |
-| `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported, or such a file changed and was imported before the recorder started. |
+| `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported, or such a file (or one `[index] exclude` keeps out) changed and was imported before the recorder started or inside a test. |
 
 ## Exit codes
 

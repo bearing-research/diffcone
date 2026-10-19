@@ -153,7 +153,7 @@ For each change diffcone classifies between C and head:
 | class structure changed (bases, metaclass, class decorators, class body) | every member of C, its bases and its subclasses + static readers of those classes | class decorators and metaclasses: always |
 | module-level statements or imports changed | — | always: they run at import |
 | a test or fixture changed | selected (`changed_target`, as today) | — |
-| changed file the index does not read | tests with the file in `F(T)`, or with code from it in `X(T)` (a `.py` outside the source roots) | when opened or executed at import; compiled sources and build inputs always (see below). A module's own file (opened as data: `inspect.getsource`) selects everything only when it is a build script as static planning judges it (`setup.py`; `build.py` at the root or beside `pyproject.toml`/`setup.cfg`, not `pkg/build.py`; audit Q17) |
+| changed file the index does not read | tests with the file in `F(T)`, or with code from it in `X(T)` (a `.py` outside the source roots) | when opened or executed at import, or when its code ran inside a test (a module first imported there, which later tests use from `sys.modules` without a line of it running; `Evidence.test_window_code`, audit T2: everything, rule `unindexed_import`; a store from before 0.5.0 lacks it, and then a `.py` file a test touched counts); compiled sources and build inputs always (see below). A module's own file (opened as data: `inspect.getsource`) selects everything only when it is a build script as static planning judges it (`setup.py`; `build.py` at the root or beside `pyproject.toml`/`setup.cfg`, not `pkg/build.py`; audit Q17) |
 
 "Escalates to static" means that one change is planned statically and the
 rest of the commit still uses evidence; selection is the union over all
@@ -443,28 +443,27 @@ selection or states something the tables left implicit; none narrows it.
   every order, so the reverse-order check does not flag a test in the
   middle. So, once E is built, every function or method in E is followed
   back to the code that can run it, and every variable that code writes in
-  place (`mutated_by`) with a value that may derive from the chain is a
-  changed value: its readers and the sites that can see it join E. What a
-  write derives from is recorded per (variable, writer)
-  (`SourceIndex.write_values`, audit E35): the value stored, the keys,
-  what decides that the write runs (the tests of the statements around
-  it, the statements before it in each block, a loop's whole body, the
-  `try` body for a handler, the rest of its expression), `@param` for a
-  parameter of the writer (what a caller in the chain may have handed),
-  for a write through a call that writes its parameter the call itself,
-  and `*` for what nothing bounds; nothing for a write a decorator or
-  default makes, which runs at import (E32). The code the chain calls,
-  transitively, is followed too when it stores a parameter or anything
-  and the call hands it what may derive from the chain
-  (`SourceIndex.call_values`: the arguments and receiver per called name,
-  and what decides that the call runs; audit E36: `get` handing
-  `compute(k)` to `_put(k, v)`); a test's own code hands nothing on, and
-  calls are the resolved ones and the constructors of a class called (no
-  name match, as for `stores`). A parameter holds what the chain computed
-  only when a caller handed it that (`_tainted`): it is bound before the
-  function runs the change. What a write
-  derives from is the R22 assumption for module variables: an attribute
-  of the writer's receiver is state, not a value derived from the chain.
+  place (`mutated_by`) is a changed value, whatever it stores: its
+  readers and the sites that can see it join E. Telling a write that
+  stores nothing of the change from one that may (E35, from what the
+  stored value, its keys and the statements deciding that it runs derive
+  from) was taken back in audit round 6 (T1): it missed the changed
+  function's own literal or parameter write, a value read off a changed
+  constant or class attribute, a call through anything but a dotted name
+  (`_FN(k)`, `_HANDLERS["c"](k)`, a `functools.partial`, `super()`), a
+  write whose stored value is an argument of something else
+  (`heapq.heappush`, `operator.setitem`, `setattr`), a container stored
+  first and filled through a local, and `__init__` registering `self`
+  first; it had saved nothing on strata. The code the chain calls,
+  transitively, is followed the same way, every in-place write of it
+  (audit E36: `get` handing `compute(k)` to `_put(k, v)`, a callee writing
+  a literal under a branch on the chain's result): calls are the resolved
+  references and, for a class, what creating or calling it runs (not
+  `__init_subclass__`/`__set_name__`); no name match, as for `stores`,
+  and a test's own code hands nothing on (the isolation assumption: what
+  it hands project code that stores it is not followed; see
+  docs/limitations.md). The R22 assumption below holds for module
+  variables too: an attribute of the writer's receiver is state.
   A cache outside a module variable (audit round 5,
   R22: `self._cache[k] = compute(k)` on a singleton or a session fixture's
   object, `cls._cache`, a `@memo` decorator's closure, `get.cache`, a

@@ -879,14 +879,8 @@ class Resolver(FirstPass):
                     at_import.visit(arg.annotation)
             if node.returns is not None:
                 at_import.visit(node.returns)
-        # What a decorator or a default writes in place it writes when the
-        # ``def`` runs, not when the function does (SourceIndex
-        # .definition_writes); annotations and type-parameter bounds may be
-        # evaluated later, so they are not flagged.
-        outer.definition = True
         for dec in node.decorator_list:
             outer.visit(dec)
-        outer.definition = False
         if self._decorators_may_read_docs(node.decorator_list, scope, outer_scope):
             self.out.doc_decorated.add(symbol_id)
         self._record_decorations(symbol_id, node.decorator_list, scope, outer_scope)
@@ -908,9 +902,7 @@ class Resolver(FirstPass):
         ):
             if default is None:
                 continue
-            outer.definition = True
             outer.visit(default)
-            outer.definition = False
             target = (
                 self.resolve_chain(parts, outer_scope)
                 if (parts := _flatten_chain(default))
