@@ -628,6 +628,71 @@ class _Graph:
                 )
 
 
+class _SharedLifecycle:
+    """The lifecycle dependencies every target of a runner carries, kept once
+    (audit E37): pandas' 25 620 tests each carry the same 654 (the code run
+    at collection that writes process-global state), 16.8M edges as one per
+    target. The graph holds no edge from a target to them; the search,
+    reaching one, relaxes every target of the runner right there, through
+    the edge it would have taken (``target -> dependency``, lifecycle, from
+    the manifest). A target is a sink (nothing depends on a ``target:``
+    node, and a lifecycle edge is no call edge, so no other walk takes it),
+    so every mode and explanation is what one edge per target gives."""
+
+    def __init__(self, targets: list[Target], known_symbols: set[str]) -> None:
+        by_runner: dict[str, list[Target]] = defaultdict(list)
+        for target in targets:
+            by_runner[target.runner].append(target)
+        self._deps: dict[str, frozenset[str]] = {}
+        self._targets: dict[str, list[str]] = {}
+        self._by_dep: dict[str, list[str]] = defaultdict(list)
+        for runner, group in sorted(by_runner.items()):
+            common = frozenset.intersection(
+                *(
+                    frozenset(
+                        dep
+                        for dep in t.lifecycle_dependencies
+                        if dep in known_symbols and not dep.startswith(DYNAMIC_DEPENDENCY)
+                    )
+                    for t in group
+                )
+            )
+            if not common:
+                continue
+            self._deps[runner] = common
+            self._targets[runner] = [t.node_id for t in group]
+            for dep in common:
+                self._by_dep[dep].append(runner)
+        # Per runner, the mode its targets were last relaxed at: all of them
+        # hold at least that, so a dependency reached at no more needs no walk.
+        self._floor: dict[str, int] = {}
+
+    def holds(self, target: Target, dep: str) -> bool:
+        return dep in self._deps.get(target.runner, ())
+
+    def relax(
+        self,
+        node: str,
+        mode: dict[str, int],
+        via: dict[str, tuple[Edge, tuple[str, ...], str] | None],
+        queue: deque[str],
+        change: SymbolChange | None,
+    ) -> None:
+        for runner in self._by_dep.get(node, ()):
+            new_mode = _propagate(Edge("", node, EdgeKind.LIFECYCLE), mode[node], change, False)
+            if new_mode is None or new_mode <= self._floor.get(runner, 0):
+                continue
+            self._floor[runner] = new_mode
+            for target_id in self._targets[runner]:
+                if new_mode <= mode.get(target_id, 0):
+                    continue
+                mode[target_id] = new_mode
+                if target_id not in via or not _leads_to(via, node, target_id):
+                    edge = Edge(target_id, node, EdgeKind.LIFECYCLE)
+                    via[target_id] = (edge, ("manifest",), node)
+                queue.append(target_id)
+
+
 T = TypeVar("T")
 
 
@@ -1229,12 +1294,18 @@ def plan_from_indexes(
                 reached.add(edge.target)
     for module in sorted(reached):
         node = f"{module}.<imports>"
-        for target in sorted(module_reach[module]):
-            for symbol in [target, *members.get(target, ())]:
-                graph.add(
-                    Edge(node, symbol, EdgeKind.REFERENCES, f"what {module} imports binds"),
-                    ("base", "head"),
-                )
+        # One edge per symbol: a reached module is also a member of a reached
+        # package (audit E37: four and a half times over on pandas).
+        bound = {
+            symbol
+            for target in module_reach[module]
+            for symbol in (target, *members.get(target, ()))
+        }
+        for symbol in sorted(bound):
+            graph.add(
+                Edge(node, symbol, EdgeKind.REFERENCES, f"what {module} imports binds"),
+                ("base", "head"),
+            )
 
     # Dependencies the project declares (diffcone.toml): the analysis cannot
     # see them, and they only add edges, so they widen selection and never
@@ -1391,7 +1462,10 @@ def plan_from_indexes(
             if edge.target in module_nodes and hook in known_symbols:
                 graph.add(Edge(edge.source, hook, EdgeKind.REFERENCES, "dir()"), revs)
 
-    # Targets join the graph as nodes with explicit dependency edges.
+    # Targets join the graph as nodes with explicit dependency edges, but for
+    # the dependencies every target of a runner carries, which the search
+    # expands itself (_SharedLifecycle).
+    shared = _SharedLifecycle(targets, known_symbols)
     dynamic_deps: dict[str, list[str]] = defaultdict(list)
     # Target -> its entry's module, when the manifest does not list it.
     entry_modules: dict[str, str] = {}
@@ -1416,7 +1490,8 @@ def plan_from_indexes(
             if module is not None and module in known_symbols:
                 dynamic_deps[target.node_id].append(module)
             elif dep in known_symbols:
-                graph.add(Edge(target.node_id, dep, EdgeKind.LIFECYCLE), ("manifest",))
+                if not shared.holds(target, dep):
+                    graph.add(Edge(target.node_id, dep, EdgeKind.LIFECYCLE), ("manifest",))
             else:
                 fallbacks.append(
                     Fallback(
@@ -1629,6 +1704,7 @@ def plan_from_indexes(
             if source not in via or not _leads_to(via, node, source):
                 via[source] = (edge, revs, node)
             queue.append(source)
+        shared.relax(node, mode, via, queue, change_by_id.get(node))
     # The runner imports a target's module to reach it, so the module's
     # import-time code runs before the target whether or not a hand-written
     # manifest lists the module (discovered targets always do). Applied after

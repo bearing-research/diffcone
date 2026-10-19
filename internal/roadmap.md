@@ -1646,3 +1646,18 @@ test's window closed. Which code lands there depends on timing (in CI
 thread a test left running can leave state for later tests, but coarse:
 any change to such code selects everything. Not planned until the
 nightly data shows how often it decides a plan.
+
+## 22. Plans that fit in memory: what is left (pandas, audit E37)
+
+The repetition E37 found is gone (a pandas evidence plan peaks at 6.6 GB,
+from 21; internal/evaluation.md). What is left, in order of size:
+
+- The caller-effect edges: 2.6M edges become 7.3M (`calls:` pseudo-nodes,
+  two per call edge). The 1.5M "attribute of a module passed to other
+  code" edges (one per referrer and member) feed most of them; one node
+  per escaped module, as `<module>.<imports>` is, would make them one per
+  referrer, but its steps would show in explanations (collapse it as
+  `_call_steps` does `calls:`).
+- The plan itself: 850 MB of JSON for 25 620 targets from a recording,
+  built whole in memory to be written.
+- Done when: measured on the item 19 pairs, plans byte-identical.

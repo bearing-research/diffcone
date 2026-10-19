@@ -283,6 +283,53 @@ def test_shared_setup_function_changes(repo):
     ]
 
 
+def test_e37_a_dependency_every_target_carries_is_one_edge_in_the_graph(repo, monkeypatch):
+    """Dependencies every target of a runner lists (pandas' code run at
+    collection, in each of 25 620 targets) are kept once, not as an edge per
+    target, and still explain each target as its own lifecycle step."""
+    from diffcone import planner
+
+    base = repo.commit(
+        {
+            "pkg/session.py": "def configure():\n    return 1\n",
+            "pkg/ops.py": "def f():\n    return 1\n",
+            "benchmarks/bench.py": "def setup():\n    pass\n\n\ndef time_f():\n    pass\n",
+            "tests/test_a.py": "def test_one():\n    pass\n\n\ndef test_two():\n    pass\n",
+        }
+    )
+    targets = [
+        py_target("t::test_one", "tests.test_a.test_one", "pkg.session.configure", "pkg.ops.f"),
+        py_target("t::test_two", "tests.test_a.test_two", "pkg.session.configure"),
+        asv_target("b.time_f", "benchmarks.bench.time_f", "benchmarks.bench.setup"),
+    ]
+    added: list[tuple[str, str]] = []
+    original = planner._Graph.add
+
+    def counting(self, edge, revisions):
+        if edge.kind == "lifecycle":
+            added.append((edge.source, edge.target))
+        original(self, edge, revisions)
+
+    monkeypatch.setattr(planner._Graph, "add", counting)
+    head = repo.commit({"pkg/session.py": "def configure():\n    return 2\n"})
+    plan = repo.plan(base, head, targets)
+    # Kept once: only what is not shared by every target of its runner (each
+    # plan is made cold- and warm-cached).
+    assert set(added) == {("target:pytest:t::test_one", "pkg.ops.f")}
+    assert selected(plan) == {"t::test_one", "t::test_two"}
+    assert unselected(plan) == {"b.time_f"}
+    for runner_id in ("t::test_one", "t::test_two"):
+        r = reason(plan, runner_id)
+        assert path_ids(r) == [f"target:pytest:{runner_id}", "pkg.session.configure"]
+        assert [s.kind for s in r.path] == ["lifecycle"]
+    head2 = repo.commit(
+        {"benchmarks/bench.py": "def setup():\n    x = 1\n\n\ndef time_f():\n    pass\n"}
+    )
+    plan = repo.plan(head, head2, targets)
+    assert selected(plan) == {"b.time_f"}
+    assert path_ids(reason(plan, "b.time_f")) == ["target:asv:b.time_f", "benchmarks.bench.setup"]
+
+
 def test_deleted_function_and_redirected_dependency(repo):
     base = repo.commit(
         {

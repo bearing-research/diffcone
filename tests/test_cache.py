@@ -427,6 +427,31 @@ def test_discovery_of_committed_snapshots_is_cached(repo, tmp_path, monkeypatch)
     assert calls == ["WORKTREE"]
 
 
+def test_e37_lifecycle_every_target_lists_is_written_once(tmp_path):
+    """A discovery cache file names a dependency every target lists once,
+    and each target comes back exactly as stored; a target whose list is not
+    sorted (a hand-built result) keeps every result written in full."""
+    from diffcone.cache import DiscoveryCache
+    from diffcone.discovery import DiscoveryOptions, DiscoveryResult
+    from diffcone.manifest import Target
+
+    session = ("pkg.conftest", "pkg.plugin.pytest_configure")
+    targets = [
+        Target("pytest", f"tests/test_x.py::test_{i}", "tests.test_x.f", tuple(sorted(deps)))
+        for i, deps in enumerate(
+            [(*session, "tests.test_x"), (*session, "tests.conftest.db"), session]
+        )
+    ]
+    cache = DiscoveryCache(tmp_path)
+    options = DiscoveryOptions()
+    for i, listed in enumerate([targets, [*targets, Target("pytest", "t", "e", ("b", "a"))]]):
+        result = DiscoveryResult(runner="pytest", targets=listed, notes=[], config={})
+        cache.store(result, f"c{i}", ["."], options)
+        assert cache.load(f"c{i}", ["."], "pytest", options) == result
+        text = cache._path(f"c{i}", ["."], "pytest", options).read_text("utf-8")
+        assert text.count('"pkg.conftest"') == (1 if i == 0 else len(listed) - 1)
+
+
 def test_pruning_keeps_what_planning_at_the_kept_commit_reads(repo, tmp_path, monkeypatch):
     """``diffcone prune --keep C`` (roadmap item 9): C's index and discovery
     stay, every other commit's go, and the module records of C's files still

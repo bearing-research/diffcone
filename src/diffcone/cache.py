@@ -416,7 +416,8 @@ class ModuleCache:
             conn.close()
 
 
-DISCOVERY_FORMAT = 1
+# 2: lifecycle dependencies every target lists are written once (audit E37)
+DISCOVERY_FORMAT = 2
 
 
 def _discovery_fingerprint() -> str:
@@ -431,6 +432,27 @@ def _discovery_fingerprint() -> str:
 
 
 DISCOVERY_FINGERPRINT = _discovery_fingerprint()
+
+
+def _sorted_unique(deps: tuple[str, ...]) -> bool:
+    return all(a < b for a, b in zip(deps, deps[1:], strict=False))
+
+
+def _shared_lifecycle(targets: list[Target]) -> frozenset[str]:
+    """The lifecycle dependencies every target lists, where each lists them
+    sorted and once (as discovery does), so a target's own rest rebuilds it."""
+    sets = [frozenset(t.lifecycle_dependencies) for t in targets]
+    if not sets or not all(_sorted_unique(t.lifecycle_dependencies) for t in targets):
+        return frozenset()
+    return frozenset.intersection(*sets)
+
+
+def _target_entry(target: Target, shared: frozenset[str]) -> dict[str, Any]:
+    entry = asdict(target)
+    if shared:
+        del entry["lifecycle_dependencies"]
+        entry["own"] = [d for d in target.lifecycle_dependencies if d not in shared]
+    return entry
 
 
 class DiscoveryCache:
@@ -460,6 +482,8 @@ class DiscoveryCache:
             data = json.loads(self._path(commit, roots, runner, options).read_text("utf-8"))
             if data.get("format") != DISCOVERY_FORMAT or data.get("commit") != commit:
                 return None
+            shared = data["shared"]
+            pool: dict[str, str] = {d: d for d in shared}
             return DiscoveryResult(
                 runner=data["runner"],
                 targets=[
@@ -467,7 +491,9 @@ class DiscoveryCache:
                         t["runner"],
                         t["runner_id"],
                         t["entry_symbol"],
-                        tuple(t["lifecycle_dependencies"]),
+                        tuple(sorted([*shared, *(pool.setdefault(d, d) for d in t["own"])]))
+                        if "own" in t
+                        else tuple(t["lifecycle_dependencies"]),
                     )
                     for t in data["targets"]
                 ],
@@ -487,12 +513,17 @@ class DiscoveryCache:
         if any(TOO_DEEP in n.detail for n in result.notes):
             return  # depends on the caller's stack depth, not only on the commit
         path = self._path(commit, roots, result.runner, options)
+        shared = _shared_lifecycle(result.targets)
         data = {
             "format": DISCOVERY_FORMAT,
             "commit": commit,
             "fingerprint": DISCOVERY_FINGERPRINT,
             "runner": result.runner,
-            "targets": [asdict(t) for t in result.targets],
+            # What every target depends on, written once (audit E37: pandas'
+            # 25 620 targets each carry the same 654, a 680 MB file that took
+            # 1.4 GB to load); a target lists the rest (``own``).
+            "shared": sorted(shared),
+            "targets": [_target_entry(t, shared) for t in result.targets],
             "notes": [asdict(n) for n in result.notes],
             "config": result.config,
         }

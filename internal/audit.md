@@ -476,3 +476,9 @@ re-run fails before planning.
 | Id | Finding | Status |
 |---|---|---|
 | E36 | Miss (evidence mode, in 0.4.0): a module cache filled through a helper handed the result (`_put(k, compute(k))`, `_put` writing `_CACHE[k] = v`; a method `self._put`, two levels of helpers, `_CACHE.append(v)` in `_keep(v)`) is not followed. `_stored_results` follows the in-place writes of code that can run the change, and the helper runs none of it. A test reading what an earlier test stored, without running `compute`, is not selected when `compute` changes. A cache on an object (`STORE.put(k, compute(k))`) is found (R22). | fixed: the code the chain calls through resolved calls handing it chain values is followed where it stores a parameter (`_handed_to`, `SourceIndex.call_values`); marshmallow +41 |
+
+## Found measuring pandas plans (E, 2026-10-19)
+
+| Id | Finding | Status |
+|---|---|---|
+| E37 | Usability (pandas): a plan's footprint peaks at 20 GB, more than a 16 GB machine or a standard GitHub runner has, so it swaps for most of an hour. The planner's graph holds 21.7M edges before caller effects (30.9M after) where the indexes have 175k each: every target carries its own copy of the 654 lifecycle dependencies all of them share (the code run at collection that writes process-global state, `state_writing_roots`; 16.8M edges), and each `<module>.<imports>` node repeats its edges about 4.5 times (a reached module is added once as a target and again as a member of its package; 3.2M edges for 0.7M distinct). And each cached discovery result repeats those 654 names per target: a 680 MB file, 1.4 GB once loaded, three loaded per plan. | fixed: the planner keeps a runner's shared lifecycle dependencies once and the search relaxes the targets when it reaches one (`_SharedLifecycle`), `<imports>` edges are deduplicated, and the discovery cache writes the shared dependencies once (`DISCOVERY_FORMAT` 2): 6.6 GB, the plans byte-identical |

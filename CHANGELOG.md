@@ -35,6 +35,13 @@ selection rules.
 
 ### Fixed
 
+- Planning a large suite took far more memory than it needed: every test
+  carried its own copy of the dependencies all tests share (code run
+  while pytest collects), in the dependency graph and in the cached
+  discovery results. On pandas (25 620 tests) a plan peaked at 21 GB,
+  more than a standard CI runner has; it now peaks at 6.6 GB, and a
+  cached discovery result is 9 MB instead of 680 MB. Plans are
+  unchanged. Discovery cached by an earlier version is redone once.
 - With a recording, a module cache filled through a helper that is
   handed the value (`_put(key, compute(key))`, with `_put` storing it, a
   method, a chain of helpers, an `append`) was not followed: a test that

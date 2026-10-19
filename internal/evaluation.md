@@ -1528,6 +1528,29 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## pandas plans that fit in memory (audit E37, 2026-10-19)
+
+A pandas evidence plan (the first item 19 pair, 25 620 targets) peaked at a
+21 GB footprint, on main and with E36 alike, and swapped on a 16 GB
+machine for 40 to 90 minutes. Checkpoints in the plan showed where:
+
+| | before | after |
+|---|---|---|
+| held before planning starts | 6.3 GB | 2.4 GB |
+| graph edges, before / after caller effects | 21.7M / 30.9M | 2.6M / 7.3M |
+| lifecycle edges | 16.8M | 70k |
+| a cached discovery result, on disk / loaded | 680 MB / 1.44 GB | 9 MB / 0.15 GB |
+| peak footprint | 21 GB | 6.3 GB |
+| warm plan, wall clock | 2 478 s (swapping) | 411 s |
+
+* 654 lifecycle dependencies are common to every target (code run at
+  collection that writes process-global state); each target carried its
+  own edge to each, and its own copy of each name in the cached discovery
+  result. Each `<module>.<imports>` node repeated its edges 4.5 times.
+* The four item 19 plans are byte-identical to main's (1c0bf93).
+* What is left (roadmap item 22): the caller-effect edges, and the plan
+  JSON itself (850 MB for this pair).
+
 ## What the chain stored: E32, E35, E36 (2026-10-18)
 
 Audit E32, E35 (precision, strata) and E36 (a miss in 0.4.0): a module
