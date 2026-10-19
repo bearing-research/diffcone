@@ -1313,9 +1313,13 @@ the whole suite.</p>
 <dd>
 <p>With a <a href="../guides/evidence/">recording</a>, a test that reads a cache an
 earlier test filled counts as running the code that filled it. That
-works when your code fills the cache with a value it computes and keeps
-it in a module variable, on an object or class, in a closure or a
-function attribute, or behind a memoising decorator.</p>
+works when your code fills the cache with a value it computes, itself
+or through a helper it hands the value to (<code>_put(key, compute(key))</code>),
+and keeps it in a module variable, on an object or class, in a closure
+or a function attribute, or behind a memoising decorator. A
+decorator's registration (<code>@router.get("/path")</code>) doesn't count as
+filling a cache, and neither does a literal written into a module
+variable before the code has run anything else.</p>
 <p>A decorator counts as memoising when diffcone knows it (<code>functools</code>,
 <code>cachetools</code>, Django's and Werkzeug's <code>cached_property</code>, and others) or
 its name says so (<code>cached_property</code>, <code>cached</code>, <code>memoize</code>, <code>memoized</code>,
@@ -1325,7 +1329,9 @@ its name says so (<code>cached_property</code>, <code>cached</code>, <code>memoi
 <li>a cache kept by an installed package's decorator under another name;</li>
 <li>a cache filled through a method of an object whose type diffcone
   can't tell (<code>self._cache.set(k, compute(k))</code> where <code>_cache</code> is set in
-  several ways).</li>
+  several ways);</li>
+<li>a cache filled with an attribute of the object the code runs on
+  (<code>_CACHE[key] = self.result</code>) that other code computed.</li>
 </ul>
 </dd>
 <dt><strong>Code that changes the process while pytest collects reaches every test.</strong></dt>
