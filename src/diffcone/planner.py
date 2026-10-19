@@ -670,6 +670,11 @@ class _SharedLifecycle:
     def holds(self, target: Target, dep: str) -> bool:
         return dep in self._deps.get(target.runner, ())
 
+    def depended_on(self, dep: str) -> bool:
+        """Whether every target of some runner depends on ``dep``: the edges
+        the graph does not hold (``_drop_lazy_writes`` asks, audit T3)."""
+        return dep in self._by_dep
+
     def relax(
         self,
         node: str,
@@ -949,7 +954,9 @@ def _newly_run_modules(
     return found
 
 
-def _drop_lazy_writes(graph: _Graph, base: SourceIndex, head: SourceIndex) -> None:
+def _drop_lazy_writes(
+    graph: _Graph, base: SourceIndex, head: SourceIndex, shared: _SharedLifecycle
+) -> None:
     """A lazily initialised constant's fill is no write for planning when
     its writer is the only code depending on it (diffcone.indexer.lazy):
     the writer computes the same value whoever runs it first and whenever,
@@ -959,9 +966,13 @@ def _drop_lazy_writes(graph: _Graph, base: SourceIndex, head: SourceIndex) -> No
     ``mutated_by`` edge goes, at both revisions' agreement (a constant at
     each revision that has the variable), unless anything else in the graph
     depends on the variable: a reference, a read by its name that may be it
-    (a name match), a declared edge, a target's lifecycle dependency."""
+    (a name match), a declared edge, a target's lifecycle dependency (one
+    every target of a runner shares among them, which has no edge in the
+    graph: ``_SharedLifecycle``, audit T3)."""
     found: dict[str, str] = {}
     for var, writer in sorted({**head.lazy_constants, **base.lazy_constants}.items()):
+        if shared.depended_on(var):
+            continue
         if all(
             index.lazy_constants.get(var) == writer
             for index in (base, head)
@@ -1513,7 +1524,7 @@ def plan_from_indexes(
                         target=target.node_id,
                     )
                 )
-    _drop_lazy_writes(graph, base, head)
+    _drop_lazy_writes(graph, base, head, shared)
     _add_caller_effects(graph, module_nodes)
     graph.freeze()
     seeded = changes if seeds is None else [c for c in changes if c.id in seeds.changes]

@@ -265,12 +265,12 @@ everything.
 :   With a [recording](guides/evidence.md), a test that reads a cache an
     earlier test filled counts as running the code that filled it. That
     works when your code fills the cache with a value it computes, itself
-    or through a helper it hands the value to (`_put(key, compute(key))`),
-    and keeps it in a module variable, on an object or class, in a closure
-    or a function attribute, or behind a memoising decorator. A
-    decorator's registration (`@router.get("/path")`) doesn't count as
-    filling a cache, and neither does a literal written into a module
-    variable before the code has run anything else.
+    or through a function it calls (`_put(key, compute(key))`), and keeps
+    it in a module variable, on an object or class, in a closure or a
+    function attribute, or behind a memoising decorator. Whatever the code
+    that can run a change writes into a module variable counts, a constant
+    or a registration included, since what it stores may depend on the
+    change in ways the code doesn't show.
 
     A decorator counts as memoising when diffcone knows it (`functools`,
     `cachetools`, Django's and Werkzeug's `cached_property`, and others) or
@@ -281,10 +281,50 @@ everything.
 
     - a cache kept by an installed package's decorator under another name;
     - a cache filled through a method of an object whose type diffcone
-      can't tell (`self._cache.set(k, compute(k))` where `_cache` is set in
-      several ways);
-    - a cache filled with an attribute of the object the code runs on
-      (`_CACHE[key] = self.result`) that other code computed.
+      can't tell: `self._cache.set(k, compute(k))` where `_cache` is set in
+      several ways, `_STORE.put(k, compute(k))` on a module-level object,
+      a bound method kept in a variable (`put = _STORE.put`), an object
+      called like a function (`__call__`), a list of callbacks or hooks
+      called in a loop, `Engine().run(k)`;
+    - a write made after the code that can run the change has returned:
+      in a context manager's exit (the end of a `with` block, or the code
+      after the `yield` of a `@contextmanager`), or in a generator that
+      whoever consumes it resumes later;
+    - a value a test computes and hands to code of your project that keeps
+      it (`store(compute(2))` in the test itself): it counts for that test
+      only, as described above.
+
+    If later tests depend on such a cache, declare the dependency in
+    [`diffcone.toml`](reference/declarations.md) (an `[[edges]]` entry
+    from the code reading the cache to the code filling it), name those
+    tests in an [`[[always_run]]`](reference/declarations.md#tests-to-run-on-every-change)
+    entry, or plan that change without the recording.
+
+**What a recording can't see.**
+:   The recorder sees what Python code of your project and its tests runs,
+    opens and lists. A plan made from a recording misses what happens out
+    of its sight:
+
+    - a file opened by compiled code rather than by Python (a certificate
+      or key file that `ssl` hands to OpenSSL, say): a change to it doesn't
+      reach the tests that load it;
+    - an environment variable a test's own code sets in `os.environ` and a
+      later test reads; set it with `monkeypatch.setenv` instead, which
+      undoes it when the test ends;
+    - a cache on disk (a pickle, an SQLite file, a cache directory) one
+      test writes and a later one reads: the later test reads the file,
+      not the code that wrote it; give each test its own directory
+      (`tmp_path`) or clear the cache between tests;
+    - tests outside pytest's rootdir: with the rootdir in a subdirectory
+      (a `pytest.ini` in `sub/`) and tests both under it and elsewhere
+      (`pytest sub/tests tests`), records can be matched to the wrong
+      tests; add `--rootdir=.` to the command you record with, or keep
+      every test under the rootdir.
+
+    For tests that depend on any of these, use an
+    [`[[always_run]]`](reference/declarations.md#tests-to-run-on-every-change)
+    entry, or plan without the recording, which follows the code instead
+    (a change to a file diffcone doesn't read selects every test).
 
 **Code that changes the process while pytest collects reaches every test.**
 :   A `conftest.py`, a test module or a module they import may set an

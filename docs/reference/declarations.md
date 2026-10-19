@@ -82,8 +82,10 @@ exclude = ["tests/data/**"]
 A `.py` file that matches is treated like any other file diffcone doesn't
 analyse, a data file, say. A change to it makes a plan without a
 recording select every test. With a recording, it selects the tests that
-read the file or ran its code. The report lists each snapshot's patterns
-(`analysis.base.excluded`, `analysis.head.excluded`).
+read the file or ran its code, or every test when a test imported it (a
+later test may use the module without running any of it). The report
+lists each snapshot's patterns (`analysis.base.excluded`,
+`analysis.head.excluded`).
 
 Don't exclude a file pytest collects tests from, or a `conftest.py`: its
 tests can't be targets, so the plan says discovery is incomplete, and the

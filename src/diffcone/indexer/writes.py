@@ -83,7 +83,6 @@ from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
     DERIVED_ANY,
     DERIVED_NAME,
-    DERIVED_PARAM,
     MUTATED_BY,
     STORE_CLOSURE,
     STORE_PARAM,
@@ -335,21 +334,13 @@ def _state_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
     return None
 
 
-def _derived(
-    collector: _ReferenceCollector,
-    value: ast.AST | None,
-    depth: int = 0,
-    *,
-    params: bool = False,
-) -> set[str]:
+def _derived(collector: _ReferenceCollector, value: ast.expr | None, depth: int = 0) -> set[str]:
     """What the value of a store derives from: every function, method or
     class its expression names (called or handed on), ``DERIVED_NAME`` +
     the name for one read off a value of unknown type or by a name nothing
     binds, ``DERIVED_ANY`` for a call through a parameter, a local bound
     more than once, or a call of something unreadable. Empty for a value
-    naming nothing of the kind (a literal, a parameter, ``len(x)``). With
-    ``params``, ``DERIVED_PARAM`` for a parameter read, or an attribute
-    read off one other than the receiver: what the caller handed."""
+    naming nothing of the kind (a literal, a parameter, ``len(x)``)."""
     found: set[str] = set()
     if value is None or depth > 3:
         return found
@@ -365,12 +356,8 @@ def _derived(
                 if len(parts) == 1:
                     if isinstance(node, ast.Name) and _is_called(value, node):
                         found.add(DERIVED_ANY)
-                    elif params and head != scope.self_name:
-                        found.add(DERIVED_PARAM)
                 elif head != scope.self_name:
                     found.add(DERIVED_NAME + parts[-1])
-                    if params:
-                        found.add(DERIVED_PARAM)
                 else:
                     # ``self.helper(x)``: resolved through the class.
                     target = indexer.resolve_chain(parts, scope)
@@ -389,7 +376,7 @@ def _derived(
                     found.add(DERIVED_ANY)
                 else:
                     for source in sources:
-                        found |= _derived(collector, source, depth + 1, params=params)
+                        found |= _derived(collector, source, depth + 1)
                 continue
             target = indexer.resolve_chain(parts, scope)
             if isinstance(target, Resolved):
@@ -494,7 +481,7 @@ BUILTIN_CALLS = frozenset(
 )
 
 
-def _is_called(value: ast.AST, name: ast.Name) -> bool:
+def _is_called(value: ast.expr, name: ast.Name) -> bool:
     """Whether ``name`` is the callee of a call in ``value``."""
     for node in ast.walk(value):
         if isinstance(node, ast.Call) and node.func is name:
@@ -643,33 +630,14 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             # says (apply_writes, audit round 3, W21).
             callees.append(f"{HELD_BY}{collector.scope.self_class}.{parts[1]}")
     out = indexer.out.passes
-    derived: set[str] | None = None
     for slot, what in handed:
         for callee in callees or [""]:
-            record = (collector.source, what, callee, name, slot, bound)
-            out.add(record)
-            if what.startswith(("var:", "module:")):
-                if derived is None:
-                    derived = _call_values(collector, node)
-                indexer.out.pass_values.setdefault(record, set()).update(derived)
+            out.add((collector.source, what, callee, name, slot, bound))
     for slot, expr in passes:
         held = _held_attr(collector, expr)
         if held:
             for callee in callees or [""]:
                 indexer.out.held_passes.add((collector.source, callee, name, slot, held, bound))
-
-
-def _call_values(collector: _ReferenceCollector, node: ast.Call) -> set[str]:
-    """What a write a call makes through what it hands on stores: what the
-    callee computes and what it is handed (the call itself), and what
-    decides that the call runs. Nothing in a function's decorators or
-    defaults, which run with the ``def``, at import."""
-    if collector.definition:
-        return set()
-    found = _derived(collector, node, params=True)
-    for expr in collector._runs_after():
-        found |= _derived(collector, expr, params=True)
-    return found
 
 
 def _held_attr(collector: _ReferenceCollector, expr: ast.expr) -> str:
@@ -1011,13 +979,6 @@ def apply_writes(indexer: Resolver) -> None:
             param = slot_param(c, slot, bound)
             if param is not None and (c, param) in writes:
                 out.handed.add((caller, c, held))
-
-    def wrote(record: Pass, variable: str, caller: str) -> None:
-        # What the callee stores through its parameter derives from what it
-        # computes or is handed (``_call_values``).
-        values = out.write_values.setdefault((variable, caller), set())
-        values |= out.pass_values.get(record, {DERIVED_ANY})
-
     module_variables: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
         if symbol.kind == SymbolKind.VARIABLE:
@@ -1036,7 +997,6 @@ def apply_writes(indexer: Resolver) -> None:
                                 out.edges.add(
                                     Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY)
                                 )
-                                wrote(record, variable, caller)
             continue
         if not what.startswith("var:"):
             continue
@@ -1048,7 +1008,6 @@ def apply_writes(indexer: Resolver) -> None:
             continue
         if writes_through(record):
             out.edges.add(Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY))
-            wrote(record, variable, caller)
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

@@ -1094,3 +1094,37 @@ def test_e7_a_symbol_is_annotations_only_only_if_every_source_says_so():
         [source({"a.f", "a.g"}, {"a.f", "a.g"}), source({"a.h"}, {"a.g", "a.h"})]
     )
     assert merged == {"a.f", "a.h"}
+
+
+@needs_monitoring
+def test_t2_the_store_keeps_the_unindexed_code_tests_ran(repo, tmp_path):
+    """Code of a file the index lacks that ran inside a test (a module first
+    imported there) is kept apart from files tests only touched, survives
+    the store, and an advanced store keeps it; a store from before it was
+    recorded (None) stays unknown when advanced (audit T2)."""
+    repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "diffcone.toml": '[index]\nexclude = ["tests/data/*"]\n',
+            "tests/__init__.py": "",
+            "tests/data/__init__.py": "",
+            "tests/data/consts.py": "LIMIT = 3\n",
+            "tests/data/case.py": "X = 1\n",
+            "tests/test_a.py": (
+                "from pathlib import Path\n\n\ndef test_a():\n"
+                "    from tests.data import consts\n    assert consts.LIMIT\n"
+                "    assert (Path(__file__).parent / 'data' / 'case.py').read_text()\n"
+            ),
+        }
+    )
+    ev = repo.collect()
+    assert ev.test_window_code is not None
+    assert "tests/data/consts.py" in ev.test_window_code
+    assert "tests/data/case.py" not in ev.test_window_code
+    assert "tests/data/case.py" in touched(ev, "tests/test_a.py::test_a")
+    again = load_store(write_store(ev, tmp_path / "stores"))
+    assert again.test_window_code == ev.test_window_code
+    assert advance(again, None, set(), "next").test_window_code == ev.test_window_code
+    old = replace(again, test_window_code=None)
+    assert load_store(write_store(old, tmp_path / "old")).test_window_code is None
+    assert advance(old, again, {"tests/test_a.py::test_a"}, "next").test_window_code is None

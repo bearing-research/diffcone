@@ -143,6 +143,13 @@ class Evidence:
     # index: any change in one is planned from the code (audit round 5,
     # R28).
     preloaded: frozenset[str] = frozenset()
+    # The files the index does not read (outside the source roots, or kept
+    # out by ``[index] exclude``) whose code ran inside a test window: a
+    # module first imported inside a test, which every later test may use
+    # from ``sys.modules`` without running a line of it (audit T2). None for
+    # a store written before this was recorded: any such file a test touched
+    # may have been.
+    test_window_code: frozenset[str] | None = None
     # The recording's file system folds case (macOS, Windows): a recorded
     # path matches a changed one in any spelling.
     case_insensitive: bool = False
@@ -304,6 +311,9 @@ class _Raw:
     collected: set[str] | None = None
     import_flagged: set[str] = field(default_factory=set)
     preloaded: set[str] = field(default_factory=set)
+    # Files the index does not read whose code ran inside a test window
+    # (``Evidence.test_window_code``).
+    test_window_code: set[str] = field(default_factory=set)
     case_insensitive: bool = False
     # The environment a process started in, when its run changed it.
     environment_at_start: dict | None = None
@@ -555,7 +565,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             if c_flags:
                 raw.import_flagged.add(module)
         for key, window in data.get("fixtures", {}).items():
-            _fold_window(raw.fixtures, key, window, symbol_of, file_of, canonical, children)
+            _fold_window(
+                raw.fixtures,
+                key,
+                window,
+                symbol_of,
+                file_of,
+                canonical,
+                children,
+                raw.test_window_code,
+            )
         tests_file = directory / f"tests-{pid}.bin"
         if data["wrote_tests"]:
             if not tests_file.exists():
@@ -574,7 +593,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                         f"process {pid} wrote a truncated or corrupt test file ({exc})"
                     ) from exc
                 i += m
-                _fold_window(raw.tests, name, record, symbol_of, file_of, canonical, children)
+                _fold_window(
+                    raw.tests,
+                    name,
+                    record,
+                    symbol_of,
+                    file_of,
+                    canonical,
+                    children,
+                    raw.test_window_code,
+                )
                 raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
     orphans = [
         p
@@ -612,18 +640,22 @@ def _fold_window(
     file_of: list[str | None],
     canonical: Callable[[str], str],
     children: _Children,
+    code_files: set[str],
 ) -> None:
     """Add what one window of a process (a test, a shared fixture's setup)
     ran and touched, with what the processes it started ran, to
     ``into[key]``: code by index into the process's table (``symbol_of``, or
-    ``file_of`` for a file the index does not read), paths and directories
-    as the index spells them (``canonical``)."""
+    ``file_of`` for a file the index does not read, which also joins
+    ``code_files``), paths and directories as the index spells them
+    (``canonical``). A process the window started ends with it, and what it
+    imported with it."""
     symbols, paths, dirs, flags = into.setdefault(key, (set(), set(), set(), 0))
     for c in window["codes"]:
         if symbol_of[c] is not None:
             symbols.add(symbol_of[c])
         elif file_of[c] is not None:
             paths.add(file_of[c])
+            code_files.add(file_of[c])
     paths.update(canonical(p) for p in window["paths"])
     dirs.update(canonical(d) for d in window["dirs"])
     flags |= window["flags"]
@@ -845,6 +877,11 @@ def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
         "import_dirs": _merged(s.import_dirs for s in sources),
         "import_flagged": frozenset().union(*(s.import_flagged for s in sources)),
         "preloaded": frozenset().union(*(s.preloaded for s in sources)),
+        "test_window_code": (
+            None
+            if any(s.test_window_code is None for s in sources)
+            else frozenset().union(*(s.test_window_code or () for s in sources))
+        ),
         "case_insensitive": any(s.case_insensitive for s in sources),
     }
 
@@ -921,6 +958,9 @@ def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
         "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
         "import_flagged": sorted(evidence.import_flagged),
         "preloaded": sorted(evidence.preloaded),
+        "test_window_code": (
+            sorted(evidence.test_window_code) if evidence.test_window_code is not None else None
+        ),
         "case_insensitive": evidence.case_insensitive,
         "reverse_checked": evidence.reverse_checked,
         "advanced_from": evidence.advanced_from,
@@ -1009,6 +1049,11 @@ def load_store(path: Path) -> Evidence:
             import_dirs={p: frozenset(m) for p, m in meta["import_dirs"].items()},
             import_flagged=frozenset(meta["import_flagged"]),
             preloaded=frozenset(meta["preloaded"]),
+            test_window_code=(
+                frozenset(meta["test_window_code"])
+                if meta.get("test_window_code") is not None
+                else None
+            ),
             case_insensitive=bool(meta["case_insensitive"]),
             reverse_checked=meta["reverse_checked"],
             advanced_from=meta.get("advanced_from"),

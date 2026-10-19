@@ -1608,26 +1608,23 @@ in them (frontend, Docker) selected less. Reproduced on a local recording
 at d72777c9 with one body edit to `strata.cache.disk.DiskCache.put`:
 6580 of 6580 (audit E32-E35).
 
-What shipped (audit E32, E35, E36; internal/evidence_design.md, "What a
-test stored"): a module variable the chain writes in place is followed
-only where what is stored, or what decides the write runs, may derive
-from the chain (`SourceIndex.write_values`), a decorator's or default's
-write derives from nothing, and the code the chain calls is followed
-where it is handed chain values and stores a parameter
-(`SourceIndex.call_values`, `_handed_to`). Corpus: no miss, marshmallow
-+41, typer -4.
+What shipped, then went (audit E32, E35, E36, T1): following a module
+variable the chain writes only where what is stored may derive from the
+chain (`SourceIndex.write_values`, `call_values`) missed in six classes
+round 6 showed (the changed function's own literal, a changed constant, a
+call through a variable or table, `heappush`/`setitem`/`setattr`, a
+container filled through a local, `__init__` registering `self`) and had
+saved nothing on strata (typer -4), so it was taken back: every in-place
+write of the chain counts again, as in 0.4.0. E36 stayed, in its sound
+form: every in-place write of the code the chain calls counts too.
 
-*What is left after E35.* The `DiskCache.put` edit still selects 6580
-of 6580: the chain's remaining writes do derive from it as recorded,
-`_TASKS` in `serve_connection` (a task built from the connection),
-`_ACTIVE_PUBLICATION_INDEX_SQL` in `ArtifactStore._init_schema` (a
-string handed to `conn.execute`, read as a call's result) and
-`_log_format` in `configure_logging`. Narrowing them needs two things
-not planned yet: taint at the call site (a parameter is chain-derived
-only where that call hands chain values, not where any caller does),
-and immutable literals (a string constant handed on stores nothing the
-chain computed). Sketch both before building; the spike bound with the
-whole module-variable half off was 2922.
+*What is left.* The `DiskCache.put` edit still selects 6580 of 6580. Any
+narrowing of the module-variable half needs a sound reason a write holds
+nothing of the change, which reading the stored expression cannot give;
+sketch one (taint at the call site, immutable literals, a write the
+recorder saw store the same value at both commits) before building, and
+measure it against the round 6 scenarios. The spike bound with the whole
+module-variable half off was 2922.
 
 *An install's file read as a table (E33).* A module loaded from a literal
 file and installed in `sys.modules` (`_load_local_module("serializer.py",

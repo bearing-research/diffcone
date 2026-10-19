@@ -68,7 +68,7 @@ from diffcone.indexer.uses import (
     UNPICKLER_CALLS,
     UNPICKLER_CLASSES,
 )
-from diffcone.indexer.writes import _derived, observe_assign, observe_augassign, observe_call
+from diffcone.indexer.writes import observe_assign, observe_augassign, observe_call
 from diffcone.model import (
     DISCARDED_IMPORT,
     GRAPH_HANDLE,
@@ -139,11 +139,6 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.source = source
         self.scope = scope
         self.skip_defs = skip_defs
-        # Walking a function's decorators or defaults, which run when the
-        # ``def`` does (Resolver sets it): an in-place write found then
-        # stores the function, nothing a call computes
-        # (SourceIndex.write_values).
-        self.definition = False
         # Positions that name a class without constructing it (the second
         # argument of ``isinstance``/``issubclass``, the first of
         # ``typing.cast``). Annotations are not among them: frameworks build
@@ -153,9 +148,6 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._bindings: dict[int, list | None] = {}
         # The nodes being visited, outermost first (see visit).
         self._stack: list[ast.AST] = []
-        # (node, scope) ids -> the scope and ``_derived`` of the node
-        # (``_derived_of``).
-        self._derived_memo: dict[tuple[int, int], tuple[Scope, set[str]]] = {}
         # Nodes naming a variable only to change it (``X`` in ``X.clear()``
         # or ``X[k] = v``) -> the edge detail their reference gets.
         self._write_only: dict[int, str] = {}
@@ -258,13 +250,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         for default in list(node.args.defaults) + [d for d in node.args.kw_defaults if d]:
             self.visit(default)
         outer = self._push(_LocalBindings().collect(node))
-        # Its body runs when it is called, which may be later, in a test.
-        definition, self.definition = self.definition, False
         try:
             self.visit(node.body)
         finally:
             self.scope = outer
-            self.definition = definition
 
     def _visit_comprehension(
         self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp
@@ -277,10 +266,6 @@ class _ReferenceCollector(ast.NodeVisitor):
             if isinstance(gen.target, ast.Name):
                 literals[gen.target.id] = self.scope.string_candidates(gen.iter)
         outer = self._push(bound, literals)
-        # A generator runs as it is consumed, which may be later.
-        definition = self.definition
-        if isinstance(node, ast.GeneratorExp):
-            self.definition = False
         try:
             for gen in generators:
                 self.visit(gen.iter)
@@ -292,7 +277,6 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self.visit(child)
         finally:
             self.scope = outer
-            self.definition = definition
 
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _visit_comprehension
 
@@ -671,15 +655,14 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         return
 
-    def _mutation_target(self, expr: ast.expr, stored: Sequence[ast.expr] = ()) -> None:
+    def _mutation_target(self, expr: ast.expr) -> None:
         """Record ``source`` as a writer when ``expr`` (an assignment target or
         a receiver of a mutating call) is a subscript/attribute of a variable
         symbol, or the variable itself under ``global``; or another module's
         variable assigned through the module (``settings.DEBUG = True`` in a
         conftest: whoever reads ``settings.DEBUG`` sees the writer). Items
         count on the way (``store._CACHE["k"].append(x)``, ``del
-        store._CACHE["k"]``, ``store._CACHE["k"] += [x]``: W15). ``stored``:
-        what the write puts there (``_mutated``)."""
+        store._CACHE["k"]``, ``store._CACHE["k"] += [x]``: W15)."""
         inner = expr
         while isinstance(inner, (ast.Subscript, ast.Attribute)):
             chain = _flatten_chain(inner) if isinstance(inner, ast.Attribute) else None
@@ -700,7 +683,9 @@ class _ReferenceCollector(ast.NodeVisitor):
                             )
                         )
                     ):
-                        self._mutated(symbol.id, expr, stored)
+                        self.indexer.out.edges.add(
+                            Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
+                        )
                         return
         base = expr
         while isinstance(base, (ast.Subscript, ast.Attribute)):
@@ -718,100 +703,9 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
-            self._mutated(symbol.id, expr, stored)
-
-    def _mutated(self, variable: str, target: ast.expr, stored: Sequence[ast.expr]) -> None:
-        """A ``mutated_by`` edge from ``variable`` to this symbol, and what the
-        write derives from (SourceIndex.write_values): the values it stores,
-        the keys it writes under (``target``'s subscripts), and what decides
-        whether it runs (``_runs_after``). A decorator or a default stores
-        the function when the ``def`` runs, nothing a call computes."""
-        out = self.indexer.out
-        out.edges.add(Edge(variable, self.source, EdgeKind.REFERENCES, MUTATED_BY))
-        values = out.write_values.setdefault((variable, self.source), set())
-        if self.definition:
-            return
-        exprs: list[ast.AST] = [
-            *stored,
-            *(n.slice for n in ast.walk(target) if isinstance(n, ast.Subscript)),
-            *self._runs_after(),
-        ]
-        for expr in exprs:
-            values |= self._derived_of(expr)
-
-    def _handed_on(self, node: ast.Call) -> None:
-        """What a call hands the code it calls (SourceIndex.call_values): its
-        arguments and receiver, and what decides that it runs."""
-        func = node.func
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if not name:
-            return
-        values = self.indexer.out.call_values.setdefault((self.source, name), set())
-        if self.definition:
-            return
-        exprs: list[ast.AST] = [*node.args, *(k.value for k in node.keywords)]
-        if isinstance(func, ast.Attribute):
-            exprs.append(func.value)
-        for expr in [*exprs, *self._runs_after()]:
-            values |= self._derived_of(expr)
-
-    def _derived_of(self, node: ast.AST) -> set[str]:
-        """``_derived`` with parameters, kept per node and scope: the
-        statements before a call are asked again for every call after them."""
-        key = (id(node), id(self.scope))
-        kept = self._derived_memo.get(key)
-        if kept is None:
-            # The scope is kept with it, so its id names no later scope.
-            kept = self._derived_memo[key] = (self.scope, _derived(self, node, params=True))
-        return kept[1]
-
-    def _runs_after(self) -> list[ast.AST]:
-        """What the function evaluates before the node being visited, or
-        around it, any of which can decide that it runs: the tests of the
-        branches, loops, ``with`` and ``match`` statements around it, the
-        statements before it in each block (an early ``return``, a call that
-        raises), a loop's whole body (an earlier iteration's ``break``), the
-        ``try`` body for a handler, ``else`` or ``finally``, and the rest of
-        the expression it is part of (``compute(k) and _SEEN.add(k)``)."""
-        stack = self._stack
-        found: list[ast.AST] = []
-        scope = self.scope
-        while scope.literal_parent is not None:
-            scope = scope.literal_parent
-        root = scope.literal_node
-        if isinstance(root, (ast.FunctionDef, ast.AsyncFunctionDef)) and stack:
-            found.extend(_before(root.body, stack[0]))
-        for parent, child in zip(stack, stack[1:], strict=False):
-            if isinstance(parent, (ast.If, ast.While, ast.IfExp)):
-                found.append(parent.test)
-            elif isinstance(parent, (ast.For, ast.AsyncFor)):
-                found.append(parent.iter)
-            elif isinstance(parent, (ast.With, ast.AsyncWith)):
-                found.extend(item.context_expr for item in parent.items)
-            elif isinstance(parent, ast.Match):
-                found.append(parent.subject)
-                found.extend(case.guard for case in parent.cases if case.guard is not None)
-            elif isinstance(parent, ast.ExceptHandler) and parent.type is not None:
-                found.append(parent.type)
-            if isinstance(parent, (ast.For, ast.AsyncFor, ast.While)):
-                if _within(parent.body, child):
-                    found.extend(parent.body)
-                    continue
-                if _within(parent.orelse, child):
-                    found.extend(parent.body)
-            if isinstance(parent, (ast.Try, ast.TryStar)) and not _within(parent.body, child):
-                found.extend(parent.body)
-                if _within(parent.finalbody, child):
-                    found.extend([*parent.handlers, *parent.orelse])
-            if isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case)):
-                for field in ("body", "orelse", "finalbody", "handlers", "cases"):
-                    block = getattr(parent, field, None)
-                    if isinstance(block, list) and _within(block, child):
-                        found.extend(_before(block, child))
-            elif not isinstance(parent, ast.stmt):
-                # Inside one expression: its other operands.
-                found.extend(n for n in ast.iter_child_nodes(parent) if n is not child)
-        return found
+            self.indexer.out.edges.add(
+                Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
+            )
 
     def _external_module(self, expr: ast.expr | None) -> str | None:
         """The external module ``expr`` names (``logging``, ``os.path``), if
@@ -1019,17 +913,16 @@ class _ReferenceCollector(ast.NodeVisitor):
                 self._dict_write(target)
             for sub in ast.walk(target):
                 if isinstance(sub, (ast.Subscript, ast.Attribute)):
-                    self._mutation_target(sub, (node.value,))
+                    self._mutation_target(sub)
                 elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                    # rebinding a ``global`` variable
-                    self._mutation_target(sub, (node.value,))
+                    self._mutation_target(sub)  # rebinding a ``global`` variable
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         observe_augassign(self, node)
         self._write_only[id(node.target)] = _READ  # ``mod.X += 1`` reads it
         self._process_store(node.target)
-        self._mutation_target(node.target, (node.value,))
+        self._mutation_target(node.target)
         if isinstance(node.target, ast.Subscript):
             self._dict_write(node.target)
         self.generic_visit(node)
@@ -1038,7 +931,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if node.value is not None:
             observe_assign(self, [node.target], node.value)
             self._process_store(node.target)
-            self._mutation_target(node.target, (node.value,))
+            self._mutation_target(node.target)
             self._stash_binding(node.target, node.value)
         self.visit(node.target)
         self.visit(node.annotation)
@@ -1057,7 +950,6 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         parts = _flatten_chain(node.func)
         observe_call(self, node, parts)
-        self._handed_on(node)
         self._process_call(node, parts)
         self._handed_instances(node, parts)
         self._format_fields(node)
@@ -1079,7 +971,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             and node.func.attr in CONTAINER_MUTATORS
             and isinstance(node.func.value, (ast.Name, ast.Subscript, ast.Attribute, ast.Call))
         ):
-            self._mutation_target(node.func.value, [*node.args, *(k.value for k in node.keywords)])
+            self._mutation_target(node.func.value)
             self._dict_write(node.func.value)
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "__setattr__",
@@ -2510,19 +2402,6 @@ class _ReferenceCollector(ast.NodeVisitor):
             target = self.indexer.resolve_dotted(held.split("."))
             if isinstance(target, ModuleNode):
                 self.indexer._record(self.source, target, chain=held)
-
-
-def _within(block: list, node: ast.AST) -> bool:
-    """Whether ``node`` is one of ``block``'s nodes (by identity)."""
-    return any(n is node for n in block)
-
-
-def _before(block: list, node: ast.AST) -> list[ast.AST]:
-    """The nodes of ``block`` before ``node`` (all of them when it is not there)."""
-    for i, n in enumerate(block):
-        if n is node:
-            return block[:i]
-    return []
 
 
 def _elements(expr: ast.expr | None) -> list[ast.expr]:

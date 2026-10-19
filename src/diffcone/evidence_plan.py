@@ -214,7 +214,6 @@ from diffcone.model import (
     CLASS_STATEMENT,
     DERIVED_ANY,
     DERIVED_NAME,
-    DERIVED_PARAM,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
@@ -587,13 +586,6 @@ class _Observers:
         # variables each function writes into in place (``mutated_by``).
         self.calls: dict[str, set[str]] = defaultdict(set)
         self.writes: dict[str, set[str]] = defaultdict(set)
-        # (function, variable) -> what the function's writes there derive
-        # from, in either index (``SourceIndex.write_values``; ``*`` for an
-        # edge an index says nothing of).
-        self._write_values: dict[tuple[str, str], set[str]] = defaultdict(set)
-        # (function, called name) -> what those calls hand on, in either index
-        # (``SourceIndex.call_values``).
-        self._call_values: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.holds: dict[str, set[str]] = defaultdict(set)
         self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
         self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
@@ -610,8 +602,6 @@ class _Observers:
         # naming it any other way (a read): see ``_readers``.
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
         for index in (c_index, other):
-            for pair, values in index.call_values.items():
-                self._call_values[pair] |= values
             for edge in index.edges:
                 mark = edge_mark(edge)
                 if mark in (INSTALLED, INSTALLED_ANYWHERE):
@@ -625,10 +615,6 @@ class _Observers:
                         self.attribute_readers[mark[len("attribute:") :]].add(edge.source)
                     if mark == MUTATED_BY:
                         self.writes[edge.target].add(edge.source)
-                        values = index.write_values.get((edge.source, edge.target))
-                        self._write_values[(edge.target, edge.source)] |= (
-                            {DERIVED_ANY} if values is None else values
-                        )
                     elif mark != REGISTERS:
                         self.calls[edge.source].add(edge.target)
                     if mark in (MUTATED_BY, REGISTERS):
@@ -797,11 +783,10 @@ class _Observers:
         # that member; who calls what, backwards; lookup sites by namespace.
         self._runs_e: dict[str, str] = {}
         self._called_by: dict[str, set[str]] | None = None
-        # ``_tainted``, kept across rounds (both only grow with the chain):
-        # per function of the chain, its callers and what they hand it; the
-        # functions found tainted so far.
-        self._taint_callers: dict[str, list[tuple[str, set[str] | None]]] = {}
-        self._tainted_found: set[str] = set()
+        # The code the chain calls, transitively, outside it -> (the chain
+        # code calling it, what that can run): ``_handed_to``, kept across
+        # rounds, as the chain only grows.
+        self._handed: dict[str, tuple[str, str]] = {}
         # Caches outside module variables (audit round 5, R22): per function,
         # where it stores computed values and what they derive from
         # (``SourceIndex.stores``); per callee, the attributes handed to it
@@ -1217,23 +1202,16 @@ class _Observers:
         for the tests after, so its readers, and the sites that can see it,
         join E. A test stores there only while tests run, so only code running
         inside a test can have read it: no import or hook is followed
-        (``in_tests``). Nor is a write whose content cannot come from the
-        chain (audit E35, as R22 below asks of attributes): what it derives
-        from (``SourceIndex.write_values``: the value and keys stored, and
-        what decides that the write runs) must be code of the chain, a name
-        it bears, a parameter of the writer (what a caller in the chain may
-        have handed it), or anything. ``_STARTED["w"] = True`` first thing
-        in a function the chain calls stores nothing of the change;
-        ``_CACHE[k] = compute(k)`` and ``_CACHE[k] = v`` may. A write only
-        the function's decorators or defaults make derives from nothing
-        (``@router.put("/x")``, audit E32): it is made when the ``def``
-        runs, at import, where the import rules follow what changed. The
-        code the chain calls, transitively, is followed too where it stores
-        a parameter or anything (``_handed_to``, audit E36: ``get`` handing
-        ``compute(k)`` to ``_put(k, v)``, which writes ``_CACHE``).
-        ``functools`` caches need none of this: the recorder
-        clears them before every test. True when a variable was found, since
-        its readers may in turn be stored.
+        (``in_tests``). Every write counts, whatever it stores: what a
+        value derives from, statically, misses too many ways a chain
+        reaches a store (the changed function's own literal, a changed
+        constant, a call through a variable or a table, ``heapq.heappush``,
+        a container stored first and filled through a local; audit T1).
+        The code the chain calls, transitively, is followed the same way
+        (``_handed_to``, audit E36): ``get`` handing ``compute(k)`` to
+        ``_put(k, v)``, which writes ``_CACHE``. ``functools`` caches need
+        none of this: the recorder clears them before every test. True when
+        a variable was found, since its readers may in turn be stored.
 
         A cache held elsewhere than a module variable (audit round 5, R22) is
         found the same way, by what the code stores rather than where: code
@@ -1267,38 +1245,26 @@ class _Observers:
             ):
                 self._runs_e[s] = s
                 queue.append(s)
+        # (variable, writer, what it can run, the chain code calling the writer)
+        found: list[tuple[str, str, str, str | None]] = []
+        joined: list[str] = []  # the chain's functions found this round
         while queue:
             node = queue.popleft()
             symbol = self.symbols[node]
+            if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                joined.append(node)
+                for variable in sorted(self.writes.get(node, ())):
+                    if variable not in self._followed and variable in self.symbols:
+                        found.append((variable, node, self._runs_e[node], None))
             by_name = node in changed and self._runs_e[node] == node
             for caller in sorted(self._callers_of(symbol, by_name=by_name)):
                 if caller not in self._runs_e and caller in self.symbols:
                     self._runs_e[caller] = self._runs_e[node]
                     queue.append(caller)
-        # Every round, over the whole chain: what a write derives from may
-        # have joined it only now.
-        chain_names = {self.symbols[s].name for s in self._runs_e if s in self.symbols}
-        tainted = self._tainted(chain_names)
-        # (variable, writer, what it can run, the chain code handing it what it stores)
-        found: list[tuple[str, str, str, str | None]] = []
-        for node, ran in sorted(self._runs_e.items()):
-            if self.symbols[node].kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
-                continue
-            for variable in sorted(self.writes.get(node, ())):
-                if variable in self._followed or variable not in self.symbols:
-                    continue
-                values = self._write_values.get((node, variable), {DERIVED_ANY})
-                params = node in tainted
-                if any(self._derives_from_chain(d, chain_names, params) for d in values):
-                    found.append((variable, node, ran, None))
-        for callee, (caller, ran) in sorted(self._handed_to(chain_names, tainted).items()):
+        for callee, caller, ran in self._handed_to(joined):
             for variable in sorted(self.writes.get(callee, ())):
-                if variable in self._followed or variable not in self.symbols:
-                    continue
-                values = self._write_values.get((callee, variable), {DERIVED_ANY})
-                if values & {DERIVED_PARAM, DERIVED_ANY}:
+                if variable not in self._followed and variable in self.symbols:
                     found.append((variable, callee, ran, caller))
-        followed = False
         for variable, writer, ran, caller in found:
             if variable in self._followed:
                 continue
@@ -1307,13 +1273,12 @@ class _Observers:
                 # seen by that test alone, which runs the writer itself.
                 continue
             self._followed.add(variable)
-            followed = True
             why = self.E.get(ran) or self.guarded[ran][0][2]
             change = changed.get(why.changed_symbol or "")
             ran_by = (
                 f"{writer} can run {ran} and"
                 if caller is None
-                else (f"{caller} can run {ran} and hands {writer} what it")
+                else f"{caller} can run {ran} and calls {writer}, which"
             )
             label = (
                 f"{ran_by} stores into {variable}, where a later test may "
@@ -1371,123 +1336,58 @@ class _Observers:
             self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
                 self._reader(reader, change, label, in_tests=True)
-        return followed or kept
+        return bool(found) or kept
 
-    def _tainted(self, chain_names: set[str]) -> set[str]:
-        """The functions of the chain whose parameters may hold what the chain
-        computed: a caller hands one of them something derived from it (a
-        call into the chain, or its own such parameter), or calls it in a
-        way ``SourceIndex.call_values`` does not record (a decorator's
-        wrapper, a callback, a declared edge). A function's parameters are
-        bound before it runs the change, so they hold its result only if a
-        caller computed that first (``get(2)`` from a test does not). The
-        chain, its names and so the answer only grow from round to round, so
-        what was found tainted stays tainted and each function's callers are
-        looked up once."""
-        functions = sorted(
-            node
-            for node in self._runs_e
-            if self.symbols[node].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
-        )
-        callers = self._taint_callers
-        for node in functions:
-            if node in callers:
-                continue
-            symbol = self.symbols[node]
-            names = {symbol.name}
-            container = self.symbols.get(symbol.container or "")
-            if _is_dunder(symbol.name) and container is not None:
-                names |= {
-                    self.symbols[c].name
-                    for c in self._related(container.id, SUBCLASSES)
-                    if c in self.symbols
-                }
-            by_name = node in self._change_by_id and self._runs_e[node] == node
-            entries: list[tuple[str, set[str] | None]] = []
-            for caller in sorted(self._callers_of(symbol, by_name=by_name)):
-                handed = [
-                    self._call_values[(caller, n)]
-                    for n in names
-                    if (caller, n) in self._call_values
-                ]
-                entries.append((caller, set().union(*handed) if handed else None))
-            callers[node] = entries
-        tainted = self._tainted_found
-        grew = True
-        while grew:
-            grew = False
-            for node in functions:
-                if node in tainted:
-                    continue
-                for caller, values in callers[node]:
-                    if values is None or any(
-                        self._derives_from_chain(d, chain_names, caller in tainted) for d in values
-                    ):
-                        tainted.add(node)
-                        grew = True
-                        break
-        return tainted
-
-    def _handed_to(self, chain_names: set[str], tainted: set[str]) -> dict[str, tuple[str, str]]:
-        """The code the chain calls, transitively, outside it -> (the chain
-        code calling it, what that can run): it may store what it is handed,
-        the chain's result (audit E36: ``_put(k, compute(k))``). Calls are the
-        resolved references and the constructors of a class called; a method
-        of a value of unknown type is not taken for every method of its name,
-        as for ``SourceIndex.stores`` (R22, docs/limitations.md). A call is
-        followed when what it hands on, or what decides that it runs
-        (``SourceIndex.call_values``), may derive from the chain (a
-        parameter of the caller among it when ``_tainted``, or when the
-        caller was itself handed something);
-        ``set_mode("fast")`` hands nothing of it. A module's top-level code
-        runs at import, which the import rules follow, and a test's own code
-        hands nothing on: what it has stored is seen by that test alone (the
-        isolation assumption, as in ``_stored_results``)."""
-        handed: dict[str, tuple[str, str]] = {}
+    def _handed_to(self, joined: list[str]) -> list[tuple[str, str, str]]:
+        """The code the chain's functions that joined it this round call,
+        transitively, outside the chain: (callee, the chain code calling it,
+        what that can run). It may store what it is handed, the chain's
+        result (audit E36: ``_put(k, compute(k))``), or something a branch
+        on that result decides, so every write it makes in place counts, as
+        for the chain itself. Calls are the resolved references and, for a
+        class, what creating or calling it runs (not ``__init_subclass__``
+        or ``__set_name__``, which a class statement runs at import); a
+        method of a value of unknown type is not taken for every method of
+        its name, as for ``SourceIndex.stores`` (R22, docs/limitations.md). A
+        module's top-level code runs at import, which the import rules
+        follow, and a test's own code hands nothing on: what it has stored
+        is seen by that test alone (the isolation assumption, as in
+        ``_stored_results``)."""
+        handed = self._handed
+        found: list[tuple[str, str, str]] = []
         queue: deque[tuple[str, str, str]] = deque(
-            (node, node, ran)
-            for node, ran in sorted(self._runs_e.items())
-            if self.symbols[node].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
-            and not (node in self.test_code.isolated and self._only_in_tests({node}))
+            (node, node, self._runs_e[node])
+            for node in joined
+            if not (node in self.test_code.isolated and self._only_in_tests({node}))
         )
         while queue:
             node, caller, ran = queue.popleft()
-            callees: set[tuple[str, str]] = set()  # (callee, the name it is called by)
+            callees: set[str] = set()
             for target in self.calls.get(node, ()):
                 symbol = self.symbols.get(target)
                 if symbol is None:
                     continue
                 if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
-                    callees.add((target, symbol.name))
-                elif symbol.kind == SymbolKind.CLASS and (node, symbol.name) in self._call_values:
-                    # What calling it or an instance runs, where it is called
-                    # (not named in ``isinstance`` or ``super``); a subclass's
-                    # definition runs ``__init_subclass__`` at import.
+                    callees.add(target)
+                elif symbol.kind == SymbolKind.CLASS:
                     callees.update(
-                        (c, symbol.name)
+                        c
                         for c in self._constructors(target)
                         if c.rsplit(".", 1)[-1] not in ("__init_subclass__", "__set_name__")
                     )
-            for callee, name in sorted(callees):
+            for callee in sorted(callees):
                 if callee in self._runs_e or callee in handed:
                     continue
-                values = self._call_values.get((node, name), {DERIVED_ANY})
-                params = node in tainted or node in handed
-                if any(self._derives_from_chain(d, chain_names, params) for d in values):
-                    handed[callee] = (caller, ran)
-                    queue.append((callee, caller, ran))
-        return handed
+                handed[callee] = (caller, ran)
+                found.append((callee, caller, ran))
+                queue.append((callee, caller, ran))
+        return found
 
-    def _derives_from_chain(
-        self, derived: str, chain_names: set[str], params: bool = False
-    ) -> bool:
+    def _derives_from_chain(self, derived: str, chain_names: set[str]) -> bool:
         """Whether a stored value (``SourceIndex.stores``) may come from code
         that can run a member of E: a symbol in the chain (a class through
-        its constructors), a name some member of the chain bears, anything
-        (a call through a parameter, a local bound twice), or with
-        ``params`` a parameter of the code storing it."""
-        if derived == DERIVED_PARAM:
-            return params
+        its constructors), a name some member of the chain bears, or
+        anything (a call through a parameter, a local bound twice)."""
         if derived == DERIVED_ANY:
             return True
         if derived.startswith(DERIVED_NAME):
@@ -3064,7 +2964,34 @@ class _Observers:
                         module,
                         f"{path} {what}, and {where} was touched while {module} was imported",
                     )
+        if not source and self._imported_in_a_test(path):
+            # The first test to import it ran its code, and its record holds
+            # the file; every later test may use the module, or what it
+            # built, from ``sys.modules`` without touching the file, and
+            # nothing static names what reads it (audit T2).
+            self._select_all(
+                Rule.UNINDEXED_IMPORT,
+                f"{path} {what}: a module the index does not read whose code ran inside a "
+                "test, so a later test may use what its import built without running it",
+            )
         self.files[path] = (what, names)
+
+    def _imported_in_a_test(self, path: str) -> bool:
+        """Whether code of ``path``, a file the index does not read, ran
+        inside a test window at C (``Evidence.test_window_code``); for a store
+        that did not record that, whether a test touched the ``.py`` file."""
+        ev = self.evidence
+        if ev.test_window_code is not None:
+            return ev.has(set(ev.test_window_code), path)
+        if not path.endswith(".py"):
+            return False
+        folded = path.casefold() if ev.case_insensitive else path
+        ids = {
+            i
+            for i, p in enumerate(ev.paths)
+            if (p.casefold() if ev.case_insensitive else p) == folded
+        }
+        return any(ids & record.paths for record in ev.tests.values())
 
 
 def _changed_outside_roots(
