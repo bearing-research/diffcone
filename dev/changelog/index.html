@@ -808,6 +808,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1237,6 +1248,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1618,6 +1640,14 @@ selection rules.</p>
   tests that read it or ran its code in one with. The report lists each
   snapshot's patterns (<code>analysis.&lt;side&gt;.excluded</code>).</li>
 </ul>
+<h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>schema_version</code> 4: selected and unselected target records no longer
+  list <code>lifecycle_dependencies</code>. Each target repeated every fixture,
+  hook and module it depends on, nine tenths of a large suite's plan
+  (pandas: 850 MB, now 40 MB). Discovery's output still lists them, and
+  the ones that selected a target are in its explanation.</li>
+</ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>collect</code> warns when none of the tests it recorded is among the tests
@@ -1639,9 +1669,10 @@ selection rules.</p>
   carried its own copy of the dependencies all tests share (code run
   while pytest collects), in the dependency graph and in the cached
   discovery results. On pandas (25 620 tests) a plan peaked at 21 GB,
-  more than a standard CI runner has; it now peaks at 6.6 GB, and a
-  cached discovery result is 9 MB instead of 680 MB. Plans are
-  unchanged. Discovery cached by an earlier version is redone once.</li>
+  more than a standard CI runner has, and took up to 90 minutes; it now
+  peaks at 5.5 GB and takes under two minutes, and a cached discovery
+  result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
+  cached by an earlier version is redone once.</li>
 <li>With a recording, a module cache filled through a helper that is
   handed the value (<code>_put(key, compute(key))</code>, with <code>_put</code> storing it, a
   method, a chain of helpers, an <code>append</code>) was not followed: a test that
