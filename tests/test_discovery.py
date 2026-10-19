@@ -2691,6 +2691,134 @@ def test_shared_scopes_find_what_a_walk_of_one_module_finds(repo, module):
     assert [t for t in both.targets if t.runner_id.startswith(module)] == alone.targets
 
 
+# Tests bound by a call's result or dynamically: pytest collects them, and
+# discovery cannot name them, so it reports them (audit round 6, T8).
+@pytest.mark.parametrize(
+    "module",
+    [
+        # A factory's result, here or imported.
+        "def _make(n):\n    def t():\n        pass\n    return t\n\ntest_one = _make(1)\n",
+        "from tests.helpers import make\n\ntest_one = make(1)\n",
+        "import functools\n\ndef _check(n):\n    pass\n\ntest_one = functools.partial(_check, 1)\n",
+        "def _make():\n    class TestGen:\n        def test_x(self):\n            pass\n"
+        "    return TestGen\n\nTestGen = _make()\n",
+        "def _make():\n    return 1, 2\n\ntest_a, test_b = _make()\n",
+        # A lambda, an item of a container, a method of an object.
+        "test_one = lambda: None\n",
+        "def _f():\n    pass\n\ntest_one = [_f][0]\n",
+        "from pathlib import Path\n\ntest_one = Path('.').resolve\n",
+        # Stored into the module's namespace.
+        "def _make(n):\n    return lambda: None\n\nfor n in range(2):\n"
+        "    globals()[f'test_{n}'] = _make(n)\n",
+        "def _t():\n    pass\n\nglobals().update(test_x=_t)\n",
+        # Set on a class.
+        "class TestA:\n    pass\n\ndef _check(self):\n    pass\n\n"
+        "setattr(TestA, 'test_x', _check)\n",
+        "class TestA:\n    pass\n\ndef _check(self):\n    pass\n\nTestA.test_x = _check\n",
+        "def _make(n):\n    return lambda self: None\n\nclass TestA:\n    for _n in range(2):\n"
+        "        locals()[f'test_{_n}'] = _make(_n)\n",
+        "def _make():\n    return lambda self: None\n\nclass TestA:\n    test_x = _make()\n",
+        # pytest-bdd makes a test per scenario of the feature file.
+        "from pytest_bdd import scenarios\n\nscenarios('features/value.feature')\n",
+    ],
+)
+def test_t8_tests_bound_by_calls_or_dynamically_are_reported(repo, module):
+    targets, notes = _targets_and_notes(
+        repo,
+        {
+            **LIB,
+            "tests/helpers.py": "def make(n):\n    return lambda: None\n",
+            "tests/test_a.py": module,
+        },
+    )
+    assert "unmodelled_test_binding" in notes
+    assert targets == set()
+
+
+def test_t8_data_bound_to_a_test_name_is_still_no_test(repo):
+    """A literal, a container, arithmetic, what a builtin or a data module
+    of the standard library returns, or a name the rules do not match binds
+    no test: nothing is reported (flask's ``test_path = (Path(__file__) /
+    "..").resolve()``, httpx's ``test_cases = json.load(input)``)."""
+    targets, notes = _targets_and_notes(
+        repo,
+        {
+            **LIB,
+            "tests/test_a.py": (
+                "import json\nimport os\nfrom pathlib import Path\n\n"
+                "test_data = [1, 2]\nTEST_DIR = 'x'\nglobals()['helper'] = len\n"
+                "setattr(object, 'attr', len)\n"
+                "test_path = (Path(__file__) / '..').resolve()\n"
+                "test_dir = os.path.dirname(__file__)\ntest_cases = json.load(open('x'))\n"
+                "test_content = ''.join(sorted('ab')) + '\\n'\ntest_n, test_m = divmod(7, 2)\n"
+                "\n\nclass Index:\n    pass\n\n\ntest_index = Index()\n\ndef test_a():\n    pass\n"
+            ),
+        },
+    )
+    assert targets == {"tests/test_a.py::test_a"}
+    assert "unmodelled_test_binding" not in notes
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        # An ``__init__`` inherited from a base here or in another module.
+        "class Base:\n    def __init__(self, x=1):\n        self.x = x\n\n"
+        "class TestA(Base):\n    def test_x(self):\n        pass\n",
+        "from tests.base import Base\n\nclass TestA(Base):\n    def test_x(self):\n        pass\n",
+        # A ``__new__``, its own or inherited.
+        "class TestA:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
+        "    def test_x(self):\n        pass\n",
+        "class Base:\n    def __new__(cls, *a):\n        return super().__new__(cls)\n\n"
+        "class TestA(Base):\n    def test_x(self):\n        pass\n",
+        # A generated ``__init__``.
+        "from dataclasses import dataclass\n\n@dataclass\nclass TestA:\n    x: int = 1\n\n"
+        "    def test_x(self):\n        pass\n",
+        "import dataclasses\n\n@dataclasses.dataclass(frozen=True)\nclass TestA:\n"
+        "    def test_x(self):\n        pass\n",
+        "import attr\n\n@attr.s\nclass TestA:\n    def test_x(self):\n        pass\n",
+    ],
+)
+def test_t17_classes_pytest_refuses_to_collect_are_not_targets(repo, module):
+    """pytest skips a test class with a constructor (``hasinit``,
+    ``hasnew``), wherever it comes from; a target for it is a selected test
+    pytest never collects, which ``run`` reports as an error (audit round 6,
+    T17). Before: only the class's own ``__init__`` counted."""
+    targets, notes = _targets_and_notes(
+        repo,
+        {
+            **LIB,
+            "tests/base.py": "class Base:\n    def __init__(self, x=1):\n        self.x = x\n",
+            "tests/test_a.py": module + "\n\ndef test_plain():\n    pass\n",
+        },
+    )
+    assert targets == {"tests/test_a.py::test_plain"}
+    assert not notes & {"uncollected_test_class", "unmodelled_test_binding"}
+
+
+def test_t17_classes_without_a_constructor_are_still_collected(repo):
+    """``@dataclass(init=False)``, a base discovery cannot resolve, and a
+    TestCase with an ``__init__`` keep their targets."""
+    targets, _ = _targets_and_notes(
+        repo,
+        {
+            **LIB,
+            "tests/test_a.py": (
+                "import unittest\nfrom dataclasses import dataclass\nfrom somewhere import Base\n\n"
+                "@dataclass(init=False)\nclass TestA:\n    def test_x(self):\n        pass\n\n"
+                "class TestB(Base):\n    def test_y(self):\n        pass\n\n"
+                "class TestC(unittest.TestCase):\n    def __init__(self, *a):\n"
+                "        super().__init__(*a)\n\n    def test_z(self):\n        pass\n"
+            ),
+        },
+    )
+    assert targets == {
+        "tests/test_a.py::TestA::test_x",
+        "tests/test_a.py::TestB::test_y",
+        "tests/test_a.py::TestC::test_z",
+    }
+
+
 # --------------------------------------------------------------------------- doctests
 
 
@@ -2782,6 +2910,113 @@ def test_dsc8_a_doctest_glob_with_a_directory_matches_the_path(repo):
     )
     plan = _plan_with_options(repo, rev, rev, runner_args=("--doctest-glob=docs/*.rst",))
     assert _targets(plan) == {"tests/test_a.py::test_a", "docs/guide.rst::guide.rst"}
+
+
+DOCTEST_INI = {"pytest.ini": "[pytest]\naddopts = --doctest-modules\n"}
+EXAMPLE = "'''\n>>> from lib.core import value\n>>> value()\n1\n'''"
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        # Set from a name bound elsewhere, a decorator that writes it, a
+        # value appended to, or a class body's f-string.
+        "from lib.docs import DOC\n\n\ndef f():\n    pass\n\n\nf.__doc__ = DOC\n",
+        "from lib.docs import doc\n\n\n@doc('x')\ndef f():\n    pass\n",
+        "def f():\n    pass\n\n\nf.__doc__ = (f.__doc__ or '') + " + EXAMPLE + "\n",
+        "N = 1\n\n\nclass C:\n    __doc__ = f'''\n    >>> {N}\n    1\n    '''\n",
+        # Set on an object discovery cannot name.
+        "def f():\n    pass\n\n\nfor g in (f,):\n    g.__doc__ = " + EXAMPLE + "\n",
+    ],
+)
+def test_t8_docstrings_set_at_import_are_reported(repo, module):
+    """pytest collects the doctests of docstrings computed at import
+    (pandas' ``@doc``, ``f.__doc__ = ...``); discovery cannot read them,
+    so it reports them (audit round 6, T8). Before: dropped silently."""
+    targets, notes = _targets_and_notes(
+        repo,
+        {
+            **LIB,
+            **DOCTEST_INI,
+            "lib/docs.py": (
+                f"DOC = {EXAMPLE}\n\n\ndef doc(text):\n    def deco(fn):\n"
+                "        fn.__doc__ = text\n        return fn\n    return deco\n"
+            ),
+            "lib/m.py": module,
+        },
+    )
+    assert "unmodelled_test_binding" in notes
+    assert not {t for t in targets if t.startswith("lib/m.py")}
+
+
+def test_t8_docstrings_discovery_can_work_out_are_doctests(repo):
+    """A literal, a module-level string expression, another function's
+    docstring: read as the docstring they set. A docstring with examples a
+    decorator rewrites is always run."""
+    base = repo.commit(
+        {
+            **LIB,
+            **DOCTEST_INI,
+            "lib/docs.py": (
+                "def doc(text):\n    def deco(fn):\n        fn.__doc__ = fn.__doc__ + text\n"
+                "        return fn\n    return deco\n"
+            ),
+            "lib/m.py": (
+                "from lib.docs import doc\n\nTEMPLATE = " + EXAMPLE + "\n\n\n"
+                "def f():\n    pass\n\n\ndef g():\n    pass\n\n\ndef h():\n    pass\n\n\n"
+                "class C:\n    def a(self):\n        " + EXAMPLE + "\n\n"
+                "    def b(self):\n        pass\n\n    b.__doc__ = a.__doc__\n\n\n"
+                "@doc('more')\ndef k():\n    " + EXAMPLE + "\n\n\n"
+                "f.__doc__ = TEMPLATE.replace('1', '1')\n"
+                "g.__doc__ = " + EXAMPLE + "\n"
+                "h.__doc__ = 'no examples'\n"
+            ),
+        }
+    )
+    found = _discovered(repo, base)
+    targets = {t.runner_id for t in found.targets}
+    assert {
+        "lib/m.py::lib.m.f",
+        "lib/m.py::lib.m.g",
+        "lib/m.py::lib.m.C.a",
+        "lib/m.py::lib.m.C.b",
+        "lib/m.py::lib.m.k",
+    } <= targets
+    assert "lib/m.py::lib.m.h" not in targets
+    assert "unmodelled_test_binding" not in _kinds(found)
+    assert "doctest:computed" in _deps(found, "lib/m.py::lib.m.k")
+    head = repo.commit({"lib/core.py": "def value():\n    return 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert {"lib/m.py::lib.m.f", "lib/m.py::lib.m.k"} <= selected(plan)
+
+
+@pytest.mark.parametrize(
+    "store",
+    [
+        "doctest_namespace['core'] = core",
+        "doctest_namespace['core'] = lib.core",
+        "doctest_namespace.setdefault('core', core)",
+    ],
+)
+def test_t8_a_module_stored_into_doctest_namespace_is_a_dependency(repo, store):
+    """The examples call ``core.value()`` through the name an autouse
+    fixture stores; a change to it selects the doctest, as for
+    ``doctest_namespace.update(core=core)`` (audit round 6, T8). Before: a
+    subscript store handed nothing on and was no dependency."""
+    conftest = (
+        "import pytest\n\nimport lib.core\nfrom lib import core\n\n\n"
+        "@pytest.fixture(autouse=True)\ndef add_ns(doctest_namespace):\n    " + store + "\n"
+    )
+    chosen = _change_selects(
+        repo,
+        {
+            **DOCTEST_INI,
+            "conftest.py": conftest,
+            "lib/api.py": "def get():\n    '''\n    >>> core.value()\n    1\n    '''\n",
+        },
+        {"lib/core.py": "def value():\n    return 2\n"},
+    )
+    assert "lib/api.py::lib.api.get" in chosen
 
 
 # -------------------------------------------------------------------- fixtures and setup functions
@@ -3106,6 +3341,159 @@ def test_d19_unittest_and_class_level_lifecycle_names(repo, kind, setup):
     assert chosen == {"tests/test_a.py::TestA::test_a"}
 
 
+# Fixtures a test requests in ways its own syntax does not say (audit round
+# 6, T8). ``val`` reads ``lib.core.value``: a change to it must select the
+# test.
+VAL_CONFTEST = (
+    "import pytest\n\nfrom lib import core\n\n\n@pytest.fixture\ndef val():\n"
+    "    return core.value()\n"
+)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # An alias of getfixturevalue, or one fetched by getattr.
+        {
+            "tests/test_a.py": "def test_a(request):\n    get = request.getfixturevalue\n"
+            "    get('val')\n"
+        },
+        {
+            "tests/test_a.py": "def test_a(request):\n"
+            "    getattr(request, 'getfixturevalue')('val')\n"
+        },
+        # ``request`` handed to a helper: in the conftest, in the module, to
+        # a fixture's helper, through a keyword, a method or ``super()``.
+        {
+            "tests/conftest.py": VAL_CONFTEST
+            + "\n\ndef fixture_value(request, name):\n    return request.getfixturevalue(name)\n",
+            "tests/test_a.py": (
+                "from tests.conftest import fixture_value\n\n\ndef test_a(request):\n"
+                "    fixture_value(request, 'val')\n"
+            ),
+        },
+        {
+            "tests/test_a.py": (
+                "def _resolve(req):\n    return req.getfixturevalue('val')\n\n\n"
+                "def test_a(request):\n    _resolve(req=request)\n"
+            )
+        },
+        {
+            "tests/conftest.py": VAL_CONFTEST
+            + "\n\ndef _resolve(req):\n    return req.getfixturevalue('val')\n\n\n"
+            "@pytest.fixture\ndef wrapped(request):\n    return _resolve(request)\n",
+            "tests/test_a.py": "def test_a(wrapped):\n    pass\n",
+        },
+        {
+            "tests/test_a.py": (
+                "class TestA:\n    def _use(self, request):\n"
+                "        request.getfixturevalue('val')\n\n"
+                "    def test_a(self, request):\n        self._use(request)\n"
+            )
+        },
+        {
+            "tests/base.py": (
+                "class Base:\n    def test_a(self, request):\n"
+                "        request.getfixturevalue('val')\n"
+            ),
+            "tests/test_a.py": (
+                "from tests.base import Base\n\n\nclass TestA(Base):\n"
+                "    def test_a(self, request):\n        super().test_a(request)\n"
+            ),
+        },
+        # Handed to what discovery cannot read: any fixture it can see.
+        {
+            "tests/test_a.py": (
+                "from outside import resolve\n\n\ndef test_a(request):\n    resolve(request)\n"
+            )
+        },
+        {"tests/test_a.py": "def test_a(request):\n    holder = [request]\n    holder[0]\n"},
+        # pytest-lazy-fixtures and pytest-lazy-fixture in parametrize values.
+        {
+            "tests/test_a.py": (
+                "import pytest\nfrom pytest_lazy_fixtures import lf\n\n\n"
+                "@pytest.mark.parametrize('x', [lf('val')])\ndef test_a(x):\n    pass\n"
+            )
+        },
+        {
+            "tests/test_a.py": (
+                "import pytest\nfrom pytest_lazyfixture import lazy_fixture\n\n"
+                "CASES = [lazy_fixture('val')]\n\n\n"
+                "@pytest.mark.parametrize('x', CASES)\ndef test_a(x):\n    pass\n"
+            )
+        },
+        {
+            "tests/conftest.py": VAL_CONFTEST
+            + "\n\n@pytest.fixture(params=[pytest.lazy_fixture('val')])\n"
+            "def through(request):\n    return request.param\n",
+            "tests/test_a.py": "def test_a(through):\n    pass\n",
+        },
+        # Added to every item's fixtures by a hook.
+        {
+            "tests/conftest.py": VAL_CONFTEST
+            + "\n\ndef pytest_collection_modifyitems(items):\n    for item in items:\n"
+            "        item.fixturenames.append('val')\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+        },
+    ],
+)
+def test_t8_fixtures_requested_outside_the_tests_own_syntax_are_dependencies(repo, files):
+    chosen = _change_selects(
+        repo,
+        {"tests/conftest.py": VAL_CONFTEST, **files},
+        {"lib/core.py": "def value():\n    return 2\n"},
+    )
+    assert chosen & {"tests/test_a.py::test_a", "tests/test_a.py::TestA::test_a"}
+
+
+def test_t8_a_helper_that_only_marks_through_request_requests_nothing(repo):
+    """``request`` handed to a helper whose code discovery reads (pandas'
+    ``xfail_datetimes_with_pyxlsb(engine, request)``) requests what that
+    code requests, here nothing; one handed to a helper it cannot read may
+    request any fixture in scope."""
+    rev = repo.commit(
+        {
+            **LIB,
+            "tests/conftest.py": VAL_CONFTEST,
+            "tests/helpers.py": (
+                "import pytest\n\n\ndef xfail_if(engine, request):\n    if engine:\n"
+                "        request.applymarker(pytest.mark.xfail)\n"
+            ),
+            "tests/test_a.py": (
+                "from tests.helpers import xfail_if\nfrom outside import other\n\n\n"
+                "def test_known(request):\n    xfail_if(1, request)\n\n\n"
+                "def test_unknown(request):\n    other(request)\n"
+            ),
+        }
+    )
+    result = _discovered(repo, rev)
+    assert "tests.conftest.val" not in _deps(result, "tests/test_a.py::test_known")
+    assert "tests.conftest.val" in _deps(result, "tests/test_a.py::test_unknown")
+
+
+@pytest.mark.parametrize(
+    "conftest",
+    [
+        "from pytest import fixture as fx\nfrom lib import core\n\n\n"
+        "@fx(autouse=True)\ndef _chk():\n    core.value()\n",
+        "import pytest\nfrom lib import core\n\nfx = pytest.fixture\n\n\n"
+        "@fx(autouse=True)\ndef _chk():\n    core.value()\n",
+        "from pytest import fixture as fx\nfrom lib import core\n\n\ndef _chk():\n"
+        "    core.value()\n\n\nchk = fx(autouse=True)(_chk)\n",
+    ],
+)
+def test_t8_an_autouse_fixture_under_an_aliased_decorator(repo, conftest):
+    """``from pytest import fixture as fx``: the alias is resolved through
+    the module's imports, not matched by name. Before: ``@fx`` was no
+    fixture, so its autouse reached no test."""
+    chosen = _change_selects(
+        repo,
+        {"tests/conftest.py": conftest, "tests/test_a.py": T.format("a")},
+        {"lib/core.py": "def value():\n    return 2\n"},
+    )
+    assert "tests/test_a.py::test_a" in chosen
+
+
 # ---------------------------------------------------------------------- usefixtures and pytestmark
 
 
@@ -3175,6 +3563,80 @@ def test_q5_a_class_pytestmark_built_with_augassign(repo):
     )
     head = repo.commit({"tests/conftest.py": CONF.format("x = 1")})
     assert selected(_plan_with_runners(repo, base, head)) == {"tests/test_a.py::TestA::test_a"}
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # Arguments that are not literals.
+        {
+            "tests/test_a.py": "import pytest\nNAME = 'val'\n\n\n@pytest.mark.usefixtures(NAME)\n"
+            "def test_a():\n    pass\n"
+        },
+        {
+            "tests/test_a.py": "import pytest\nNAMES = ['val']\n\n\n"
+            "@pytest.mark.usefixtures(*NAMES)\n"
+            "def test_a():\n    pass\n"
+        },
+        # Through an alias of the mark.
+        {
+            "tests/test_a.py": "from pytest import mark\nuse = mark.usefixtures\n\n\n@use('val')\n"
+            "def test_a():\n    pass\n"
+        },
+        # Applied by a function, a mark factory, or a list of marks a call
+        # returns.
+        {
+            "tests/helpers.py": "import pytest\n\n\ndef needs_val(f):\n"
+            "    return pytest.mark.usefixtures('val')(f)\n",
+            "tests/test_a.py": "from tests.helpers import needs_val\n\n\n@needs_val\n"
+            "def test_a():\n    pass\n",
+        },
+        {
+            "tests/helpers.py": "import pytest\n\n\ndef uses(name):\n"
+            "    return pytest.mark.usefixtures(name)\n",
+            "tests/test_a.py": "from tests import helpers\n\n\n@helpers.uses('val')\n"
+            "def test_a():\n    pass\n",
+        },
+        {
+            "tests/helpers.py": "import pytest\n\n\ndef marks():\n"
+            "    return [pytest.mark.usefixtures('val')]\n",
+            "tests/test_a.py": "from tests.helpers import marks\n\npytestmark = marks()\n\n\n"
+            "class TestA:\n    def test_a(self):\n        pass\n",
+        },
+        # Added to the ini option by a hook.
+        {
+            "tests/conftest.py": VAL_CONFTEST + "\n\ndef pytest_configure(config):\n"
+            "    config.addinivalue_line('usefixtures', 'val')\n",
+            "tests/test_a.py": T.format("a"),
+        },
+    ],
+)
+def test_t8_usefixtures_discovery_cannot_read_is_an_unknown_fixture(repo, files):
+    """A ``usefixtures`` whose names discovery cannot read may name any
+    fixture the test can see (audit round 6, T8). Before: such a mark
+    requested nothing."""
+    chosen = _change_selects(
+        repo,
+        {"tests/conftest.py": VAL_CONFTEST, **files},
+        {"lib/core.py": "def value():\n    return 2\n"},
+    )
+    assert any(t.endswith("::test_a") for t in chosen)
+
+
+def test_t8_a_decorator_that_applies_no_mark_requests_nothing(repo):
+    """A decorator in the source roots whose code never mentions
+    ``usefixtures`` (a skip helper) adds no fixture."""
+    rev = repo.commit(
+        {
+            **LIB,
+            "tests/conftest.py": VAL_CONFTEST,
+            "tests/helpers.py": "import pytest\n\n\ndef skip_if_no(name):\n"
+            "    return pytest.mark.skipif(not name, reason=name)\n",
+            "tests/test_a.py": "from tests.helpers import skip_if_no\n\n\n@skip_if_no('x')\n"
+            "def test_a():\n    pass\n",
+        }
+    )
+    assert "tests.conftest.val" not in _deps(_discovered(repo, rev), "tests/test_a.py::test_a")
 
 
 # ----------------------------------------------------------------- parametrized names and indirect
