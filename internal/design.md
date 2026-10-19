@@ -1488,9 +1488,23 @@ collect outside the source roots is reported (`test_file_outside_roots`).
 Tests bound by assignment (`test_alias = test_orig`, a class attribute
 `test_x = _check`, under `if`/`try` too) to a function or class defined
 there are targets entered at that definition; bound to anything else
-visible as a name or attribute (`TestMachine = Machine.TestCase`) they are
-reported (`unmodelled_test_binding`); data (`test_data = [...]`, a call's
-result) is not a test. `f.__test__ = True` (under `if` too) collects `f`
+visible as a name or attribute (`TestMachine = Machine.TestCase`) or to a
+value that may hold code (a call's result: `test_one = make(1)`,
+`functools.partial(_check, 1)`, `TestGen = _make()`) they are reported
+(`unmodelled_test_binding`), and so is a lambda. Evident data is not a
+test and no note (`_evidently_data`): literals, containers and
+comprehensions, arithmetic, what a builtin of `_DATA_BUILTINS` or a
+standard-library data module (`os`, `pathlib`, `json`, `re`, ...:
+`_DATA_MODULES`) returns, an instance of a plain class the module defines
+(pip's `TestPyPI = PackageIndex(...)`), and items and method results of a
+scalar (flask's `test_path = (Path(__file__) / "..").resolve()`). An item
+of a container (`[f][0]`) and an object's attribute (`Path(".").resolve`,
+a bound method pytest collects through `__func__`) are not. Tests bound
+dynamically are reported the same way (`_dynamic_bindings`): stores into
+`globals()`/`locals()`/`vars()` (subscript, `.update`, `.setdefault`),
+`setattr(TestA, "test_x", f)` and `TestA.test_x = f`, unpacking a value
+that may hold code (`test_a, test_b = make()`), pytest-bdd's
+`scenarios(...)`. `f.__test__ = True` (under `if` too) collects `f`
 whatever its name; a
 unittest TestCase without `test*` methods runs `runTest`; an imported
 TestCase is collected whatever name it is bound to. A base named
@@ -1505,8 +1519,12 @@ without `/` matches the basename, one with `/` the path, as pytest's
 `fnmatch_ex` does -- pytest matches absolute paths, so such a pattern is
 effectively prefixed with `*/` and scrapy's `test_*/__init__.py` collects
 `tests/test_settings/__init__.py`; restricted to `testpaths` if set); module-level functions matching `python_functions`;
-methods of classes matching `python_classes` that have no `__init__`,
-including methods inherited from base classes (own definitions win): a
+methods of classes matching `python_classes` that have no constructor
+(pytest's `hasinit`/`hasnew`: an own or inherited `__init__` or `__new__`,
+inherited along the resolved bases, or one `@dataclass`, `attr.s`,
+`attrs.define` and the like generate unless `init=False`; a TestCase is
+collected anyway, and a class with a constructor is not reported as
+uncollected either), including methods inherited from base classes (own definitions win): a
 base defined in the same module, or imported from a module in the source
 roots (networkx's `TestDiGraph(BaseGraphTester)`) or named through one
 (`base.NDArrayBacked2DTests`), whose own bases then resolve in the module
@@ -1648,7 +1666,18 @@ requests. A mark may be stored in a variable and applied by name
 `pytestmark` entry that is a bare name or `module.name` is resolved to the
 mark expressions bound to it at module level, in the module that defines
 the decorated function or class, through aliases and `from` imports (only
-names used this way are followed). `pytestmark` (module or class) and a
+names used this way are followed); a call of such a name (a mark factory
+returning a mark expression) applies the stored marks with the call's
+arguments. A `usefixtures` whose arguments are not literal strings (or
+lists of them), an alias of the mark (`use = mark.usefixtures`), and a
+decorator, factory or `pytestmark = marks()` that resolves to code in the
+source roots mentioning `usefixtures` (`_Scopes.applies_marks`) request
+every visible fixture (`*`); one whose code never mentions it (a skip
+helper) requests nothing. Hooks that add to every item's fixtures,
+`<item>.fixturenames.append/extend/insert/+=` and
+`config.addinivalue_line("usefixtures", ...)` in a loaded conftest or
+plugin, count like the ini option (`ModuleFacts.session_requests`; a
+non-literal name is `*`). `pytestmark` (module or class) and a
 variable storing marks are read however the list is built: every
 assignment, `+`, `+=`, `.append`, `.extend`; a module's `pytestmark`
 imported by name is the imported module's. A mark built by a function call
@@ -1823,7 +1852,23 @@ Further rules (pre-release audit, round 2):
 * Doctests get pytest's fixture closure for a `DoctestItem`: the module's
   and its conftests' autouse fixtures, plugin fixtures, the ini
   `usefixtures`, `doctest_namespace` (an autouse fixture usually fills it,
-  as pandas's root conftest does), and the session-wide hooks.
+  as pandas's root conftest does), and the session-wide hooks. A module
+  such a fixture stores into `doctest_namespace` (`ns["np"] = numpy`,
+  `.update`, `.setdefault`) is a `dynamic:<module>` dependency of every
+  doctest (`_namespace_modules`): the examples call into it by the stored
+  name, which the indexer's `_into_doctest_namespace` does not hand on.
+* A docstring set at import under `--doctest-modules` is read when its text
+  can be worked out (`_docstrings`, `_static_text`): a literal, a
+  module-level string built with `+`, `%`, f-strings and string methods
+  (`format`, `replace`, `strip`, ...), or a same-scope `X.__doc__` copy
+  (networkx's `categorical_doc.replace("node", "edge")`, `b.__doc__ =
+  a.__doc__`). A docstring with examples that a decorator in the source
+  roots rewrites (`_Scopes.writes_docstring`) is a target with the
+  lifecycle dependency `doctest:computed`, which the planner cannot find,
+  so it is always selected. A docstring discovery cannot work out (an
+  imported value, a decorator that writes the whole docstring, a store on
+  an object it cannot name) is reported (`unmodelled_test_binding`): pytest
+  collects its doctests, and they are not targets.
 * A hook or xunit function bound by import or assignment (`from x import
   pytest_generate_tests`, `setup_module = _setup`, a star import) is a
   dependency like one defined there, followed to its definition.
@@ -1836,7 +1881,26 @@ Further rules (pre-release audit, round 2):
   for it); nested test classes inherited from a base are collected under
   the subclass.
 * `request.getfixturevalue` with a non-literal argument requests every
-  fixture visible from the test (`*`).
+  fixture visible from the test (`*`). `request` is followed where it goes
+  (`_RequestFlow`, up to four calls deep): an alias (`req = request`,
+  `get = request.getfixturevalue`), `getattr(request, "getfixturevalue")`,
+  and a helper it is handed to (positionally, by keyword or with `*args`)
+  that resolves to a function in the source roots: nested, module-level,
+  imported, a `self`/`cls` method of the class or a `super()` method of its
+  bases. The helper's literal `getfixturevalue` names are requests; a
+  helper that only reads `request` (`request.applymarker(...)`, pandas'
+  `xfail_datetimes_with_pyxlsb(engine, request)`) requests nothing.
+  `request` handed to code discovery cannot read, stored, returned or put
+  in a container requests `*`. The same applies to fixtures.
+* pytest-lazy-fixtures' `lf("name")` and pytest-lazy-fixture's
+  `lazy_fixture("name")` (`pytest.lazy_fixture`) anywhere in a test's
+  module (and the module defining an imported or inherited test), or in a
+  fixture's decorator, request that fixture
+  (`lf("a.b")` requests `a`); a non-literal name requests `*`.
+* A fixture decorator under another name (`from pytest import fixture as
+  fx`, `fx = pytest.fixture`) makes a fixture: the alias is resolved
+  through the module's own imports and assignments (`fixture_aliases`), not
+  matched by name; an alias imported from another module is not followed.
 * A test (or a fixture it uses) requesting `pytester` or `testdir` runs a
   pytest session of its own with the project's registered plugins loaded
   (`pytest11` entry points, `-p` in addopts, `PYTEST_PLUGINS`,

@@ -63,6 +63,43 @@ def _mark_functions(body: list[ast.stmt]) -> None:
                 stack.extend(getattr(node, name, ()) or ())
 
 
+# Set on the ``Name`` nodes of a module that name a fixture decorator under
+# a name of its own (``from pytest import fixture as fx``, ``fx =
+# pytest.fixture``), so that ``@fx`` is read as ``@pytest.fixture``.
+FIXTURE_ALIAS = "_diffcone_fixture_alias"
+
+
+def fixture_aliases(body: list[ast.stmt]) -> set[str]:
+    """Names a module binds to a fixture decorator (one whose name ends in
+    ``fixture``) under a name that does not end so: ``from pytest import
+    fixture as fx``, ``fx = pytest.fixture``. ``import pytest as pt`` needs
+    none, since ``pt.fixture`` still ends in ``fixture``."""
+    aliases: set[str] = set()
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, ast.ImportFrom):
+            for alias in stmt.names:
+                if alias.asname and alias.name.endswith("fixture"):
+                    aliases.add(alias.asname)
+        elif (
+            isinstance(stmt, ast.Assign)
+            and len(stmt.targets) == 1
+            and isinstance(stmt.targets[0], ast.Name)
+            and isinstance(stmt.value, (ast.Name, ast.Attribute))
+        ):
+            parts, _ = decorator_chain(stmt.value)
+            if parts and parts[-1].endswith("fixture"):
+                aliases.add(stmt.targets[0].id)
+    return {a for a in aliases if not a.endswith("fixture")}
+
+
+def names_fixture_alias(node: ast.expr) -> bool:
+    """Whether a decorator (``@fx``, ``@fx(autouse=True)``) names a fixture
+    decorator through one of its module's aliases (FIXTURE_ALIAS)."""
+    while isinstance(node, (ast.Call, ast.Attribute)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return isinstance(node, ast.Name) and getattr(node, FIXTURE_ALIAS, False)
+
+
 # How deep a syntax tree discovery walks once a walk has run out of stack
 # (``RecursionError``): discover() then runs the runner again with
 # CHECK_DEPTH set, and parse_modules leaves out every module nested deeper
@@ -113,6 +150,10 @@ def parse_modules(
             continue
         if b"getfixturevalue" not in snapshot.files[path]:
             _mark_functions(tree.body)
+        if b"fixture" in snapshot.files[path] and (aliases := fixture_aliases(tree.body)):
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Name) and node.id in aliases:
+                    setattr(node, FIXTURE_ALIAS, True)
         parsed.append(
             ParsedModule(
                 path, module, tree, children.get(module, frozenset()), snapshot.files[path]

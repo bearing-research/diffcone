@@ -39,9 +39,11 @@ Among those options:
 **Tests** found:
 
 - test functions and methods, following your naming settings;
-- test classes (without an `__init__`, unless they are
-  `unittest.TestCase` subclasses), including nested classes and nested
-  classes inherited from a base class;
+- test classes, including nested classes and nested classes inherited
+  from a base class. As in pytest, a class with a constructor is not
+  collected unless it is a `unittest.TestCase` subclass: its own or an
+  inherited `__init__` or `__new__`, or one a `@dataclass` or attrs
+  decorator generates;
 - `unittest.TestCase` subclasses, whatever their names;
 - tests inherited from base classes, including base classes in other
   modules;
@@ -58,9 +60,15 @@ Among those options:
 **What each test depends on**, besides its own code:
 
 - its fixtures, and the fixtures those use:
-    - A fixture is requested by parameter, by `usefixtures` (the mark or
-      the configuration option) or by `request.getfixturevalue` (every
-      fixture the test can see, when the name isn't written out).
+    - A fixture is requested by parameter, by `usefixtures` (the mark,
+      the configuration option, or a hook that adds to either:
+      `config.addinivalue_line("usefixtures", ...)`,
+      `item.fixturenames.append(...)`), by `request.getfixturevalue`
+      (also through an alias or `getattr`, and in a helper the test or
+      fixture hands `request` to), or by pytest-lazy-fixtures' `lf()` and
+      pytest-lazy-fixture's `lazy_fixture()` in parametrize values. When
+      the name isn't written out, or `request` goes to code diffcone
+      can't read, every fixture the test can see counts.
     - It is looked up the way pytest does: the class (including fixtures
       inherited from base classes in other modules), the module, each
       `conftest.py` outward, then plugins. Plugins are those listed in
@@ -88,7 +96,11 @@ Among those options:
 - marks such as `usefixtures` and `parametrize` on its class and the
   class's base classes, including marks stored in a variable and applied
   by name (`needs_db = pytest.mark.usefixtures("db")`, then `@needs_db`),
-  and `pytestmark` lists built with `+`, `+=`, `.append` or `.extend`;
+  and `pytestmark` lists built with `+`, `+=`, `.append` or `.extend`. A
+  `usefixtures` whose names aren't written out (`usefixtures(NAME)`), or
+  one applied by a decorator, mark factory or function whose code mentions
+  `usefixtures` (`@needs_db` defined as a function, `pytestmark =
+  marks()`), counts as every fixture the test can see;
 - autouse fixtures that apply to it, including ones whose `autouse=` is a
   variable and ones a `conftest.py`, test module or plugin imports;
 - xunit-style `setup_*` and `teardown_*` functions, and unittest's
@@ -132,8 +144,18 @@ code did not: for example, a test module adds a plugin to
 
 A doctest depends on everything its module can reach, and on the fixtures
 pytest gives it: autouse fixtures (such as one that fills
-`doctest_namespace`) and the `usefixtures` option. A doctest in a text
-file is always selected.
+`doctest_namespace`) and the `usefixtures` option. A module such a fixture
+stores into `doctest_namespace` (`doctest_namespace["np"] = numpy`, or
+with `.update` or `.setdefault`) counts too, with everything it imports. A
+doctest in a text file is always selected.
+
+A docstring set when the module is imported is read when diffcone can
+work out its text: a string, a module-level string built with `+`, `%`,
+f-strings or methods such as `.format` and `.replace`, or another
+function's docstring (`b.__doc__ = a.__doc__`). A docstring with examples
+that a decorator rewrites is always selected. One diffcone can't work out
+(`f.__doc__ = DOC` imported from elsewhere, a decorator that writes the
+whole docstring) is reported, since its doctests are not targets.
 
 A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
@@ -183,7 +205,9 @@ on every change, since diffcone can't tell what the fixture depends on.
 
 A fixture is a function under a decorator whose name ends in `fixture`:
 `pytest.fixture`, pytest-asyncio's `fixture`, pytest-twisted's
-`async_fixture` and `async_yield_fixture`, pytest-trio's `trio_fixture`.
+`async_fixture` and `async_yield_fixture`, pytest-trio's `trio_fixture`,
+also under another name the module gives it (`from pytest import fixture
+as fx`, `fx = pytest.fixture`).
 A plugin's fixture name is assumed only when nothing your tests can see
 defines it. If a test class, test module, conftest or plugin module defines
 that name under some other decorator, or binds it to something diffcone
@@ -262,7 +286,13 @@ Some things can't be known by reading the source:
   pytest's arguments come from: `addopts`, `PYTEST_ADDOPTS`, `--command`
   or after `--`;
 - a test bound to something discovery can't follow
-  (`TestMachine = Machine.TestCase`);
+  (`TestMachine = Machine.TestCase`, `test_one = make_test(1)`,
+  `test_a, test_b = make()`), or bound dynamically: stored into
+  `globals()`, `locals()` or `vars()`, set on a class (`setattr(TestA,
+  name, check)`, `TestA.test_x = check`), or made by pytest-bdd's
+  `scenarios(...)`;
+- a docstring set when its module is imported that discovery can't read,
+  under `--doctest-modules`;
 - a plugin your configuration turns on that collects files of its own
   (pytest-typing's `typing_checkers`, `--nbval`, `--markdown-docs`);
 - a test file that can't be parsed;
