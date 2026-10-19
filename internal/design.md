@@ -2251,7 +2251,19 @@ files, git-ignored `.py` files outside ignored directories (the working
 tree snapshot reads those), files flagged assume-unchanged or skip-worktree
 that differ on disk, and submodules whose checked-out commit or content
 differs from the gitlink all count; bytecode, diffcone's own directory and
-ASV's output directories do not. The message names the files. Differences
+ASV's output directories do not, nor do diffcone's own untracked outputs
+(the `run` action's `diffcone-results/` files, `execution.RESULT_FILES`,
+and the file this command's `-o` names). Nor does a git-ignored `.py` that
+neither snapshot holds, when neither is the working tree, that is no
+conftest, test file or build script, and that only binds constants
+(`execution._generated_module`: no call, definition, doctest or import
+but `__future__`/`typing`, no hook name): the `_version.py` of
+setuptools-scm and hatch-vcs. Such a file is no part of the change the
+plan claims, a run of either snapshot on this disk imports the same file,
+and a module that calls nothing adds no path from changed code to a test;
+one with a function or a call could (a test importing it would depend on
+what it calls through an edge no snapshot shows), so it is still refused,
+and a `WORKTREE` snapshot reads ignored files. The message names the files. Differences
 elsewhere (a manifest, a README outside the roots, an extra commit that
 touches neither) do not block it, and neither does a plan that selected
 nothing, since nothing would run; `--allow-mismatched-worktree` says to go
@@ -2282,7 +2294,12 @@ three after a plan exists, `collect` to record execution evidence.
   name, and against `name(param0, param1, ...)` for a parameterised one, so
   an anchored pattern selects none of those (58 of networkx's 59) and `run`
   would report success having run nothing. It exits with the runner's exit
-  code, 0 when nothing was selected.
+  code, 0 when nothing was selected. With pytest discovery incomplete (and
+  `--allow-incomplete-discovery`) pytest runs even when nothing was
+  selected (`execution.runs_unknown`), every target deselected: the plugin
+  keeps the tests that are no target, which would otherwise never run;
+  an evidence plan that selected nothing runs them in the same session
+  that checks the environment. `--dry-run` says so.
 * `validate` (pytest only) runs the full suite at base and head under the
   selection plugin, which writes one outcome line per report with the node
   id made relative to the repository (pytest's own is relative to its

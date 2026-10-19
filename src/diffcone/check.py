@@ -255,6 +255,24 @@ class CheckReport:
     def ok(self) -> bool:
         return not self.misses and not self.not_run
 
+    @property
+    def own_run_checked(self) -> bool:
+        """Whether diffcone's own run was given (``--run diffcone=...``):
+        without it the check says the plan selected every new failure, not
+        that the selected tests ran."""
+        return any(r.name == OWN_RUN for r in self.runs)
+
+    @property
+    def verdict(self) -> str:
+        if not self.ok:
+            return "MISS"
+        if self.own_run_checked:
+            return "OK: every new failure was selected and run"
+        return (
+            "OK: every new failure was selected; whether diffcone's run ran them was not "
+            f"checked (no --run {OWN_RUN}=JUNIT)"
+        )
+
 
 def _broken(cases: list[Case], targets: _Targets) -> dict[str, tuple[str, str, set[str]]]:
     """Test -> (outcome, kind, broken case keys) for every broken case, by
@@ -391,6 +409,7 @@ def to_dict(report: CheckReport) -> dict:
     return {
         "ok": report.ok,
         "not_run": report.not_run,
+        "own_run_checked": report.own_run_checked,
         "plan": {
             "status": report.plan_status,
             "discovery_incomplete": report.discovery_incomplete,
@@ -469,14 +488,19 @@ def to_text(report: CheckReport) -> str:
         lines.append(
             f"diffcone's run did not run {len(report.not_run)} new failure(s) (see NOT RUN above)"
         )
-    lines.append("OK: every new failure was selected and run" if report.ok else "MISS")
+    lines.append(report.verdict)
     return "\n".join(lines) + "\n"
 
 
 def to_markdown(report: CheckReport) -> str:
     new = [f for f in report.failures if not f.already]
     missed = len({f.test for f in report.misses} | set(report.not_run))
-    verdict = "no miss" if report.ok else f"**{missed} missed**"
+    if not report.ok:
+        verdict = f"**{missed} missed**"
+    elif report.own_run_checked:
+        verdict = "no miss"
+    else:
+        verdict = "no miss in the plan (diffcone's run not checked)"
     lines = [
         f"### diffcone check: {verdict}",
         "",
@@ -504,6 +528,12 @@ def to_markdown(report: CheckReport) -> str:
         )
     if report.mapping_doubtful:
         lines += ["", report.mapping_note + "."]
+    if not report.own_run_checked:
+        lines += [
+            "",
+            "Only the plan was checked: without the JUnit XML of diffcone's own run "
+            f"(`--run {OWN_RUN}=...`), whether the selected tests ran is not known.",
+        ]
     if report.misses:
         lines += ["", "Missed by the plan:", ""]
         lines += [f"- `{f.test}` ({f.outcome}, {f.kind})" for f in report.misses]

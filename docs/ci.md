@@ -91,6 +91,23 @@ incomplete (unless you set `allow-incomplete-discovery: true`). The plan and
 the run's JUnit XML are written to `diffcone-results/`; upload them with
 `if: always()` so they're kept when tests fail.
 
+The action plans the change the event brings, read from the event itself:
+
+- for a pull request, what it changes on top of its target branch: from
+  the merge commit's first parent when the merge commit is checked out
+  (the default), from the pull request's base commit when you check out
+  its head (`ref: ${{ github.event.pull_request.head.sha }}`, as
+  `pull_request_target` workflows do);
+- for a push, every commit it brings, from the commit the branch pointed
+  at before it;
+- for a merge queue (`merge_group`), every queued pull request, from the
+  queue's base commit.
+
+When the event names no base (a push that creates a branch, a manual or
+scheduled run) or the base can't be fetched (a force push dropped it),
+the action selects every test and says why in a warning. To plan against
+something else, set `base`.
+
 !!! important "Match the recording"
 
     `command` and `pytest-args` must be the same in both workflows, and the
@@ -135,7 +152,9 @@ of the full run that the plan didn't select, or that diffcone's own run
 didn't execute. It doesn't fail the workflow unless you set
 `fail-on-miss: true`, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
-the nightly run are reported as already failing, not as misses.
+the nightly run are reported as already failing, not as misses. Without
+`diffcone.xml` in the results (the run never started pytest), the check
+compares the plan only, and the summary and a warning say so.
 
 The check matches JUnit names to tests through pytest's rootdir and
 `--junit-prefix`, as the plan recorded them, and the action has no inputs
@@ -196,7 +215,8 @@ On a push, `record` with `check: true`:
    reported as flaky. Only a test can be run again: a file that failed to
    collect, or a failure that matches no target, is a miss straight away.
    Failures the recorded run already had are not misses. If
-   `diffcone check` itself fails (an input it can't read), the job fails
+   `diffcone check` itself fails (an input it can't read), or the plan of
+   the commit's change fails even without the recording, the job fails
    too;
 4. saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.
@@ -278,8 +298,10 @@ that workflow's runs; default all), `artifact-prefix` (default
 `diffcone-`), `report-label` and `miss-label` (set either to an empty
 string to skip that issue), and `comment` (`always`, the default, or
 `on-problem`: comment only when there is a miss, a failed check, a
-pull request whose selected tests pytest did not collect, or an incomplete
-report; the job summary always has the report). It reads what
+pull request whose selected tests pytest did not collect or that failed to
+run them after planning (`diffcone run` refused, or pytest was interrupted
+or could not start), or an incomplete report; the job summary always has
+the report). It reads what
 `run` and `record` upload from the same release on, so give all the
 actions the same tag.
 
@@ -320,7 +342,9 @@ Each recording is saved with `actions/cache` under its own key,
 newest one with their prefix (`diffcone-ubuntu` never restores a recording of
 `diffcone-ubuntu-py312`). If a recording's commit can no longer be fetched
 (after a force push), the run plans without it and says so. A shallow
-checkout is deepened until the base revision is there. GitHub lets pull
+checkout gets the base it plans against: a base relative to `HEAD`
+(`HEAD^1`, `HEAD~3`) by deepening the checkout until it is there, a
+commit, branch or tag name by fetching it. GitHub lets pull
 requests, including those from forks, read caches saved on the default branch but
 never write them, so a pull request can't change the recording. The
 `cache-mode` settings above give each job only the access it needs.
@@ -346,8 +370,9 @@ on, see [execution evidence](guides/evidence.md#run-with-a-recording)),
 `junit` (where to keep the recording run's JUnit XML; default
 `.diffcone/baseline.xml`), `check` (default `false`: check each push's
 change against its full run, as above) and `fail-on-test-failure` (default
-`false`). `run` also takes `base` (default `HEAD^1`, the
-target branch of the pull request's merge commit) and
+`false`). `run` also takes `base` (a commit, a branch or tag name, or
+`HEAD^1`; by default the event's own, see
+[run on pull requests](#run-on-pull-requests)) and
 `allow-incomplete-discovery` (default `false`; see
 [when the target list may be short](reference/discovery.md#when-the-target-list-may-be-short)).
 

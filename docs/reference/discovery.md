@@ -275,7 +275,11 @@ plan exits with code `3`: running only the selected tests could skip
 tests your runner would collect. You can:
 
 - widen your source roots so the missing code is analysed;
-- list the missing tests in a [manifest](manifest.md); or
+- list your tests in a [manifest](manifest.md) and plan from it alone,
+  without `--discover` (beside discovery, a manifest adds targets but
+  doesn't clear its notes);
+- run anyway with `diffcone run --allow-incomplete-discovery`: pytest then
+  also runs every test it collects that isn't a target; or
 - use [execution evidence](../guides/evidence.md): a recording captures
   what pytest really collected, which can settle a note.
 

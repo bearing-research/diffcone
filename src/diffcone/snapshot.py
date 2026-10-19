@@ -993,10 +993,12 @@ def _exclusions(raw: bytes) -> tuple[tuple[str, ...], list[str]]:
 
 def _exclude(repo: Path, snapshot: Snapshot) -> None:
     """Move the ``.py`` files the snapshot's ``[index] exclude`` matches from
-    ``files`` to ``other_files``. Their id is git's blob id of the content
-    read, the same whatever kind of snapshot read it, so a file compares
-    equal across a commit and the working tree unless a filter (line
-    endings) changes it, which can only widen a plan."""
+    ``files`` to ``other_files``. Their id is git's blob id, the same
+    whatever kind of snapshot read it: of the content read for a commit or
+    the index, and for the working tree the id ``git add`` would store
+    (_worktree_blob_ids: line-ending conversion and clean filters applied),
+    so a file checked out with ``core.autocrlf`` (CRLF on disk, LF in the
+    commit) compares equal to the commit's."""
     try:
         raw = read_root_file(repo, snapshot.revision, PROJECT_FILE)
     except (OSError, GitError):
@@ -1011,10 +1013,20 @@ def _exclude(repo: Path, snapshot: Snapshot) -> None:
     if not patterns:
         return
     snapshot.info = replace(snapshot.info, excluded=patterns)
-    for path in [p for p in snapshot.files if any(fnmatchcase(p, pat) for pat in patterns)]:
+    excluded = [p for p in snapshot.files if any(fnmatchcase(p, pat) for pat in patterns)]
+    on_disk: dict[str, str] = {}
+    if excluded and snapshot.revision == WORKTREE:
+        # Hashed as git would store them, not as read: the bytes on disk
+        # are the checkout's (CRLF under core.autocrlf), the commit's blob
+        # is what a clean filter made of them.
+        staged = _ls_files_staged_ids(repo, snapshot.source_roots)
+        on_disk = _worktree_blob_ids(repo, excluded, snapshot.source_roots, staged)
+    for path in excluded:
         content = snapshot.files.pop(path)
         header = b"blob %d\0" % len(content)
-        snapshot.other_files[path] = hashlib.sha1(header + content).hexdigest()  # noqa: S324
+        snapshot.other_files[path] = (
+            on_disk.get(path) or hashlib.sha1(header + content).hexdigest()  # noqa: S324
+        )
     snapshot.other_files = dict(sorted(snapshot.other_files.items()))
 
 

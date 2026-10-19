@@ -271,6 +271,37 @@ def test_f8_a_miss_is_counted_once_in_the_summary(tmp_path):
     assert "**1 missed**" in to_markdown(report)
 
 
+def test_t16_without_diffcones_run_the_verdict_says_only_the_plan_was_checked(tmp_path):
+    """The check action passes ``--run diffcone=...`` only when the run's
+    JUnit is there; without it the check compares the plan alone, yet said
+    every new failure was "selected and run"."""
+    from diffcone.check import check, read_junit, to_dict, to_markdown, to_text
+
+    plan = {
+        "status": "complete",
+        "selected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+        "unselected_targets": [],
+    }
+    (tmp_path / "full.xml").write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_a" name="test_x">'
+        '<failure message="boom"/></testcase></testsuite></testsuites>'
+    )
+    full = read_junit(tmp_path / "full.xml")
+    alone = check(plan, full)
+    assert alone.ok and not alone.own_run_checked
+    text = to_text(alone)
+    assert "selected and run" not in text
+    assert "whether diffcone's run ran them was not checked" in text
+    assert "### diffcone check: no miss in the plan (diffcone's run not checked)" in (
+        to_markdown(alone)
+    )
+    assert to_dict(alone)["own_run_checked"] is False
+    ran = check(plan, full, runs={"diffcone": full})
+    assert ran.ok and ran.own_run_checked
+    assert "OK: every new failure was selected and run" in to_text(ran)
+    assert "### diffcone check: no miss\n" in to_markdown(ran)
+
+
 # --------------------------------------------------------------------------- rootdir and prefix
 
 

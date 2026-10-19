@@ -712,3 +712,43 @@ def test_e29_each_snapshot_kind_reads_its_own_exclusions(repo):
     worktree = read_snapshot(repo.path, WORKTREE, ["."])
     assert path in worktree.files and worktree.info.excluded == ()
     assert read_snapshot(repo.path, "HEAD", ["."]).info.excluded == ("tests/data/**",)
+
+
+def test_t17_an_excluded_file_checked_out_with_crlf_is_unchanged(repo):
+    """With ``core.autocrlf=true`` (a Windows checkout) an excluded file has
+    CRLF line endings on disk and LF in the commit. Its id was hashed from
+    the bytes on disk, so every WORKTREE plan saw it changed and selected
+    everything; it is the id ``git add`` would store, as for any other
+    file. An edit to it is still a change."""
+    path = "tests/data/case.py"
+    base = repo.commit(
+        {
+            "diffcone.toml": EXCLUDE,
+            "pkg/__init__.py": "",
+            "pkg/ops.py": OPS,
+            "tests/test_ops.py": TEST_OPS,
+            path: "x = 1\ny = 2\n",
+            "benchmarks/asv.conf.json": '{"benchmark_dir": "benchmarks"}\n',
+            "benchmarks/benchmarks/__init__.py": "",
+            "benchmarks/benchmarks/bench_ops.py": (
+                "from pkg.ops import add\n\n\nclass Ops:\n    def time_add(self):\n"
+                "        add(1, 2)\n"
+            ),
+        }
+    )
+    # Checked out as Windows checks it out.
+    repo.git("config", "core.autocrlf", "true")
+    (repo.path / path).unlink()
+    repo.git("checkout", "--", path)
+    assert (repo.path / path).read_bytes() == b"x = 1\r\ny = 2\r\n"
+    assert repo.git("status", "--porcelain") == ""
+    blob = repo.git("rev-parse", f"HEAD:{path}")
+    assert read_snapshot(repo.path, WORKTREE, ["."]).other_files[path] == blob
+    plan = repo.plan(base, "WORKTREE", [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == set() and not plan.changes
+    # An edit on disk is a change, CRLF or not.
+    (repo.path / path).write_bytes(b"x = 1\r\ny = 3\r\n")
+    plan = repo.plan(base, "WORKTREE", [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul",
+                              "bench_ops.Ops.time_add"}  # fmt: skip
+    assert rules(plan, "bench_ops.Ops.time_add") == {"unanalysed_file_changed"}

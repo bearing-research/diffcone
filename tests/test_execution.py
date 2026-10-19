@@ -2054,3 +2054,222 @@ def test_outcomes_are_written_as_reports_come_in_through_one_handle(tmp_path, mo
         "t.py::a\tPASSED",
         "t.py::b\tPASSED",
     ]
+
+
+# --------------------------------------------------------------------------- run: unknown tests
+
+# A src layout planned with the root ``src`` alone: the tests under tests/
+# lie outside the roots, so discovery says pytest collects tests that are no
+# target (``test_file_outside_roots``); src/pkg/test_inner.py is a target.
+OUTSIDE = {
+    ".gitignore": ".diffcone/\n",
+    "pytest.ini": "[pytest]\npythonpath = src\n",
+    "src/pkg/__init__.py": "",
+    "src/pkg/ops.py": ADD_OPS,
+    "src/pkg/test_inner.py": "def test_inner():\n    assert True\n",
+    "tests/test_ops.py": TEST_ADD_OPS,
+}
+
+
+def test_t5_an_empty_selection_still_runs_the_tests_discovery_does_not_know(repo, capfd):
+    """With --allow-incomplete-discovery the selection plugin keeps the tests
+    that are no target, but an empty selection never started pytest: a
+    change to a test outside the roots selected nothing and ran nothing,
+    exit 0, while that test fails."""
+    base = repo.commit(OUTSIDE)
+    head = repo.commit({"tests/test_ops.py": TEST_ADD_OPS.replace("== 2", "== 3")})
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", head,
+            "--discover", "pytest", "--source-root", "src",
+            "--command", PYTEST_NO_CACHE]  # fmt: skip
+    assert main(args) == 3  # discovery may be incomplete: refused
+    capfd.readouterr()
+    assert main([*args, "--allow-incomplete-discovery", "--dry-run"]) == 0
+    out = capfd.readouterr()
+    assert "0 of 1 pytest target(s) selected" in out.err
+    assert "starts pytest with every target deselected" in out.err
+    assert "nothing selected; not running" not in out.err and out.out == ""
+    code = main([*args, "--allow-incomplete-discovery", "--", "-q"])
+    out = capfd.readouterr()
+    assert code == 1, out.err  # the changed test ran, and fails
+    assert "1 failed, 1 deselected" in out.out
+    assert "tests/test_ops.py::test_add" in out.err  # named as a test the plan does not know
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_t5_an_empty_evidence_selection_still_runs_the_tests_discovery_does_not_know(repo, capfd):
+    """A conftest collecting YAML files: the recording collected a test that
+    is no target, so discovery stays incomplete. A new failing YAML test
+    selects nothing from the evidence; with --allow-incomplete-discovery
+    pytest ran only to check the environment, and the new test never ran."""
+    repo.commit(
+        {
+            ".gitignore": ".diffcone/\n",
+            "pytest.ini": "[pytest]\n",
+            "pkg/__init__.py": "",
+            "pkg/ops.py": ADD_OPS,
+            "tests/conftest.py": YAML_CONFTEST,
+            "tests/test_ops.py": TEST_ADD_OPS,
+            "tests/test_a.yaml": "ok\n",
+        }
+    )
+    repo.collect(command=PYTEST_NO_CACHE)
+    repo.commit({"tests/test_b.yaml": "fail\n"})
+    args = ["run", "--repo", str(repo.path), "--base", "HEAD^", "--head", "HEAD",
+            "--discover", "pytest", "--command", PYTEST_NO_CACHE, "--evidence", "auto",
+            "--allow-incomplete-discovery"]  # fmt: skip
+    capfd.readouterr()
+    code = main([*args, "--", "-q"])
+    out = capfd.readouterr()
+    assert "0 of 1 pytest target(s) selected" in out.err, out.err
+    assert code == 1, out.err  # test_b.yaml ran, and fails
+    assert "tests/test_b.yaml::check" in out.out and "1 deselected" in out.out
+
+
+YAML_CONFTEST = """\
+import pytest
+
+
+def pytest_collect_file(parent, file_path):
+    if file_path.suffix == ".yaml" and file_path.name.startswith("test"):
+        return YamlFile.from_parent(parent, path=file_path)
+
+
+class YamlFile(pytest.File):
+    def collect(self):
+        yield YamlItem.from_parent(self, name="check", text=self.path.read_text())
+
+
+class YamlItem(pytest.Item):
+    def __init__(self, *, text, **kw):
+        super().__init__(**kw)
+        self.text = text
+
+    def runtest(self):
+        assert "fail" not in self.text
+"""
+
+
+# --------------------------------------------------------------------------- run: its own files
+
+
+def test_t15_run_ignores_its_own_results_in_a_flat_layout(repo):
+    """The run action writes diffcone-results/plan.json (and copies the
+    baseline) before ``diffcone run``; with the root ``.`` the untracked
+    files made the worktree check refuse (exit 2). They are diffcone's own,
+    and so is the file ``-o`` names. Anything else untracked still counts."""
+    base = repo.commit(FILES)
+    head = repo.commit({"pkg/ops.py": ADD_OPS_BROKEN})
+    _write(repo, "diffcone-results/plan.json", "{}\n")
+    _write(repo, "diffcone-results/baseline.xml", "<testsuites/>\n")
+    _write(repo, "ran.json", "{}\n")
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert worktree_mismatch(repo.path, plan, ["ran.json"]) is None
+    args = ["run", "--base", base, "--head", head, "--discover", "pytest",
+            "--command", PYTEST_NO_CACHE]  # fmt: skip
+    proc = _cli(repo, *args, "-o", "ran.json", "--", "-q")
+    assert proc.returncode == 1, proc.stderr  # ran: test_add fails at head
+    assert "would select on" not in proc.stderr
+    # Not a name diffcone writes: a difference.
+    _write(repo, "diffcone-results/notes.json", "{}\n")
+    proc = _cli(repo, *args, "--dry-run")
+    assert proc.returncode == 2 and "diffcone-results/notes.json" in proc.stderr
+    # Nor is the -o file of an earlier command exempt in a later one.
+    (repo.path / "diffcone-results/notes.json").unlink()
+    proc = _cli(repo, *args, "--dry-run")
+    assert proc.returncode == 2 and "ran.json" in proc.stderr
+
+
+GENERATED_VERSION = """\
+# file generated by vcs-versioning
+# don't change, don't track in version control
+from __future__ import annotations
+
+__all__ = [
+    "__version__",
+    "__version_tuple__",
+    "version",
+    "version_tuple",
+    "__commit_id__",
+    "commit_id",
+]
+
+TYPE_CHECKING = False
+if TYPE_CHECKING:
+    from typing import Tuple
+
+version: str
+__version__: str
+__version_tuple__: tuple[int | str, ...]
+version_tuple: tuple[int | str, ...]
+commit_id: str | None
+__commit_id__: str | None
+
+__version__ = version = '9.2.1'
+__version_tuple__ = version_tuple = (9, 2, 1)
+
+__commit_id__ = commit_id = None
+"""
+
+
+def test_t15_an_ignored_generated_version_module_is_environment_not_a_difference(repo):
+    """setuptools-scm and hatch-vcs write an ignored ``_version.py`` that no
+    commit holds: ``run`` of a committed plan refused (exit 2) while it was
+    on disk. Neither snapshot has it and it binds constants only, so it is
+    the same for a run of either commit, like an installed package. An
+    ignored module that calls into the project could carry the change to a
+    test the plan sees no edge to, and is still refused, as is any ignored
+    file a commit holds, and any when a snapshot is the working tree."""
+    repo.commit(
+        {
+            **FILES,
+            ".gitignore": "pkg/_version.py\npkg/local.py\npkg/old.py\n",
+            "pkg/__init__.py": "from pkg._version import version\n",
+            "tests/test_version.py": (
+                "from pkg import version\n\n\ndef test_version():\n    assert version\n"
+            ),
+        }
+    )
+    _write(repo, "pkg/old.py", "x = 1\n")
+    repo.git("add", "-f", "pkg/old.py")
+    repo.git("commit", "-q", "-m", "track an ignored file")
+    base = repo.git("rev-parse", "HEAD")
+    repo.git("rm", "-q", "--cached", "pkg/old.py")
+    head = repo.commit({"pkg/ops.py": ADD_OPS_BROKEN}, "untrack old.py")
+    (repo.path / "pkg/old.py").unlink()
+    _write(repo, "pkg/_version.py", GENERATED_VERSION)
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert worktree_mismatch(repo.path, plan) is None
+    proc = _cli(repo, "run", "--base", base, "--head", head, "--discover", "pytest",
+                "--command", PYTEST_NO_CACHE, "--", "-q")  # fmt: skip
+    assert proc.returncode == 1, proc.stderr  # ran: test_add fails at head
+    assert "would select on" not in proc.stderr
+
+    # A module that reaches project code: a test importing it would depend
+    # on add through it, an edge no commit shows.
+    _write(repo, "pkg/local.py", "from pkg.ops import add\n\ndef limit():\n    return add(1, 1)\n")
+    assert "pkg/local.py" in (worktree_mismatch(repo.path, plan) or "")
+    for text in (
+        "VALUE = len('x')\n",  # a call
+        "from pkg import ops\n",  # a project import
+        '"""\n>>> 1\n1\n"""\n',  # a doctest, collected with --doctest-modules
+        "__path__ = ['elsewhere']\n",  # a name the import system reads
+    ):
+        _write(repo, "pkg/local.py", text)
+        assert "pkg/local.py" in (worktree_mismatch(repo.path, plan) or ""), text
+    (repo.path / "pkg/local.py").unlink()
+    # An ignored file the base commit holds is part of the change.
+    _write(repo, "pkg/old.py", "x = 2\n")
+    assert "pkg/old.py" in (worktree_mismatch(repo.path, plan) or "")
+    (repo.path / "pkg/old.py").unlink()
+    # A conftest or a test file, even of constants, is pytest's to read.
+    for name in ("conftest.py", "test_gen.py"):
+        _write(repo, f"pkg/{name}", "X = 1\n")
+        (repo.path / ".git/info/exclude").write_text(f"pkg/{name}\n")
+        assert f"pkg/{name}" in (worktree_mismatch(repo.path, plan) or ""), name
+        (repo.path / f"pkg/{name}").unlink()
+    # With the index as head the file is in neither snapshot either.
+    plan_index = repo.plan(base, "INDEX", [], discover_runners=["pytest"])
+    assert worktree_mismatch(repo.path, plan_index) is None
+    # A working-tree base reads it.
+    plan_worktree = repo.plan("WORKTREE", head, [], discover_runners=["pytest"])
+    assert "pkg/_version.py" in (worktree_mismatch(repo.path, plan_worktree) or "")

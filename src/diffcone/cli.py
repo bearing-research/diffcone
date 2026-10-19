@@ -18,7 +18,9 @@ only the selected targets would skip tests. 3 wins when both apply.
 tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
 the runner's exit code (0 when nothing was selected or with --dry-run; pytest's
-5 counts as 0), or 3 when a selected target was not collected. ``validate`` exits
+5 counts as 0), or 3 when a selected target was not collected. With
+--allow-incomplete-discovery pytest runs even when nothing was selected: the
+tests it collects that are no target are kept. ``validate`` exits
 0 when every outcome change was selected (a test that is not a target is
 reported apart, not missed, when the plan says its discovery is
 incomplete), 1 when some were missed, 2 on
@@ -71,6 +73,7 @@ from diffcone.execution import (
     join_command,
     run_selected,
     run_with_evidence,
+    runs_unknown,
     split_command,
     validate_pytest,
     validation_to_dict,
@@ -218,7 +221,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--allow-incomplete-discovery",
         action="store_true",
-        help="run even when discovery reports tests the runner may collect that are not targets",
+        help="run even when discovery reports tests the runner may collect that are not targets; "
+        "pytest then also runs every test it collects that is no target, and starts even when "
+        "nothing is selected",
     )
     _add_common(r)
     _add_evidence(r)
@@ -768,6 +773,18 @@ def _deselecting_options(plan) -> list[str]:
     return lines
 
 
+def _outputs_in(repo: str, output: str | None) -> list[str]:
+    """The file ``-o`` names, relative to the repository when inside it: the
+    output of the command itself, which ``run``'s worktree check ignores."""
+    if not output or output == "-":
+        return []
+    try:
+        rel = Path(output).resolve().relative_to(Path(repo).resolve())
+    except (OSError, ValueError):
+        return []
+    return [rel.as_posix()]
+
+
 def _run_exit_code(returncode: int, missing: bool) -> int:
     """``run``'s exit code from the runner's. Selected targets that did not run
     make it 3 (the run may have skipped tests) unless the runner failed on its
@@ -925,9 +942,19 @@ def _main(argv: list[str] | None) -> int:
             ran_plan = result
             # Why the recording was not used, for ``-o``.
             unused: dict | None = None
-            will_run = any(d.selected and d.target.runner == args.runner for d in result.decisions)
+            # With discovery incomplete (and allowed), pytest runs even when
+            # nothing is selected: the tests it collects that are no target
+            # are kept.
+            unknown_run = runs_unknown(result, args.runner) and args.allow_incomplete_discovery
+            will_run = unknown_run or any(
+                d.selected and d.target.runner == args.runner for d in result.decisions
+            )
             # Only worth refusing when something would actually execute.
-            mismatch = worktree_mismatch(Path(args.repo), result) if will_run else None
+            mismatch = (
+                worktree_mismatch(Path(args.repo), result, _outputs_in(args.repo, args.output))
+                if will_run
+                else None
+            )
             if mismatch and not args.allow_mismatched_worktree:
                 print(
                     f"diffcone: {mismatch}; running it would execute code the plan never "
@@ -941,8 +968,14 @@ def _main(argv: list[str] | None) -> int:
                 print(
                     f"diffcone: discovery reports {len(incomplete)} place(s) where "
                     f"{args.runner} may collect tests that are not targets; running the "
-                    "selected targets would skip them. Pass --allow-incomplete-discovery "
-                    "to run anyway, or declare those tests in a manifest.",
+                    "selected targets would skip them. Each note below says what would let "
+                    "discovery see them (a manifest beside discovery does not); or pass "
+                    "--allow-incomplete-discovery to run anyway"
+                    + (
+                        ", which also runs every test pytest collects that is no target."
+                        if args.runner == "pytest"
+                        else "."
+                    ),
                     file=sys.stderr,
                 )
                 for note in incomplete[:5]:
@@ -1062,8 +1095,20 @@ def _main(argv: list[str] | None) -> int:
                 file=sys.stderr,
             )
             if args.dry_run:
+                if runs_unknown(ran_plan, args.runner):
+                    print(
+                        "diffcone: discovery may be incomplete: the run also runs the tests "
+                        "pytest collects that are no target"
+                        + (
+                            ", so it starts pytest with every target deselected"
+                            if not outcome.selected
+                            else "; the command below runs the selected targets only"
+                        ),
+                        file=sys.stderr,
+                    )
                 if not outcome.selected:
-                    print("diffcone: nothing selected; not running", file=sys.stderr)
+                    if not runs_unknown(ran_plan, args.runner):
+                        print("diffcone: nothing selected; not running", file=sys.stderr)
                     return 0
                 return _write(join_command(outcome.command) + "\n", args.output)
             if outcome.returncode is None:
@@ -1071,6 +1116,16 @@ def _main(argv: list[str] | None) -> int:
                 # something even when no static target was selected).
                 print("diffcone: nothing selected; not running", file=sys.stderr)
                 return 0
+            if (
+                not outcome.selected
+                and outcome.unknown == []
+                and runs_unknown(ran_plan, args.runner)
+            ):
+                print(
+                    "diffcone: nothing selected, and pytest collected no test the plan does "
+                    "not know",
+                    file=sys.stderr,
+                )
             return _run_exit_code(outcome.returncode, bool(outcome.missing))
         if args.command == "validate":
             result = build_plan(load_evidence())

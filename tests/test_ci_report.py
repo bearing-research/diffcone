@@ -15,6 +15,7 @@ import pytest
 
 from diffcone import ci_report
 from diffcone.cli import main
+from diffcone.testing import FixtureRepo
 
 ACTIONS = Path(__file__).resolve().parent.parent / "actions"
 
@@ -970,11 +971,13 @@ def test_a_shallow_checkout_is_deepened_by_depth_not_deepen(repo, tmp_path):
     # first attempt's), deepens to nothing and the base never resolves.
     run = _step("run", "Plan and run")
     record = _step("record", "Plan the commit's change")
-    fetches = [line for line in (run + record).splitlines() if "git fetch" in line]
+    base_sh = (ACTIONS / "base.sh").read_text()
+    fetches = [line for line in (run + record + base_sh).splitlines() if "git fetch" in line]
     assert fetches and not any("--deepen" in line for line in fetches)
     assert 'git fetch --quiet --depth=2 origin "$head"' in record
-    # The run action's block deepens a depth-1 clone until the base is there.
-    block = run[run.index("# A shallow checkout") : run.index("cp .diffcone/baseline.xml")]
+    # The run action's resolve_base deepens a depth-1 clone until the base is there.
+    assert 'source "$GITHUB_ACTION_PATH/../base.sh"' in run and "resolve_base" in run
+    block = f'source "{ACTIONS / "base.sh"}"\nresolve_base\n'
     repo.commit({"a.py": "x = 1\n"})
     repo.commit({"a.py": "x = 2\n"})
     clone = tmp_path / "clone"
@@ -1175,3 +1178,267 @@ def test_ci6_a_report_that_posted_nothing_does_not_move_the_window(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     assert sorted(p.name for p in (runs / "runs").iterdir()) == ["7"]
     assert (runs / "runs" / "7" / "diffcone-ubuntu" / "context.json").exists()
+
+
+# --------------------------------------------------------------------------- run: the base
+
+
+def test_t16_a_run_that_failed_after_a_good_plan_is_not_ok(tmp_path):
+    """``run`` exits 2 when it refuses (the working tree differs from the
+    plan's) and passes pytest's own failures through (2 interrupted, 4
+    usage error): the selected tests did not run, which the report counted
+    as a good pull-request run."""
+    _run(
+        tmp_path, 1, "pull_request", "1" * 40,
+        {
+            "diffcone-a": {"context.json": _pr(run_exit=2), "plan.json": _plan(1, 1)},
+            "diffcone-b": {"context.json": _pr(run_exit=4)},
+            "diffcone-c": {"context.json": _pr(run_exit=1)},  # a selected test failed
+        },
+    )  # fmt: skip
+    report = ci_report.build(ci_report.load(tmp_path))
+    cells = {c.name: c for c in report.cells}
+    assert [cells[n].run_failed for n in ("diffcone-a", "diffcone-b", "diffcone-c")] == [1, 1, 0]
+    assert report.run_failed == 2 and not report.ok
+    assert "**2 pull-request run(s) failed to run the selection**" in ci_report.to_markdown(report)
+    assert ci_report.to_dict(report)["run_failed"] == 2
+
+
+@posix_only
+def test_t16_the_check_action_says_when_it_checked_the_plan_only(tmp_path):
+    results = tmp_path / "diffcone-results"
+    results.mkdir()
+    plan = {
+        "status": "complete",
+        "selected_targets": [{"runner": "pytest", "runner_id": "tests/test_a.py::test_x"}],
+        "unselected_targets": [],
+    }
+    (results / "plan.json").write_text(json.dumps(plan))
+    (tmp_path / "full.xml").write_text(_junit(["test_x"]))
+    env = {"RESULTS": str(results), "FULL": str(tmp_path / "full.xml"), "OTHERS": "",
+           "FAIL": "true", "RUNNER_TEMP": str(tmp_path),
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}  # fmt: skip
+    done = _bash(_step("check", "Check"), tmp_path, env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "checking the plan only" in done.stdout
+    summary = (tmp_path / "summary").read_text()
+    assert "diffcone's run not checked" in summary and "Only the plan was checked" in summary
+    (results / "diffcone.xml").write_text(_junit(["test_x"]))
+    (tmp_path / "summary").unlink()
+    done = _bash(_step("check", "Check"), tmp_path, env)
+    assert done.returncode == 0 and "checking the plan only" not in done.stdout
+    assert "### diffcone check: no miss\n" in (tmp_path / "summary").read_text()
+
+
+FAKE_PLAN_DICFFONE = """#!/bin/bash
+# exits 2 for a plan with a recording; without one, $STATIC
+case "$*" in
+  *--evidence*) exit 2 ;;
+  *) exit "$STATIC" ;;
+esac
+"""
+
+
+@posix_only
+@pytest.mark.parametrize(
+    ("static", "note", "error"),
+    [
+        ("0", "the previous recording could not be used", False),
+        ("2", "the plan of the commit's change failed", True),
+    ],
+)
+def test_t16_only_an_unusable_recording_skips_the_record_check(repo, tmp_path, static, note,
+                                                              error):  # fmt: skip
+    """The record action read any plan exit 2 as "the previous recording
+    could not be used" and recorded the push as not checked, misses 0. Only
+    a plan that succeeds without the recording says that; a plan that fails
+    either way is a failed check."""
+    parent = repo.commit({"a.py": "x = 1\n"})
+    repo.commit({"a.py": "x = 2\n"})
+    (repo.path / ".diffcone" / "evidence").mkdir(parents=True)
+    (repo.path / ".diffcone" / "evidence" / f"{parent}-e.sqlite").write_bytes(b"")
+    (repo.path / ".diffcone" / "baseline.xml").write_text(_junit([], ["test_x"]))
+    bin_dir, results = tmp_path / "bin", tmp_path / "results"
+    bin_dir.mkdir()
+    (bin_dir / "diffcone").write_text(FAKE_PLAN_DICFFONE)
+    (bin_dir / "diffcone").chmod(0o755)
+    outputs = tmp_path / "outputs"
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "RESULTS": str(results),
+           "COMMAND": "pytest", "PYTEST_ARGS": "", "ROOTS": ".", "STATIC": static,
+           "GITHUB_OUTPUT": str(outputs), "GITHUB_ACTION_PATH": str(ACTIONS / "record"),
+           "JUNIT": "full.xml", "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}  # fmt: skip
+    done = _bash(_step("record", "Plan the commit's change"), repo.path, env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (results / "check-note").read_text().strip() == note
+    (repo.path / "full.xml").write_text(_junit([], ["test_x"]))
+    done = _bash(_step("record", "Check the plan against this full run"), repo.path, env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    kept = json.loads((repo.path / ".diffcone" / "check.json").read_text())
+    assert kept["check_error"] is error and not kept["checked"]
+    got = dict(line.split("=", 1) for line in outputs.read_text().splitlines() if "=" in line)
+    assert got["check-error"] == str(error).lower()
+
+
+def _event(tmp_path: Path, name: str, payload: dict) -> dict[str, str]:
+    path = tmp_path / f"{name}.json"
+    path.write_text(json.dumps(payload))
+    return {"GITHUB_EVENT_NAME": name, "GITHUB_EVENT_PATH": str(path)}
+
+
+def _shallow(origin: FixtureRepo, sha: str, where: Path, depth: int = 1) -> Path:
+    """A checkout of ``sha`` as actions/checkout makes it: fetched alone, at
+    ``depth``, detached."""
+    subprocess.run(["git", "init", "-q", str(where)], check=True)
+    for args in (
+        ["remote", "add", "origin", f"file://{origin.path}"],
+        ["fetch", "-q", "--no-tags", f"--depth={depth}", "origin", f"+{sha}:refs/remotes/x"],
+        ["checkout", "-q", "--detach", sha],
+    ):
+        subprocess.run(["git", *args], cwd=where, check=True, capture_output=True)
+    return where
+
+
+EVENT_BASE = f'source "{ACTIONS / "base.sh"}"\nevent_base\necho "$base|$base_note"\n'
+
+
+@posix_only
+def test_t4_the_base_is_the_events_own(repo, tmp_path):
+    """The run action planned ``HEAD^1..HEAD``: right for a pull request's
+    merge commit only. A push of several commits planned its last, a
+    checkout of a pull request's head its last commit, a merge group's
+    rebased head its last pull request."""
+    repo.git("config", "uploadpack.allowAnySHA1InWant", "true")
+    base = repo.commit({"a.py": "x = 1\n"})
+    repo.git("checkout", "-q", "-b", "pr")
+    repo.commit({"a.py": "x = 2\n"})
+    pr_head = repo.commit({"a.py": "x = 3\n"})
+    repo.git("checkout", "-q", "main")
+    target = repo.commit({"b.py": "y = 1\n"})
+    repo.git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+    merge = repo.git("rev-parse", "HEAD")
+
+    def found(sha, env, name):
+        clone = _shallow(repo, sha, tmp_path / name)
+        done = _bash(EVENT_BASE, clone, env)
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip().split("|")
+
+    pr = {"pull_request": {"base": {"sha": base}, "head": {"sha": pr_head}}}
+    # The merge commit: its first parent, the target branch it merged onto.
+    assert found(merge, _event(tmp_path, "pull_request", pr), "merge")[0] == target
+    # The pull request's head checked out (pull_request_target, or a
+    # checkout of head.sha): the pull request's base, not HEAD^1.
+    for event in ("pull_request", "pull_request_target"):
+        assert found(pr_head, _event(tmp_path, event, pr), f"head-{event}")[0] == base
+    # A push of three commits: the commit before it.
+    push = _event(tmp_path, "push", {"before": base, "after": merge})
+    assert found(merge, push, "push")[0] == base
+    group = _event(tmp_path, "merge_group", {"merge_group": {"base_sha": target}})
+    assert found(merge, group, "group")[0] == target
+    # No base: a push that created the branch, a manual run.
+    created, note = found(merge, _event(tmp_path, "push", {"before": "0" * 40}), "created")
+    assert created == "" and "created the branch" in note
+    manual, note = found(merge, _event(tmp_path, "workflow_dispatch", {}), "manual")
+    assert manual == "" and "workflow_dispatch" in note
+
+
+RESOLVE_BASE = f'source "{ACTIONS / "base.sh"}"\nresolve_base\necho "$base_sha"\n'
+
+
+@posix_only
+def test_t4_cli7_the_base_is_fetched_whatever_names_it(repo, tmp_path):
+    """The deepening fetched HEAD one level deeper, then ``origin $BASE``
+    into FETCH_HEAD: ``main``, ``origin/main``, a tag and ``HEAD~3`` never
+    resolved in a depth-1 checkout, and the plan exited 2."""
+    repo.git("config", "uploadpack.allowAnySHA1InWant", "true")
+    first = repo.commit({"a.py": "x = 0\n"})
+    repo.git("tag", "v0")
+    commits = [repo.commit({"a.py": f"x = {i}\n"}) for i in range(1, 5)]
+    head = commits[-1]
+    repo.git("checkout", "-q", "-b", "side", first)
+    side = repo.commit({"b.py": "y = 1\n"})
+    repo.git("checkout", "-q", "main")
+    expected = {
+        "HEAD^1": commits[-2],
+        "HEAD~3": commits[0],
+        first: first,  # a push's before, several commits back
+        "main": head,
+        "origin/main": head,
+        "v0": first,
+        side: side,  # a pull request's base, not an ancestor
+    }
+    for i, (name, sha) in enumerate(expected.items()):
+        clone = _shallow(repo, head, tmp_path / f"c{i}")
+        done = _bash(RESOLVE_BASE, clone, {"BASE": name})
+        assert done.returncode == 0, (name, done.stderr)
+        assert done.stdout.strip() == sha, name
+        assert _bash(f"git cat-file -e {sha}^{{commit}}", clone).returncode == 0
+    clone = _shallow(repo, head, tmp_path / "gone")
+    assert _bash(RESOLVE_BASE, clone, {"BASE": "f" * 40}).returncode == 1
+    # A complete clone is not made shallow.
+    full = tmp_path / "full"
+    subprocess.run(["git", "clone", "-q", f"file://{repo.path}", str(full)], check=True)
+    assert _bash(RESOLVE_BASE, full, {"BASE": "v0"}).stdout.strip() == first
+    shallow = _bash("git rev-parse --is-shallow-repository", full).stdout.strip()
+    assert shallow == "false"
+
+
+T4_OPS = "def add(a, b):\n    return a + b\n\n\ndef mul(a, b):\n    return a * b\n"
+T4_TESTS = (
+    "from pkg.ops import add, mul\n\n\n"
+    "def test_add():\n    assert add(1, 1) == 2\n\n\n"
+    "def test_mul():\n    assert mul(2, 3) == 6\n"
+)
+
+
+@posix_only
+def test_t4_a_push_of_several_commits_plans_them_all(repo, tmp_path):
+    """The run step itself, on a depth-1 checkout of a push of three
+    commits whose first breaks ``test_mul``: planned ``HEAD^1..HEAD`` it
+    selected nothing and passed. A push that creates the branch has no base,
+    and runs every test."""
+    repo.git("config", "uploadpack.allowAnySHA1InWant", "true")
+    before = repo.commit(
+        {"pkg/__init__.py": "", "pkg/ops.py": T4_OPS, "tests/__init__.py": "",
+         "tests/test_ops.py": T4_TESTS}
+    )  # fmt: skip
+    repo.commit({"pkg/ops.py": T4_OPS.replace("a * b", "a * b + 1")})
+    repo.commit({"pkg/other.py": "x = 1\n"})
+    head = repo.commit({"pkg/other.py": "x = 2\n"})
+    bin_dir = Path(sys.executable).parent
+
+    def step(name: str, payload: dict):
+        clone = _shallow(repo, head, tmp_path / name)
+        outputs = tmp_path / f"{name}.out"
+        env = {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_ACTION_PATH": str(ACTIONS / "run"),
+            "GITHUB_OUTPUT": str(outputs),
+            "COMMAND": f"{sys.executable} -m pytest -p no:cacheprovider",
+            "PYTEST_ARGS": "-q",
+            "ROOTS": ".",
+            "BASE": "",
+            "ALLOW_INCOMPLETE": "false",
+            **_event(tmp_path, "push", payload),
+        }
+        done = _bash(_step("run", "Plan and run"), clone, env)
+        results = clone / "diffcone-results"
+        plan = json.loads((results / "plan.json").read_text())
+        context = json.loads((results / "context.json").read_text())
+        return done, {t["runner_id"] for t in plan["selected_targets"]}, context
+
+    done, chosen, context = step("push", {"before": before, "after": head})
+    assert done.returncode == 1, done.stdout + done.stderr  # test_mul ran, and fails
+    assert chosen == {"tests/test_ops.py::test_mul"}
+    assert context["base"] == before and context["run_exit"] == 1
+    assert "before the push" in context["base_note"]
+
+    done, chosen, context = step("created", {"before": "0" * 40, "after": head})
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert chosen == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}
+    assert "created the branch" in context["base_note"]
+    assert "no base to plan against" in done.stdout + done.stderr
+    # Gone (a force push dropped it): every test, too.
+    done, chosen, context = step("gone", {"before": "f" * 40, "after": head})
+    assert chosen == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}
+    assert "cannot be fetched" in context["base_note"]

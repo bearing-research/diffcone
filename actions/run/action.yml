@@ -19,9 +19,14 @@ inputs:
     default: "."
   base:
     description: >-
-      The base revision; default: the first parent of a pull request's merge
-      commit (what the pull request changes on top of its target branch).
-    default: "HEAD^1"
+      The base revision (a commit, a branch or tag name, or HEAD^1). Default:
+      the event's own: for a pull request, the target branch it is merged
+      onto (the merge commit's first parent, or the pull request's base
+      commit when its head is checked out); for a push, the commit the
+      branch pointed at before it; for a merge group, its base commit. When
+      the event names none (a push that creates a branch, a manual run) or
+      it is gone (a force push dropped it), every test is selected.
+    default: ""
   diffcone-ref:
     description: >-
       Install diffcone from this git ref instead of from the action's own copy
@@ -97,6 +102,7 @@ runs:
                 "base": os.environ["BASE_SHA"],
                 "recording": os.environ.get("RECORDING") or None,
                 "recording_note": os.environ.get("NOTE") or None,
+                "base_note": os.environ.get("BASE_NOTE") or None,
                 "allow_incomplete_discovery": os.environ.get("ALLOW_INCOMPLETE") == "true",
                 "plan_exit": plan_exit,
                 "run_exit": run_exit,
@@ -106,16 +112,34 @@ runs:
         )
         PY
         }
-        # A shallow checkout (actions/checkout's default depth 1) lacks the
-        # base: deepen it until the base resolves. With --depth, not
-        # --deepen: GitHub deepens only from a commit a ref still points at,
-        # and a pull request's merge commit is replaced when the pull request
-        # moves (a re-run checks out its first attempt's).
-        if ! git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-          depth=$(( $(git rev-list --count HEAD | tr -d '\r') + 1 ))
-          git fetch --quiet --depth="$depth" origin "$(git rev-parse HEAD)" 2>/dev/null || true
-          git rev-parse --verify --quiet "$BASE^{commit}" >/dev/null \
-            || git fetch --quiet --depth=1 origin "$BASE" 2>/dev/null || true
+        # The base: the input, or the event's own (base.sh says which). A
+        # shallow checkout (actions/checkout's default depth 1) lacks it:
+        # resolve_base deepens or fetches until it is there, and the plan
+        # and the run get its commit. An event that names no base, or one
+        # that cannot be fetched (a force push dropped it), selects every
+        # test: planned from an empty commit, every target is new.
+        source "$GITHUB_ACTION_PATH/../base.sh"
+        base_note=""
+        if [ -z "$BASE" ]; then
+          event_base
+          BASE=$base
+        fi
+        if [ -n "$BASE" ]; then
+          if resolve_base; then
+            BASE=$base_sha
+          elif [ -n "$base_note" ]; then
+            base_note="the base $BASE, $base_note, cannot be fetched"
+            BASE=""
+          fi
+          # An input that does not resolve stays as given: the plan fails
+          # on it (exit 2) and says why.
+        fi
+        if [ -z "$BASE" ]; then
+          echo "::warning::no base to plan against ($base_note); selecting every test"
+          BASE=$(empty_base)
+          evidence=()
+          recording=""
+          note="no base to plan against: $base_note"
         fi
         cp .diffcone/baseline.xml diffcone-results/baseline.xml 2>/dev/null || true
         # The same pytest arguments and command as the run below (doctest
@@ -137,9 +161,10 @@ runs:
           diffcone plan --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
             --command "$COMMAND" -o diffcone-results/plan.json -- "${args[@]}" || rc=$?
         fi
-        export HEAD_SHA BASE_SHA RECORDING NOTE
+        export HEAD_SHA BASE_SHA BASE_NOTE RECORDING NOTE
         HEAD_SHA=$(git rev-parse HEAD)
         BASE_SHA=$(git rev-parse --verify --quiet "$BASE^{commit}" || echo "$BASE")
+        BASE_NOTE=$base_note
         RECORDING=$recording
         NOTE=$note
         if ! { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ] || [ "$rc" -eq 3 ]; }; then

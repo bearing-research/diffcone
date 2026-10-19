@@ -24,6 +24,7 @@ user controls.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import posixpath
@@ -62,6 +63,7 @@ from diffcone.model import (
 from diffcone.planner import OWN_DIRS, OWN_FILES, Plan, _index_snapshot, build_input
 from diffcone.snapshot import (
     ASV_CONFIGS,
+    BUILD_SCRIPTS,
     CONFIG_FILES,
     GITLINK_MODE,
     INDEX,
@@ -220,7 +222,176 @@ def _dirty_submodules(repo: Path, analysed_rev: str) -> list[str]:
     return found
 
 
-def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
+# What diffcone and its CI actions write into the checkout: the results
+# directory of the ``run`` action (the plan, the plan that ran, the run's
+# JUnit XML, the baseline copied from the recording, the context the report
+# reads, the check's verdict). Untracked, they are no difference the plan
+# missed: diffcone writes them, no test reads them, and in a flat layout
+# (source root ".") they would make ``run`` refuse its own output.
+RESULTS_DIR = "diffcone-results"
+RESULT_FILES = frozenset(
+    f"{RESULTS_DIR}/{name}"
+    for name in (
+        "plan.json",
+        "ran.json",
+        "context.json",
+        "baseline.xml",
+        "diffcone.xml",
+        "verdict.json",
+        "verdict.md",
+    )
+)
+# Names a module of constants may bind (_inert_module): anything else that
+# looks like a hook (``__getattr__``, ``__path__``, ``pytest_plugins``)
+# changes what importing or collecting does.
+_INERT_DUNDERS = frozenset(
+    {
+        "__all__",
+        "__version__",
+        "__version_tuple__",
+        "__commit_id__",
+        "__author__",
+        "__email__",
+        "__license__",
+        "__copyright__",
+    }
+)
+_INERT_IMPORTS = frozenset({"__future__", "typing", "typing_extensions"})
+_INERT_EXPRESSIONS = (
+    ast.Constant,
+    ast.Name,
+    ast.Load,
+    ast.Store,
+    ast.Tuple,
+    ast.List,
+    ast.Set,
+    ast.Dict,
+    ast.UnaryOp,
+    ast.BinOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.Subscript,
+    ast.Slice,
+    ast.Attribute,
+    ast.unaryop,
+    ast.operator,
+    ast.boolop,
+    ast.cmpop,
+)
+
+
+def _inert_name(name: str) -> bool:
+    if name.startswith("__") and name.endswith("__"):
+        return name in _INERT_DUNDERS
+    return not name.startswith("pytest_") and name not in ("collect_ignore", "collect_ignore_glob")
+
+
+def _inert_expression(node: ast.AST | None) -> bool:
+    if node is None:
+        return True
+    for sub in ast.walk(node):
+        if not isinstance(sub, _INERT_EXPRESSIONS):
+            return False
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and ">>>" in sub.value:
+            return False  # a doctest, collected with --doctest-modules
+    return True
+
+
+def _inert_target(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return _inert_name(node.id)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_inert_target(e) for e in node.elts)
+    return False
+
+
+def _inert_statements(body: list[ast.stmt]) -> bool:
+    for stmt in body:
+        if isinstance(stmt, ast.Expr):
+            ok = _inert_expression(stmt.value) and isinstance(stmt.value, ast.Constant)
+        elif isinstance(stmt, ast.Pass):
+            ok = True
+        elif isinstance(stmt, ast.ImportFrom):
+            ok = stmt.level == 0 and stmt.module in _INERT_IMPORTS
+            ok = ok and all(a.name != "*" and _inert_name(a.asname or a.name) for a in stmt.names)
+        elif isinstance(stmt, ast.Import):
+            ok = all(
+                a.name in _INERT_IMPORTS and _inert_name(a.asname or a.name) for a in stmt.names
+            )
+        elif isinstance(stmt, ast.Assign):
+            ok = all(_inert_target(t) for t in stmt.targets) and _inert_expression(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign):
+            ok = (
+                _inert_target(stmt.target)
+                and _inert_expression(stmt.annotation)
+                and _inert_expression(stmt.value)
+            )
+        elif isinstance(stmt, ast.If):
+            ok = (
+                _inert_expression(stmt.test)
+                and _inert_statements(stmt.body)
+                and _inert_statements(stmt.orelse)
+            )
+        else:
+            ok = False
+        if not ok:
+            return False
+    return True
+
+
+def _inert_module(source: bytes) -> bool:
+    """Whether a module only binds constants: no call, no definition, no
+    import but ``__future__`` and ``typing``, no doctest, no name pytest or
+    the import system gives a meaning to. Run, it reaches no code of the
+    project, and what it binds is the same whichever commit imports it.
+    The ``_version.py`` setuptools-scm and hatch-vcs generate is one."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return False
+    return _inert_statements(tree.body)
+
+
+def _generated_module(repo: Path, plan: Plan, path: str) -> bool:
+    """Whether a git-ignored ``.py`` on disk is environment, like an installed
+    package, rather than a difference from what the plan analysed: neither
+    snapshot is the working tree, neither holds the file, it is no file
+    pytest or the interpreter gives a meaning by its name, and it only binds
+    constants (_inert_module).
+
+    The plan claims that the change from base to head reaches no other
+    test. The file is in neither snapshot, so it is no part of that change;
+    a run of either snapshot on this disk imports the same file, and a
+    module that calls nothing adds no path from changed code to a test, so
+    no test the plan left out depends through it on what changed. A module
+    with a function or a call could (``def limit(): return add(1, 1)``: the
+    plan sees no edge from the test that imports it to ``add``), and is
+    still refused, as is every ignored file when a snapshot is the working
+    tree: a ``WORKTREE`` plan reads ignored files beside tracked code."""
+    if SnapshotKind.WORKTREE in (plan.base.kind, plan.head.kind):
+        return False
+    name = PurePosixPath(path).name
+    if (
+        name == "conftest.py"
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name in BUILD_SCRIPTS
+    ):
+        return False
+    full = repo / path
+    if full.is_symlink() or not full.is_file():
+        return False
+    for side in (plan.base, plan.head):
+        revision = INDEX if side.kind == SnapshotKind.INDEX else side.commit
+        if file_id(repo, revision, path) is not None:
+            return False
+    try:
+        return _inert_module(full.read_bytes())
+    except OSError:
+        return False
+
+
+def worktree_mismatch(repo: Path, plan: Plan, outputs: Sequence[str] = ()) -> str | None:
     """Why the working tree is not what the plan analysed, if it is not.
 
     ``run`` executes the checkout, so a plan made from a commit only
@@ -232,7 +403,11 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     ignored directories (the working tree snapshot reads those), files
     flagged assume-unchanged or skip-worktree that differ on disk, and
     submodules whose commit or content differs. ASV's output directories
-    beside its configuration are left out: nothing runs them.
+    beside its configuration are left out: nothing runs them. So are
+    diffcone's own untracked outputs (RESULT_FILES, and ``outputs``, the
+    repository-relative files this command writes), and git-ignored
+    modules of constants neither snapshot holds (_generated_module: a
+    generated ``_version.py``).
     """
     if plan.head.kind == SnapshotKind.WORKTREE:
         return None
@@ -247,8 +422,17 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
     )
     try:
         differing = _listed(_git(repo, against))
-        untracked = _listed(_git(repo, ["ls-files", "-z", "--others", "--exclude-standard"]))
-        ignored = ignored_python_files(repo, [])
+        own = RESULT_FILES | set(outputs)
+        untracked = [
+            path
+            for path in _listed(_git(repo, ["ls-files", "-z", "--others", "--exclude-standard"]))
+            if path not in own
+        ]
+        ignored = [
+            path
+            for path in ignored_python_files(repo, [])
+            if not _generated_module(repo, plan, path)
+        ]
         # git diff does not look at files flagged assume-unchanged or
         # skip-worktree; what is on disk is what runs.
         flagged = [
@@ -288,6 +472,13 @@ def worktree_mismatch(repo: Path, plan: Plan) -> str | None:
 MISMATCHES_SHOWN = 5
 
 
+def runs_unknown(plan: Plan, runner: str) -> bool:
+    """Whether ``run`` starts ``runner`` for the tests it collects that are no
+    target, selected or not: pytest, when its discovery may be incomplete.
+    The selection plugin keeps those tests; ASV has no such plugin."""
+    return runner == "pytest" and pytest_discovery_incomplete(plan)
+
+
 def run_selected(
     plan: Plan,
     runner: str,
@@ -302,12 +493,18 @@ def run_selected(
     equivalent command (pytest node ids appended); a real pytest run instead
     collects from pytest's own starting points and keeps the selection with
     ``-p diffcone_select`` (``selection.py`` says why), so conftests load as
-    in a full run."""
+    in a full run.
+
+    With nothing selected, nothing runs, unless pytest discovery may be
+    incomplete (``run`` allowed it, ``--allow-incomplete-discovery``): pytest
+    then runs with every target deselected, since the tests it collects that
+    are no target are kept (the plan cannot say the change misses them), and
+    without a run they would never run at all (``runs_unknown``)."""
     selected = [d.target for d in plan.decisions if d.selected and d.target.runner == runner]
     total = sum(1 for d in plan.decisions if d.target.runner == runner)
     argv = build_command(runner, selected, command, list(extra or [])) if selected else []
     result = RunResult(runner, argv, selected, total, None)
-    if dry_run or not selected:
+    if dry_run or not (selected or runs_unknown(plan, runner)):
         return result
     if runner != "pytest":
         result.returncode = subprocess.run(argv, cwd=cwd, env=env).returncode
@@ -2117,9 +2314,11 @@ def run_with_evidence(
                 extra=[*plugins, *(extra or [])],
                 env=env,
             )
-            if not result.selected:
+            if result.returncode is None:
                 # Nothing selected is a verdict of the evidence too: check
                 # that it applies to this environment before trusting it.
+                # (With discovery incomplete pytest ran anyway, for the
+                # tests that are no target, and checked it then.)
                 argv = build_command("pytest", [], command, ["-p", PLUGIN, *(extra or [])])
                 subprocess.run(argv, cwd=cwd, env={**env, "DIFFCONE_CHECK_ONLY": "1"})
         finally:

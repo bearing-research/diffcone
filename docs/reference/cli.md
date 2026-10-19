@@ -92,7 +92,7 @@ diffcone run [-h] --base BASE --head HEAD [--targets TARGETS] [--runner {pytest,
 | `--command` `COMMAND` |  | Runner command line (default: "python -m pytest", or "asv run --python=same", which benchmarks the checkout in the current environment); run in --repo. |
 | `--dry-run` |  | Print the command instead of running. |
 | `--allow-mismatched-worktree` |  | Run even when the checkout is not the snapshot the plan analysed. |
-| `--allow-incomplete-discovery` |  | Run even when discovery reports tests the runner may collect that are not targets. |
+| `--allow-incomplete-discovery` |  | Run even when discovery reports tests the runner may collect that are not targets; pytest then also runs every test it collects that is no target, and starts even when nothing is selected. |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |
 | `--source-root` `DIR[=PREFIX]` |  | Repo-relative directory whose .py files are analyzed as a module tree (repeatable; overrides the manifest's source_roots; default: .). DIR=PREFIX names its modules PREFIX.&lt;path&gt;, for per-package test trees whose files share names. |
 | `--discover` `RUNNER` |  | Statically discover targets for a runner (pytest, asv); repeatable. One of `pytest`, `asv`. |

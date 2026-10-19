@@ -67,9 +67,15 @@ is close to, but not the same as, what `run` does:
   source roots, a git-ignored `.py` beside tracked code, any
   `conftest.py`, pytest or ASV configuration, `diffcone.toml`, dependency
   and lock files, and submodules. Plan with `--head WORKTREE`, or pass
-  `--allow-mismatched-worktree`.
+  `--allow-mismatched-worktree`. Two kinds of file don't count: the
+  results diffcone's CI actions write to `diffcone-results/` (and the file
+  `run -o` names), and a git-ignored module that neither commit holds and
+  that only assigns constants, such as the `_version.py` setuptools-scm or
+  hatch-vcs generate. Both commits would run with the same copy of it.
 - **Discovery may be incomplete** (exit code `3`). Pass
-  `--allow-incomplete-discovery` to run the selection anyway.
+  `--allow-incomplete-discovery` to run the selection anyway. pytest then
+  also runs every test it collects that the plan doesn't know, so it
+  starts even when nothing was selected; `--dry-run` says so.
 
 ## Check a plan against a full run
 
@@ -96,6 +102,8 @@ selected, and exits with `1` if there is one. Options:
   diffcone's own run of the plan, or another test-selection tool's. Name
   diffcone's own run `diffcone` (`--run diffcone=diffcone.xml`): a new
   failure it didn't execute is a miss too, even if the plan selected it.
+  Without it, the check only says the plan selected every new failure,
+  not that they ran, and the verdict says so.
 - `--format markdown` writes a summary table for a CI job summary, and
   `--format json` a report for scripts.
 
@@ -119,6 +127,7 @@ any of them was selected.
 | `ok` | `true` when there is no miss and nothing in `not_run`. |
 | `misses` | The new failures the plan didn't select. |
 | `not_run` | New failures diffcone's own run (`--run diffcone=...`) didn't execute. |
+| `own_run_checked` | `true` when diffcone's own run was given, so `not_run` was checked. |
 | `plan` | `status`, `discovery_incomplete`, and how many `targets` there were and how many were `selected`. |
 | `full_run` | `cases`, `test_time`, `selected_test_time` (the full run's time for the selected tests) and `unmatched_cases` (cases that match no target). |
 | `mapping` | The `rootdir` and `junit_prefix` the names were mapped with, and a `note` when no case matched a target. |

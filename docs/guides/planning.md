@@ -95,7 +95,10 @@ every time.
     naming rules, or a test base class outside your source roots. The
     report's `discovery` section lists each case. Running only the selected
     tests could skip some, so `diffcone run` refuses unless you pass
-    `--allow-incomplete-discovery`. See
+    `--allow-incomplete-discovery`. With it, pytest also runs every test it
+    collects that isn't a target, even when the plan selected nothing.
+    Listing those tests in a manifest beside `--discover` adds them as
+    targets but doesn't clear the notes. See
     [static discovery](../reference/discovery.md#when-the-target-list-may-be-short).
 
 ### List them in a manifest

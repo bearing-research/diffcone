@@ -74,6 +74,9 @@ class CellReport:
     refused: int = 0
     plan_failed: int = 0
     not_collected: int = 0  # runs where pytest did not collect selected tests
+    # Runs whose ``diffcone run`` failed after a good plan (exit 2 or more,
+    # other than 3: it refused, or pytest was interrupted or could not start).
+    run_failed: int = 0
     pushes: int = 0
     checked: int = 0
     not_checked: Counter[str] = field(default_factory=Counter)
@@ -100,17 +103,20 @@ class Report:
     check_errors: int = 0
     not_collected: int = 0
     malformed: int = 0
+    run_failed: int = 0
 
     @property
     def ok(self) -> bool:
         """No confirmed miss, no check that failed to reach a verdict, no
-        selected test left uncollected and no artifact that cannot be read."""
+        selected test left uncollected or unrun and no artifact that cannot
+        be read."""
         return not (
             self.misses
             or self.earlier_misses
             or self.unlisted_misses
             or self.check_errors
             or self.not_collected
+            or self.run_failed
             or self.malformed
         )
 
@@ -242,6 +248,7 @@ class _Totals:
     unlisted: int = 0
     check_errors: int = 0
     not_collected: int = 0
+    run_failed: int = 0
 
 
 def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Totals) -> None:
@@ -284,6 +291,13 @@ def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Tota
             # they did not run.
             cell.not_collected += 1
             totals.not_collected += 1
+        elif context.get("run_exit") not in (0, 1):
+            # After a good plan, anything else is a run that did not run the
+            # selection: ``run`` refused (exit 2: the working tree differs
+            # from the plan's), pytest was interrupted (2) or could not start
+            # (4), diffcone crashed. Not a pass.
+            cell.run_failed += 1
+            totals.run_failed += 1
     elif context.get("action") == "record":
         cell.pushes += 1
         if context.get("checked"):
@@ -368,6 +382,7 @@ def build(artifacts: list[Artifact]) -> Report:
         check_errors=totals.check_errors,
         not_collected=totals.not_collected,
         malformed=malformed,
+        run_failed=totals.run_failed,
     )
 
 
@@ -393,6 +408,7 @@ def to_dict(report: Report) -> dict[str, Any]:
                     "refused": c.refused,
                     "plan_failed": c.plan_failed,
                     "not_collected": c.not_collected,
+                    "run_failed": c.run_failed,
                 },
                 "pushes": {
                     "runs": c.pushes,
@@ -424,6 +440,7 @@ def to_dict(report: Report) -> dict[str, Any]:
         "unlisted_misses": report.unlisted_misses,
         "check_errors": report.check_errors,
         "not_collected": report.not_collected,
+        "run_failed": report.run_failed,
         "malformed": report.malformed,
     }
 
@@ -497,6 +514,13 @@ def to_markdown(report: Report) -> str:
             "pytest did not collect them (discovery and collection disagree); see the jobs' logs.",
             "",
         ]
+    if report.run_failed:
+        lines += [
+            f"**{report.run_failed} pull-request run(s) failed to run the selection** after "
+            "a good plan (diffcone run refused, or pytest was interrupted or could not "
+            "start); see the jobs' logs.",
+            "",
+        ]
     if report.malformed:
         lines += [
             f"**{report.malformed} artifact(s) could not be read** (their files are not what "
@@ -510,8 +534,8 @@ def to_markdown(report: Report) -> str:
             "**Pull requests**",
             "",
             "| job | runs | selected (median) | selected (max) | planned from the code "
-            "| refused | plan failed | selected, not collected |",
-            "|---|---|---|---|---|---|---|---|",
+            "| refused | plan failed | run failed | selected, not collected |",
+            "|---|---|---|---|---|---|---|---|---|",
         ]
         for c in prs:
             median = statistics.median(c.selected_shares) if c.selected_shares else None
@@ -521,7 +545,8 @@ def to_markdown(report: Report) -> str:
             )
             lines.append(
                 f"| {c.name} | {c.pull_requests} | {_share(median)} | {_share(peak)} | "
-                f"{from_code} | {c.refused} | {c.plan_failed} | {c.not_collected} |"
+                f"{from_code} | {c.refused} | {c.plan_failed} | {c.run_failed} | "
+                f"{c.not_collected} |"
             )
         lines.append("")
     pushes = [c for c in report.cells if c.pushes]

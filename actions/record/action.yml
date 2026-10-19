@@ -151,11 +151,23 @@ runs:
           --command "$COMMAND" --evidence "$store" -o "$RESULTS/plan.json" -- "${args[@]}" \
           || rc=$?
         if [ "$rc" -eq 2 ]; then
-          echo "the previous recording could not be used" > "$RESULTS/check-note"
-          # A recording diffcone cannot read (other source roots, an older
-          # store format) must not stop the recording itself.
-          echo "::warning::the previous recording could not be used ($store); not checking this push"
           rm -f "$RESULTS/plan.json"
+          # Exit 2 is any plan that failed. Only a recording diffcone cannot
+          # use (other source roots, an older store format) is a reason not
+          # to check, and must not stop the recording itself: told apart by
+          # planning the same change without it. A plan that fails without
+          # the recording too is a failed check.
+          static=0
+          diffcone plan --base HEAD^1 --head HEAD --discover pytest "${roots[@]}" \
+            --command "$COMMAND" -o /dev/null -- "${args[@]}" >/dev/null 2>&1 || static=$?
+          if [ "$static" -eq 2 ]; then
+            echo "::error::diffcone plan failed (exit 2) with or without the recording; see the log above"
+            echo "diffcone plan failed" > "$RESULTS/plan-error"
+            echo "the plan of the commit's change failed" > "$RESULTS/check-note"
+          else
+            echo "the previous recording could not be used" > "$RESULTS/check-note"
+            echo "::warning::the previous recording could not be used ($store); not checking this push"
+          fi
         fi
     - name: Record
       shell: bash
@@ -233,6 +245,13 @@ runs:
           # The earlier verdict stands as it was written.
           cp "$RESULTS/sticky.json" .diffcone/check.json
           { echo "misses=$misses"; echo "flaky=0"; echo "check-error=$check_error"; } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [ -f "$RESULTS/plan-error" ]; then
+          # The plan of the commit's change failed, recording or not: no
+          # verdict, which is not a pass.
+          check_error=true
+          record 1
           exit 0
         fi
         if [ ! -f "$RESULTS/plan.json" ]; then

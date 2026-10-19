@@ -38,7 +38,13 @@ runs:
         FAIL: ${{ inputs.fail-on-miss }}
       run: |
         runs=()
-        [ -f "$RESULTS/diffcone.xml" ] && runs+=(--run "diffcone=$RESULTS/diffcone.xml")
+        if [ -f "$RESULTS/diffcone.xml" ]; then
+          runs+=(--run "diffcone=$RESULTS/diffcone.xml")
+        else
+          # No JUnit of diffcone's run (nothing was selected, or the run
+          # never started): the check compares the plan only, and says so.
+          echo "::warning::no $RESULTS/diffcone.xml: checking the plan only, not whether diffcone's run ran the selected tests"
+        fi
         for o in $OTHERS; do runs+=(--run "$o"); done
         baseline=()
         [ -f "$RESULTS/baseline.xml" ] && baseline=(--baseline "$RESULTS/baseline.xml")
