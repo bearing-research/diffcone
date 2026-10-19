@@ -264,9 +264,13 @@ everything.
 **Caches with a recording.**
 :   With a [recording](guides/evidence.md), a test that reads a cache an
     earlier test filled counts as running the code that filled it. That
-    works when your code fills the cache with a value it computes and keeps
-    it in a module variable, on an object or class, in a closure or a
-    function attribute, or behind a memoising decorator.
+    works when your code fills the cache with a value it computes, itself
+    or through a helper it hands the value to (`_put(key, compute(key))`),
+    and keeps it in a module variable, on an object or class, in a closure
+    or a function attribute, or behind a memoising decorator. A
+    decorator's registration (`@router.get("/path")`) doesn't count as
+    filling a cache, and neither does a literal written into a module
+    variable before the code has run anything else.
 
     A decorator counts as memoising when diffcone knows it (`functools`,
     `cachetools`, Django's and Werkzeug's `cached_property`, and others) or
@@ -278,7 +282,9 @@ everything.
     - a cache kept by an installed package's decorator under another name;
     - a cache filled through a method of an object whose type diffcone
       can't tell (`self._cache.set(k, compute(k))` where `_cache` is set in
-      several ways).
+      several ways);
+    - a cache filled with an attribute of the object the code runs on
+      (`_CACHE[key] = self.result`) that other code computed.
 
 **Code that changes the process while pytest collects reaches every test.**
 :   A `conftest.py`, a test module or a module they import may set an

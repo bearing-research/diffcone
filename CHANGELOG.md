@@ -24,9 +24,22 @@ selection rules.
   discovered at that commit: pytest's rootdir lies outside the repository
   (a configuration file in a directory above it), so plans would find no
   recording for any test and select them all.
+- A module variable that code able to run a change writes is followed as
+  a cache only when what it stores, or what decides that the write runs,
+  may come from that code: its parameters, the changed code's results,
+  calls through what it was handed. A decorator's registration
+  (`@router.put("/x")` writing the router when the module is imported)
+  and a literal written before the code runs anything else no longer
+  make every reader of the variable depend on every change the decorated
+  function can run.
 
 ### Fixed
 
+- With a recording, a module cache filled through a helper that is
+  handed the value (`_put(key, compute(key))`, with `_put` storing it, a
+  method, a chain of helpers, an `append`) was not followed: a test that
+  read what an earlier test stored there, without running `compute`, was
+  not selected when `compute` changed. It is now.
 - The `run` and `record` actions deepen a shallow checkout with an
   absolute depth. They used `git fetch --deepen`, which GitHub serves only
   from a commit a branch or pull request still points at: a re-run, or a

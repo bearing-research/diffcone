@@ -1528,6 +1528,31 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## What the chain stored: E32, E35, E36 (2026-10-18)
+
+Audit E32, E35 (precision, strata) and E36 (a miss in 0.4.0): a module
+variable the chain writes is followed only where what it stores may
+derive from the chain, and the code the chain calls is followed where it
+stores what it was handed. The 48 corpus pairs replayed from their
+recordings (`REPLAY=1`), against the E21-E26 table below.
+
+| repo | before | after | the pairs that moved |
+|---|---|---|---|
+| marshmallow | 1 205 of 3 877 | 1 246 | `SchemaMeta.__init__` registers the classes a test creates, handed what the chain built (E36, +41) |
+| typer | 5 636 of 5 801 | 5 632 | a variable the chain writes, not derived from it, no longer followed (E35, -4) |
+| the other six | 12 590 | 12 590 | none |
+
+* **No miss.**
+* strata, the `DiskCache.put` edit at d72777c9: still 6 580 of 6 580.
+  The chain's remaining writes do derive from it as recorded (roadmap
+  item 21, "What is left after E35").
+* pandas, the four item 19 replays: 24 085 of 25 620 (94.0 %), then
+  100 % with 34, 41 and 34 `pytest_hook_changed` fallbacks, as on main.
+  The plan's footprint peaks at 20 GB on main and on the branch alike;
+  on a 16 GB machine it swaps, so wall-clock times (2 478 s on the
+  branch with a warm cache, 3 327 s on main building its indexes) say
+  little. `_tainted` adds no measurable time once kept across rounds.
+
 ## The import trade-off under evidence: measured (2026-10-14)
 
 Roadmap item 20, E27/E28. An escalated change is planned twice, by the

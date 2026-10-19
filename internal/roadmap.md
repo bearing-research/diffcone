@@ -1608,62 +1608,26 @@ in them (frontend, Docker) selected less. Reproduced on a local recording
 at d72777c9 with one body edit to `strata.cache.disk.DiskCache.put`:
 6580 of 6580 (audit E32-E35).
 
-*A decorator's registration read as a stored result (E32).*
-`_stored_results` follows, for each function that can run a changed one,
-the variables it writes in place: what it computed may be kept there for
-later tests. `@router.put("/x")` on an endpoint is such a write (a
-mutating call on `router`, attributed to the function because decorators
-are part of its definition), so a body change of anything an endpoint can
-run reaches every reader of the router, and through the app every test.
-But the decorator runs when the `def` does, at import, and stores the
-function, not what calling it computes.
+What shipped (audit E32, E35, E36; internal/evidence_design.md, "What a
+test stored"): a module variable the chain writes in place is followed
+only where what is stored, or what decides the write runs, may derive
+from the chain (`SourceIndex.write_values`), a decorator's or default's
+write derives from nothing, and the code the chain calls is followed
+where it is handed chain values and stores a parameter
+(`SourceIndex.call_values`, `_handed_to`). Corpus: no miss, marshmallow
++41, typer -4.
 
-- Mechanism: the reference walker flags the walk of a function's
-  decorators and defaults (`definition`; not annotations or type-parameter
-  bounds, which may be evaluated later). A direct in-place write made
-  there is recorded in `definition_mutations`, every other origin (the
-  body, writes through a parameter, use records) in `other_mutations`;
-  the edges are emitted as before, so static planning is unchanged.
-  `SourceIndex.definition_writes` keeps the pairs only a definition makes.
-  `_stored_results` skips a write that is definition-only in every index
-  holding it. `INDEX_FORMAT` bump.
-- Why it is sound: a definition runs at import (or at a reload). Code a
-  decorator runs then is recorded in `import_by`, inside a test window
-  too, and the import rules follow a change to it. What calling the
-  function stores is a body write, still followed. A pair any other origin
-  also makes is followed.
-- Built on branch `e32` (not merged): the 35 writes into
-  `strata.notebook.routes.router` are a definition's alone (a `put`
-  decorator resolves by name to methods that write `self`). Re-planned,
-  the same edit still selects 6580: the chain moves on to the other
-  in-place writes (E35). Merge it with E35, or not at all; it saves
-  nothing on its own.
-- Done when (with E35): regression tests (a router decorator: a reader of
-  the router that calls nothing is not selected, one that calls the
-  endpoint is; a decorator calling changed code at import keeps its
-  readers; a body that also writes the registry keeps them), the evidence
-  corpus replayed with no miss and no suite worse, strata's real
-  pull-request pairs replanned, pandas no worse.
-
-*In-place writes followed without asking what they store (E35).* The
-module-variable half of `_stored_results` follows every variable that
-code able to run a changed function writes in place, whatever it puts
-there; its other half (stores into attributes, `SourceIndex.stores`)
-follows only a value derived from that code (`_derives_from_chain`). For
-the `DiskCache.put` edit it follows 28 variables: task sets
-(`worker_connect._TASKS`), locks, flags (`logging._configured`),
-singletons (`transforms.runner._runner`, `server.app`), a log ring
-buffer; almost none can hold what `DiskCache.put` computes.
-
-- Mechanism (to sketch in full before building): record what each
-  in-place write of a module variable puts there, as `stores` records
-  for attributes (the `_derived` of the stored value), and follow a
-  variable only when that derives from the chain, or from what nothing
-  bounds. A write that empties or rebinds to a literal stores nothing
-  computed.
-- Upper bound (spike `loaderspike`, the module-variable half switched
-  off): 6580 -> 2922; what is left are real caches (`CachedFetcher`
-  storing what `DiskCache.put` helps compute) and lookup sites.
+*What is left after E35.* The `DiskCache.put` edit still selects 6580
+of 6580: the chain's remaining writes do derive from it as recorded,
+`_TASKS` in `serve_connection` (a task built from the connection),
+`_ACTIVE_PUBLICATION_INDEX_SQL` in `ArtifactStore._init_schema` (a
+string handed to `conn.execute`, read as a call's result) and
+`_log_format` in `configure_logging`. Narrowing them needs two things
+not planned yet: taint at the call site (a parameter is chain-derived
+only where that call hands chain values, not where any caller does),
+and immutable literals (a string constant handed on stores nothing the
+chain computed). Sketch both before building; the spike bound with the
+whole module-variable half off was 2922.
 
 *An install's file read as a table (E33).* A module loaded from a literal
 file and installed in `sys.modules` (`_load_local_module("serializer.py",
@@ -1680,5 +1644,5 @@ strata's in-process servers finishing a response, or evicting, after a
 test's window closed. Which code lands there depends on timing (in CI
 `DiskCache.put`, locally not). Counting it as hook code is sound, since a
 thread a test left running can leave state for later tests, but coarse:
-any change to such code selects everything. Not planned until E35 has
-shipped and the nightly data shows how often it decides a plan.
+any change to such code selects everything. Not planned until the
+nightly data shows how often it decides a plan.

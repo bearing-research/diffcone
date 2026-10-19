@@ -443,8 +443,29 @@ selection or states something the tables left implicit; none narrows it.
   every order, so the reverse-order check does not flag a test in the
   middle. So, once E is built, every function or method in E is followed
   back to the code that can run it, and every variable that code writes in
-  place (`mutated_by`) is a changed value: its readers and the sites that
-  can see it join E. A cache outside a module variable (audit round 5,
+  place (`mutated_by`) with a value that may derive from the chain is a
+  changed value: its readers and the sites that can see it join E. What a
+  write derives from is recorded per (variable, writer)
+  (`SourceIndex.write_values`, audit E35): the value stored, the keys,
+  what decides that the write runs (the tests of the statements around
+  it, the statements before it in each block, a loop's whole body, the
+  `try` body for a handler, the rest of its expression), `@param` for a
+  parameter of the writer (what a caller in the chain may have handed),
+  for a write through a call that writes its parameter the call itself,
+  and `*` for what nothing bounds; nothing for a write a decorator or
+  default makes, which runs at import (E32). The code the chain calls,
+  transitively, is followed too when it stores a parameter or anything
+  and the call hands it what may derive from the chain
+  (`SourceIndex.call_values`: the arguments and receiver per called name,
+  and what decides that the call runs; audit E36: `get` handing
+  `compute(k)` to `_put(k, v)`); a test's own code hands nothing on, and
+  calls are the resolved ones and the constructors of a class called (no
+  name match, as for `stores`). A parameter holds what the chain computed
+  only when a caller handed it that (`_tainted`): it is bound before the
+  function runs the change. What a write
+  derives from is the R22 assumption for module variables: an attribute
+  of the writer's receiver is state, not a value derived from the chain.
+  A cache outside a module variable (audit round 5,
   R22: `self._cache[k] = compute(k)` on a singleton or a session fixture's
   object, `cls._cache`, a `@memo` decorator's closure, `get.cache`, a
   `functools.cached_property`) is found by what the code stores rather

@@ -45,6 +45,7 @@ from diffcone.indexer.uses import (
 from diffcone.indexer.writes import apply_writes
 from diffcone.model import (
     ANY_MODULE,
+    DERIVED_ANY,
     EXTERNAL_WRITTEN,
     GRAPH_HANDLE,
     GRAPH_MODULES,
@@ -205,6 +206,12 @@ class Indexer(DynamicBounds):
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
+        self.index.write_values = {
+            pair: frozenset(values) for pair, values in self._global.write_values.items()
+        }
+        self.index.call_values = {
+            pair: frozenset(values) for pair, values in self._global.call_values.items()
+        }
         self._lazy_constants()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
@@ -883,6 +890,7 @@ class Indexer(DynamicBounds):
         for var, writers in sorted(self._use_mutations.items()):
             for writer in sorted(writers):
                 self.index.edges.add(Edge(var, writer, EdgeKind.REFERENCES, MUTATED_BY))
+                self._global.write_values.setdefault((var, writer), set()).add(DERIVED_ANY)
 
     def _outside_stars(self, records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
         """The records, and each about a name a star import may bind

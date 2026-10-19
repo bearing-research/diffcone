@@ -2352,6 +2352,70 @@ def get(backend, k):
         _CACHE[k] = backend.compute(k)
     return _CACHE[k]
 """
+# Filled through code that runs nothing of ``compute`` (audit E36).
+HELPER_LIB = """\
+_CACHE = {}
+
+
+def compute(k):
+    return k * 2
+
+
+def _put(k, v):
+    _CACHE[k] = v
+
+
+def get(k):
+    if k not in _CACHE:
+        _put(k, compute(k))
+    return _CACHE[k]
+"""
+METHOD_HELPER_LIB = """\
+_CACHE = {}
+
+
+def compute(k):
+    return k * 2
+
+
+class C:
+    def _put(self, k, v):
+        _CACHE[k] = v
+
+    def get(self, k):
+        if k not in _CACHE:
+            self._put(k, compute(k))
+        return _CACHE[k]
+
+
+def get(k):
+    return C().get(k)
+"""
+TWO_HELPERS_LIB = HELPER_LIB.replace(
+    "def _put(k, v):\n    _CACHE[k] = v\n",
+    "def _put2(k, v):\n    _CACHE[k] = v\n\n\ndef _put(k, v):\n    _put2(k, v)\n",
+)
+FILLER_LIB = HELPER_LIB.replace(
+    "def _put(k, v):\n    _CACHE[k] = v\n",
+    "def _fill(d, k, v):\n    d[k] = v\n\n\ndef _put(k, v):\n    _fill(_CACHE, k, v)\n",
+)
+APPEND_LIB = """\
+_CACHE = []
+
+
+def compute(k):
+    return k * 2
+
+
+def _keep(v):
+    _CACHE.append(v)
+
+
+def get(k):
+    if not _CACHE:
+        _keep(compute(k))
+    return _CACHE[0]
+"""
 USES = "from pkg.lib import get\n\n\ndef test_{0}():\n    assert get(2) == 4\n"
 USES_METHOD = (
     "from pkg.lib import Backend, get\n\n\ndef test_{0}():\n    assert get(Backend(), 2) == 4\n"
@@ -2370,15 +2434,30 @@ CACHE_TESTS = {
         (CACHE_LIB, USES, ("k * 2", "k + k")),
         (CHAIN_LIB, USES, ("k * 2", "k + k")),
         (METHOD_LIB, USES_METHOD, ("k * 2", "k + k")),
+        (HELPER_LIB, USES, ("k * 2", "k + k")),
+        (METHOD_HELPER_LIB, USES, ("k * 2", "k + k")),
+        (TWO_HELPERS_LIB, USES, ("k * 2", "k + k")),
+        (APPEND_LIB, USES, ("k * 2", "k + k")),
+        (FILLER_LIB, USES, ("k * 2", "k + k")),
     ],
-    ids=["direct", "through a helper", "a method by name"],
+    ids=[
+        "direct",
+        "through a helper",
+        "a method by name",
+        "e36 stored by a helper",
+        "e36 stored by a method",
+        "e36 two helpers down",
+        "e36 appended by a helper",
+        "e36 through a writer of its parameter",
+    ],
 )
 def test_w7_a_module_cache_filled_by_an_earlier_test(repo, lib, uses, edit):
     """test_m1 and test_m2 run between test_a and test_z in both orders, so
     the cache is always filled when they run and their records never hold
     ``compute``: the reverse-order check cannot flag them. ``get`` can run
-    ``compute`` and writes ``_CACHE``, so the tests that read ``_CACHE``
-    are selected."""
+    ``compute`` and writes ``_CACHE``, or hands what it computed to code
+    that does (audit E36), so the tests that read ``_CACHE`` are
+    selected."""
     second = uses.format("m2").split("\n\n\n", 1)[1]
     base = repo.commit(
         {
@@ -2399,6 +2478,211 @@ def test_w7_a_module_cache_filled_by_an_earlier_test(repo, lib, uses, edit):
     assert "stores into pkg.lib._CACHE" in next(
         r.detail for r in reasons_of(plan, "tests/test_m.py::test_m1")
     )
+
+
+# What ``get`` writes into ``_SEEN`` (audit E35): only a value derived from
+# code that can run ``compute`` may hold what it computed for a later test.
+SEEN_LIB = """\
+_SEEN = {{}}
+
+
+def compute(k):
+    return k * 2
+
+
+def get(k):
+{0}
+    return compute(k)
+
+
+def seen():
+    return len(_SEEN)
+
+
+def _fill(d, key):
+    d[key] = True
+
+
+def _mark(key):
+    _SEEN[key] = True
+"""
+SEEN_TESTS = {
+    "tests/test_a.py": "from pkg.lib import get\n\n\ndef test_a():\n    assert get(2) == 4\n",
+    "tests/test_s.py": "from pkg.lib import seen\n\n\ndef test_s():\n    assert seen() >= 0\n",
+}
+
+
+@pytest.mark.parametrize(
+    "write, stored",
+    [
+        ('    _SEEN["k"] = True', False),
+        ("    _SEEN.clear()", False),
+        ('    _SEEN.setdefault("k", [])', False),
+        ("    _SEEN[k] = True", False),
+        ('    _fill(_SEEN, "k")', False),
+        ("    _fill(_SEEN, compute(k))", True),
+        ('    _mark("k")', False),
+        ("    _mark(compute(k))", True),
+        ("    _mark(k)", False),
+        ("    _SEEN[k] = compute(k)", True),
+        ("    _SEEN[compute(k)] = True", True),
+        ("    v = compute(k)\n    _SEEN[k] = v", True),
+        ("    if compute(k) > 2:\n        _SEEN[k] = True", True),
+        ("    for x in range(compute(k)):\n        _SEEN[x] = True", True),
+        ("    with open(str(compute(k))) as f:\n        _SEEN[k] = f", True),
+        ("    _SEEN.update({k: compute(k)})", True),
+        ("    _SEEN.update(k=get)", True),
+        ('    compute(k)\n    _SEEN["k"] = True', True),
+        ('    if compute(k) > 2:\n        return 0\n    _SEEN["k"] = True', True),
+        ('    try:\n        compute(k)\n    except ValueError:\n        _SEEN["k"] = True', True),
+        ('    compute(k) and _SEEN.setdefault("k", 1)', True),
+        ('    for _ in range(2):\n        _SEEN["k"] = True\n        compute(k)', True),
+    ],
+    ids=[
+        "a literal",
+        "emptied",
+        "a literal key",
+        "keyed by a parameter",
+        "through a writer of its parameter",
+        "the result through a writer of its parameter",
+        "a helper handed a literal",
+        "a helper handed the result",
+        "a helper handed a parameter",
+        "the result",
+        "the key",
+        "through a local",
+        "under a branch on it",
+        "in a loop over it",
+        "in a with on it",
+        "a mutator's argument",
+        "the chain handed on",
+        "after a call to it",
+        "after an early return",
+        "in a handler",
+        "in an expression with it",
+        "in a loop calling it",
+    ],
+)
+def test_e35_a_variable_written_by_the_chain_holds_only_what_derives_from_it(repo, write, stored):
+    """``get`` can run ``compute`` and writes ``_SEEN``; ``test_s`` reads
+    ``_SEEN`` through ``seen`` and runs nothing of ``compute``. A store of
+    what does not derive from the chain holds nothing ``compute`` changes;
+    a parameter is what the test handed, and code the function runs before
+    the write (a call that raises, an early return) decides whether it is
+    made."""
+    lib = SEEN_LIB.format(write)
+    base = repo.commit({**NOOP_BASE, **SEEN_TESTS, "pkg/lib.py": lib})
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("return k * 2", "return k + k")})
+    plan = _noop_plan(repo, base, head, evidence)
+    expected = {"tests/test_a.py::test_a"}
+    if stored:
+        expected.add("tests/test_s.py::test_s")
+    assert selected(plan) == expected
+
+
+@pytest.mark.parametrize("caller", ["get(compute(k))", "get(k + 1)"])
+def test_e35_a_parameter_holds_what_a_caller_in_the_chain_computed(repo, caller):
+    """``get`` stores its parameter; ``twice`` hands it ``compute``'s result,
+    so what ``_SEEN`` holds may change with ``compute``. Handed ``k + 1``,
+    it holds what the test computed."""
+    lib = SEEN_LIB.format("    _SEEN[k] = True") + f"\n\ndef twice(k):\n    return {caller}\n"
+    tests = {
+        **SEEN_TESTS,
+        "tests/test_a.py": (
+            "from pkg.lib import twice\n\n\ndef test_a():\n    assert twice(2) > 0\n"
+        ),
+    }
+    base = repo.commit({**NOOP_BASE, **tests, "pkg/lib.py": lib})
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("return k * 2", "return k + k")})
+    plan = _noop_plan(repo, base, head, evidence)
+    expected = {"tests/test_a.py::test_a"}
+    if caller == "get(compute(k))":
+        expected.add("tests/test_s.py::test_s")
+    assert selected(plan) == expected
+
+
+ROUTING = """\
+class Router:
+    def __init__(self):
+        self.routes = {}
+
+    def put(self, path):
+        def deco(f):
+            self.routes[path] = f
+            return f
+
+        return deco
+
+
+router = Router()
+
+
+def path():
+    return "/x"
+"""
+ENDPOINT = """\
+from pkg.lib import compute
+from pkg.routing import path, router
+
+
+@router.put({0})
+def endpoint(k):
+{1}    return compute(k)
+"""
+ROUTER_TESTS = {
+    "tests/test_a.py": (
+        "from pkg.endpoint import endpoint\n\n\ndef test_a():\n    assert endpoint(2) == 4\n"
+    ),
+    "tests/test_r.py": (
+        "import pkg.endpoint\nfrom pkg.routing import router\n\n\n"
+        "def test_r():\n    assert router.routes\n"
+    ),
+    "tests/test_c.py": (
+        "import pkg.endpoint\nfrom pkg.routing import router\n\n\n"
+        "def test_c():\n    assert router.routes['/x'](2) == 4\n"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "edit, decorator, body, readers",
+    [
+        ("compute", "'/x'", "", False),
+        ("path", "path()", "", True),
+        ("compute", "'/x'", "    router.put(str(compute(k)))(endpoint)\n", True),
+    ],
+    ids=["a body change", "the decorator's own call changed", "the body registers too"],
+)
+def test_e32_a_decorators_registration_is_no_stored_result(repo, edit, decorator, body, readers):
+    """``@router.put('/x')`` writes ``router`` when the ``def`` runs, at
+    import, and stores the function: a body change of what ``endpoint``
+    runs reaches the tests that run it (``test_a``, ``test_c`` through the
+    router), not ``test_r``, which only reads the router. A change to code
+    the decorator runs reaches it through the import rules, and a body
+    that writes the router too stores what it computes."""
+    lib = "def compute(k):\n    return k * 2\n"
+    files = {
+        **NOOP_BASE,
+        **ROUTER_TESTS,
+        "pkg/lib.py": lib,
+        "pkg/routing.py": ROUTING,
+        "pkg/endpoint.py": ENDPOINT.format(decorator, body),
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    changed = (
+        {"pkg/lib.py": lib.replace("k * 2", "k + k")}
+        if edit == "compute"
+        else {"pkg/routing.py": ROUTING.replace('return "/x"', 'return "/" + "x"')}
+    )
+    head = repo.commit(changed)
+    plan = _noop_plan(repo, base, head, evidence)
+    expected = {"tests/test_a.py::test_a", "tests/test_c.py::test_c"}
+    if readers:
+        expected.add("tests/test_r.py::test_r")
+    assert selected(plan) == expected
 
 
 HANDLER_TABLES = (

@@ -273,6 +273,9 @@ STORE_PARAM = "@param"
 STORE_CLOSURE = "@closure"
 DERIVED_ANY = "*"
 DERIVED_NAME = "name:"
+# What a write of a module variable stores derives from a parameter of the
+# writer: what its caller handed it (SourceIndex.write_values).
+DERIVED_PARAM = "@param"
 # A lifecycle dependency ``dynamic:<module>`` says the target runs code with
 # that module's globals (a doctest): it is affected by any impact-carrying
 # change in the module's import closure, as a dynamic reference is.
@@ -466,6 +469,25 @@ class SourceIndex:
     # Static planning treats that block as import-time code like any other;
     # discovery leaves it out of what runs while pytest collects.
     main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
+    # (variable, function) of a ``mutated_by`` edge -> what the function's
+    # writes there derive from (as for ``stores``: symbols, ``name:<n>``,
+    # ``*``, and ``@param`` for a parameter of the function): the values
+    # and keys they store and what decides that they run; for a write
+    # through a call that writes what it is handed, the call. Empty for a
+    # write that stores nothing computed (``REG.clear()``, ``_seen.add(1)``
+    # first thing) and for one only the function's decorators or defaults
+    # make (``@router.put("/x")``, made when the ``def`` runs); ``*`` for a
+    # use record. A pair with no entry stores anything. Static planning
+    # does not use these; evidence mode follows a write as a store of what
+    # code able to run a change computed only when it derives from that
+    # code (``_stored_results``; audit E32, E35, E36).
+    write_values: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
+    # (function, called name) -> what the function's calls of that name
+    # (``f(...)``, ``x.f(...)``, ``C(...)`` by ``C``) hand on and what
+    # decides that they run, in the same terms: whether code the function
+    # calls may store what the function computed (audit E36). Empty for a
+    # call in the function's decorators or defaults.
+    call_values: dict[tuple[str, str], frozenset[str]] = field(default_factory=dict)
     # (function, where, derived): a store of a computed value into state
     # outliving the call that no ``mutated_by`` edge names (diffcone.indexer
     # .writes: the attribute written through ``self``, ``cls``, a parameter,

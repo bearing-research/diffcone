@@ -218,6 +218,17 @@ class _Output:
     # (module, kind, target): what a module's own code does only under
     # ``if __name__ == "__main__":`` (SourceIndex.main_guarded).
     main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
+    # (variable, writer) of each ``mutated_by`` edge -> what its writes store
+    # (SourceIndex.write_values).
+    write_values: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    # (function, called name) -> what those calls hand on
+    # (SourceIndex.call_values).
+    call_values: dict[tuple[str, str], set[str]] = field(default_factory=dict)
+    # A ``passes`` record handing on a module variable or a module -> what
+    # its calls derive from (the callee, the arguments, what decides that
+    # they run): what a write through it stores. Nothing for a call in a
+    # function's decorators or defaults (diffcone.indexer.writes).
+    pass_values: dict[tuple[str, str, str, str, str, bool], set[str]] = field(default_factory=dict)
 
     def merge(self, other: _Output) -> None:
         self.edges |= other.edges
@@ -255,6 +266,12 @@ class _Output:
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
+        for pair, values in other.write_values.items():
+            self.write_values.setdefault(pair, set()).update(values)
+        for pair, values in other.call_values.items():
+            self.call_values.setdefault(pair, set()).update(values)
+        for record, values in other.pass_values.items():
+            self.pass_values.setdefault(record, set()).update(values)
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -327,6 +344,9 @@ def _output_to_dict(out: _Output) -> dict:
         "process_writes": sorted(list(w) for w in out.process_writes),
         "rebound": sorted(out.rebound),
         "main_guarded": sorted(list(m) for m in out.main_guarded),
+        "write_values": sorted([v, w, sorted(d)] for (v, w), d in out.write_values.items()),
+        "call_values": sorted([f, n, sorted(d)] for (f, n), d in out.call_values.items()),
+        "pass_values": sorted([list(p), sorted(d)] for p, d in out.pass_values.items()),
         "class_attributes": {
             c: dict(sorted(a.items())) for c, a in sorted(out.class_attributes.items())
         },
@@ -409,6 +429,11 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.process_writes = {(s, w) for s, w in data["process_writes"]}
     out.rebound = set(data["rebound"])
     out.main_guarded = {(a, b, c) for a, b, c in data["main_guarded"]}
+    out.write_values = {(v, w): set(d) for v, w, d in data["write_values"]}
+    out.call_values = {(f, n): set(d) for f, n, d in data["call_values"]}
+    out.pass_values = {
+        (a, b, c, d, e, bool(f)): set(values) for (a, b, c, d, e, f), values in data["pass_values"]
+    }
     out.returns = {f: tuple(c) for f, c in data["returns"].items()}
     out.external_returns = set(data["external_returns"])
     out.func_params = {
