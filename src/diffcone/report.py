@@ -20,7 +20,9 @@ from diffcone.planner import (
 
 # 2: unresolved_relationships.matched_affected_symbols (was matched_changed_symbols)
 # 3: analysis.evidence (null for a static plan) and the evidence reason rules
-SCHEMA_VERSION = 3
+# 4: target records drop lifecycle_dependencies (audit E37: 634 of a pandas
+#    plan's 709 MB; discovery's output keeps them)
+SCHEMA_VERSION = 4
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
@@ -61,7 +63,6 @@ def _target_dict(decision: Decision) -> dict[str, Any]:
         "runner": t.runner,
         "runner_id": t.runner_id,
         "entry_symbol": t.entry_symbol,
-        "lifecycle_dependencies": list(t.lifecycle_dependencies),
     }
 
 

@@ -282,7 +282,8 @@ DERIVED_PARAM = "@param"
 DYNAMIC_DEPENDENCY = "dynamic:"
 
 
-@dataclass(frozen=True, order=True)
+# Slots: a plan's graph holds millions (audit E37: 112 bytes each without).
+@dataclass(frozen=True, order=True, slots=True)
 class Edge:
     source: str
     target: str

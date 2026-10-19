@@ -1543,13 +1543,18 @@ machine for 40 to 90 minutes. Checkpoints in the plan showed where:
 | peak footprint | 21 GB | 6.3 GB |
 | warm plan, wall clock | 2 478 s (swapping) | 411 s |
 
+Then (roadmap item 22) one `calls:` string per node, caller-effect edges
+added as made, `slots=True` on `Edge`, and the plan's target records
+without `lifecycle_dependencies` (`schema_version` 4). Exact peaks from
+`/usr/bin/time -l`, both warm: 7.09 GB and 121 s on main (6370331; the
+411 s above was measured under a sampler), 5.50 GB and 109 s after; the
+plan JSON 850 MB, now 40 MB, identical to main's with the field removed.
+
 * 654 lifecycle dependencies are common to every target (code run at
   collection that writes process-global state); each target carried its
   own edge to each, and its own copy of each name in the cached discovery
   result. Each `<module>.<imports>` node repeated its edges 4.5 times.
 * The four item 19 plans are byte-identical to main's (1c0bf93).
-* What is left (roadmap item 22): the caller-effect edges, and the plan
-  JSON itself (850 MB for this pair).
 
 ## What the chain stored: E32, E35, E36 (2026-10-18)
 

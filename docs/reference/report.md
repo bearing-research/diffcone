@@ -2,13 +2,13 @@
 
 `diffcone plan` prints a JSON report (`--format text` prints a readable
 summary of the same information). The report's format is versioned by
-`schema_version`, currently `3`.
+`schema_version`, currently `4`.
 
 ## Top-level fields
 
 | Field | Contents |
 |---|---|
-| `schema_version` | The report format version, `3`. |
+| `schema_version` | The report format version, `4`. |
 | `status` | `complete`, or `degraded` when an analysis error made diffcone select every target. |
 | `discovery_incomplete` | `true` when the runner may collect tests diffcone couldn't see; the plan then exits with code `3`. |
 | `analysis` | What was compared: both snapshots, the source roots, whether uncommitted files were analysed, counts, and the recording used, if any. |
@@ -96,16 +96,19 @@ changes something the tests read.
   "runner": "pytest",
   "runner_id": "tests/test_calc.py::test_square",
   "entry_symbol": "tests.test_calc.test_square",
-  "lifecycle_dependencies": ["tests.test_calc"],
   "rules": ["dependency"],
   "conservative": false,
   "affected_dependencies": ["tests.test_calc.test_square"]
 }
 ```
 
-`rules` says how the target was selected. `conservative` is `true` when
-any of them is a fallback: something diffcone couldn't bound, so it
-selected the target to be safe.
+`rules` says how the target was selected. The fixtures, setup and
+modules a target depends on aren't repeated here: they're in discovery's
+output (`diffcone discover -o targets.json`), and the ones that selected
+it are in `dependency_explanations`.
+
+`conservative` is `true` when any of the rules is a fallback: something
+diffcone couldn't bound, so it selected the target to be safe.
 
 | Rule | Fallback | Meaning |
 |---|---|---|

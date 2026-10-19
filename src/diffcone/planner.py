@@ -1006,7 +1006,25 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
     directly or through what it calls, may differ. The edges keep the kind
     of the call edge they come from, so a name match on the way shows in the
     rule; explanations show them as ``called_by`` steps (_call_steps)."""
-    added: list[tuple[Edge, tuple[str, ...]]] = []
+    # One name per pseudo-node, not per edge (audit E37: 4.7M edges on
+    # pandas, 160k nodes).
+    names: dict[str, str] = {}
+
+    def calls(node: str) -> str:
+        name = names.get(node)
+        if name is None:
+            name = names[node] = CALLS + node
+        return name
+
+    # The writes are read off the graph before any edge is added, and every
+    # edge is added in the order it was made, so ``freeze`` sorts ties as
+    # it would have.
+    mutated = [
+        (Edge(source, calls(target), edge.kind, MUTATED_BY), revs)
+        for target, adj in graph.reverse.items()
+        for source, edge, revs in adj
+        if edge_mark(edge) == MUTATED_BY
+    ]
     for source, adj in list(graph.forward.items()):
         for target, edge, revs in adj:
             if not _is_call(edge):
@@ -1015,14 +1033,10 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
                 continue
             detail = f"{CALLER}:{edge.detail}" if edge.kind == EdgeKind.DECLARED else CALLER
             if not _is_name_node(source):
-                added.append((Edge(CALLS + target, source, edge.kind, detail), revs))
+                graph.add(Edge(calls(target), source, edge.kind, detail), revs)
             if source not in module_nodes:
-                added.append((Edge(CALLS + target, CALLS + source, edge.kind, detail), revs))
-    for target, adj in list(graph.reverse.items()):
-        for source, edge, revs in adj:
-            if edge_mark(edge) == MUTATED_BY:
-                added.append((Edge(source, CALLS + target, edge.kind, MUTATED_BY), revs))
-    for edge, revs in added:
+                graph.add(Edge(calls(target), calls(source), edge.kind, detail), revs)
+    for edge, revs in mutated:
         graph.add(edge, revs)
 
 
@@ -1301,11 +1315,9 @@ def plan_from_indexes(
             for target in module_reach[module]
             for symbol in (target, *members.get(target, ()))
         }
+        detail = f"what {module} imports binds"
         for symbol in sorted(bound):
-            graph.add(
-                Edge(node, symbol, EdgeKind.REFERENCES, f"what {module} imports binds"),
-                ("base", "head"),
-            )
+            graph.add(Edge(node, symbol, EdgeKind.REFERENCES, detail), ("base", "head"))
 
     # Dependencies the project declares (diffcone.toml): the analysis cannot
     # see them, and they only add edges, so they widen selection and never

@@ -18,6 +18,14 @@ selection rules.
   tests that read it or ran its code in one with. The report lists each
   snapshot's patterns (`analysis.<side>.excluded`).
 
+### Report
+
+- `schema_version` 4: selected and unselected target records no longer
+  list `lifecycle_dependencies`. Each target repeated every fixture,
+  hook and module it depends on, nine tenths of a large suite's plan
+  (pandas: 850 MB, now 40 MB). Discovery's output still lists them, and
+  the ones that selected a target are in its explanation.
+
 ### Execution evidence
 
 - `collect` warns when none of the tests it recorded is among the tests
@@ -39,9 +47,10 @@ selection rules.
   carried its own copy of the dependencies all tests share (code run
   while pytest collects), in the dependency graph and in the cached
   discovery results. On pandas (25 620 tests) a plan peaked at 21 GB,
-  more than a standard CI runner has; it now peaks at 6.6 GB, and a
-  cached discovery result is 9 MB instead of 680 MB. Plans are
-  unchanged. Discovery cached by an earlier version is redone once.
+  more than a standard CI runner has, and took up to 90 minutes; it now
+  peaks at 5.5 GB and takes under two minutes, and a cached discovery
+  result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
+  cached by an earlier version is redone once.
 - With a recording, a module cache filled through a helper that is
   handed the value (`_put(key, compute(key))`, with `_put` storing it, a
   method, a chain of helpers, an `append`) was not followed: a test that
