@@ -393,9 +393,10 @@ STATE_READERS = {
 FILL_HERE = "from pkg.state import fill  # noqa: F401\n"
 
 
-def _state_plan(repo, state, lib=FILL_HERE, edit=("'x'", "'y'")):
+def _state_plan(repo, state, lib=FILL_HERE, edit=("'x'", "'y'"), extra=None):
     """Plan an edit of whichever module holds ``edit[0]``: the selection."""
     files = {**UNRELATED_BASE, **STATE_READERS, "pkg/state.py": state, "pkg/lib.py": lib}
+    files.update(extra or {})
     path = "pkg/lib.py" if edit[0] in lib else "pkg/state.py"
     assert edit[0] in files[path]
     base = repo.commit(files)
@@ -596,6 +597,221 @@ def test_a_write_into_an_object_of_its_own_changes_no_shared_state(repo, case):
     """The bounds of the rules above: the readers of what was copied, or of
     the class, are not selected."""
     assert _state_plan(repo, OWN_OBJECTS[case]) == {"tests/test_a.py::test_a"}
+
+
+# A module variable whose one binding is an immutable value (a string, a
+# number, a tuple of such, a compiled pattern) cannot be changed in place:
+# whatever ``fill`` does with it, or with what its methods return, its
+# readers read what they read before. Rebinding it is no write in place: a
+# variable some code binds anew, or bound to anything else, keeps every
+# writer (audit round 6, T20).
+WRITER_HERE = "\n\ndef _write(d, k):\n    d[k] = 'x'\n"
+
+
+def _constant(value, read="_C", prelude=""):
+    return f"{prelude}_C = {value}\n\n\ndef peek(k):\n    return {read}\n"
+
+
+def _lib(body, prelude=""):
+    head = f"{prelude}from pkg import state\nfrom pkg.state import _C{WRITER_HERE}"
+    return f"{head}\n\ndef fill(k):\n{body}    return 'x'\n"
+
+
+IMMUTABLE_HANDLED = {
+    "a string handed to a writer": (_constant("'CREATE TABLE t (a)'"), _lib("    _write(_C, k)\n")),
+    "a string handed to an unknown receiver's method": (
+        _constant("'CREATE TABLE t (a)'"),
+        _lib(
+            "    conn.executescript(_C)\n",
+            "class Conn:\n    def __init__(self, inner):\n        self._inner = inner\n\n"
+            "    def executescript(self, sql):\n        return self._inner.execute(sql)\n\n\n"
+            "class Batch:\n    def execute(self, items):\n        items.append(1)\n\n\n"
+            "conn = Conn(object())\n",
+        ),
+    ),
+    "a dedented string": (
+        _constant(
+            "textwrap.dedent('''\\n    CREATE TABLE t (a)\\n''')", prelude="import textwrap\n\n"
+        ),
+        _lib("    _write(_C, k)\n"),
+    ),
+    "a float handed on as a keyword": (
+        _constant("20.0"),
+        _lib(
+            "    r = get(k)\n    r.status = 'x'\n",
+            "import requests\n\n\ndef get(url):\n    return requests.get(url, timeout=_C)\n\n\n",
+        ),
+    ),
+    "an f-string and a concatenation": (
+        _constant("f'{_P}:key' + '!' + _P.upper()", prelude="_P = 'pkg'\n"),
+        _lib("    _write(_C, k)\n"),
+    ),
+    "a frozen tuple": (_constant("('a', ('b', 1), -2, None)"), _lib("    _write(_C, k)\n")),
+    "an element of a frozen tuple": (
+        _constant("('a', ('b', 1))"),
+        _lib("    for kind in _C:\n        _write(kind, k)\n"),
+    ),
+    "a frozenset": (
+        _constant("frozenset({('a', 1), ('b', 2)})"),
+        _lib("    c = _C\n    c.update(k)\n"),
+    ),
+    "a compiled pattern's results": (
+        _constant("re.compile(r'(a)')", "_C.pattern", "import re\n\n"),
+        _lib("    found = _C.findall(k)\n    found.append('x')\n"),
+    ),
+    "what a function returns of a pattern's match": (
+        _constant("re.compile(r'(a)')", "_C.pattern", "import re\n\n"),
+        _lib(
+            "    named(k).append('x')\n",
+            "def named(k):\n    m = _C.match(k)\n    return m.groups()\n\n\n",
+        ),
+    ),
+    "a pattern through the module": (
+        _constant("compile(r'(a)')", "_C.pattern", "from re import compile\n\n"),
+        _lib("    m = state._C.match(k)\n    m.extra = 'x'\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(IMMUTABLE_HANDLED))
+def test_t20_an_immutable_variable_has_no_writers(repo, case):
+    """Nothing ``fill`` does reaches the constant's readers."""
+    assert _state_plan(repo, *IMMUTABLE_HANDLED[case]) == {"tests/test_a.py::test_a"}
+
+
+APPEND = "    state._C.append('x')\n"
+STILL_WRITTEN = {
+    "rebound under global": (
+        _constant("''") + "\n\ndef reset():\n    global _C\n    _C = []\n",
+        _lib(APPEND),
+    ),
+    "rebound under global by the changed code": (
+        _constant("''") + "\n\ndef fill(k):\n    global _C\n    _C = 'x'\n",
+        FILL_HERE,
+    ),
+    "augmented under global by the changed code": (
+        _constant("''") + "\n\ndef fill(k):\n    global _C\n    _C += 'x'\n",
+        FILL_HERE,
+    ),
+    "a tuple holding a list": (_constant("([],)"), _lib("    _C[0].append('x')\n")),
+    "bound again at module level": (_constant("''") + "\n\n_C = []\n", _lib(APPEND)),
+    "bound in two branches": (
+        "try:\n    _C = ''\nexcept ImportError:\n    _C = []\n\n\ndef peek(k):\n    return _C\n",
+        _lib(APPEND),
+    ),
+    "bound to a name": (_constant("_D", prelude="_D = []\n"), _lib(APPEND)),
+    "bound to a call of project code": (
+        _constant("make()", prelude="def make():\n    return []\n\n\n"),
+        _lib(APPEND),
+    ),
+    "bound to a rebound constant": (
+        _constant("_D", prelude="_D = ''\n") + "\n\ndef reset():\n    global _D\n    _D = []\n",
+        _lib(APPEND),
+    ),
+    "a module attribute bound from another module": (
+        _constant("''"),
+        _lib(APPEND, "def init():\n    state._C = []\n\n\n"),
+    ),
+    "augmented from another module": (_constant("''"), _lib("    state._C += 'x'\n")),
+    "setattr on the module": (
+        _constant("''"),
+        _lib(APPEND, "def init():\n    setattr(state, '_C', [])\n\n\n"),
+    ),
+    "setattr on the module by a computed name": (
+        _constant("''"),
+        _lib(APPEND, "def init(name):\n    setattr(state, name, [])\n\n\n"),
+    ),
+    "the module's __dict__": (
+        _constant("''"),
+        _lib(APPEND, "def init():\n    state.__dict__['_C'] = []\n\n\n"),
+    ),
+    "vars() of the module": (
+        _constant("''"),
+        _lib(APPEND, "def init():\n    vars(state)['_C'] = []\n\n\n"),
+    ),
+    "sys.modules": (
+        _constant("''"),
+        _lib(APPEND, "import sys\n\n\ndef init():\n    sys.modules['pkg.state']._C = []\n\n\n"),
+    ),
+    "globals() in its module": (
+        _constant("''") + "\n\ndef reset():\n    globals()['_C'] = []\n",
+        _lib(APPEND),
+    ),
+    "the module handed to a writer": (
+        _constant("''"),
+        _lib(APPEND, "def init(mod):\n    mod._C = []\n\n\ndef setup():\n    init(state)\n\n\n"),
+    ),
+    "import_module": (
+        _constant("''"),
+        _lib(
+            APPEND,
+            "import importlib\n\n\n"
+            "def init():\n    importlib.import_module('pkg.state')._C = []\n\n\n",
+        ),
+    ),
+    "a module found at run time": (
+        _constant("''"),
+        _lib(
+            APPEND,
+            "import importlib\n\n\n"
+            "def init(name):\n    importlib.import_module(name)._C = []\n\n\n",
+        ),
+    ),
+    "another name for the module": (
+        _constant("''"),
+        _lib(APPEND, "def init():\n    m = state\n    m._C = []\n\n\n"),
+    ),
+    "the module held by another object": (
+        _constant("''"),
+        _lib(
+            APPEND,
+            "class Holder:\n    def __init__(self, mod):\n        self.mod = mod\n\n"
+            "    def reset(self):\n        self.mod._C = []\n\n\n"
+            "HOLDER = Holder(state)\n\n\n",
+        ),
+    ),
+    "the module handed to a library": (
+        _constant("''"),
+        _lib(APPEND, "import somelib\n\n\ndef init():\n    somelib.configure(state)\n\n\n"),
+    ),
+    "a patch never stopped": (
+        _constant("''"),
+        _lib(
+            APPEND,
+            "from unittest import mock\n\n\n"
+            "def init():\n    mock.patch.object(state, '_C', []).start()\n\n\n",
+        ),
+    ),
+    "a shadowed re": (
+        _constant("re.compile(r'(a)')", "_C.pattern", "from pkg import re\n\n"),
+        _lib("    found = _C.findall(k)\n    found.append('x')\n"),
+    ),
+}
+
+
+def test_t20_an_imported_constant_bound_anew_where_imported(repo):
+    """``from pkg.state import _C`` then ``_C = []``: the importing module's
+    own ``_C`` is a list its readers see written."""
+    lib = (
+        "from pkg.state import _C\n\n_C = []\n\n\n"
+        "def fill(k):\n    _C.append('x')\n\n\ndef peek(k):\n    return _C\n"
+    )
+    readers = {
+        "tests/test_z.py": "from pkg.lib import peek\n\n\ndef test_z():\n    peek('k')\n",
+        "benchmarks/bench_read.py": (
+            "from pkg.lib import peek\n\n\ndef time_peek():\n    peek('k')\n"
+        ),
+    }
+    assert _state_plan(repo, _constant("''"), lib, extra=readers) == STATE_SELECTED
+
+
+@pytest.mark.parametrize("case", list(STILL_WRITTEN))
+def test_t20_a_variable_bound_anew_keeps_its_writers(repo, case):
+    """The bounds of the rule above: a variable some code may bind to a
+    mutable object, or whose value is not immutable by construction, keeps
+    the writers its readers depend on."""
+    extra = {"pkg/re.py": "def compile(p):\n    return []\n"} if case == "a shadowed re" else {}
+    assert _state_plan(repo, *STILL_WRITTEN[case], extra=extra) == STATE_SELECTED
 
 
 # ------------------------------------------------- import-time writes to another module's variables

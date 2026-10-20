@@ -557,3 +557,291 @@ def make_evaluator(
         )
 
     return evaluate
+
+
+# --------------------------------------------------------------------------- immutable values
+# A module variable whose one binding is a value nothing can change in place
+# (audit round 6, T20): a write "into" it, or into what its methods return,
+# changes nothing its readers read. ``module_immutables`` is pass 1's record;
+# whether such a variable is immutable is decided after pass 2, once every
+# module's rebindings are known (Indexer._immutable_variables).
+
+# Standard-library calls whose result nothing can change in place, whatever
+# they are handed: a compiled pattern, a string, a number, a path.
+IMMUTABLE_RESULTS = frozenset(
+    {
+        "re.compile",
+        "textwrap.dedent",
+        "inspect.cleandoc",
+        "datetime.timedelta",
+        "decimal.Decimal",
+        "fractions.Fraction",
+        "pathlib.Path",
+        "pathlib.PurePath",
+        "pathlib.PurePosixPath",
+        "pathlib.PureWindowsPath",
+        "pathlib.PosixPath",
+        "pathlib.WindowsPath",
+        "uuid.UUID",
+        "os.path.join",
+        "os.path.dirname",
+        "os.path.basename",
+        "os.path.abspath",
+        "os.path.realpath",
+        "os.path.normpath",
+        "os.path.expanduser",
+    }
+)
+# Calls whose result is immutable when what they are handed is (a
+# ``datetime`` keeps the ``tzinfo`` object it is given, a ``tuple`` its
+# items).
+IMMUTABLE_OF_IMMUTABLE = frozenset(
+    {"datetime.date", "datetime.datetime", "datetime.time", "datetime.timezone"}
+)
+IMMUTABLE_BUILTINS = frozenset(
+    {"int", "float", "complex", "str", "bytes", "bool", "tuple", "frozenset", "range"}
+)
+# Methods of a string, bytes, number, tuple or path that give such a value
+# again (``", ".join(...)``, ``"{}".format(...)``, ``p.with_suffix(...)``),
+# and attributes of one that are one (``p.parent``, ``pattern.pattern``).
+IMMUTABLE_METHODS = frozenset(
+    {
+        "capitalize",
+        "casefold",
+        "center",
+        "count",
+        "decode",
+        "encode",
+        "endswith",
+        "expandtabs",
+        "find",
+        "format",
+        "index",
+        "join",
+        "ljust",
+        "lower",
+        "lstrip",
+        "removeprefix",
+        "removesuffix",
+        "replace",
+        "rfind",
+        "rindex",
+        "rjust",
+        "rstrip",
+        "startswith",
+        "strip",
+        "swapcase",
+        "title",
+        "upper",
+        "zfill",
+        "absolute",
+        "expanduser",
+        "joinpath",
+        "relative_to",
+        "resolve",
+        "with_name",
+        "with_stem",
+        "with_suffix",
+    }
+)
+IMMUTABLE_ATTRIBUTES = frozenset({"parent", "name", "stem", "suffix", "pattern"})
+# Builtins that bind names of a namespace by a string (``globals()["X"] =
+# v``, ``exec(code)``, ``vars()``): a module naming one may bind any of its
+# names anew.
+_NAMESPACE_WRITERS = frozenset({"globals", "vars", "locals", "exec", "eval"})
+# What an immutable value rests on besides the module's own names: an
+# imported standard-library module (``module:re``), which no module of the
+# project may shadow.
+EXTERNAL_DEPENDENCY = "module:"
+
+
+def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+    """The module-level names bound exactly once in the module (nothing else
+    binds, deletes or declares them ``global`` anywhere in it) by an
+    assignment of a value that cannot change in place: a string, bytes,
+    number, ``None`` or ``bool`` literal, an f-string, an operator,
+    comparison, condition or subscript of such values, a tuple of them, a
+    call of ``IMMUTABLE_RESULTS``, of ``IMMUTABLE_OF_IMMUTABLE`` or of an
+    immutable builtin on them, one of the methods or attributes above, or
+    another such name. Name -> what that rests on: the module's names it
+    reads (immutable themselves only if they are, once every module is
+    known) and ``module:<m>`` per standard-library module it calls into.
+    Nothing in a module that names its namespace (``globals``, ``vars``,
+    ``exec``, ``__dict__``, ``sys.modules``) or star-imports: any of its
+    names may be bound anew there."""
+    counts: dict[str, int] = {}
+    imports: dict[str, str] = {}
+    values: dict[str, ast.expr] = {}
+    declared: set[str] = set()
+    modules_reads: set[str] = set()  # names ``x`` of ``x.modules``
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
+            return {}
+        if isinstance(node, ast.Attribute):
+            if node.attr in ("__dict__", "__globals__", "f_globals"):
+                return {}
+            if node.attr == "modules" and isinstance(node.value, ast.Name):
+                modules_reads.add(node.value.id)
+        elif isinstance(node, ast.ImportFrom):
+            if any(a.name == "*" for a in node.names):
+                return {}
+            if node.module == "sys" and any(a.name == "modules" for a in node.names):
+                return {}
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            declared.update(node.names)
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            # A walrus in a comprehension binds the enclosing scope's name.
+            declared.add(node.target.id)
+
+    def bind(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (*DEF_NODES, ast.ClassDef)):
+            bind(node.name)
+            # Its decorators, defaults, bases and annotations run here.
+            body = {id(stmt) for stmt in node.body}
+            stack.extend(c for c in ast.iter_child_nodes(node) if id(c) not in body)
+            continue
+        if isinstance(node, (ast.Lambda, *COMPREHENSIONS)):
+            continue
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                bind(name)
+                imports[name] = alias.name if alias.asname else name
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                bind(name)
+                if node.level == 0 and node.module:
+                    imports[name] = f"{node.module}.{alias.name}"
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bind(node.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bind(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bind(node.rest)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    values[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                values[node.target.id] = node.value
+        stack.extend(ast.iter_child_nodes(node))
+    if any(imports.get(name, name) == "sys" for name in modules_reads):
+        return {}  # ``sys.modules[__name__].X = v``
+    once = {name for name, n in counts.items() if n == 1 and name not in declared}
+    found: dict[str, tuple[str, ...]] = {}
+    for name, value in values.items():
+        if name not in once:
+            continue
+        rests: set[str] = set()
+        if _ImmutableValue(imports, once, counts, rests).check(value):
+            found[name] = tuple(sorted(rests))
+    return dict(sorted(found.items()))
+
+
+class _ImmutableValue:
+    """Whether a module-level expression is a value nothing can change in
+    place, given that the module's names and the modules it adds to
+    ``rests`` are what they are bound to (``module_immutables``)."""
+
+    def __init__(
+        self, imports: dict[str, str], once: set[str], counts: dict[str, int], rests: set[str]
+    ) -> None:
+        self.imports, self.once, self.counts, self.rests = imports, once, counts, rests
+
+    def check(self, expr: ast.expr | None) -> bool:
+        if expr is None:
+            return False
+        if isinstance(expr, (ast.Constant, ast.JoinedStr)):
+            return True  # an f-string is a ``str`` whatever it interpolates
+        if isinstance(expr, ast.Name):
+            if expr.id in ("__name__", "__file__", "__package__"):
+                return expr.id not in self.counts
+            if expr.id in self.once and expr.id not in self.imports:
+                self.rests.add(expr.id)
+                return True
+            return False
+        if isinstance(expr, ast.Tuple):
+            return all(self.check(e) for e in expr.elts)
+        if isinstance(expr, ast.Starred):
+            return self.check(expr.value)  # the items of an immutable value
+        if isinstance(expr, ast.BinOp):
+            return self.check(expr.left) and self.check(expr.right)
+        if isinstance(expr, ast.UnaryOp):
+            return isinstance(expr.op, ast.Not) or self.check(expr.operand)
+        if isinstance(expr, ast.BoolOp):
+            return all(self.check(v) for v in expr.values)
+        if isinstance(expr, ast.Compare):
+            if all(isinstance(op, (ast.In, ast.NotIn, ast.Is, ast.IsNot)) for op in expr.ops):
+                return True  # always a ``bool``
+            return self.check(expr.left) and all(self.check(c) for c in expr.comparators)
+        if isinstance(expr, ast.IfExp):
+            return self.check(expr.body) and self.check(expr.orelse)
+        if isinstance(expr, ast.Subscript):
+            return self.check(expr.value)
+        if isinstance(expr, ast.Attribute):
+            return expr.attr in IMMUTABLE_ATTRIBUTES and self.check(expr.value)
+        if isinstance(expr, ast.Call):
+            return self._call(expr)
+        return False
+
+    def _call(self, expr: ast.Call) -> bool:
+        if any(k.arg is None for k in expr.keywords):
+            return False  # ``**kwargs``
+        args = [*expr.args, *(k.value for k in expr.keywords)]
+        func = expr.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in IMMUTABLE_METHODS
+            and self.check(func.value)
+            and all(self.check(a) for a in args)
+        ):
+            return True
+        named = self._canonical(func)
+        if named is None:
+            return False
+        dotted, module = named
+        if dotted in IMMUTABLE_RESULTS:
+            self.rests.add(EXTERNAL_DEPENDENCY + module)
+            return True
+        if dotted in IMMUTABLE_OF_IMMUTABLE or (not module and dotted in IMMUTABLE_BUILTINS):
+            if module:
+                self.rests.add(EXTERNAL_DEPENDENCY + module)
+            # ``frozenset({"a", "b"})``, ``tuple(["a"])``: a display of
+            # immutable items is copied.
+            return all(
+                all(self.check(e) for e in a.elts)
+                if isinstance(a, (ast.List, ast.Set))
+                else self.check(a)
+                for a in args
+            )
+        return False
+
+    def _canonical(self, func: ast.expr) -> tuple[str, str] | None:
+        """The dotted name a called function is (``re.compile`` after
+        ``import re``, ``compile`` after ``from re import compile``) and the
+        module it is imported from, when only that import binds the name;
+        a builtin's name and "" when nothing binds it; None otherwise."""
+        parts: list[str] = []
+        while isinstance(func, ast.Attribute):
+            parts.insert(0, func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return None
+        head = func.id
+        if head in self.imports:
+            if head not in self.once:
+                return None
+            target = self.imports[head]
+            return ".".join([target, *parts]), target.split(".")[0]
+        if not parts and head not in self.counts and head in IMMUTABLE_BUILTINS:
+            return head, ""
+        return None

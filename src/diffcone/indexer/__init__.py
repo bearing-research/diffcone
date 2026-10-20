@@ -47,7 +47,10 @@ Supported subset (see internal/design.md):
   through a parameter or receiver the callee writes (``writes.py``); a variable filled once by the
   one function writing it, with a value nothing can see differently
   (``global V; if V is None: V = os.path.dirname(pkg.__file__)``), is a
-  lazy constant (``lazy.py``);
+  lazy constant (``lazy.py``); a variable bound once to a value nothing can
+  change in place (a string, a number, a tuple of such, ``re.compile(...)``)
+  that nothing binds anew has no writers (``literals.module_immutables``,
+  ``Indexer._immutable_variables``);
 * project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
   ``-c CODE``, and a Python command whose program cannot be named
   (``scripts.py``); a module loaded from a file by path

@@ -26,7 +26,8 @@ Pass 2 records, per function (cacheable per module):
 
 After pass 2 (``apply_writes``), a parameter handed to a callee's written
 parameter is written too, until nothing changes; then every variable handed
-to a written parameter gets a ``mutated_by`` edge to the caller, and so does
+to a written parameter gets a ``mutated_by`` edge to the caller (unless its
+value cannot change in place: Indexer._value_writes), and so does
 every variable of a module handed to one (and of its submodules: which of
 its attributes the callee writes is not recorded). A callee
 that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
@@ -817,6 +818,8 @@ def apply_writes(indexer: Resolver) -> None:
     for edge in indexer.index.edges:
         if edge.kind == EdgeKind.REFERENCES:
             edges_from[edge.source].append(edge)
+    for state, writer in sorted(out.value_writes):  # edges once every module is known
+        edges_from[state].append(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
     external_users = {x.symbol for x in indexer.index.external}
 
     def slot_param(callee: str, slot: str, bound: bool) -> str | None:
@@ -1011,7 +1014,9 @@ def apply_writes(indexer: Resolver) -> None:
             # part of its hash already.
             continue
         if writes_through(record):
-            out.edges.add(Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY))
+            # What the variable holds is written: no edge if it cannot be
+            # (Indexer._value_writes).
+            out.value_writes.add((variable, caller))
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

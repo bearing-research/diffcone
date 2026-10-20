@@ -53,6 +53,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 55: no mutated_by edge from a module variable whose one binding is an
+#     immutable value nothing binds anew (audit round 6, T20);
 # 54: writes to state held on a class, and through another name for a module
 #     variable (a local alias, a getter's result, globals()), give mutated_by
 #     edges (audit round 6, T6 and T7);
@@ -96,7 +98,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 54
+INDEX_FORMAT = 55
 
 
 def _indexer_fingerprint() -> str:

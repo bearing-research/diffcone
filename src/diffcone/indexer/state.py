@@ -85,6 +85,13 @@ class IndexerState:
         # What module uses say about modules outside the source roots (see
         # Indexer._apply_uses): (mode, module, writer symbol).
         self._use_external: set[tuple[str, str, str]] = set()
+        # Set by Indexer._apply_uses: the modules handed to code that may write
+        # any of their attributes (Indexer._immutable_variables), and the
+        # code the use records say rebinds a variable, or changes what it
+        # holds in place (Indexer._use_mutation_edges).
+        self._written_modules: set[str] = set()
+        self._use_mutations: dict[str, set[str]] = {}
+        self._use_value_mutations: dict[str, set[str]] = {}
         # Classes with an unresolved ``super().<name>``, per name (final pass).
         self._super_misses: dict[str, set[str]] = defaultdict(set)
         # Set by Indexer._apply_uses: what each module's imports make reachable

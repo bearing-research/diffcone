@@ -227,6 +227,13 @@ everything.
     on an instance's own attribute (`self.items.append(x)` where `__init__`
     sets `self.items = []`) or on a new instance (`Config().mode = m`).
 
+    A module-level constant nothing can change in place has no writers: a
+    name your module binds once, to a string, a number, a tuple of such
+    values, `re.compile(...)`, `textwrap.dedent(...)` or a path, and that no
+    code binds again (`global`, `module.NAME = ...`, `setattr`). Passing
+    `SQL` to a function, or using what `PATTERN.match(s)` returns, does not
+    make its readers depend on that code.
+
     Not followed:
 
     - an object stored away and changed later under another name

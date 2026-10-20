@@ -21,7 +21,7 @@ from diffcone.indexer.facts import (
     symbol_from_dict,
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
-from diffcone.indexer.literals import literal_base, literal_keys
+from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal_keys
 from diffcone.indexer.references import RESULT, SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
@@ -199,6 +199,7 @@ class Indexer(DynamicBounds):
             self._resolve_param_dynamics()
             apply_scripts(self)  # after the script parameters are bound
             self._use_mutation_edges()
+            self._value_writes()
             self._registrations()
             self._write_only_references()
             self._module_reach()
@@ -206,6 +207,8 @@ class Indexer(DynamicBounds):
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
+            for state, writer in sorted(self._global.value_writes):  # every one, undecided
+                self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._lazy_constants()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
@@ -514,6 +517,7 @@ class Indexer(DynamicBounds):
         literal_names = {k: _tuples(v) for k, v in record["literal_names"].items()}
         uses = tuple(UseRecord.from_list(r) for r in record["uses"])
         containers = frozenset(record["containers"])
+        immutables = {k: tuple(v) for k, v in record["immutables"].items()}
         literal_sources = {k: tuple(v) for k, v in record["literal_sources"].items()}
         lazy = {k: (str(w), tuple(n), tuple(d)) for k, (w, n, d) in record["lazy"].items()}
         env_digest = str(record["env"])
@@ -544,6 +548,7 @@ class Indexer(DynamicBounds):
         scope.alt_imports = alt_imports
         scope.members, scope.variables, scope.literal_names = members, variables, literal_names
         scope.uses, scope.containers = uses, containers
+        scope.immutables = immutables
         scope.literal_sources = literal_sources
         scope.lazy_candidates = lazy
         scope.env_digest = env_digest
@@ -580,9 +585,12 @@ class Indexer(DynamicBounds):
         anything: set[str] = set()  # the writers that may change any module
         external: set[tuple[str, str, str]] = set()  # (mode, module, writer)
         # Variable (or ``*.NAME``: every variable of the name) -> the code
-        # that changes what it holds in place or rebinds it through a module
-        # object however obtained (``_use_mutations``).
+        # that rebinds it through a module object however obtained, and the
+        # code that changes what it holds in place (``_use_mutations``; a
+        # store whose target a module found at run time may hold counts as
+        # a rebinding).
         mutated: dict[str, set[str]] = defaultdict(set)
+        changed_in_place: dict[str, set[str]] = defaultdict(set)
         # The code changing an object nothing names in place (an item stored
         # into an unpickled object, a ``gc`` list's element): it may be any
         # container variable.
@@ -677,7 +685,7 @@ class Indexer(DynamicBounds):
                     # does not see it, W26).
                     var = variable(place, (*rest, name)[0])
                     if var is not None and kind == STORE:
-                        mutated[var].add(writer)
+                        (changed_in_place if rest else mutated)[var].add(writer)
                 return
             places = self._locate_target(module, parts)
             if places is None:
@@ -698,7 +706,7 @@ class Indexer(DynamicBounds):
                 # the callee in pass 2 (indexer/writes.py).
                 var = variable(place, rest[0])
                 if var is not None and kind == MUT:
-                    mutated[var].add(writer)
+                    changed_in_place[var].add(writer)
 
         self._reach_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
@@ -754,7 +762,8 @@ class Indexer(DynamicBounds):
                             else set(parts[1:])
                         )
                         for name in names:
-                            mutated[f"{ANY}.{name}"].add(writer)
+                            held = mutated if kind == STORE else changed_in_place
+                            held[f"{ANY}.{name}"].add(writer)
                 if kind in (CALL, AS):
                     continue
                 if kind == LOADER:
@@ -810,8 +819,10 @@ class Indexer(DynamicBounds):
                     chain = target.split(".")[1:]
                     # Whichever module's variable of the first name holds
                     # what changed (``obj.OBJ.x = v`` changes ``OBJ``).
-                    if kind in (MUT, STORE):
+                    if kind == STORE and len(chain) == 1:
                         mutated[ANY + "." + chain[0]].add(writer)
+                    elif kind in (MUT, STORE):
+                        changed_in_place[ANY + "." + chain[0]].add(writer)
                     if kind in (STORE, SCOPED):
                         named[chain[-1]].add(writer)
                         if kind == STORE:
@@ -842,7 +853,9 @@ class Indexer(DynamicBounds):
             if size() == before:
                 break
         self._use_external = external
-        self._use_mutations = self._mutations(mutated, any_container)
+        self._use_mutations = self._mutations(mutated, set())
+        self._use_value_mutations = self._mutations(changed_in_place, any_container)
+        self._written_modules = set(whole)
         self._installed = installs
         self._installed_anywhere = installs_anywhere - installs
         self._attribute_modules(records, changed)
@@ -909,7 +922,66 @@ class Indexer(DynamicBounds):
                 symbol = self.index.symbols.get(root)
                 if symbol is None or root == writer or symbol.module == module:
                     continue
-                self.index.edges.add(Edge(root, writer, EdgeKind.REFERENCES, MUTATED_BY))
+                self._global.value_writes.add((root, writer))
+
+    def _value_writes(self) -> None:
+        """The ``mutated_by`` edges of changes in place of what a module
+        variable, class or function holds (``value_writes``), but none from a
+        variable that cannot change in place (``_immutable_variables``): its
+        readers read what they read before, whatever the writer does (audit
+        round 6, T20)."""
+        immutable = self._immutable_variables()
+        for state, writer in sorted(self._global.value_writes):
+            if state not in immutable:
+                self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+
+    def _immutable_variables(self) -> set[str]:
+        """The module variables whose value nothing can change in place: the
+        one binding of the name in its module is an immutable value
+        (``ModuleScope.immutables``) resting only on standard-library modules
+        no project module shadows and on such variables, and nothing may bind
+        it anew: no code rebinds it (``global``, ``mod.X = v``, ``mod.X +=
+        v``: ``rebound``, or a ``mutated_by`` edge of its own: a store through
+        the module however obtained, the module handed to code writing it),
+        and its module is handed to no code the analysis does not follow
+        (``_written_modules``). Computed over the whole index on every build
+        from facts and edges a cold and a warm build share."""
+        rebound = self._global.rebound
+        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
+        modules = self.index.modules
+        candidates: dict[str, tuple[str, tuple[str, ...]]] = {}
+        for module, scope in self.scopes.items():
+            if module in self._written_modules:
+                continue
+            for name, rests in scope.immutables.items():
+                var = scope.variables.get(name)
+                symbol = self.index.symbols.get(var) if var is not None else None
+                if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
+                    candidates[symbol.id] = (module, rests)
+        decided: dict[str, bool] = {}
+
+        def immutable(var: str, path: frozenset[str]) -> bool:
+            if var in decided:
+                return decided[var]
+            found = var in candidates and var not in rebound and var not in written
+            if found:
+                module, rests = candidates[var]
+                for rest in rests:
+                    if rest.startswith(EXTERNAL_DEPENDENCY):
+                        top = rest[len(EXTERNAL_DEPENDENCY) :]
+                        if any(m == top or m.startswith(top + ".") for m in modules):
+                            found = False  # a project module of that name
+                    else:
+                        other = self.scopes[module].variables.get(rest)
+                        if other is None or other in path or not immutable(other, path | {var}):
+                            found = False
+                    if not found:
+                        break
+            if not path or found:  # a cycle's answer depends on where it was entered
+                decided[var] = found
+            return found
+
+        return {var for var in sorted(candidates) if immutable(var, frozenset())}
 
     def _use_mutation_edges(self) -> None:
         """A ``mutated_by`` edge from each variable to the code the use
@@ -918,6 +990,9 @@ class Indexer(DynamicBounds):
         for var, writers in sorted(self._use_mutations.items()):
             for writer in sorted(writers):
                 self.index.edges.add(Edge(var, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        for var, writers in sorted(self._use_value_mutations.items()):
+            for writer in sorted(writers):
+                self._global.value_writes.add((var, writer))
 
     def _outside_stars(self, records: list[tuple[str, UseRecord]]) -> list[tuple[str, UseRecord]]:
         """The records, and each about a name a star import may bind

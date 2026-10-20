@@ -535,6 +535,42 @@ Further rules (pre-release audit, round 2):
   `_CACHE = {"a": Store()}`: the variable is a dict display, so only the
   container mutators count), an object stored under an instance's attribute
   and written later (above), a library function's result.
+* A module variable whose value cannot change in place has no writers
+  (audit round 6, T20; `literals.module_immutables` in pass 1,
+  `Indexer._immutable_variables` after pass 2). Every write of what a
+  variable, class or function holds (the forms in the two items above, the
+  use records' changes in place, a getter's result written) is kept apart
+  in pass 2 (`value_writes`) and becomes its `mutated_by` edge after pass 2
+  (`Indexer._value_writes`), unless the variable is immutable: its module
+  binds the name exactly once (no other assignment, import, `def`, `for`,
+  `del`, walrus, or `global` of it anywhere in the module), to a string,
+  bytes, number, `None` or `bool` literal, an f-string, an operator,
+  comparison, condition or subscript of such values, a tuple of them, a
+  call of `re.compile`, `textwrap.dedent`, `pathlib.Path` and the other
+  standard-library calls `IMMUTABLE_RESULTS` lists (through an import only
+  that import binds, of a module no project module shadows), a `datetime`
+  or an immutable builtin (`frozenset`, `tuple`, `int`, `str`, ...) of
+  immutable values, a string or path method giving such a value again
+  (`", ".join(...)`, `.format(...)`, `.with_suffix(...)`), or another such
+  variable of the module; and nothing may bind it anew: it is not
+  `rebound` (`global V; V = ...`, `mod.V = v` elsewhere), has no
+  `mutated_by` edge of its own (a rebinding through the module however
+  obtained: `mod.V = v`, `mod.V += v`, `del mod.V`, `setattr(mod, "V",
+  v)`, `import_module("m").V = v`, a store through the module's
+  `__dict__`/`vars()`, the module handed to code writing it), its module is
+  handed to no code the analysis does not follow (`_written_modules`), and
+  the module itself names no namespace by a string (`globals`, `vars`,
+  `exec`, `eval`, `__dict__`, `sys.modules`, `__globals__`, a star import).
+  Then a write "into" it, into an element of it, or into what one of its
+  methods returns (`_RE.match(s)`, `_RE.findall(s).append(x)`, `SQL`
+  handed to a callee writing its parameter, `timeout=TIMEOUT` handed to a
+  call whose result is written) changes nothing its readers read, and gives
+  no edge. Rebinding is no write in place: those edges stay. An enum
+  member, a class instance, a frozen dataclass, a `frozenset` or `tuple` of
+  something else, and anything bound twice keep every writer. Not modelled
+  (as for lazy constants): a store through a module found at run time by a
+  name nothing bounds (`setattr(import_module(name), attr, v)`) is no
+  rebinding of any particular variable.
 * Project code run by naming it in a string (`indexer/scripts.py`). A
   string naming a `.py` file (a literal, or the last literal piece of a
   path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,

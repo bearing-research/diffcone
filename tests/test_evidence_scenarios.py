@@ -5125,3 +5125,31 @@ def test_t6_t7_state_filled_through_a_class_or_another_name(repo, case):
         "tests/test_z.py::test_z",
         PEEK_BENCH.runner_id,
     }
+
+
+# ``fill`` writes into what a method of ``_RE`` returns: a compiled pattern,
+# which nothing changes in place, unless something binds ``_RE`` anew.
+PATTERN_FILL = (
+    "import re\n\n_RE = re.compile(r'(\\w)')\n\n\n"
+    + FILL_COMPUTE
+    + "def fill(k):\n    found = _RE.findall(compute(k))\n    found.append(k)\n"
+    "    return found\n\n\n"
+    "def peek(k):\n    return _RE.match(k).group(1).upper()\n"
+)
+REBOUND_PATTERN = PATTERN_FILL + "\n\ndef reset():\n    global _RE\n    _RE = re.compile('')\n"
+
+
+@pytest.mark.parametrize(
+    ("lib", "readers"),
+    [(PATTERN_FILL, False), (REBOUND_PATTERN, True)],
+    ids=["immutable", "rebound"],
+)
+def test_t20_no_state_filled_into_an_immutable_variable(repo, lib, readers):
+    """Audit round 6, T20: a write into what a compiled pattern's method
+    returns gives ``_RE`` no writer, so its readers stay out of E; a
+    variable some code binds anew keeps the writer."""
+    base, ev = _collected(repo, {**BASE, **FILLED_READERS, "pkg/lib.py": lib})
+    head = repo.commit({"pkg/lib.py": lib.replace("return k.upper()", "return k.upper() + '!'")})
+    plan = repo.plan(base, head, [*ASV, PEEK_BENCH], discover_runners=["pytest"], evidence=ev)
+    reading = {"tests/test_z.py::test_z", PEEK_BENCH.runner_id} if readers else set()
+    assert selected(plan) == {"tests/test_a.py::test_a", *reading}
