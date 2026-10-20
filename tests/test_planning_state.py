@@ -375,6 +375,229 @@ def test_w4_locals_bound_to_each_other_are_no_loop(repo):
     assert chosen == {"tests/test_loop.py::test_loop"}
 
 
+# ---------------------------------------------- state held on a class, or reached by another name
+# Code changing state in place is a dependency of every reader of that state,
+# however it reaches it: through the class holding it (``Config.mode = m``,
+# ``cls._instance = ...``), a name bound to part of it (``c = _CACHE``), what
+# a call returns (``registry()[k] = v``) or ``globals()``. In each scenario
+# test_a runs the writer, which changes; test_z and a benchmark read the
+# state without running it.
+
+READER_BENCH = asv_target("bench_read.time_peek", "benchmarks.bench_read.time_peek")
+STATE_READERS = {
+    "tests/test_a.py": "from pkg.lib import fill\n\n\ndef test_a():\n    fill('k')\n",
+    "tests/test_z.py": "from pkg.state import peek\n\n\ndef test_z():\n    peek('k')\n",
+    "benchmarks/bench_read.py": "from pkg.state import peek\n\n\ndef time_peek():\n    peek('k')\n",
+}
+# ``fill`` in pkg/lib.py, unless the state's own module defines it.
+FILL_HERE = "from pkg.state import fill  # noqa: F401\n"
+
+
+def _state_plan(repo, state, lib=FILL_HERE, edit=("'x'", "'y'")):
+    """Plan an edit of whichever module holds ``edit[0]``: the selection."""
+    files = {**UNRELATED_BASE, **STATE_READERS, "pkg/state.py": state, "pkg/lib.py": lib}
+    path = "pkg/lib.py" if edit[0] in lib else "pkg/state.py"
+    assert edit[0] in files[path]
+    base = repo.commit(files)
+    head = repo.commit({path: files[path].replace(*edit)})
+    plan = repo.plan(base, head, [UNRELATED_BENCH, READER_BENCH], discover_runners=["pytest"])
+    return selected(plan)
+
+
+STATE_SELECTED = {"tests/test_a.py::test_a", "tests/test_z.py::test_z", READER_BENCH.runner_id}
+
+CONFIG = (
+    "class Config:\n    mode = None\n    items = []\n\n\n"
+    "def peek(k):\n    return Config.mode, Config.items\n"
+)
+CONFIG_WRITER = "from pkg.state import Config\n\n\ndef fill(k):\n    {}\n"
+CLASS_STATE = {
+    "an attribute stored from another module": (CONFIG, CONFIG_WRITER.format("Config.mode = 'x'")),
+    "a container changed from another module": (
+        CONFIG,
+        CONFIG_WRITER.format("Config.items.append('x')"),
+    ),
+    "setattr": (CONFIG, CONFIG_WRITER.format("setattr(Config, 'mode', 'x')")),
+    "an attribute deleted": (
+        CONFIG.replace("    mode = None\n", "    mode = None\n    old = 'x'\n"),
+        CONFIG_WRITER.format("del Config.old"),
+        ("del Config.old", "del Config.mode"),
+    ),
+    "the same module": (CONFIG + "\n\ndef fill(k):\n    Config.mode = 'x'\n", FILL_HERE),
+    "a classmethod's cls": (
+        CONFIG.replace(
+            "    items = []\n",
+            "    items = []\n\n    @classmethod\n    def set(cls):\n        cls.mode = 'x'\n",
+        ),
+        CONFIG_WRITER.format("Config.set()"),
+    ),
+    "a singleton": (
+        "class S:\n    _instance = None\n\n    @classmethod\n    def get(cls):\n"
+        "        if cls._instance is None:\n            cls._instance = cls()\n"
+        "            cls._instance.level = 'x'\n        return cls._instance\n\n\n"
+        "def peek(k):\n    return S._instance\n",
+        "from pkg.state import S\n\n\ndef fill(k):\n    S.get()\n",
+    ),
+    "type(self)": (
+        "class R:\n    _cache = {}\n\n    def put(self, k):\n"
+        "        type(self)._cache[k] = 'x'\n\n\n"
+        "def peek(k):\n    return R._cache.get(k)\n",
+        "from pkg.state import R\n\n\ndef fill(k):\n    R().put(k)\n",
+    ),
+    "self.__class__": (
+        "class R:\n    count = 0\n\n    def put(self, k):\n        self.__class__.count = 'x'\n\n\n"
+        "def peek(k):\n    return R.count\n",
+        "from pkg.state import R\n\n\ndef fill(k):\n    R().put(k)\n",
+    ),
+    "a class-level container through self": (
+        "class R:\n    _items = []\n\n    def put(self, k):\n        self._items.append('x')\n\n"
+        "    def count(self):\n        return len(self._items)\n\n\n"
+        "def peek(k):\n    return R().count()\n",
+        "from pkg.state import R\n\n\ndef fill(k):\n    R().put(k)\n",
+    ),
+    "read through a subclass": (
+        CONFIG.replace("return Config.mode, Config.items", "return Sub.mode")
+        + "\n\nclass Sub(Config):\n    pass\n",
+        CONFIG_WRITER.format("Config.mode = 'x'"),
+    ),
+    "the instance a classmethod returns": (
+        "class Config:\n    _instance = None\n\n    @classmethod\n    def instance(cls):\n"
+        "        if cls._instance is None:\n            cls._instance = cls()\n"
+        "        return cls._instance\n\n\ndef peek(k):\n    return Config._instance\n",
+        "from pkg.state import Config\n\n\ndef fill(k):\n    Config.instance().mode = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(CLASS_STATE))
+def test_t6_state_held_on_a_class_reaches_its_readers(repo, case):
+    """Class attributes are no symbols: a write onto one is a write of the
+    class (a ``mutated_by`` edge), and every reader of the class reads it."""
+    assert _state_plan(repo, *CLASS_STATE[case]) == STATE_SELECTED
+
+
+CACHE_PEEK = "\n\ndef peek(k):\n    return _CACHE.get(k)\n"
+
+
+def _cache(body, head="_CACHE = {}", read=CACHE_PEEK):
+    return f"{head}\n\n\ndef fill(k):\n{body}{read}"
+
+
+PEEK_A = "\n\ndef peek(k):\n    return _CACHE['a']\n"
+WRITE_INTO = "\n\ndef _write(d, k):\n    d[k] = 'x'\n"
+ALIASES = {
+    "a local": _cache("    c = _CACHE\n    c[k] = 'x'\n"),
+    "a local, a mutator": _cache("    c = _CACHE\n    c.update(k='x')\n"),
+    "two locals": _cache("    c = _CACHE\n    d = c\n    d[k] = 'x'\n"),
+    "a walrus": _cache("    if (c := _CACHE) is not None:\n        c[k] = 'x'\n"),
+    "a loop over a tuple": _cache("    for c in (_CACHE,):\n        c[k] = 'x'\n"),
+    "a with target": _cache(
+        "    with contextlib.nullcontext(_CACHE) as c:\n        c[k] = 'x'\n",
+        "import contextlib\n\n_CACHE = {}",
+    ),
+    "an unpacked pair": _cache("    c, o = _CACHE, {}\n    c[k] = 'x'\n"),
+    "a conditional": _cache("    c = _CACHE if k else {}\n    c[k] = 'x'\n"),
+    "a later binding in a loop": _cache(
+        "    c = None\n    for _ in range(2):\n        if c is not None:\n            c[k] = 'x'\n"
+        "        c = _CACHE\n"
+    ),
+    "a nested function": _cache(
+        "    c = _CACHE\n\n    def put():\n        c[k] = 'x'\n\n    put()\n"
+    ),
+    "an item": _cache("    d = _CACHE['a']\n    d[k] = 'x'\n", "_CACHE = {'a': {}}", PEEK_A),
+    "an item's mutator": _cache(
+        "    d = _CACHE['a']\n    d.append('x')\n", "_CACHE = {'a': []}", PEEK_A
+    ),
+    "an item got": _cache(
+        "    d = _CACHE.get('a')\n    d[k] = 'x'\n", "_CACHE = {'a': {}}", PEEK_A
+    ),
+    "a defaultdict entry": _cache(
+        "    lst = _CACHE[k]\n    lst.append('x')\n",
+        "import collections\n\n_CACHE = collections.defaultdict(list)",
+    ),
+    "a loop over the values": _cache(
+        "    for d in _CACHE.values():\n        d[k] = 'x'\n", "_CACHE = {'a': {}}", PEEK_A
+    ),
+    "an attribute of an item": _cache(
+        "    b = _CACHE['a']\n    b.v = 'x'\n",
+        "class Box:\n    v = None\n\n\n_CACHE = {'a': Box()}",
+        PEEK_A,
+    ),
+    "a bound method at module level": _cache(
+        "    _put(k, 'x')\n", "_CACHE = {}\n_put = _CACHE.__setitem__"
+    ),
+    "a bound method in the function": _cache("    put = _CACHE.update\n    put(k='x')\n"),
+    "globals()": _cache("    globals()['_CACHE'][k] = 'x'\n"),
+    "what a getter returns": _cache(
+        "    registry()[k] = 'x'\n",
+        "_CACHE = {}\n\n\ndef registry():\n    return _CACHE",
+    ),
+    "a local bound to what a getter returns": _cache(
+        "    r = registry()\n    r.update(k='x')\n",
+        "_CACHE = {}\n\n\ndef registry():\n    return _CACHE",
+    ),
+    "a local handed to a writer": _cache(
+        "    for c in (_CACHE,):\n        _write(c, k)\n", "_CACHE = {}", CACHE_PEEK + WRITE_INTO
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(ALIASES))
+def test_t7_a_write_through_another_name_reaches_the_readers(repo, case):
+    """A write in place through a name bound (anywhere in the function) to
+    a module variable, an item of it or a method's result on it, or
+    through a bound mutator, ``globals()`` or what a getter returns, is a
+    write of the variable."""
+    assert _state_plan(repo, ALIASES[case]) == STATE_SELECTED
+
+
+def test_t7_an_alias_of_another_modules_variable_reaches_its_readers(repo):
+    lib = (
+        "from pkg import state\n\n\n"
+        "def fill(k):\n    for c in (state._CACHE,):\n        c[k] = 'x'\n"
+    )
+    assert _state_plan(repo, "_CACHE = {}" + CACHE_PEEK, lib) == STATE_SELECTED
+
+
+# A write into a new object (a copy, an instance's own attribute, a fresh
+# instance) changes no state another reader shares.
+OWN_OBJECTS = {
+    "a copy": _cache("    c = dict(_CACHE)\n    c[k] = 'x'\n"),
+    "a copy by method": _cache("    c = _CACHE.copy()\n    c.update(k='x')\n"),
+    "a display": _cache("    c = {**_CACHE}\n    c[k] = 'x'\n"),
+    "a deep copy": _cache(
+        "    c = copy.deepcopy(_CACHE)\n    c[k] = 'x'\n", "import copy\n\n_CACHE = {}"
+    ),
+    "an instance's own attribute": (
+        "class R:\n    items = []\n\n    def __init__(self):\n        self.items = []\n\n"
+        "    def put(self, k):\n        self.items.append('x')\n\n\n"
+        "def peek(k):\n    return R().items\n\n\ndef fill(k):\n    R().put(k)\n"
+    ),
+    "a dataclass field": (
+        "import dataclasses\n\n\n@dataclasses.dataclass\nclass R:\n"
+        "    items: list = dataclasses.field(default_factory=list)\n\n"
+        "    def put(self, k):\n        self.items.append('x')\n\n\n"
+        "def peek(k):\n    return R().items\n\n\ndef fill(k):\n    R().put(k)\n"
+    ),
+    "a new instance": (
+        "class R:\n    v = None\n\n    @classmethod\n    def make(cls):\n        return cls()\n\n\n"
+        "def peek(k):\n    return R.v\n\n\ndef fill(k):\n    r = R.make()\n    r.v = 'x'\n"
+    ),
+    "a base's __init__ on the instance": (
+        "class B:\n    def __init__(self):\n        self.v = None\n\n\n"
+        "class R(B):\n    def __init__(self):\n        B.__init__(self)\n        self.w = 'x'\n\n\n"
+        "def peek(k):\n    return B().v\n\n\ndef fill(k):\n    R()\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(OWN_OBJECTS))
+def test_a_write_into_an_object_of_its_own_changes_no_shared_state(repo, case):
+    """The bounds of the rules above: the readers of what was copied, or of
+    the class, are not selected."""
+    assert _state_plan(repo, OWN_OBJECTS[case]) == {"tests/test_a.py::test_a"}
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

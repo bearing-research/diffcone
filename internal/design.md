@@ -495,6 +495,46 @@ Further rules (pre-release audit, round 2):
   edge. Not modelled: an object kept under another name and written
   through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),
   and a third-party function that changes an argument in place.
+* Writes to state held on a class, or reached by another name (audit
+  round 6, T6 and T7; pass 2, `RefCollector._rooted_write` in
+  `indexer/references.py`, the bindings from `aliases.name_sources`). Every
+  write form above (an item or attribute assigned, augmented or deleted, a
+  container mutator called or taken as a bound method, `setattr`, a
+  standard-library function changing its first argument) is traced from the
+  written object back to the state it is part of, its *roots*, and each root
+  gets a `mutated_by` edge to the writer. A root is a module variable or a
+  class: readers of a class attribute already reference the class (`Config.mode`,
+  `self.mode`, `cls.mode`, a subclass), so the class stands for every
+  attribute stored on it. The trace goes through a class or variable named
+  directly or through a module (`Config.mode = m`, `Config.items.append(x)`,
+  `setattr(Config, ...)`), `cls`, `type(self)`, `self.__class__`, and
+  `self.x` when no method of the class or of a base binds `x` on the
+  instance (an instance's own attribute, a dataclass field, is no shared
+  state); through an item or attribute of a root (`_CACHE[k]`,
+  `_CACHE.get(k)`, `_CACHE.setdefault(k, [])`, any method call on a root
+  except a copy); through a local name bound to any of these, in every
+  binding the scope makes of it (an assignment, an unpacked literal, a
+  conditional, `:=`, a `for` over it or over its items, a `with ... as`
+  over it, a match capture, a store of the name into a root, which makes it
+  part of that root: `_CACHE[k] = entry = {}`); through `globals()` (its
+  item a module variable the key may be, every variable when the key is not
+  bounded); and through what an in-scope function returns
+  (`registry()[k] = v`): `return` statements record the roots of what the
+  function returns (`state_returns`), the write records a `<result>:`
+  marker of the callee (`result_writes`), and `Indexer._result_writes`
+  closes the two over calls between functions after pass 2. A copy is no
+  root (`dict(x)`, `list(x)`, `copy.copy(x)`, `x.copy()`, a fresh value:
+  `len`, `str`, `json.loads`, `copy.deepcopy`), nor is a new instance
+  (`Config().mode = m`), nor a class or function handed to a call. A local
+  bound to state is handed on to a callee's written parameter as the state
+  is (`writes.observe_call`). The same-module rule holds: a module's own
+  top-level statements add no edge for its own variables. Evidence planning
+  reads the same edges, so the readers of what a fill stored through a
+  class or another name join the plan. Not modelled: a method of an object
+  held in an item of a container variable (`_CACHE["a"].put(4)` with
+  `_CACHE = {"a": Store()}`: the variable is a dict display, so only the
+  container mutators count), an object stored under an instance's attribute
+  and written later (above), a library function's result.
 * Project code run by naming it in a string (`indexer/scripts.py`). A
   string naming a `.py` file (a literal, or the last literal piece of a
   path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,
