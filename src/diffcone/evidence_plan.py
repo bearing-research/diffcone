@@ -795,8 +795,9 @@ class _Observers:
         # rounds, as the chain only grows.
         self._handed: dict[str, tuple[str, str]] = {}
         # Caches outside module variables (audit round 5, R22): per function,
-        # where it stores (``SourceIndex.stores``); per callee, the attributes handed to it
-        # in a parameter it writes (``handed``); the functions whose
+        # where it stores (``SourceIndex.stores``); per callee, the
+        # attributes handed to it in a parameter it writes (``handed``); the
+        # functions whose
         # decorator keeps a result (``memoized``); and the decorator
         # functions whose wrapper may run what they decorate.
         self.stores: dict[str, set[str]] = defaultdict(set)
@@ -1313,20 +1314,20 @@ class _Observers:
                 exclude=self._lazy_writer(variable, writer),
             )
             self._sites(self.symbols[variable], change, label, in_tests=True)
-        # Storing or memoised code anywhere in the chain, every round: what a
-        # store derives from may have joined the chain only now.
-        keepers = [
-            (node, ran, None)
-            for node, ran in sorted(self._runs_e.items())
-            if (node in self.stores or node in self.memoized) and node not in self._stored_seen
-        ]
-        keepers += [
-            (node, ran, caller)
+        # Storing or memoised code anywhere in the chain or what it calls,
+        # every round: both grow as E does.
+        keepers: dict[str, tuple[str, str | None]] = {
+            node: (ran, caller)
             for node, (caller, ran) in sorted(self._handed.items())
             if node in self.stores and node not in self._stored_seen
-        ]
+        }
+        keepers.update(
+            (node, (ran, None))
+            for node, ran in sorted(self._runs_e.items())
+            if (node in self.stores or node in self.memoized) and node not in self._stored_seen
+        )
         kept = False
-        for keeper, ran, caller in keepers:
+        for keeper, (ran, caller) in sorted(keepers.items()):
             if keeper in self.test_code.isolated and self._only_in_tests({keeper}):
                 self._stored_seen.add(keeper)
                 continue  # the isolation assumption, as above
@@ -1355,8 +1356,8 @@ class _Observers:
                 else f"{caller} can run {ran} and calls {keeper}, which stores"
             )
             label = (
-                f"{ran_by} into state a later test may read what an earlier one "
-                f"stored in ({why.detail})"
+                f"{ran_by} into state where a later test may read what an earlier "
+                f"one stored ({why.detail})"
             )
             self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
