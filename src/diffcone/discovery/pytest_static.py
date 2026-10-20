@@ -51,7 +51,8 @@ Collected:
   ``test_one = make(1)``, ``functools.partial(_check, 1)``, ``TestGen =
   _make()``; anything but evident data, _may_bind_test: not a literal,
   arithmetic, or what a builtin or a standard-library module such as
-  ``os``, ``pathlib`` or ``json`` returns) is reported
+  ``os``, ``pathlib`` or ``json`` returns, an instance of a plain class
+  the module defines, an item or method result of such data) is reported
   (``unmodelled_test_binding``), and so is a test bound dynamically
   (_dynamic_bindings: ``globals()[f"test_{n}"] = ...``, ``locals()[...]`` in
   a class body, ``setattr(TestA, "test_x", f)``, ``TestA.test_x = f``,

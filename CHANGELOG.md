@@ -19,33 +19,34 @@ selection rules.
   runs is not read, so code that imports or runs one (an import,
   `import_module`, `runpy`, a subprocess, a file loader) is selected on any
   change, with a reason naming the file; with a recording, a change to an
-  excluded file a test imported selects every test. The report lists each
-  snapshot's patterns (`analysis.<side>.excluded`).
+  excluded file a test imported selects every test. Discovery's notes on
+  an excluded plugin, base class or benchmark file name the exclusion. The
+  report lists each snapshot's patterns (`analysis.<side>.excluded`).
 
 ### Discovery
 
 - Under `--doctest-modules`, a docstring set when the module is imported
   (`f.__doc__ = ...`, a string built from parts) is read when its text can
-  be worked out; one a decorator of yours rewrites makes its doctest
-  always selected; one discovery cannot read is reported (exit 3).
+  be worked out. Otherwise (a decorator of yours rewrites it, or the value
+  is imported or computed) a function whose written docstring has
+  examples has its doctest always selected, and one without is reported
+  (exit 3).
 - Tests bound by a call (`test_one = make(1)`, `functools.partial`), a
   lambda, `globals()` or `setattr`, and pytest-bdd's `scenarios()`, are
   reported (exit 3). Module data that merely has a test's name is not.
-- A `usefixtures` mark discovery cannot read (a non-literal argument, an
-  alias of the mark, a decorator or factory that applies it,
-  `pytestmark = marks()`) counts as every visible fixture.
+- A `usefixtures` mark discovery cannot read (a non-literal argument, a
+  decorator or factory that applies it, `pytestmark = marks()`) counts as
+  every visible fixture.
 - Test classes pytest does not collect (an inherited `__init__` or
   `__new__`, a dataclass or attrs class) are no longer targets: `run`
   reported them as selected tests pytest did not collect.
-- Notes on an excluded plugin, base class or benchmark file name the
-  exclusion and say to narrow the pattern.
 
 ### Report
 
 - `schema_version` 4: selected and unselected target records no longer
   list `lifecycle_dependencies`. Each target repeated every fixture,
   hook and module it depends on, nine tenths of a large suite's plan
-  (pandas: 850 MB, now 40 MB). Discovery's output still lists them, and
+  (850 MB for one of 25 000 tests, now 40 MB). Discovery's output still lists them, and
   the ones that selected a target are in its explanation.
 
 ### Execution evidence
@@ -73,7 +74,7 @@ selection rules.
 - Planning a large suite took far more memory than it needed: every test
   carried its own copy of the dependencies all tests share (code run
   while pytest collects), in the dependency graph and in the cached
-  discovery results. On pandas (25 620 tests) a plan peaked at 21 GB,
+  discovery results. On a suite of 25 000 tests a plan peaked at 21 GB,
   more than a standard CI runner has, and took up to 90 minutes; it now
   peaks at 5.5 GB and takes under two minutes, and a cached discovery
   result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
@@ -110,15 +111,15 @@ selection rules.
   `item.fixturenames` or to the `usefixtures` option; an autouse fixture
   under another name for the decorator (`from pytest import fixture as
   fx`); and a module stored into `doctest_namespace` by subscript
-  (`doctest_namespace["np"] = numpy`). They are dependencies now.
+  (`doctest_namespace["pkg"] = pkg`). They are dependencies now.
 - The `run` action planned only the last commit (`HEAD^1`): a push of
   several commits, a merge-queue group or a pull request checked out at
   its head planned part of the change. It plans the event's own change
   now (a pull request on top of its target branch, every commit of a
   push, the whole merge-queue group), and a branch name, tag or `HEAD~n`
   as `base` works in a shallow checkout. With no base (a new branch, a
-  manual run) or one that cannot be fetched, it runs every test and says
-  why.
+  manual run) or an event base that cannot be fetched, it runs every test
+  and says why.
 - The `record` action's check counted any failed plan as an unusable
   recording and passed; it fails now when the plan fails without the
   recording too.
@@ -136,7 +137,7 @@ selection rules.
 - On Windows, the recorder no longer treats a system query (`locale -a`,
   `git rev-parse` and the other read-only `git` queries, `ps`, `uname`) as
   a process it cannot follow. It did, so a recording of a suite that runs
-  one outside every test (pandas' locale tests at import, pytest-benchmark
+  one outside every test (locale tests that query at import, pytest-benchmark
   in every run) planned every change as select-everything there. POSIX
   was not affected.
 

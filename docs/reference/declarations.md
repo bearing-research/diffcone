@@ -97,8 +97,10 @@ costs you that precision; it never makes diffcone skip a test.
 
 Don't exclude a file pytest collects tests from, or a `conftest.py`: its
 tests can't be targets, so the plan says discovery is incomplete, and the
-tests under an excluded `conftest.py` are always selected. The same goes
-for a pytest plugin, a base class tests inherit from, or a benchmark file.
+tests under an excluded `conftest.py` are always selected. An excluded
+pytest plugin makes every test always selected; excluding a module tests
+inherit their base class from, or a benchmark file, makes the plan report
+discovery incomplete (exit 3).
 
 ## What can go wrong
 

@@ -75,9 +75,14 @@ observed by"), and a test is selected when its record meets E:
   was touched outside every test, import and test module (a hook), or is
   compiled source, build, dependency or pytest
   configuration (``build_input``), or a ``conftest.py`` outside the
-  roots. A Python source file is data to the tests that opened it as a
-  file (``inspect.getsource``) too; a module's file selects everything
-  only when it is a build script as static planning judges it
+  roots, or a ``.py`` file the index does not read (outside the roots, or
+  ``[index] exclude``d) whose code ran inside a test
+  (``Evidence.test_window_code``; for an older store, any ``.py`` file a
+  test touched: ``unindexed_import``), since later tests use the module
+  from ``sys.modules`` without running it. A Python source file is data
+  to the tests that opened it as a file (``inspect.getsource``) too; a
+  module's file selects everything only when it is a build script as
+  static planning judges it
   (planner.is_build_script: ``setup.py``, a ``build.py`` at the root or
   beside the project's metadata, not ``pkg/build.py``);
 * a Cython source (``.pyx``, ``.pxd``, ``.pxi``), at function level: a
@@ -108,8 +113,9 @@ process-global state or can reach pytest's session-wide objects (a
 ``.session``, ``.stash`` or ``.pluginmanager``: ``_collection_reach``). A
 lookup site in E is a reader too, followed into the import, collection or
 hook that ran it. Once E is
-built, the variables written in place by code that can run a member of E
-(a cache an earlier test filled) are changed values for the code reading
+built, the variables written in place by code that can run a member of E,
+and by the code that code calls, transitively (``_handed_to``), whatever
+they store (a cache an earlier test filled), are changed values for the code reading
 them inside tests (``_stored_results``); code in that chain storing
 through a receiver, a closure or a function's or class's attribute
 (``SourceIndex.stores``) is read by every test that executed it, and

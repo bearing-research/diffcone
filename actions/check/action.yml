@@ -2,7 +2,8 @@ name: diffcone check
 description: >-
   Compare a diffcone plan with the JUnit XML of the full run of the same
   tests, and write the verdict (missed failures, tests run, test time) to
-  the job summary. Exits non-zero only when fail-on-miss is true.
+  the job summary. Exits non-zero when fail-on-miss is true and the plan
+  missed a failure, or when an input cannot be read.
 inputs:
   results:
     description: The directory diffcone run wrote (plan.json, diffcone.xml, baseline.xml).

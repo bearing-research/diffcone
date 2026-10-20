@@ -25,8 +25,8 @@ target list itself may be short, so running only the selected targets
 could skip tests. `3` wins when both apply. A manifest written by
 `discover` keeps its notes, so a plan made from it exits `3` as well.
 
-`run` exits with the runner's own code (0 when nothing was selected, or
-with `--dry-run`; pytest's `5`, no test ran, counts as `0`), and with `3`
+`run` exits with the runner's own code (0 when nothing ran because
+nothing was selected, or with `--dry-run`; pytest's `5`, no test ran, counts as `0`), and with `3`
 when a selected test was not collected. It refuses with `2` when the
 working tree differs from the snapshot the plan analysed (unless
 `--allow-mismatched-worktree`) or `--repo` is not the top of a git
@@ -40,8 +40,8 @@ not a miss when the plan said its discovery is incomplete (the plan's
 failure of the full run was selected, `1` when the plan missed one, `2`
 when an input cannot be read. `report` exits `0` when the runs it read
 show no problem, `1` when they show one (a miss, a check that reached no
-verdict, a selected test pytest did not collect, an artifact it could not
-read), `2` on errors. `collect`, `prune` and
+verdict, a selected test pytest did not collect, a pull-request run that
+failed after a good plan, an artifact it could not read), `2` on errors. `collect`, `prune` and
 `evidence` exit `0` on success (`collect` records whatever the suite's own
 results) and `2` on errors. An internal error exits `2` in every command.
 
@@ -58,7 +58,7 @@ diffcone plan [-h] --base BASE --head HEAD [--targets TARGETS] [--command COMMAN
 | Option | Default | Description |
 |---|---|---|
 | `--base` `BASE` |  | **Required.** Base snapshot: a git revision, INDEX or WORKTREE. |
-| `--head` `HEAD` |  | **Required.** Head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on disk, ignored files excluded). |
+| `--head` `HEAD` |  | **Required.** Head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on disk, with git-ignored .py files beside tracked code; ignored directories excluded). |
 | `--targets` `TARGETS` |  | Path to a JSON target manifest. |
 | `--command` `COMMAND` |  | The pytest command line the run will use: pytest options written in it (uv run pytest -p plugins.x) are read by discovery, as run reads them. |
 | `--repo` `REPO` | `.` | Path to the git repository (default: .). |

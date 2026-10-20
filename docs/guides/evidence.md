@@ -103,8 +103,10 @@ report:
   reads it counts. This covers caches in module variables, on objects and
   classes, in closures, in function attributes and in `cached_property`.
   `functools.cache` and `lru_cache` are cleared before each test instead.
-  Caches kept by an unknown memoising decorator, or filled through a
-  method of an object whose type diffcone can't tell, are not seen, nor
+  Caches kept by an unknown memoising decorator, or filled by code
+  diffcone can't follow from the code that ran the change (a method
+  writing somewhere other than its own object, a table of callbacks), are
+  not seen, nor
   is what the recorder can't watch: files opened by compiled code, state
   kept on disk between tests (see
   [limitations](../limitations.md#state-shared-between-tests)).
@@ -121,14 +123,17 @@ report:
       macOS. The test is credited with what it ran, and so is every test
       that runs while it is still running.
     - **Always selected.** A test that starts a process any other way
-      (`os.system`, a shell, `multiprocessing`, or anything on Windows),
+      (`os.system`, a shell, `multiprocessing`, or, on Windows, any other
+      process),
       or whose child can't record itself. So is every test that runs
       while such a process is still running (a `multiprocessing` pool
       reused by a later test), and a test whose child runs your code from
       a `python -c` snippet or a script outside your source roots.
     - **Ignored.** A `python -c` snippet that can't run your code (a
-      version check), and package-manager commands such as `uv sync`,
-      `uv pip` or `uv python list`.
+      version check), package-manager commands (`uv sync`, `uv pip`,
+      `uv python list`), and programs that only ask about the machine or
+      the repository (`uname`, `ps`, `locale -a`, read-only `git` commands
+      such as `git rev-parse`), on every platform.
 
     A project `sitecustomize.py` still runs in every child.
 - A process started outside every test (by a `conftest.py` as it is

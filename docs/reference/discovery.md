@@ -152,10 +152,11 @@ doctest in a text file is always selected.
 A docstring set when the module is imported is read when diffcone can
 work out its text: a string, a module-level string built with `+`, `%`,
 f-strings or methods such as `.format` and `.replace`, or another
-function's docstring (`b.__doc__ = a.__doc__`). A docstring with examples
-that a decorator rewrites is always selected. One diffcone can't work out
-(`f.__doc__ = DOC` imported from elsewhere, a decorator that writes the
-whole docstring) is reported, since its doctests are not targets.
+function's docstring (`b.__doc__ = a.__doc__`). A docstring diffcone
+can't work out (one a decorator of yours rewrites, or `f.__doc__ = DOC`
+with `DOC` imported from elsewhere) makes its doctest always selected when
+the docstring written in the code has examples; when it has none, whether
+pytest finds a doctest there is unknown, so it is reported.
 
 A `conftest.py` outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
@@ -257,11 +258,12 @@ Some things can't be known by reading the source:
 
 - a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;
-- a test base class, or an imported test, from outside your source roots;
+- a test base class, or an imported test, from outside your source roots
+  (or from a file `[index] exclude` keeps out);
 - an imported test that its module binds to something discovery can't
   follow (`test_x = factory.make`);
 - a test file, benchmark file or doctest module outside your source roots
-  (with `--source-root src`, add `--source-root .` for tests in `tests/`),
+  or kept out by `[index] exclude` (with `--source-root src`, add `--source-root .` for tests in `tests/`),
   or a `benchmark_dir` outside the repository;
 - options that change what pytest collects in ways discovery doesn't
   follow (`-c`/`--config-file`, `--rootdir`, `--pyargs`), or a

@@ -17,7 +17,8 @@ only the selected targets would skip tests. 3 wins when both apply.
 --allow-incomplete-discovery is given, and refuses (exit 2) when the working
 tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
-the runner's exit code (0 when nothing was selected or with --dry-run; pytest's
+the runner's exit code (0 when nothing ran because nothing was selected, or
+with --dry-run; pytest's
 5 counts as 0), or 3 when a selected target was not collected. With
 --allow-incomplete-discovery pytest runs even when nothing was selected: the
 tests it collects that are no target are kept. ``validate`` exits
@@ -26,8 +27,9 @@ reported apart, not missed, when the plan says its discovery is
 incomplete), 1 when some were missed, 2 on
 errors. ``check`` exits 0 when every new failure of the full run was
 selected, 1 when the plan missed one, 2 when an input cannot be read.
-``report`` exits 0 when the CI runs it reads have no miss and no failed check,
-1 otherwise, 2 when the directory cannot be read.
+``report`` exits 0 when the CI runs it reads show no problem (a miss, a check
+with no verdict, an uncollected selected test, a run that failed after a good
+plan, an unreadable artifact), 1 otherwise, 2 when the directory cannot be read.
 """
 
 from __future__ import annotations
@@ -170,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--head",
         required=True,
         help="head snapshot: a git revision, INDEX (staged content) or WORKTREE (files on "
-        "disk, ignored files excluded)",
+        "disk, with git-ignored .py files beside tracked code; ignored directories excluded)",
     )
     p.add_argument("--targets", help="path to a JSON target manifest")
     p.add_argument(

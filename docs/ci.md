@@ -97,7 +97,12 @@ The action plans the change the event brings, read from the event itself:
   the merge commit's first parent when the merge commit is checked out
   (the default), from the pull request's base commit when you check out
   its head (`ref: ${{ github.event.pull_request.head.sha }}`, as
-  `pull_request_target` workflows do);
+  `pull_request_target` workflows do). That base is the target branch as
+  it was when the event fired, so commits on it that the pull request
+  lacks count as changes too: more is selected, never less. A
+  `pull_request_target` workflow that doesn't check out the head runs the
+  target branch's own code, which the pull request doesn't change, so
+  nothing is selected;
 - for a push, every commit it brings, from the commit the branch pointed
   at before it;
 - for a merge queue (`merge_group`), every queued pull request, from the

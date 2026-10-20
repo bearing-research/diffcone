@@ -38,8 +38,9 @@ inputs:
   comment:
     description: >-
       When to comment the report on the report issue: "always", or
-      "on-problem" (a miss, a failed check, an incomplete report). The job
-      summary always has it.
+      "on-problem" (a miss, a failed check, a pull request whose selected
+      tests pytest did not collect or that failed to run them after
+      planning, an incomplete report). The job summary always has it.
     default: "always"
   report-label:
     description: >-
@@ -62,7 +63,9 @@ inputs:
 outputs:
   ok:
     description: >-
-      "true" when the report has no miss and no failed check. (A failing step
+      "true" when the report shows no problem (a miss, a failed check, a
+      selected test pytest did not collect, a run that failed after a good
+      plan, an artifact it could not read). (A failing step
       after this action makes the next report cover this window again.)
     value: ${{ steps.report.outputs.ok }}
   report:

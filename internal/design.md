@@ -496,7 +496,7 @@ Further rules (pre-release audit, round 2):
   through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),
   and a third-party function that changes an argument in place.
 * Writes to state held on a class, or reached by another name (audit
-  round 6, T6 and T7; pass 2, `RefCollector._rooted_write` in
+  round 6, T6 and T7; pass 2, `_ReferenceCollector._rooted_write` in
   `indexer/references.py`, the bindings from `aliases.name_sources`). Every
   write form above (an item or attribute assigned, augmented or deleted, a
   container mutator called or taken as a bound method, `setattr`, a
@@ -1730,9 +1730,9 @@ mark expressions bound to it at module level, in the module that defines
 the decorated function or class, through aliases and `from` imports (only
 names used this way are followed); a call of such a name (a mark factory
 returning a mark expression) applies the stored marks with the call's
-arguments. A `usefixtures` whose arguments are not literal strings (or
-lists of them), an alias of the mark (`use = mark.usefixtures`), and a
-decorator, factory or `pytestmark = marks()` that resolves to code in the
+arguments (an alias of the mark is that mark: `use = mark.usefixtures`,
+then `@use("db")`, requests `db`). A `usefixtures` whose arguments are not literal strings (or
+lists of them), and a decorator, factory or `pytestmark = marks()` that resolves to code in the
 source roots mentioning `usefixtures` (`_Scopes.applies_marks`) request
 every visible fixture (`*`); one whose code never mentions it (a skip
 helper) requests nothing. Hooks that add to every item's fixtures,
@@ -1915,7 +1915,8 @@ Further rules (pre-release audit, round 2):
   and its conftests' autouse fixtures, plugin fixtures, the ini
   `usefixtures`, `doctest_namespace` (an autouse fixture usually fills it,
   as pandas's root conftest does), and the session-wide hooks. A module
-  such a fixture stores into `doctest_namespace` (`ns["np"] = numpy`,
+  in the source roots such a fixture stores into `doctest_namespace`
+  (`ns["pkg"] = pkg`,
   `.update`, `.setdefault`) is a `dynamic:<module>` dependency of every
   doctest (`_namespace_modules`): the examples call into it by the stored
   name, which the indexer's `_into_doctest_namespace` does not hand on.
@@ -1925,12 +1926,13 @@ Further rules (pre-release audit, round 2):
   (`format`, `replace`, `strip`, ...), or a same-scope `X.__doc__` copy
   (networkx's `categorical_doc.replace("node", "edge")`, `b.__doc__ =
   a.__doc__`). A docstring with examples that a decorator in the source
-  roots rewrites (`_Scopes.writes_docstring`) is a target with the
-  lifecycle dependency `doctest:computed`, which the planner cannot find,
-  so it is always selected. A docstring discovery cannot work out (an
-  imported value, a decorator that writes the whole docstring, a store on
-  an object it cannot name) is reported (`unmodelled_test_binding`): pytest
-  collects its doctests, and they are not targets.
+  roots rewrites (`_Scopes.writes_docstring`), or that a value discovery
+  cannot work out replaces (an imported value, a call), is a target with
+  the lifecycle dependency `doctest:computed`, which the planner cannot
+  find, so it is always selected, when the object's own written docstring
+  has examples. Without examples there, or on an object discovery cannot
+  name, it is reported (`unmodelled_test_binding`): pytest may collect
+  doctests from it that are not targets.
 * A hook or xunit function bound by import or assignment (`from x import
   pytest_generate_tests`, `setup_module = _setup`, a star import) is a
   dependency like one defined there, followed to its definition.

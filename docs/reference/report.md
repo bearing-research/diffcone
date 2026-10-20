@@ -118,13 +118,13 @@ diffcone couldn't bound, so it selected the target to be safe.
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
 | `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
-| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file `[index] exclude` keeps out of the analysis; or it runs with a module's globals (a doctest) and that module's imports changed. |
+| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file `[index] exclude` keeps out of the analysis; or it runs with a module's globals (a doctest) and a change lies in what that module imports. |
 | `unresolved_name_match` | yes | It reaches a reference diffcone couldn't resolve (a call, a name or an attribute) whose name matches something that changed. |
 | `entry_symbol_unresolved` | yes | Its own code wasn't found in either snapshot. |
-| `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots, a benchmark's code it couldn't read. |
+| `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots or kept out by `[index] exclude`, a benchmark's code it couldn't read, a doctest whose docstring is computed when the module is imported or whose examples can't be read. |
 | `analysis_error` | yes | A file, or `diffcone.toml`, couldn't be analysed, so every target is selected. |
 | `runner_dependency` | yes | Code the test runner itself imports changed. |
-| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a `conftest.py`, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed. |
+| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a `.py` file `[index] exclude` keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a `conftest.py`, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed. |
 
 With execution evidence, the rules name what the recorded run observed:
 
@@ -145,7 +145,7 @@ With execution evidence, the rules name what the recorded run observed:
 | `text_code` | yes | The test ran code compiled from text that no file of your code holds, such as a doctest's examples or a `timeit` statement: that code can use any name. |
 | `pytest_hook_changed` | yes | A pytest hook or what decides what pytest loads changed, or code that a hook ran in the recording (or that ran while pytest collected a file, and could change the whole process or pytest's session) changed or reads something that changed: what a hook does, such as setting an environment variable, reaches every test. |
 | `unobserved_file_changed` | yes | A change the recording can't attribute to tests: code that ran outside every test (a hook), a `conftest.py` outside the source roots, Cython outside functions or without a profiled build, other compiled sources, or your build, dependency or pytest configuration files. |
-| `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported, or such a file (or one `[index] exclude` keeps out) changed and was imported before the recorder started or inside a test. |
+| `unindexed_import` | yes | Changed code ran while a file outside the source roots was being imported, or such a file (or one `[index] exclude` keeps out) changed and was imported before the recorder started or inside a test; every test is selected. |
 
 ## Exit codes
 

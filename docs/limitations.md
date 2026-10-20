@@ -43,8 +43,8 @@ everything.
     run before.
 
 **A change to a file diffcone doesn't read selects everything.**
-:   Under your source roots, diffcone reads only `.py` files. A change to
-    any other file there (a data file, a `.pyx`, a `README.md`, a
+:   Under your source roots, diffcone reads only `.py` files, and not
+    those `[index] exclude` lists. A change to any other file there (a data file, a `.pyx`, a `README.md`, a
     configuration file) selects every target, since code or tests may read
     it. So does a change to a file's mode (a script made executable, a
     file turned into a symlink). `diffcone.toml` and `.diffcone/` are the
@@ -124,7 +124,8 @@ everything.
     modules, so passing it on or writing to it makes every lookup table
     dynamic. The same goes for a function's `__globals__`, a frame's
     `f_globals`, and what `pickle.loads`, `pkgutil.resolve_name` or
-    `gc.get_objects()` hand back.
+    `pydoc.locate` given a computed name, or `gc.get_objects()`, hand
+    back.
 
     Two exceptions: a name that starts with fixed text, and a new module
     (`types.ModuleType(name)`) that isn't installed in `sys.modules` under
@@ -223,9 +224,10 @@ everything.
     - `globals()["_CACHE"][k] = v`.
 
     A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
-    then `cache[k] = v`, changes nothing shared, and neither does a store
-    on an instance's own attribute (`self.items.append(x)` where `__init__`
-    sets `self.items = []`) or on a new instance (`Config().mode = m`).
+    then `cache[k] = v`, changes nothing shared, and a store on an
+    attribute of an instance no module variable or class holds
+    (`Config().mode = m`, or `self.items.append(x)` on such an instance)
+    is not followed as shared state.
 
     Not followed:
 
@@ -303,16 +305,17 @@ everything.
     Not followed:
 
     - a cache kept by an installed package's decorator under another name;
-    - a cache filled through a method of an object whose type diffcone
-      can't tell: `self._cache.set(k, compute(k))` where `_cache` is set in
-      several ways, `_STORE.put(k, compute(k))` on a module-level object,
-      a bound method kept in a variable (`put = _STORE.put`), an object
-      called like a function (`__call__`), a list of callbacks or hooks
-      called in a loop, `Engine().run(k)`;
-    - a write made after the code that can run the change has returned:
-      in a context manager's exit (the end of a `with` block, or the code
-      after the `yield` of a `@contextmanager`), or in a generator that
-      whoever consumes it resumes later;
+    - a cache filled through code diffcone can't follow from the code that
+      ran the change: a method that stores somewhere other than its own
+      object (`_STORE.put(k, v)` writing a module-level `_D`,
+      `Engine().run(k)`), a method of an attribute set in several ways
+      (`self._cache.set(k, compute(k))`), a bound method kept in a variable
+      (`put = _STORE.put`), an object called like a function (`__call__`),
+      or a list or table of functions (`for cb in _HOOKS: cb(v)`,
+      `_SINKS["a"](k, v)`);
+    - a write in a class's `__exit__` at the end of a `with` block, or in a
+      generator created elsewhere that the code running the change
+      resumes;
     - a value a test computes and hands to code of your project that keeps
       it (`store(compute(2))` in the test itself): it counts for that test
       only, as described above.
@@ -338,6 +341,14 @@ everything.
       test writes and a later one reads: the later test reads the file,
       not the code that wrote it; give each test its own directory
       (`tmp_path`) or clear the cache between tests;
+    - a cache an earlier test filled through `functools.lru_cache` or
+      `functools.cache`: the recorder clears these before each test, so
+      each test records the code that fills them, but a suite that relies
+      on one test seeing another's cached result runs differently while
+      recording;
+    - a program your tests start that is named like a read-only system
+      query (`git`, `uname`, `ps`, `locale`) but is a script of yours on
+      `PATH`: it is taken for the system program and not followed;
     - tests outside pytest's rootdir: with the rootdir in a subdirectory
       (a `pytest.ini` in `sub/`) and tests both under it and elsewhere
       (`pytest sub/tests tests`), records can be matched to the wrong
@@ -385,7 +396,9 @@ everything.
     doesn't know what the file imports or calls. Code that imports or runs
     one (an import, `import_module`, `runpy`, a subprocess, loading it by
     path) is selected on any change under your source roots, and a change
-    to the excluded file itself selects every test. Tests and benchmarks
+    to the excluded file itself selects every test (with a recording, see
+    [diffcone.toml](reference/declarations.md#files-to-leave-out-of-the-analysis)).
+    Tests and benchmarks
     in an excluded file, and the fixtures and hooks of an excluded
     `conftest.py` or plugin, are not discovered.
 
@@ -397,8 +410,9 @@ everything.
 :   A plan of a commit or of `INDEX` reads what git recorded. A `.py` file
     git ignores (a generated `_version.py`, a `local_settings.py`) and any
     edit to it are invisible to it. `run` refuses to run such a plan while
-    one is on disk under your source roots: plan with `--head WORKTREE`
-    instead.
+    one is on disk under your source roots, unless it only assigns
+    constants and neither commit has it (a generated `_version.py`);
+    otherwise plan with `--head WORKTREE`.
 
     A `WORKTREE` plan reads ignored `.py` files in a directory that also
     holds files git tracks or doesn't ignore. A directory with only ignored
@@ -416,6 +430,14 @@ everything.
     plan from the code. Whenever `run` starts pytest, it runs every
     collected test the plan doesn't know, and a recording captures what
     pytest really collected.
+
+    A fixture decorator is recognised under another name only when the
+    module using it binds that name (`from pytest import fixture as fx`,
+    `fx = pytest.fixture`). One imported from another of your modules is
+    not: an autouse fixture under it is not a dependency of the tests it
+    applies to, so a change to it may select none of them. A decorator from
+    an installed package that writes docstrings isn't read either: the
+    doctests it adds are not targets.
 
 **Parametrized tests are selected as a whole.**
 :   diffcone selects or skips all of a test's parameter cases together.
