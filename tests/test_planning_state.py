@@ -1556,6 +1556,178 @@ def test_t23_a_mutable_class_attribute_handed_to_a_constructor(repo):
     assert _state_plan(repo, state, lib) == STATE_SELECTED
 
 
+# A write onto the class of an object whose type the analysis does not know
+# (``type(o).X = v``, ``o.__class__.items.append(v)`` with ``o`` a parameter)
+# may be a write of any in-scope class that may have that attribute: a class
+# binding or defining it, and its subclasses. Such a write is a write of each
+# of them, as ``Conf.X = v`` is of ``Conf`` (audit round 6, T25).
+CONF = (
+    "class Conf:\n    X = 1\n\n    @classmethod\n    def registry(cls):\n"
+    "        return cls._cache\n\n\nclass Conf2(Conf):\n    pass\n\n\n"
+    "def peek(k):\n    return Conf.X\n"
+)
+CONF_HOLDING = (
+    "class Conf:\n    items = []\n    _cache = {}\n\n    @classmethod\n"
+    "    def registry(cls):\n        return cls._cache\n\n\n"
+    "def peek(k):\n    return Conf.items, Conf._cache\n"
+)
+CONF_SUB = (
+    "class Conf:\n    X = 1\n\n\nclass Sub(Conf):\n    pass\n\n\ndef peek(k):\n    return Sub.X\n"
+)
+CONF_LIB = "def fill(k):\n{}"
+UNKNOWN_CLASS_WRITES = {
+    "type() of a parameter": (CONF, CONF_LIB.format("    type(k).X = 'x'\n")),
+    "__class__ of a parameter": (CONF, CONF_LIB.format("    k.__class__.X = 'x'\n")),
+    "augmented": (CONF, CONF_LIB.format("    type(k).X += 'x'\n")),
+    "augmented through __class__": (CONF, CONF_LIB.format("    k.__class__.X += 'x'\n")),
+    "setattr": (CONF, CONF_LIB.format("    setattr(type(k), 'X', 'x')\n")),
+    "setattr with a computed name": (CONF, CONF_LIB.format("    setattr(type(k), k, 'x')\n")),
+    "delattr": (CONF, CONF_LIB.format("    delattr(type(k), 'X' if k else 'x')\n")),
+    "deleted": (CONF, CONF_LIB.format("    if k == 'x':\n        del k.__class__.X\n")),
+    "through a local alias": (CONF, CONF_LIB.format("    c = type(k)\n    c.X = 'x'\n")),
+    "through the class's namespace": (
+        CONF,
+        CONF_LIB.format("    vars(type(k))['X'] = 'x'\n"),
+    ),
+    "handed to a function binding it": (
+        CONF,
+        CONF_LIB.format("    _set(type(k))\n") + "\n\ndef _set(c):\n    c.X = 'x'\n",
+    ),
+    "returned by a function": (
+        CONF,
+        CONF_LIB.format("    _cls(k).X = 'x'\n") + "\n\ndef _cls(o):\n    return type(o)\n",
+    ),
+    "of an attribute of the receiver": (
+        CONF,
+        "class Holder:\n    def __init__(self, t):\n        self.thing = t\n\n"
+        "    def poke(self):\n        type(self.thing).X = 'x'\n\n\n"
+        "def fill(k):\n    Holder(k).poke()\n",
+    ),
+    "of a subclass": (CONF_SUB, CONF_LIB.format("    type(k).X = 'x'\n")),
+    "of a local that may be a new instance or a parameter": (
+        CONF + "\n\nclass Other:\n    X = 2\n",
+        "from pkg.state import Other\n\n\ndef fill(k):\n    o = Other() if k else k\n"
+        "    type(o).X = 'x'\n",
+    ),
+    "an attribute no class binds": (
+        "class Conf:\n    pass\n\n\ndef peek(k):\n    return getattr(Conf, 'flag', None)\n",
+        CONF_LIB.format("    type(k).flag = 'x'\n"),
+    ),
+    "a special attribute every class has": (
+        "class Conf:\n    pass\n\n\ndef peek(k):\n    return Conf.__doc__\n",
+        CONF_LIB.format("    type(k).__doc__ = 'x'\n"),
+    ),
+    "a container changed in place": (
+        CONF_HOLDING,
+        CONF_LIB.format("    type(k).items.append('x')\n"),
+    ),
+    "an item stored through __class__": (
+        CONF_HOLDING,
+        CONF_LIB.format("    k.__class__._cache['a'] = 'x'\n"),
+    ),
+    "what a method of the class returns": (
+        CONF_HOLDING,
+        CONF_LIB.format("    type(k).registry()['a'] = 'x'\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(UNKNOWN_CLASS_WRITES))
+def test_t25_a_write_onto_the_class_of_an_unknown_object(repo, case):
+    """``type(o).X = v`` or ``o.__class__.X = v`` where ``o`` is a parameter
+    (``bump(Conf())`` in one test, ``Conf.X`` read in another): the class
+    may be ``Conf``, so the readers of ``Conf`` read the write."""
+    assert _state_plan(repo, *UNKNOWN_CLASS_WRITES[case]) == STATE_SELECTED
+
+
+REBIND_PARAM = "\n\ndef rebind(o):\n    {}\n"
+REBOUND_THROUGH_AN_UNKNOWN_CLASS = {
+    "an immutable class attribute bound anew through type()": (
+        FIELDS.format(body="") + REBIND_PARAM.format("type(o).DAYS = []"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "an immutable class attribute bound anew through __class__": (
+        FIELDS.format(body="") + REBIND_PARAM.format("o.__class__.DAYS = []"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "an immutable class attribute bound anew by a computed name": (
+        FIELDS.format(body="") + REBIND_PARAM.format("setattr(type(o), o.name, [])"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "a literal table bound anew through type()": (
+        FIELDS.format(body="") + REBIND_PARAM.format("type(o).errors = {'invalid': Out()}") + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a class holding only constants given a container through type()": (
+        "class Store:\n    limits = (1, 2)\n\n\nSTORE = Store()\n\n\n"
+        "def peek(k):\n    return Store.limits\n" + REBIND_PARAM.format("type(o).limits = []"),
+        STORE_WRITER.format("    STORE.limits.append('x')\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(REBOUND_THROUGH_AN_UNKNOWN_CLASS))
+def test_t25_a_class_an_unknown_object_may_be_is_written(repo, case):
+    """A write onto the class of an unknown object binds the attribute anew
+    on every class that may own it: an attribute bound once to a value that
+    cannot change (``DAYS = 'days'``) or a literal table may then hold a
+    container, and a class whose body binds only constants may hold state
+    an instance's write reaches (T21, T24)."""
+    assert _state_plan(repo, *REBOUND_THROUGH_AN_UNKNOWN_CLASS[case]) == STATE_SELECTED
+
+
+KNOWN_CLASS_WRITES = {
+    "the class itself": (CONF, "from pkg.state import Conf\n\n\ndef fill(k):\n    Conf.X = 'x'\n"),
+    "type() of a fresh instance": (
+        CONF,
+        "from pkg.state import Conf\n\n\ndef fill(k):\n    type(Conf()).X = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(KNOWN_CLASS_WRITES))
+def test_t25_a_write_onto_a_known_class_still_selects_its_readers(repo, case):
+    """The rule for a class the analysis knows is unchanged (T6, T22)."""
+    assert _state_plan(repo, *KNOWN_CLASS_WRITES[case]) == STATE_SELECTED
+
+
+NOT_AN_OWNER = {
+    "type(self) in a subclass's method": (
+        CONF,
+        "from pkg.state import Conf\n\n\nclass Mine(Conf):\n    def bump(self):\n"
+        "        type(self).X = 'x'\n\n\ndef fill(k):\n    Mine().bump()\n",
+    ),
+    "a mock's own class": (
+        CONF,
+        "from unittest.mock import Mock, PropertyMock\n\n\ndef fill(k):\n    m = Mock()\n"
+        "    type(m).X = PropertyMock(return_value='x')\n",
+    ),
+    "a class's name": (CONF, CONF_LIB.format("    n = type(k).__name__\n    n += 'x'\n")),
+    "an attribute only another class binds": (
+        CONF + "\n\nclass Other:\n    other = 1\n",
+        CONF_LIB.format("    type(k).other = 'x'\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(NOT_AN_OWNER))
+def test_t25_a_write_onto_a_class_that_cannot_be_the_readers(repo, case):
+    """The bound of the rule: ``type(self)`` in a method is that method's
+    class (or a subclass), a mock's class is its own (``type(m).p =
+    PropertyMock()``), a class's ``__name__`` is a string, and binding on a
+    class of unknown type an attribute only some other class binds is no
+    write of the reader's class."""
+    assert _state_plan(repo, *NOT_AN_OWNER[case]) == {"tests/test_a.py::test_a"}
+
+
+def test_t25_an_unrelated_attribute_keeps_immutable_class_attributes(repo):
+    """T24's narrowing holds when the attribute written on an unknown class
+    is one ``TimeDelta``'s family does not have."""
+    state = FIELDS.format(body="") + REBIND_PARAM.format("type(o).unrelated = []")
+    lib = FIELDS_LIB.format("    f = TimeDelta(TimeDelta.DAYS)\n    f.load('x')\n")
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

@@ -35,7 +35,10 @@ resolve is a write of it unless it is a literal table nothing changes
 (writes.apply_writes).
 What a builtin returns may be its argument (``min(m, self._N)``), so a
 local augmented after it keeps the root; ``cast(T, x)`` is ``x``, not
-``T``, and ``type(Store())`` is the class.
+``T``, and ``type(Store())`` is the class. The class of anything else
+(``type(o)``, ``o.__class__`` of a parameter, of what a call returns) is
+unknown (``ANY_CLASS``): a write onto it is a write of every in-scope class
+that may own the attribute (writes.AnyClassOwners, after pass 2; T25).
 
 What a constructor call of an in-scope class is handed (``Tokenizer(src,
 rules=RULES)``) is held by the instance it makes (``HELD``): a change in
@@ -117,6 +120,7 @@ from diffcone.indexer.uses import (
     UNPICKLER_CLASSES,
 )
 from diffcone.indexer.writes import (
+    ANY_CLASS_WHAT,
     ARGUMENT_MUTATORS,
     HELD_WHAT,
     _whole_param,
@@ -316,6 +320,33 @@ ATTR = "<attr>:"
 # attribute of the instance does not, unless that runs code of the class
 # (writes._HeldSafety; audit round 6, T23).
 HELD = "<held>:"
+# The class of an object whose type the analysis does not know (``type(o)``,
+# ``o.__class__`` of a parameter, of something a call returned, of a module
+# variable): ``ANY_CLASS`` and the attribute it is reached through
+# (``type(o).items``) or nothing. A write into it may be one of any in-scope
+# class that may own that attribute (decided after pass 2:
+# writes.AnyClassOwners; audit round 6, T25).
+ANY_CLASS = "<anyclass>:"
+# Attributes every class has whose value ``type`` keeps of a type nothing can
+# change in place (assigning another type raises): what a class of unknown
+# type holds there is no state (T25).
+_FIXED_CLASS_ATTRIBUTES = frozenset({"__name__", "__qualname__", "__mro__", "__bases__"})
+# unittest.mock's mocks: each instance has a class of its own (``type(m).p =
+# PropertyMock()`` changes that mock alone), so ``type(m)`` is no class of the
+# project (T25).
+MOCK_CALLS = frozenset(
+    f"{module}.{name}"
+    for module in ("unittest.mock", "mock")
+    for name in (
+        "Mock",
+        "MagicMock",
+        "NonCallableMock",
+        "NonCallableMagicMock",
+        "AsyncMock",
+        "PropertyMock",
+        "create_autospec",
+    )
+)
 _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -1021,7 +1052,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.indexer.out.value_writes.add((state, self.source))
 
     def _rooted_write(
-        self, obj: ast.expr, *, call: bool = False, bound: bool = False, attr: str = ""
+        self,
+        obj: ast.expr,
+        *,
+        call: bool = False,
+        bound: bool = False,
+        attr: str = "",
+        member: str = "",
     ) -> None:
         """A change in place of ``obj`` (an item or attribute stored into it,
         a mutator called on it): a
@@ -1039,7 +1076,10 @@ class _ReferenceCollector(ast.NodeVisitor):
         for a name only known at run time), which on a fresh instance
         changes that object alone (audit round 6, T22), and changes nothing
         a constructor was handed unless binding runs code of the class
-        (``HELD``: ``held_binds``, decided after pass 2; T23)."""
+        (``HELD``: ``held_binds``, decided after pass 2; T23). ``member``:
+        the attribute of ``obj`` an augmented assignment changes
+        (``type(o).n += 1``), which names what a class of unknown type
+        (``ANY_CLASS``) may own (T25)."""
         if call and self._names_definition(obj):
             return
         roots = self._state_roots(obj, frozenset())
@@ -1061,10 +1101,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                     else:
                         apply_fact(out, self.source, fact)
                 continue
-            for fact in self._root_facts(root, bound=bound, attr=attr):
+            for fact in self._root_facts(root, bound=bound, attr=attr, member=member):
                 apply_fact(out, self.source, fact)
 
-    def _root_facts(self, root: str, *, bound: bool, attr: str) -> list[tuple[str, str, str]]:
+    def _root_facts(
+        self, root: str, *, bound: bool, attr: str, member: str = ""
+    ) -> list[tuple[str, str, str]]:
         """What a write into what ``root`` names records (``apply_fact``):
         ``value``, a change in place of a module variable, class or
         function (Indexer._value_writes); ``attribute``, of what a class
@@ -1074,10 +1116,18 @@ class _ReferenceCollector(ast.NodeVisitor):
         (Indexer._result_writes); ``own``, a class written by its own
         module's top-level code, which is part of the module's hash but may
         bind a class attribute anew (T24): the attribute ``attr``, any for
-        ``*`` or a change in place of the class itself."""
+        ``*`` or a change in place of the class itself; ``anyclass``, of a
+        class of unknown type (``type(o).x = v``): the attribute it binds
+        or is reached through (``*``: any), and the writer's module for
+        code its hash covers, decided after pass 2 (writes.AnyClassOwners;
+        T25)."""
         here = self.scope.module.name
         unhashed = not self.skip_defs or (bound and self.source != here)
         symbols = self.indexer.index.symbols
+        reached = any_class_root(root)
+        if reached is not None:
+            name = reached or attr or member or "*"
+            return [("anyclass", "*" if name == "__dict__" else name, "" if unhashed else here)]
         made = instance_root(root)
         if made is not None:
             # An instance of an in-scope class (or part of one): a write
@@ -1137,6 +1187,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         for root, copy in sorted(self._state_roots(expr, frozenset()).items()):
             if copy or root == self.source:
                 continue
+            if receiver and any_class_root(root) == "":
+                continue  # ``type(o).register(x)``: the method's ``cls`` writes are its own
             held = held_root(root)
             if held is not None:
                 # Part of a fresh instance its constructor was handed: written
@@ -1161,6 +1213,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         named = class_attribute_root(root)
         if named is not None:
             return [f"attr:{named[1]}:{named[0]}"] if named[0] in symbols else []
+        member = any_class_root(root)
+        if member is not None:
+            return [f"{ANY_CLASS_WHAT}{member}"]  # a class of unknown type (T25)
         symbol = symbols.get(root)
         if symbol is not None and symbol.kind in (SymbolKind.VARIABLE, SymbolKind.CLASS):
             return [f"var:{root}"]
@@ -1179,7 +1234,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         elif isinstance(target, ast.Subscript):
             self._rooted_write(target.value)
         elif isinstance(target, ast.Attribute):
-            self._rooted_write(target.value, attr=target.attr if bind else "")
+            self._rooted_write(target.value, attr=target.attr if bind else "", member=target.attr)
 
     def _is_local(self, name: str) -> bool:
         """A name the function binds itself (no parameter default's alias,
@@ -1359,12 +1414,37 @@ class _ReferenceCollector(ast.NodeVisitor):
                             return found
         inner = self._state_roots(expr.value, seen)
         if expr.attr == "__class__":
-            # The class of a fresh instance is its class (or a subclass), as
-            # for ``type(new)``: ``new.__class__.x = v`` binds a class attribute.
-            classes = {r.rpartition(":")[2]: False for r in inner if r.startswith(FRESH)}
-            rest = {r: c for r, c in inner.items() if not r.startswith(FRESH)}
-            return _merged(classes, _part_of(rest, copy=False, attr=expr.attr))
+            return _class_of(inner, self._made_here(expr.value))
         return _part_of(inner, copy=False, attr=expr.attr)
+
+    def _made_here(self, expr: ast.expr, depth: int = 0) -> bool:
+        """Whether ``expr`` is certainly an object made where it is used: a
+        construction of an in-scope class or a ``__new__`` called with one
+        (``_made_instance``), a mock (``MOCK_CALLS``), a display or literal,
+        or a local name every binding of which is one of those (no
+        parameter). Its class is then known (T25)."""
+        if isinstance(expr, ast.Call):
+            if self._made_instance(expr) is not None:
+                return True
+            parts = _flatten_chain(expr.func)
+            return (
+                parts is not None and not self._is_local(parts[0]) and self._only(parts, MOCK_CALLS)
+            )
+        if isinstance(expr, (ast.Constant, ast.JoinedStr, ast.List, ast.Dict, ast.Set, ast.Tuple)):
+            return True
+        if isinstance(expr, _COMPREHENSIONS):
+            return True
+        if not isinstance(expr, ast.Name) or depth > 3 or expr.id in self.scope.params:
+            return False
+        if not self._is_local(expr.id):
+            return False
+        owner = self._binding_scope(expr.id)
+        if owner is None:
+            return False
+        sources = self._sources_in(owner).get(expr.id, ())
+        return bool(sources) and all(
+            how == VALUE and self._made_here(value, depth + 1) for value, how in sources
+        )
 
     def _instance_roots(self, chain: list[str]) -> dict[str, bool]:
         """``self.<attr>``: the class whose body binds ``attr`` (and each
@@ -1522,13 +1602,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             if func.id == "type" and len(node.args) == 1 and not node.keywords:
                 if self._is_self(node.args[0]) and not self.scope.self_is_class:
                     return {self.scope.self_class: False} if self.scope.self_class else {}
-                # The class of a fresh instance is its class (or a subclass,
-                # whose state the class's edges reach): ``type(new).x = v``
-                # binds a class attribute.
-                inner = self._state_roots(node.args[0], seen)
-                classes = {r.rpartition(":")[2]: False for r in inner if r.startswith(FRESH)}
-                rest = {r: c for r, c in inner.items() if not r.startswith(FRESH)}
-                return _merged(classes, _part_of(rest, copy=False))
+                return _class_of(
+                    self._state_roots(node.args[0], seen), self._made_here(node.args[0])
+                )
             if func.id in FRESH_CALLS:
                 return {}
             copy = func.id in SHALLOW_CALLS
@@ -1548,6 +1624,11 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return self._namespace_method(func.attr, node)
             if receiver:
                 copy = func.attr in ("copy", "__copy__")
+                # A method of a class of unknown type gives what a class
+                # owning that method holds (T25).
+                receiver = {
+                    (ANY_CLASS + func.attr if r == ANY_CLASS else r): c for r, c in receiver.items()
+                }
                 found = _merged(found, receiver)
         return _part_of(found, copy=copy)
 
@@ -3592,7 +3673,9 @@ def _part_of(roots: dict[str, bool], *, copy: bool, attr: str = "") -> dict[str,
     attribute of them (no copy), or a new container of them (``copy``). What
     a fresh instance holds is no longer the new object itself (``attr``: the
     attribute it is reached through)."""
-    return {_instance_part(root, attr): copy for root in roots if root != _NAMESPACE}
+    parts = {_instance_part(root, attr): copy for root in roots if root != _NAMESPACE}
+    parts.pop(_NAMESPACE, None)
+    return parts
 
 
 def _instance_part(root: str, attr: str = "") -> str:
@@ -3600,10 +3683,38 @@ def _instance_part(root: str, attr: str = "") -> str:
     reached through attribute ``attr``, or anyhow."""
     if root.startswith(FRESH):
         return f"{INSTANCE}{'.' + attr if attr else ''}:{root.rpartition(':')[2]}"
+    if root == ANY_CLASS:
+        if attr in _FIXED_CLASS_ATTRIBUTES:
+            return _NAMESPACE  # nothing a write in place can change (dropped)
+        return ANY_CLASS + attr  # what the class holds under ``attr`` (T25)
     held = held_root(root)
     if held is not None:
         return held[1]  # a part of the instance may be what it was handed
     return root
+
+
+def _class_of(inner: dict[str, bool], made: bool) -> dict[str, bool]:
+    """The roots of ``type(x)`` and ``x.__class__`` where ``inner`` are
+    those of ``x`` and ``made`` says whether ``x`` is certainly an object a
+    call or display just made (``_made_here``). The class of a fresh
+    instance is its class (or a subclass, whose state the class's edges
+    reach): ``type(new).x = v`` binds a class attribute; a display's or a
+    mock's is no class of the project. Of anything else (a parameter, what
+    a call returned, a module variable's value, a local that may be any of
+    these), part of what it is stays a root, and the class is one the
+    analysis does not know (``ANY_CLASS``; T25)."""
+    classes = {r.rpartition(":")[2]: False for r in inner if r.startswith(FRESH)}
+    rest = {r: c for r, c in inner.items() if not r.startswith(FRESH)}
+    found = _merged(classes, _part_of(rest, copy=False))
+    if not made:
+        found[ANY_CLASS] = False
+    return found
+
+
+def any_class_root(root: str) -> str | None:
+    """The attribute an ``ANY_CLASS`` root is reached through ("" for the
+    class itself); None for any other root."""
+    return root[len(ANY_CLASS) :] if root.startswith(ANY_CLASS) else None
 
 
 def _held(cls: str, root: str) -> str:

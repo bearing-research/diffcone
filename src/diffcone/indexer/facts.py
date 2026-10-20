@@ -255,6 +255,12 @@ class _Output:
     # writes (an edge the module's hash covers, but a class attribute may be
     # bound anew: ``Arrow.min = ...`` binds ``min``; T24).
     own_class_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (attribute or ``*``, writer, the writer's module for code its hash
+    # covers or ""): a write onto the class of an object of unknown type
+    # (``type(o).x = v``, ``o.__class__.items.append(x)``,
+    # ``setattr(type(o), name, v)``): a write of every in-scope class that
+    # may own the attribute (writes.AnyClassOwners; audit round 6, T25).
+    any_class_writes: set[tuple[str, str, str]] = field(default_factory=set)
     # (class, attribute or ``*``, writer, kind, first, second): an attribute
     # bound on a fresh instance of the class whose constructor was handed
     # what the fact (apply_fact) names; the fact holds when
@@ -325,6 +331,7 @@ class _Output:
         self.instance_writes |= other.instance_writes
         self.attr_value_writes |= other.attr_value_writes
         self.own_class_writes |= other.own_class_writes
+        self.any_class_writes |= other.any_class_writes
         self.held_binds |= other.held_binds
         self.attr_values |= other.attr_values
         self.param_flavors |= other.param_flavors
@@ -382,6 +389,8 @@ def apply_fact(out: _Output, writer: str, fact: tuple[str, ...]) -> None:
         out.result_writes.add((writer, first, second))
     elif kind == "own":
         out.own_class_writes.add((first, second))
+    elif kind == "anyclass":
+        out.any_class_writes.add((first, writer, second))
 
 
 def _output_to_dict(out: _Output) -> dict:
@@ -457,6 +466,7 @@ def _output_to_dict(out: _Output) -> dict:
         "instance_writes": sorted(list(w) for w in out.instance_writes),
         "attr_value_writes": sorted(list(w) for w in out.attr_value_writes),
         "own_class_writes": sorted(out.own_class_writes),
+        "any_class_writes": sorted(list(w) for w in out.any_class_writes),
         "held_binds": sorted(list(b) for b in out.held_binds),
         "attr_values": sorted(list(v) for v in out.attr_values),
         "param_flavors": sorted(list(f) for f in out.param_flavors),
@@ -548,6 +558,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.instance_writes = {(c, w, h) for c, w, h in data["instance_writes"]}
     out.attr_value_writes = {(c, a, w) for c, a, w in data["attr_value_writes"]}
     out.own_class_writes = {(c, a) for c, a in data["own_class_writes"]}
+    out.any_class_writes = {(a, w, m) for a, w, m in data["any_class_writes"]}
     out.held_binds = {(c, a, w, k, f, s) for c, a, w, k, f, s in data["held_binds"]}
     out.attr_values = {(c, a, bool(ok)) for c, a, ok in data["attr_values"]}
     out.param_flavors = {(f, p, h) for f, p, h in data["param_flavors"]}

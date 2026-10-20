@@ -689,6 +689,50 @@ Further rules (pre-release audit, round 2):
   family defines
   `__getattribute__` (`writes.apply_writes`). Its methods and its items'
   are then builtins'.
+* A write onto the class of an object of unknown type is a write of every
+  class that may own the attribute (audit round 6, T25;
+  `references.ANY_CLASS`, `writes.AnyClassOwners` after pass 2).
+  `type(x)` and `x.__class__` are the method's class for `self` (T6), the
+  class of a fresh instance (T22, T24) and no class of the project for a
+  display, a literal or a `unittest.mock` mock (each mock has a class of
+  its own: `type(m).p = PropertyMock()`), when `x` is certainly such an
+  object (`_made_here`: the call or display itself, or a local every
+  binding of which is one, no parameter). Of anything else (a parameter,
+  what a call returns, an attribute of the receiver, a module variable's
+  value, a local that may be any of these: `o = Store() if c else p`) the
+  class is unknown, and the write tracing gives the root `<anyclass>:`
+  with the attribute it is reached through (`type(o).items`, a method's
+  result: `type(o).registry()`) or none; `__name__`, `__qualname__`,
+  `__mro__` and `__bases__`, whose types `type` enforces, hold nothing a
+  write can change. A write into it (a bind, augment or
+  delete of an attribute, `setattr`/`delattr`, an item stored or a
+  container mutator on an attribute, `vars(type(o))`/`__dict__`, through
+  a local alias, `type(o)` handed to a callee that writes its parameter,
+  whose `param_flavors` name the attribute bound, or returned to a caller
+  writing into it) records `any_class_writes` (attribute, writer, module
+  for top-level code). After pass 2 each becomes a `value_writes` entry,
+  so a `mutated_by` edge, of each owner: an in-scope class whose body
+  binds or defines the attribute, or whose methods bind it on `self` or
+  `cls` (`attr_writes`; which object it is is not known, so an instance
+  attribute counts), every class with a base outside the index
+  (`opaque`), and every in-scope subclass of those; every in-scope class
+  for a special name (`__doc__`, `__repr__`: every class has them), for an
+  attribute no class binds or defines (only such code gives a class one,
+  read by `getattr(Conf, "flag", None)`), and for a name only known at run
+  time (`*`). A module's own top-level code writing a class of the same
+  module is an `own_class_writes` binding instead (its hash covers it, but
+  the attribute is bound anew). The owner then counts as written: it holds
+  state (T21), its class attributes may be bound anew (T24), and its
+  literal tables may change (`writes.apply_writes`, which counts every
+  owner of an `anyclass:` pass or return before deciding, whatever the
+  callee does). A method called on `type(o)` itself is no write of it (its
+  `cls` writes are its own). Cost: a callee changing its parameter in
+  place (`*`: networkx's `empty_graph` calling `create_using.clear()`,
+  handed `create_using=G.__class__`) cannot be told from one changing what
+  an attribute of it holds, so the class handed is any class's, and every
+  class of the project then counts as written. Not modelled: an in-scope
+  `__new__` giving back an instance of a class outside the family (the
+  class of what a construction makes is taken to be the family's).
 * An instance holds what its constructor was handed (audit round 6, T23;
   `HELD` roots and `held:` passes, `writes._HeldSafety` after pass 2). An
   explicit call of an in-scope class (`Tokenizer(src, rules=RULES)`) gives

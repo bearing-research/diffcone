@@ -22,7 +22,13 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal_keys
-from diffcone.indexer.references import RESULT, SETITEM, class_attribute_root, instance_root
+from diffcone.indexer.references import (
+    RESULT,
+    SETITEM,
+    any_class_root,
+    class_attribute_root,
+    instance_root,
+)
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
@@ -42,7 +48,7 @@ from diffcone.indexer.uses import (
     USE,
     UseRecord,
 )
-from diffcone.indexer.writes import apply_writes
+from diffcone.indexer.writes import AnyClassOwners, apply_writes
 from diffcone.model import (
     ANY_MODULE,
     EXTERNAL_WRITTEN,
@@ -929,8 +935,16 @@ class Indexer(DynamicBounds):
                             stack.append(callee)
             return found
 
+        owners: AnyClassOwners | None = None
         for writer, callee, module in sorted(self._global.result_writes):
             for root in sorted(state_of(callee)):
+                member = any_class_root(root)
+                if member is not None:
+                    # The class of an object of unknown type (``return
+                    # type(o)``): each class that may own what is written (T25).
+                    owners = owners or AnyClassOwners(self)
+                    owners.record(self._global, member or "*", writer, module)
+                    continue
                 named = class_attribute_root(root)
                 if named is not None:
                     # What a class attribute holds (T24); its own module's

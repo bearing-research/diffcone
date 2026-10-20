@@ -210,8 +210,17 @@ everything.
     The same holds for state kept on a class (`Config.mode = m`,
     `Config.items.append(x)`, `setattr(Config, "mode", m)`, `cls._instance
     = cls()`, `type(self)._cache[k] = v`): the code storing it is a
-    dependency of every reader of the class. And it holds when the code
-    reaches the object by another name:
+    dependency of every reader of the class. When the class can't be known
+    (`type(obj).mode = m` or `obj.__class__.items.append(x)`, where `obj`
+    is a parameter or comes from a call), the code is a dependency of the
+    readers of each of your classes that has that attribute (its body or
+    one of its methods sets it), of each class deriving from a library
+    class, and of their subclasses, or of
+    every class for a special attribute (`__doc__`), for an attribute none
+    of your classes has, and for a name only known at run time
+    (`setattr(type(obj), name, v)`). A mock's class is its own, so
+    `type(mock).name = PropertyMock(...)` changes none of your classes. And
+    it holds when the code reaches the object by another name:
 
     - a local name for it: `cache = _CACHE`, then `cache[k] = v` (also
       `(cache := _CACHE)`, `for cache in (_A, _B)`, `with nullcontext(_CACHE)
