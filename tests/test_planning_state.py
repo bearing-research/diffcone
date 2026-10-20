@@ -814,6 +814,120 @@ def test_t20_a_variable_bound_anew_keeps_its_writers(repo, case):
     assert _state_plan(repo, *STILL_WRITTEN[case], extra=extra) == STATE_SELECTED
 
 
+# State a class holds (a class-level container) is shared by its instances:
+# a write in place into a module variable holding an instance, through any
+# name or method result, writes the class, whose readers read it (audit
+# round 6, T21).
+STORE = (
+    "class Store:\n    _cache = {}\n\n    def cache(self):\n        return self._cache\n\n"
+    "    @classmethod\n    def lookup(cls, k):\n        return cls._cache.get(k)\n\n\n"
+    "STORE = Store()\n\n\ndef peek(k):\n    return Store._cache.get(k)\n"
+)
+STORE_WRITER = "from pkg import state\nfrom pkg.state import STORE\n\n\ndef fill(k):\n{}"
+INSTANCE_OF_A_CLASS_WITH_STATE = {
+    "a method returning the class-level container": (
+        STORE,
+        STORE_WRITER.format("    STORE.cache()[k] = 'x'\n"),
+    ),
+    "the class-level container through the instance": (
+        STORE,
+        STORE_WRITER.format("    STORE._cache[k] = 'x'\n"),
+    ),
+    "read in a classmethod": (
+        STORE.replace("return Store._cache.get(k)", "return Store.lookup(k)"),
+        STORE_WRITER.format("    STORE._cache.update(k='x')\n"),
+    ),
+    "a local alias of the instance": (
+        STORE,
+        STORE_WRITER.format("    s = state.STORE\n    s.cache().setdefault(k, 'x')\n"),
+    ),
+    "a lazily made singleton": (
+        STORE.replace(
+            "STORE = Store()\n",
+            "STORE = None\n\n\ndef get_store():\n    global STORE\n    if STORE is None:\n"
+            "        STORE = Store()\n    return STORE\n",
+        ),
+        "from pkg.state import get_store\n\n\ndef fill(k):\n    get_store()._cache[k] = 'x'\n",
+    ),
+    "made by a factory": (
+        STORE.replace("STORE = Store()\n", "def make():\n    return Store()\n\n\nSTORE = make()\n"),
+        STORE_WRITER.format("    STORE._cache[k] = 'x'\n"),
+    ),
+    "the container on a base": (
+        "class Base:\n    _cache = {}\n\n\nclass Store(Base):\n    pass\n\n\n"
+        "STORE = Store()\n\n\ndef peek(k):\n    return Base._cache.get(k)\n",
+        STORE_WRITER.format("    STORE._cache[k] = 'x'\n"),
+    ),
+    "a class-level object's method result": (
+        "class Registry:\n    def __init__(self):\n        self._items = {}\n\n"
+        "    def entries(self):\n        return self._items\n\n\n"
+        "class Store:\n    registry = Registry()\n\n\nSTORE = Store()\n\n\n"
+        "def peek(k):\n    return Store.registry.entries().get(k)\n",
+        STORE_WRITER.format("    STORE.registry.entries()[k] = 'x'\n"),
+    ),
+    "a method of the instance writing the container": (
+        STORE.replace(
+            "    @classmethod\n",
+            "    def put(self, k):\n        self._cache[k] = 'x'\n\n    @classmethod\n",
+        ),
+        STORE_WRITER.format("    STORE.put(k)\n"),
+    ),
+    "an instance in a container display": (
+        STORE.replace("STORE = Store()\n", "STORE = Store()\n_STORES = {'a': Store()}\n"),
+        STORE_WRITER.format("    state._STORES['a']._cache[k] = 'x'\n"),
+    ),
+    "an instance under another instance's attribute": (
+        STORE.replace(
+            "STORE = Store()\n",
+            "class Holder:\n    def __init__(self):\n        self.store = Store()\n\n\n"
+            "STORE = Store()\nHOLDER = Holder()\n",
+        ),
+        STORE_WRITER.format("    state.HOLDER.store._cache[k] = 'x'\n"),
+    ),
+    "state a classmethod puts on the class": (
+        "class Store:\n    @classmethod\n    def setup(cls):\n        cls._cache = {}\n\n\n"
+        "Store.setup()\nSTORE = Store()\n\n\ndef peek(k):\n    return Store._cache.get(k)\n",
+        STORE_WRITER.format("    STORE._cache[k] = 'x'\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(INSTANCE_OF_A_CLASS_WITH_STATE))
+def test_t21_a_write_into_an_instance_reaches_the_state_its_class_holds(repo, case):
+    """``STORE._cache[k] = v``, ``STORE.cache()[k] = v``: what the instance
+    reaches may be the class's own container, so the class's readers
+    (``Store._cache``, ``cls._cache``, a base's) read the write."""
+    assert _state_plan(repo, *INSTANCE_OF_A_CLASS_WITH_STATE[case]) == STATE_SELECTED
+
+
+INSTANCE_OF_A_CLASS_WITHOUT_STATE = {
+    "constants and methods only": (
+        "import functools\n\n\nclass Store:\n    kind = 'store'\n    limits = (1, 2)\n"
+        "    size = property(lambda self: len(self._cache))\n\n    def __init__(self):\n"
+        "        self._cache = {}\n\n    @functools.cached_property\n    def name(self):\n"
+        "        return self.kind\n\n\nSTORE = Store()\n\n\n"
+        "def peek(k):\n    return Store.kind, Store.limits\n",
+        STORE_WRITER.format("    STORE._cache[k] = 'x'\n"),
+    ),
+    "a dataclass": (
+        "import dataclasses\n\n\n@dataclasses.dataclass\nclass Store:\n    kind: str = 'store'\n"
+        "    items: dict = dataclasses.field(default_factory=dict)\n\n\n"
+        "STORE = Store()\n\n\ndef peek(k):\n    return Store.kind\n",
+        STORE_WRITER.format("    STORE.items[k] = 'x'\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(INSTANCE_OF_A_CLASS_WITHOUT_STATE))
+def test_t21_a_write_into_an_instance_of_a_class_without_state(repo, case):
+    """The bound of the rule above: a class whose body binds only immutable
+    values, functions and descriptors holds nothing an instance's write
+    reaches, and its readers are not selected."""
+    assert _state_plan(repo, *INSTANCE_OF_A_CLASS_WITHOUT_STATE[case]) == {
+        "tests/test_a.py::test_a"
+    }
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

@@ -7,7 +7,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Sequence
 
-from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES
+from diffcone.indexer.syntax import DEF_NODES, FUNC_NODES, iter_scope_statements
 from diffcone.indexer.uses import scan_names
 
 # Synthetic key in a literal table: what *indexing* the literal bound to NAME
@@ -655,20 +655,14 @@ _NAMESPACE_WRITERS = frozenset({"globals", "vars", "locals", "exec", "eval"})
 EXTERNAL_DEPENDENCY = "module:"
 
 
-def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
-    """The module-level names bound exactly once in the module (nothing else
-    binds, deletes or declares them ``global`` anywhere in it) by an
-    assignment of a value that cannot change in place: a string, bytes,
-    number, ``None`` or ``bool`` literal, an f-string, an operator,
-    comparison, condition or subscript of such values, a tuple of them, a
-    call of ``IMMUTABLE_RESULTS``, of ``IMMUTABLE_OF_IMMUTABLE`` or of an
-    immutable builtin on them, one of the methods or attributes above, or
-    another such name. Name -> what that rests on: the module's names it
-    reads (immutable themselves only if they are, once every module is
-    known) and ``module:<m>`` per standard-library module it calls into.
-    Nothing in a module that names its namespace (``globals``, ``vars``,
-    ``exec``, ``__dict__``, ``sys.modules``) or star-imports: any of its
-    names may be bound anew there."""
+Bindings = tuple[dict[str, int], dict[str, str], dict[str, ast.expr], set[str]]
+
+
+def module_bindings(tree: ast.Module) -> Bindings | None:
+    """How often each module-level name is bound, what each import binds,
+    the value a simple assignment binds each name to and the names declared
+    ``global``/``nonlocal`` or bound by a walrus (``module_immutables``);
+    None for a module that names its namespace or star-imports."""
     counts: dict[str, int] = {}
     imports: dict[str, str] = {}
     values: dict[str, ast.expr] = {}
@@ -676,17 +670,17 @@ def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     modules_reads: set[str] = set()  # names ``x`` of ``x.modules``
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in _NAMESPACE_WRITERS:
-            return {}
+            return None
         if isinstance(node, ast.Attribute):
             if node.attr in ("__dict__", "__globals__", "f_globals"):
-                return {}
+                return None
             if node.attr == "modules" and isinstance(node.value, ast.Name):
                 modules_reads.add(node.value.id)
         elif isinstance(node, ast.ImportFrom):
             if any(a.name == "*" for a in node.names):
-                return {}
+                return None
             if node.module == "sys" and any(a.name == "modules" for a in node.names):
-                return {}
+                return None
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             declared.update(node.names)
         elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
@@ -735,7 +729,28 @@ def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
                 values[node.target.id] = node.value
         stack.extend(ast.iter_child_nodes(node))
     if any(imports.get(name, name) == "sys" for name in modules_reads):
-        return {}  # ``sys.modules[__name__].X = v``
+        return None  # ``sys.modules[__name__].X = v``
+    return counts, imports, values, declared
+
+
+def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+    """The module-level names bound exactly once in the module (nothing else
+    binds, deletes or declares them ``global`` anywhere in it) by an
+    assignment of a value that cannot change in place: a string, bytes,
+    number, ``None`` or ``bool`` literal, an f-string, an operator,
+    comparison, condition or subscript of such values, a tuple of them, a
+    call of ``IMMUTABLE_RESULTS``, of ``IMMUTABLE_OF_IMMUTABLE`` or of an
+    immutable builtin on them, one of the methods or attributes above, or
+    another such name. Name -> what that rests on: the module's names it
+    reads (immutable themselves only if they are, once every module is
+    known) and ``module:<m>`` per standard-library module it calls into.
+    Nothing in a module that names its namespace (``globals``, ``vars``,
+    ``exec``, ``__dict__``, ``sys.modules``) or star-imports: any of its
+    names may be bound anew there."""
+    found_bindings = module_bindings(tree)
+    if found_bindings is None:
+        return {}
+    counts, imports, values, declared = found_bindings
     once = {name for name, n in counts.items() if n == 1 and name not in declared}
     found: dict[str, tuple[str, ...]] = {}
     for name, value in values.items():
@@ -745,6 +760,70 @@ def module_immutables(tree: ast.Module) -> dict[str, tuple[str, ...]]:
         if _ImmutableValue(imports, once, counts, rests).check(value):
             found[name] = tuple(sorted(rests))
     return dict(sorted(found.items()))
+
+
+# What a class body may bind without giving the class state of its own: a
+# descriptor or method wrapper around a function (``x = property(get)``).
+_DESCRIPTOR_BUILTINS = frozenset({"property", "staticmethod", "classmethod"})
+_DESCRIPTORS = frozenset(
+    {
+        "functools.cached_property",
+        "functools.singledispatchmethod",
+        "abc.abstractproperty",
+        "dataclasses.field",
+    }
+)
+# Compound statements that bind nothing themselves (their bodies are
+# statements of the scope, ``iter_scope_statements``).
+_BLOCKS = (ast.If, ast.Try, ast.While, *((ast.TryStar,) if hasattr(ast, "TryStar") else ()))
+
+
+def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...] | None:
+    """Whether the class whose body is ``body`` (in a module whose
+    ``module_bindings`` are ``found``) holds
+    state of its own that can change in place (audit round 6, T21): None
+    when its body binds a name (outside its ``def``s and nested classes) to
+    anything ``module_immutables`` would not call immutable, other than a
+    function, a descriptor (``property``, ``cached_property``) or a
+    dataclass field (whose default, if any, is immutable). Otherwise what
+    that rests on, as there: the module's names its values read and
+    ``module:<m>`` per standard-library module called."""
+    if found is None:
+        return None
+    counts, imports, _, declared = found
+    once = {name for name, n in counts.items() if n == 1 and name not in declared}
+    rests: set[str] = set()
+    value = _ImmutableValue(imports, once, counts, rests)
+
+    def stateless(expr: ast.expr) -> bool:
+        if isinstance(expr, ast.Lambda):
+            return True
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            if (
+                isinstance(func, ast.Name)
+                and func.id in _DESCRIPTOR_BUILTINS
+                and func.id not in counts
+            ):
+                return True
+            named = value._canonical(func)
+            if named is not None and named[0] in _DESCRIPTORS:
+                rests.add(EXTERNAL_DEPENDENCY + named[1])
+                return all(value.check(k.value) for k in expr.keywords if k.arg == "default")
+        return value.check(expr)
+
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, (*DEF_NODES, *_BLOCKS, ast.Pass)):
+            continue
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            if stmt.value is None:
+                continue  # ``x: int`` binds nothing
+            if _collect_store_names(stmt) and not stateless(stmt.value):
+                return None
+            continue
+        if _collect_store_names(stmt):
+            return None  # ``for``, ``with``, ``import``, ``+=``: anything
+    return tuple(sorted(rests))
 
 
 class _ImmutableValue:

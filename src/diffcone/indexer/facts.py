@@ -223,6 +223,17 @@ class _Output:
     # (``mod.X = v``, ``global X; X = v``) and writing a module object are
     # edges of their own.
     value_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (module variable, what a binding of it holds): ``class:<id>`` an
+    # instance of an in-scope class (or the class), ``call:<id>`` what an
+    # in-scope function returns, ``var:<id>`` another module variable's
+    # value; joined after pass 2 (Indexer._instance_classes; audit round 6,
+    # T21).
+    instance_bindings: set[tuple[str, str]] = field(default_factory=set)
+    # (state, writer): ``value_writes`` made only by handing the variable to
+    # a method writing its receiver (writes.apply_writes, after pass 2): an
+    # edge of the variable, but none of the class it holds an instance of,
+    # whose state the method's own writes of ``self`` reach (T21).
+    receiver_writes: set[tuple[str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -269,6 +280,8 @@ class _Output:
         self.state_returns |= other.state_returns
         self.result_writes |= other.result_writes
         self.value_writes |= other.value_writes
+        self.instance_bindings |= other.instance_bindings
+        self.receiver_writes |= other.receiver_writes
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -377,6 +390,7 @@ def _output_to_dict(out: _Output) -> dict:
         "state_returns": sorted(list(r) for r in out.state_returns),
         "result_writes": sorted(list(w) for w in out.result_writes),
         "value_writes": sorted(list(w) for w in out.value_writes),
+        "instance_bindings": sorted(list(b) for b in out.instance_bindings),
     }
 
 
@@ -460,6 +474,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.state_returns = {(f, r) for f, r in data["state_returns"]}
     out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
     out.value_writes = {(v, w) for v, w in data["value_writes"]}
+    out.instance_bindings = {(v, o) for v, o in data["instance_bindings"]}
     return out
 
 
@@ -513,6 +528,7 @@ def _facts_to_dict(
                 "base_names": c.base_names,
                 "plain": c.plain,
                 "match_args": list(c.match_args) if c.match_args is not None else None,
+                "stateless": list(c.stateless) if c.stateless is not None else None,
             }
             for c in classes
         ],

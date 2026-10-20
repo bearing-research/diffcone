@@ -207,7 +207,8 @@ class Indexer(DynamicBounds):
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
-            for state, writer in sorted(self._global.value_writes):  # every one, undecided
+            undecided = self._global.value_writes | self._global.receiver_writes
+            for state, writer in sorted(undecided):  # every one, undecided
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._lazy_constants()
         # Classes whose instances (or the class itself) are handed to someone
@@ -535,6 +536,7 @@ class Indexer(DynamicBounds):
                 base_names=[list(c) if c is not None else None for c in data["base_names"]],
                 plain=bool(data["plain"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
+                stateless=tuple(data["stateless"]) if data["stateless"] is not None else None,
             )
         edges = {Edge(s, t, EdgeKind(k), d) for s, t, k, d in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):
@@ -931,9 +933,113 @@ class Indexer(DynamicBounds):
         readers read what they read before, whatever the writer does (audit
         round 6, T20)."""
         immutable = self._immutable_variables()
-        for state, writer in sorted(self._global.value_writes):
+        classes = self._instance_classes()
+        holding = self._classes_holding_state(immutable)
+        for state, writer in sorted(self._global.receiver_writes - self._global.value_writes):
             if state not in immutable:
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        for state, writer in sorted(self._global.value_writes):
+            if state in immutable:
+                continue
+            self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+            # A write in place into an instance (``STORE._cache[k] = v``,
+            # ``STORE.cache()[k] = v``) may be one into state its class
+            # holds: a ``mutated_by`` edge from the class and its in-scope
+            # bases when one of them holds any (audit round 6, T21).
+            for cls in sorted(classes.get(state, ())):
+                mro = self._mro(cls)
+                if any(c in holding for c in mro):
+                    for c in mro:
+                        if c != writer:
+                            self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
+
+    def _instance_classes(self) -> dict[str, set[str]]:
+        """Module variable -> the in-scope classes it may hold an instance of
+        (or be): what its bindings hold (``instance_bindings``), through
+        what the functions called return (``returns``, ``state_returns``),
+        other variables, and what such an instance holds under an attribute
+        a method binds to an instance or a factory's result
+        (``attr_writes``). Computed over the whole index on every build
+        from facts a cold and a warm build share (audit round 6, T21)."""
+        bindings: dict[str, set[str]] = defaultdict(set)
+        for var, origin in self._global.instance_bindings:
+            bindings[var].add(origin)
+        if not bindings:
+            return {}
+        returned: dict[str, set[str]] = defaultdict(set)
+        for function, root in self._global.state_returns:
+            returned[function].add(root)
+        returns, symbols = self._global.returns, self.index.symbols
+        held: dict[str, set[str]] = defaultdict(set)
+        for w in self._global.attr_writes:
+            if w.binding is not None and w.binding[0] == "instance":
+                held[w.cls].add(f"class:{w.binding[1]}")
+            elif w.binding is not None and w.binding[0] == "factory":
+                held[w.cls].add(f"call:{w.binding[1]}")
+        found: dict[str, set[str]] = {}
+        for start in sorted(bindings):
+            classes: set[str] = set()
+            seen: set[str] = set()
+            stack = [f"var:{start}"]
+            while stack:
+                origin = stack.pop()
+                if origin in seen:
+                    continue
+                seen.add(origin)
+                kind, _, ident = origin.partition(":")
+                if kind == "class":
+                    if ident in self.class_scopes and ident not in classes:
+                        classes.add(ident)
+                        # What its instances hold under an attribute
+                        # (``self.store = Store()``) is reached through them.
+                        for c in self._mro(ident):
+                            stack.extend(held.get(c, ()))
+                elif kind == "var":
+                    stack.extend(bindings.get(ident, ()))
+                elif kind == "call":
+                    classes.update(c for c in returns.get(ident, ()) if c in self.class_scopes)
+                    for root in returned.get(ident, ()):
+                        if root.startswith(RESULT):
+                            stack.append("call:" + root[len(RESULT) :])
+                        elif (symbol := symbols.get(root)) is not None:
+                            if symbol.kind == SymbolKind.CLASS:
+                                stack.append(f"class:{root}")
+                            elif symbol.kind == SymbolKind.VARIABLE:
+                                stack.append(f"var:{root}")
+            if classes:
+                found[start] = classes
+        return found
+
+    def _classes_holding_state(self, immutable: set[str]) -> set[str]:
+        """The in-scope classes that may hold state of their own that can
+        change in place: their body binds something that may
+        (``ClassScope.stateless``: anything not immutable, or immutable only
+        through a standard-library module a project module shadows or a
+        module variable that is not immutable), or some code stores onto
+        the class (a ``mutated_by`` edge of its own: ``cls._registry =
+        {}``, ``Store._cache[k] = v``). A class with an external base may
+        hold state the library defines, which only the evidence recorder
+        sees (audit round 6, T21)."""
+        modules = self.index.modules
+        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
+        written |= {state for state, _ in self._global.value_writes}
+        written |= {state for state, _ in self._global.receiver_writes}
+        found: set[str] = set()
+        for cls, cscope in self.class_scopes.items():
+            rests = cscope.stateless
+            holds = rests is None or cls in written
+            for rest in rests or ():
+                if holds:
+                    break
+                if rest.startswith(EXTERNAL_DEPENDENCY):
+                    top = rest[len(EXTERNAL_DEPENDENCY) :]
+                    holds = any(m == top or m.startswith(top + ".") for m in modules)
+                else:
+                    var = cscope.module.variables.get(rest)
+                    holds = var is None or var not in immutable
+            if holds:
+                found.add(cls)
+        return found
 
     def _immutable_variables(self) -> set[str]:
         """The module variables whose value nothing can change in place: the

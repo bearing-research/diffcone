@@ -9,6 +9,7 @@ from typing import Any
 
 from diffcone.cython import read as read_cython
 from diffcone.indexer.facts import _Output
+from diffcone.indexer.literals import Bindings
 from diffcone.indexer.scopes import ClassScope, ModuleScope
 from diffcone.model import AnalysisError, SourceIndex, Symbol
 from diffcone.snapshot import Snapshot, excluded_modules, excluded_paths
@@ -73,6 +74,9 @@ class IndexerState:
         # Class -> whether creating it makes instances of it
         # (Resolver._instantiates_at_creation), memoised.
         self._creation_instantiates: dict[str, bool] = {}
+        # Module -> literals.module_bindings of its tree, for the classes
+        # pass 1 reads (literals.class_state).
+        self._class_bindings: dict[str, Bindings | None] = {}
         # Import bindings being resolved (guards self-referential imports).
         self._resolving_bindings: set[tuple[str, str]] = set()
         self._pickling_hooks: list[str] | None = None

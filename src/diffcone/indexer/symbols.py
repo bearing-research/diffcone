@@ -39,7 +39,9 @@ from diffcone.indexer.literals import (
     _collect_literal_bindings,
     _collect_store_names,
     _module_containers,
+    class_state,
     make_evaluator,
+    module_bindings,
     module_immutables,
 )
 from diffcone.indexer.scopes import (
@@ -163,6 +165,21 @@ class FirstPass(IndexerState):
                 )
         body = _split_docstring(scope.tree.body)[1]
         return stmts, body, _variable_statements(scope, body)
+
+    def _class_state(self, scope: ModuleScope, nodes: list[ast.ClassDef]) -> tuple[str, ...] | None:
+        """``ClassScope.stateless`` of a class defined by ``nodes`` (every
+        ``if``/``else`` variant of it) in ``scope``."""
+        if scope.name not in self._class_bindings:
+            tree = scope.tree
+            self._class_bindings[scope.name] = module_bindings(tree) if tree is not None else None
+        found = self._class_bindings[scope.name]
+        rests: set[str] = set()
+        for node in nodes:
+            these = class_state(found, node.body)
+            if these is None:
+                return None
+            rests.update(these)
+        return tuple(sorted(rests))
 
     def _index_module(self, scope: ModuleScope) -> None:
         assert scope.tree is not None
@@ -424,6 +441,7 @@ class FirstPass(IndexerState):
                 self.out.edges.add(Edge(symbol_id, container_id, EdgeKind.DEFINED_IN))
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 cscope.plain = plain
+                cscope.stateless = self._class_state(scope, nodes)
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                     cscope.base_names.extend(

@@ -53,6 +53,9 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 57: a write in place into a module variable holding an instance of an
+#     in-scope class with class-level state writes the class and its
+#     in-scope bases too (audit round 6, T21);
 # 56: SourceIndex.stores without what the value derives from, through
 #     ``__dict__``/``vars()`` and explicit re-initialisation (audit T19);
 # 55: no mutated_by edge from a module variable whose one binding is an
@@ -100,7 +103,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 56
+INDEX_FORMAT = 57
 
 
 def _indexer_fingerprint() -> str:

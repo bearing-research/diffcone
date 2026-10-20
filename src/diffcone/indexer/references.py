@@ -841,6 +841,84 @@ class _ReferenceCollector(ast.NodeVisitor):
             else:
                 self._value_write(symbol.id)
 
+    def _held_instance(
+        self, target: ast.expr, value: ast.expr, annotation: ast.expr | None = None
+    ) -> None:
+        """Record what a binding of a module variable holds (``STORE =
+        Store()``, ``global _S; _S = make()``, ``mod.X = Y``) where that may
+        be an instance of an in-scope class, or the class: a write in place
+        into the variable may be one into state the class holds
+        (Indexer._instance_classes; audit round 6, T21)."""
+        if isinstance(target, (ast.Tuple, ast.List)):
+            pairs = (
+                zip(target.elts, value.elts, strict=True)
+                if isinstance(value, (ast.Tuple, ast.List)) and len(value.elts) == len(target.elts)
+                else ((elt, value) for elt in target.elts)
+            )
+            for elt, part in pairs:
+                self._held_instance(elt, part)
+            return
+        if isinstance(target, ast.Starred):
+            self._held_instance(target.value, value)
+            return
+        chain = _flatten_chain(target) if isinstance(target, (ast.Name, ast.Attribute)) else None
+        if chain is None or self._is_local(chain[0]):
+            return
+        node = self.indexer.resolve_chain(chain, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        if symbol is None or symbol.kind != SymbolKind.VARIABLE:
+            return
+        origins = self._held_origins(value, 0)
+        if annotation is not None:
+            for sub in ast.walk(annotation):
+                if isinstance(sub, (ast.Name, ast.Attribute)):
+                    origins |= {o for o in self._held_origins(sub, 0) if o.startswith("class:")}
+        for origin in sorted(origins):
+            self.indexer.out.instance_bindings.add((symbol.id, origin))
+
+    def _held_origins(self, expr: ast.expr, depth: int) -> set[str]:
+        """``_held_instance``'s origins of what ``expr`` evaluates to: an
+        in-scope class called or named (``class:``), an in-scope function
+        or method called (``call:``), a module variable (``var:``), through
+        conditions, ``or``/``and``, ``await``, a container display's items
+        and a local bound once."""
+        if depth > 8:
+            return set()
+        if isinstance(expr, ast.IfExp):
+            return self._held_origins(expr.body, depth + 1) | self._held_origins(
+                expr.orelse, depth + 1
+            )
+        if isinstance(expr, ast.BoolOp):
+            return {o for v in expr.values for o in self._held_origins(v, depth + 1)}
+        if isinstance(expr, (ast.NamedExpr, ast.Await, ast.Starred)):
+            return self._held_origins(expr.value, depth + 1)
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            # A container display: an instance in it is reached through it.
+            items = expr.values if isinstance(expr, ast.Dict) else expr.elts
+            return {o for v in items for o in self._held_origins(v, depth + 1)}
+        if isinstance(expr, ast.Name) and self._is_local(expr.id):
+            source = self._local_source(expr.id)
+            return self._held_origins(source, depth + 1) if source is not None else set()
+        call = isinstance(expr, ast.Call)
+        parts = _flatten_chain(expr.func if isinstance(expr, ast.Call) else expr)
+        if parts is None or self._is_local(parts[0]):
+            return set()
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return set()
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        if symbol is None:
+            return set()
+        if symbol.kind == SymbolKind.CLASS:
+            return {f"class:{symbol.id}"}
+        if call and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            return {f"call:{symbol.id}"}
+        if not call and symbol.kind == SymbolKind.VARIABLE:
+            return {f"var:{symbol.id}"}
+        return set()
+
     def _value_write(self, state: str) -> None:
         """A change in place of what ``state`` (a module variable, class or
         function) holds, made by ``source``: a ``mutated_by`` edge after pass
@@ -1437,6 +1515,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
                     self._mutation_target(sub, True)  # rebinding a ``global`` variable
             self._target_write(target)
+            self._held_instance(target, node.value)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -1460,6 +1539,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._mutation_target(node.target, True)
             self._target_write(node.target)
             self._stash_binding(node.target, node.value)
+            self._held_instance(node.target, node.value, node.annotation)
         self.visit(node.target)
         self.visit(node.annotation)
         if node.value is not None:

@@ -571,6 +571,39 @@ Further rules (pre-release audit, round 2):
   (as for lazy constants): a store through a module found at run time by a
   name nothing bounds (`setattr(import_module(name), attr, v)`) is no
   rebinding of any particular variable.
+* A write into an instance writes the state its class holds (audit round
+  6, T21; `Indexer._instance_classes` and `_classes_holding_state` after
+  pass 2). Pass 2 records what each binding of a module variable holds
+  (`instance_bindings`: `STORE = Store()`, `global _S; _S = Store()`,
+  `mod.X = make()`, an annotation naming a class, through conditions,
+  `or`, `await` and a local bound once): an in-scope class called or
+  named, an in-scope function called (what it returns: `returns`, and the
+  variables and classes `state_returns` gives), another variable, the items
+  of a container display (`_STORES = {"a": Store()}`); and what such an
+  instance holds under an attribute a method binds to an instance or a
+  factory's result (`self.store = Store()`: `attr_writes`). A write
+  in place into the variable (any `value_writes` form: `STORE._cache[k] =
+  v`, `STORE.cache()[k] = v`, a local alias, a getter's result) is then
+  also a `mutated_by` edge from each class it may hold an instance of and
+  that class's in-scope bases, when one of them may hold state of its own:
+  its body binds a name (outside its `def`s and nested classes) to
+  anything the T20 rule would not call immutable, other than a function, a
+  descriptor (`property`, `staticmethod`, `classmethod`,
+  `functools.cached_property`) or a dataclass field with no mutable
+  default (`literals.class_state`, `ClassScope.stateless`), or some code
+  stores onto the class (a `mutated_by` edge of its own: `cls._cache =
+  {}`). So a reader of the class (`Store._cache.get(k)`, `cls._cache` in a
+  classmethod, a base's `Base._cache`) reads the write; an instance of a
+  class with only constants, functions and descriptors gives the class no
+  edge. Nor does handing the variable to a method that writes its receiver
+  (`STORE.put(k)`, `@app.route("/")`: `receiver_writes`, the variable's
+  edge only): what the method writes through `self` of state its class
+  holds is an edge of the class already. Not modelled: state a base outside the source roots holds (only
+  in-scope bases count), an instance reached otherwise (an attribute bound
+  to a parameter, `self.store = store`; an item stored later, `_STORES[k] =
+  Store()`; a class attribute bound to one, `registry = Registry()`, whose
+  own class is written only when it holds state), and a binding by a
+  library call returning a project instance.
 * Project code run by naming it in a string (`indexer/scripts.py`). A
   string naming a `.py` file (a literal, or the last literal piece of a
   path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,

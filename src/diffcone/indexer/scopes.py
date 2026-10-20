@@ -59,6 +59,10 @@ class ClassScope:
     # attributes a positional class pattern reads (``case C(1, 2)``); None
     # when the class does not bind it (or binds something else).
     match_args: tuple[str, ...] | None = None
+    # What the class body binds holds nothing that can change in place,
+    # resting on these names and modules (literals.class_state); None when
+    # it may hold state of the class's own (audit round 6, T21).
+    stateless: tuple[str, ...] | None = None
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising

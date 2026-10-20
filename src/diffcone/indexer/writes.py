@@ -882,8 +882,13 @@ def apply_writes(indexer: Resolver) -> None:
             continue
         if writes_through(record):
             # What the variable holds is written: no edge if it cannot be
-            # (Indexer._value_writes).
-            out.value_writes.add((variable, caller))
+            # (Indexer._value_writes). As the receiver of a method that
+            # writes ``self``, what the method writes of state its class
+            # holds is an edge of the class already (audit round 6, T21).
+            if record[4] == RECEIVER:
+                out.receiver_writes.add((variable, caller))
+            else:
+                out.value_writes.add((variable, caller))
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

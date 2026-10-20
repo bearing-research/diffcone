@@ -5278,6 +5278,13 @@ FILLED_READERS = {
 PEEK_BENCH = asv_target("bench_peek.time_peek", "benchmarks.bench_peek.time_peek")
 FILL_COMPUTE = "def compute(k):\n    return k.upper()\n\n\n"
 FILLED_STATE = {
+    "a class-level cache through an instance (T21)": (
+        "class Store:\n    _cache = {}\n\n    def cache(self):\n        return self._cache\n\n\n"
+        "STORE = Store()\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    STORE.cache()[k] = compute(k)\n\n\n"
+        "def peek(k):\n    return Store._cache[k]\n"
+    ),
     "an attribute of a class": (
         "class Config:\n    mode = None\n\n\n"
         + FILL_COMPUTE
