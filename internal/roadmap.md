@@ -1626,6 +1626,28 @@ recorder saw store the same value at both commits) before building, and
 measure it against the round 6 scenarios. The spike bound with the whole
 module-variable half off was 2922.
 
+*What decides a plan now (round 6 validation, 2026-10-19).* On the pair
+`edc32ce0` -> `1241020210` (a 3.13 recording at `edc32ce0`), v0.4.0
+selects 661 of 6231 and the 0.5.0 candidate 6231 (bisected to 1c0bf93,
+E36's descent). Removing the false writers of immutable constants (T20)
+and narrowing T7's aliasing (constructor arguments, method results of
+unknown type) each left 6231. The chains that remain:
+
+- a real write of `_vended` reached by the descent (`ReadPlanner.plan`
+  -> `register_vended_credentials`), read by `configure_logging` only
+  through `getattr(logging, level)`, which is unbounded because thirty
+  generic external-module writers count as writing `logging`
+  (`EXTERNAL_WRITTEN` -> any name); `_log_format` then reaches the
+  `MetricsCollector._writer_loop` thread every test runs;
+- the lazy singleton `_artifact_store` bound again, counted as a store;
+- `_principal_ctx` through `ContextVar.get` (close to sound).
+
+The first is the one worth sketching: which names a generic writer of an
+external module can write (a writer that sets a fixed attribute writes
+that attribute only) would bound `getattr(logging, level)` to the level
+names. strata's own CI already selects everything on 0.4.0, so none of
+this blocks the release.
+
 *An install's file read as a table (E33).* A module loaded from a literal
 file and installed in `sys.modules` (`_load_local_module("serializer.py",
 "_nb_serializer")`) carries a `>module` source naming that file's module.

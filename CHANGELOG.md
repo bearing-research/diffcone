@@ -85,6 +85,14 @@ selection rules.
   a test that read what an earlier test stored there, without running
   `compute`, was not selected when `compute` changed. Every in-place write
   of the code that code calls is now followed.
+- With a recording, a cache kept on an object, a class, a closure or a
+  function attribute counted a store only when the stored value named the
+  changed code directly. A value computed through a variable, a table or
+  `super()`, read off a changed constant, or the writer's own literal could
+  leave a later test that read the cache unselected. Every store counts
+  now, as for module variables, including stores through `__dict__` and
+  `vars()`. What `__init__` sets on the object it is building does not
+  count; calling `__init__` again on an object in use does.
 - With a recording, a module the analysis does not read (outside the
   source roots) that a test imported was credited to that test alone,
   though later tests use it without running any of it: a change to it now
@@ -100,6 +108,18 @@ selection rules.
   (`registry()[k] = v`). Both are followed now, with and without a
   recording. Copies (`dict(_CACHE)`, `.copy()`) and an instance's own
   attributes are not shared state.
+- A write into state a class holds, made through a module-level instance
+  of it (`STORE._cache[k] = v`, or `STORE.cache()[k] = v` where `cache`
+  returns the class-level `_cache`), did not make the writer a dependency
+  of the code that reads that state through the class. It does now, with
+  and without a recording.
+- A module constant that cannot change in place (a string, a number, a
+  tuple of such, `re.compile(...)`, `textwrap.dedent(...)`) and that no
+  code binds again gained a writer from every function that passed it to
+  a call or used what its methods return (SQL handed to
+  `conn.executescript`, `PATTERN.match(s)`). Such false writers made every
+  reader of the constant depend on unrelated code. Binding the name again
+  (`global`, `module.NAME = ...`, `setattr`) still counts.
 - `pytest.importorskip("pkg.mod")`, `importlib.util.find_spec`,
   `pkgutil.resolve_name`, `pydoc.locate` and `pkgutil.iter_modules` or
   `walk_packages` over a package were not imports: a change that made the
