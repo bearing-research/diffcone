@@ -1081,6 +1081,39 @@ def child_modules(snapshot: Snapshot) -> dict[str, frozenset[str]]:
     return result
 
 
+def excluded_paths(snapshot: Snapshot) -> list[str]:
+    """The ``.py`` and ``.pyw`` files ``diffcone.toml``'s ``[index] exclude``
+    keeps out of the analysis (read as other files), sorted."""
+    patterns = snapshot.info.excluded
+    return sorted(
+        path
+        for path in snapshot.other_files
+        if path.endswith((".py", ".pyw")) and any(fnmatchcase(path, p) for p in patterns)
+    )
+
+
+def excluded_modules(snapshot: Snapshot) -> dict[str, str]:
+    """Module name -> path of each excluded ``.py`` file a module name maps
+    to under the roots: importing one runs code the index does not read."""
+    found: dict[str, str] = {}
+    for path in excluded_paths(snapshot):
+        module = module_name_for(path, snapshot.source_roots) if path.endswith(".py") else None
+        if module is not None:
+            found.setdefault(module, path)
+    return found
+
+
+def excluded_files(modules: dict[str, str], module: str) -> list[str]:
+    """The excluded files importing ``module`` runs (``excluded_modules``):
+    the ``__init__.py`` of each package it is imported through, outermost
+    first, and the module's own."""
+    if not modules:
+        return []
+    parts = module.split(".")
+    found = (modules.get(".".join(parts[:i])) for i in range(1, len(parts) + 1))
+    return [path for path in found if path is not None]
+
+
 def member_symbol_id(module: str, name: str, submodules: frozenset[str] | set[str]) -> str:
     """Identity of the top-level binding ``name`` of ``module``. When the
     module is a package with a submodule of that name (``pkg/__init__.py``

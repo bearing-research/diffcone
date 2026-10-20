@@ -10,6 +10,9 @@ serves and modules a patcher imports by dotted string. Module names the
 source roots cannot bound and objects installed in ``sys.modules`` are
 unbounded or reach the importers. A module handed on as a value, obtained
 by a literal name or read through another name depends on its members.
+An import or a run of a file ``[index] exclude`` keeps out of the analysis
+is an unknown dependency; ``pytest.importorskip``, ``find_spec``,
+``pkgutil`` and ``pydoc.locate`` import by name as ``import_module`` does.
 
 Scenarios mix pytest and ASV targets and assert exact target sets.
 """
@@ -1378,3 +1381,321 @@ def test_alias_a_module_bound_to_a_name_is_one_an_unknown_value_can_be(form):
     # Read through its import alone, it is not.
     direct = H + "def test_p():\n    assert ops.value() == 1\n"
     assert "pkg.ops" not in _index(direct, **plain).attribute_modules
+
+
+# --------------------------------------------------------------------------- excluded files
+
+# An import or a run of a ``.py`` file ``[index] exclude`` keeps out of the
+# analysis is an unknown dependency: what the file runs is not read, so the
+# importer is selected on any change (audit round 6, T2).
+EXCLUDED_TREE = {
+    "asv.conf.json": ASV_CONF,
+    "pkg/__init__.py": "",
+    "pkg/ops.py": OPS,
+    "tests/__init__.py": "",
+    "tests/test_mul.py": "from pkg.ops import mul\n\n\ndef test_mul():\n    mul(1, 2)\n",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench_mul.py": "from pkg.ops import mul\n\n\ndef time_mul():\n    mul(1, 2)\n",
+}
+ADD_EDITED = {"pkg/ops.py": OPS.replace("a + b", "b + a")}
+CALLS_ADD = "from pkg.ops import add\n\nRESULT = add(1, 2)\n"
+RUNS = "import importlib\nimport runpy\nimport subprocess\nimport sys\n\n\n"
+LOADS = "import importlib.util\n\n\n"
+EXCLUDED_IMPORTS = {
+    # A test helper the tests import, calling project code.
+    "helper": (
+        "tests/helpers/**",
+        {
+            "tests/helpers/__init__.py": "",
+            "tests/helpers/util.py": CALLS_ADD,
+            "tests/test_h.py": (
+                "from tests.helpers.util import RESULT\n\n\ndef test_h():\n    assert RESULT == 3\n"
+            ),
+            "benchmarks/bench_h.py": (
+                "from tests.helpers import util\n\n\ndef time_h():\n    util.RESULT\n"
+            ),
+        },
+        "tests/helpers/util.py",
+        {"tests/test_h.py::test_h", "bench_h.time_h"},
+    ),
+    # Project code importing an excluded re-export.
+    "project": (
+        "pkg/_vendor/*",
+        {
+            "pkg/_vendor/__init__.py": "",
+            "pkg/_vendor/shim.py": "from pkg.ops import add as plus\n",
+            "pkg/api.py": (
+                "from pkg._vendor.shim import plus\n\n\ndef total():\n    return plus(1, 2)\n"
+            ),
+            "tests/test_h.py": (
+                "from pkg.api import total\n\n\ndef test_h():\n    assert total() == 3\n"
+            ),
+            "benchmarks/bench_h.py": "from pkg.api import total\n\n\ndef time_h():\n    total()\n",
+        },
+        "pkg/_vendor/shim.py",
+        {"tests/test_h.py::test_h", "bench_h.time_h"},
+    ),
+    "import_module": (
+        "pkg/plugins/*",
+        {
+            "pkg/plugins/__init__.py": "",
+            "pkg/plugins/p1.py": CALLS_ADD,
+            "tests/test_h.py": RUNS + "def test_h():\n"
+            "    assert importlib.import_module('pkg.plugins.p1').RESULT == 3\n",
+        },
+        "pkg/plugins/p1.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "import_module_prefix": (
+        "pkg/plugins/p*",
+        {
+            "pkg/plugins/__init__.py": "",
+            "pkg/plugins/p1.py": CALLS_ADD,
+            "tests/test_h.py": RUNS + "def test_h(n='1'):\n"
+            "    assert importlib.import_module(f'pkg.plugins.p{n}').RESULT == 3\n",
+        },
+        "pkg/plugins/p1.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "run_module": (
+        "scripts/*",
+        {
+            "scripts/__init__.py": "",
+            "scripts/tool.py": CALLS_ADD,
+            "tests/test_h.py": RUNS + "def test_h():\n"
+            "    assert runpy.run_module('scripts.tool')['RESULT'] == 3\n",
+        },
+        "scripts/tool.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "script": (
+        "tools/*",
+        {
+            "tools/tool.py": "import sys\n\nsys.path.insert(0, '.')\n" + CALLS_ADD,
+            "tests/test_h.py": RUNS + "def test_h():\n"
+            "    subprocess.run([sys.executable, 'tools/tool.py'], check=True)\n",
+        },
+        "tools/tool.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "dash_m": (
+        "tools/*",
+        {
+            "tools/__init__.py": "",
+            "tools/tool.py": CALLS_ADD,
+            "tests/test_h.py": RUNS + "def test_h():\n"
+            "    subprocess.run([sys.executable, '-m', 'tools.tool'], check=True)\n",
+        },
+        "tools/tool.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "file_loader": (
+        "tools/*",
+        {
+            "tools/tool.py": CALLS_ADD,
+            "tests/test_h.py": LOADS + "def test_h():\n"
+            "    spec = importlib.util.spec_from_file_location('t', 'tools/tool.py')\n"
+            "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n",
+        },
+        "tools/tool.py",
+        {"tests/test_h.py::test_h"},
+    ),
+    "file_loader_prefix": (
+        "tools/gen_*",
+        {
+            "tools/tool.py": "X = 1\n",
+            "tools/gen_a.py": CALLS_ADD,
+            "tests/test_h.py": LOADS + "def test_h(n='gen_a'):\n"
+            "    spec = importlib.util.spec_from_file_location('t', f'tools/{n}.py')\n"
+            "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n",
+        },
+        "tools/gen_a.py",
+        {"tests/test_h.py::test_h"},
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("pattern", "files", "path", "expected"),
+    list(EXCLUDED_IMPORTS.values()),
+    ids=list(EXCLUDED_IMPORTS),
+)
+def test_t2_an_import_of_an_excluded_file_is_an_unknown_dependency(
+    repo, pattern, files, path, expected
+):
+    """The excluded file is imported or run and calls ``add``, which
+    changes: its importers are selected, naming the file; code that reaches
+    no excluded file stays bounded."""
+    toml = f'[index]\nexclude = ["{pattern}"]\n'
+    base = repo.commit({**EXCLUDED_TREE, **files, "diffcone.toml": toml})
+    head = repo.commit(ADD_EDITED)
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert not plan.degraded
+    assert selected(plan) == expected
+    assert {"tests/test_mul.py::test_mul", "bench_mul.time_mul"} <= unselected(plan)
+    for target in expected:
+        assert rules(plan, target) == {"dynamic_reference"}
+        detail = reason(plan, target, "dynamic_reference").detail
+        assert path in detail and "[index] exclude" in detail
+
+
+def test_t2_an_excluded_package_init_runs_for_every_import_under_it(repo):
+    """``pkg/__init__.py`` runs before any ``pkg.*`` module: excluded, every
+    importer of the package depends on anything."""
+    base = repo.commit(
+        {
+            **EXCLUDED_TREE,
+            "diffcone.toml": '[index]\nexclude = ["pkg/__init__.py"]\n',
+            "pkg/__init__.py": "from pkg.ops import add as plus\n",
+            "pkg/extra.py": "def three():\n    return 3\n",
+            "tests/test_h.py": (
+                "from pkg import plus\n\n\ndef test_h():\n    assert plus(1, 2) == 3\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/extra.py": "def three():\n    return 4\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {
+        "tests/test_h.py::test_h",
+        "tests/test_mul.py::test_mul",
+        "bench_mul.time_mul",
+    }
+    assert "pkg/__init__.py" in reason(plan, "bench_mul.time_mul", "dynamic_reference").detail
+
+
+def test_t2_a_test_runner_given_an_excluded_test_file_depends_on_anything(repo):
+    """``pytest.main(["tests/data/test_case.py"])`` runs an excluded file."""
+    base = repo.commit(
+        {
+            **EXCLUDED_TREE,
+            "diffcone.toml": '[index]\nexclude = ["tests/data/**"]\n',
+            "tests/data/test_case.py": (
+                "from pkg.ops import add\n\n\ndef test_case():\n    assert add(1, 2) == 3\n"
+            ),
+            "tests/test_h.py": (
+                "import pytest\n\n\ndef test_h():\n"
+                "    assert pytest.main(['tests/data/test_case.py']) == 0\n"
+            ),
+        }
+    )
+    head = repo.commit(ADD_EDITED)
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_h.py::test_h"}
+    detail = reason(plan, "tests/test_h.py::test_h", "dynamic_reference").detail
+    assert "tests/data/test_case.py" in detail and "[index] exclude" in detail
+
+
+# --------------------------------------------------------------------------- imports by name
+
+# Calls that import a module by a name in a string, as ``import_module``
+# does (audit round 6, T9).
+OPTIONAL = {
+    "asv.conf.json": ASV_CONF,
+    "pkg/__init__.py": "",
+    "pkg/ops.py": OPS,
+    "pkg/optional.py": "X = 1\n",
+    "tests/__init__.py": "",
+    "tests/test_mul.py": "from pkg.ops import mul\n\n\ndef test_mul():\n    mul(1, 2)\n",
+    "benchmarks/__init__.py": "",
+    "benchmarks/bench_mul.py": "from pkg.ops import mul\n\n\ndef time_mul():\n    mul(1, 2)\n",
+}
+BY_NAME = {
+    "importorskip": (
+        "import pytest\n\nopt = pytest.importorskip('pkg.optional')\n\n\ndef test_h():\n    pass\n"
+    ),
+    "importorskip_in_test": (
+        "import pytest\n\n\ndef test_h():\n    pytest.importorskip('pkg.optional')\n"
+    ),
+    "importorskip_from": (
+        "from pytest import importorskip\n\n\ndef test_h():\n    importorskip('pkg.optional')\n"
+    ),
+    "find_spec": LOADS + "def test_h():\n"
+    "    spec = importlib.util.find_spec('pkg.optional')\n"
+    "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n",
+    "resolve_name": "import pkgutil\n\n\ndef test_h():\n"
+    "    assert pkgutil.resolve_name('pkg.optional:X') == 1\n",
+    "resolve_name_dotted": "import pkgutil\n\n\ndef test_h():\n"
+    "    assert pkgutil.resolve_name('pkg.optional.X') == 1\n",
+    "locate": "import pydoc\n\n\ndef test_h():\n    assert pydoc.locate('pkg.optional.X') == 1\n",
+    "walk_packages": "import pkgutil\n\nimport pkg\n\n\ndef test_h():\n"
+    "    for info in pkgutil.walk_packages(pkg.__path__, 'pkg.'):\n        pass\n",
+}
+
+
+@pytest.mark.parametrize("test", list(BY_NAME.values()), ids=list(BY_NAME))
+def test_t9_a_module_imported_by_name_fails_to_import(repo, test):
+    """The module raises on import now: the test that imports it by name
+    skips or fails, so it is selected; so is the benchmark importing it."""
+    bench = "import pytest\n\n\ndef time_h():\n    pytest.importorskip('pkg.optional')\n"
+    base = repo.commit({**OPTIONAL, "tests/test_h.py": test, "benchmarks/bench_h.py": bench})
+    head = repo.commit({"pkg/optional.py": "raise ImportError('gone')\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_h.py::test_h", "bench_h.time_h"}
+    assert rules(plan, "tests/test_h.py::test_h") == {"dependency"}
+
+
+def test_t9_importorskip_runs_the_module_s_import_time_writes(repo):
+    """What the module does on import (an ``os.environ`` write) is what the
+    test reads; the module body changes."""
+    optional = "import os\n\nos.environ['OPT'] = '1'\n"
+    test = "import os\n\nimport pytest\n\npytest.importorskip('pkg.optional')\n\n\n"
+    test += "def test_h():\n    assert os.environ.get('OPT') == '1'\n"
+    base = repo.commit({**OPTIONAL, "pkg/optional.py": optional, "tests/test_h.py": test})
+    head = repo.commit({"pkg/optional.py": optional.replace("'1'", "'2'")})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert "tests/test_h.py::test_h" in selected(plan)
+    assert "dependency" in rules(plan, "tests/test_h.py::test_h")
+
+
+def test_t9_find_spec_depends_on_whether_the_module_exists(repo):
+    """``find_spec`` finds the module's file: deleting the module changes
+    what it returns."""
+    test = LOADS + "def test_h():\n    assert importlib.util.find_spec('pkg.optional')\n"
+    base = repo.commit({**OPTIONAL, "tests/test_h.py": test})
+    head = repo.commit({"pkg/optional.py": None})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_h.py::test_h"}
+
+
+def test_t9_iter_modules_of_a_package_sees_a_module_added_to_it(repo):
+    """``pkgutil.iter_modules(pkg.__path__)`` lists the package's modules:
+    a new one changes the listing; a file outside the package does not."""
+    test = "import pkgutil\n\nimport pkg\n\n\ndef test_h():\n"
+    test += "    assert len(list(pkgutil.iter_modules(pkg.__path__))) == 2\n"
+    base = repo.commit({**OPTIONAL, "tests/test_h.py": test})
+    head = repo.commit({"pkg/extra.py": "Y = 1\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_h.py::test_h"}
+    other = repo.commit({"tests/helpers.py": "Y = 1\n"})
+    assert selected(repo.plan(head, other, [], discover_runners=["pytest", "asv"])) == set()
+
+
+def test_t9_a_spec_found_by_a_computed_name_and_loaded_runs_anything(repo):
+    """``find_spec(name)`` then ``exec_module``: any module may run, so a
+    change outside the helper's imports reaches it. Without the load it only
+    looks the module up, bounded by the helper's imports like a ``getattr``
+    of a computed name; ``bench_find`` uses that one."""
+    loader = (
+        "import importlib.util\n\n\ndef load(prefix):\n"
+        "    spec = importlib.util.find_spec(prefix + '.optional')\n"
+        "    module = importlib.util.module_from_spec(spec)\n"
+        "    spec.loader.exec_module(module)\n    return module\n\n\n"
+        "def where(prefix):\n    return importlib.util.find_spec(prefix + '.optional').origin\n"
+    )
+    base = repo.commit(
+        {
+            **OPTIONAL,
+            "pkg/loader.py": loader,
+            "tests/test_h.py": (
+                "from pkg.loader import load\n\n\ndef test_h():\n    assert load('pkg').X == 1\n"
+            ),
+            "benchmarks/bench_find.py": (
+                "from pkg.loader import where\n\n\ndef time_find():\n    where('pkg')\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/optional.py": "X = 2\n"})
+    plan = repo.plan(base, head, [], discover_runners=["pytest", "asv"])
+    assert selected(plan) == {"tests/test_h.py::test_h"}
+    assert rules(plan, "tests/test_h.py::test_h") == {"dynamic_reference"}
+    assert "bench_find.time_find" in unselected(plan)

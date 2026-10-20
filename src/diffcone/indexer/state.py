@@ -11,7 +11,7 @@ from diffcone.cython import read as read_cython
 from diffcone.indexer.facts import _Output
 from diffcone.indexer.scopes import ClassScope, ModuleScope
 from diffcone.model import AnalysisError, SourceIndex, Symbol
-from diffcone.snapshot import Snapshot
+from diffcone.snapshot import Snapshot, excluded_modules, excluded_paths
 
 
 class IndexerState:
@@ -39,6 +39,11 @@ class IndexerState:
         self.scopes: dict[str, ModuleScope] = {}
         self.class_scopes: dict[str, ClassScope] = {}
         self._module_prefixes: set[str] = set()
+        # The ``.py`` files ``[index] exclude`` keeps out of the analysis, and
+        # the modules they are: an import or a run of one is an unknown
+        # dependency (Resolver.excluded_import).
+        self.excluded_paths: list[str] = excluded_paths(snapshot)
+        self.excluded_modules: dict[str, str] = excluded_modules(snapshot)
         self._bases_final = False
         # Where writes go: the global output is backed by the index; pass 2
         # swaps in a per-module output so it can be cached (see _Output).

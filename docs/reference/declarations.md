@@ -87,9 +87,18 @@ later test may use the module without running any of it). The report
 lists each snapshot's patterns (`analysis.base.excluded`,
 `analysis.head.excluded`).
 
+Exclude only files nothing imports or runs. diffcone doesn't read what an
+excluded file does, so code that imports it, or runs it (`import_module`,
+`runpy`, a subprocess, loading it by path), depends on anything: a change
+anywhere under the source roots selects it, and the reason names the
+excluded file. Excluding a package's `__init__.py` does this to every
+import of the package. Excluding a module your code or tests import
+costs you that precision; it never makes diffcone skip a test.
+
 Don't exclude a file pytest collects tests from, or a `conftest.py`: its
 tests can't be targets, so the plan says discovery is incomplete, and the
-tests under an excluded `conftest.py` are always selected.
+tests under an excluded `conftest.py` are always selected. The same goes
+for a pytest plugin, a base class tests inherit from, or a benchmark file.
 
 ## What can go wrong
 

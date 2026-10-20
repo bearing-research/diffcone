@@ -106,8 +106,10 @@ Collected:
   (``conftest_outside_roots``; an excluded one too) and is an unknown dependency
   (``conftest:<path>``) of every test under it, so those tests are always
   selected; a plugin module in the repository the source roots do not name
-  is reported (``plugin_outside_roots``) and is an unknown dependency
-  (``plugin:<module>``) of every test.
+  is reported (``plugin_outside_roots``; an excluded one too) and is an
+  unknown dependency (``plugin:<module>``) of every test. A note on an
+  excluded file (``[index] exclude``) names the exclusion, a base class
+  imported from one included (``unknown_base_class``).
 
 Lifecycle dependencies attached to each test:
 
@@ -336,7 +338,7 @@ from diffcone.model import (
     SourceIndex,
     SymbolKind,
 )
-from diffcone.snapshot import PYTEST_CONFIGS, Snapshot
+from diffcone.snapshot import PYTEST_CONFIGS, Snapshot, excluded_files, excluded_modules
 
 RUNNER = "pytest"
 
@@ -3881,13 +3883,22 @@ class _PluginLoader:
                 if path is not None:
                     if f"plugin:{name}" not in self.unknown:
                         self.unknown.append(f"plugin:{name}")
+                    held = (
+                        "diffcone.toml's [index] exclude keeps out of the analysis"
+                        if _excluded(path, self.snapshot)
+                        else "the source roots do not hold under that name"
+                    )
+                    remedy = (
+                        "narrow the exclude pattern that matches it"
+                        if _excluded(path, self.snapshot)
+                        else "add a source root that names it"
+                    )
                     self.result.notes.append(
                         DiscoveryNote(
                             RUNNER,
                             "plugin_outside_roots",
-                            f"{where}: {kind} entry {name!r} is {path}, which the source roots "
-                            "do not hold under that name, so what it defines is unknown and "
-                            "every test is always selected; add a source root that names it",
+                            f"{where}: {kind} entry {name!r} is {path}, which {held}, so what "
+                            f"it defines is unknown and every test is always selected; {remedy}",
                             path,
                         )
                     )
@@ -4088,6 +4099,8 @@ def discover_pytest(
     # where plugin_facts finds them, with their own requests added.
     requested = _requested_names(f.parsed.tree for f in facts_by_path.values())
     fixture_reach = _fixture_reach(snapshot, index)
+    # Modules ``[index] exclude`` keeps out, for what a note says of them.
+    kept_out = excluded_modules(snapshot)
     linked: set[str] = set()
 
     def link(facts: ModuleFacts) -> ModuleFacts:
@@ -4240,6 +4253,7 @@ def discover_pytest(
             used_as_base,
             uncollected,
             flow,
+            kept_out,
         )
 
     # A class pytest's own rules skip is only worth reporting if nothing
@@ -4977,6 +4991,7 @@ def _collect_module_tests(
     used_as_base: set[str],
     uncollected: list[tuple[str, str]],
     flow: _RequestFlow,
+    kept_out: dict[str, str],
 ) -> None:
     parsed = facts.parsed
     body = parsed.tree.body
@@ -5067,12 +5082,25 @@ def _collect_module_tests(
                 or name in NO_TEST_BASES
                 or (name.endswith("TestCase") and _framework_base(parts, owner))
             ):
+                source = (
+                    owner.imported[name][0]
+                    if name in owner.imported
+                    else _base_source(parts, owner)
+                    if len(parts) > 1
+                    else None
+                )
+                excluded = (excluded_files(kept_out, source) or [None])[-1] if source else None
+                where = (
+                    f"is imported from {excluded}, which diffcone.toml's [index] exclude keeps "
+                    "out of the analysis (narrow the exclude pattern that matches it)"
+                    if excluded is not None
+                    else "is not defined in this module or imported from one in the source roots"
+                )
                 result.notes.append(
                     DiscoveryNote(
                         RUNNER,
                         "unknown_base_class",
-                        f"{nodeid}: base class {name!r} is not defined in this module or "
-                        "imported from one in the source roots; test methods it may "
+                        f"{nodeid}: base class {name!r} {where}; test methods it may "
                         "contribute are not discovered",
                         parsed.path,
                     )

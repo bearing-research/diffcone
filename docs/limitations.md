@@ -354,7 +354,17 @@ everything.
     otherwise), is an analysis error, even a test data file nothing
     imports. So is one that nests an expression hundreds of levels deep,
     as generated code may (a sum of a thousand terms). Choose source roots
-    that leave such files out.
+    that leave such files out, or list them under `[index] exclude` in
+    [diffcone.toml](reference/declarations.md#files-to-leave-out-of-the-analysis).
+
+**An excluded file is a dependency diffcone can't see into.**
+:   diffcone doesn't read a `.py` file `[index] exclude` keeps out, so it
+    doesn't know what the file imports or calls. Code that imports or runs
+    one (an import, `import_module`, `runpy`, a subprocess, loading it by
+    path) is selected on any change under your source roots, and a change
+    to the excluded file itself selects every test. Tests and benchmarks
+    in an excluded file, and the fixtures and hooks of an excluded
+    `conftest.py` or plugin, are not discovered.
 
 **Uncommitted analysis is only as stable as your working tree.**
 :   A plan of `WORKTREE` or `INDEX` describes the files at the moment you

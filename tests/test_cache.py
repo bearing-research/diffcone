@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from typing import Any
 
 from diffcone import cache as cache_mod
@@ -126,7 +127,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 52
+    assert cache_mod.INDEX_FORMAT == 53
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -502,6 +503,34 @@ def test_pruning_keeps_what_planning_at_the_kept_commit_reads(repo, tmp_path, mo
     assert cache.hits == 1
     assert cache.modules.facts_hits == 3 and cache.modules.facts_misses == 1
     assert to_json(plan) == to_json(planner.plan(repo.path, second, third, **args))
+
+
+def test_t2_an_excluded_file_added_is_in_the_resolution_fingerprint(repo, tmp_path):
+    """Resolving a module reads which files ``[index] exclude`` keeps out
+    (an import of one is an unknown dependency): a module whose content and
+    neighbours are unchanged is re-resolved when an excluded file it imports
+    appears."""
+    tree = {
+        "diffcone.toml": '[index]\nexclude = ["tests/helpers/*"]\n',
+        "pkg/__init__.py": "",
+        "pkg/ops.py": OPS,
+        "tests/__init__.py": "",
+        "tests/test_h.py": "from tests.helpers.util import three\n\n\ndef test_h():\n    three()\n",
+    }
+    first = repo.commit(tree)
+    util = "from pkg.ops import add\n\n\ndef three():\n    return add(1, 2)\n"
+    second = repo.commit({"tests/helpers/util.py": util})
+    third = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    targets = [py_target("tests/test_h.py::test_h", "tests.test_h.test_h", "tests.test_h")]
+    cache = IndexCache(tmp_path / "cache")
+    repo.plan(first, first, targets, cache=cache)  # resolves tests.test_h without it
+    shutil.rmtree(tmp_path / "cache" / "index")  # the module cache answers
+    cached = repo.plan(second, third, targets, cache=IndexCache(tmp_path / "cache"))
+    fresh = repo.plan(second, third, targets)
+    assert _plans_equal(cached, fresh)
+    assert {d.target.runner_id for d in fresh.decisions if d.selected} == {
+        "tests/test_h.py::test_h"
+    }
 
 
 # --------------------------------------------------------------------------- revisions as given

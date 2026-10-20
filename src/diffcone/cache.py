@@ -53,6 +53,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 53: imports and runs of files [index] exclude keeps out are unknown
+#     dependencies; pytest.importorskip, find_spec, pkgutil imports (T2, T9);
 # 52: SourceIndex.write_values, call_values removed again (audit T1);
 # 51: SourceIndex.write_values, call_values (what in-place writes store and calls
 #     hand on; E32, E35, E36);
@@ -91,7 +93,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 52
+INDEX_FORMAT = 53
 
 
 def _indexer_fingerprint() -> str:

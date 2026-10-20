@@ -23,7 +23,14 @@ Supported subset (see internal/design.md):
   and with instance attributes that ``__init__`` binds to such values
   (``getattr(x, self.name)``); with a name starting with literal text
   (``import_module(f"plugins.{name}")``, ``getattr(obj, f"do_{name}")``),
-  every in-scope module or attribute name with that prefix;
+  every in-scope module or attribute name with that prefix; the other
+  calls that import by name, the same way (``pytest.importorskip``,
+  ``importlib.util.find_spec``, ``runpy.run_module``,
+  ``pkgutil.resolve_name``, ``pydoc.locate``, ``pkgutil.iter_modules``/
+  ``walk_packages`` over a package's ``__path__``);
+* an import or a run of a ``.py`` file ``diffcone.toml``'s ``[index]
+  exclude`` keeps out of the analysis: an unknown dependency (a dynamic
+  reference that imports anything, naming the file);
 * attribute lookup on classes through their in-scope MRO (``self.m`` for an
   inherited ``m``, ``Sub.m``, ``super().m``); an attribute the class does
   not define (``C.__doc__``, ``C.__type_params__``) is a read of the class

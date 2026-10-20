@@ -73,6 +73,11 @@ RUN_PATH = "runpy.run_path"
 # evidence mode sees what the text ran in the record (the recorder flags a
 # test that ran text no file holds) and treats the site as ``exec()``.
 RUNS_TEXT = "runs text built at run time"
+# Detail prefix, followed by the file's path, of the dynamic reference an
+# import or a run of a ``.py`` file ``diffcone.toml``'s ``[index] exclude``
+# keeps out of the analysis records: what the file runs is not read, so the
+# importer depends on anything (an unknown dependency). It says "import".
+IMPORTS_EXCLUDED = "imports or runs a file diffcone.toml's [index] exclude keeps out: "
 # Dynamic references that run code named at run time without saying "import"
 # in their detail.
 _RUNS_NAMED = ("runpy.run_module", RUN_PATH, RUNS_PROGRAM, RUNS_SCRIPT, RUNS_TEXT)

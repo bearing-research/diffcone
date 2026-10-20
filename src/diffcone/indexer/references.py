@@ -118,8 +118,33 @@ _READ = "read"
 # Calls that hand out every member of their argument, values included.
 MEMBER_LISTINGS = frozenset({"inspect.getmembers", "inspect.getmembers_static"})
 # Calls that import a module by name, and those that hand one back by name.
-IMPORT_CALLS = frozenset({"importlib.import_module", "importlib.__import__", "runpy.run_module"})
-MODULE_GETTERS = frozenset({"importlib.import_module", "sys.modules.get"})
+# ``pytest.importorskip`` imports it (a test skips when that fails);
+# ``find_spec`` imports the parent packages and finds the module's file,
+# which ``module_from_spec`` and ``exec_module`` then run (audit round 6, T9).
+IMPORT_CALLS = frozenset(
+    {
+        "importlib.import_module",
+        "importlib.__import__",
+        "runpy.run_module",
+        "pytest.importorskip",
+        "importlib.util.find_spec",
+    }
+)
+FIND_SPEC = "importlib.util.find_spec"
+# What runs the module a spec names.
+SPEC_LOADERS = frozenset({"module_from_spec", "exec_module", "load_module"})
+# Detail of a ``find_spec`` of a name known at run time whose spec nothing
+# around it loads; it does not say "import" (model.imports_anything).
+FINDS_MODULE = "find_spec(<non-literal>): finds a module by a name known at run time"
+# ``__import__``'s forms, which hand back the top-level package unless given a ``fromlist``.
+DUNDER_IMPORTS = frozenset({"__import__", "importlib.__import__"})
+MODULE_GETTERS = frozenset({"importlib.import_module", "sys.modules.get", "pytest.importorskip"})
+# Calls that import the module a dotted name starts with and hand back what
+# the rest of it names (``pkgutil.resolve_name("pkg.mod:attr")``).
+NAME_RESOLVERS = frozenset({"pkgutil.resolve_name", "pydoc.locate"})
+# Calls that list the modules on a path (``walk_packages`` imports the
+# packages among them too).
+MODULE_LISTINGS = frozenset({"pkgutil.iter_modules", "pkgutil.walk_packages"})
 CASTS = frozenset({"typing.cast", "typing_extensions.cast"})
 
 
@@ -1024,6 +1049,10 @@ class _ReferenceCollector(ast.NodeVisitor):
                 for canonical in sorted(self._canonical_names(parts)):
                     if canonical in IMPORT_CALLS:
                         self._import_module(node, canonical)
+                    elif canonical in NAME_RESOLVERS:
+                        self._resolve_name(node, canonical)
+                    elif canonical in MODULE_LISTINGS:
+                        self._module_listing(node, canonical)
                     elif canonical == "runpy.run_path":
                         self._dynamic("runpy.run_path()")  # runs a file by path: anything
                     elif canonical in UNPICKLER_CALLS:
@@ -2343,13 +2372,19 @@ class _ReferenceCollector(ast.NodeVisitor):
             if all(p in modules or not p.endswith((".py", ".pyw")) for p in under):
                 for path in sorted(modules):
                     self.indexer._module_import_edge(self.source, modules[path])
+                # An excluded file under the prefix runs unread (audit round
+                # 6, T2): an unknown dependency.
+                for path in self.indexer.excluded_paths:
+                    if path.startswith(prefix) or f"/{prefix}" in f"/{path}":
+                        self.indexer.excluded_import(self.source, "", path)
                 return
         self._dynamic(detail)
 
     def _import_module(self, node: ast.Call, name: str) -> None:
         if not node.args:
             return
-        package = self._import_package(node) if name == "importlib.import_module" else None
+        relative = name in ("importlib.import_module", "importlib.util.find_spec")
+        package = self._import_package(node) if relative else None
         names = self.scope.string_candidates(node.args[0])
         if names is not None and package is not None:
             resolved = [_resolve_relative_name(n, package) for n in names]
@@ -2361,14 +2396,27 @@ class _ReferenceCollector(ast.NodeVisitor):
                 prefix = _resolve_relative_name(prefix, package, prefix=True)
             if prefix is not None and not prefix.startswith("."):
                 # ``import_module(f"attr.{name}")``: every in-scope module under
-                # the prefix may be imported; nothing outside it can be.
+                # the prefix may be imported, and every excluded one (an
+                # unknown dependency); nothing outside it can be.
                 names = self.indexer.modules_with_prefix(prefix)
+                excluded = sorted(m for m in self.indexer.excluded_modules if m.startswith(prefix))
+                for module in excluded:
+                    self.indexer._module_import_edge(self.source, module)
+                if not names and excluded:
+                    return
                 if not names:
                     self.indexer.out.external.add(ExternalReference(self.source, prefix + "*"))
                     return
         if names is None or any(n.startswith(".") for n in names):
             detail = f"{name}(<non-literal>)"
-            if isinstance(self._parent(node), ast.Expr):
+            if name == FIND_SPEC and not self._loads_a_spec():
+                # Looks a module up without running it (flask finds an app's
+                # package directory): bounded by the import closure, as a
+                # lookup by a name known at run time is. Loaded in the same
+                # code (``module_from_spec``, ``exec_module``), it runs
+                # anything (audit round 6, T9).
+                detail = FINDS_MODULE
+            elif isinstance(self._parent(node), ast.Expr):
                 # ``__import__(name)`` as a statement: it runs the module's
                 # import, but hands the module to nothing.
                 detail += DISCARDED_IMPORT
@@ -2390,7 +2438,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         # members are reachable through it: SourceIndex.escaped_modules).
         for module in names:
             held = module
-            if name != "importlib.import_module":
+            if name in DUNDER_IMPORTS:
                 fromlist = node.args[3] if len(node.args) > 3 else None
                 for k in node.keywords:
                     if k.arg == "fromlist":
@@ -2402,6 +2450,87 @@ class _ReferenceCollector(ast.NodeVisitor):
             target = self.indexer.resolve_dotted(held.split("."))
             if isinstance(target, ModuleNode):
                 self.indexer._record(self.source, target, chain=held)
+
+    def _loads_a_spec(self) -> bool:
+        """Whether the code around a ``find_spec`` runs a module from a spec
+        (``module_from_spec``, ``exec_module``, ``load_module``): the
+        enclosing functions, or the module's top level."""
+        scope: Scope | None = self.scope
+        node: ast.AST | None = None
+        while scope is not None:
+            node = scope.literal_node or node  # the outermost function wins
+            scope = scope.literal_parent
+        node = node or self.scope.module.tree
+        return node is not None and any(
+            isinstance(n, ast.Call)
+            and (
+                (isinstance(n.func, ast.Attribute) and n.func.attr in SPEC_LOADERS)
+                or (isinstance(n.func, ast.Name) and n.func.id in SPEC_LOADERS)
+            )
+            for n in ast.walk(node)
+        )
+
+    def _resolve_name(self, node: ast.Call, name: str) -> None:
+        """``pkgutil.resolve_name("pkg.mod:attr")``, ``pydoc.locate("pkg.mod.attr")``:
+        an import of the module the name starts with (the part before the
+        colon; without one, its longest prefix that is a module, as both
+        import it part by part) and a reference to what the rest names. A
+        name only known at run time imports anything (audit round 6, T9)."""
+        if not node.args:
+            return
+        names = self.scope.string_candidates(node.args[0])
+        if names is None:
+            self._dynamic(f"{name}(<non-literal>): an import of anything")
+            return
+        for text in names:
+            module, colon, rest = text.partition(":")
+            parts = module.split(".")
+            attrs = rest.split(".") if rest else []
+            if not all(p.isidentifier() for p in parts + attrs):
+                self._dynamic(f"{name}({text!r}): an import of anything")
+                continue
+            if not colon:
+                for i in range(len(parts), 0, -1):
+                    prefix = ".".join(parts[:i])
+                    if self.indexer._module_in_scope(prefix) or prefix in (
+                        self.indexer.excluded_modules
+                    ):
+                        parts, attrs = parts[:i], parts[i:]
+                        break
+                else:
+                    parts, attrs = parts[:1], parts[1:]
+            self.indexer._module_import_edge(self.source, ".".join(parts))
+            target = self.indexer.resolve_dotted(parts + attrs)
+            self.indexer._record(self.source, target, chain=text)
+
+    def _module_listing(self, node: ast.Call, name: str) -> None:
+        """``pkgutil.iter_modules(pkg.__path__)``, ``walk_packages(...)``:
+        what it finds changes with the modules a package holds, and
+        ``walk_packages`` imports the packages among them. Over an in-scope
+        package's ``__path__``: an import of each module under it; over any
+        other path, ``walk_packages`` imports anything and ``iter_modules``
+        is a lookup bounded by the import closure (audit round 6, T9)."""
+        path = node.args[0] if node.args else None
+        for k in node.keywords:
+            if k.arg == "path":
+                path = k.value
+        chain = _flatten_chain(path) if isinstance(path, ast.Attribute) else None
+        if chain is not None and chain[-1] == "__path__":
+            package = self.indexer.resolve_chain(chain[:-1], self.scope)
+            if isinstance(package, ModuleNode) and package.module in self.indexer.scopes:
+                prefix = package.module + "."
+                for module in self.indexer.modules_with_prefix(prefix):
+                    self.indexer._module_import_edge(self.source, module)
+                for module in sorted(self.indexer.excluded_modules):
+                    if module.startswith(prefix):
+                        self.indexer._module_import_edge(self.source, module)
+                return
+        if name == "pkgutil.walk_packages":
+            self._dynamic(f"{name}(): imports the packages on a path, an import of anything")
+        else:
+            # Lists without running anything: bounded by the import closure,
+            # as a lookup by a name known at run time is.
+            self._dynamic(f"{name}(): lists the modules on a path known at run time")
 
 
 def _elements(expr: ast.expr | None) -> list[ast.expr]:

@@ -118,7 +118,7 @@ diffcone couldn't bound, so it selected the target to be safe.
 | `entry_docstring_changed` | | The target's docstring changed; for a doctest, the docstring is the test. |
 | `declared_dependency` | | A dependency declared in `diffcone.toml` connects it to a change. |
 | `always_run` | | An `[[always_run]]` entry in `diffcone.toml` names it: it runs on every change. |
-| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it runs with a module's globals (a doctest) and that module's imports changed. |
+| `dynamic_reference` | yes | It reaches code that looks names up dynamically (`getattr`, `importlib`), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file `[index] exclude` keeps out of the analysis; or it runs with a module's globals (a doctest) and that module's imports changed. |
 | `unresolved_name_match` | yes | It reaches a reference diffcone couldn't resolve (a call, a name or an attribute) whose name matches something that changed. |
 | `entry_symbol_unresolved` | yes | Its own code wasn't found in either snapshot. |
 | `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots, a benchmark's code it couldn't read. |

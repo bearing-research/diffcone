@@ -20,7 +20,9 @@ per module):
   and what that calls); a ``.py`` file no module name maps to
   (``scripts/gen-data.py``) is code the index does not read, so the symbol
   may import anything (an unbounded dynamic reference), and a change to the
-  file reaches it (``SourceIndex.script_refs``);
+  file reaches it (``SourceIndex.script_refs``); a file ``[index] exclude``
+  keeps out is not read at all: an unknown dependency
+  (``Resolver.excluded_import``), as is ``-m`` of an excluded module;
 * ``-m NAME`` (in a string, or as two items of a command list) naming an
   in-scope module: an import of it (and of ``NAME.__main__`` for a
   package);
@@ -96,7 +98,7 @@ from diffcone.model import (
     UnresolvedKind,
     UnresolvedReference,
 )
-from diffcone.snapshot import module_name_for
+from diffcone.snapshot import excluded_files, module_name_for
 
 if TYPE_CHECKING:
     from diffcone.indexer.references import _ReferenceCollector
@@ -316,6 +318,10 @@ def _module_run(indexer: Resolver, source: str, name: str) -> bool:
     parts = [p for p in name.split(".") if p]
     if not parts or not all(p.isidentifier() for p in parts):
         return False
+    if excluded_files(indexer.excluded_modules, ".".join(parts)):
+        # A module ``[index] exclude`` keeps out: run unread (audit round 6, T2).
+        indexer._module_import_edge(source, ".".join(parts))
+        return True
     node = indexer.resolve_dotted(parts)
     if not isinstance(node, ModuleNode) or node.module != ".".join(parts):
         return False
@@ -351,7 +357,11 @@ def whole_module(indexer: Resolver, source: str, module: str, detail: str = RUNS
     reference to every symbol in it. False when the module is not in
     scope."""
     if module not in indexer.scopes:
-        return False
+        if not excluded_files(indexer.excluded_modules, module):
+            return False
+        # Excluded by ``[index] exclude``: run unread (audit round 6, T2).
+        indexer._module_import_edge(source, module)
+        return True
     indexer._module_import_edge(source, module)
     for symbol in module_symbols(indexer, module):
         if symbol != source:
@@ -1366,7 +1376,7 @@ def _is_directory(collector: _ReferenceCollector, text: str) -> bool:
         return True
     return any(
         path.startswith(prefix + "/") or f"/{prefix}/" in f"/{path}"
-        for path in collector.indexer.snapshot.files
+        for path in [*collector.indexer.snapshot.files, *collector.indexer.excluded_paths]
     )
 
 
@@ -1515,11 +1525,17 @@ def apply_scripts(indexer: Resolver) -> None:
     if not out.script_paths and not out.test_runs:
         return
     module_of = {scope.path: name for name, scope in indexer.scopes.items()}
+    # Files ``[index] exclude`` keeps out: run unread (audit round 6, T2).
+    excluded = set(indexer.excluded_paths)
     by_name: dict[str, list[str]] = {}
-    for path in sorted(set(module_of) | set(unmapped)):
+    for path in sorted(set(module_of) | set(unmapped) | excluded):
         by_name.setdefault(path.rpartition("/")[2], []).append(path)
 
     def unread(source: str, path: str) -> None:
+        if path in excluded:
+            # Its code is not read at all: an unknown dependency.
+            indexer.excluded_import(source, module_name_for(path, roots) or "", path)
+            return
         # A file the index does not read: its program, read here as
         # ``-c`` code is; the symbol also sees a change to the file.
         index.script_refs.add((source, path))
@@ -1552,7 +1568,7 @@ def apply_scripts(indexer: Resolver) -> None:
             prefix = suffix.strip("/")
             paths = sorted(
                 p
-                for p in set(module_of) | set(unmapped)
+                for p in set(module_of) | set(unmapped) | excluded
                 if p.startswith(prefix + "/") or f"/{prefix}/" in f"/{p}"
             )
         if not paths:
@@ -1574,6 +1590,8 @@ def apply_scripts(indexer: Resolver) -> None:
             if runner in ("pytest", "py.test"):
                 for conftest in _conftest_chain(module_of, path):
                     whole_module(indexer, source, conftest)
+                for conftest in _conftest_chain({p: p for p in excluded}, path):
+                    unread(source, conftest)
 
 
 def plugin_options(indexer: Resolver, source: str, words: list[str]) -> None:
