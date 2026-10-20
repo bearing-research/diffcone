@@ -1558,6 +1558,10 @@ plan JSON 850 MB, now 40 MB, identical to main's with the field removed.
 
 ## What the chain stored: E32, E35, E36 (2026-10-18)
 
+*The E32/E35 narrowing measured here was reverted in audit round 6 (T1): it
+missed tests in many common patterns and saved nothing on strata. E36 stays,
+as every in-place write of every function the chain calls.*
+
 Audit E32, E35 (precision, strata) and E36 (a miss in 0.4.0): a module
 variable the chain writes is followed only where what it stores may
 derive from the chain, and the code the chain calls is followed where it

@@ -64,7 +64,7 @@ Suite = one run of `pytest -q -p no:cacheprovider` at the HEAD below.
 | rich | 9d8f9a372c | `-e . pytest attrs typing-extensions` (poetry dev-dependencies) | ok | 947 passed, 9 failed (newer Pygments renders differently) |
 | typer | b15210b71a | `-e . --group tests` | ok | 1468 passed |
 | fastapi | f5c6e9b4f9 | `-e .[all] --group tests` | ok | 3596 passed |
-| pydantic | 0edb9347fa | `-e .[email,timezone] --group dev --group testing-extra --group pydantic-core/pyproject.toml:testing-extra` (uv workspace: pydantic-core is built from source by maturin, needs `cargo`) | ok | 12972 passed, 25 failed (all `tests/pydantic_core/test_docstrings.py`, which CI ignores) |
+| pydantic | 0edb9347fa | `-e .[email,timezone] --group dev --group testing-extra --group pydantic-core/pyproject.toml:testing-extra` (uv workspace: pydantic-core is built from source by maturin, needs `cargo`, and uv >= 0.13 since the repository requires it) | ok | 12972 passed, 25 failed (all `tests/pydantic_core/test_docstrings.py`, which CI ignores) |
 | marshmallow | d08471b178 | `-e . --group tests` | ok | 1190 passed |
 | cattrs | 73fa273b12 | `-e .[ujson,orjson,msgpack,pyyaml,tomlkit,cbor2,bson,msgspec] --group test --group lint` (justfile: all extras) | ok | 1121 passed, 2 failed (tomllib converter) |
 | tenacity | 58c45dc02b | `-e .[test] --group dev` (CI: `uv run poe`) | ok | 185 passed |

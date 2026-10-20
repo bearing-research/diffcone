@@ -15,8 +15,30 @@ selection rules.
   formatter's or a linter's test suite). A matching file is read as a data
   file: plans no longer degrade, `collect` records the checkout, and a
   change to one selects everything in a plan without a recording and the
-  tests that read it or ran its code in one with. The report lists each
+  tests that read it or ran its code in one with. What an excluded file
+  runs is not read, so code that imports or runs one (an import,
+  `import_module`, `runpy`, a subprocess, a file loader) is selected on any
+  change, with a reason naming the file; with a recording, a change to an
+  excluded file a test imported selects every test. The report lists each
   snapshot's patterns (`analysis.<side>.excluded`).
+
+### Discovery
+
+- Under `--doctest-modules`, a docstring set when the module is imported
+  (`f.__doc__ = ...`, a string built from parts) is read when its text can
+  be worked out; one a decorator of yours rewrites makes its doctest
+  always selected; one discovery cannot read is reported (exit 3).
+- Tests bound by a call (`test_one = make(1)`, `functools.partial`), a
+  lambda, `globals()` or `setattr`, and pytest-bdd's `scenarios()`, are
+  reported (exit 3). Module data that merely has a test's name is not.
+- A `usefixtures` mark discovery cannot read (a non-literal argument, an
+  alias of the mark, a decorator or factory that applies it,
+  `pytestmark = marks()`) counts as every visible fixture.
+- Test classes pytest does not collect (an inherited `__init__` or
+  `__new__`, a dataclass or attrs class) are no longer targets: `run`
+  reported them as selected tests pytest did not collect.
+- Notes on an excluded plugin, base class or benchmark file name the
+  exclusion and say to narrow the pattern.
 
 ### Report
 
@@ -32,14 +54,19 @@ selection rules.
   discovered at that commit: pytest's rootdir lies outside the repository
   (a configuration file in a directory above it), so plans would find no
   recording for any test and select them all.
-- A module variable that code able to run a change writes is followed as
-  a cache only when what it stores, or what decides that the write runs,
-  may come from that code: its parameters, the changed code's results,
-  calls through what it was handed. A decorator's registration
-  (`@router.put("/x")` writing the router when the module is imported)
-  and a literal written before the code runs anything else no longer
-  make every reader of the variable depend on every change the decorated
-  function can run.
+
+### Running and checking
+
+- `diffcone run --allow-incomplete-discovery` starts pytest even when
+  nothing is selected, with every target deselected, so the tests
+  discovery does not know about still run (`--dry-run` says so).
+- `diffcone run` no longer refuses to run because of its own results
+  (`diffcone-results/`) in a flat layout, or a generated, git-ignored
+  `_version.py` that only binds constants.
+- `diffcone check` (and the `check` action) says when it compared the plan
+  only, without diffcone's own run.
+- `diffcone report` counts a pull-request run that failed after a good
+  plan as a problem.
 
 ### Fixed
 
@@ -51,11 +78,50 @@ selection rules.
   peaks at 5.5 GB and takes under two minutes, and a cached discovery
   result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
   cached by an earlier version is redone once.
-- With a recording, a module cache filled through a helper that is
-  handed the value (`_put(key, compute(key))`, with `_put` storing it, a
-  method, a chain of helpers, an `append`) was not followed: a test that
-  read what an earlier test stored there, without running `compute`, was
-  not selected when `compute` changed. It is now.
+- With a recording, a module cache filled by a function the cache's
+  caller calls (`_put(key, compute(key))`, a method, a chain of helpers,
+  an `append`, or a write under a branch on the result) was not followed:
+  a test that read what an earlier test stored there, without running
+  `compute`, was not selected when `compute` changed. Every in-place write
+  of the code that code calls is now followed.
+- With a recording, a module the analysis does not read (outside the
+  source roots) that a test imported was credited to that test alone,
+  though later tests use it without running any of it: a change to it now
+  selects every test. A recording made by an earlier version does not say
+  which such files a test imported, so any `.py` file a test touched
+  counts.
+- A write to state held on a class (`Config.mode = m`,
+  `Config.items.append(x)`, `setattr(Config, ...)`, `cls._instance = ...`,
+  `type(self)._cache[k] = v`) did not make the writer a dependency of the
+  class's readers; nor did a write to a module variable under another
+  name: a local alias (`cache = _CACHE`), an item of it, a bound method,
+  `globals()["_CACHE"]`, or what one of your functions returns
+  (`registry()[k] = v`). Both are followed now, with and without a
+  recording. Copies (`dict(_CACHE)`, `.copy()`) and an instance's own
+  attributes are not shared state.
+- `pytest.importorskip("pkg.mod")`, `importlib.util.find_spec`,
+  `pkgutil.resolve_name`, `pydoc.locate` and `pkgutil.iter_modules` or
+  `walk_packages` over a package were not imports: a change that made the
+  module fail to import, or changed what it does when imported, did not
+  select the test. They are now.
+- Discovery missed fixtures a test requests outside its own signature:
+  `request` handed to a helper, an alias of `request.getfixturevalue`,
+  `lf()`/`lazy_fixture()` in a parametrization, a hook adding to
+  `item.fixturenames` or to the `usefixtures` option; an autouse fixture
+  under another name for the decorator (`from pytest import fixture as
+  fx`); and a module stored into `doctest_namespace` by subscript
+  (`doctest_namespace["np"] = numpy`). They are dependencies now.
+- The `run` action planned only the last commit (`HEAD^1`): a push of
+  several commits, a merge-queue group or a pull request checked out at
+  its head planned part of the change. It plans the event's own change
+  now (a pull request on top of its target branch, every commit of a
+  push, the whole merge-queue group), and a branch name, tag or `HEAD~n`
+  as `base` works in a shallow checkout. With no base (a new branch, a
+  manual run) or one that cannot be fetched, it runs every test and says
+  why.
+- The `record` action's check counted any failed plan as an unusable
+  recording and passed; it fails now when the plan fails without the
+  recording too.
 - The `run` and `record` actions deepen a shallow checkout with an
   absolute depth. They used `git fetch --deepen`, which GitHub serves only
   from a commit a branch or pull request still points at: a re-run, or a
