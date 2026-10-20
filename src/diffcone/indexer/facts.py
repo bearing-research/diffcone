@@ -245,6 +245,35 @@ class _Output:
     # but ``object.__new__`` made it (Indexer._instance_writes; audit round
     # 6, T22).
     instance_writes: set[tuple[str, str, str]] = field(default_factory=set)
+    # (class, attribute, writer): a change in place of what a class
+    # attribute holds (``Field.DAYS``, ``self._SECS_MAP``): a ``mutated_by``
+    # edge of the class unless the attribute is bound once to a value that
+    # cannot change in place and nothing binds it anew (references.ATTR,
+    # Indexer._class_attribute_writes; audit round 6, T24).
+    attr_value_writes: set[tuple[str, str, str]] = field(default_factory=set)
+    # (class, attribute or ``*``): classes their own module's top-level code
+    # writes (an edge the module's hash covers, but a class attribute may be
+    # bound anew: ``Arrow.min = ...`` binds ``min``; T24).
+    own_class_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (class, attribute or ``*``, writer, kind, first, second): an attribute
+    # bound on a fresh instance of the class whose constructor was handed
+    # what the fact (apply_fact) names; the fact holds when
+    # binding the attribute may run code of the class (writes._HeldSafety;
+    # audit round 6, T23).
+    held_binds: set[tuple[str, str, str, str, str, str]] = field(default_factory=set)
+    # (class of a ``self``/``cls`` receiver or "", attribute or ``*``,
+    # whether the value bound is of a builtin type that cannot change in
+    # place): every attribute store, ``setattr``, ``__dict__`` write (T23).
+    attr_values: set[tuple[str, str, bool]] = field(default_factory=set)
+    # (function, parameter, how): how the function writes a parameter
+    # (``param_writes``): ``=<attribute>`` binds or deletes one of its
+    # attributes (``=*``: a name known at run time), ``+<attribute>``
+    # augments one with a value of a builtin type that cannot change in
+    # place, ``*`` anything else (T23).
+    param_flavors: set[tuple[str, str, str]] = field(default_factory=set)
+    # The ``passes`` handing a parameter itself on (not an item or an
+    # attribute of it): the callee's writes are the caller's (T23).
+    whole_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -294,6 +323,12 @@ class _Output:
         self.instance_bindings |= other.instance_bindings
         self.receiver_writes |= other.receiver_writes
         self.instance_writes |= other.instance_writes
+        self.attr_value_writes |= other.attr_value_writes
+        self.own_class_writes |= other.own_class_writes
+        self.held_binds |= other.held_binds
+        self.attr_values |= other.attr_values
+        self.param_flavors |= other.param_flavors
+        self.whole_passes |= other.whole_passes
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -331,6 +366,22 @@ def _scope_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> Scope:
         self_class=data["self_class"],
         param_aliases=dict(data["param_aliases"]),
     )
+
+
+def apply_fact(out: _Output, writer: str, fact: tuple[str, ...]) -> None:
+    """Record what ``_ReferenceCollector._root_facts`` says a write by
+    ``writer`` changes."""
+    kind, first, second = fact[0], fact[1], fact[2]
+    if kind == "value":
+        out.value_writes.add((first, writer))
+    elif kind == "attribute":
+        out.attr_value_writes.add((first, second, writer))
+    elif kind == "instance":
+        out.instance_writes.add((first, writer, second))
+    elif kind == "result":
+        out.result_writes.add((writer, first, second))
+    elif kind == "own":
+        out.own_class_writes.add((first, second))
 
 
 def _output_to_dict(out: _Output) -> dict:
@@ -404,6 +455,12 @@ def _output_to_dict(out: _Output) -> dict:
         "value_writes": sorted(list(w) for w in out.value_writes),
         "instance_bindings": sorted(list(b) for b in out.instance_bindings),
         "instance_writes": sorted(list(w) for w in out.instance_writes),
+        "attr_value_writes": sorted(list(w) for w in out.attr_value_writes),
+        "own_class_writes": sorted(out.own_class_writes),
+        "held_binds": sorted(list(b) for b in out.held_binds),
+        "attr_values": sorted(list(v) for v in out.attr_values),
+        "param_flavors": sorted(list(f) for f in out.param_flavors),
+        "whole_passes": sorted(list(p) for p in out.whole_passes),
     }
 
 
@@ -489,6 +546,12 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.value_writes = {(v, w) for v, w in data["value_writes"]}
     out.instance_bindings = {(v, o) for v, o in data["instance_bindings"]}
     out.instance_writes = {(c, w, h) for c, w, h in data["instance_writes"]}
+    out.attr_value_writes = {(c, a, w) for c, a, w in data["attr_value_writes"]}
+    out.own_class_writes = {(c, a) for c, a in data["own_class_writes"]}
+    out.held_binds = {(c, a, w, k, f, s) for c, a, w, k, f, s in data["held_binds"]}
+    out.attr_values = {(c, a, bool(ok)) for c, a, ok in data["attr_values"]}
+    out.param_flavors = {(f, p, h) for f, p, h in data["param_flavors"]}
+    out.whole_passes = {(c, w, e, n, s, bool(b)) for c, w, e, n, s, b in data["whole_passes"]}
     return out
 
 
@@ -541,8 +604,16 @@ def _facts_to_dict(
                 "base_chains": c.base_chains,
                 "base_names": c.base_names,
                 "plain": c.plain,
+                "kept": c.kept,
+                "declared": sorted(c.declared),
+                "tables": sorted(c.tables),
                 "match_args": list(c.match_args) if c.match_args is not None else None,
                 "stateless": list(c.stateless) if c.stateless is not None else None,
+                "immutables": (
+                    {k: list(v) for k, v in c.immutables.items()}
+                    if c.immutables is not None
+                    else None
+                ),
             }
             for c in classes
         ],

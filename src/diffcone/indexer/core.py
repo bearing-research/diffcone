@@ -22,7 +22,7 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal_keys
-from diffcone.indexer.references import RESULT, SETITEM, instance_root
+from diffcone.indexer.references import RESULT, SETITEM, class_attribute_root, instance_root
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
@@ -209,6 +209,7 @@ class Indexer(DynamicBounds):
             self._too_deep("", "")
             undecided = self._global.value_writes | self._global.receiver_writes
             undecided |= {(c, w) for c, w, _ in self._global.instance_writes}
+            undecided |= {(c, w) for c, _, w in self._global.attr_value_writes}
             for state, writer in sorted(undecided):  # every one, undecided
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._lazy_constants()
@@ -536,8 +537,16 @@ class Indexer(DynamicBounds):
                 base_chains=[list(c) if c is not None else None for c in data["base_chains"]],
                 base_names=[list(c) if c is not None else None for c in data["base_names"]],
                 plain=bool(data["plain"]),
+                kept=bool(data["kept"]),
+                declared={str(n) for n in data["declared"]},
+                tables=frozenset(str(n) for n in data["tables"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
                 stateless=tuple(data["stateless"]) if data["stateless"] is not None else None,
+                immutables=(
+                    {str(k): tuple(v) for k, v in data["immutables"].items()}
+                    if data["immutables"] is not None
+                    else None
+                ),
             )
         edges = {Edge(s, t, EdgeKind(k), d) for s, t, k, d in record["edges"]}
         if any(s.id in self.index.symbols for s in symbols):
@@ -922,6 +931,17 @@ class Indexer(DynamicBounds):
 
         for writer, callee, module in sorted(self._global.result_writes):
             for root in sorted(state_of(callee)):
+                named = class_attribute_root(root)
+                if named is not None:
+                    # What a class attribute holds (T24); its own module's
+                    # top-level code changes it as part of the module's hash.
+                    symbol = self.index.symbols.get(named[0])
+                    if symbol is not None and named[0] != writer:
+                        if symbol.module != module:
+                            self._global.attr_value_writes.add((named[0], named[1], writer))
+                        else:
+                            self._global.own_class_writes.add(named)
+                    continue
                 made = instance_root(root)
                 if made is not None:
                     # An instance the callee made (``return Store()``), or
@@ -934,7 +954,13 @@ class Indexer(DynamicBounds):
                         self._global.instance_writes.add((cls, writer, how))
                     continue
                 symbol = self.index.symbols.get(root)
-                if symbol is None or root == writer or symbol.module == module:
+                if symbol is None or root == writer:
+                    continue
+                if symbol.module == module:
+                    if symbol.kind == SymbolKind.CLASS:
+                        # Its module's top-level code may bind any attribute
+                        # of it anew (``_cls().DAYS = []``; T24).
+                        self._global.own_class_writes.add((root, "*"))
                     continue
                 self._global.value_writes.add((root, writer))
 
@@ -945,6 +971,7 @@ class Indexer(DynamicBounds):
         readers read what they read before, whatever the writer does (audit
         round 6, T20)."""
         immutable = self._immutable_variables()
+        self._class_attribute_writes(immutable)
         classes = self._instance_classes()
         holding = self._classes_holding_state(immutable)
         for state, writer in sorted(self._global.receiver_writes - self._global.value_writes):
@@ -965,6 +992,64 @@ class Indexer(DynamicBounds):
                         if c != writer:
                             self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._instance_writes(holding)
+
+    def _class_attribute_writes(self, immutable: set[str]) -> None:
+        """A change in place of what a class attribute holds
+        (``attr_value_writes``) is a ``mutated_by`` edge of the class (a
+        ``value_writes`` one), unless the attribute cannot change in place:
+        its class's body binds it once to an immutable value
+        (``ClassScope.immutables``) resting on immutable variables and
+        standard-library modules no project module shadows, no class of the
+        attribute class's MRO is decorated, has a metaclass other than
+        ``abc.ABCMeta`` or a base outside the source roots that may do
+        anything to the class, no class of its family customises attribute
+        reads (``__getattribute__``) and no code writes a class of its
+        family itself (``Store.x = v``, ``setattr(cls, ...)``, the class
+        handed to a writer: an edge or a value write), which may bind the
+        attribute anew, and no top-level code of its module binds the
+        attribute or writes the class otherwise (``own_class_writes``)
+        (audit round 6, T24). Computed over the whole index on every build
+        from facts a cold and a warm build share."""
+        pending = self._global.attr_value_writes
+        if not pending:
+            return
+        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
+        written |= {state for state, _ in self._global.value_writes}
+        written |= {state for state, _ in self._global.receiver_writes}
+        own = self._global.own_class_writes
+        modules = self.index.modules
+        decided: dict[tuple[str, str], bool] = {}
+
+        def fixed(cls: str, attr: str) -> bool:
+            cscope = self.class_scopes.get(cls)
+            if cscope is None or cscope.immutables is None or attr not in cscope.immutables:
+                return False
+            for rest in cscope.immutables[attr]:
+                if rest.startswith(EXTERNAL_DEPENDENCY):
+                    top = rest[len(EXTERNAL_DEPENDENCY) :]
+                    if any(m == top or m.startswith(top + ".") for m in modules):
+                        return False
+                else:
+                    var = cscope.module.variables.get(rest)
+                    if var is None or var not in immutable:
+                        return False
+            for c in self._mro(cls):
+                base = self.class_scopes.get(c)
+                if base is None or base.immutables is None or base.external_base:
+                    return False
+            for c in self._family(cls):
+                member = self.class_scopes[c]
+                if c in written or "__getattribute__" in member.members.keys() | member.bindings:
+                    return False
+                if (c, attr) in own or (c, "*") in own:
+                    return False
+            return True
+
+        for cls, attr, writer in sorted(pending):
+            if (cls, attr) not in decided:
+                decided[(cls, attr)] = fixed(cls, attr)
+            if not decided[(cls, attr)]:
+                self._global.value_writes.add((cls, writer))
 
     def _instance_writes(self, holding: set[str]) -> None:
         """A write into an instance of an in-scope class the writer made
@@ -1094,7 +1179,10 @@ class Indexer(DynamicBounds):
                 elif kind == "call":
                     classes.update(c for c in returns.get(ident, ()) if c in self.class_scopes)
                     for root in returned.get(ident, ()):
-                        if root.startswith(RESULT):
+                        named = class_attribute_root(root)
+                        if named is not None:
+                            stack.append(f"class:{named[0]}")  # what it holds: any
+                        elif root.startswith(RESULT):
                             stack.append("call:" + root[len(RESULT) :])
                         elif (symbol := symbols.get(root)) is not None:
                             if symbol.kind == SymbolKind.CLASS:

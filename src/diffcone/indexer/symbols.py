@@ -39,7 +39,11 @@ from diffcone.indexer.literals import (
     _collect_literal_bindings,
     _collect_store_names,
     _module_containers,
+    class_declared,
+    class_immutables,
+    class_kept,
     class_state,
+    class_tables,
     make_evaluator,
     module_bindings,
     module_immutables,
@@ -442,6 +446,10 @@ class FirstPass(IndexerState):
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 cscope.plain = plain
                 cscope.stateless = self._class_state(scope, nodes)
+                cscope.immutables = class_immutables(self._class_bindings[scope.name], nodes)
+                cscope.kept = class_kept(self._class_bindings[scope.name], nodes)
+                cscope.declared = class_declared(nodes)
+                cscope.tables = class_tables(nodes)
                 for n in nodes:
                     cscope.base_chains.extend(_flatten_chain(b) for b in n.bases)
                     cscope.base_names.extend(

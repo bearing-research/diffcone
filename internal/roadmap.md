@@ -1648,20 +1648,6 @@ that attribute only) would bound `getattr(logging, level)` to the level
 names. strata's own CI already selects everything on 0.4.0, so none of
 this blocks the release.
 
-*Constructor arguments as part of the instance (audit T23).* Round 6's
-alias tracing takes every argument of a constructor call for a root of
-the instance, so handing the instance to a function that writes its own
-attributes (`self.position += 1`) writes whatever was passed in
-(`Tokenizer(source, rules=DEFAULT_RULES)`). On packaging this makes four
-of eight census plans select everything (6 292 -> 11 278 of 11 278).
-Sketch: record, per in-scope `__init__`, which parameters it stores into
-which attributes (`self.rules = rules`); an argument is a root of the
-instance only through those attributes, and only a write through such an
-attribute (`self.rules[k] = v`, `self.rules.append`) writes the argument.
-An `__init__` that hands a parameter on, stores it under a computed name,
-or is not in scope keeps today's rule. Done when packaging's four plans
-come back and the T7 and T21 scenarios still pass.
-
 *An install's file read as a table (E33).* A module loaded from a literal
 file and installed in `sys.modules` (`_load_local_module("serializer.py",
 "_nb_serializer")`) carries a `>module` source naming that file's module.

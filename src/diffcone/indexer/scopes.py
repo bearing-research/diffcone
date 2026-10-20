@@ -49,6 +49,19 @@ class ClassScope:
     # No decorators and no class keywords (metaclass=...): nothing but the
     # class body and its bases decides how instances are built.
     plain: bool = True
+    # Plain, or decorated only by decorators that give back the class itself
+    # with no hook on making an instance or setting an attribute
+    # (``functools.total_ordering``; literals.class_kept): instances are
+    # made as the body and bases say (audit round 6, T23).
+    kept: bool = True
+    # The names the class body only annotates (``_cache: int | None``):
+    # ``bindings`` has them, but they bind nothing at class level
+    # (literals.class_declared; audit round 6, T23).
+    declared: set[str] = field(default_factory=set)
+    # Class attributes the body binds once to a display of constants
+    # (literals.class_tables): while nothing changes one in place, a method
+    # called on it or an item of it is a builtin's (audit round 6, T24).
+    tables: frozenset[str] = frozenset()
     # Some base is external, dynamic or unresolved, other than a plain
     # ``object``: attributes may be written by code that is not visible.
     opaque: bool = False
@@ -63,6 +76,11 @@ class ClassScope:
     # resting on these names and modules (literals.class_state); None when
     # it may hold state of the class's own (audit round 6, T21).
     stateless: tuple[str, ...] | None = None
+    # The class attributes its body binds once to a value that cannot change
+    # in place, and what each rests on (literals.class_immutables); None for
+    # a decorated class or one naming a metaclass that may rebind them
+    # (audit round 6, T24). Decided after pass 2.
+    immutables: dict[str, tuple[str, ...]] | None = field(default_factory=dict)
     bases_state: int = 0  # 0 pending, 1 resolving, 2 resolved
     mro: list[str] | None = None
     in_mro: bool = False  # cycle guard while linearising

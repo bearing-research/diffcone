@@ -650,6 +650,82 @@ Further rules (pre-release audit, round 2):
   modelled: an instance a library call makes, and a metaclass `__call__`
   keeping instances in state of the metaclass (the class itself need not
   hold any).
+* A class attribute bound once to a value that cannot change in place is
+  no root of its class (audit round 6, T24; `literals.class_immutables` in
+  pass 1, `Indexer._class_attribute_writes` after pass 2). A class
+  attribute read in the write tracing (`TimeDelta.DAYS`, `self._N` when the
+  class body binds `_N`, `cls.X`) is a root of its own (`<attr>:`), and a
+  write into it (directly, through a local, a tuple holding it, a callee
+  writing its parameter, or held by an instance) is a `mutated_by` edge of
+  the class unless the class body binds the attribute exactly once (no
+  `def`, import, `global`, second binding) to a value the T20 rule calls
+  immutable and that reads no other class-body name, the class and every
+  class of its MRO are `kept` (`literals.class_kept`: no decorator but
+  `functools.total_ordering` or `typing.final`, no metaclass but
+  `abc.ABCMeta`), every base is in scope, the module names no namespace
+  (as for T20), and nothing may bind it anew: no class of the family (MRO
+  and in-scope subclasses) has a `mutated_by` edge of its own, is written
+  in place, or defines `__getattribute__`, and no top-level code of its own
+  module binds that attribute or writes the class otherwise
+  (`own_class_writes`, per attribute: `Arrow.min = ...` binds `min` only).
+  What a builtin returns may be its argument (`m = min(m, self._N); m += 1`
+  keeps the root, as it may be `_N`); results of builtins of a fixed
+  immutable type (`len`, `int`, `str`, `repr`, ...:
+  `IMMUTABLE_TYPED_CALLS`) hold nothing. `cast(T, x)` is `x`, not `T`;
+  `type(x)` and `x.__class__` of a fresh instance are its class. A method called on a class
+  attribute or an item of it (`self.timeframes[k].format(n)`) by a name
+  that does not resolve may be any in-scope method of that name (writing
+  the attribute's object, so the class), unless the attribute is a literal
+  table (`literals.class_tables`: bound once to a dict, list, set or tuple
+  display of constants and such displays) that nothing may change: every
+  class of its MRO kept and in scope, no class of the family written as a
+  whole, no write of the attribute recorded (an item stored, a mutator, a
+  top-level store of its module, through what a function returns), it is
+  handed to no call other than as a method's receiver, no class of the
+  family is handed to a call other than as a method's receiver, held by an
+  instance its constructor was handed, has an instance written in place
+  or handed to a call, or is returned by a function (as a class or an
+  instance: what is decided after the table is), and no class of the
+  family defines
+  `__getattribute__` (`writes.apply_writes`). Its methods and its items'
+  are then builtins'.
+* An instance holds what its constructor was handed (audit round 6, T23;
+  `HELD` roots and `held:` passes, `writes._HeldSafety` after pass 2). An
+  explicit call of an in-scope class (`Tokenizer(src, rules=RULES)`) gives
+  the fresh instance the arguments' roots as `<held>:<class>|<root>`. A
+  change in place of the instance (`tok.rules["x"] = 1`, a method call on
+  it, the instance handed to a callee changing it in place) writes them;
+  so do the initialiser's own writes through `self` (the call hands the
+  arguments to `__init__` as its receiver). Binding or deleting an
+  attribute of the instance other than a special one (`__dict__` bound to
+  an argument makes every later binding a write into it, `__class__` may
+  bring any class's hooks) (`tok.position = 0`, `setattr(tok, "pos", v)`)
+  or augmenting one with a value of a fixed immutable type (`tok.position
+  += len(s)`), directly or through any chain of callees (`param_flavors`:
+  `=<attr>`, `+<attr>`, `*`), does not, when no class of the family defines
+  `__new__`, `__setattr__`, `__delattr__`, `__getattr__` or
+  `__getattribute__`, is not `kept` or has a base outside the roots, no
+  class binds or defines that attribute in its body (a descriptor, a
+  property setter) other than as an immutable value (an annotation alone,
+  `_cache: int | None`, binds nothing: `literals.class_declared`), and, for
+  an augment, no class of the family binds any class-level value that may
+  be a descriptor (whose `__get__` may store into the instance's
+  `__dict__`) and no store of the attribute, or under a computed name
+  (`setattr(r, name, v)`, `r.__dict__`, `vars(r)`), binds a value that may
+  change in place (`attr_values`). A computed-name store through a
+  parameter (the function's own or a nested function's) or onto a module
+  is not counted: an instance reaches a parameter only by a call, which
+  the write tracing follows for the function's own (its kind is `=*`) and
+  does not for a nested function's for any write. Storing an argument in a
+  container, under a computed name, through `__dict__`, or handing it to a
+  base initialiser keeps the conservative rule. As for an instance itself
+  (T22), what a constructor was handed that is itself an instance of an
+  in-scope class is not written by a method called on the holder (the
+  methods' own writes of `self` reach the state their classes hold). Not
+  modelled: an instance a factory or a library makes holding an argument
+  (the instance's own roots apply), and a write by a property getter or
+  another descriptor of the class (reading an attribute is no call the
+  write tracing follows).
 * Project code run by naming it in a string (`indexer/scripts.py`). A
   string naming a `.py` file (a literal, or the last literal piece of a
   path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,

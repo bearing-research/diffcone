@@ -53,6 +53,10 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 59: a class attribute bound once to a value that cannot change in place
+#     is no root of its class (audit round 6, T24); an instance holds the
+#     arguments its constructor was handed, and only a write that may reach
+#     them writes them (T23);
 # 58: an instance an in-scope class makes (``Store()``, ``cls.__new__(cls)``)
 #     is no root of the class; a write in place into it writes the class
 #     when the class holds state, and ``__new__``/``__init_subclass__`` take
@@ -107,7 +111,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 58
+INDEX_FORMAT = 59
 
 
 def _indexer_fingerprint() -> str:

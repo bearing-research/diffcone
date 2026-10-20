@@ -255,12 +255,36 @@ everything.
     values, `re.compile(...)`, `textwrap.dedent(...)` or a path, and that no
     code binds again (`global`, `module.NAME = ...`, `setattr`). Passing
     `SQL` to a function, or using what `PATTERN.match(s)` returns, does not
-    make its readers depend on that code.
+    make its readers depend on that code. The same holds for a class
+    attribute your class body binds once to such a value (`DAYS = "days"`,
+    `_MONTHS = 12`) and that no code binds again: handing `TimeDelta.DAYS`
+    to a function, or `m = min(m, self._MONTHS)`, writes nothing of the
+    class, and neither does calling a method on an item of a class-level
+    table of strings and numbers that no code changes
+    (`self.timeframes[k].format(n)`). A class with a decorator (other than
+    `functools.total_ordering` or `typing.final`), a metaclass (other than
+    `abc.ABCMeta`) or a library base keeps every writer of its attributes.
+
+    An object you hand to a constructor of your class (`Tokenizer(source,
+    rules=RULES)`) is part of the new instance. Changing the instance in
+    place (`tok.rules["x"] = 1`, calling one of its methods, `__init__`
+    changing what it stored) changes the object, so it is a dependency of
+    every reader of `RULES`. Setting an attribute on the instance
+    (`tok.position = 0`, but not `__dict__` or `__class__`), or adding a number or string to one that only
+    ever holds such values (`tok.position += 1`), in that code or in a
+    function it hands the instance to, is not, as long as no class involved
+    defines `__new__`,
+    `__setattr__`, `__getattr__` or a property of that name, or has a
+    decorator (other than `functools.total_ordering` or `typing.final`), a
+    metaclass or a library base.
 
     Not followed:
 
     - an object stored away and changed later under another name
-      (`self.store = store`, then `self.store[k] = v`);
+      (`self.store = store`, then `self.store[k] = v`), unless the instance
+      holding it was made by calling your class with it in the function that
+      changes it or hands it on (an instance kept in a module variable,
+      `TOK = Tokenizer(RULES)`, is not followed back to `RULES`);
     - an object a library function returns that your code then changes;
     - a method called on an item of a module-level dict or list
       (`_CACHE["a"].put(4)`): only the dict's own methods count as writes;

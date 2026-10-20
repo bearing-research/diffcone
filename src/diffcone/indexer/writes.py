@@ -44,8 +44,23 @@ holds when every write of it says (a construction of a plainly built
 in-scope class, a third-party value: ``_attribute_values``), and any method
 of that name otherwise.
 
+Each parameter write also records how it writes (``param_flavors``):
+``=<attr>`` binds or deletes an attribute of the parameter itself
+(``p.a = v``, ``setattr(p, "a", v)``, ``=*`` for a computed name),
+``+<attr>`` augments one with a value of a builtin type that cannot change
+in place (``p.n += len(s)``), ``*`` is anything else; a parameter handed
+whole to a written parameter (``whole_passes``) takes the callee's kinds,
+one handed in part (``p.items``) is ``*``. What a constructor of an
+in-scope class was handed is handed on as ``held:<class>|<what>``: it is
+written when the instance is written in a way ``_HeldSafety`` cannot rule
+out (audit round 6, T23), and an explicit construction hands the arguments
+to the class's ``__init__`` as its receiver, so ``self.d = d`` in
+``__init__`` then ``self.d[k] = v`` in ``__init__`` or a method called on
+the instance writes what the caller handed.
+
 Not modelled: an object kept and written through later under another name
-(``self.d = d`` in ``__init__``, then ``self.d[k] = v``; a parameter
+(``self.d = d`` in ``__init__``, then ``self.d[k] = v`` on an instance not
+made by an explicit call of its class; a parameter
 returned to the caller; a module returned by a function other code calls),
 and a third-party function that changes an argument in place, a module
 included (a library handed a module of the project that writes into it).
@@ -79,7 +94,8 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
-from diffcone.indexer.scopes import External, ModuleNode, Resolved, Scope
+from diffcone.indexer.facts import apply_fact
+from diffcone.indexer.scopes import ClassScope, External, ModuleNode, Resolved, Scope
 from diffcone.indexer.syntax import BUILTIN_NAMES, _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
 from diffcone.model import (
@@ -152,6 +168,10 @@ ARGUMENT_MUTATORS = frozenset(
 
 # Slot of the receiver in a pass record.
 RECEIVER = "self"
+# A pass record's ``held:<class id>|<what>``: ``<what>`` handed on as what a
+# fresh instance of the class holds of its constructor's arguments
+# (references.HELD; audit round 6, T23).
+HELD_WHAT = "held:"
 # A pass record's callee ``@<class id>.<attribute>``: the method of that name
 # of whatever ``self.<attribute>`` holds in a method of the class.
 HELD_BY = "@"
@@ -283,11 +303,41 @@ def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0)
     return symbol.id
 
 
-def _write(collector: _ReferenceCollector, expr: ast.expr) -> None:
-    """``expr`` (or what it holds) is changed in place."""
+def _write(collector: _ReferenceCollector, expr: ast.expr, how: str = "*") -> None:
+    """``expr`` (or what it holds) is changed in place. ``how`` (as
+    ``param_flavors`` says) holds when ``expr`` is the parameter itself:
+    through an item or an attribute of it, it is ``*``."""
     param = _param_of(collector, expr)
     if param is not None:
-        collector.indexer.out.param_writes.add((collector.source, param))
+        out = collector.indexer.out
+        out.param_writes.add((collector.source, param))
+        flavor = how if _whole_param(collector, expr) else "*"
+        out.param_flavors.add((collector.source, param, flavor))
+
+
+def _instance_what(what: str) -> bool:
+    """An instance of an in-scope class, or one a constructor was handed
+    (``held:<class>|instance:...``), as ``_handed_state`` names it."""
+    if what.startswith(HELD_WHAT):
+        what = what.partition("|")[2]
+    return what.startswith("instance:")
+
+
+def _whole_param(collector: _ReferenceCollector, expr: ast.expr) -> bool:
+    """``expr`` is a parameter of the function itself (or a local bound once
+    to one), not an item or attribute of it."""
+    if not isinstance(expr, ast.Name):
+        return False
+    if _own_param(collector, expr.id) is not None:
+        return True
+    if expr.id in collector.scope.locals:
+        source = collector._local_source(expr.id)
+        return (
+            isinstance(source, ast.Name)
+            and source.id != expr.id
+            and _own_param(collector, source.id) is not None
+        )
+    return False
 
 
 def _state_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
@@ -365,7 +415,8 @@ def observe_assign(collector: _ReferenceCollector, targets: list[ast.expr]) -> N
             if isinstance(sub, (ast.Subscript, ast.Attribute)) and not isinstance(
                 sub.ctx, ast.Load
             ):
-                _write(collector, sub.value)
+                how = f"={sub.attr}" if isinstance(sub, ast.Attribute) else "*"
+                _write(collector, sub.value, how)
                 _store(collector, sub.value)
 
 
@@ -374,7 +425,10 @@ def observe_augassign(collector: _ReferenceCollector, node: ast.AugAssign) -> No
     augmented item or attribute."""
     target = node.target
     receiver = target.value if isinstance(target, (ast.Subscript, ast.Attribute)) else target
-    _write(collector, receiver)
+    how = "*"
+    if isinstance(target, ast.Attribute) and collector._immutable_typed(node.value, target):
+        how = f"+{target.attr}"  # ``p.n += 1``: in place only if ``n`` may be mutable
+    _write(collector, receiver, how)
     _store(collector, receiver)
 
 
@@ -397,14 +451,19 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         )
     ):
         first = node.args[0]
-        _write(collector, first)
+        how = "*"
+        if parts[-1] in ("setattr", "delattr", "__setattr__", "__delattr__"):
+            names = collector.scope.string_candidates(node.args[1]) if len(node.args) > 1 else None
+            how = f"={names[0]}" if names is not None and len(names) == 1 else "=*"
+        _write(collector, first, how)
         _dict_receiver(collector, first)
         if not isinstance(first, ast.Starred):
             collector._mutation_target(first)  # a module variable: ``heappush(QUEUE, x)``
             _store(collector, first)
     if isinstance(func, ast.Attribute):
         if func.attr in CONTAINER_MUTATORS or func.attr in ("__setattr__", "__delattr__"):
-            _write(collector, func.value)
+            how = "=*" if func.attr in ("__setattr__", "__delattr__") else "*"
+            _write(collector, func.value, how)
             _dict_receiver(collector, func.value)
             _store(collector, func.value)
         else:
@@ -430,26 +489,32 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         if kw.arg is not None:
             passes.append((f"={kw.arg}", kw.value))
     handed: list[tuple[str, str]] = []  # (slot, what)
+    whole: set[tuple[str, str]] = set()  # a parameter itself handed on (T23)
     for slot, expr in passes:
         what = _handed(collector, expr)
         if what is not None:
             handed.append((slot, what))
+            if what.startswith("param:") and _whole_param(collector, expr):
+                whole.add((slot, what))
         else:  # through a name bound to part of it, a class (audit round 6, T6, T7)
             handed += [(slot, w) for w in collector._handed_state(expr)]
     if isinstance(func, ast.Attribute) and func.attr not in CONTAINER_MUTATORS:
         what = _handed(collector, func.value, modules=False)
         if what is not None:
             handed.append((RECEIVER, what))
+            if what.startswith("param:") and _whole_param(collector, func.value):
+                whole.add((RECEIVER, what))
         else:
             # Not an instance of an in-scope class: the method's own writes
-            # of ``self`` reach the state its class holds (T21, T22).
+            # of ``self`` reach the state its class holds (T21, T22), and
+            # those of an instance a constructor was handed (T23).
             handed += [
                 (RECEIVER, w)
                 for w in collector._handed_state(func.value, True)
-                if not w.startswith("instance:")
+                if not _instance_what(w)
             ]
     if not handed:
-        return
+        return  # (an instance's constructor is handed nothing its arguments are not)
     name = func.attr if isinstance(func, ast.Attribute) else (parts[-1] if parts else "")
     if not name:
         return
@@ -470,6 +535,13 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
                 bound = True
                 if not callees:
                     return  # no in-scope constructor: nothing of ours runs
+                # The new instance is the initialiser's ``self``: what it
+                # holds of the arguments is written when the initialiser
+                # changes ``self`` in place (``self.rules[k] = v``; T23).
+                for w in collector._handed_state(node):
+                    if w.startswith(HELD_WHAT) and not _instance_what(w):
+                        handed.append((RECEIVER, w))
+                        whole.add((RECEIVER, w))
             elif symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 callees.append(symbol.id)
                 callees += [o for o, detail in target.overrides if not detail]
@@ -497,6 +569,8 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
     for slot, what in handed:
         for callee in callees or [""]:
             out.add((collector.source, what, callee, name, slot, bound))
+            if (slot, what) in whole:
+                indexer.out.whole_passes.add((collector.source, what, callee, name, slot, bound))
     for slot, expr in passes:
         held = _held_attr(collector, expr)
         if held:
@@ -681,6 +755,7 @@ def apply_writes(indexer: Resolver) -> None:
     params = out.func_params
     writes: set[tuple[str, str]] = set(out.param_writes)
     if not writes:
+        _apply_held_binds(indexer, _HeldSafety(indexer))
         return
     symbols = indexer.index.symbols
     by_name: dict[str, list[str]] = defaultdict(list)
@@ -762,6 +837,12 @@ def apply_writes(indexer: Resolver) -> None:
             return sorted(set(found))
         if callee:
             return [callee]
+        if slot == RECEIVER and what.startswith("attr:"):
+            # A literal table nothing changes: its methods and its items'
+            # are builtins' (T24).
+            attr, _, cls = what[len("attr:") :].partition(":")
+            if literal_table(cls, attr):
+                return []
         if slot == RECEIVER and what.startswith("var:"):
             variable = symbols.get(what[4:])
             if variable is not None:
@@ -782,6 +863,101 @@ def apply_writes(indexer: Resolver) -> None:
                         found.append(hit.symbol)
                 return found
         return by_name.get(name, [])
+
+    # What may change a class attribute in place: a write of it pass 2
+    # records, its module's top-level code, and (whatever the callee does)
+    # any call it is handed to other than as the receiver of a method, or
+    # as what a constructor was handed.
+    tables_written = {(c, a) for c, a, _ in out.attr_value_writes} | out.own_class_writes
+    for record in passes:
+        what = record[1]
+        if what.startswith(HELD_WHAT):
+            what = what.partition("|")[2]
+        elif record[4] == RECEIVER:
+            continue
+        if what.startswith("attr:"):
+            attr, _, cls = what[len("attr:") :].partition(":")
+            tables_written.add((cls, attr))
+    for _, _, _, kind, first, second in out.held_binds:
+        if kind == "attribute":
+            tables_written.add((first, second))
+    classes_written = {e.source for e in indexer.index.edges if e.detail == MUTATED_BY}
+    classes_written |= {state for state, _ in out.value_writes}
+    classes_written |= {state for state, _ in out.receiver_writes}
+    # What is decided only below or after this function counts as written
+    # however it ends: a class (or an instance of it, which reads the table
+    # through the class) handed to a call other than as a method's receiver,
+    # or held by an instance its constructor was handed, an instance of it
+    # written in place, and a class, an instance or a class attribute some
+    # function returns and some code writes into (Indexer._result_writes).
+    classes_written |= {cls for cls, _, _ in out.instance_writes}
+    for record in passes:
+        what, held = record[1], record[1].startswith(HELD_WHAT)
+        if held:
+            what = what.partition("|")[2]
+        elif record[4] == RECEIVER:
+            continue
+        if what.startswith("var:"):
+            classes_written.add(what[len("var:") :])
+        elif what.startswith("instance:"):
+            classes_written.add(what.rpartition(":")[2])
+    returned: dict[str, set[str]] = defaultdict(set)
+    for function, root in out.state_returns:
+        returned[function].add(root)
+    stack = sorted({callee for _, callee, _ in out.result_writes})
+    stack += [first for *_, kind, first, _ in out.held_binds if kind == "result"]
+    seen_results: set[str] = set()
+    written_returns: set[str] = set()
+    while stack:  # what a call whose result is written in place returns
+        function = stack.pop()
+        if function in seen_results:
+            continue
+        seen_results.add(function)
+        for root in returned.get(function, ()):
+            if root.startswith("<result>:"):
+                stack.append(root[len("<result>:") :])
+            else:
+                written_returns.add(root)
+    for root in sorted(written_returns):
+        if root.startswith("<attr>:"):
+            attr, _, cls = root[len("<attr>:") :].partition(":")
+            tables_written.add((cls, attr))
+        elif root.startswith(("<fresh>:", "<instance>")):
+            classes_written.add(root.rpartition(":")[2])
+        else:
+            classes_written.add(root)
+    table_cache: dict[tuple[str, str], bool] = {}
+
+    def literal_table(cls: str, attr: str) -> bool:
+        """Whether class ``cls``'s attribute ``attr`` is a literal table
+        (``ClassScope.tables``) nothing may change or bind anew: every class
+        of its MRO kept and in scope, no class of its family written as a
+        whole, storing the attribute or changing it in place, or customising
+        attribute reads."""
+        key = (cls, attr)
+        if key not in table_cache:
+            cscope = indexer.class_scopes.get(cls)
+            found = cscope is not None and attr in cscope.tables
+            if found:
+                for c in indexer._mro(cls):
+                    base = indexer.class_scopes.get(c)
+                    if base is None or not base.kept or base.external_base:
+                        found = False
+            if found:
+                family = {
+                    c for d in (cls, *indexer._descendants.get(cls, ())) for c in indexer._mro(d)
+                }
+                for c in sorted(family):
+                    member = indexer.class_scopes[c]
+                    if (
+                        c in classes_written
+                        or (c, attr) in tables_written
+                        or (c, "*") in tables_written
+                        or "__getattribute__" in member.members.keys() | member.bindings
+                    ):
+                        found = False
+            table_cache[key] = found
+        return table_cache[key]
 
     attribute_cache: dict[tuple[str, str], list[str] | None] = {}
 
@@ -820,14 +996,43 @@ def apply_writes(indexer: Resolver) -> None:
                 return True
         return False
 
+    # How each written parameter is written (``param_flavors``): a parameter
+    # handed itself on is written as the callee writes its own, one handed
+    # on in part (an item, an attribute) in place (``*``; T23).
+    flavors: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for function, param, how in out.param_flavors:
+        flavors[(function, param)].add(how)
+    whole = out.whole_passes
+
+    def written_flavors(record: Pass) -> set[str] | None:
+        """How the callees of ``record`` write what it hands them; None when
+        none writes it."""
+        _, _, _, _, slot, bound = record
+        found: set[str] | None = None
+        for callee in callees(record):
+            param = slot_param(callee, slot, bound)
+            if param is not None and (callee, param) in writes:
+                found = (found or set()) | (flavors.get((callee, param)) or {"*"})
+        return found
+
     param_passes = [p for p in passes if p[1].startswith("param:")]
     changed = True
     while changed:
         changed = False
         for record in param_passes:
             key = (record[0], record[1][len("param:") :])
-            if key not in writes and writes_through(record):
+            if key in writes and "*" in flavors[key]:
+                continue  # written every way already
+            how = written_flavors(record)
+            if how is None:
+                continue
+            if key not in writes:
                 writes.add(key)
+                changed = True
+            if record not in whole:
+                how = {"*"}
+            if not how <= flavors[key]:
+                flavors[key] |= how
                 changed = True
 
     def resolved_callees(record: Pass) -> list[str]:
@@ -865,8 +1070,59 @@ def apply_writes(indexer: Resolver) -> None:
     for symbol in symbols.values():
         if symbol.kind == SymbolKind.VARIABLE:
             module_variables[symbol.module].append(symbol.id)
+    safe = _HeldSafety(indexer)
+
+    def handed_written(caller: str, what: str, receiver: bool) -> None:
+        """What a written parameter was handed is changed: an instance of an
+        in-scope class (or part of one), what a class attribute holds, a
+        module variable or class."""
+        if what.startswith("instance:"):
+            # An instance of an in-scope class (or part of one) handed to a
+            # written parameter: a write of the state its class holds, if
+            # any (Indexer._value_writes; audit round 6, T22).
+            how, _, cls = what[len("instance:") :].partition(":")
+            symbol = symbols.get(cls)
+            if symbol is not None and caller not in (cls, symbol.module):
+                out.instance_writes.add((cls, caller, how))
+            return
+        if what.startswith("attr:"):
+            # What a class attribute holds (Indexer._class_attribute_writes; T24).
+            attr, _, cls = what[len("attr:") :].partition(":")
+            symbol = symbols.get(cls)
+            if symbol is not None and caller not in (cls, symbol.module):
+                out.attr_value_writes.add((cls, attr, caller))
+            return
+        if not what.startswith("var:"):
+            return
+        variable = what[len("var:") :]
+        symbol = symbols.get(variable)
+        if symbol is None or caller in (variable, symbol.module):
+            # A module's own top-level statements naming the variable are
+            # part of its hash already (a class among them may have an
+            # attribute bound anew: Indexer._class_attribute_writes).
+            if symbol is not None and symbol.kind == SymbolKind.CLASS and caller != variable:
+                out.own_class_writes.add((variable, "*"))
+            return
+        # What the variable holds is written: no edge if it cannot be
+        # (Indexer._value_writes). As the receiver of a method that writes
+        # ``self``, what the method writes of state its class holds is an
+        # edge of the class already (audit round 6, T21).
+        if receiver:
+            out.receiver_writes.add((variable, caller))
+        else:
+            out.value_writes.add((variable, caller))
+
     for record in passes:
         caller, what = record[0], record[1]
+        if what.startswith(HELD_WHAT):
+            # What a fresh instance holds of its constructor's arguments:
+            # written unless the callee only binds attributes of the instance
+            # (that run no code of its class) or augments immutable ones (T23).
+            cls, _, inner = what[len(HELD_WHAT) :].partition("|")
+            how = written_flavors(record)
+            if how is not None and safe.writes(cls, how):
+                handed_written(caller, inner, False)
+            continue
         if what.startswith("module:"):
             # A module handed to a written parameter: any of its variables
             # (and its submodules') may be what the callee writes.
@@ -880,33 +1136,113 @@ def apply_writes(indexer: Resolver) -> None:
                                     Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY)
                                 )
             continue
-        if what.startswith("instance:"):
-            # An instance of an in-scope class (or part of one) handed to a
-            # written parameter: a write of the state its class holds, if
-            # any (Indexer._value_writes; audit round 6, T22).
-            how, _, cls = what[len("instance:") :].partition(":")
-            symbol = symbols.get(cls)
-            if symbol is not None and caller not in (cls, symbol.module):
-                if writes_through(record):
-                    out.instance_writes.add((cls, caller, how))
-            continue
-        if not what.startswith("var:"):
-            continue
-        variable = what[len("var:") :]
-        symbol = symbols.get(variable)
-        if symbol is None or caller in (variable, symbol.module):
-            # A module's own top-level statements naming the variable are
-            # part of its hash already.
-            continue
         if writes_through(record):
-            # What the variable holds is written: no edge if it cannot be
-            # (Indexer._value_writes). As the receiver of a method that
-            # writes ``self``, what the method writes of state its class
-            # holds is an edge of the class already (audit round 6, T21).
-            if record[4] == RECEIVER:
-                out.receiver_writes.add((variable, caller))
-            else:
-                out.value_writes.add((variable, caller))
+            handed_written(caller, what, record[4] == RECEIVER)
+    _apply_held_binds(indexer, safe)
+
+
+def _apply_held_binds(indexer: Resolver, safe: _HeldSafety) -> None:
+    """An attribute bound on a fresh instance: what its constructor was
+    handed changes only when binding runs code of the class (T23). Decided
+    whether or not any function writes a parameter."""
+    out = indexer.out
+    for cls, attr, writer, kind, first, second in sorted(out.held_binds):
+        if safe.writes(cls, {f"={attr}"}):
+            apply_fact(out, writer, (kind, first, second))
+
+
+class _HeldSafety:
+    """Whether writes into a fresh instance of an in-scope class change
+    nothing its constructor was handed (audit round 6, T23): the instance
+    is a new object (no class of its family defines ``__new__``, has a
+    decorator other than an inert one, a metaclass other than
+    ``abc.ABCMeta`` (``ClassScope.kept``) or a base outside the source roots
+    that may give back something else), and every write only binds an attribute of
+    the instance itself (``=<attr>``), other than a special one
+    (``__dict__``, ``__class__``), that runs no code of the class (no
+    ``__setattr__``/``__delattr__``, no class-level member or binding of
+    that name, which may be a descriptor, other than an immutable value),
+    or augments one (``+<attr>``) whose every value is of a builtin type
+    that cannot change in place (no store of the attribute, on any
+    receiver of unknown type or an instance of the family, binds anything
+    else, ``attr_values``). A change in place of the instance (``*``) may
+    run its methods, which may change anything it holds."""
+
+    def __init__(self, indexer: Resolver) -> None:
+        self.indexer = indexer
+        self.values: dict[str, set[tuple[str, bool]]] = defaultdict(set)
+        for owner, attr, ok in indexer.out.attr_values:
+            self.values[attr].add((owner, ok))
+        self._family: dict[str, set[str] | None] = {}
+
+    def family(self, cls: str) -> set[str] | None:
+        """The family of ``cls`` (its MRO and its in-scope subclasses'), or
+        None when one of them may make or customise the instance."""
+        if cls not in self._family:
+            indexer = self.indexer
+            found: set[str] | None = set()
+            for c in (cls, *indexer._descendants.get(cls, ())):
+                found.update(indexer._mro(c))
+            for c in sorted(found):
+                cscope = indexer.class_scopes.get(c)
+                names = cscope.members.keys() | cscope.bindings if cscope is not None else set()
+                if (
+                    cscope is None
+                    or not cscope.kept
+                    or cscope.external_base
+                    or names & _INSTANCE_HOOKS
+                ):
+                    found = None
+                    break
+            self._family[cls] = found
+        return self._family[cls]
+
+    def writes(self, cls: str, how: set[str]) -> bool:
+        """Whether writes ``how`` (``param_flavors``) into a fresh instance
+        of ``cls`` may change what its constructor was handed."""
+        if "*" in how:
+            return True
+        family = self.family(cls)
+        if family is None:
+            return True
+        class_scopes = self.indexer.class_scopes
+        for flavor in sorted(how):
+            attr = flavor[1:]
+            if attr == "*" or (attr.startswith("__") and attr.endswith("__")):
+                # A computed name, or a special attribute: ``__dict__`` bound
+                # to what it was handed makes every later binding a write
+                # into it, ``__class__`` may give it any class's hooks.
+                return True
+            for c in family:
+                cscope = class_scopes[c]
+                if attr in cscope.members or attr in _class_values(cscope):
+                    return True
+            if flavor.startswith("+"):
+                # What the attribute may hold: a store of it, or under any
+                # name, binding a value that may change in place, or a
+                # class-level value (a descriptor's ``__get__`` may store into
+                # the instance's ``__dict__``).
+                owners = family | {""}
+                for name in (attr, "*"):
+                    if any(not ok and owner in owners for owner, ok in self.values.get(name, ())):
+                        return True
+                if any(_class_values(class_scopes[c]) for c in family):
+                    return True
+        return False
+
+
+def _class_values(cscope: ClassScope) -> set[str]:
+    """The names a class body binds to a value that may be a descriptor or
+    change in place: not a function, an only annotated name or an immutable
+    value (``_HeldSafety``)."""
+    return cscope.bindings - cscope.declared - (cscope.immutables or {}).keys()
+
+
+# Special methods that make an instance or run on an attribute bound on it,
+# or read one (``__getattribute__``, ``__getattr__``: an augmented attribute).
+_INSTANCE_HOOKS = frozenset(
+    {"__new__", "__setattr__", "__delattr__", "__getattribute__", "__getattr__"}
+)
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

@@ -1112,6 +1112,450 @@ def test_t22_a_write_into_a_fresh_instance_reaches_the_state_its_class_holds(rep
     assert _state_plan(repo, *FRESH_SOUND[case]) == STATE_SELECTED
 
 
+# A class attribute bound once to a value that cannot change in place (a
+# string, a number, a tuple of them) holds nothing a write reaches, as a
+# module constant does (T20): a constructor handed ``TimeDelta.DAYS``, or a
+# local taken from ``min(m, self._N)``, writes no state of the class
+# (audit round 6, T24).
+FIELDS = (
+    "import abc\nfrom typing import Literal, cast\n\nUNITS = Literal['d', 's']\n\n\n"
+    "class Field(metaclass=abc.ABCMeta):\n    errors = {{'invalid': 'bad'}}\n\n"
+    "    def __init__(self, unit='s'):\n        self.unit = unit\n\n"
+    "    def load(self, v):\n        self.last = v\n        return v\n\n\n"
+    "class TimeDelta(Field):\n    DAYS = 'days'\n    LIMITS = (1, 2)\n    _N = 12\n"
+    "    errors = {{'invalid': 'bad period'}}\n{body}\n\n"
+    "def peek(k):\n    return TimeDelta.errors, TimeDelta.DAYS, UNITS\n"
+)
+FIELDS_LIB = (
+    "from typing import cast\n\nfrom pkg.state import UNITS, TimeDelta\n\n\ndef fill(k):\n{}"
+)
+# An in-scope ``format`` that writes its receiver: a method of that name
+# called on a value of unknown type may be it.
+OUT = "\n\nclass Out:\n    def format(self, v):\n        self.v = v\n"
+COUNT = (
+    "    def count(self, m):\n        if m == 'x':\n            m += 1\n"
+    "        m = min(m, self._N)\n"
+)
+IMMUTABLE_CLASS_ATTRIBUTES = {
+    "handed to the constructor": (
+        FIELDS.format(body=""),
+        FIELDS_LIB.format("    f = TimeDelta(TimeDelta.DAYS)\n    f.load('x')\n"),
+    ),
+    "through a local": (
+        FIELDS.format(body=""),
+        FIELDS_LIB.format("    u = TimeDelta.DAYS\n    f = TimeDelta(u)\n    f.load('x')\n"),
+    ),
+    "a tuple of them": (
+        FIELDS.format(body=""),
+        FIELDS_LIB.format("    f = TimeDelta(TimeDelta.LIMITS)\n    f.load('x')\n"),
+    ),
+    "a local augmented after min() of one": (
+        FIELDS.format(body="\n" + COUNT + "        return m\n"),
+        FIELDS_LIB.format("    TimeDelta().count(1)\n"),
+    ),
+    "the target of typing.cast": (
+        FIELDS.format(body=""),
+        FIELDS_LIB.format("    g = cast(UNITS, k)\n    g += 'x'\n    return g\n"),
+    ),
+    "another attribute bound by the module's own code": (
+        FIELDS.format(body="") + "\n\nTimeDelta.EXTRA = []\n",
+        FIELDS_LIB.format("    f = TimeDelta(TimeDelta.DAYS)\n    f.load('x')\n"),
+    ),
+    "a method of an item of a literal table": (
+        FIELDS.format(body=""),
+        FIELDS_LIB.format("    return TimeDelta.errors['invalid'].format('x')\n") + OUT,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(IMMUTABLE_CLASS_ATTRIBUTES))
+def test_t24_an_immutable_class_attribute_roots_nothing(repo, case):
+    """``fields.TimeDelta(fields.TimeDelta.DAYS)`` (marshmallow) and then a
+    method binding the instance's attribute, or ``m = min(m,
+    self._MONTHS_PER_YEAR); m += 1`` (arrow), change nothing ``TimeDelta``
+    holds: the readers of the class are not selected. ``cast(T, x)`` is
+    ``x``, not ``T``; the module's own code binding another attribute
+    (``Arrow.min = ...``) binds no ``DAYS``; a method called on an item of a
+    table of literals nothing changes (``timeframes[k].format(n)``) is a
+    builtin's."""
+    assert _state_plan(repo, *IMMUTABLE_CLASS_ATTRIBUTES[case]) == {"tests/test_a.py::test_a"}
+
+
+REBIND = "\n\ndef rebind():\n    {}\n"
+MAY_CHANGE = {
+    "a mutable class attribute": (
+        FIELDS.format(body="    UNITS = []\n"),
+        FIELDS_LIB.format("    f = TimeDelta(TimeDelta.UNITS)\n    f.unit.append('x')\n"),
+    ),
+    "a mutable class attribute handed to a writer": (
+        FIELDS.format(body="    UNITS = []\n"),
+        FIELDS_LIB.format("    _add(TimeDelta.UNITS)\n") + "\n\ndef _add(d):\n    d.append('x')\n",
+    ),
+    "bound anew by other code": (
+        FIELDS.format(body="") + REBIND.format("TimeDelta.DAYS = []"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound anew through setattr": (
+        FIELDS.format(body="") + REBIND.format("setattr(TimeDelta, 'DAYS', [])"),
+        FIELDS_LIB.format("    d = TimeDelta.DAYS\n    d.append('x')\n"),
+    ),
+    "bound anew by the module's own code": (
+        FIELDS.format(body="") + "\n\nTimeDelta.DAYS = []\n",
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound anew through cls in a base's classmethod": (
+        FIELDS.format(body="").replace(
+            "    def load(self, v):",
+            "    @classmethod\n    def reset(cls):\n        cls.DAYS = []\n\n"
+            "    def load(self, v):",
+        ),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound anew through type() of an instance": (
+        FIELDS.format(body="") + REBIND.format("type(TimeDelta()).DAYS = []"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound anew through a class handed to a function": (
+        FIELDS.format(body="")
+        + "\n\ndef _reset(c):\n    c.DAYS = []\n"
+        + REBIND.format("_reset(TimeDelta)"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound twice in the class body": (
+        FIELDS.format(body="    if UNITS:\n        DAYS = []\n"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "another class attribute's object": (
+        FIELDS.format(body="    UNITS = []\n    DAYS = UNITS\n").replace("    DAYS = 'days'\n", ""),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "a decorated class": (
+        FIELDS.format(body="").replace(
+            "class TimeDelta(Field):",
+            "def keep(c):\n    return c\n\n\n@keep\nclass TimeDelta(Field):",
+        ),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "a metaclass of the project": (
+        FIELDS.format(body="").replace(
+            "class Field(metaclass=abc.ABCMeta):",
+            "class Meta(type):\n    pass\n\n\nclass Field(metaclass=Meta):",
+        ),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "an enum member": (
+        "import enum\n\n\nclass Color(enum.Enum):\n    RED = 'r'\n\n\n"
+        "def peek(k):\n    return Color.RED.label\n",
+        "from pkg.state import Color\n\n\ndef fill(k):\n    c = Color.RED\n    c.label = 'x'\n",
+    ),
+    "read through self in a method": (
+        FIELDS.format(
+            body="    UNITS = []\n\n    def put(self, v):\n        self.UNITS.append(v)\n"
+        ),
+        FIELDS_LIB.format("    TimeDelta().put('x')\n"),
+    ),
+    "a method of an item of a table holding an object": (
+        FIELDS.format(body="")
+        .replace("    errors = {'invalid': 'bad period'}", "    errors = {'invalid': Out()}")
+        .replace("\n\nclass Field", OUT + "\n\nclass Field"),
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a method of an item of a literal table written elsewhere": (
+        FIELDS.format(body="") + REBIND.format("TimeDelta.errors['invalid'] = Out()") + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a method of an item of a literal table handed to a function": (
+        FIELDS.format(body="")
+        + "\n\ndef _put(d):\n    d['invalid'] = Out()\n"
+        + REBIND.format("_put(TimeDelta.errors)")
+        + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table a subclass binds anew": (
+        FIELDS.format(body="")
+        + "\n\nclass Days(TimeDelta):\n    pass\n"
+        + REBIND.format("Days.errors = {'invalid': Out()}")
+        + OUT,
+        FIELDS_LIB.replace("TimeDelta\n", "TimeDelta\nfrom pkg.state import Days\n").format(
+            "    Days.errors['invalid'].format('x')\n"
+        ),
+    ),
+    "a literal table its module's own code changes": (
+        FIELDS.format(body="") + OUT + "\n\nTimeDelta.errors['invalid'] = Out()\n",
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table changed through the class handed to a function": (
+        FIELDS.format(body="")
+        + "\n\ndef _put(c):\n    c.errors['invalid'] = Out()\n"
+        + REBIND.format("_put(TimeDelta)")
+        + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table changed through an instance": (
+        FIELDS.format(body="") + REBIND.format("TimeDelta().errors['invalid'] = Out()") + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table changed through an instance handed to a function": (
+        FIELDS.format(body="")
+        + "\n\ndef _put(f):\n    f.errors['invalid'] = Out()\n"
+        + REBIND.format("_put(TimeDelta())")
+        + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table changed through what a function returns": (
+        FIELDS.format(body="")
+        + "\n\ndef _get():\n    return TimeDelta.errors\n"
+        + REBIND.format("_get()['invalid'] = Out()")
+        + OUT,
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "a literal table changed through what a function returns, at import": (
+        FIELDS.format(body="")
+        + OUT
+        + "\n\ndef _get():\n    return TimeDelta.errors\n\n\n_get()['invalid'] = Out()\n",
+        FIELDS_LIB.format("    TimeDelta.errors['invalid'].format('x')\n"),
+    ),
+    "bound anew through what a function returns, at import": (
+        FIELDS.format(body="") + "\n\ndef _cls():\n    return TimeDelta\n\n\n_cls().DAYS = []\n",
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+    "bound anew through __class__ of an instance": (
+        FIELDS.format(body="") + REBIND.format("TimeDelta().__class__.DAYS = []"),
+        FIELDS_LIB.format("    TimeDelta.DAYS.append('x')\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(MAY_CHANGE))
+def test_t24_a_class_attribute_that_may_change_keeps_its_writers(repo, case):
+    """The bounds of the rule above: a class attribute holding a container,
+    or one some code (another module's, a classmethod's ``cls``,
+    ``type(obj)``, the class handed to a function, the module's own
+    top-level code, the class body itself) may bind anew, a decorated class
+    or one a metaclass of the project makes, an enum member, and a table
+    holding an object or one some code (a function it is handed to, a
+    subclass bound anew) may change are state a write reaches."""
+    assert _state_plan(repo, *MAY_CHANGE[case]) == STATE_SELECTED
+
+
+# What a constructor is handed is part of the new instance (T7), but binding
+# an attribute of the instance (``self.position = 0``, ``self.next_token =
+# tok``), or augmenting one whose every value is an immutable of a builtin
+# type (``self.position += len(text)``), changes nothing the instance holds:
+# ``Tokenizer(source, rules=RULES)`` handed to a parser whose methods only do
+# that writes no ``RULES`` (packaging; audit round 6, T23).
+INIT = (
+    "    def __init__(self, source, rules):\n        self.source = source\n"
+    "        self.rules = rules\n        self.position = 0\n        self.next_token = None\n"
+)
+TOKENIZER = (
+    "RULES = {{'x': 1}}\n\n\nclass Tokenizer:\n{extra}{init}\n"
+    "    def read(self):\n        token = self.next_token\n"
+    "        self.position += len(self.source)\n        self.next_token = None\n"
+    "        return token\n\n"
+    "    def poke(self, v):\n        self.rules[v] = 1\n\n\n"
+    "def peek(k):\n    return RULES.get(k)\n"
+)
+TOKENIZER_LIB = (
+    "from pkg.state import RULES, Tokenizer\n\n\n"
+    "def fill(k):\n    tok = Tokenizer('x', rules=RULES)\n{}"
+    "\n\ndef _parse(tokenizer):\n    tokenizer.read()\n"
+    "\n\ndef _mark(t):\n    t.seen = True\n"
+    "\n\ndef _poke(t):\n    t.rules['x'] = 2\n"
+)
+NOTHING_HANDED_WRITTEN = {
+    "a parser reading the tokenizer": TOKENIZER_LIB.format("    _parse(tok)\n"),
+    "an attribute bound by the caller": TOKENIZER_LIB.format("    tok.position = 1\n"),
+    "an attribute bound by a callee": TOKENIZER_LIB.format("    _mark(tok)\n"),
+    "computed names stored on parameters and modules elsewhere": "import sys\n\n"
+    + TOKENIZER_LIB.format("    _parse(tok)\n")
+    + "\n\ndef _tag(f, name):\n    setattr(f, name, RULES)\n    vars(f)[name] = RULES\n"
+    + "    setattr(sys, name, RULES)\n"
+    + "\n\ndef _attributes(**attrs):\n    def deco(func):\n        for n, v in attrs.items():\n"
+    + "            setattr(func, n, v)\n        return func\n\n    return deco\n",
+}
+
+
+@pytest.mark.parametrize("case", list(NOTHING_HANDED_WRITTEN))
+def test_t23_binding_attributes_of_an_instance_writes_nothing_it_was_handed(repo, case):
+    """``Tokenizer(source, rules=RULES)`` and then the instance's own
+    attributes bound or augmented with an ``int`` (computed names stored
+    elsewhere on a parameter or a module bind nothing on it): the readers
+    of ``RULES`` are not selected."""
+    lib = NOTHING_HANDED_WRITTEN[case]
+    state = TOKENIZER.format(extra="", init=INIT)
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
+ORDERED = "    def __lt__(self, other):\n        return self.position < other.position\n\n"
+
+
+def test_t23_a_class_functools_orders_is_made_as_its_body_says(repo):
+    """``@functools.total_ordering`` gives back the class itself, adding
+    comparisons: binding the instance's attributes, in ``__init__`` or
+    after, writes nothing it was handed (packaging's ``BoundaryVersion(v,
+    BoundaryKind.AFTER_POSTS)``)."""
+    state = TOKENIZER.format(extra=ORDERED, init=INIT).replace(
+        "class Tokenizer:", "@functools.total_ordering\nclass Tokenizer:"
+    )
+    state = "import functools\n\n" + state
+    lib = TOKENIZER_LIB.format("    _parse(tok)\n")
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
+SETTER = "    @property\n    def pos(self):\n        return self.rules\n\n" + (
+    "    @pos.setter\n    def pos(self, v):\n        self.rules['p'] = v\n\n"
+)
+OWN_INIT = "    def __init__(self, source, rules):\n{}"
+HANDED_WRITTEN = {
+    "a write through the attribute": ("", TOKENIZER_LIB.format("    tok.rules['x'] = 2\n")),
+    "a method writing through it": ("", TOKENIZER_LIB.format("    tok.poke('x')\n")),
+    "a callee writing through it": ("", TOKENIZER_LIB.format("    _poke(tok)\n")),
+    "the attribute handed to a writer": (
+        "",
+        TOKENIZER_LIB.format("    _add(tok.rules)\n") + "\n\ndef _add(d):\n    d['x'] = 2\n",
+    ),
+    "the instance written in place": (
+        "    def __setitem__(self, k, v):\n        self.rules[k] = v\n\n",
+        TOKENIZER_LIB.format("    tok['x'] = 2\n"),
+    ),
+    "the initialiser writing it": (
+        OWN_INIT.format("        self.rules = rules\n        self.rules['k'] = 2\n"),
+        "from pkg.state import RULES, Tokenizer\n\n\ndef fill(k):\n    Tokenizer('x', RULES)\n",
+    ),
+    "stored in a container": (
+        OWN_INIT.format("        self.parts = [rules]\n"),
+        TOKENIZER_LIB.format("    tok.parts[0]['x'] = 2\n"),
+    ),
+    "handed to a base initialiser": (
+        OWN_INIT.format("        super().__init__(rules)\n"),
+        TOKENIZER_LIB.format("    tok.kept['x'] = 2\n"),
+    ),
+    "stored under a computed name": (
+        OWN_INIT.format("        setattr(self, source, rules)\n"),
+        TOKENIZER_LIB.format("    getattr(tok, 'x')['k'] = 2\n"),
+    ),
+    "stored through __dict__": (
+        OWN_INIT.format("        self.__dict__.update(r=rules)\n"),
+        TOKENIZER_LIB.format("    tok.r['x'] = 2\n"),
+    ),
+    "moved to another attribute": (
+        "    def move(self):\n        self.kept = self.rules\n\n",
+        TOKENIZER_LIB.format("    tok.move()\n    tok.kept['x'] = 2\n"),
+    ),
+    "an attribute that may hold it augmented": (
+        "    def take(self):\n        self.acc = self.rules\n        self.acc += 'x'\n\n",
+        TOKENIZER_LIB.format("    tok.take()\n"),
+    ),
+    "a property setter": (SETTER, TOKENIZER_LIB.format("    tok.pos = 'x'\n")),
+    "a __setattr__ of the class": (
+        "    def __setattr__(self, n, v):\n        object.__setattr__(self, n, v)\n"
+        "        if n == 'seen':\n            self.rules['x'] = v\n\n",
+        TOKENIZER_LIB.format("    _mark(tok)\n"),
+    ),
+    "a __new__ giving back what it was handed": (
+        "    def __new__(cls, source, rules):\n        return rules\n\n",
+        TOKENIZER_LIB.format("    tok.x = 2\n"),
+    ),
+    "a class decorator of the project": (ORDERED, TOKENIZER_LIB.format("    _parse(tok)\n")),
+    "augmented, with a computed name stored on anything": (
+        "",
+        TOKENIZER_LIB.format("    _parse(tok)\n")
+        + "\n\nSLOTS = []\n\n\ndef _anywhere(name):\n    setattr(SLOTS[0], name, RULES)\n",
+    ),
+    "augmented, with a descriptor of the class": (
+        "    cached = Lazy()\n\n",
+        TOKENIZER_LIB.format("    _parse(tok)\n"),
+    ),
+    "returned to a caller writing into it": (
+        "",
+        "from pkg.state import RULES, Tokenizer\n\n\n"
+        "def make(k):\n    return Tokenizer(k, rules=RULES)\n\n\n"
+        "def fill(k):\n    make('x').rules['k'] = 2\n",
+    ),
+    "__dict__ bound to it": (
+        OWN_INIT.format("        self.__dict__ = rules\n"),
+        TOKENIZER_LIB.format("    tok.position = 1\n"),
+    ),
+    "__dict__ bound to it by a method": (
+        "    def adopt(self):\n        self.__dict__ = self.rules\n\n",
+        TOKENIZER_LIB.format("    tok.adopt()\n    _mark(tok)\n"),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(HANDED_WRITTEN))
+def test_t23_a_write_that_may_reach_what_an_instance_was_handed(repo, case):
+    """The bounds of the rule above: a change in place of the instance or of
+    any part of it (through the attribute, a method, a callee, ``tok[k] =
+    v``, the initialiser itself, an attribute the argument was moved to, a
+    container or base the initialiser hands it to, a computed name,
+    ``__dict__``), binding an attribute that runs code of the class (a
+    property setter, ``__setattr__``, a class decorator of the project), an
+    augmented attribute that code storing under computed names on objects
+    of unknown type, or a descriptor of the class, may have bound to the
+    rules, an instance ``__new__`` may give back, or a factory's instance
+    written by its caller writes ``RULES``."""
+    extra, lib = HANDED_WRITTEN[case]
+    init = INIT
+    if extra.startswith("    def __init__"):
+        extra, init = "", extra
+    state = TOKENIZER.format(extra=extra, init=init)
+    if case == "a __new__ giving back what it was handed":
+        state = state.replace(
+            "RULES = {'x': 1}\n", "class Box:\n    pass\n\n\nRULES = Box()\n"
+        ).replace("return RULES.get(k)", "return getattr(RULES, k, None)")
+    if case == "augmented, with a descriptor of the class":
+        # Reading ``tok.cached`` may bind ``position`` to the rules.
+        state = state.replace(
+            "class Tokenizer:",
+            "class Lazy:\n    def __get__(self, inst, owner):\n"
+            "        inst.__dict__['position'] = RULES\n        return 0\n\n\n"
+            "class Tokenizer:",
+        )
+    if case == "a class decorator of the project":
+        # It may give back a class whose ``__setattr__`` writes the rules.
+        state = state.replace(
+            "class Tokenizer:", "def hook(c):\n    return c\n\n\n@hook\nclass Tokenizer:"
+        )
+    if case == "handed to a base initialiser":
+        state = state.replace(
+            "class Tokenizer:",
+            "class Base:\n    def __init__(self, r):\n        self.kept = r\n\n\n"
+            "class Tokenizer(Base):",
+        )
+    assert _state_plan(repo, state, lib) == STATE_SELECTED
+
+
+def test_t23_a_bound_attribute_counts_with_no_parameter_writer_anywhere(repo):
+    """``__new__`` gives back what it was handed, so ``tok.x = 'x'`` binds an
+    attribute of ``RULES``: a write of it even when no function of the
+    project writes a parameter."""
+    state = (
+        "class Box:\n    pass\n\n\nRULES = Box()\n\n\n"
+        "class Tokenizer:\n    def __new__(cls, rules):\n        return rules\n\n\n"
+        "def peek(k):\n    return getattr(RULES, k, None)\n"
+    )
+    lib = (
+        "from pkg.state import RULES, Tokenizer\n\n\n"
+        "def fill(k):\n    tok = Tokenizer(RULES)\n    tok.x = 'x'\n"
+    )
+    assert _state_plan(repo, state, lib) == STATE_SELECTED
+
+
+def test_t23_a_mutable_class_attribute_handed_to_a_constructor(repo):
+    """``Tokenizer(source, rules=Tokenizer.DEFAULT)`` with ``DEFAULT = {}``
+    and a write through ``tok.rules``: a write of the class's state."""
+    state = TOKENIZER.format(extra="    DEFAULT = {}\n\n", init=INIT).replace(
+        "    return RULES.get(k)", "    return Tokenizer.DEFAULT.get(k)"
+    )
+    lib = (
+        "from pkg.state import Tokenizer\n\n\n"
+        "def fill(k):\n    tok = Tokenizer('x', rules=Tokenizer.DEFAULT)\n    tok.rules['x'] = 2\n"
+    )
+    assert _state_plan(repo, state, lib) == STATE_SELECTED
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

@@ -383,6 +383,59 @@ def _module_containers(tree: ast.Module) -> frozenset[str]:
     return frozenset(names)
 
 
+def class_tables(nodes: list[ast.ClassDef]) -> frozenset[str]:
+    """The class attributes a class statement binds exactly once (nothing
+    else in the body binding, deleting, importing or defining the name) to
+    a literal table: a dict, list, set or tuple display of constants and
+    such displays (``timeframes = {"now": "just now", "day": {"past":
+    "{0} ago"}}``). Whether nothing changes one in place is decided after
+    pass 2 (writes.apply_writes; audit round 6, T24)."""
+    if len(nodes) != 1:
+        return frozenset()
+    counts: dict[str, int] = {}
+    tables: set[str] = set()
+    for stmt in iter_scope_statements(nodes[0].body):
+        if isinstance(stmt, (*DEF_NODES, ast.ClassDef)):
+            names = {stmt.name}
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            names = {a.asname or a.name.split(".")[0] for a in stmt.names}
+        elif isinstance(stmt, (ast.Global, ast.Nonlocal)):
+            names = set(stmt.names)
+            for name in names:
+                counts[name] = 2  # never once
+        else:
+            names = _collect_store_names(stmt)
+            if isinstance(stmt, ast.AnnAssign) and stmt.value is None:
+                names = set()  # an annotation binds nothing
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
+        target = None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        if (
+            isinstance(target, ast.Name)
+            and isinstance(value, (ast.Dict, ast.List, ast.Set, ast.Tuple))
+            and _literal_table(value)
+        ):
+            tables.add(target.id)
+    return frozenset(name for name in tables if counts.get(name) == 1)
+
+
+def _literal_table(node: ast.expr | None) -> bool:
+    """A constant, or a display of constants and such displays."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.Dict):
+        return all(k is not None and _literal_table(k) for k in node.keys) and all(
+            _literal_table(v) for v in node.values
+        )
+    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+        return all(_literal_table(e) for e in node.elts)
+    return False
+
+
 def _collect_store_names(stmt: ast.AST) -> set[str]:
     """Names bound by a statement in *its own* scope (nested scopes excluded)."""
     names: set[str] = set()
@@ -824,6 +877,125 @@ def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...]
         if _collect_store_names(stmt):
             return None  # ``for``, ``with``, ``import``, ``+=``: anything
     return tuple(sorted(rests))
+
+
+# The metaclasses a class may name and keep ``class_immutables``: one that
+# leaves the class body's bindings as they are.
+_PLAIN_METACLASSES = frozenset({"abc.ABCMeta"})
+# Class decorators that give back the class itself, adding comparison
+# methods or a marker at most: no binding of the body changes, no hook on
+# making an instance or setting an attribute (``class_kept``).
+_INERT_CLASS_DECORATORS = frozenset(
+    {"functools.total_ordering", "typing.final", "typing_extensions.final"}
+)
+
+
+def class_declared(nodes: list[ast.ClassDef]) -> set[str]:
+    """The names a class body only annotates (``_cache: int | None``, no
+    value), which bind nothing at class level, unless another statement of
+    the body binds them (audit round 6, T23)."""
+    declared: set[str] = set()
+    bound: set[str] = set()
+    for node in nodes:
+        for stmt in iter_scope_statements(node.body):
+            if (
+                isinstance(stmt, ast.AnnAssign)
+                and stmt.value is None
+                and isinstance(stmt.target, ast.Name)
+            ):
+                declared.add(stmt.target.id)
+            elif isinstance(stmt, (*DEF_NODES, ast.ClassDef)):
+                bound.add(stmt.name)
+            elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                bound |= {a.asname or a.name.split(".")[0] for a in stmt.names}
+            elif isinstance(stmt, (ast.Global, ast.Nonlocal)):
+                bound |= set(stmt.names)
+            else:
+                bound |= _collect_store_names(stmt)
+    return declared - bound
+
+
+def class_kept(found: Bindings | None, nodes: list[ast.ClassDef]) -> bool:
+    """Whether the class statement keeps the class as its body and bases
+    make it: one statement, every decorator one of
+    ``_INERT_CLASS_DECORATORS`` and no keyword but a metaclass of
+    ``_PLAIN_METACLASSES``, each named through an import its module binds
+    once (audit round 6, T23/T24). A ``plain`` class is kept."""
+    if len(nodes) != 1:
+        return False
+    node = nodes[0]
+    if not (node.decorator_list or node.keywords):
+        return True
+    if found is None:
+        return False
+    counts, imports, _, declared = found
+    once = {name for name, n in counts.items() if n == 1 and name not in declared}
+    canonical = _ImmutableValue(imports, once, counts, set())._canonical
+    for decorator in node.decorator_list:
+        named = canonical(decorator)
+        if named is None or named[0] not in _INERT_CLASS_DECORATORS:
+            return False
+    for keyword in node.keywords:
+        named = canonical(keyword.value)
+        if keyword.arg != "metaclass" or named is None or named[0] not in _PLAIN_METACLASSES:
+            return False
+    return True
+
+
+def class_immutables(
+    found: Bindings | None, nodes: list[ast.ClassDef]
+) -> dict[str, tuple[str, ...]] | None:
+    """The class attributes the class statement binds exactly once in its
+    body (outside its ``def``s, nothing else in the body binding, deleting
+    or importing the name) to a value ``module_immutables`` calls immutable,
+    reading none of the body's own names (audit round 6, T24): attribute ->
+    what that rests on, as there. None when the class is not ``class_kept``
+    (a decorator or metaclass may bind or replace its attributes); empty
+    for a class with ``if``/``else`` variants. Whether such an attribute
+    keeps its value is decided after pass 2
+    (Indexer._class_attribute_writes): nothing may bind it anew."""
+    if not all(class_kept(found, [node]) for node in nodes):
+        return None
+    if found is None or len(nodes) != 1:
+        return {}
+    counts, imports, _, declared = found
+    once = {name for name, n in counts.items() if n == 1 and name not in declared}
+    body = nodes[0].body
+    bound: dict[str, int] = {}
+    values: dict[str, ast.expr] = {}
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, DEF_NODES):
+            names = {stmt.name}
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            names = {a.asname or a.name.split(".")[0] for a in stmt.names}
+        elif isinstance(stmt, (ast.Global, ast.Nonlocal)):
+            names = set(stmt.names)
+            for name in names:
+                bound[name] = 2  # never once
+        else:
+            names = _collect_store_names(stmt)
+        for name in names:
+            bound[name] = bound.get(name, 0) + 1
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    values[target.id] = stmt.value
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.value is not None
+        ):
+            values[stmt.target.id] = stmt.value
+    result: dict[str, tuple[str, ...]] = {}
+    for name, expr in values.items():
+        if bound.get(name) != 1:
+            continue
+        if any(isinstance(n, ast.Name) and n.id in bound for n in ast.walk(expr)):
+            continue  # a name of the class body, which nothing here bounds
+        rests: set[str] = set()
+        if _ImmutableValue(imports, once, counts, rests).check(expr):
+            result[name] = tuple(sorted(rests))
+    return dict(sorted(result.items()))
 
 
 class _ImmutableValue:

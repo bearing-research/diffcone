@@ -23,7 +23,29 @@ callee writing its parameter, is a write of the class's state when the
 class holds any (``instance_writes``, decided after pass 2 by
 Indexer._instance_writes as for a module variable holding an instance);
 binding an attribute on the instance itself changes that object alone when
-nothing but ``object.__new__`` made it (audit round 6, T22)."""
+nothing but ``object.__new__`` made it (audit round 6, T22).
+
+A class attribute (``Field.DAYS``, ``self._MONTHS`` when the class body
+binds ``_MONTHS``) is a root of its own (``ATTR``): a write into it writes
+the class's state unless the class body binds the attribute once to a value
+that cannot change in place and nothing may bind it anew, on the class or
+on any class of its MRO and subclasses (Indexer._class_attribute_writes; T24).
+A method called on one, or on an item of one, by a name that does not
+resolve is a write of it unless it is a literal table nothing changes
+(writes.apply_writes).
+What a builtin returns may be its argument (``min(m, self._N)``), so a
+local augmented after it keeps the root; ``cast(T, x)`` is ``x``, not
+``T``, and ``type(Store())`` is the class.
+
+What a constructor call of an in-scope class is handed (``Tokenizer(src,
+rules=RULES)``) is held by the instance it makes (``HELD``): a change in
+place of the instance, a method call on it, or a write into anything it
+holds writes the argument, but binding or augmenting an attribute of the
+instance itself (``tok.position += 1``, through any number of callees:
+``param_flavors``) does not when that runs no code of the class and the
+attribute only ever holds values that cannot change in place
+(writes._HeldSafety; T23). The initialiser's own writes through ``self``
+reach the arguments as a call handing them would."""
 
 from __future__ import annotations
 
@@ -32,7 +54,7 @@ from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
 from diffcone.indexer.aliases import VALUE, name_sources
-from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic
+from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic, apply_fact
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
 from diffcone.indexer.patches import (
     DICT,
@@ -96,6 +118,8 @@ from diffcone.indexer.uses import (
 )
 from diffcone.indexer.writes import (
     ARGUMENT_MUTATORS,
+    HELD_WHAT,
+    _whole_param,
     observe_assign,
     observe_augassign,
     observe_call,
@@ -251,6 +275,47 @@ RESULT = "<result>:"
 # state (audit round 6, T22).
 FRESH = "<fresh>:"
 INSTANCE = "<instance>:"
+# Builtins whose result is of a builtin type nothing can change in place,
+# whatever they are handed (``_immutable_typed``).
+IMMUTABLE_TYPED_CALLS = frozenset(
+    {
+        "ascii",
+        "bin",
+        "bool",
+        "bytes",
+        "callable",
+        "chr",
+        "complex",
+        "float",
+        "format",
+        "hasattr",
+        "hash",
+        "hex",
+        "id",
+        "int",
+        "isinstance",
+        "issubclass",
+        "len",
+        "oct",
+        "ord",
+        "repr",
+        "str",
+    }
+)
+# What a class attribute holds (``Field.DAYS``, ``self._SECS_MAP`` when the
+# class body binds it): ``ATTR``, the attribute, ``:`` and the class id. A
+# write into it is a write of the class's state unless the attribute is
+# bound once to a value that cannot change in place and nothing binds it
+# anew (decided after pass 2: Indexer._class_attribute_writes; audit round 6,
+# T24).
+ATTR = "<attr>:"
+# What a constructor call of an in-scope class was handed (an argument's
+# root), as part of the fresh instance: ``HELD``, the class id, ``|`` and the
+# argument's root. A change in place of the instance (its methods may change
+# what it holds) or of any part of it may change the argument; binding an
+# attribute of the instance does not, unless that runs code of the class
+# (writes._HeldSafety; audit round 6, T23).
+HELD = "<held>:"
 _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -278,6 +343,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._type_nodes: set[int] = set()
         # ``self.<attr> = value`` targets in ``__init__`` -> what they bind.
         self._bindings: dict[int, list | None] = {}
+        # Attribute targets whose stored value cannot change in place (an
+        # immutable of a builtin type: ``_immutable_typed``) -> True.
+        self._attr_ok: dict[int, bool] = {}
         # The nodes being visited, outermost first (see visit).
         self._stack: list[ast.AST] = []
         # Nodes naming a variable only to change it (``X`` in ``X.clear()``
@@ -505,6 +573,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             # receiver (aliased, reassigned, ``|=``) the class is unknown.
             owner = self.scope.self_class if self._is_self(node.value) else ""
             self.indexer.out.attr_unbound.add((owner or "", "*"))
+            self._generic_store(owner or "", node.value)
             if isinstance(node.ctx, ast.Load):
                 self._namespace_read(node)
         elif isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
@@ -952,7 +1021,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         self.indexer.out.value_writes.add((state, self.source))
 
     def _rooted_write(
-        self, obj: ast.expr, *, call: bool = False, bound: bool = False, attr: bool = False
+        self, obj: ast.expr, *, call: bool = False, bound: bool = False, attr: str = ""
     ) -> None:
         """A change in place of ``obj`` (an item or attribute stored into it,
         a mutator called on it): a
@@ -965,53 +1034,90 @@ class _ReferenceCollector(ast.NodeVisitor):
         ``call``) is no change of the class. ``bound``: a bound mutator taken
         as a value (``_put = _CACHE.__setitem__``), which writes when it is
         called, so a module-level one is no write the module's own hash
-        covers: whoever calls the variable holding it writes. ``attr``: an
-        attribute of ``obj`` itself bound or deleted (``new.x = v``), which
-        on a fresh instance changes that object alone (audit round 6,
-        T22)."""
+        covers: whoever calls the variable holding it writes. ``attr``: the
+        attribute of ``obj`` itself bound or deleted (``new.x = v``; ``*``
+        for a name only known at run time), which on a fresh instance
+        changes that object alone (audit round 6, T22), and changes nothing
+        a constructor was handed unless binding runs code of the class
+        (``HELD``: ``held_binds``, decided after pass 2; T23)."""
         if call and self._names_definition(obj):
             return
         roots = self._state_roots(obj, frozenset())
         own = isinstance(obj, ast.Name) and self._is_local(obj.id)
+        out = self.indexer.out
         for root, copy in sorted(roots.items()):
             if root == _NAMESPACE or (copy and own):
                 continue
-            made = instance_root(root)
-            if made is not None:
-                # An instance of an in-scope class (or part of one): a write
-                # of the class's state when the class holds any, decided
-                # after pass 2 (Indexer._instance_writes).
-                how, cls = made
-                if root.startswith(FRESH):
-                    if not attr:
-                        how = ""  # a write in place into the instance itself
-                    elif how == "object":
-                        continue  # nothing but ``object.__new__`` made it
-                symbol = self.indexer.index.symbols.get(cls)
-                if symbol is None or (
-                    self.skip_defs
-                    and symbol.module == self.scope.module.name
-                    and not (bound and self.source != self.scope.module.name)
-                ):
-                    continue
-                self.indexer.out.instance_writes.add((cls, self.source, how))
+            held = held_root(root)
+            if held is not None:
+                # What the constructor of a fresh instance was handed: changed
+                # in place by a change in place of the instance (which may
+                # run its methods), not by binding one of its attributes,
+                # unless that runs code of the class (T23).
+                cls, inner = held
+                for fact in self._root_facts(inner, bound=bound, attr=""):
+                    if attr:
+                        out.held_binds.add((cls, attr, self.source, *fact))
+                    else:
+                        apply_fact(out, self.source, fact)
                 continue
-            if root.startswith(RESULT):
-                # What a call returns, known after pass 2 (a copy included:
-                # what it returns may hold the state it copied).
-                module = self.scope.module.name if self.skip_defs and not bound else ""
-                self.indexer.out.result_writes.add((self.source, root[len(RESULT) :], module))
-                continue
-            symbol = self.indexer.index.symbols.get(root)
-            if symbol is None or symbol.id == self.source:
-                continue
-            if (
-                self.skip_defs
-                and symbol.module == self.scope.module.name
-                and not (bound and self.source != self.scope.module.name)
-            ):
-                continue  # a module's own top-level code is part of its hash
-            self._value_write(symbol.id)
+            for fact in self._root_facts(root, bound=bound, attr=attr):
+                apply_fact(out, self.source, fact)
+
+    def _root_facts(self, root: str, *, bound: bool, attr: str) -> list[tuple[str, str, str]]:
+        """What a write into what ``root`` names records (``apply_fact``):
+        ``value``, a change in place of a module variable, class or
+        function (Indexer._value_writes); ``attribute``, of what a class
+        attribute holds (Indexer._class_attribute_writes); ``instance``, of an
+        instance of an in-scope class or part of one (Indexer._instance_writes);
+        ``result``, of what a call of an in-scope function returns
+        (Indexer._result_writes); ``own``, a class written by its own
+        module's top-level code, which is part of the module's hash but may
+        bind a class attribute anew (T24): the attribute ``attr``, any for
+        ``*`` or a change in place of the class itself."""
+        here = self.scope.module.name
+        unhashed = not self.skip_defs or (bound and self.source != here)
+        symbols = self.indexer.index.symbols
+        made = instance_root(root)
+        if made is not None:
+            # An instance of an in-scope class (or part of one): a write
+            # of the class's state when the class holds any, decided
+            # after pass 2 (Indexer._instance_writes).
+            how, cls = made
+            if root.startswith(FRESH):
+                if not attr:
+                    how = ""  # a write in place into the instance itself
+                elif how == "object":
+                    return []  # nothing but ``object.__new__`` made it
+            symbol = symbols.get(cls)
+            if symbol is None or (symbol.module == here and not unhashed):
+                return []
+            return [("instance", cls, how)]
+        if root.startswith(RESULT):
+            # What a call returns, known after pass 2 (a copy included:
+            # what it returns may hold the state it copied).
+            return [("result", root[len(RESULT) :], here if self.skip_defs and not bound else "")]
+        named = class_attribute_root(root)
+        if named is not None:
+            cls, name = named
+            symbol = symbols.get(cls)
+            if symbol is None or cls == self.source:
+                return []
+            if symbol.module == here and not unhashed:
+                # Part of the module's hash, but what the attribute holds is
+                # no longer what its class body bound (a literal table
+                # changed: writes.apply_writes).
+                return [("own", cls, name)]
+            return [("attribute", cls, name)]
+        symbol = symbols.get(root)
+        if symbol is None or symbol.id == self.source:
+            return []
+        if symbol.module == here and not unhashed:
+            # A module's own top-level code is part of its hash.
+            if symbol.kind != SymbolKind.CLASS:
+                return []
+            return [("own", symbol.id, attr or "*")]  # the attribute it binds
+        return [("value", symbol.id, "")]
 
     def _handed_state(self, expr: ast.expr, receiver: bool = False) -> list[str]:
         """The module variables and classes whose state a call is handed in
@@ -1027,22 +1133,38 @@ class _ReferenceCollector(ast.NodeVisitor):
         round 6, T22)."""
         if receiver and self._names_definition(expr):
             return []
-        symbols = self.indexer.index.symbols
         found: list[str] = []
         for root, copy in sorted(self._state_roots(expr, frozenset()).items()):
             if copy or root == self.source:
                 continue
-            made = instance_root(root)
-            if made is not None:
-                if made[1] in symbols:
-                    how = made[0] if root.startswith(INSTANCE) else ""
-                    found.append(f"instance:{how}:{made[1]}")
-            elif (symbol := symbols.get(root)) is not None and symbol.kind in (
-                SymbolKind.VARIABLE,
-                SymbolKind.CLASS,
-            ):
-                found.append(f"var:{root}")
+            held = held_root(root)
+            if held is not None:
+                # Part of a fresh instance its constructor was handed: written
+                # when the callee may change it (writes.apply_writes; T23).
+                found += [f"{HELD_WHAT}{held[0]}|{w}" for w in self._handed_root(held[1])]
+            else:
+                found += self._handed_root(root)
         return list(dict.fromkeys(found))
+
+    def _handed_root(self, root: str) -> list[str]:
+        """``_handed_state`` of one root: ``var:<id>`` for a module variable
+        or class, ``attr:<attribute>:<class id>`` for what a class attribute
+        holds (T24), ``instance:...`` for an instance of an in-scope class or
+        part of one."""
+        symbols = self.indexer.index.symbols
+        made = instance_root(root)
+        if made is not None:
+            if made[1] in symbols:
+                how = made[0] if root.startswith(INSTANCE) else ""
+                return [f"instance:{how}:{made[1]}"]
+            return []
+        named = class_attribute_root(root)
+        if named is not None:
+            return [f"attr:{named[1]}:{named[0]}"] if named[0] in symbols else []
+        symbol = symbols.get(root)
+        if symbol is not None and symbol.kind in (SymbolKind.VARIABLE, SymbolKind.CLASS):
+            return [f"var:{root}"]
+        return []
 
     def _target_write(self, target: ast.expr, *, bind: bool = True) -> None:
         """``_rooted_write`` for each item or attribute an assignment or
@@ -1057,7 +1179,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         elif isinstance(target, ast.Subscript):
             self._rooted_write(target.value)
         elif isinstance(target, ast.Attribute):
-            self._rooted_write(target.value, attr=bind)
+            self._rooted_write(target.value, attr=target.attr if bind else "")
 
     def _is_local(self, name: str) -> bool:
         """A name the function binds itself (no parameter default's alias,
@@ -1225,13 +1347,24 @@ class _ReferenceCollector(ast.NodeVisitor):
                         if not node.detail:
                             return {symbol.id: False}
                     elif symbol is not None and symbol.kind == SymbolKind.CLASS:
-                        if node.detail in ("", f"attribute:{chain[-1]}"):
-                            found = {symbol.id: False}
+                        if node.detail == "":
+                            return {symbol.id: False}
+                        if node.detail == f"attribute:{chain[-1]}":
+                            # What a class attribute holds (T24): the class's
+                            # state, unless it cannot change in place.
+                            found = {_class_attribute(symbol.id, chain[-1]): False}
                             for other, detail in node.overrides:
                                 if detail == f"attribute:{chain[-1]}":
-                                    found[other] = False
+                                    found[_class_attribute(other, chain[-1])] = False
                             return found
-        return _part_of(self._state_roots(expr.value, seen), copy=False, attr=expr.attr)
+        inner = self._state_roots(expr.value, seen)
+        if expr.attr == "__class__":
+            # The class of a fresh instance is its class (or a subclass), as
+            # for ``type(new)``: ``new.__class__.x = v`` binds a class attribute.
+            classes = {r.rpartition(":")[2]: False for r in inner if r.startswith(FRESH)}
+            rest = {r: c for r, c in inner.items() if not r.startswith(FRESH)}
+            return _merged(classes, _part_of(rest, copy=False, attr=expr.attr))
+        return _part_of(inner, copy=False, attr=expr.attr)
 
     def _instance_roots(self, chain: list[str]) -> dict[str, bool]:
         """``self.<attr>``: the class whose body binds ``attr`` (and each
@@ -1243,7 +1376,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         found: dict[str, bool] = {}
         for cid, detail in [(node.symbol, node.detail), *node.overrides]:
             if detail == f"attribute:{chain[1]}" and self._class_held(cid, chain[1]):
-                found[cid] = False
+                found[_class_attribute(cid, chain[1])] = False
         return found
 
     def _class_held(self, cid: str, attr: str) -> bool:
@@ -1367,6 +1500,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             _merged(*(self._state_roots(a, seen) for a in rest if not self._names_definition(a))),
             copy=False,
         )
+        if how == "call":
+            # What the constructor was handed is held by the new instance,
+            # not the instance itself (T23).
+            found = {_held(cls, root): copy for root, copy in found.items()}
         if how != "object":
             found = _merged(found, self._new_results(cls))
         return _merged(found, {f"{FRESH}{how}:{cls}": False})
@@ -1385,13 +1522,21 @@ class _ReferenceCollector(ast.NodeVisitor):
             if func.id == "type" and len(node.args) == 1 and not node.keywords:
                 if self._is_self(node.args[0]) and not self.scope.self_is_class:
                     return {self.scope.self_class: False} if self.scope.self_class else {}
-                return _part_of(self._state_roots(node.args[0], seen), copy=False)
+                # The class of a fresh instance is its class (or a subclass,
+                # whose state the class's edges reach): ``type(new).x = v``
+                # binds a class attribute.
+                inner = self._state_roots(node.args[0], seen)
+                classes = {r.rpartition(":")[2]: False for r in inner if r.startswith(FRESH)}
+                rest = {r: c for r, c in inner.items() if not r.startswith(FRESH)}
+                return _merged(classes, _part_of(rest, copy=False))
             if func.id in FRESH_CALLS:
                 return {}
             copy = func.id in SHALLOW_CALLS
         elif parts is not None and not self._is_local(parts[0]):
             if self._only(parts, FRESH_CALLS):
                 return {}
+            if len(node.args) == 2 and not node.keywords and self._only(parts, CASTS):
+                return self._state_roots(node.args[1], seen)  # ``cast(T, x)`` is ``x``
             copy = self._only(parts, SHALLOW_CALLS)
         found = _merged(
             *(self._state_roots(a, seen) for a in args if not self._names_definition(a)),
@@ -1435,6 +1580,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             and isinstance(self.scope.literal_node, FUNC_NODES)
         ):
             for root in self._state_roots(node.value, frozenset()):
+                held = held_root(root)
+                if held is not None:
+                    root = held[1]  # what a caller writing into the instance may change
                 if root != _NAMESPACE and root != f"{RESULT}{self.source}":
                     self.indexer.out.state_returns.add((self.source, root))
         self.generic_visit(node)
@@ -1528,6 +1676,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         unknown, so no class's ``attr`` can be bounded."""
         if (module := self._written_module(node.value)) is not None:
             self.indexer.out.external_writes.add((module, self.source))
+        owner = self._self_class(node.value) or ""
+        self.indexer.out.attr_values.add((owner, node.attr, self._attr_ok.pop(id(node), False)))
         if (cls := self._self_class(node.value)) is not None:
             binding = self._bindings.pop(id(node), None)
             self.indexer.out.attr_writes.append(
@@ -1635,6 +1785,44 @@ class _ReferenceCollector(ast.NodeVisitor):
         owner = (self._self_class(receiver) if receiver is not None else None) or ""
         for attr in names if names is not None else ("*",):
             self.indexer.out.attr_unbound.add((owner, attr.rsplit(".", 1)[-1]))
+            if attr == "*":
+                self._generic_store(owner, receiver)
+            else:
+                self.indexer.out.attr_values.add((owner, attr.rsplit(".", 1)[-1], False))
+
+    def _generic_store(self, owner: str, receiver: ast.expr | None) -> None:
+        """A store under a name only known at run time (``setattr(r, name,
+        v)``, ``r.__dict__``, ``vars(r)``) may bind any attribute of ``r`` to
+        anything (``attr_values``: writes._HeldSafety, audit round 6, T23).
+        Through a parameter of the function itself, an instance handed to it
+        is one the write tracing follows (its kind is ``=*``); a parameter of
+        a nested function is reached only by a call of it, which the write
+        tracing does not follow for any write; and a module is no instance:
+        none of these is recorded on a receiver of unknown type."""
+        if not owner and receiver is not None:
+            if _whole_param(self, receiver):
+                return
+            if isinstance(receiver, ast.Name) and self._nested_parameter(receiver.id):
+                return
+            if self._written_module(receiver) is not None or self._is_module(receiver):
+                return
+        self.indexer.out.attr_values.add((owner, "*", False))
+
+    def _nested_parameter(self, name: str) -> bool:
+        """``name`` is a parameter of a function nested in the symbol (the
+        innermost scope binding it is that function's)."""
+        scope: Scope | None = self.scope
+        while scope is not None:
+            if name in scope.literal_bound:
+                node = scope.literal_node
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return False
+                args = node.args
+                named = [*args.posonlyargs, *args.args, *args.kwonlyargs]
+                named += [a for a in (args.vararg, args.kwarg) if a is not None]
+                return any(a.arg == name for a in named)
+            scope = scope.literal_parent
+        return False
 
     def _dict_write(self, expr: ast.expr) -> None:
         """``x.__dict__[k] = v``, ``vars(x).update(...)``: any attribute."""
@@ -1653,10 +1841,59 @@ class _ReferenceCollector(ast.NodeVisitor):
         if receiver is not None:
             self._reflective_write(receiver, None)
 
+    def _stash_value(self, target: ast.expr, value: ast.expr | None) -> None:
+        """Whether an attribute target is bound to a value that cannot
+        change in place (``_attribute_write``; audit round 6, T23)."""
+        if isinstance(target, ast.Attribute) and value is not None:
+            self._attr_ok[id(target)] = self._immutable_typed(value, target)
+
+    def _immutable_typed(self, expr: ast.expr, target: ast.Attribute | None = None) -> bool:
+        """Whether ``expr`` is a value of a builtin type that cannot change
+        in place, whatever the names it reads hold: a literal, an f-string,
+        a call of a builtin giving one (``len(x)``, ``str(x)``), an operator
+        on such values, or (``target``: ``self.<attr>``) the attribute being
+        bound itself, as in ``self.n = self.n + 1``."""
+        if isinstance(expr, (ast.Constant, ast.JoinedStr)):
+            return True
+        if isinstance(expr, ast.UnaryOp):
+            return isinstance(expr.op, ast.Not) or self._immutable_typed(expr.operand, target)
+        if isinstance(expr, ast.BinOp):
+            return self._immutable_typed(expr.left, target) and self._immutable_typed(
+                expr.right, target
+            )
+        if isinstance(expr, ast.BoolOp):
+            return all(self._immutable_typed(v, target) for v in expr.values)
+        if isinstance(expr, ast.Compare):
+            if all(isinstance(op, (ast.In, ast.NotIn, ast.Is, ast.IsNot)) for op in expr.ops):
+                return True
+            return self._immutable_typed(expr.left, target) and all(
+                self._immutable_typed(c, target) for c in expr.comparators
+            )
+        if isinstance(expr, ast.IfExp):
+            return self._immutable_typed(expr.body, target) and self._immutable_typed(
+                expr.orelse, target
+            )
+        if isinstance(expr, ast.Call):
+            func = expr.func
+            return (
+                isinstance(func, ast.Name)
+                and func.id in IMMUTABLE_TYPED_CALLS
+                and not self._is_shadowed(func.id)
+            )
+        if isinstance(expr, ast.Attribute) and target is not None:
+            return (
+                expr.attr == target.attr
+                and self._is_self(expr.value)
+                and self._is_self(target.value)
+            )
+        return False
+
     def visit_Assign(self, node: ast.Assign) -> None:
         observe_assign(self, node.targets)
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
+        for target in node.targets:
+            self._stash_value(target, node.value)
         undone = self.scope.module.undone()
         for target in node.targets:
             if isinstance(target, ast.Attribute) and not self._is_self(target.value):
@@ -1689,6 +1926,8 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         observe_augassign(self, node)
+        # ``self.n += 1``: what an immutable ``n`` becomes is one again.
+        self._stash_value(node.target, node.value)
         self._write_only[id(node.target)] = _READ  # ``mod.X += 1`` reads it
         self._process_store(node.target)
         self._mutation_target(node.target, True)
@@ -1708,6 +1947,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._mutation_target(node.target, True)
             self._target_write(node.target)
             self._stash_binding(node.target, node.value)
+            self._stash_value(node.target, node.value)
             self._held_instance(node.target, node.value, node.annotation)
         self.visit(node.target)
         self.visit(node.annotation)
@@ -1761,7 +2001,13 @@ class _ReferenceCollector(ast.NodeVisitor):
             # ``setattr(Config, "mode", v)``, ``heappush(queue, x)``.
             if id(node) not in self.scope.module.undone():
                 binds = parts is not None and parts[-1] in ("setattr", "delattr")
-                self._rooted_write(node.args[0], attr=binds)
+                names = (
+                    self.scope.string_candidates(node.args[1])
+                    if binds and len(node.args) > 1
+                    else None
+                )
+                bound_name = names[0] if names is not None and len(names) == 1 else "*"
+                self._rooted_write(node.args[0], attr=bound_name if binds else "")
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "__setattr__",
             "__delattr__",
@@ -1826,6 +2072,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if builtin and parts[0] == "vars" and node.args:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.out.attr_unbound.add((cls, "*"))
+                self._generic_store(cls or "", node.args[0])
             if builtin and parts[0] == "type" and len(node.args) == 1:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.escape_class_family(cls)
@@ -3353,7 +3600,36 @@ def _instance_part(root: str, attr: str = "") -> str:
     reached through attribute ``attr``, or anyhow."""
     if root.startswith(FRESH):
         return f"{INSTANCE}{'.' + attr if attr else ''}:{root.rpartition(':')[2]}"
+    held = held_root(root)
+    if held is not None:
+        return held[1]  # a part of the instance may be what it was handed
     return root
+
+
+def _held(cls: str, root: str) -> str:
+    """``root`` as held by a fresh instance of ``cls`` (HELD)."""
+    return f"{HELD}{cls}|{root}"
+
+
+def held_root(root: str) -> tuple[str, str] | None:
+    """(class id, the root it holds) of a ``HELD`` root; None for any other."""
+    if root.startswith(HELD):
+        cls, _, inner = root[len(HELD) :].partition("|")
+        return cls, inner
+    return None
+
+
+def _class_attribute(cls: str, attr: str) -> str:
+    """The root of what class ``cls``'s attribute ``attr`` holds (ATTR)."""
+    return f"{ATTR}{attr}:{cls}"
+
+
+def class_attribute_root(root: str) -> tuple[str, str] | None:
+    """(class id, attribute) of an ``ATTR`` root; None for any other."""
+    if root.startswith(ATTR):
+        attr, _, cls = root[len(ATTR) :].partition(":")
+        return cls, attr
+    return None
 
 
 def instance_root(root: str) -> tuple[str, str] | None:
