@@ -808,6 +808,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#report" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -823,6 +834,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
       </span>
     </span>
   </a>
@@ -892,7 +914,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery" class="md-nav__link">
+  <a href="#discovery_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -941,7 +963,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_1" class="md-nav__link">
+  <a href="#discovery_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1074,7 +1096,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_2" class="md-nav__link">
+  <a href="#discovery_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1113,7 +1135,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking" class="md-nav__link">
+  <a href="#running-and-checking_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1248,6 +1270,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#report" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1263,6 +1296,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
       </span>
     </span>
   </a>
@@ -1332,7 +1376,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery" class="md-nav__link">
+  <a href="#discovery_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1381,7 +1425,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_1" class="md-nav__link">
+  <a href="#discovery_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1514,7 +1558,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#discovery_2" class="md-nav__link">
+  <a href="#discovery_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Discovery
@@ -1553,7 +1597,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking" class="md-nav__link">
+  <a href="#running-and-checking_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1637,8 +1681,30 @@ selection rules.</p>
   formatter's or a linter's test suite). A matching file is read as a data
   file: plans no longer degrade, <code>collect</code> records the checkout, and a
   change to one selects everything in a plan without a recording and the
-  tests that read it or ran its code in one with. The report lists each
+  tests that read it or ran its code in one with. What an excluded file
+  runs is not read, so code that imports or runs one (an import,
+  <code>import_module</code>, <code>runpy</code>, a subprocess, a file loader) is selected on any
+  change, with a reason naming the file; with a recording, a change to an
+  excluded file a test imported selects every test. The report lists each
   snapshot's patterns (<code>analysis.&lt;side&gt;.excluded</code>).</li>
+</ul>
+<h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Under <code>--doctest-modules</code>, a docstring set when the module is imported
+  (<code>f.__doc__ = ...</code>, a string built from parts) is read when its text can
+  be worked out; one a decorator of yours rewrites makes its doctest
+  always selected; one discovery cannot read is reported (exit 3).</li>
+<li>Tests bound by a call (<code>test_one = make(1)</code>, <code>functools.partial</code>), a
+  lambda, <code>globals()</code> or <code>setattr</code>, and pytest-bdd's <code>scenarios()</code>, are
+  reported (exit 3). Module data that merely has a test's name is not.</li>
+<li>A <code>usefixtures</code> mark discovery cannot read (a non-literal argument, an
+  alias of the mark, a decorator or factory that applies it,
+  <code>pytestmark = marks()</code>) counts as every visible fixture.</li>
+<li>Test classes pytest does not collect (an inherited <code>__init__</code> or
+  <code>__new__</code>, a dataclass or attrs class) are no longer targets: <code>run</code>
+  reported them as selected tests pytest did not collect.</li>
+<li>Notes on an excluded plugin, base class or benchmark file name the
+  exclusion and say to narrow the pattern.</li>
 </ul>
 <h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1654,14 +1720,19 @@ selection rules.</p>
   discovered at that commit: pytest's rootdir lies outside the repository
   (a configuration file in a directory above it), so plans would find no
   recording for any test and select them all.</li>
-<li>A module variable that code able to run a change writes is followed as
-  a cache only when what it stores, or what decides that the write runs,
-  may come from that code: its parameters, the changed code's results,
-  calls through what it was handed. A decorator's registration
-  (<code>@router.put("/x")</code> writing the router when the module is imported)
-  and a literal written before the code runs anything else no longer
-  make every reader of the variable depend on every change the decorated
-  function can run.</li>
+</ul>
+<h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone run --allow-incomplete-discovery</code> starts pytest even when
+  nothing is selected, with every target deselected, so the tests
+  discovery does not know about still run (<code>--dry-run</code> says so).</li>
+<li><code>diffcone run</code> no longer refuses to run because of its own results
+  (<code>diffcone-results/</code>) in a flat layout, or a generated, git-ignored
+  <code>_version.py</code> that only binds constants.</li>
+<li><code>diffcone check</code> (and the <code>check</code> action) says when it compared the plan
+  only, without diffcone's own run.</li>
+<li><code>diffcone report</code> counts a pull-request run that failed after a good
+  plan as a problem.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1673,11 +1744,50 @@ selection rules.</p>
   peaks at 5.5 GB and takes under two minutes, and a cached discovery
   result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
   cached by an earlier version is redone once.</li>
-<li>With a recording, a module cache filled through a helper that is
-  handed the value (<code>_put(key, compute(key))</code>, with <code>_put</code> storing it, a
-  method, a chain of helpers, an <code>append</code>) was not followed: a test that
-  read what an earlier test stored there, without running <code>compute</code>, was
-  not selected when <code>compute</code> changed. It is now.</li>
+<li>With a recording, a module cache filled by a function the cache's
+  caller calls (<code>_put(key, compute(key))</code>, a method, a chain of helpers,
+  an <code>append</code>, or a write under a branch on the result) was not followed:
+  a test that read what an earlier test stored there, without running
+  <code>compute</code>, was not selected when <code>compute</code> changed. Every in-place write
+  of the code that code calls is now followed.</li>
+<li>With a recording, a module the analysis does not read (outside the
+  source roots) that a test imported was credited to that test alone,
+  though later tests use it without running any of it: a change to it now
+  selects every test. A recording made by an earlier version does not say
+  which such files a test imported, so any <code>.py</code> file a test touched
+  counts.</li>
+<li>A write to state held on a class (<code>Config.mode = m</code>,
+  <code>Config.items.append(x)</code>, <code>setattr(Config, ...)</code>, <code>cls._instance = ...</code>,
+  <code>type(self)._cache[k] = v</code>) did not make the writer a dependency of the
+  class's readers; nor did a write to a module variable under another
+  name: a local alias (<code>cache = _CACHE</code>), an item of it, a bound method,
+  <code>globals()["_CACHE"]</code>, or what one of your functions returns
+  (<code>registry()[k] = v</code>). Both are followed now, with and without a
+  recording. Copies (<code>dict(_CACHE)</code>, <code>.copy()</code>) and an instance's own
+  attributes are not shared state.</li>
+<li><code>pytest.importorskip("pkg.mod")</code>, <code>importlib.util.find_spec</code>,
+  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code> and <code>pkgutil.iter_modules</code> or
+  <code>walk_packages</code> over a package were not imports: a change that made the
+  module fail to import, or changed what it does when imported, did not
+  select the test. They are now.</li>
+<li>Discovery missed fixtures a test requests outside its own signature:
+  <code>request</code> handed to a helper, an alias of <code>request.getfixturevalue</code>,
+  <code>lf()</code>/<code>lazy_fixture()</code> in a parametrization, a hook adding to
+  <code>item.fixturenames</code> or to the <code>usefixtures</code> option; an autouse fixture
+  under another name for the decorator (<code>from pytest import fixture as
+  fx</code>); and a module stored into <code>doctest_namespace</code> by subscript
+  (<code>doctest_namespace["np"] = numpy</code>). They are dependencies now.</li>
+<li>The <code>run</code> action planned only the last commit (<code>HEAD^1</code>): a push of
+  several commits, a merge-queue group or a pull request checked out at
+  its head planned part of the change. It plans the event's own change
+  now (a pull request on top of its target branch, every commit of a
+  push, the whole merge-queue group), and a branch name, tag or <code>HEAD~n</code>
+  as <code>base</code> works in a shallow checkout. With no base (a new branch, a
+  manual run) or one that cannot be fetched, it runs every test and says
+  why.</li>
+<li>The <code>record</code> action's check counted any failed plan as an unusable
+  recording and passed; it fails now when the plan fails without the
+  recording too.</li>
 <li>The <code>run</code> and <code>record</code> actions deepen a shallow checkout with an
   absolute depth. They used <code>git fetch --deepen</code>, which GitHub serves only
   from a commit a branch or pull request still points at: a re-run, or a
@@ -1960,7 +2070,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   conflicted merge) is an analysis error too; it was read as no file. A
   manifest that is not valid JSON says so.</li>
 </ul>
-<h4 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h4>
+<h4 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h4>
 <ul>
 <li>A fixture defined with a decorator whose name ends in <code>fixture</code>
   (pytest-twisted's <code>async_fixture</code> and <code>async_yield_fixture</code>,
@@ -2228,7 +2338,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   with <code>--maxfail=0</code>, and a missed test the re-run did not run still
   counts as a miss.</li>
 </ul>
-<h3 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h3>
+<h3 id="discovery_2">Discovery<a class="headerlink" href="#discovery_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li>pytest options in <code>PYTEST_ADDOPTS</code>, plugins in <code>PYTEST_PLUGINS</code> and
   pytest arguments written into the run's command are read: <code>plan</code> and
@@ -2396,7 +2506,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   the middle of while it runs, which also covers a later test running
   beside a thread that loops in one function.</li>
 </ul>
-<h3 id="discovery_2">Discovery<a class="headerlink" href="#discovery_2" title="Permanent link">&para;</a></h3>
+<h3 id="discovery_3">Discovery<a class="headerlink" href="#discovery_3" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
   pytest; a node id, or a path after an option that may take it as its
@@ -2448,7 +2558,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   <code>diffcone prune --keep REV</code> shrinks the cache to what planning at given
   commits reads.</li>
 </ul>
-<h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
+<h3 id="running-and-checking_1">Running and checking<a class="headerlink" href="#running-and-checking_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone run</code> plans and runs only the selected targets with pytest or
   ASV; <code>diffcone validate</code> runs the whole suite at both snapshots and

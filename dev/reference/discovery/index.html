@@ -1108,9 +1108,11 @@ and arguments; <code>diffcone check</code> uses those to match JUnit names to te
 <p><strong>Tests</strong> found:</p>
 <ul>
 <li>test functions and methods, following your naming settings;</li>
-<li>test classes (without an <code>__init__</code>, unless they are
-  <code>unittest.TestCase</code> subclasses), including nested classes and nested
-  classes inherited from a base class;</li>
+<li>test classes, including nested classes and nested classes inherited
+  from a base class. As in pytest, a class with a constructor is not
+  collected unless it is a <code>unittest.TestCase</code> subclass: its own or an
+  inherited <code>__init__</code> or <code>__new__</code>, or one a <code>@dataclass</code> or attrs
+  decorator generates;</li>
 <li><code>unittest.TestCase</code> subclasses, whatever their names;</li>
 <li>tests inherited from base classes, including base classes in other
   modules;</li>
@@ -1127,9 +1129,15 @@ and arguments; <code>diffcone check</code> uses those to match JUnit names to te
 <p><strong>What each test depends on</strong>, besides its own code:</p>
 <ul>
 <li>its fixtures, and the fixtures those use:<ul>
-<li>A fixture is requested by parameter, by <code>usefixtures</code> (the mark or
-  the configuration option) or by <code>request.getfixturevalue</code> (every
-  fixture the test can see, when the name isn't written out).</li>
+<li>A fixture is requested by parameter, by <code>usefixtures</code> (the mark,
+  the configuration option, or a hook that adds to either:
+  <code>config.addinivalue_line("usefixtures", ...)</code>,
+  <code>item.fixturenames.append(...)</code>), by <code>request.getfixturevalue</code>
+  (also through an alias or <code>getattr</code>, and in a helper the test or
+  fixture hands <code>request</code> to), or by pytest-lazy-fixtures' <code>lf()</code> and
+  pytest-lazy-fixture's <code>lazy_fixture()</code> in parametrize values. When
+  the name isn't written out, or <code>request</code> goes to code diffcone
+  can't read, every fixture the test can see counts.</li>
 <li>It is looked up the way pytest does: the class (including fixtures
   inherited from base classes in other modules), the module, each
   <code>conftest.py</code> outward, then plugins. Plugins are those listed in
@@ -1159,7 +1167,11 @@ and arguments; <code>diffcone check</code> uses those to match JUnit names to te
 <li>marks such as <code>usefixtures</code> and <code>parametrize</code> on its class and the
   class's base classes, including marks stored in a variable and applied
   by name (<code>needs_db = pytest.mark.usefixtures("db")</code>, then <code>@needs_db</code>),
-  and <code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>;</li>
+  and <code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>. A
+  <code>usefixtures</code> whose names aren't written out (<code>usefixtures(NAME)</code>), or
+  one applied by a decorator, mark factory or function whose code mentions
+  <code>usefixtures</code> (<code>@needs_db</code> defined as a function, <code>pytestmark =
+  marks()</code>), counts as every fixture the test can see;</li>
 <li>autouse fixtures that apply to it, including ones whose <code>autouse=</code> is a
   variable and ones a <code>conftest.py</code>, test module or plugin imports;</li>
 <li>xunit-style <code>setup_*</code> and <code>teardown_*</code> functions, and unittest's
@@ -1201,8 +1213,17 @@ code did not: for example, a test module adds a plugin to
 <code>pytest_plugins</code>, whose autouse fixture then applies to every test.</p>
 <p>A doctest depends on everything its module can reach, and on the fixtures
 pytest gives it: autouse fixtures (such as one that fills
-<code>doctest_namespace</code>) and the <code>usefixtures</code> option. A doctest in a text
-file is always selected.</p>
+<code>doctest_namespace</code>) and the <code>usefixtures</code> option. A module such a fixture
+stores into <code>doctest_namespace</code> (<code>doctest_namespace["np"] = numpy</code>, or
+with <code>.update</code> or <code>.setdefault</code>) counts too, with everything it imports. A
+doctest in a text file is always selected.</p>
+<p>A docstring set when the module is imported is read when diffcone can
+work out its text: a string, a module-level string built with <code>+</code>, <code>%</code>,
+f-strings or methods such as <code>.format</code> and <code>.replace</code>, or another
+function's docstring (<code>b.__doc__ = a.__doc__</code>). A docstring with examples
+that a decorator rewrites is always selected. One diffcone can't work out
+(<code>f.__doc__ = DOC</code> imported from elsewhere, a decorator that writes the
+whole docstring) is reported, since its doctests are not targets.</p>
 <p>A <code>conftest.py</code> outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
 contains it. The same goes for a plugin in your repository that your source
@@ -1246,7 +1267,9 @@ can't find otherwise is reported, and the tests that use it are selected
 on every change, since diffcone can't tell what the fixture depends on.</p>
 <p>A fixture is a function under a decorator whose name ends in <code>fixture</code>:
 <code>pytest.fixture</code>, pytest-asyncio's <code>fixture</code>, pytest-twisted's
-<code>async_fixture</code> and <code>async_yield_fixture</code>, pytest-trio's <code>trio_fixture</code>.
+<code>async_fixture</code> and <code>async_yield_fixture</code>, pytest-trio's <code>trio_fixture</code>,
+also under another name the module gives it (<code>from pytest import fixture
+as fx</code>, <code>fx = pytest.fixture</code>).
 A plugin's fixture name is assumed only when nothing your tests can see
 defines it. If a test class, test module, conftest or plugin module defines
 that name under some other decorator, or binds it to something diffcone
@@ -1322,7 +1345,13 @@ parameter cases together.</p>
   pytest's arguments come from: <code>addopts</code>, <code>PYTEST_ADDOPTS</code>, <code>--command</code>
   or after <code>--</code>;</li>
 <li>a test bound to something discovery can't follow
-  (<code>TestMachine = Machine.TestCase</code>);</li>
+  (<code>TestMachine = Machine.TestCase</code>, <code>test_one = make_test(1)</code>,
+  <code>test_a, test_b = make()</code>), or bound dynamically: stored into
+  <code>globals()</code>, <code>locals()</code> or <code>vars()</code>, set on a class (<code>setattr(TestA,
+  name, check)</code>, <code>TestA.test_x = check</code>), or made by pytest-bdd's
+  <code>scenarios(...)</code>;</li>
+<li>a docstring set when its module is imported that discovery can't read,
+  under <code>--doctest-modules</code>;</li>
 <li>a plugin your configuration turns on that collects files of its own
   (pytest-typing's <code>typing_checkers</code>, <code>--nbval</code>, <code>--markdown-docs</code>);</li>
 <li>a test file that can't be parsed;</li>
@@ -1335,7 +1364,11 @@ plan exits with code <code>3</code>: running only the selected tests could skip
 tests your runner would collect. You can:</p>
 <ul>
 <li>widen your source roots so the missing code is analysed;</li>
-<li>list the missing tests in a <a href="../manifest/">manifest</a>; or</li>
+<li>list your tests in a <a href="../manifest/">manifest</a> and plan from it alone,
+  without <code>--discover</code> (beside discovery, a manifest adds targets but
+  doesn't clear its notes);</li>
+<li>run anyway with <code>diffcone run --allow-incomplete-discovery</code>: pytest then
+  also runs every test it collects that isn't a target; or</li>
 <li>use <a href="../../guides/evidence/">execution evidence</a>: a recording captures
   what pytest really collected, which can settle a note.</li>
 </ul>

@@ -1229,7 +1229,10 @@ see: for example a pytest plugin that collects classes by its own
 naming rules, or a test base class outside your source roots. The
 report's <code>discovery</code> section lists each case. Running only the selected
 tests could skip some, so <code>diffcone run</code> refuses unless you pass
-<code>--allow-incomplete-discovery</code>. See
+<code>--allow-incomplete-discovery</code>. With it, pytest also runs every test it
+collects that isn't a target, even when the plan selected nothing.
+Listing those tests in a manifest beside <code>--discover</code> adds them as
+targets but doesn't clear the notes. See
 <a href="../../reference/discovery/#when-the-target-list-may-be-short">static discovery</a>.</p>
 </div>
 <h3 id="list-them-in-a-manifest">List them in a manifest<a class="headerlink" href="#list-them-in-a-manifest" title="Permanent link">&para;</a></h3>

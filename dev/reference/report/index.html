@@ -1341,7 +1341,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>dynamic_reference</code></td>
 <td>yes</td>
-<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file <code>[index] exclude</code> keeps out of the analysis; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
 </tr>
 <tr>
 <td><code>unresolved_name_match</code></td>
@@ -1463,7 +1463,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>unindexed_import</code></td>
 <td>yes</td>
-<td>Changed code ran while a file outside the source roots was being imported, or such a file changed and was imported before the recorder started.</td>
+<td>Changed code ran while a file outside the source roots was being imported, or such a file (or one <code>[index] exclude</code> keeps out) changed and was imported before the recorder started or inside a test.</td>
 </tr>
 </tbody>
 </table>

@@ -1241,6 +1241,22 @@ when a selected test wasn't collected by pytest, and when discovery may be
 incomplete (unless you set <code>allow-incomplete-discovery: true</code>). The plan and
 the run's JUnit XML are written to <code>diffcone-results/</code>; upload them with
 <code>if: always()</code> so they're kept when tests fail.</p>
+<p>The action plans the change the event brings, read from the event itself:</p>
+<ul>
+<li>for a pull request, what it changes on top of its target branch: from
+  the merge commit's first parent when the merge commit is checked out
+  (the default), from the pull request's base commit when you check out
+  its head (<code>ref: ${{ github.event.pull_request.head.sha }}</code>, as
+  <code>pull_request_target</code> workflows do);</li>
+<li>for a push, every commit it brings, from the commit the branch pointed
+  at before it;</li>
+<li>for a merge queue (<code>merge_group</code>), every queued pull request, from the
+  queue's base commit.</li>
+</ul>
+<p>When the event names no base (a push that creates a branch, a manual or
+scheduled run) or the base can't be fetched (a force push dropped it),
+the action selects every test and says why in a warning. To plan against
+something else, set <code>base</code>.</p>
 <div class="admonition important">
 <p class="admonition-title">Match the recording</p>
 <p><code>command</code> and <code>pytest-args</code> must be the same in both workflows, and the
@@ -1282,7 +1298,9 @@ of the full run that the plan didn't select, or that diffcone's own run
 didn't execute. It doesn't fail the workflow unless you set
 <code>fail-on-miss: true</code>, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
-the nightly run are reported as already failing, not as misses.</p>
+the nightly run are reported as already failing, not as misses. Without
+<code>diffcone.xml</code> in the results (the run never started pytest), the check
+compares the plan only, and the summary and a warning say so.</p>
 <p>The check matches JUnit names to tests through pytest's rootdir and
 <code>--junit-prefix</code>, as the plan recorded them, and the action has no inputs
 to change them. So run the full job's pytest from the same directory, with
@@ -1337,7 +1355,8 @@ test diffcone should have selected fails the default branch's workflow.</p>
    reported as flaky. Only a test can be run again: a file that failed to
    collect, or a failure that matches no target, is a miss straight away.
    Failures the recorded run already had are not misses. If
-   <code>diffcone check</code> itself fails (an input it can't read), the job fails
+   <code>diffcone check</code> itself fails (an input it can't read), or the plan of
+   the commit's change fails even without the recording, the job fails
    too;</li>
 <li>saves the new recording, together with the verdict. Re-running a job
    that found a miss finds it again.</li>
@@ -1410,8 +1429,10 @@ that workflow's runs; default all), <code>artifact-prefix</code> (default
 <code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code> (set either to an empty
 string to skip that issue), and <code>comment</code> (<code>always</code>, the default, or
 <code>on-problem</code>: comment only when there is a miss, a failed check, a
-pull request whose selected tests pytest did not collect, or an incomplete
-report; the job summary always has the report). It reads what
+pull request whose selected tests pytest did not collect or that failed to
+run them after planning (<code>diffcone run</code> refused, or pytest was interrupted
+or could not start), or an incomplete report; the job summary always has
+the report). It reads what
 <code>run</code> and <code>record</code> upload from the same release on, so give all the
 actions the same tag.</p>
 <p>Each miss issue has a link that opens a new issue on diffcone's tracker
@@ -1442,7 +1463,9 @@ one directory per run and run <code>diffcone report</code>:</p>
 newest one with their prefix (<code>diffcone-ubuntu</code> never restores a recording of
 <code>diffcone-ubuntu-py312</code>). If a recording's commit can no longer be fetched
 (after a force push), the run plans without it and says so. A shallow
-checkout is deepened until the base revision is there. GitHub lets pull
+checkout gets the base it plans against: a base relative to <code>HEAD</code>
+(<code>HEAD^1</code>, <code>HEAD~3</code>) by deepening the checkout until it is there, a
+commit, branch or tag name by fetching it. GitHub lets pull
 requests, including those from forks, read caches saved on the default branch but
 never write them, so a pull request can't change the recording. The
 <code>cache-mode</code> settings above give each job only the access it needs.</p>
@@ -1486,8 +1509,9 @@ on, see <a href="../guides/evidence/#run-with-a-recording">execution evidence</a
 <code>junit</code> (where to keep the recording run's JUnit XML; default
 <code>.diffcone/baseline.xml</code>), <code>check</code> (default <code>false</code>: check each push's
 change against its full run, as above) and <code>fail-on-test-failure</code> (default
-<code>false</code>). <code>run</code> also takes <code>base</code> (default <code>HEAD^1</code>, the
-target branch of the pull request's merge commit) and
+<code>false</code>). <code>run</code> also takes <code>base</code> (a commit, a branch or tag name, or
+<code>HEAD^1</code>; by default the event's own, see
+<a href="#run-on-pull-requests">run on pull requests</a>) and
 <code>allow-incomplete-discovery</code> (default <code>false</code>; see
 <a href="../reference/discovery/#when-the-target-list-may-be-short">when the target list may be short</a>).</p>
 <p><code>check</code> takes <code>full</code> (required: the full run's JUnit XML), <code>results</code> (the

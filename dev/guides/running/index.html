@@ -1105,9 +1105,15 @@ is close to, but not the same as, what <code>run</code> does:</p>
   source roots, a git-ignored <code>.py</code> beside tracked code, any
   <code>conftest.py</code>, pytest or ASV configuration, <code>diffcone.toml</code>, dependency
   and lock files, and submodules. Plan with <code>--head WORKTREE</code>, or pass
-  <code>--allow-mismatched-worktree</code>.</li>
+  <code>--allow-mismatched-worktree</code>. Two kinds of file don't count: the
+  results diffcone's CI actions write to <code>diffcone-results/</code> (and the file
+  <code>run -o</code> names), and a git-ignored module that neither commit holds and
+  that only assigns constants, such as the <code>_version.py</code> setuptools-scm or
+  hatch-vcs generate. Both commits would run with the same copy of it.</li>
 <li><strong>Discovery may be incomplete</strong> (exit code <code>3</code>). Pass
-  <code>--allow-incomplete-discovery</code> to run the selection anyway.</li>
+  <code>--allow-incomplete-discovery</code> to run the selection anyway. pytest then
+  also runs every test it collects that the plan doesn't know, so it
+  starts even when nothing was selected; <code>--dry-run</code> says so.</li>
 </ul>
 <h2 id="check-a-plan-against-a-full-run">Check a plan against a full run<a class="headerlink" href="#check-a-plan-against-a-full-run" title="Permanent link">&para;</a></h2>
 <p>To trust a selection, you want to know: did it select every test that
@@ -1129,7 +1135,9 @@ selected, and exits with <code>1</code> if there is one. Options:</p>
 <li><code>--run NAME=JUNIT</code> adds a selective run to compare on the same failures:
   diffcone's own run of the plan, or another test-selection tool's. Name
   diffcone's own run <code>diffcone</code> (<code>--run diffcone=diffcone.xml</code>): a new
-  failure it didn't execute is a miss too, even if the plan selected it.</li>
+  failure it didn't execute is a miss too, even if the plan selected it.
+  Without it, the check only says the plan selected every new failure,
+  not that they ran, and the verdict says so.</li>
 <li><code>--format markdown</code> writes a summary table for a CI job summary, and
   <code>--format json</code> a report for scripts.</li>
 </ul>
@@ -1163,6 +1171,10 @@ any of them was selected.</p>
 <tr>
 <td><code>not_run</code></td>
 <td>New failures diffcone's own run (<code>--run diffcone=...</code>) didn't execute.</td>
+</tr>
+<tr>
+<td><code>own_run_checked</code></td>
+<td><code>true</code> when diffcone's own run was given, so <code>not_run</code> was checked.</td>
 </tr>
 <tr>
 <td><code>plan</code></td>
