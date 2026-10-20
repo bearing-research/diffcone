@@ -111,7 +111,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 60
+INDEX_FORMAT = 61
 
 
 def _indexer_fingerprint() -> str:

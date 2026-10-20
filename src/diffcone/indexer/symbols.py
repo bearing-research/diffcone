@@ -39,6 +39,7 @@ from diffcone.indexer.literals import (
     _collect_literal_bindings,
     _collect_store_names,
     _module_containers,
+    class_adds_no_state,
     class_declared,
     class_immutables,
     class_kept,
@@ -172,11 +173,15 @@ class FirstPass(IndexerState):
 
     def _class_state(self, scope: ModuleScope, nodes: list[ast.ClassDef]) -> tuple[str, ...] | None:
         """``ClassScope.stateless`` of a class defined by ``nodes`` (every
-        ``if``/``else`` variant of it) in ``scope``."""
+        ``if``/``else`` variant of it) in ``scope``: None (it may hold state)
+        also when a decorator or metaclass may give it some
+        (``class_adds_no_state``)."""
         if scope.name not in self._class_bindings:
             tree = scope.tree
             self._class_bindings[scope.name] = module_bindings(tree) if tree is not None else None
         found = self._class_bindings[scope.name]
+        if not class_adds_no_state(found, nodes):
+            return None
         rests: set[str] = set()
         for node in nodes:
             these = class_state(found, node.body)

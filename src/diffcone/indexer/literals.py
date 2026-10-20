@@ -1,6 +1,9 @@
 """What literal strings a name or expression can hold (``getattr(x, NAME)``
-with ``NAME`` from a literal table), and which names a scope binds or
-mutates in place."""
+with ``NAME`` from a literal table), which names a scope binds or
+mutates in place, and which module variables and class attributes hold
+values nothing can change in place (``module_immutables``,
+``class_immutables``, ``class_tables``) and whether a class holds state
+(``class_state``, ``class_kept``)."""
 
 from __future__ import annotations
 
@@ -888,6 +891,45 @@ _PLAIN_METACLASSES = frozenset({"abc.ABCMeta"})
 _INERT_CLASS_DECORATORS = frozenset(
     {"functools.total_ordering", "typing.final", "typing_extensions.final"}
 )
+
+
+# Class decorators that add no state to the class: the inert ones, and
+# ``dataclasses.dataclass`` (methods and slots only; its field defaults stay
+# the body's), bare or called with constant arguments (``class_adds_no_state``).
+_STATELESS_CLASS_DECORATORS = _INERT_CLASS_DECORATORS | {"dataclasses.dataclass"}
+
+
+def class_adds_no_state(found: Bindings | None, nodes: list[ast.ClassDef]) -> bool:
+    """Whether the class statement gives the class no state beyond what its
+    body binds: every decorator one of ``_STATELESS_CLASS_DECORATORS`` (a
+    call of one with constant keyword arguments only) and no keyword but a
+    metaclass of ``_PLAIN_METACLASSES``, each named through an import its
+    module binds once. Any other decorator or metaclass may keep something
+    on the class (a singleton, a registry) (audit round 6, T26)."""
+    for node in nodes:
+        if not (node.decorator_list or node.keywords):
+            continue
+        if found is None:
+            return False
+        counts, imports, _, declared = found
+        once = {name for name, n in counts.items() if n == 1 and name not in declared}
+        canonical = _ImmutableValue(imports, once, counts, set())._canonical
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                if decorator.args or not all(
+                    k.arg is not None and isinstance(k.value, ast.Constant)
+                    for k in decorator.keywords
+                ):
+                    return False
+                decorator = decorator.func
+            named = canonical(decorator)
+            if named is None or named[0] not in _STATELESS_CLASS_DECORATORS:
+                return False
+        for keyword in node.keywords:
+            named = canonical(keyword.value)
+            if keyword.arg != "metaclass" or named is None or named[0] not in _PLAIN_METACLASSES:
+                return False
+    return True
 
 
 def class_declared(nodes: list[ast.ClassDef]) -> set[str]:

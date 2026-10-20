@@ -50,7 +50,16 @@ Supported subset (see internal/design.md):
   lazy constant (``lazy.py``); a variable bound once to a value nothing can
   change in place (a string, a number, a tuple of such, ``re.compile(...)``)
   that nothing binds anew has no writers (``literals.module_immutables``,
-  ``Indexer._immutable_variables``);
+  ``Indexer._immutable_variables``), and so has a class attribute bound once
+  to such a value or a class-level table of them nothing changes
+  (``literals.class_immutables``, ``class_tables``);
+* in-place writes through an instance of an in-scope class (a module
+  variable holding one, or one a function makes) reaching the state its
+  class holds (``literals.class_state``, ``Indexer._instance_writes``); what
+  a constructor is handed is part of the instance, so a change in place of
+  the instance writes it (``writes._HeldSafety``); a write onto the class
+  of an object of unknown type (``type(o).x = v``) writes every class that
+  may own the attribute (``writes.AnyClassOwners``);
 * project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
   ``-c CODE``, and a Python command whose program cannot be named
   (``scripts.py``); a module loaded from a file by path

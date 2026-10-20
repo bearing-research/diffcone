@@ -14,8 +14,9 @@ selection rules.
   leave out of the analysis (deliberately invalid test data, as in a
   formatter's or a linter's test suite). A matching file is read as a data
   file: plans no longer degrade, `collect` records the checkout, and a
-  change to one selects everything in a plan without a recording and the
-  tests that read it or ran its code in one with. What an excluded file
+  change to one selects everything in a plan without a recording; with
+  one, the tests that read the file as data, and every test when a test
+  imported or ran its code. What an excluded file
   runs is not read, so code that imports or runs one (an import,
   `import_module`, `runpy`, a subprocess, a file loader) is selected on any
   change, with a reason naming the file; with a recording, a change to an
@@ -84,7 +85,8 @@ selection rules.
   an `append`, or a write under a branch on the result) was not followed:
   a test that read what an earlier test stored there, without running
   `compute`, was not selected when `compute` changed. Every in-place write
-  of the code that code calls is now followed.
+  of the functions that code calls is now followed, where diffcone can
+  tell which function a call runs.
 - With a recording, a cache kept on an object, a class, a closure or a
   function attribute counted a store only when the stored value named the
   changed code directly. A value computed through a variable, a table or
@@ -120,9 +122,17 @@ selection rules.
   class-level state, when the class or one of its bases holds some. It
   does now. Setting an attribute on a new instance (`new =
   cls.__new__(cls); new._key = None`, as copy and replace methods do) is
-  not a change to the class, unless the class's own `__new__` may hand
-  out an instance in use (a singleton). In `__new__`, `__init_subclass__`
+  not a change to the class, unless a `__new__` in the class's hierarchy,
+  a library base, or a decorator or metaclass may hand out an instance in
+  use (a singleton). In `__new__`, `__init_subclass__`
   and `__class_getitem__`, `cls` is the class.
+- A class whose body binds only constants and methods was taken to hold
+  no state even when a decorator, a metaclass or a library base may give
+  it some (a decorator keeping a singleton or a registry on the class),
+  so changes made through its instances reached none of its readers. Such
+  a class now counts as holding state, unless the decorator or metaclass
+  is one that adds no state (`dataclasses.dataclass`,
+  `functools.total_ordering`, `typing.final`, `abc.ABCMeta`).
 - A module constant that cannot change in place (a string, a number, a
   tuple of such, `re.compile(...)`, `textwrap.dedent(...)`) and that no
   code binds again gained a writer from every function that passed it to
@@ -143,8 +153,10 @@ selection rules.
   place (`tok.rules["x"] = 1`, a method changing what `__init__` stored)
   makes that code a dependency of the readers of `RULES`. Setting or
   counting up the instance's own attributes (`tok.position += 1`) does
-  not, unless the class can run code when they are set (`__setattr__`,
-  a property, `__new__`, a decorator, a metaclass or a library base).
+  not, unless the class can run code when they are set (`__new__`,
+  `__setattr__`, `__delattr__`, `__getattr__`, `__getattribute__`, a
+  class attribute of that name, a decorator, a metaclass or a library
+  base) or the attribute is a special one (`__dict__`).
 - A write onto the class of an object whose type is not known
   (`type(obj).x = v`, `obj.__class__.items.append(v)`, `setattr(type(obj),
   name, v)`, or `type(obj)` handed to a function that sets `c.x`) only

@@ -8,7 +8,7 @@ everything.
 
 **Changes that run on import reach every importer.**
 :   A change to code that runs when a module is imported (a module-level
-    statement, a constant, a class body, a decorator) selects every target
+    statement, a class body, a decorator) selects every target
     whose module imports that module, directly or indirectly. In a codebase
     where most modules import a few central ones, such a change selects
     most tests.
@@ -235,24 +235,28 @@ everything.
     A class-level container is shared by every instance: a change made
     through an instance of your class is a dependency of every reader of
     the class too (`Store._cache`, `cls._cache`), as long as the class or
-    one of your base classes binds something mutable in its body or some
-    code stores onto the class. That holds for an instance a module-level
+    one of your base classes binds something mutable in its body, some
+    code stores onto the class, or it has a decorator, a metaclass or a
+    library base that may give it state (other than `dataclasses.dataclass`,
+    `functools.total_ordering`, `typing.final` and `abc.ABCMeta`). That holds for an instance a module-level
     name holds (`STORE = Store()`, `STORE = make_store()`, or set by a
     function under `global`: `STORE._cache[k] = v`, `STORE.cache()[k] =
     v`), and for one a function makes (`s = Store()`, `new =
     cls.__new__(cls)`, `make_store()`: `s._cache[k] = v`,
     `new._items.append(x)`, or `s._items` handed to a function that
-    changes it). A class whose body holds only constants, methods and
-    properties is not affected, nor is an attribute of a new instance that
-    no class body binds (`s.mine.append(x)`, where only `__init__` sets
-    `self.mine`). State a library base class keeps is not seen.
+    changes it). Otherwise a class whose body holds only constants,
+    methods and properties is not affected, nor is an attribute of a new
+    instance that no class body binds (`s.mine.append(x)`, where only
+    `__init__` sets `self.mine`).
 
     A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
     then `cache[k] = v`, changes nothing shared. Setting an attribute on a
     new instance (`Config().mode = m`, `new = cls.__new__(cls); new.mode =
-    m`) changes that instance only, unless the class or one of its bases
-    defines its own `__new__`, is decorated, has a metaclass or derives
-    from a library class: such an instance may be one kept elsewhere (a
+    m`) changes that instance only, unless a class in its hierarchy (a
+    base or a subclass) defines its own `__new__` or derives from a class
+    of an installed package, or the class is decorated or has a metaclass
+    (for `cls.__new__(cls)`, one other than `functools.total_ordering`,
+    `typing.final` or `abc.ABCMeta`): such an instance may be one kept elsewhere (a
     singleton), and setting its attribute counts as a change of the
     class's state. A method changing an attribute its instance owns
     (`self.items.append(x)`, where `__init__` sets `self.items = []`) on an
@@ -279,20 +283,23 @@ everything.
     place (`tok.rules["x"] = 1`, calling one of its methods, `__init__`
     changing what it stored) changes the object, so it is a dependency of
     every reader of `RULES`. Setting an attribute on the instance
-    (`tok.position = 0`, but not `__dict__` or `__class__`), or adding a number or string to one that only
-    ever holds such values (`tok.position += 1`), in that code or in a
-    function it hands the instance to, is not, as long as no class involved
-    defines `__new__`,
-    `__setattr__`, `__getattr__` or a property of that name, or has a
-    decorator (other than `functools.total_ordering` or `typing.final`), a
-    metaclass or a library base.
+    (`tok.position = 0`; not a special attribute such as `__dict__`), or
+    adding a number or string to one that only ever holds such values
+    (`tok.position += 1`), in that code or in a function it hands the
+    instance to, is not, as long as no class involved defines `__new__`,
+    `__setattr__`, `__delattr__`, `__getattr__` or `__getattribute__`,
+    binds that name in its body to anything but a constant (a property,
+    another descriptor, a list), or has a decorator (other than
+    `functools.total_ordering` or `typing.final`), a metaclass (other than
+    `abc.ABCMeta`) or a library base.
 
     Not followed:
 
     - an object stored away and changed later under another name
       (`self.store = store`, then `self.store[k] = v`), unless the instance
-      holding it was made by calling your class with it in the function that
-      changes it or hands it on (an instance kept in a module variable,
+      holding it was made by calling your class with it, in the function
+      that changes it or hands it on or in a function of yours that returns
+      it (an instance kept in a module variable,
       `TOK = Tokenizer(RULES)`, is not followed back to `RULES`);
     - an object a library function returns that your code then changes;
     - a method called on an item of a module-level dict or list

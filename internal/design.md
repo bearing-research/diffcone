@@ -493,7 +493,8 @@ Further rules (pre-release audit, round 2):
   local or anything else bound there leaves it any method of that name. A module's own top-level
   statements naming its variable are part of the variable's hash and add no
   edge. Not modelled: an object kept under another name and written
-  through later (`self.d = d`, then `self.d[k] = v`; a parameter returned),
+  through later (`self.d = d`, then `self.d[k] = v`, unless the instance
+  was made from it in the writing code or by a factory it calls: T23 below),
   and a third-party function that changes an argument in place.
 * Writes to state held on a class, or reached by another name (audit
   round 6, T6 and T7; pass 2, `_ReferenceCollector._rooted_write` in
@@ -524,8 +525,9 @@ Further rules (pre-release audit, round 2):
   marker of the callee (`result_writes`), and `Indexer._result_writes`
   closes the two over calls between functions after pass 2. A copy is no
   root (`dict(x)`, `list(x)`, `copy.copy(x)`, `x.copy()`, a fresh value:
-  `len`, `str`, `json.loads`, `copy.deepcopy`), nor is a new instance
-  (`Config().mode = m`), nor a class or function handed to a call. A local
+  `len`, `str`, `json.loads`, `copy.deepcopy`), nor, for an attribute
+  bound on it, is a new instance (`Config().mode = m`; T22 below says when
+  one counts), nor a class or function handed to a call. A local
   bound to state is handed on to a callee's written parameter as the state
   is (`writes.observe_call`). The same-module rule holds: a module's own
   top-level statements add no edge for its own variables. Evidence planning
@@ -534,7 +536,7 @@ Further rules (pre-release audit, round 2):
   held in an item of a container variable (`_CACHE["a"].put(4)` with
   `_CACHE = {"a": Store()}`: the variable is a dict display, so only the
   container mutators count), an object stored under an instance's attribute
-  and written later (above), a library function's result.
+  and written later (above; partly modelled by T23 below), a library function's result.
 * A module variable whose value cannot change in place has no writers
   (audit round 6, T20; `literals.module_immutables` in pass 1,
   `Indexer._immutable_variables` after pass 2). Every write of what a
@@ -598,8 +600,14 @@ Further rules (pre-release audit, round 2):
   edge. Nor does handing the variable to a method that writes its receiver
   (`STORE.put(k)`, `@app.route("/")`: `receiver_writes`, the variable's
   edge only): what the method writes through `self` of state its class
-  holds is an edge of the class already. Not modelled: state a base outside the source roots holds (only
-  in-scope bases count), an instance reached otherwise (an attribute bound
+  holds is an edge of the class already. A class counts as holding state
+  whatever its body binds when it has a decorator or metaclass that may add
+  some (`literals.class_adds_no_state`: other than `dataclasses.dataclass`,
+  bare or called with constants, `functools.total_ordering`, `typing.final`,
+  `abc.ABCMeta`; `ClassScope.stateless` is then None) or a base outside the source roots: either
+  may give it state its body does not show (a decorator keeping a
+  singleton or a registry on it; audit round 6, T26). Not modelled: an
+  instance reached otherwise (an attribute bound
   to a parameter, `self.store = store`; an item stored later, `_STORES[k] =
   Store()`; a class attribute bound to one, `registry = Registry()`, whose
   own class is written only when it holds state), and a binding by a
@@ -637,7 +645,10 @@ Further rules (pre-release audit, round 2):
   class or of an in-scope subclass defines or binds `__new__` (for
   `super().__new__`, but the class itself) or has a base outside the roots
   that may (`external_base`; a builtin, typing or abc base does not), and
-  for a constructor none is decorated or has a metaclass (`plain`).
+  none is decorated or has a metaclass: for a constructor none at all
+  (`plain`), for `cls.__new__(cls)` none but the inert ones (`kept`), since
+  a decorator may give back a subclass whose `__new__` keeps an instance
+  (T26).
   Otherwise the bind counts as a write in place: an in-scope `__new__`, a
   library's, a class decorator or a metaclass may give back an object kept
   elsewhere (a singleton). A method called on such an instance adds no
@@ -766,8 +777,8 @@ Further rules (pre-release audit, round 2):
   (T22), what a constructor was handed that is itself an instance of an
   in-scope class is not written by a method called on the holder (the
   methods' own writes of `self` reach the state their classes hold). Not
-  modelled: an instance a factory or a library makes holding an argument
-  (the instance's own roots apply), and a write by a property getter or
+  modelled as precisely: an instance a factory or a library makes holding
+  an argument is followed by its roots, without the binding exemption, and a write by a property getter or
   another descriptor of the class (reading an attribute is no call the
   write tracing follows).
 * Project code run by naming it in a string (`indexer/scripts.py`). A

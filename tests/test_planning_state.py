@@ -915,6 +915,12 @@ INSTANCE_OF_A_CLASS_WITHOUT_STATE = {
         "STORE = Store()\n\n\ndef peek(k):\n    return Store.kind\n",
         STORE_WRITER.format("    STORE.items[k] = 'x'\n"),
     ),
+    "a frozen dataclass": (
+        "from dataclasses import dataclass, field\n\n\n@dataclass(frozen=True)\nclass Store:\n"
+        "    kind: str = 'store'\n    items: dict = field(default_factory=dict)\n\n\n"
+        "STORE = Store()\n\n\ndef peek(k):\n    return Store.kind\n",
+        STORE_WRITER.format("    STORE.items[k] = 'x'\n"),
+    ),
 }
 
 
@@ -1099,6 +1105,27 @@ FRESH_SOUND = {
         "        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n"
         "        return cls._instance\n\n\ndef peek(k):\n    return S._instance.mode\n",
         "from pkg.state import S\n\n\ndef fill(k):\n    s = S()\n    s.mode = 'x'\n",
+    ),
+    "a singleton a decorator may make, through cls.__new__, the body holding none": (
+        "def single(c):\n    class S(c):\n        _instance = None\n\n        def __new__(k):\n"
+        "            if S._instance is None:\n                S._instance = object.__new__(k)\n"
+        "            return S._instance\n\n    return S\n\n\n@single\nclass Config:\n"
+        "    @classmethod\n    def make(cls):\n        new = cls.__new__(cls)\n"
+        "        new.mode = 'x'\n        return new\n\n\ndef peek(k):\n    return Config().mode\n",
+        "from pkg.state import Config\n\n\ndef fill(k):\n    Config.make()\n",
+    ),
+    "a singleton a decorator may make, through cls.__new__": (
+        "def single(c):\n    class S(c):\n        _instance = None\n\n        def __new__(k):\n"
+        "            if S._instance is None:\n                S._instance = object.__new__(k)\n"
+        "            return S._instance\n\n    return S\n\n\n@single\nclass Config:\n"
+        "    items = []\n\n    @classmethod\n    def make(cls):\n        new = cls.__new__(cls)\n"
+        "        new.mode = 'x'\n        return new\n\n\ndef peek(k):\n    return Config().mode\n",
+        "from pkg.state import Config\n\n\ndef fill(k):\n    Config.make()\n",
+    ),
+    "a decorated class whose body holds no state": (
+        "def single(c):\n    c._shared = {}\n    return c\n\n\n@single\nclass Config:\n"
+        "    kind = 'c'\n\n\nCONFIG = Config()\n\n\ndef peek(k):\n    return Config._shared\n",
+        "from pkg.state import CONFIG\n\n\ndef fill(k):\n    CONFIG._shared['k'] = 'x'\n",
     ),
 }
 

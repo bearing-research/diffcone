@@ -1134,8 +1134,10 @@ class Indexer(DynamicBounds):
         a subclass defines ``__new__`` (for ``super``, but ``cls`` itself,
         whose own ``__new__`` calls it) or has a base outside the source
         roots that may (``external_base``; a builtin, typing or abc base
-        does not), and, for a constructor call, none is decorated or has a
-        metaclass (``plain``)."""
+        does not), and none is decorated or has a metaclass, which may give
+        back another class with its own ``__new__``: for a constructor call
+        none at all (``plain``), for ``cls.__new__(cls)`` none but the inert
+        ones (``kept``: ``functools.total_ordering``, ``abc.ABCMeta``)."""
         family = self._family(cls)
         if how == "super":
             family.discard(cls)
@@ -1144,6 +1146,8 @@ class Indexer(DynamicBounds):
             if "__new__" in cscope.members or "__new__" in cscope.bindings:
                 return False
             if cscope.external_base or (how == "call" and not cscope.plain):
+                return False
+            if how == "new" and not cscope.kept:
                 return False
         return True
 
@@ -1214,9 +1218,11 @@ class Indexer(DynamicBounds):
         through a standard-library module a project module shadows or a
         module variable that is not immutable), or some code stores onto
         the class (a ``mutated_by`` edge of its own: ``cls._registry =
-        {}``, ``Store._cache[k] = v``). A class with an external base may
-        hold state the library defines, which only the evidence recorder
-        sees (audit round 6, T21)."""
+        {}``, ``Store._cache[k] = v``), or a decorator or metaclass
+        (``stateless`` is None: ``literals.class_adds_no_state``) or a base
+        outside the source roots (``external_base``) may give it some its
+        body does not show (a singleton a decorator keeps, a library base's
+        registry) (audit round 6, T21, T26)."""
         modules = self.index.modules
         written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
         written |= {state for state, _ in self._global.value_writes}
@@ -1224,7 +1230,7 @@ class Indexer(DynamicBounds):
         found: set[str] = set()
         for cls, cscope in self.class_scopes.items():
             rests = cscope.stateless
-            holds = rests is None or cls in written
+            holds = rests is None or cls in written or cscope.external_base
             for rest in rests or ():
                 if holds:
                     break
