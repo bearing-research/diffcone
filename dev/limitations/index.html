@@ -1257,8 +1257,17 @@ place.</p>
 <p>The same holds for state kept on a class (<code>Config.mode = m</code>,
 <code>Config.items.append(x)</code>, <code>setattr(Config, "mode", m)</code>, <code>cls._instance
 = cls()</code>, <code>type(self)._cache[k] = v</code>): the code storing it is a
-dependency of every reader of the class. And it holds when the code
-reaches the object by another name:</p>
+dependency of every reader of the class. When the class can't be known
+(<code>type(obj).mode = m</code> or <code>obj.__class__.items.append(x)</code>, where <code>obj</code>
+is a parameter or comes from a call), the code is a dependency of the
+readers of each of your classes that has that attribute (its body or
+one of its methods sets it), of each class deriving from a library
+class, and of their subclasses, or of
+every class for a special attribute (<code>__doc__</code>), for an attribute none
+of your classes has, and for a name only known at run time
+(<code>setattr(type(obj), name, v)</code>). A mock's class is its own, so
+<code>type(mock).name = PropertyMock(...)</code> changes none of your classes. And
+it holds when the code reaches the object by another name:</p>
 <ul>
 <li>a local name for it: <code>cache = _CACHE</code>, then <code>cache[k] = v</code> (also
   <code>(cache := _CACHE)</code>, <code>for cache in (_A, _B)</code>, <code>with nullcontext(_CACHE)

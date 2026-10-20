@@ -1811,6 +1811,14 @@ selection rules.</p>
   counting up the instance's own attributes (<code>tok.position += 1</code>) does
   not, unless the class can run code when they are set (<code>__setattr__</code>,
   a property, <code>__new__</code>, a decorator, a metaclass or a library base).</li>
+<li>A write onto the class of an object whose type is not known
+  (<code>type(obj).x = v</code>, <code>obj.__class__.items.append(v)</code>, <code>setattr(type(obj),
+  name, v)</code>, or <code>type(obj)</code> handed to a function that sets <code>c.x</code>) only
+  counted as a change to the object. It now makes the writer a dependency
+  of the readers of every class that may have that attribute: the classes
+  that define or set it, classes deriving from a library class, and their
+  subclasses (every class, for a special attribute, a computed name or an
+  attribute no class sets). A mock's class is its own.</li>
 <li><code>pytest.importorskip("pkg.mod")</code>, <code>importlib.util.find_spec</code>,
   <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code> and <code>pkgutil.iter_modules</code> or
   <code>walk_packages</code> over a package were not imports: a change that made the
