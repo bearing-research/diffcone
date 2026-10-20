@@ -1220,10 +1220,11 @@ doctest in a text file is always selected.</p>
 <p>A docstring set when the module is imported is read when diffcone can
 work out its text: a string, a module-level string built with <code>+</code>, <code>%</code>,
 f-strings or methods such as <code>.format</code> and <code>.replace</code>, or another
-function's docstring (<code>b.__doc__ = a.__doc__</code>). A docstring with examples
-that a decorator rewrites is always selected. One diffcone can't work out
-(<code>f.__doc__ = DOC</code> imported from elsewhere, a decorator that writes the
-whole docstring) is reported, since its doctests are not targets.</p>
+function's docstring (<code>b.__doc__ = a.__doc__</code>). A docstring diffcone
+can't work out (one a decorator of yours rewrites, or <code>f.__doc__ = DOC</code>
+with <code>DOC</code> imported from elsewhere) makes its doctest always selected when
+the docstring written in the code has examples; when it has none, whether
+pytest finds a doctest there is unknown, so it is reported.</p>
 <p>A <code>conftest.py</code> outside your source roots can't be read, so the tests under
 it are always selected and the report says why; add a source root that
 contains it. The same goes for a plugin in your repository that your source
@@ -1316,11 +1317,12 @@ parameter cases together.</p>
 <ul>
 <li>a pytest plugin that collects tests by its own rules, such as classes
   with a different naming pattern;</li>
-<li>a test base class, or an imported test, from outside your source roots;</li>
+<li>a test base class, or an imported test, from outside your source roots
+  (or from a file <code>[index] exclude</code> keeps out);</li>
 <li>an imported test that its module binds to something discovery can't
   follow (<code>test_x = factory.make</code>);</li>
 <li>a test file, benchmark file or doctest module outside your source roots
-  (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>),
+  or kept out by <code>[index] exclude</code> (with <code>--source-root src</code>, add <code>--source-root .</code> for tests in <code>tests/</code>),
   or a <code>benchmark_dir</code> outside the repository;</li>
 <li>options that change what pytest collects in ways discovery doesn't
   follow (<code>-c</code>/<code>--config-file</code>, <code>--rootdir</code>, <code>--pyargs</code>), or a

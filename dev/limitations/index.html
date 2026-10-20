@@ -1088,8 +1088,8 @@ imported module runs code of its own that the importing module did not
 run before.</dd>
 <dt><strong>A change to a file diffcone doesn't read selects everything.</strong></dt>
 <dd>
-<p>Under your source roots, diffcone reads only <code>.py</code> files. A change to
-any other file there (a data file, a <code>.pyx</code>, a <code>README.md</code>, a
+<p>Under your source roots, diffcone reads only <code>.py</code> files, and not
+those <code>[index] exclude</code> lists. A change to any other file there (a data file, a <code>.pyx</code>, a <code>README.md</code>, a
 configuration file) selects every target, since code or tests may read
 it. So does a change to a file's mode (a script made executable, a
 file turned into a symlink). <code>diffcone.toml</code> and <code>.diffcone/</code> are the
@@ -1173,7 +1173,8 @@ for any change:</p>
 modules, so passing it on or writing to it makes every lookup table
 dynamic. The same goes for a function's <code>__globals__</code>, a frame's
 <code>f_globals</code>, and what <code>pickle.loads</code>, <code>pkgutil.resolve_name</code> or
-<code>gc.get_objects()</code> hand back.</p>
+<code>pydoc.locate</code> given a computed name, or <code>gc.get_objects()</code>, hand
+back.</p>
 <p>Two exceptions: a name that starts with fixed text, and a new module
 (<code>types.ModuleType(name)</code>) that isn't installed in <code>sys.modules</code> under
 a name of yours. A copy made with <code>importlib.util.module_from_spec</code>
@@ -1269,10 +1270,26 @@ reaches the object by another name:</p>
   <code>registry</code> returns <code>_CACHE</code>;</li>
 <li><code>globals()["_CACHE"][k] = v</code>.</li>
 </ul>
+<p>A class-level container is shared by every instance: when a
+module-level name holds an instance of your class (<code>STORE = Store()</code>,
+<code>STORE = make_store()</code>, or set by a function under <code>global</code>), a change
+made through it (<code>STORE._cache[k] = v</code>, <code>STORE.cache()[k] = v</code>) is a
+dependency of every reader of the class too (<code>Store._cache</code>,
+<code>cls._cache</code>), as long as the class or one of your base classes binds
+something mutable in its body or some code stores onto the class. A
+class whose body holds only constants, methods and properties is not
+affected. State a library base class keeps is not seen.</p>
 <p>A copy is not the object: <code>cache = dict(_CACHE)</code> or <code>_CACHE.copy()</code>,
-then <code>cache[k] = v</code>, changes nothing shared, and neither does a store
-on an instance's own attribute (<code>self.items.append(x)</code> where <code>__init__</code>
-sets <code>self.items = []</code>) or on a new instance (<code>Config().mode = m</code>).</p>
+then <code>cache[k] = v</code>, changes nothing shared, and a store on an
+attribute of an instance no module variable or class holds
+(<code>Config().mode = m</code>, or <code>self.items.append(x)</code> on such an instance)
+is not followed as shared state.</p>
+<p>A module-level constant nothing can change in place has no writers: a
+name your module binds once, to a string, a number, a tuple of such
+values, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code> or a path, and that no
+code binds again (<code>global</code>, <code>module.NAME = ...</code>, <code>setattr</code>). Passing
+<code>SQL</code> to a function, or using what <code>PATTERN.match(s)</code> returns, does not
+make its readers depend on that code.</p>
 <p>Not followed:</p>
 <ul>
 <li>an object stored away and changed later under another name
@@ -1334,14 +1351,19 @@ the whole suite.</p>
 <dt><strong>Caches with a recording.</strong></dt>
 <dd>
 <p>With a <a href="../guides/evidence/">recording</a>, a test that reads a cache an
-earlier test filled counts as running the code that filled it. That
-works when your code fills the cache with a value it computes, itself
-or through a function it calls (<code>_put(key, compute(key))</code>), and keeps
-it in a module variable, on an object or class, in a closure or a
-function attribute, or behind a memoising decorator. Whatever the code
-that can run a change writes into a module variable counts, a constant
-or a registration included, since what it stores may depend on the
-change in ways the code doesn't show.</p>
+earlier test filled counts as running the code that filled it. Every
+write counts that the code able to run a change makes, itself or
+through a function it calls (<code>_put(key, compute(key))</code>), into a module
+variable, a class, an object (<code>self._cache[k] = v</code>,
+<code>self.__dict__[k] = v</code>, <code>setattr(self, k, v)</code>), a closure or a
+function attribute, whatever it stores: a computed value, a constant,
+a registration, or a value it stores only on some branch, since what
+it stores may depend on the change in ways the code doesn't show. So
+does a result kept by a memoising decorator. The one exception is what
+<code>__init__</code> (or a dataclass's <code>__post_init__</code>) sets on the object it is
+building: no other test can hold that object yet. Calling
+<code>obj.__init__()</code>, <code>Base.__init__(obj)</code> or <code>super().__init__()</code> again on
+an object in use counts as writing into it.</p>
 <p>A decorator counts as memoising when diffcone knows it (<code>functools</code>,
 <code>cachetools</code>, Django's and Werkzeug's <code>cached_property</code>, and others) or
 its name says so (<code>cached_property</code>, <code>cached</code>, <code>memoize</code>, <code>memoized</code>,
@@ -1349,16 +1371,17 @@ its name says so (<code>cached_property</code>, <code>cached</code>, <code>memoi
 <p>Not followed:</p>
 <ul>
 <li>a cache kept by an installed package's decorator under another name;</li>
-<li>a cache filled through a method of an object whose type diffcone
-  can't tell: <code>self._cache.set(k, compute(k))</code> where <code>_cache</code> is set in
-  several ways, <code>_STORE.put(k, compute(k))</code> on a module-level object,
-  a bound method kept in a variable (<code>put = _STORE.put</code>), an object
-  called like a function (<code>__call__</code>), a list of callbacks or hooks
-  called in a loop, <code>Engine().run(k)</code>;</li>
-<li>a write made after the code that can run the change has returned:
-  in a context manager's exit (the end of a <code>with</code> block, or the code
-  after the <code>yield</code> of a <code>@contextmanager</code>), or in a generator that
-  whoever consumes it resumes later;</li>
+<li>a cache filled through code diffcone can't follow from the code that
+  ran the change: a method that stores somewhere other than its own
+  object (<code>_STORE.put(k, v)</code> writing a module-level <code>_D</code>,
+  <code>Engine().run(k)</code>), a method of an attribute set in several ways
+  (<code>self._cache.set(k, compute(k))</code>), a bound method kept in a variable
+  (<code>put = _STORE.put</code>), an object called like a function (<code>__call__</code>),
+  or a list or table of functions (<code>for cb in _HOOKS: cb(v)</code>,
+  <code>_SINKS["a"](k, v)</code>);</li>
+<li>a write in a class's <code>__exit__</code> at the end of a <code>with</code> block, or in a
+  generator created elsewhere that the code running the change
+  resumes;</li>
 <li>a value a test computes and hands to code of your project that keeps
   it (<code>store(compute(2))</code> in the test itself): it counts for that test
   only, as described above.</li>
@@ -1385,6 +1408,14 @@ of its sight:</p>
   test writes and a later one reads: the later test reads the file,
   not the code that wrote it; give each test its own directory
   (<code>tmp_path</code>) or clear the cache between tests;</li>
+<li>a cache an earlier test filled through <code>functools.lru_cache</code> or
+  <code>functools.cache</code>: the recorder clears these before each test, so
+  each test records the code that fills them, but a suite that relies
+  on one test seeing another's cached result runs differently while
+  recording;</li>
+<li>a program your tests start that is named like a read-only system
+  query (<code>git</code>, <code>uname</code>, <code>ps</code>, <code>locale</code>) but is a script of yours on
+  <code>PATH</code>: it is taken for the system program and not followed;</li>
 <li>tests outside pytest's rootdir: with the rootdir in a subdirectory
   (a <code>pytest.ini</code> in <code>sub/</code>) and tests both under it and elsewhere
   (<code>pytest sub/tests tests</code>), records can be matched to the wrong
@@ -1430,7 +1461,9 @@ that leave such files out, or list them under <code>[index] exclude</code> in
 doesn't know what the file imports or calls. Code that imports or runs
 one (an import, <code>import_module</code>, <code>runpy</code>, a subprocess, loading it by
 path) is selected on any change under your source roots, and a change
-to the excluded file itself selects every test. Tests and benchmarks
+to the excluded file itself selects every test (with a recording, see
+<a href="../reference/declarations/#files-to-leave-out-of-the-analysis">diffcone.toml</a>).
+Tests and benchmarks
 in an excluded file, and the fixtures and hooks of an excluded
 <code>conftest.py</code> or plugin, are not discovered.</dd>
 <dt><strong>Uncommitted analysis is only as stable as your working tree.</strong></dt>
@@ -1441,8 +1474,9 @@ planned. The report always marks such plans as uncommitted.</dd>
 <p>A plan of a commit or of <code>INDEX</code> reads what git recorded. A <code>.py</code> file
 git ignores (a generated <code>_version.py</code>, a <code>local_settings.py</code>) and any
 edit to it are invisible to it. <code>run</code> refuses to run such a plan while
-one is on disk under your source roots: plan with <code>--head WORKTREE</code>
-instead.</p>
+one is on disk under your source roots, unless it only assigns
+constants and neither commit has it (a generated <code>_version.py</code>);
+otherwise plan with <code>--head WORKTREE</code>.</p>
 <p>A <code>WORKTREE</code> plan reads ignored <code>.py</code> files in a directory that also
 holds files git tracks or doesn't ignore. A directory with only ignored
 files is skipped, as are ignored directories (a virtualenv, a build
@@ -1452,14 +1486,23 @@ tree) and ignored files that aren't Python.</p>
 <h2 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h2>
 <dl>
 <dt><strong>Discovery reads the source, so it can't see what plugins do.</strong></dt>
-<dd>A pytest plugin that collects tests by its own rules, or a test base
+<dd>
+<p>A pytest plugin that collects tests by its own rules, or a test base
 class outside your source roots, can mean diffcone's target list is
 incomplete. diffcone reports it and the plan exits with code <code>3</code>
 (<a href="../reference/discovery/#when-the-target-list-may-be-short">static discovery</a>).
 A plugin that collects files just by being installed is invisible to a
 plan from the code. Whenever <code>run</code> starts pytest, it runs every
 collected test the plan doesn't know, and a recording captures what
-pytest really collected.</dd>
+pytest really collected.</p>
+<p>A fixture decorator is recognised under another name only when the
+module using it binds that name (<code>from pytest import fixture as fx</code>,
+<code>fx = pytest.fixture</code>). One imported from another of your modules is
+not: an autouse fixture under it is not a dependency of the tests it
+applies to, so a change to it may select none of them. A decorator from
+an installed package that writes docstrings isn't read either: the
+doctests it adds are not targets.</p>
+</dd>
 <dt><strong>Parametrized tests are selected as a whole.</strong></dt>
 <dd>diffcone selects or skips all of a test's parameter cases together.</dd>
 </dl>

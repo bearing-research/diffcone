@@ -1165,8 +1165,10 @@ report:</p>
   reads it counts. This covers caches in module variables, on objects and
   classes, in closures, in function attributes and in <code>cached_property</code>.
   <code>functools.cache</code> and <code>lru_cache</code> are cleared before each test instead.
-  Caches kept by an unknown memoising decorator, or filled through a
-  method of an object whose type diffcone can't tell, are not seen, nor
+  Caches kept by an unknown memoising decorator, or filled by code
+  diffcone can't follow from the code that ran the change (a method
+  writing somewhere other than its own object, a table of callbacks), are
+  not seen, nor
   is what the recorder can't watch: files opened by compiled code, state
   kept on disk between tests (see
   <a href="../../limitations/#state-shared-between-tests">limitations</a>).</li>
@@ -1185,14 +1187,17 @@ report:</p>
   macOS. The test is credited with what it ran, and so is every test
   that runs while it is still running.</li>
 <li><strong>Always selected.</strong> A test that starts a process any other way
-  (<code>os.system</code>, a shell, <code>multiprocessing</code>, or anything on Windows),
+  (<code>os.system</code>, a shell, <code>multiprocessing</code>, or, on Windows, any other
+  process),
   or whose child can't record itself. So is every test that runs
   while such a process is still running (a <code>multiprocessing</code> pool
   reused by a later test), and a test whose child runs your code from
   a <code>python -c</code> snippet or a script outside your source roots.</li>
 <li><strong>Ignored.</strong> A <code>python -c</code> snippet that can't run your code (a
-  version check), and package-manager commands such as <code>uv sync</code>,
-  <code>uv pip</code> or <code>uv python list</code>.</li>
+  version check), package-manager commands (<code>uv sync</code>, <code>uv pip</code>,
+  <code>uv python list</code>), and programs that only ask about the machine or
+  the repository (<code>uname</code>, <code>ps</code>, <code>locale -a</code>, read-only <code>git</code> commands
+  such as <code>git rev-parse</code>), on every platform.</li>
 </ul>
 <p>A project <code>sitecustomize.py</code> still runs in every child.
 - A process started outside every test (by a <code>conftest.py</code> as it is

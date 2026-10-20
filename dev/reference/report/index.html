@@ -1341,7 +1341,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>dynamic_reference</code></td>
 <td>yes</td>
-<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file <code>[index] exclude</code> keeps out of the analysis; or it runs with a module's globals (a doctest) and that module's imports changed.</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file <code>[index] exclude</code> keeps out of the analysis; or it runs with a module's globals (a doctest) and a change lies in what that module imports.</td>
 </tr>
 <tr>
 <td><code>unresolved_name_match</code></td>
@@ -1356,7 +1356,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>lifecycle_dependency_unresolved</code></td>
 <td>yes</td>
-<td>Something it depends on wasn't found: a fixture diffcone couldn't find, a <code>conftest.py</code> or pytest plugin outside the source roots, a benchmark's code it couldn't read.</td>
+<td>Something it depends on wasn't found: a fixture diffcone couldn't find, a <code>conftest.py</code> or pytest plugin outside the source roots or kept out by <code>[index] exclude</code>, a benchmark's code it couldn't read, a doctest whose docstring is computed when the module is imported or whose examples can't be read.</td>
 </tr>
 <tr>
 <td><code>analysis_error</code></td>
@@ -1371,7 +1371,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>unanalysed_file_changed</code></td>
 <td>yes</td>
-<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
+<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a <code>.py</code> file <code>[index] exclude</code> keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
 </tr>
 </tbody>
 </table>
@@ -1463,7 +1463,7 @@ diffcone couldn't bound, so it selected the target to be safe.</p>
 <tr>
 <td><code>unindexed_import</code></td>
 <td>yes</td>
-<td>Changed code ran while a file outside the source roots was being imported, or such a file (or one <code>[index] exclude</code> keeps out) changed and was imported before the recorder started or inside a test.</td>
+<td>Changed code ran while a file outside the source roots was being imported, or such a file (or one <code>[index] exclude</code> keeps out) changed and was imported before the recorder started or inside a test; every test is selected.</td>
 </tr>
 </tbody>
 </table>

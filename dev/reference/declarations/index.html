@@ -1139,8 +1139,10 @@ import of the package. Excluding a module your code or tests import
 costs you that precision; it never makes diffcone skip a test.</p>
 <p>Don't exclude a file pytest collects tests from, or a <code>conftest.py</code>: its
 tests can't be targets, so the plan says discovery is incomplete, and the
-tests under an excluded <code>conftest.py</code> are always selected. The same goes
-for a pytest plugin, a base class tests inherit from, or a benchmark file.</p>
+tests under an excluded <code>conftest.py</code> are always selected. An excluded
+pytest plugin makes every test always selected; excluding a module tests
+inherit their base class from, or a benchmark file, makes the plan report
+discovery incomplete (exit 3).</p>
 <h2 id="what-can-go-wrong">What can go wrong<a class="headerlink" href="#what-can-go-wrong" title="Permanent link">&para;</a></h2>
 <p>Declarations can only add dependencies or selected tests, so they can only
 make diffcone select more tests, never fewer.</p>

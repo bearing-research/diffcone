@@ -1247,7 +1247,12 @@ the run's JUnit XML are written to <code>diffcone-results/</code>; upload them w
   the merge commit's first parent when the merge commit is checked out
   (the default), from the pull request's base commit when you check out
   its head (<code>ref: ${{ github.event.pull_request.head.sha }}</code>, as
-  <code>pull_request_target</code> workflows do);</li>
+  <code>pull_request_target</code> workflows do). That base is the target branch as
+  it was when the event fired, so commits on it that the pull request
+  lacks count as changes too: more is selected, never less. A
+  <code>pull_request_target</code> workflow that doesn't check out the head runs the
+  target branch's own code, which the pull request doesn't change, so
+  nothing is selected;</li>
 <li>for a push, every commit it brings, from the commit the branch pointed
   at before it;</li>
 <li>for a merge queue (<code>merge_group</code>), every queued pull request, from the

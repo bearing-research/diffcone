@@ -1685,33 +1685,34 @@ selection rules.</p>
   runs is not read, so code that imports or runs one (an import,
   <code>import_module</code>, <code>runpy</code>, a subprocess, a file loader) is selected on any
   change, with a reason naming the file; with a recording, a change to an
-  excluded file a test imported selects every test. The report lists each
-  snapshot's patterns (<code>analysis.&lt;side&gt;.excluded</code>).</li>
+  excluded file a test imported selects every test. Discovery's notes on
+  an excluded plugin, base class or benchmark file name the exclusion. The
+  report lists each snapshot's patterns (<code>analysis.&lt;side&gt;.excluded</code>).</li>
 </ul>
 <h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Under <code>--doctest-modules</code>, a docstring set when the module is imported
   (<code>f.__doc__ = ...</code>, a string built from parts) is read when its text can
-  be worked out; one a decorator of yours rewrites makes its doctest
-  always selected; one discovery cannot read is reported (exit 3).</li>
+  be worked out. Otherwise (a decorator of yours rewrites it, or the value
+  is imported or computed) a function whose written docstring has
+  examples has its doctest always selected, and one without is reported
+  (exit 3).</li>
 <li>Tests bound by a call (<code>test_one = make(1)</code>, <code>functools.partial</code>), a
   lambda, <code>globals()</code> or <code>setattr</code>, and pytest-bdd's <code>scenarios()</code>, are
   reported (exit 3). Module data that merely has a test's name is not.</li>
-<li>A <code>usefixtures</code> mark discovery cannot read (a non-literal argument, an
-  alias of the mark, a decorator or factory that applies it,
-  <code>pytestmark = marks()</code>) counts as every visible fixture.</li>
+<li>A <code>usefixtures</code> mark discovery cannot read (a non-literal argument, a
+  decorator or factory that applies it, <code>pytestmark = marks()</code>) counts as
+  every visible fixture.</li>
 <li>Test classes pytest does not collect (an inherited <code>__init__</code> or
   <code>__new__</code>, a dataclass or attrs class) are no longer targets: <code>run</code>
   reported them as selected tests pytest did not collect.</li>
-<li>Notes on an excluded plugin, base class or benchmark file name the
-  exclusion and say to narrow the pattern.</li>
 </ul>
 <h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>schema_version</code> 4: selected and unselected target records no longer
   list <code>lifecycle_dependencies</code>. Each target repeated every fixture,
   hook and module it depends on, nine tenths of a large suite's plan
-  (pandas: 850 MB, now 40 MB). Discovery's output still lists them, and
+  (850 MB for one of 25 000 tests, now 40 MB). Discovery's output still lists them, and
   the ones that selected a target are in its explanation.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
@@ -1739,7 +1740,7 @@ selection rules.</p>
 <li>Planning a large suite took far more memory than it needed: every test
   carried its own copy of the dependencies all tests share (code run
   while pytest collects), in the dependency graph and in the cached
-  discovery results. On pandas (25 620 tests) a plan peaked at 21 GB,
+  discovery results. On a suite of 25 000 tests a plan peaked at 21 GB,
   more than a standard CI runner has, and took up to 90 minutes; it now
   peaks at 5.5 GB and takes under two minutes, and a cached discovery
   result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
@@ -1750,6 +1751,14 @@ selection rules.</p>
   a test that read what an earlier test stored there, without running
   <code>compute</code>, was not selected when <code>compute</code> changed. Every in-place write
   of the code that code calls is now followed.</li>
+<li>With a recording, a cache kept on an object, a class, a closure or a
+  function attribute counted a store only when the stored value named the
+  changed code directly. A value computed through a variable, a table or
+  <code>super()</code>, read off a changed constant, or the writer's own literal could
+  leave a later test that read the cache unselected. Every store counts
+  now, as for module variables, including stores through <code>__dict__</code> and
+  <code>vars()</code>. What <code>__init__</code> sets on the object it is building does not
+  count; calling <code>__init__</code> again on an object in use does.</li>
 <li>With a recording, a module the analysis does not read (outside the
   source roots) that a test imported was credited to that test alone,
   though later tests use it without running any of it: a change to it now
@@ -1765,6 +1774,18 @@ selection rules.</p>
   (<code>registry()[k] = v</code>). Both are followed now, with and without a
   recording. Copies (<code>dict(_CACHE)</code>, <code>.copy()</code>) and an instance's own
   attributes are not shared state.</li>
+<li>A write into state a class holds, made through a module-level instance
+  of it (<code>STORE._cache[k] = v</code>, or <code>STORE.cache()[k] = v</code> where <code>cache</code>
+  returns the class-level <code>_cache</code>), did not make the writer a dependency
+  of the code that reads that state through the class. It does now, with
+  and without a recording.</li>
+<li>A module constant that cannot change in place (a string, a number, a
+  tuple of such, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code>) and that no
+  code binds again gained a writer from every function that passed it to
+  a call or used what its methods return (SQL handed to
+  <code>conn.executescript</code>, <code>PATTERN.match(s)</code>). Such false writers made every
+  reader of the constant depend on unrelated code. Binding the name again
+  (<code>global</code>, <code>module.NAME = ...</code>, <code>setattr</code>) still counts.</li>
 <li><code>pytest.importorskip("pkg.mod")</code>, <code>importlib.util.find_spec</code>,
   <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code> and <code>pkgutil.iter_modules</code> or
   <code>walk_packages</code> over a package were not imports: a change that made the
@@ -1776,15 +1797,15 @@ selection rules.</p>
   <code>item.fixturenames</code> or to the <code>usefixtures</code> option; an autouse fixture
   under another name for the decorator (<code>from pytest import fixture as
   fx</code>); and a module stored into <code>doctest_namespace</code> by subscript
-  (<code>doctest_namespace["np"] = numpy</code>). They are dependencies now.</li>
+  (<code>doctest_namespace["pkg"] = pkg</code>). They are dependencies now.</li>
 <li>The <code>run</code> action planned only the last commit (<code>HEAD^1</code>): a push of
   several commits, a merge-queue group or a pull request checked out at
   its head planned part of the change. It plans the event's own change
   now (a pull request on top of its target branch, every commit of a
   push, the whole merge-queue group), and a branch name, tag or <code>HEAD~n</code>
   as <code>base</code> works in a shallow checkout. With no base (a new branch, a
-  manual run) or one that cannot be fetched, it runs every test and says
-  why.</li>
+  manual run) or an event base that cannot be fetched, it runs every test
+  and says why.</li>
 <li>The <code>record</code> action's check counted any failed plan as an unusable
   recording and passed; it fails now when the plan fails without the
   recording too.</li>
@@ -1802,7 +1823,7 @@ selection rules.</p>
 <li>On Windows, the recorder no longer treats a system query (<code>locale -a</code>,
   <code>git rev-parse</code> and the other read-only <code>git</code> queries, <code>ps</code>, <code>uname</code>) as
   a process it cannot follow. It did, so a recording of a suite that runs
-  one outside every test (pandas' locale tests at import, pytest-benchmark
+  one outside every test (locale tests that query at import, pytest-benchmark
   in every run) planned every change as select-everything there. POSIX
   was not affected.</li>
 </ul>
