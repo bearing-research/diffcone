@@ -1407,7 +1407,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._reflective_write(receiver, None)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        observe_assign(self, node.targets, node.value)
+        observe_assign(self, node.targets)
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
         undone = self.scope.module.undone()
@@ -1455,7 +1455,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
-            observe_assign(self, [node.target], node.value)
+            observe_assign(self, [node.target])
             self._process_store(node.target)
             self._mutation_target(node.target, True)
             self._target_write(node.target)

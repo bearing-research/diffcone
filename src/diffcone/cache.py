@@ -53,6 +53,8 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 56: SourceIndex.stores without what the value derives from, through
+#     ``__dict__``/``vars()`` and explicit re-initialisation (audit T19);
 # 55: no mutated_by edge from a module variable whose one binding is an
 #     immutable value nothing binds anew (audit round 6, T20);
 # 54: writes to state held on a class, and through another name for a module
@@ -98,7 +100,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 55
+INDEX_FORMAT = 56
 
 
 def _indexer_fingerprint() -> str:
@@ -259,7 +261,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         script_refs={(s, p) for s, p in data["script_refs"]},
         process_writes={(s, w) for s, w in data["process_writes"]},
         main_guarded={(a, b, c) for a, b, c in data["main_guarded"]},
-        stores={(a, b, c) for a, b, c in data["stores"]},
+        stores={(a, b) for a, b in data["stores"]},
         handed={(a, b, c) for a, b, c in data["handed"]},
         memoized=set(data["memoized"]),
         decorations={(a, b) for a, b in data["decorations"]},

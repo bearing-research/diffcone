@@ -295,14 +295,19 @@ everything.
 
 **Caches with a recording.**
 :   With a [recording](guides/evidence.md), a test that reads a cache an
-    earlier test filled counts as running the code that filled it. That
-    works when your code fills the cache with a value it computes, itself
-    or through a function it calls (`_put(key, compute(key))`), and keeps
-    it in a module variable, on an object or class, in a closure or a
-    function attribute, or behind a memoising decorator. Whatever the code
-    that can run a change writes into a module variable counts, a constant
-    or a registration included, since what it stores may depend on the
-    change in ways the code doesn't show.
+    earlier test filled counts as running the code that filled it. Every
+    write counts that the code able to run a change makes, itself or
+    through a function it calls (`_put(key, compute(key))`), into a module
+    variable, a class, an object (`self._cache[k] = v`,
+    `self.__dict__[k] = v`, `setattr(self, k, v)`), a closure or a
+    function attribute, whatever it stores: a computed value, a constant,
+    a registration, or a value it stores only on some branch, since what
+    it stores may depend on the change in ways the code doesn't show. So
+    does a result kept by a memoising decorator. The one exception is what
+    `__init__` (or a dataclass's `__post_init__`) sets on the object it is
+    building: no other test can hold that object yet. Calling
+    `obj.__init__()`, `Base.__init__(obj)` or `super().__init__()` again on
+    an object in use counts as writing into it.
 
     A decorator counts as memoising when diffcone knows it (`functools`,
     `cachetools`, Django's and Werkzeug's `cached_property`, and others) or

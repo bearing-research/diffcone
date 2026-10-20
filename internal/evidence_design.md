@@ -225,7 +225,8 @@ object whose type the analysis cannot tell (`store.put(k, v)` with
 resolved calls, or calls the changed function itself by name, is planned
 (W7, "Refinements"), and so is one held on a receiver, a parameter, a
 class, a function or in a closure (`SourceIndex.stores`, `handed`: audit
-round 5, R22) or by a known memoiser (`SourceIndex.memoized`).
+round 5, R22; every store counts, audit T19) or by a known memoiser
+(`SourceIndex.memoized`).
 These can make a test's recorded path shorter than its real one. A
 periodic full run under collection (nightly in CI) detects them after the
 fact. Every test that fails there but went unselected in the runs since is
@@ -467,18 +468,41 @@ selection or states something the tables left implicit; none narrows it.
   A cache outside a module variable (audit round 5,
   R22: `self._cache[k] = compute(k)` on a singleton or a session fixture's
   object, `cls._cache`, a `@memo` decorator's closure, `get.cache`, a
-  `functools.cached_property`) is found by what the code stores rather
-  than where: the index records, per function, each store of a computed
-  value into state outliving the call (`SourceIndex.stores`: the attribute
-  written through `self`/`cls`/a parameter/a function/a class, `@self`,
-  `@param` or `@closure`, and what the value derives from: the symbols the
-  expression names, `name:<n>` on a value of unknown type, `*` for a call
-  through a parameter or a local bound in a way that says nothing). Code
-  in the chain whose stored value derives from a chain member is a cache
-  filler: it is observed, and so is whoever reads that state (the readers
-  of the attribute by name, guarded for a test-code class; every member of
-  the class for `@self`; the readers of the attribute a caller handed for
-  `@param`, `SourceIndex.handed`; only the filler for a closure). A
+  `functools.cached_property`) is found the same way: the index records,
+  per function, each store into state outliving the call, whatever it
+  stores (`SourceIndex.stores`: the attribute written through
+  `self`/`cls`/a parameter/a function/a class; `@self` for the receiver
+  itself, `self.__dict__` and `vars(self)` included; `@param`;
+  `@closure`; a `del` of an item or attribute counts). Code in the chain,
+  or code it calls (`_handed_to`), that stores so is a cache filler: it is
+  observed, and so is whoever reads that state (the readers of the
+  attribute by name, guarded for a test-code class; every member of the
+  class for `@self`; the readers of the attribute a caller handed for
+  `@param`, `SourceIndex.handed`; only the filler for a closure). R22 first
+  counted only a store whose value named a chain member (the symbols the
+  expression names, a name read on a value of unknown type, `*` for a call
+  through a parameter), which had the holes T1 found for module variables:
+  audit T19 found `_FN(k)`, `_TABLE["c"](k)`, `super().compute(k)`,
+  `k * SCALE` with `SCALE` changed, the writer's own literal and a store
+  under a branch on the change's result all missed on a session fixture's
+  object, and stores through `__dict__`/`vars()` read as an attribute
+  named `__dict__`. One store does not count: what an initialiser
+  (`__init__`, `__post_init__`) binds on its own receiver lands on an
+  object created for that call, which nothing else holds yet; whoever
+  keeps it is the code creating it, which can run the change too and
+  whose own store is followed, or a fixture, whose setup is credited to
+  every test using it. An explicit `obj.__init__()`, `Base.__init__(self)`
+  or `super().__init__()` outside an initialiser re-initialises an object
+  in use, and the index records it as a store into that object by the
+  caller. On the evidence corpus (24 replayed pairs that select fewer than
+  every test, 8 projects) counting every store adds 128 of 21 431
+  selections and the initialiser exception brings that to 46 (more-itertools'
+  `seekable.peek`, which stores on its receiver, 6 -> 47 of 766; typer +5 on
+  two pairs; arrow +1 on three; marshmallow -8, initialisers it followed
+  before). A narrower rule, a sound reading of what a value derives from
+  (an unresolved call as `*`, a variable or class attribute as itself,
+  every store of a member of E itself), would save at most 5 of those 46
+  there and still miss a store under a branch on the change's result. A
   function under `cached_property` or a known memoiser
   (`SourceIndex.memoized`) serves its value to readers that run nothing of
   it: its readers and sites are followed as for a changed value; a

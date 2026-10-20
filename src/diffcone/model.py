@@ -268,16 +268,16 @@ MUTATED_BY = "mutated_by"
 # whose ``__init_subclass__`` runs for the subclass. Code that later calls
 # the registry depends on what it holds; the code that registers does not.
 REGISTERS = "registers"
-# Where a store of a computed value goes (SourceIndex.stores), when not an
-# attribute name: the receiver itself, another parameter itself, a variable
-# of an enclosing function; and what the value derives from, when not a
-# symbol: a name read on a value of unknown type, or anything (a call
-# through a parameter, a local bound in a way that says nothing).
+# Where a store goes (SourceIndex.stores), when not an attribute name: the
+# receiver itself, another parameter itself, a variable of an enclosing
+# function.
 STORE_SELF = "@self"
 STORE_PARAM = "@param"
 STORE_CLOSURE = "@closure"
-DERIVED_ANY = "*"
-DERIVED_NAME = "name:"
+# Initialisers run on a fresh object when its class is called: what they
+# bind on the receiver itself no other test can hold yet (an explicit
+# ``obj.__init__()`` stores into ``obj`` instead: indexer/writes.py).
+FRESH_INITS = frozenset({"__init__", "__post_init__"})
 # A lifecycle dependency ``dynamic:<module>`` says the target runs code with
 # that module's globals (a doctest): it is affected by any impact-carrying
 # change in the module's import closure, as a dynamic reference is.
@@ -472,18 +472,17 @@ class SourceIndex:
     # Static planning treats that block as import-time code like any other;
     # discovery leaves it out of what runs while pytest collects.
     main_guarded: set[tuple[str, str, str]] = field(default_factory=set)
-    # (function, where, derived): a store of a computed value into state
-    # outliving the call that no ``mutated_by`` edge names (diffcone.indexer
-    # .writes: the attribute written through ``self``, ``cls``, a parameter,
-    # a function or a class, or ``@self``, ``@param``, ``@closure``), and
-    # what the value derives from (a symbol, ``name:<n>``, ``*``). Evidence
-    # mode treats one whose value derives from code that can run a change as
-    # a cache the first test fills, read by every test that executed the
-    # code reading that state (audit round 5, R22). Static planning does
-    # not use it. ``handed``: (caller, callee, attribute) for a parameter's
+    # (function, where): a store into state outliving the call that no
+    # ``mutated_by`` edge names (diffcone.indexer.writes: the attribute
+    # written through ``self``, ``cls``, a parameter, a function or a class,
+    # or ``@self``, ``@param``, ``@closure``), whatever the value stored.
+    # Evidence mode treats one made by code that can run a change (or code
+    # that code calls) as a cache the first test fills, read by every test
+    # that executed the code reading that state (audit round 5, R22; T19).
+    # Static planning does not use it. ``handed``: (caller, callee, attribute) for a parameter's
     # attribute handed to a callee that writes the parameter it lands in,
     # so a store into a parameter container is read through the attribute.
-    stores: set[tuple[str, str, str]] = field(default_factory=set)
+    stores: set[tuple[str, str]] = field(default_factory=set)
     handed: set[tuple[str, str, str]] = field(default_factory=set)
     # Functions and methods under a decorator known to serve a kept result
     # without running them again (``functools.cached_property``, the

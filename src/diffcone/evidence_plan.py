@@ -115,10 +115,12 @@ lookup site in E is a reader too, followed into the import, collection or
 hook that ran it. Once E is
 built, the variables written in place by code that can run a member of E,
 and by the code that code calls, transitively (``_handed_to``), whatever
-they store (a cache an earlier test filled), are changed values for the code reading
-them inside tests (``_stored_results``); code in that chain storing
-through a receiver, a closure or a function's or class's attribute
-(``SourceIndex.stores``) is read by every test that executed it, and
+they store (a cache an earlier test filled), are changed values for the
+code reading them inside tests (``_stored_results``); code in that chain,
+or code it calls, storing anything through a receiver, a closure or a
+function's or class's attribute (``SourceIndex.stores``; not an
+initialiser's bindings on its own fresh receiver) is read by every test
+that executed the code reading that state, and
 code whose decorator keeps its result (``SourceIndex.memoized``:
 ``cached_property``) by its readers. A target whose lifecycle
 dependencies differ between C and either snapshot is selected
@@ -218,10 +220,9 @@ from diffcone.manifest import Manifest, Target
 from diffcone.model import (
     ATTRIBUTE_KINDS,
     CLASS_STATEMENT,
-    DERIVED_ANY,
-    DERIVED_NAME,
     DISCARDED_IMPORT,
     EXTERNAL_WRITTEN,
+    FRESH_INITS,
     GRAPH_HANDLE,
     INSTALLED,
     INSTALLED_ANYWHERE,
@@ -794,16 +795,15 @@ class _Observers:
         # rounds, as the chain only grows.
         self._handed: dict[str, tuple[str, str]] = {}
         # Caches outside module variables (audit round 5, R22): per function,
-        # where it stores computed values and what they derive from
-        # (``SourceIndex.stores``); per callee, the attributes handed to it
+        # where it stores (``SourceIndex.stores``); per callee, the attributes handed to it
         # in a parameter it writes (``handed``); the functions whose
         # decorator keeps a result (``memoized``); and the decorator
         # functions whose wrapper may run what they decorate.
-        self.stores: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        self.stores: dict[str, set[str]] = defaultdict(set)
         self.handed_to: dict[str, set[str]] = defaultdict(set)
         for index in (c_index, other):
-            for function, where, derived in index.stores:
-                self.stores[function].add((where, derived))
+            for function, where in index.stores:
+                self.stores[function].add(where)
             for _caller, callee, attr in index.handed:
                 self.handed_to[callee].add(attr)
         self.memoized = c_index.memoized | other.memoized
@@ -1220,16 +1220,29 @@ class _Observers:
         a variable was found, since its readers may in turn be stored.
 
         A cache held elsewhere than a module variable (audit round 5, R22) is
-        found the same way, by what the code stores rather than where: code
-        in the chain that stores a value derived from code that can run a
-        member of E (``SourceIndex.stores``: ``self._cache[k] =
-        compute(k)``, ``cls._cache[k] = ...``, a memoising decorator's
-        ``cache[k] = f(k)``) holds the result on an object or in a closure
-        that a later test reads without reaching the change. What reads it
+        found the same way: code in the chain, or code it calls
+        (``_handed_to``), that stores through a receiver, a parameter, a
+        closure or a function's or class's attribute (``SourceIndex.stores``:
+        ``self._cache[k] = compute(k)``, ``cls._cache[k] = ...``, a memoising
+        decorator's ``cache[k] = f(k)``) may hold the result on an object or
+        in a closure that a later test reads without reaching the change.
+        Every store counts, whatever it stores, as for module variables
+        (audit T19: ``_FN(k)``, ``_TABLE["c"](k)``, ``super().compute(k)``,
+        ``k * SCALE`` and the writer's own literal were missed when only a
+        value naming the chain counted). One exception: what an initialiser
+        (``__init__``, ``__post_init__``: ``FRESH_INITS``) binds on its own
+        receiver lands on an object created for that call, which nothing
+        else holds yet. Whoever then keeps it is the code creating it, which
+        can run the change too and whose own store is followed, or a
+        fixture, whose setup is credited to every test using it; an
+        explicit ``obj.__init__()``, ``Base.__init__(self)`` or
+        ``super().__init__()`` outside an initialiser re-initialises an
+        object in use and is a store into it by the caller
+        (indexer/writes.py). What reads it
         is whoever reads that state: the code reading the attribute by name
         (for a store through ``self``, ``cls``, a parameter, a function or a
-        class), every member of the class for a method writing its receiver
-        through another method (``self.put(k, compute(k))``), the storing
+        class), every member of the class for a store into the receiver
+        itself (``self.x = v``, ``self.put(k, v)``), the storing
         code itself for a closure, and the readers of the attribute a caller
         handed for a parameter container (``fill(self._cache, k)``:
         ``handed``); each is observed, and the storing code too, so every
@@ -1303,13 +1316,17 @@ class _Observers:
         # Storing or memoised code anywhere in the chain, every round: what a
         # store derives from may have joined the chain only now.
         keepers = [
-            (node, ran)
+            (node, ran, None)
             for node, ran in sorted(self._runs_e.items())
             if (node in self.stores or node in self.memoized) and node not in self._stored_seen
         ]
+        keepers += [
+            (node, ran, caller)
+            for node, (caller, ran) in sorted(self._handed.items())
+            if node in self.stores and node not in self._stored_seen
+        ]
         kept = False
-        chain_names: set[str] | None = None
-        for keeper, ran in keepers:
+        for keeper, ran, caller in keepers:
             if keeper in self.test_code.isolated and self._only_in_tests({keeper}):
                 self._stored_seen.add(keeper)
                 continue  # the isolation assumption, as above
@@ -1325,19 +1342,21 @@ class _Observers:
                 self._observe(keeper, Rule.EXECUTED_READER, label, change)
                 self._readers(keeper, change, label, in_tests=True, content_only=True)
                 self._sites(self.symbols[keeper], change, label, in_tests=True)
-            wheres: set[str] = set()
-            for where, derived in sorted(self.stores.get(keeper, ())):
-                if chain_names is None:
-                    chain_names = {self.symbols[s].name for s in self._runs_e if s in self.symbols}
-                if self._derives_from_chain(derived, chain_names):
-                    wheres.add(where)
+            wheres = set(self.stores.get(keeper, ()))
+            if self.symbols[keeper].name in FRESH_INITS:
+                wheres.discard(STORE_SELF)  # bound on a fresh object
             if not wheres:
-                continue  # the chain's result is not what it stores, as far as E goes
+                continue
             self._stored_seen.add(keeper)
             kept = True
+            ran_by = (
+                f"{keeper} can run {ran} and stores"
+                if caller is None
+                else f"{caller} can run {ran} and calls {keeper}, which stores"
+            )
             label = (
-                f"{keeper} can run {ran} and stores what that computes, where a later test "
-                f"may read what an earlier one stored ({why.detail})"
+                f"{ran_by} into state a later test may read what an earlier one "
+                f"stored in ({why.detail})"
             )
             self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
@@ -1388,22 +1407,6 @@ class _Observers:
                 found.append((callee, caller, ran))
                 queue.append((callee, caller, ran))
         return found
-
-    def _derives_from_chain(self, derived: str, chain_names: set[str]) -> bool:
-        """Whether a stored value (``SourceIndex.stores``) may come from code
-        that can run a member of E: a symbol in the chain (a class through
-        its constructors), a name some member of the chain bears, or
-        anything (a call through a parameter, a local bound twice)."""
-        if derived == DERIVED_ANY:
-            return True
-        if derived.startswith(DERIVED_NAME):
-            return derived[len(DERIVED_NAME) :] in chain_names
-        if derived in self._runs_e:
-            return True
-        symbol = self.symbols.get(derived)
-        if symbol is not None and symbol.kind == SymbolKind.CLASS:
-            return any(c in self._runs_e for c in self._constructors(derived))
-        return False
 
     def _state_readers(
         self, keeper: str, wheres: set[str], change: SymbolChange | None, label: str

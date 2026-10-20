@@ -3090,6 +3090,223 @@ def test_r22_a_cache_outside_a_module_variable_reaches_every_reader(repo, files)
     assert selected(plan) == {READER_C, BENCH_OTHER.runner_id}
 
 
+# A session fixture's ``Store``: test_a fills it (``get``), test_z reads
+# what test_a stored (``peek``) and runs nothing that computed it.
+STORE_LIB = """\
+SCALE = 2
+
+
+def compute(k):
+    return k * 2
+
+
+def other():
+    return 10
+
+
+_FN = compute
+_TABLE = {{"c": compute}}
+
+
+class Base:
+    def compute(self, k):
+        return k * 2
+
+
+class Store(Base):
+    def __init__(self):
+        self.d = {{}}
+
+    def get(self, k):
+        if k not in self.d:
+{store}
+        return self.d.get(k, 0)
+
+    def peek(self, k):
+        return {peek}
+"""
+STORE_FILES = {
+    **BENCH_PKG,
+    "tests/conftest.py": "import pytest\n\nfrom pkg.lib import Store\n\n\n"
+    "@pytest.fixture(scope='session')\ndef store():\n    return Store()\n",
+    "tests/test_a.py": "def test_a(store):\n    assert store.get(2) >= 0\n",
+    "tests/test_z.py": "def test_z(store):\n    assert store.peek(2) is not None\n",
+    "benchmarks/bench_store.py": "from pkg.lib import Store, other\n\n\nclass TimeStore:\n"
+    "    def time_get(self):\n        Store().get(2)\n\n"
+    "    def time_other(self):\n        other()\n",
+}
+STORE_A, STORE_Z = "tests/test_a.py::test_a", "tests/test_z.py::test_z"
+BENCH_GET = asv_target(
+    "bench_store.TimeStore.time_get", "benchmarks.bench_store.TimeStore.time_get"
+)
+BENCH_OTHER_FN = asv_target(
+    "bench_store.TimeStore.time_other", "benchmarks.bench_store.TimeStore.time_other"
+)
+_COMPUTE = ("def compute(k):\n    return k * 2", "def compute(k):\n    return k * 3")
+_PEEK = "self.d.get(k)"
+_DYNAMIC_PEEK = 'getattr(self, f"v{k}", 0)'
+# (the store in ``get``, what ``peek`` returns, the change)
+STORED_VALUES = {
+    "a call through a variable": ("self.d[k] = _FN(k)", _PEEK, _COMPUTE),
+    "a call through a table": ('self.d[k] = _TABLE["c"](k)', _PEEK, _COMPUTE),
+    "a super() call": (
+        "self.d[k] = super().compute(k)",
+        _PEEK,
+        (
+            "    def compute(self, k):\n        return k * 2",
+            "    def compute(self, k):\n        return k * 3",
+        ),
+    ),
+    "a changed constant": ("self.d[k] = k * SCALE", _PEEK, ("SCALE = 2", "SCALE = 3")),
+    "the writer's own literal": ('self.d[k] = "x"', _PEEK, ('self.d[k] = "x"', 'self.d[k] = "y"')),
+    "a branch on the change's result": (
+        "if compute(k) > 3:\n                self.d[k] = 1",
+        _PEEK,
+        _COMPUTE,
+    ),
+    "through __dict__": ('self.__dict__[f"v{k}"] = compute(k)', _DYNAMIC_PEEK, _COMPUTE),
+    "through vars()": ('vars(self)[f"v{k}"] = compute(k)', _DYNAMIC_PEEK, _COMPUTE),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STORED_VALUES))
+def test_t19_a_store_onto_an_object_counts_whatever_it_stores(repo, case):
+    """Audit T19: a store through a receiver was followed only when the
+    value named a symbol of the chain, which misses a call through a
+    variable, a table or ``super()``, a changed constant, the writer's own
+    literal and a branch on the change's result, as module variables did
+    before audit T1; and a store through ``__dict__`` or ``vars()`` was not
+    read as one into the object. ``get`` can run the change and stores into
+    the session fixture's ``Store``: test_z reads it without running
+    anything changed, and is selected whatever was stored. The benchmark of
+    ``get`` is selected statically; the one of ``other`` is not."""
+    store, peek, (old, new) = STORED_VALUES[case]
+    lib = STORE_LIB.format(store="            " + store, peek=peek)
+    base = repo.commit({**STORE_FILES, "pkg/lib.py": lib})
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace(old, new, 1)})
+    plan = _evidence_plan(repo, base, head, evidence, [BENCH_GET, BENCH_OTHER_FN])
+    assert selected(plan) == {STORE_A, STORE_Z, BENCH_GET.runner_id}
+    assert rules(plan, STORE_Z) == {"executed_reader"}
+
+
+# ``Thing`` builds its value in ``__init__`` from ``compute``.
+THING_LIB = """\
+def compute():
+    return 1
+
+
+class Base:
+    def __init__(self, v=None):
+        self.v = compute() if v is None else v
+
+
+class Thing(Base):
+    def __init__(self):
+        self.v = 0
+
+    def peek(self):
+        return self.v
+
+    @staticmethod
+    def label():
+        return "thing"
+
+
+def other():
+    return 10
+"""
+THING_FIXTURE = (
+    "import pytest\n\nfrom pkg.lib import Thing\n\n\n"
+    "@pytest.fixture(scope='session')\ndef thing():\n    return Thing()\n"
+)
+THING_BENCH = {
+    "benchmarks/bench_thing.py": "from pkg.lib import Thing, other\n\n\ndef time_thing():\n"
+    "    Thing()\n\n\ndef time_other():\n    other()\n",
+}
+BENCH_BUILD = asv_target("bench_thing.time_thing", "benchmarks.bench_thing.time_thing")
+BENCH_UNRELATED = asv_target("bench_thing.time_other", "benchmarks.bench_thing.time_other")
+_THING_INIT = "class Thing(Base):\n    def __init__(self):\n        self.v = 0\n"
+# (the class ``Thing`` with its ``reset``, the session fixture's construction)
+REINIT = {
+    "self.__init__()": (
+        "class Thing(Base):\n    def reset(self):\n        self.__init__()\n",
+        "Thing(0)",
+    ),
+    "Base.__init__(self)": (
+        _THING_INIT + "\n    def reset(self):\n        Base.__init__(self)\n",
+        "Thing()",
+    ),
+    "super().__init__()": (
+        _THING_INIT + "\n    def reset(self):\n        super().__init__()\n",
+        "Thing()",
+    ),
+}
+
+
+@pytest.mark.parametrize("call", sorted(REINIT))
+def test_t19_re_initialising_an_object_in_use_stores_into_it(repo, call):
+    """Guard for the one store that does not count (audit T19): what an
+    initialiser binds on its own receiver lands on a fresh object. Called by
+    name on an object in use it is a store into that object by the caller:
+    ``reset`` re-initialises the session fixture's ``Thing`` through
+    ``Base.__init__``, which runs the change; test_z only reads ``v``."""
+    thing, built = REINIT[call]
+    lib = THING_LIB.replace(_THING_INIT, thing)
+    files = {
+        **BENCH_PKG,
+        **THING_BENCH,
+        "pkg/lib.py": lib,
+        "tests/conftest.py": THING_FIXTURE.replace("Thing()", built),
+        "tests/test_a.py": "def test_a(thing):\n    thing.reset()\n",
+        "tests/test_z.py": "def test_z(thing):\n    assert thing.peek() is not None\n",
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("return 1\n", "return 2\n", 1)})
+    plan = _evidence_plan(repo, base, head, evidence, [BENCH_BUILD, BENCH_UNRELATED])
+    assert selected(plan) == {STORE_A, STORE_Z, BENCH_BUILD.runner_id}
+
+
+def test_t19_an_initialiser_binding_its_fresh_receiver_is_no_store(repo):
+    """What ``Base.__init__`` binds on a fresh ``Thing`` no other test holds:
+    a test calling only ``Thing.label`` is not selected (it was, as a
+    member of the class whose receiver was written). The guards: a test
+    building its own ``Thing`` runs the change, and so does every user of a
+    session fixture holding one (its setup is credited to each); a store of
+    the fresh object by the code creating it (``holder``, a closure here)
+    is followed. A benchmark reaching the change is selected statically."""
+    lib = THING_LIB.replace(_THING_INIT, "class Thing(Base):\n    pass\n")
+    files = {
+        **BENCH_PKG,
+        **THING_BENCH,
+        "pkg/lib.py": lib,
+        "pkg/hold.py": "from pkg.lib import Thing\n\n\ndef holder():\n    kept = {}\n\n"
+        "    def get():\n        if 'thing' not in kept:\n            kept['thing'] = Thing()\n"
+        "        return kept['thing']\n\n    return get\n\n\nHOLD = holder()\n",
+        "tests/conftest.py": THING_FIXTURE,
+        "tests/test_a.py": "from pkg.lib import Thing\n\n\ndef test_a():\n"
+        "    assert Thing().peek() is not None\n",
+        "tests/test_b.py": "def test_b(thing):\n    assert thing.v is not None\n",
+        "tests/test_c.py": "from pkg.lib import Thing\n\n\ndef test_c():\n"
+        "    assert Thing.label() == 'thing'\n",
+        "tests/test_h.py": "from pkg.hold import HOLD\n\n\ndef test_h1():\n"
+        "    assert HOLD().peek() is not None\n\n\ndef test_h2():\n"
+        "    assert HOLD().peek() is not None\n",
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("return 1\n", "return 2\n", 1)})
+    plan = _evidence_plan(repo, base, head, evidence, [BENCH_BUILD, BENCH_UNRELATED])
+    assert selected(plan) == {
+        STORE_A,
+        "tests/test_b.py::test_b",
+        "tests/test_h.py::test_h1",
+        "tests/test_h.py::test_h2",
+        BENCH_BUILD.runner_id,
+    }
+
+
 # A lazily initialised constant (pandas' ``find_stack_level``: ``global
 # _pkg_dir; if _pkg_dir is None: _pkg_dir = os.path.dirname(pd.__file__)``)
 # holds the same value whoever fills it first: running its writer at import

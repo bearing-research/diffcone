@@ -187,15 +187,14 @@ class _Output:
     param_writes: set[tuple[str, str]] = field(default_factory=set)
     passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
     # Caches outside module variables (diffcone.indexer.writes, audit round
-    # 5, R22): stores of computed values into state outliving the call
-    # (SourceIndex.stores), the method calls on such state handed a computed
-    # value, resolved after pass 2 (``computed_passes``: (caller, where,
-    # callee, name, derived)), a parameter's attribute handed to a callee
-    # (``held_passes``: (caller, callee, name, slot, attribute, bound);
-    # resolved into SourceIndex.handed), and the functions whose decorator
-    # may keep a result (SourceIndex.memoized).
-    stores: set[tuple[str, str, str]] = field(default_factory=set)
-    computed_passes: set[tuple[str, str, str, str, str]] = field(default_factory=set)
+    # 5, R22): stores into state outliving the call (SourceIndex.stores),
+    # the method calls on such state, resolved after pass 2
+    # (``computed_passes``: (caller, where, callee, name)), a parameter's
+    # attribute handed to a callee (``held_passes``: (caller, callee, name,
+    # slot, attribute, bound); resolved into SourceIndex.handed), and the
+    # functions whose decorator may keep a result (SourceIndex.memoized).
+    stores: set[tuple[str, str]] = field(default_factory=set)
+    computed_passes: set[tuple[str, str, str, str]] = field(default_factory=set)
     held_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
     handed: set[tuple[str, str, str]] = field(default_factory=set)
     memoized: set[str] = field(default_factory=set)
@@ -451,8 +450,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.attr_refs = [_AttrRef(*r) for r in data["attr_refs"]]
     out.param_writes = {(f, p) for f, p in data["param_writes"]}
     out.passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["passes"]}
-    out.stores = {(a, b, c) for a, b, c in data["stores"]}
-    out.computed_passes = {(a, b, c, d, e) for a, b, c, d, e in data["computed_passes"]}
+    out.stores = {(a, b) for a, b in data["stores"]}
+    out.computed_passes = {(a, b, c, d) for a, b, c, d in data["computed_passes"]}
     out.held_passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["held_passes"]}
     out.memoized = set(data["memoized"])
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
