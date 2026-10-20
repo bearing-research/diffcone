@@ -1779,6 +1779,16 @@ selection rules.</p>
   returns the class-level <code>_cache</code>), did not make the writer a dependency
   of the code that reads that state through the class. It does now, with
   and without a recording.</li>
+<li>The same held for an instance a function makes itself: a change in
+  place through it (<code>s = Store(); s._items.append(x)</code>, an instance made
+  with <code>cls.__new__(cls)</code> or returned by a factory, or one handed to a
+  function that changes it) did not reach the code that reads the
+  class-level state, when the class or one of its bases holds some. It
+  does now. Setting an attribute on a new instance (<code>new =
+  cls.__new__(cls); new._key = None</code>, as copy and replace methods do) is
+  not a change to the class, unless the class's own <code>__new__</code> may hand
+  out an instance in use (a singleton). In <code>__new__</code>, <code>__init_subclass__</code>
+  and <code>__class_getitem__</code>, <code>cls</code> is the class.</li>
 <li>A module constant that cannot change in place (a string, a number, a
   tuple of such, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code>) and that no
   code binds again gained a writer from every function that passed it to

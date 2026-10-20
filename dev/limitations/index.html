@@ -1270,20 +1270,31 @@ reaches the object by another name:</p>
   <code>registry</code> returns <code>_CACHE</code>;</li>
 <li><code>globals()["_CACHE"][k] = v</code>.</li>
 </ul>
-<p>A class-level container is shared by every instance: when a
-module-level name holds an instance of your class (<code>STORE = Store()</code>,
-<code>STORE = make_store()</code>, or set by a function under <code>global</code>), a change
-made through it (<code>STORE._cache[k] = v</code>, <code>STORE.cache()[k] = v</code>) is a
-dependency of every reader of the class too (<code>Store._cache</code>,
-<code>cls._cache</code>), as long as the class or one of your base classes binds
-something mutable in its body or some code stores onto the class. A
-class whose body holds only constants, methods and properties is not
-affected. State a library base class keeps is not seen.</p>
+<p>A class-level container is shared by every instance: a change made
+through an instance of your class is a dependency of every reader of
+the class too (<code>Store._cache</code>, <code>cls._cache</code>), as long as the class or
+one of your base classes binds something mutable in its body or some
+code stores onto the class. That holds for an instance a module-level
+name holds (<code>STORE = Store()</code>, <code>STORE = make_store()</code>, or set by a
+function under <code>global</code>: <code>STORE._cache[k] = v</code>, <code>STORE.cache()[k] =
+v</code>), and for one a function makes (<code>s = Store()</code>, <code>new =
+cls.__new__(cls)</code>, <code>make_store()</code>: <code>s._cache[k] = v</code>,
+<code>new._items.append(x)</code>, or <code>s._items</code> handed to a function that
+changes it). A class whose body holds only constants, methods and
+properties is not affected, nor is an attribute of a new instance that
+no class body binds (<code>s.mine.append(x)</code>, where only <code>__init__</code> sets
+<code>self.mine</code>). State a library base class keeps is not seen.</p>
 <p>A copy is not the object: <code>cache = dict(_CACHE)</code> or <code>_CACHE.copy()</code>,
-then <code>cache[k] = v</code>, changes nothing shared, and a store on an
-attribute of an instance no module variable or class holds
-(<code>Config().mode = m</code>, or <code>self.items.append(x)</code> on such an instance)
-is not followed as shared state.</p>
+then <code>cache[k] = v</code>, changes nothing shared. Setting an attribute on a
+new instance (<code>Config().mode = m</code>, <code>new = cls.__new__(cls); new.mode =
+m</code>) changes that instance only, unless the class or one of its bases
+defines its own <code>__new__</code>, is decorated, has a metaclass or derives
+from a library class: such an instance may be one kept elsewhere (a
+singleton), and setting its attribute counts as a change of the
+class's state. A method changing an attribute its instance owns
+(<code>self.items.append(x)</code>, where <code>__init__</code> sets <code>self.items = []</code>) on an
+instance no module variable or class holds is not followed as shared
+state.</p>
 <p>A module-level constant nothing can change in place has no writers: a
 name your module binds once, to a string, a number, a tuple of such
 values, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code> or a path, and that no
