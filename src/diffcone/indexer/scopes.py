@@ -99,6 +99,10 @@ class ModuleScope:
     # Module-level names bound to a dict, list or set display (or a live view
     # of one): a use elsewhere that is not a read may change them in place.
     containers: frozenset[str] = frozenset()
+    # Module-level names bound once to a value nothing can change in place,
+    # and what that rests on (literals.module_immutables); decided after
+    # pass 2 (Indexer._immutable_variables).
+    immutables: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Module-level literal name -> the names its values were taken from.
     literal_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # ``literal_names`` as this module's own code leaves them, before other

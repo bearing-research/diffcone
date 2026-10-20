@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 import tempfile
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from diffcone.cache import IndexCache, ModuleCache, index_to_dict
 from diffcone.indexer import build_index
+from diffcone.indexer.literals import module_immutables
 from diffcone.model import (
     Edge,
     EdgeKind,
@@ -1288,3 +1290,78 @@ def test_lazy_constants(case):
     source, extra, want = LAZY_CASES[case]
     idx = index({"pkg/__init__.py": "", "pkg/m.py": source, **extra})
     assert idx.lazy_constants == want
+
+
+IMMUTABLE_SOURCES = {
+    "literals": (
+        "A = 'a'\nB = b'b'\nC = 1.5\nD: int = -2\nE = None\nF = A + f'{C}'\n",
+        {"A": (), "B": (), "C": (), "D": (), "E": (), "F": ("A",)},
+    ),
+    "a tuple of immutables": ("T = ('a', (1, None), *('b',))\n", {"T": ()}),
+    "a tuple holding a list": ("T = ('a', [])\n", {}),
+    "a set display": ("S = {'a'}\n", {}),
+    "frozenset and tuple of displays": (
+        "S = frozenset({'a'})\nT = tuple(['a'])\n",
+        {"S": (), "T": ()},
+    ),
+    "frozenset of a name": ("L = ['a']\nS = frozenset(L)\n", {"S": ("L",)}),
+    "a compiled pattern": ("import re\n\nP = re.compile('a')\n", {"P": ("module:re",)}),
+    "an imported compile": (
+        "from re import compile\n\nP = compile('a')\n",
+        {"P": ("module:re",)},
+    ),
+    "a rebound import": ("import re\n\nre = object()\nP = re.compile('a')\n", {}),
+    "a relative import": ("from .re import compile\n\nP = compile('a')\n", {}),
+    "string methods": (
+        "S = ', '.join(('a', 'b')).upper()\nF = '{}'.format(1)\n",
+        {"S": (), "F": ()},
+    ),
+    "a method handed a list": ("S = ', '.join(['a'])\n", {}),
+    "a split": ("S = 'a b'.split()\n", {}),
+    "a path": (
+        "from pathlib import Path\n\nHERE = Path(__file__).resolve().parent\n",
+        {"HERE": ("module:pathlib",)},
+    ),
+    "a datetime handed a project object": (
+        "import datetime\n\nD = datetime.datetime(2020, 1, 1, tzinfo=TZ())\n",
+        {},
+    ),
+    "a call of project code": ("def make():\n    return 'a'\n\n\nS = make()\n", {}),
+    "bound twice": ("S = 'a'\nS = 'b'\n", {}),
+    "augmented": ("S = 'a'\nS += 'b'\n", {}),
+    "deleted": ("S = 'a'\ndel S\n", {}),
+    "a loop target": ("S = 'a'\nfor S in 'xy':\n    pass\n", {}),
+    "global in a function": ("S = 'a'\n\n\ndef f():\n    global S\n    S = []\n", {}),
+    "a walrus in a comprehension": ("S = 'a'\nX = [(S := c) for c in 'xy']\n", {}),
+    "globals() in the module": ("S = 'a'\n\n\ndef f():\n    return globals()\n", {}),
+    "a star import": ("from os import *\n\nS = 'a'\n", {}),
+    "sys.modules": ("import sys\n\nS = 'a'\nM = sys.modules[__name__]\n", {}),
+}
+
+
+@pytest.mark.parametrize("case", list(IMMUTABLE_SOURCES))
+def test_t20_module_immutables(case):
+    """Pass 1's record of the module-level names bound once to a value
+    nothing can change in place, with what that rests on (audit round 6,
+    T20); whether one is immutable is decided over the whole index."""
+    source, want = IMMUTABLE_SOURCES[case]
+    assert module_immutables(ast.parse(source)) == want
+
+
+def test_t20_an_immutable_variable_keeps_its_rebinding_edges():
+    """Rebinding a constant (``mod.X = v``) is an edge of its own; a write
+    into it in place is none, and makes it no less immutable."""
+    idx = index(
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": "X = 'a'\nY = 'b'\n",
+            "pkg/w.py": (
+                "from pkg import m\n\n\ndef put(d):\n    d['k'] = 1\n\n\n"
+                "def fill():\n    put(m.X)\n    put(m.Y)\n\n\ndef rebind():\n    m.Y = []\n"
+            ),
+        }
+    )
+    writers = {
+        (e.source, e.target) for e in idx.edges if e.detail == "mutated_by" and "pkg.m" in e.source
+    }
+    assert writers == {("pkg.m.Y", "pkg.w.fill"), ("pkg.m.Y", "pkg.w.rebind")}

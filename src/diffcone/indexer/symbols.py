@@ -40,6 +40,7 @@ from diffcone.indexer.literals import (
     _collect_store_names,
     _module_containers,
     make_evaluator,
+    module_immutables,
 )
 from diffcone.indexer.scopes import (
     ClassScope,
@@ -173,6 +174,7 @@ class FirstPass(IndexerState):
         scope.literal_names = _collect_literal_bindings(scope.tree, {}, sources=sources)
         scope.literal_sources = {k: tuple(sorted(v)) for k, v in sorted(sources.items())}
         scope.containers = _module_containers(scope.tree)
+        scope.immutables = module_immutables(scope.tree)
         found = scan_module(
             scope.tree, scope.name, scope.is_package, make_evaluator(scope.literal_names)
         )

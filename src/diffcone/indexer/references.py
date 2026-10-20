@@ -9,7 +9,10 @@ through items and method results of a root, through any local name bound
 to one (``aliases.name_sources``), ``globals()``, or what an in-scope
 function returns (``state_returns``/``result_writes``, closed after pass 2
 by ``Indexer._result_writes``). Copies and new instances are no roots.
-Each root gets a ``mutated_by`` edge to the writer (``_rooted_write``)."""
+Each root gets a ``mutated_by`` edge to the writer (``_rooted_write``), after
+pass 2 and unless the root is a variable whose value cannot change in place
+(``value_writes``, Indexer._value_writes); rebinding a variable is an edge of
+its own (``_mutation_target``)."""
 
 from __future__ import annotations
 
@@ -776,17 +779,21 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         return
 
-    def _mutation_target(self, expr: ast.expr) -> None:
+    def _mutation_target(self, expr: ast.expr, whole: bool = False) -> None:
         """Record ``source`` as a writer when ``expr`` (an assignment target or
         a receiver of a mutating call) is a subscript/attribute of a variable
         symbol, or the variable itself under ``global``; or another module's
         variable assigned through the module (``settings.DEBUG = True`` in a
         conftest: whoever reads ``settings.DEBUG`` sees the writer). Items
         count on the way (``store._CACHE["k"].append(x)``, ``del
-        store._CACHE["k"]``, ``store._CACHE["k"] += [x]``: W15)."""
+        store._CACHE["k"]``, ``store._CACHE["k"] += [x]``: W15). ``whole``:
+        ``expr`` is itself bound or deleted (an assignment target), so a
+        variable it names is rebound, which is an edge of its own; a change
+        of what the variable holds is a value write (``_value_write``)."""
         inner = expr
         while isinstance(inner, (ast.Subscript, ast.Attribute)):
             chain = _flatten_chain(inner) if isinstance(inner, ast.Attribute) else None
+            rebound = whole and inner is expr
             inner = inner.value
             if chain is not None and len(chain) > 1 and chain[0] not in self.scope.locals:
                 target = self.indexer.resolve_chain(chain, self.scope)
@@ -804,9 +811,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                             )
                         )
                     ):
-                        self.indexer.out.edges.add(
-                            Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
-                        )
+                        if rebound:  # ``settings.DEBUG = True``
+                            self.indexer.out.edges.add(
+                                Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
+                            )
+                        else:
+                            self._value_write(symbol.id)
                         return
         base = expr
         while isinstance(base, (ast.Subscript, ast.Attribute)):
@@ -824,9 +834,19 @@ class _ReferenceCollector(ast.NodeVisitor):
                 return
             if self.skip_defs and symbol.module == self.scope.module.name:
                 return  # a module's own top-level mutations are part of the variable's hash
-            self.indexer.out.edges.add(
-                Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
-            )
+            if whole and base is expr:  # ``global X; X = v``: rebound
+                self.indexer.out.edges.add(
+                    Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
+                )
+            else:
+                self._value_write(symbol.id)
+
+    def _value_write(self, state: str) -> None:
+        """A change in place of what ``state`` (a module variable, class or
+        function) holds, made by ``source``: a ``mutated_by`` edge after pass
+        2 unless the variable cannot change in place (``value_writes``,
+        Indexer._value_writes; audit round 6, T20)."""
+        self.indexer.out.value_writes.add((state, self.source))
 
     def _rooted_write(self, obj: ast.expr, *, call: bool = False, bound: bool = False) -> None:
         """A change in place of ``obj`` (an item or attribute stored into it,
@@ -863,9 +883,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 and not (bound and self.source != self.scope.module.name)
             ):
                 continue  # a module's own top-level code is part of its hash
-            self.indexer.out.edges.add(
-                Edge(symbol.id, self.source, EdgeKind.REFERENCES, MUTATED_BY)
-            )
+            self._value_write(symbol.id)
 
     def _handed_state(self, expr: ast.expr, receiver: bool = False) -> list[str]:
         """The module variables and classes whose state a call is handed in
@@ -1412,11 +1430,12 @@ class _ReferenceCollector(ast.NodeVisitor):
             if isinstance(target, ast.Subscript):
                 self._mark_write_only(target.value, SETITEM)
                 self._dict_write(target)
+            bound = {id(t) for t in _bound_targets(target)}
             for sub in ast.walk(target):
                 if isinstance(sub, (ast.Subscript, ast.Attribute)):
-                    self._mutation_target(sub)
+                    self._mutation_target(sub, id(sub) in bound)
                 elif isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Store):
-                    self._mutation_target(sub)  # rebinding a ``global`` variable
+                    self._mutation_target(sub, True)  # rebinding a ``global`` variable
             self._target_write(target)
         self.generic_visit(node)
 
@@ -1424,7 +1443,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         observe_augassign(self, node)
         self._write_only[id(node.target)] = _READ  # ``mod.X += 1`` reads it
         self._process_store(node.target)
-        self._mutation_target(node.target)
+        self._mutation_target(node.target, True)
         if isinstance(node.target, ast.Subscript):
             self._dict_write(node.target)
         if isinstance(node.target, ast.Name):
@@ -1438,7 +1457,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         if node.value is not None:
             observe_assign(self, [node.target], node.value)
             self._process_store(node.target)
-            self._mutation_target(node.target)
+            self._mutation_target(node.target, True)
             self._target_write(node.target)
             self._stash_binding(node.target, node.value)
         self.visit(node.target)
@@ -1450,7 +1469,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         observe_assign(self, node.targets)
         for target in node.targets:
             self._process_store(target)
-            self._mutation_target(target)
+            for whole in _bound_targets(target):
+                self._mutation_target(whole, True)
             self._target_write(target)
             if isinstance(target, ast.Subscript):
                 self._dict_write(target)
@@ -3025,6 +3045,16 @@ class _ReferenceCollector(ast.NodeVisitor):
             # Lists without running anything: bounded by the import closure,
             # as a lookup by a name known at run time is.
             self._dynamic(f"{name}(): lists the modules on a path known at run time")
+
+
+def _bound_targets(target: ast.expr) -> list[ast.expr]:
+    """The expressions an assignment or ``del`` target binds or deletes
+    itself: the target, or each element it unpacks."""
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [t for elt in target.elts for t in _bound_targets(elt)]
+    if isinstance(target, ast.Starred):
+        return _bound_targets(target.value)
+    return [target]
 
 
 def _merged(*found: dict[str, bool]) -> dict[str, bool]:

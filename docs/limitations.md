@@ -229,6 +229,13 @@ everything.
     (`Config().mode = m`, or `self.items.append(x)` on such an instance)
     is not followed as shared state.
 
+    A module-level constant nothing can change in place has no writers: a
+    name your module binds once, to a string, a number, a tuple of such
+    values, `re.compile(...)`, `textwrap.dedent(...)` or a path, and that no
+    code binds again (`global`, `module.NAME = ...`, `setattr`). Passing
+    `SQL` to a function, or using what `PATTERN.match(s)` returns, does not
+    make its readers depend on that code.
+
     Not followed:
 
     - an object stored away and changed later under another name

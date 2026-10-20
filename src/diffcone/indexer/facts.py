@@ -217,6 +217,13 @@ class _Output:
     # place into what a call of an in-scope function returns.
     state_returns: set[tuple[str, str]] = field(default_factory=set)
     result_writes: set[tuple[str, str, str]] = field(default_factory=set)
+    # (state, writer): a ``mutated_by`` edge of a change in place of what a
+    # module variable (or class, or function) holds, kept apart until every
+    # module is known: a variable whose value cannot change in place gets
+    # none (audit round 6, T20; Indexer._value_writes). Rebinding a variable
+    # (``mod.X = v``, ``global X; X = v``) and writing a module object are
+    # edges of their own.
+    value_writes: set[tuple[str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -262,6 +269,7 @@ class _Output:
         self.handed_instances |= other.handed_instances
         self.state_returns |= other.state_returns
         self.result_writes |= other.result_writes
+        self.value_writes |= other.value_writes
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -369,6 +377,7 @@ def _output_to_dict(out: _Output) -> dict:
         "handed_instances": sorted(list(h) for h in out.handed_instances),
         "state_returns": sorted(list(r) for r in out.state_returns),
         "result_writes": sorted(list(w) for w in out.result_writes),
+        "value_writes": sorted(list(w) for w in out.value_writes),
     }
 
 
@@ -451,6 +460,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
     out.state_returns = {(f, r) for f, r in data["state_returns"]}
     out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
+    out.value_writes = {(v, w) for v, w in data["value_writes"]}
     return out
 
 
@@ -488,6 +498,7 @@ def _facts_to_dict(
         },
         "uses": [r.to_list() for r in scope.uses],
         "containers": sorted(scope.containers),
+        "immutables": {k: list(v) for k, v in sorted(scope.immutables.items())},
         "literal_sources": {k: list(v) for k, v in scope.literal_sources.items()},
         "lazy": {
             k: [w, list(n), list(d)] for k, (w, n, d) in sorted(scope.lazy_candidates.items())
