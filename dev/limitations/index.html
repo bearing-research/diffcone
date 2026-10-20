@@ -1300,11 +1300,34 @@ name your module binds once, to a string, a number, a tuple of such
 values, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code> or a path, and that no
 code binds again (<code>global</code>, <code>module.NAME = ...</code>, <code>setattr</code>). Passing
 <code>SQL</code> to a function, or using what <code>PATTERN.match(s)</code> returns, does not
-make its readers depend on that code.</p>
+make its readers depend on that code. The same holds for a class
+attribute your class body binds once to such a value (<code>DAYS = "days"</code>,
+<code>_MONTHS = 12</code>) and that no code binds again: handing <code>TimeDelta.DAYS</code>
+to a function, or <code>m = min(m, self._MONTHS)</code>, writes nothing of the
+class, and neither does calling a method on an item of a class-level
+table of strings and numbers that no code changes
+(<code>self.timeframes[k].format(n)</code>). A class with a decorator (other than
+<code>functools.total_ordering</code> or <code>typing.final</code>), a metaclass (other than
+<code>abc.ABCMeta</code>) or a library base keeps every writer of its attributes.</p>
+<p>An object you hand to a constructor of your class (<code>Tokenizer(source,
+rules=RULES)</code>) is part of the new instance. Changing the instance in
+place (<code>tok.rules["x"] = 1</code>, calling one of its methods, <code>__init__</code>
+changing what it stored) changes the object, so it is a dependency of
+every reader of <code>RULES</code>. Setting an attribute on the instance
+(<code>tok.position = 0</code>, but not <code>__dict__</code> or <code>__class__</code>), or adding a number or string to one that only
+ever holds such values (<code>tok.position += 1</code>), in that code or in a
+function it hands the instance to, is not, as long as no class involved
+defines <code>__new__</code>,
+<code>__setattr__</code>, <code>__getattr__</code> or a property of that name, or has a
+decorator (other than <code>functools.total_ordering</code> or <code>typing.final</code>), a
+metaclass or a library base.</p>
 <p>Not followed:</p>
 <ul>
 <li>an object stored away and changed later under another name
-  (<code>self.store = store</code>, then <code>self.store[k] = v</code>);</li>
+  (<code>self.store = store</code>, then <code>self.store[k] = v</code>), unless the instance
+  holding it was made by calling your class with it in the function that
+  changes it or hands it on (an instance kept in a module variable,
+  <code>TOK = Tokenizer(RULES)</code>, is not followed back to <code>RULES</code>);</li>
 <li>an object a library function returns that your code then changes;</li>
 <li>a method called on an item of a module-level dict or list
   (<code>_CACHE["a"].put(4)</code>): only the dict's own methods count as writes;</li>

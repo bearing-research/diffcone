@@ -1796,6 +1796,21 @@ selection rules.</p>
   <code>conn.executescript</code>, <code>PATTERN.match(s)</code>). Such false writers made every
   reader of the constant depend on unrelated code. Binding the name again
   (<code>global</code>, <code>module.NAME = ...</code>, <code>setattr</code>) still counts.</li>
+<li>The same holds for a class attribute your class body binds once to
+  such a value (<code>DAYS = "days"</code>, <code>_MONTHS = 12</code>) and that no code binds
+  again: handing <code>TimeDelta.DAYS</code> to a function, or <code>m = min(m,
+  self._MONTHS)</code>, is no longer a change to the class, and neither is
+  calling a method on an item of a class-level table of strings and
+  numbers that nothing changes (<code>self.timeframes[k].format(n)</code>). When
+  such a table can change, a method called on its items counts as a
+  change.</li>
+<li>An object handed to a constructor of your class (<code>Tokenizer(source,
+  rules=RULES)</code>) is part of the new instance: changing the instance in
+  place (<code>tok.rules["x"] = 1</code>, a method changing what <code>__init__</code> stored)
+  makes that code a dependency of the readers of <code>RULES</code>. Setting or
+  counting up the instance's own attributes (<code>tok.position += 1</code>) does
+  not, unless the class can run code when they are set (<code>__setattr__</code>,
+  a property, <code>__new__</code>, a decorator, a metaclass or a library base).</li>
 <li><code>pytest.importorskip("pkg.mod")</code>, <code>importlib.util.find_spec</code>,
   <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code> and <code>pkgutil.iter_modules</code> or
   <code>walk_packages</code> over a package were not imports: a change that made the
