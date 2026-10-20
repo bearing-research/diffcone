@@ -674,6 +674,28 @@ under a `DIR=PREFIX` root the indexed name is not the runtime one, so
 only a literal `package` resolves there. Any other relative name is
 unbounded.
 
+The other calls that import by a name in a string are imports the same
+way (audit round 6, T9; `references.IMPORT_CALLS`, `NAME_RESOLVERS`,
+`MODULE_LISTINGS`): `pytest.importorskip` (a test that skips when the
+import fails, which `uses.py` already followed for writes, now an
+`imports` edge too, so the module's import-time code and a module made
+to fail reach it), `importlib.util.find_spec` (imports the parents and
+finds the file `module_from_spec`/`exec_module` run; relative names
+resolve as `import_module`'s; a name known at run time imports anything
+when the code around it loads a spec, and is otherwise a lookup bounded by
+the import closure, `references.FINDS_MODULE`, so flask's
+`get_root_path(import_name)` in every `Flask()` does not make each app
+unbounded), `pkgutil.resolve_name` and `pydoc.locate`
+(an import of the module the name starts with, the part before `:` or
+the longest prefix that is a module, and a reference to what the rest
+names; a non-literal imports anything), and `pkgutil.iter_modules` /
+`walk_packages` over an in-scope package's `__path__` (an `imports` edge
+to every module under it, so an added or deleted module reaches the
+listing; over any other path `walk_packages` imports anything and
+`iter_modules`, which runs nothing, is bounded by the import closure).
+`importlib.reload(m)` needs
+nothing: `m` is a module reference already.
+
 `getattr(x, name)` and `importlib.import_module(name)` are expanded over
 every string `name` may hold when that is bounded: a string literal, a
 tuple/list/set of literals, a dict literal with string keys (iterated
@@ -2222,7 +2244,23 @@ statically (`unanalysed_file_changed`), and under evidence the tests that
 touched the file or ran its code (the recorder records any file of the
 checkout; code from a file the index lacks folds as a touched path, and
 outside every test into the hook phase). Nothing narrows on the project's
-word: an excluded file is only planned less precisely. Patterns that
+word: an excluded file is only planned less precisely. What the file runs
+is not read, so an import or a run of one is an unknown dependency (audit
+round 6, T2; before, the import resolved to nothing and what the file
+called was invisible): `Resolver._module_import_edge` records a
+`dynamic` reference with detail `model.IMPORTS_EXCLUDED` + the path for
+each excluded file an import runs (the module's own, and the
+`__init__.py` of each package it is imported through, so an excluded
+package `__init__.py` makes every import under the package one), as do
+`from pkg import sub` of an excluded `sub`, a literal or prefix
+`import_module`/`importorskip`/`find_spec`/`run_module`, `-m` of an
+excluded module, a script path, a test file given to a runner (and an
+excluded conftest on its chain), and a file loader's literal path or
+prefix (`indexer.scripts.apply_scripts` and `_file_loader` match the
+excluded files too). The planner treats the importer as one that imports
+anything (`unbounded_dynamic`, kind `excluded:`), selected on any change
+under the roots, with a `dynamic_reference` reason naming the file; the
+excluded paths are in the resolution fingerprint. Patterns that
 differ between the snapshots move files between the module table and the
 other files, which selects everything without a rule of its own. An
 excluded test file or conftest gets the discovery notes of one outside the

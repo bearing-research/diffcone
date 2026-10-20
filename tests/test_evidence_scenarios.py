@@ -4864,3 +4864,24 @@ def test_e29_an_excluded_file_is_planned_from_who_read_it(repo):
     # does not read selects them.
     assert selected(plan) == {"tests/test_data.py::test_reads"} | BENCHES
     assert rules(plan, "tests/test_data.py::test_reads") == {"touched_file"}
+
+
+@pytest.mark.parametrize(
+    ("optional", "edited"),
+    [
+        ("X = 1\n", "raise ImportError('gone')\n"),
+        ("import os\n\nos.environ['OPT'] = '1'\n", "import os\n\nos.environ['OPT'] = '2'\n"),
+    ],
+    ids=["fails_to_import", "import_time_write"],
+)
+def test_t9_importorskip_at_collection_is_an_import_of_the_module(repo, optional, edited):
+    """``pytest.importorskip`` at module level runs while pytest collects the
+    test module, before the recorder attributes anything to a test: the
+    change escalates to static planning, which follows the import."""
+    test = "import os\n\nimport pytest\n\npytest.importorskip('pkg.optional')\n\n\n"
+    test += "def test_opt():\n    assert os.environ.get('OPT', '1') == '1'\n"
+    base, ev = _collected(repo, {**BASE, "pkg/optional.py": optional, "tests/test_opt.py": test})
+    head = repo.commit({"pkg/optional.py": edited})
+    plan = _plan(repo, base, head, ev)
+    assert "tests/test_opt.py::test_opt" in selected(plan)
+    assert "escalated" in rules(plan, "tests/test_opt.py::test_opt")

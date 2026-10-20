@@ -1231,6 +1231,9 @@ class Indexer(DynamicBounds):
             sorted(
                 p for p in self.snapshot.files if p.endswith((".py", ".pyw")) and p not in paths
             ),
+            # An import or a run of a file ``[index] exclude`` keeps out is an
+            # unknown dependency (Resolver.excluded_import).
+            self.excluded_paths,
         ]
         return _digest(json.dumps(material))
 

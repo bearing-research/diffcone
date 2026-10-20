@@ -74,10 +74,11 @@ Seeds besides the changed symbols themselves:
   (``SourceIndex.script_refs``) is seeded.
 * A symbol with a dynamic reference is a pseudo-seed when a change lies in
   its module's import closure, or whatever changed when the reference
-  imports or runs code named at run time (model.imports_anything), runs a
-  script that does, or looks a name up on, or lists (``dir``, ``hasattr``,
-  ``vars``: a reflection site, R11), an external module in-scope code
-  writes to.
+  imports or runs code named at run time (model.imports_anything), imports
+  or runs a file ``[index] exclude`` keeps out of the analysis (an unknown
+  dependency: model.IMPORTS_EXCLUDED, T2), runs a script that does, or
+  looks a name up on, or lists (``dir``, ``hasattr``, ``vars``: a
+  reflection site, R11), an external module in-scope code writes to.
 * ``dir(mod)`` of an in-scope module depends on its ``__dir__`` (an edge
   from the listing symbol, detail ``dir()``; R21).
 * After the search, a target whose manifest does not list its entry's
@@ -126,6 +127,7 @@ from diffcone.model import (
     ANY_MODULE,
     DYNAMIC_DEPENDENCY,
     EXTERNAL_WRITTEN,
+    IMPORTS_EXCLUDED,
     INSTALLED,
     INSTALLED_ANYWHERE,
     MUTATED_BY,
@@ -1424,6 +1426,8 @@ def plan_from_indexes(
     # (diffcone.indexer.scripts) sees a change to the file; one whose program
     # computes what it imports sees any change.
     script_refs = sorted(base.script_refs | head.script_refs)
+    # Symbol -> the excluded files it imports or runs (model.IMPORTS_EXCLUDED).
+    excluded_imports: dict[str, set[str]] = defaultdict(set)
     for ref, revs in _union(base.unresolved, head.unresolved).items():
         if ref.kind == UnresolvedKind.DYNAMIC and ref.detail.endswith(EXTERNAL_WRITTEN):
             key = (ref.symbol, ref.detail)
@@ -1438,6 +1442,8 @@ def plan_from_indexes(
             if ref.detail.startswith(RUNS_SCRIPT):
                 paths = sorted(p for s, p in script_refs if s == ref.symbol)
                 unbounded_dynamic.setdefault(ref.symbol, "script:" + ", ".join(paths))
+            elif ref.detail.startswith(IMPORTS_EXCLUDED):
+                excluded_imports[ref.symbol].add(ref.detail[len(IMPORTS_EXCLUDED) :])
             elif imports_anything(ref.detail):
                 unbounded_dynamic[ref.symbol] = "import"
             elif ref.detail.endswith(EXTERNAL_WRITTEN):
@@ -1450,6 +1456,8 @@ def plan_from_indexes(
             )
             graph.add(Edge(ref.symbol, node, EdgeKind.UNRESOLVED_NAME_MATCH, ref.detail), revs)
         pending_unresolved.append((ref, revs))
+    for symbol, paths in sorted(excluded_imports.items()):
+        unbounded_dynamic.setdefault(symbol, "excluded:" + ", ".join(sorted(paths)))
 
     # A listing of an external module in-scope code writes to (``name in
     # dir(builtins)``, ``hasattr(builtins, name)``, ``vars(builtins)``) finds
@@ -2239,6 +2247,14 @@ def _explain(
             Rule.UNANALYSED_FILE,
             f"{current} runs {kind[len('changed-script:') :]}, a Python file no module name "
             "maps to, which changed (the analysis reads only what it imports)",
+            tuple(steps),
+        )
+    if kind.startswith("excluded:"):
+        return Reason(
+            Rule.DYNAMIC_REFERENCE,
+            f"{current} imports or runs {kind[len('excluded:') :]} ({', '.join(revs)}), which "
+            "diffcone.toml's [index] exclude keeps out of the analysis: what it runs is "
+            "unknown, so any change can affect it",
             tuple(steps),
         )
     if kind.startswith("script:"):

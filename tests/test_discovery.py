@@ -4024,3 +4024,36 @@ def test_e29_an_excluded_test_file_is_reported_as_not_read(repo):
     assert "narrow the exclude pattern" in notes["tests/sub/conftest.py"]
     assert "tests/data/test_case.py::test_case" not in {t.runner_id for t in result.targets}
     assert "conftest:tests/sub/conftest.py" in _deps(result, "tests/sub/test_s.py::test_s")
+
+
+def test_t2_notes_on_excluded_files_name_the_exclusion(repo):
+    """A plugin, a test base class or a benchmark file ``[index] exclude``
+    keeps out: the note says so and how to undo it, not that a source root
+    is missing (audit round 6, snap-4)."""
+    rev = repo.commit(
+        {
+            "diffcone.toml": ('[index]\nexclude = ["tests/support/*", "benchmarks/bench_gen*"]\n'),
+            "asv.conf.json": '{"version": 1, "benchmark_dir": "benchmarks"}',
+            "conftest.py": 'pytest_plugins = ["tests.support.plug"]\n',
+            "tests/__init__.py": "",
+            "tests/support/__init__.py": "",
+            "tests/support/plug.py": "",
+            "tests/support/bases.py": "class Base:\n    def test_x(self):\n        pass\n",
+            "tests/test_h.py": (
+                "from tests.support.bases import Base\n\n\nclass TestH(Base):\n    pass\n"
+            ),
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench_gen.py": "def time_x():\n    pass\n",
+            "benchmarks/bench_ok.py": "def time_y():\n    pass\n",
+        }
+    )
+    pytest_notes = {n.kind: n.detail for n in _discovered(repo, rev).notes}
+    asv_notes = {n.kind: n.detail for n in run_discovery(repo, rev, "asv").notes}
+    for detail in (
+        pytest_notes["plugin_outside_roots"],
+        pytest_notes["unknown_base_class"],
+        asv_notes["test_file_outside_roots"],
+    ):
+        assert "[index] exclude" in detail and "narrow the exclude pattern" in detail
+        assert "add a source root" not in detail
+    assert "tests/support/bases.py" in pytest_notes["unknown_base_class"]

@@ -55,7 +55,8 @@ imported (``from .common import setup``) too; a benchmark matched as
 function's own name) depends (``dynamic:``) on the in-scope modules its
 returned code imports, and on an unknown (always selected) when that code
 is not a literal string.
-Benchmark files under ``benchmark_dir`` but outside the source roots are
+Benchmark files under ``benchmark_dir`` but outside the source roots, or
+kept out of the analysis by ``diffcone.toml``'s ``[index] exclude``, are
 reported (``test_file_outside_roots``).
 
 Not modelled: ``params`` expansion (a benchmark is one target), a
@@ -87,7 +88,7 @@ from diffcone.discovery.common import (
 from diffcone.indexer import iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import DYNAMIC_DEPENDENCY, SourceIndex
-from diffcone.snapshot import ASV_CONFIGS, Snapshot, module_name_for
+from diffcone.snapshot import ASV_CONFIGS, Snapshot, excluded_paths, module_name_for
 
 RUNNER = "asv"
 # asv_runner's ``name_regex`` of each benchmark type, combined, and the
@@ -398,7 +399,21 @@ def discover_asv(
     # ``"."``: the configuration's own directory, the repository root.
     prefix = "" if bench_dir == "." else bench_dir + "/"
     paths = [p for p in snapshot.files if p.startswith(prefix) and p.endswith(".py")]
+    excluded = set(excluded_paths(snapshot))
     outside = [p for p in snapshot.python_paths if p.startswith(prefix) and p not in snapshot.files]
+    kept_out = [p for p in outside if p in excluded]
+    outside = [p for p in outside if p not in excluded]
+    if kept_out:
+        result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "test_file_outside_roots",
+                f"{len(kept_out)} benchmark file(s) under {bench_dir!r} are kept out of the "
+                f"analysis by diffcone.toml's [index] exclude (first: {kept_out[0]}), so their "
+                "benchmarks are not targets; narrow the exclude pattern that matches them",
+                kept_out[0],
+            )
+        )
     if outside:
         result.notes.append(
             DiscoveryNote(

@@ -59,6 +59,7 @@ from diffcone.indexer.syntax import (
 )
 from diffcone.indexer.writes import returns_third_party
 from diffcone.model import (
+    IMPORTS_EXCLUDED,
     Edge,
     EdgeKind,
     ExternalReference,
@@ -67,6 +68,7 @@ from diffcone.model import (
     UnresolvedKind,
     UnresolvedReference,
 )
+from diffcone.snapshot import excluded_files
 
 
 def _with_alternatives(bindings: list[Node]) -> Node:
@@ -945,6 +947,12 @@ class Resolver(FirstPass):
                 return
             base = _absolute_module(scope, node.module, node.level)
             self._module_import_edge(source, base)
+            for alias in node.names:
+                # ``from pkg import sub`` imports an excluded submodule ``sub``
+                # (audit round 6, T2).
+                sub = f"{base}.{alias.name}"
+                if sub in self.excluded_modules:
+                    self.excluded_import(source, sub, self.excluded_modules[sub])
             if not self._module_in_scope(base):
                 return
             for alias in node.names:
@@ -961,8 +969,25 @@ class Resolver(FirstPass):
                     chain=f"from {base} import {alias.name}",
                 )
 
+    def excluded_import(self, source: str, module: str, path: str) -> None:
+        """``source`` imports or runs ``path``, a file ``[index] exclude``
+        keeps out of the analysis (as ``module``, or by path when it is
+        empty): what the file runs is not read, so ``source`` depends on
+        anything, as on an import of a module named at run time (audit
+        round 6, T2)."""
+        self.out.unresolved.add(
+            UnresolvedReference(source, UnresolvedKind.DYNAMIC, module, f"{IMPORTS_EXCLUDED}{path}")
+        )
+
     def _module_import_edge(self, source: str, module: str) -> None:
+        excluded = excluded_files(self.excluded_modules, module)
+        for path in excluded:
+            # The module, or a package ``__init__.py`` importing it runs, is
+            # excluded: an unknown dependency, whatever else is in scope.
+            self.excluded_import(source, module, path)
         if not self._module_in_scope(module):
+            if excluded:
+                return
             if self._module_in_scope(module.split(".")[0]):
                 self.out.unresolved.add(
                     UnresolvedReference(
