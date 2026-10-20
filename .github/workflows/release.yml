@@ -31,7 +31,7 @@ jobs:
             exit 1
           fi
       - run: uv sync --locked
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto
       - run: uv build
       - run: uvx twine check dist/*
       - uses: actions/upload-artifact@v7

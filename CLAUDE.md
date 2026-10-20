@@ -32,7 +32,7 @@ uv run python scripts/collection_check.py --repo DIR --command CMD  # discovery 
 uv run python scripts/collection_check.py --runner asv --execute --repo DIR --command PYTHON  # + the --bench pattern
 uv run python scripts/fixture_check.py --repo DIR --command CMD  # discovered fixture deps vs pytest's closures
 uv run python scripts/cause_precision.py --repo DIR --command CMD --commit SHA  # is a cause worth it
-uv run pytest                                   # all tests
+uv run pytest -n 4                              # all tests, 4 workers (pytest-xdist)
 uv run pytest tests/test_scenarios.py -k alias  # one scenario
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 uv run ty check                                 # types (src, tests, scripts; pinned in the dev group)

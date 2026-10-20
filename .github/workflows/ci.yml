@@ -45,7 +45,7 @@ jobs:
       - run: uv sync --locked
       # Evidence tests need Python 3.12+ (sys.monitoring) and skip below it;
       # the Cython tests build a small extension with the runner's C compiler.
-      - run: uv run pytest -q
+      - run: uv run pytest -q -n auto
         shell: bash
 
   package:

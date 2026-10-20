@@ -58,10 +58,12 @@ narrowed case is still sound.
   of a few repositories under <E>/repos before and after.
 - Targeted tests while you work
   (`uv run pytest -q -p no:cacheprovider tests/<file> -k ...`); the machine
-  is shared.
+  is shared. Measure (census, edge counts, plans) once the code is final,
+  and run the full gate once, last: a fix after the gate means another
+  full run.
 - The gate at the end: `uv run ruff check src tests scripts`,
   `uv run ruff format --check src tests scripts`, `uv run ty check`, then
-  the full suite to a log: `uv run pytest -q -p no:cacheprovider > LOG 2>&1;
+  the full suite to a log, once: `uv run pytest -q -p no:cacheprovider -n 4 > LOG 2>&1;
   echo exit=$?` (never pipe pytest into tail). Commit on your branch only
   when the gate exits 0, in a command that checks it
   (`grep -qx exit=0 LOG && git commit ...`). Don't push.

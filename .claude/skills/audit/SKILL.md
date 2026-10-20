@@ -111,7 +111,10 @@ Run reviewers in the background; don't do the same searching yourself.
    status in `internal/audit.md` (`fixed (<batch>): <one line on the fix>`).
 5. Full gate on the merged main, commit, push, watch CI
    (`gh run watch <id> --exit-status`). Fix CI-only failures (Windows) the
-   same way: test first, gated commit.
+   same way: test first, gated commit. A single branch its agent already
+   gated, fast-forwarded with only CHANGELOG and `internal/` edits on top,
+   needs only the docs gate (ruff, ty, the zensical build and
+   `tests/test_docs.py`); two merged branches need the full gate.
 
 ### 5. Validate
 
@@ -162,7 +165,7 @@ measurements). Regenerate `docs/reference/cli.md` with
 LOG=$S/gate-<name>.log
 ( uv run ruff check src tests scripts && uv run ruff format --check src tests scripts \
   && uv run ty check && uv run --group docs zensical build --strict >/dev/null 2>&1 \
-  && uv run pytest -q -p no:cacheprovider; echo "exit=$?" ) > $LOG 2>&1
+  && uv run pytest -q -p no:cacheprovider -n 4; echo "exit=$?" ) > $LOG 2>&1
 grep -qx 'exit=0' $LOG && git commit ... && git push origin main
 ```
 
