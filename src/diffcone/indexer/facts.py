@@ -209,6 +209,14 @@ class _Output:
     # handed to code the analysis does not follow (``references.py``,
     # ``_handed_on``); the classes join ``SourceIndex.escaped_classes``.
     handed_instances: set[tuple[str, str]] = field(default_factory=set)
+    # State reached through what a function returns (references.py,
+    # ``_rooted_write``; audit round 6, T7), joined after pass 2
+    # (Indexer._result_writes): (function, module variable, class, function
+    # or ``<result>:`` callee whose state it may return), and (writer,
+    # callee, the writer's module for top-level code or "") for a write in
+    # place into what a call of an in-scope function returns.
+    state_returns: set[tuple[str, str]] = field(default_factory=set)
+    result_writes: set[tuple[str, str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -252,6 +260,8 @@ class _Output:
         self.script_paths |= other.script_paths
         self.test_runs |= other.test_runs
         self.handed_instances |= other.handed_instances
+        self.state_returns |= other.state_returns
+        self.result_writes |= other.result_writes
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -357,6 +367,8 @@ def _output_to_dict(out: _Output) -> dict:
         "script_paths": sorted(list(p) for p in out.script_paths),
         "test_runs": sorted(list(t) for t in out.test_runs),
         "handed_instances": sorted(list(h) for h in out.handed_instances),
+        "state_returns": sorted(list(r) for r in out.state_returns),
+        "result_writes": sorted(list(w) for w in out.result_writes),
     }
 
 
@@ -437,6 +449,8 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
     out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
+    out.state_returns = {(f, r) for f, r in data["state_returns"]}
+    out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
     return out
 
 

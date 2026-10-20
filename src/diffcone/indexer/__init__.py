@@ -41,8 +41,10 @@ Supported subset (see internal/design.md):
   outside the source roots, an in-scope factory), and in ``__init__`` to a
   parameter, a literal or a symbol as well; any other write leaves the
   attribute unbounded;
-* in-place writes of a module variable, directly or through a parameter or
-  receiver the callee writes (``writes.py``); a variable filled once by the
+* in-place writes of a module variable or of state held on a class,
+  directly, through ``cls``/``type(self)``, through a local name, an item,
+  ``globals()`` or a function's result bound to it (``references.py``), or
+  through a parameter or receiver the callee writes (``writes.py``); a variable filled once by the
   one function writing it, with a value nothing can see differently
   (``global V; if V is None: V = os.path.dirname(pkg.__file__)``), is a
   lazy constant (``lazy.py``);

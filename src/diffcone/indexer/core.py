@@ -22,7 +22,7 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import literal_base, literal_keys
-from diffcone.indexer.references import SETITEM
+from diffcone.indexer.references import RESULT, SETITEM
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
@@ -193,6 +193,7 @@ class Indexer(DynamicBounds):
             self._global.merge(out)
         try:
             apply_writes(self)
+            self._result_writes()
             self._external_lookups()
             self._table_imports()
             self._resolve_param_dynamics()
@@ -875,6 +876,40 @@ class Indexer(DynamicBounds):
             if by:
                 found[symbol.id] = by
         return found
+
+    def _result_writes(self) -> None:
+        """A write in place into what a call returns (``registry()[k] = v``,
+        ``r = get_cache(); r.update(d)``, ``Config.instance().mode = m``)
+        changes the state the callee returns, directly or through what it
+        calls (``state_returns``): a ``mutated_by`` edge from each such
+        module variable, class or function to the writer (audit round 6,
+        T7). Code at a module's top level writing its own module's state is
+        part of that module's hash, as in pass 2."""
+        returned: dict[str, set[str]] = defaultdict(set)
+        for function, root in self._global.state_returns:
+            returned[function].add(root)
+        closed: dict[str, set[str]] = {}
+
+        def state_of(function: str) -> set[str]:
+            found = closed.get(function)
+            if found is None:
+                found = closed[function] = set()
+                seen, stack = {function}, [function]
+                while stack:
+                    for root in returned.get(stack.pop(), ()):
+                        if not root.startswith(RESULT):
+                            found.add(root)
+                        elif (callee := root[len(RESULT) :]) not in seen:
+                            seen.add(callee)
+                            stack.append(callee)
+            return found
+
+        for writer, callee, module in sorted(self._global.result_writes):
+            for root in sorted(state_of(callee)):
+                symbol = self.index.symbols.get(root)
+                if symbol is None or root == writer or symbol.module == module:
+                    continue
+                self.index.edges.add(Edge(root, writer, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _use_mutation_edges(self) -> None:
         """A ``mutated_by`` edge from each variable to the code the use

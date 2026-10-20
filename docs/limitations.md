@@ -206,11 +206,34 @@ everything.
     also reaches the readers of whatever the functions it calls change in
     place.
 
+    The same holds for state kept on a class (`Config.mode = m`,
+    `Config.items.append(x)`, `setattr(Config, "mode", m)`, `cls._instance
+    = cls()`, `type(self)._cache[k] = v`): the code storing it is a
+    dependency of every reader of the class. And it holds when the code
+    reaches the object by another name:
+
+    - a local name for it: `cache = _CACHE`, then `cache[k] = v` (also
+      `(cache := _CACHE)`, `for cache in (_A, _B)`, `with nullcontext(_CACHE)
+      as cache`);
+    - a part of it: `entry = _CACHE[k]` or `entry = _CACHE.setdefault(k, [])`,
+      then `entry.append(v)`;
+    - a bound method: `put = _CACHE.__setitem__`, then `put(k, v)`;
+    - what one of your functions returns: `registry()[k] = v`, where
+      `registry` returns `_CACHE`;
+    - `globals()["_CACHE"][k] = v`.
+
+    A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
+    then `cache[k] = v`, changes nothing shared, and neither does a store
+    on an instance's own attribute (`self.items.append(x)` where `__init__`
+    sets `self.items = []`) or on a new instance (`Config().mode = m`).
+
     Not followed:
 
     - an object stored away and changed later under another name
       (`self.store = store`, then `self.store[k] = v`);
-    - an object a function returns that its caller then changes;
+    - an object a library function returns that your code then changes;
+    - a method called on an item of a module-level dict or list
+      (`_CACHE["a"].put(4)`): only the dict's own methods count as writes;
     - a library function that changes an argument you pass it, a module of
       yours included (a library writing into a module you hand it).
 

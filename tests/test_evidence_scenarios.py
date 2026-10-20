@@ -5047,3 +5047,81 @@ def test_t9_importorskip_at_collection_is_an_import_of_the_module(repo, optional
     plan = _plan(repo, base, head, ev)
     assert "tests/test_opt.py::test_opt" in selected(plan)
     assert "escalated" in rules(plan, "tests/test_opt.py::test_opt")
+
+
+# ------------------------------------------ state on a class, or reached by another name
+# test_a runs ``fill``, which stores what ``compute`` returns; test_z and a
+# benchmark read it without running ``compute``: a change to ``compute``
+# reaches them through the state ``fill`` writes, however ``fill`` names it.
+FILLED_READERS = {
+    "tests/test_a.py": "from pkg.lib import fill\n\n\ndef test_a():\n    fill('a')\n",
+    "tests/test_z.py": "from pkg.lib import peek\n\n\ndef test_z():\n    assert peek('a') == 'A'\n",
+    "benchmarks/bench_peek.py": "from pkg.lib import peek\n\n\ndef time_peek():\n    peek('a')\n",
+}
+PEEK_BENCH = asv_target("bench_peek.time_peek", "benchmarks.bench_peek.time_peek")
+FILL_COMPUTE = "def compute(k):\n    return k.upper()\n\n\n"
+FILLED_STATE = {
+    "an attribute of a class": (
+        "class Config:\n    mode = None\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    Config.mode = compute(k)\n\n\ndef peek(k):\n    return Config.mode\n"
+    ),
+    "a classmethod's cls": (
+        "class Config:\n    mode = None\n\n    @classmethod\n    def set(cls, k):\n"
+        "        cls.mode = compute(k)\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    Config.set(k)\n\n\ndef peek(k):\n    return Config.mode\n"
+    ),
+    "type(self)": (
+        "class R:\n    _cache = {}\n\n    def get(self, k):\n        cache = type(self)._cache\n"
+        "        if k not in cache:\n            cache[k] = compute(k)\n"
+        "        return cache[k]\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    R().get(k)\n\n\ndef peek(k):\n    return R._cache[k]\n"
+    ),
+    "a local alias": (
+        "_CACHE = {}\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    if (c := _CACHE) is not None:\n        c[k] = compute(k)\n\n\n"
+        "def peek(k):\n    return _CACHE[k]\n"
+    ),
+    "an entry made first": (
+        "_CACHE = {}\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    _CACHE[k] = entry = {}\n    entry['v'] = compute(k)\n\n\n"
+        "def peek(k):\n    return _CACHE[k]['v']\n"
+    ),
+    "a defaultdict entry": (
+        "import collections\n\n_CACHE = collections.defaultdict(list)\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    lst = _CACHE[k]\n    lst.append(compute(k))\n\n\n"
+        "def peek(k):\n    return _CACHE[k][0]\n"
+    ),
+    "what a getter returns": (
+        "_CACHE = {}\n\n\ndef registry():\n    return _CACHE\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    registry()[k] = compute(k)\n\n\ndef peek(k):\n    return _CACHE[k]\n"
+    ),
+    "globals()": (
+        "_CACHE = {}\n\n\n"
+        + FILL_COMPUTE
+        + "def fill(k):\n    globals()['_CACHE'][k] = compute(k)\n\n\n"
+        "def peek(k):\n    return _CACHE[k]\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(FILLED_STATE))
+def test_t6_t7_state_filled_through_a_class_or_another_name(repo, case):
+    """Audit round 6, T6 and T7: the write is a ``mutated_by`` edge of the
+    class or the variable, so the readers of the state the chain filled join
+    E. The benchmark has no evidence and is planned statically."""
+    lib = FILLED_STATE[case]
+    base, ev = _collected(repo, {**BASE, **FILLED_READERS, "pkg/lib.py": lib})
+    head = repo.commit({"pkg/lib.py": lib.replace("return k.upper()", "return k.upper() + '!'")})
+    plan = repo.plan(base, head, [*ASV, PEEK_BENCH], discover_runners=["pytest"], evidence=ev)
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_z.py::test_z",
+        PEEK_BENCH.runner_id,
+    }
