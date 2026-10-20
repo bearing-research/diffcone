@@ -22,7 +22,7 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal_keys
-from diffcone.indexer.references import RESULT, SETITEM
+from diffcone.indexer.references import RESULT, SETITEM, instance_root
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
 from diffcone.indexer.scripts import apply_scripts
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
@@ -208,6 +208,7 @@ class Indexer(DynamicBounds):
             self.out = self._global
             self._too_deep("", "")
             undecided = self._global.value_writes | self._global.receiver_writes
+            undecided |= {(c, w) for c, w, _ in self._global.instance_writes}
             for state, writer in sorted(undecided):  # every one, undecided
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._lazy_constants()
@@ -921,6 +922,17 @@ class Indexer(DynamicBounds):
 
         for writer, callee, module in sorted(self._global.result_writes):
             for root in sorted(state_of(callee)):
+                made = instance_root(root)
+                if made is not None:
+                    # An instance the callee made (``return Store()``), or
+                    # part of one: a write into it may be one into its
+                    # class's state (T22).
+                    how, cls = made
+                    symbol = self.index.symbols.get(cls)
+                    if symbol is not None and symbol.module != module:
+                        how = how if how.startswith(".") else ""
+                        self._global.instance_writes.add((cls, writer, how))
+                    continue
                 symbol = self.index.symbols.get(root)
                 if symbol is None or root == writer or symbol.module == module:
                     continue
@@ -952,6 +964,89 @@ class Indexer(DynamicBounds):
                     for c in mro:
                         if c != writer:
                             self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        self._instance_writes(holding)
+
+    def _instance_writes(self, holding: set[str]) -> None:
+        """A write into an instance of an in-scope class the writer made
+        (``s = Store(); s._items.append(x)``, ``new = cls.__new__(cls);
+        new._cache[k] = v``), or into part of one, may be one into state
+        its class holds: a ``mutated_by`` edge from the class and its
+        in-scope bases when one of them holds any, as for a module variable
+        holding an instance (T21). An attribute bound on the instance
+        itself (``new._key = None``) changes that object alone when nothing
+        but ``object.__new__`` made it (``_allocated_fresh``); otherwise
+        (an in-scope or a library ``__new__``, a class decorator or
+        metaclass, which may give back an object kept elsewhere) it counts
+        as a write in place. A write reached through an attribute
+        (``s._items.append(x)``: ``.``-prefixed ``how``) is one into the
+        instance's own object when no class of the family binds or defines
+        the attribute (``_own_attribute``) (audit round 6, T22)."""
+        if not self._global.instance_writes:
+            return
+        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
+        written |= {state for state, _ in self._global.value_writes}
+        written |= {state for state, _ in self._global.receiver_writes}
+        own: dict[tuple[str, str], bool] = {}
+        for cls, writer, how in sorted(self._global.instance_writes):
+            if cls not in self.class_scopes:
+                continue
+            if how:
+                if (cls, how) not in own:
+                    if how.startswith("."):
+                        own[(cls, how)] = self._own_attribute(cls, how[1:], written)
+                    else:
+                        own[(cls, how)] = self._allocated_fresh(cls, how)
+                if own[(cls, how)]:
+                    continue
+            mro = self._mro(cls)
+            if any(c in holding for c in mro):
+                for c in mro:
+                    if c != writer:
+                        self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
+
+    def _family(self, cls: str) -> set[str]:
+        """The in-scope classes an instance of ``cls`` or of an in-scope
+        subclass of it may look an attribute up on."""
+        family: set[str] = set()
+        for c in (cls, *self._descendants.get(cls, ())):
+            family.update(self._mro(c))
+        return family
+
+    def _own_attribute(self, cls: str, attr: str, written: set[str]) -> bool:
+        """Whether ``attr`` of an instance of ``cls`` (or of a subclass) is
+        the instance's own: no class of the family binds or defines it in
+        its body (a class-level object, or a method or property whose result
+        may be one), customises attribute lookup (``__getattr__``,
+        ``__getattribute__``), has a base outside the index (``opaque``), or
+        is stored onto by code (which may put ``attr`` on the class)."""
+        for c in sorted(self._family(cls)):
+            cscope = self.class_scopes[c]
+            names = cscope.members.keys() | cscope.bindings
+            if attr in names or "__getattr__" in names or "__getattribute__" in names:
+                return False
+            if cscope.opaque or c in written:
+                return False
+        return True
+
+    def _allocated_fresh(self, cls: str, how: str) -> bool:
+        """Whether an instance of ``cls`` (or of a subclass of it) made as
+        ``how`` says (references.FRESH: ``call``, ``new``, ``super``) is a
+        new object nothing else holds: no class in the MRO of ``cls`` or of
+        a subclass defines ``__new__`` (for ``super``, but ``cls`` itself,
+        whose own ``__new__`` calls it) or has a base outside the source
+        roots that may (``external_base``; a builtin, typing or abc base
+        does not), and, for a constructor call, none is decorated or has a
+        metaclass (``plain``)."""
+        family = self._family(cls)
+        if how == "super":
+            family.discard(cls)
+        for c in sorted(family):
+            cscope = self.class_scopes[c]
+            if "__new__" in cscope.members or "__new__" in cscope.bindings:
+                return False
+            if cscope.external_base or (how == "call" and not cscope.plain):
+                return False
+        return True
 
     def _instance_classes(self) -> dict[str, set[str]]:
         """Module variable -> the in-scope classes it may hold an instance of

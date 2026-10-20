@@ -8,11 +8,22 @@ variables and classes, reached directly, through ``cls``/``type(self)``,
 through items and method results of a root, through any local name bound
 to one (``aliases.name_sources``), ``globals()``, or what an in-scope
 function returns (``state_returns``/``result_writes``, closed after pass 2
-by ``Indexer._result_writes``). Copies and new instances are no roots.
-Each root gets a ``mutated_by`` edge to the writer (``_rooted_write``), after
-pass 2 and unless the root is a variable whose value cannot change in place
+by ``Indexer._result_writes``). Copies are no roots. Each root gets a
+``mutated_by`` edge to the writer (``_rooted_write``), after pass 2 and
+unless the root is a variable whose value cannot change in place
 (``value_writes``, Indexer._value_writes); rebinding a variable is an edge of
-its own (``_mutation_target``)."""
+its own (``_mutation_target``).
+
+An instance an in-scope class makes (``Store()``, ``cls()``,
+``cls.__new__(cls)``, ``self.__class__.__new__(self.__class__)``,
+``super().__new__(cls)``, ``object.__new__(cls)``: ``_made_instance``) is a
+root of its own (``FRESH``), never the class it was made from, and what it
+holds is ``INSTANCE``. A write in place into either, or either handed to a
+callee writing its parameter, is a write of the class's state when the
+class holds any (``instance_writes``, decided after pass 2 by
+Indexer._instance_writes as for a module variable holding an instance);
+binding an attribute on the instance itself changes that object alone when
+nothing but ``object.__new__`` made it (audit round 6, T22)."""
 
 from __future__ import annotations
 
@@ -228,6 +239,18 @@ _NAMESPACE = "<namespace>"
 # A root that is what a call of an in-scope function returns: ``RESULT`` and
 # the function's id (_state_roots, joined in Indexer._result_writes).
 RESULT = "<result>:"
+# A root that is an instance of an in-scope class the call makes (``Store()``,
+# ``cls()``, ``cls.__new__(cls)``): ``FRESH``, how it was made (``call``, a
+# ``__new__`` called on a class: ``new``, on ``super()``: ``super``, on
+# ``object``: ``object``), ``:`` and the class id. A write in place into it
+# may be one into state its class holds; binding an attribute on it is not,
+# when nothing but ``object.__new__`` made it (``Indexer._instance_writes``).
+# ``INSTANCE``, ``.`` and the attribute it was reached through (``s._items``)
+# or nothing (an item, a method's result), ``:`` and the class id: what such
+# an instance holds or is part of, where a write may be one into its class's
+# state (audit round 6, T22).
+FRESH = "<fresh>:"
+INSTANCE = "<instance>:"
 _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -902,6 +925,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             source = self._local_source(expr.id)
             return self._held_origins(source, depth + 1) if source is not None else set()
         call = isinstance(expr, ast.Call)
+        if isinstance(expr, ast.Call) and (made := self._made_instance(expr)) is not None:
+            return {f"class:{made[1]}"}  # ``Store.__new__(Store)`` too (T22)
         parts = _flatten_chain(expr.func if isinstance(expr, ast.Call) else expr)
         if parts is None or self._is_local(parts[0]):
             return set()
@@ -926,7 +951,9 @@ class _ReferenceCollector(ast.NodeVisitor):
         Indexer._value_writes; audit round 6, T20)."""
         self.indexer.out.value_writes.add((state, self.source))
 
-    def _rooted_write(self, obj: ast.expr, *, call: bool = False, bound: bool = False) -> None:
+    def _rooted_write(
+        self, obj: ast.expr, *, call: bool = False, bound: bool = False, attr: bool = False
+    ) -> None:
         """A change in place of ``obj`` (an item or attribute stored into it,
         a mutator called on it): a
         ``mutated_by`` edge from each module variable, class or function
@@ -938,13 +965,36 @@ class _ReferenceCollector(ast.NodeVisitor):
         ``call``) is no change of the class. ``bound``: a bound mutator taken
         as a value (``_put = _CACHE.__setitem__``), which writes when it is
         called, so a module-level one is no write the module's own hash
-        covers: whoever calls the variable holding it writes."""
+        covers: whoever calls the variable holding it writes. ``attr``: an
+        attribute of ``obj`` itself bound or deleted (``new.x = v``), which
+        on a fresh instance changes that object alone (audit round 6,
+        T22)."""
         if call and self._names_definition(obj):
             return
         roots = self._state_roots(obj, frozenset())
         own = isinstance(obj, ast.Name) and self._is_local(obj.id)
         for root, copy in sorted(roots.items()):
             if root == _NAMESPACE or (copy and own):
+                continue
+            made = instance_root(root)
+            if made is not None:
+                # An instance of an in-scope class (or part of one): a write
+                # of the class's state when the class holds any, decided
+                # after pass 2 (Indexer._instance_writes).
+                how, cls = made
+                if root.startswith(FRESH):
+                    if not attr:
+                        how = ""  # a write in place into the instance itself
+                    elif how == "object":
+                        continue  # nothing but ``object.__new__`` made it
+                symbol = self.indexer.index.symbols.get(cls)
+                if symbol is None or (
+                    self.skip_defs
+                    and symbol.module == self.scope.module.name
+                    and not (bound and self.source != self.scope.module.name)
+                ):
+                    continue
+                self.indexer.out.instance_writes.add((cls, self.source, how))
                 continue
             if root.startswith(RESULT):
                 # What a call returns, known after pass 2 (a copy included:
@@ -971,29 +1021,43 @@ class _ReferenceCollector(ast.NodeVisitor):
         result, a class itself as an argument (``configure(Config)``). A
         copy is no state handed on; nor is a class a method is called on
         (``Base.method(self)``: a classmethod writing ``cls`` is a write of
-        its own)."""
+        its own). As writes.py's passes give them: ``var:<id>``, and
+        ``instance:<class id>`` for an instance of an in-scope class or
+        part of one (a write of the class's state when it holds any: audit
+        round 6, T22)."""
         if receiver and self._names_definition(expr):
             return []
         symbols = self.indexer.index.symbols
-        return [
-            root
-            for root, copy in sorted(self._state_roots(expr, frozenset()).items())
-            if not copy
-            and root != self.source
-            and (symbol := symbols.get(root)) is not None
-            and symbol.kind in (SymbolKind.VARIABLE, SymbolKind.CLASS)
-        ]
+        found: list[str] = []
+        for root, copy in sorted(self._state_roots(expr, frozenset()).items()):
+            if copy or root == self.source:
+                continue
+            made = instance_root(root)
+            if made is not None:
+                if made[1] in symbols:
+                    how = made[0] if root.startswith(INSTANCE) else ""
+                    found.append(f"instance:{how}:{made[1]}")
+            elif (symbol := symbols.get(root)) is not None and symbol.kind in (
+                SymbolKind.VARIABLE,
+                SymbolKind.CLASS,
+            ):
+                found.append(f"var:{root}")
+        return list(dict.fromkeys(found))
 
-    def _target_write(self, target: ast.expr) -> None:
+    def _target_write(self, target: ast.expr, *, bind: bool = True) -> None:
         """``_rooted_write`` for each item or attribute an assignment or
-        ``del`` target stores into (each element of an unpacking)."""
+        ``del`` target stores into (each element of an unpacking). ``bind``:
+        an attribute target is bound or deleted, not changed in place as
+        ``new.items += [x]`` may change it."""
         if isinstance(target, (ast.Tuple, ast.List)):
             for elt in target.elts:
-                self._target_write(elt)
+                self._target_write(elt, bind=bind)
         elif isinstance(target, ast.Starred):
-            self._target_write(target.value)
-        elif isinstance(target, (ast.Subscript, ast.Attribute)):
+            self._target_write(target.value, bind=bind)
+        elif isinstance(target, ast.Subscript):
             self._rooted_write(target.value)
+        elif isinstance(target, ast.Attribute):
+            self._rooted_write(target.value, attr=bind)
 
     def _is_local(self, name: str) -> bool:
         """A name the function binds itself (no parameter default's alias,
@@ -1043,6 +1107,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         taken from; a call's result may be any of its arguments, its
         receiver included (unless it is a fresh value or a copy:
         FRESH_CALLS, SHALLOW_CALLS), but no class or function named as one;
+        an instance an in-scope class makes is ``FRESH`` (``_made_instance``);
         ``type(self)``, ``self.__class__`` and a classmethod's ``cls`` are
         the class, and ``self.<attr>`` is the class when its body binds
         ``attr`` and the instance gets no object of its own
@@ -1166,7 +1231,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                                 if detail == f"attribute:{chain[-1]}":
                                     found[other] = False
                             return found
-        return _part_of(self._state_roots(expr.value, seen), copy=False)
+        return _part_of(self._state_roots(expr.value, seen), copy=False, attr=expr.attr)
 
     def _instance_roots(self, chain: list[str]) -> dict[str, bool]:
         """``self.<attr>``: the class whose body binds ``attr`` (and each
@@ -1205,7 +1270,111 @@ class _ReferenceCollector(ast.NodeVisitor):
             found = self._class_nodes[cid] = (module.tree, _find_class(module.tree.body, path))
         return found[1]
 
+    def _class_named(self, expr: ast.expr) -> str | None:
+        """The in-scope class ``expr`` names: a class (``Store``), a
+        classmethod's ``cls``, ``type(self)`` or ``self.__class__`` (the
+        method's class, or a subclass of it)."""
+        scope = self.scope
+        if scope.self_class is not None:
+            if isinstance(expr, ast.Name) and expr.id == scope.self_name:
+                return scope.self_class if scope.self_is_class else None
+            if not scope.self_is_class and (
+                (
+                    isinstance(expr, ast.Attribute)
+                    and expr.attr == "__class__"
+                    and self._is_self(expr.value)
+                )
+                or (
+                    isinstance(expr, ast.Call)
+                    and isinstance(expr.func, ast.Name)
+                    and expr.func.id == "type"
+                    and not self._is_shadowed("type")
+                    and len(expr.args) == 1
+                    and not expr.keywords
+                    and self._is_self(expr.args[0])
+                )
+            ):
+                return scope.self_class
+        parts = _flatten_chain(expr)
+        if parts is None or self._is_local(parts[0]) or parts[0] == scope.self_name:
+            return None
+        node = self.indexer.resolve_chain(parts, scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return symbol.id if symbol is not None and symbol.kind == SymbolKind.CLASS else None
+
+    def _made_instance(self, node: ast.Call) -> tuple[str, str] | None:
+        """(how, class id) when the call makes an instance of an in-scope
+        class: a constructor call (``Store()``, ``cls()``, ``type(self)()``:
+        ``call``) or ``__new__`` called with the class (``cls.__new__(cls)``,
+        ``self.__class__.__new__(self.__class__)``: ``new``;
+        ``super().__new__(cls)``: ``super``; ``object.__new__(cls)``:
+        ``object``). Not a ``__new__`` of a class outside the instance's
+        MRO, which may give anything back."""
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "__new__":
+            if not node.args or isinstance(node.args[0], ast.Starred):
+                return None
+            cls = self._class_named(node.args[0])
+            if cls is None:
+                return None
+            receiver = func.value
+            if isinstance(receiver, ast.Name) and receiver.id == "object":
+                return ("object", cls) if not self._is_shadowed("object") else None
+            if (
+                isinstance(receiver, ast.Call)
+                and isinstance(receiver.func, ast.Name)
+                and receiver.func.id == "super"
+                and not self._is_shadowed("super")
+            ):
+                return "super", cls
+            on = self._class_named(receiver)
+            if on is None:
+                return None
+            return ("new", cls) if on in self.indexer._mro(cls) else None
+        cls = self._class_named(func)
+        return ("call", cls) if cls is not None else None
+
+    def _new_results(self, cls: str) -> dict[str, bool]:
+        """What an in-scope ``__new__`` making ``cls`` (or a subclass of it)
+        returns, joined after pass 2: the object may be one it keeps."""
+        hit = self.indexer.lookup_in_class(cls, "__new__", dispatch=True)
+        if not isinstance(hit, Resolved):
+            return {}
+        found = {}
+        for symbol_id, detail in [(hit.symbol, hit.detail), *hit.overrides]:
+            symbol = self.indexer.index.symbols.get(symbol_id)
+            if not detail and symbol is not None and symbol.kind == SymbolKind.METHOD:
+                found[f"{RESULT}{symbol_id}"] = False
+        return found
+
+    def _instance_roots_of(self, node: ast.Call, seen: frozenset) -> dict[str, bool] | None:
+        """``_call_roots`` of a call making an instance of an in-scope class
+        (``_made_instance``): the instance (``FRESH``), what an in-scope
+        ``__new__`` returns and, as for any call, what its other arguments
+        give it. The class itself, named as the call or its first
+        argument, is no root: binding an attribute on the new object is no
+        change of the class (audit round 6, T22)."""
+        made = self._made_instance(node)
+        if made is None:
+            return None
+        how, cls = made
+        rest = [*node.args, *(k.value for k in node.keywords)]
+        if how != "call":
+            rest = rest[1:]  # the class handed to ``__new__``
+        found = _part_of(
+            _merged(*(self._state_roots(a, seen) for a in rest if not self._names_definition(a))),
+            copy=False,
+        )
+        if how != "object":
+            found = _merged(found, self._new_results(cls))
+        return _merged(found, {f"{FRESH}{how}:{cls}": False})
+
     def _call_roots(self, node: ast.Call, seen: frozenset) -> dict[str, bool]:
+        made = self._instance_roots_of(node, seen)
+        if made is not None:
+            return made
         func = node.func
         args = [*node.args, *(k.value for k in node.keywords)]
         parts = _flatten_chain(func)
@@ -1529,7 +1698,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             # ``c += [x]`` extends in place what ``c`` holds.
             self._rooted_write(node.target)
         else:
-            self._target_write(node.target)
+            self._target_write(node.target, bind=False)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -1591,7 +1760,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         ):
             # ``setattr(Config, "mode", v)``, ``heappush(queue, x)``.
             if id(node) not in self.scope.module.undone():
-                self._rooted_write(node.args[0])
+                binds = parts is not None and parts[-1] in ("setattr", "delattr")
+                self._rooted_write(node.args[0], attr=binds)
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "__setattr__",
             "__delattr__",
@@ -2050,7 +2220,14 @@ class _ReferenceCollector(ast.NodeVisitor):
         (``items.append(C())``), a class with no in-scope constructor, or
         ``**x``. Whoever holds it may call any method of it by name, so the
         class escapes (``SourceIndex.escaped_classes``); a call site of an
-        in-scope function records what it is handed already."""
+        in-scope function records what it is handed already. Not the class
+        handed to ``object.__new__`` alone (``cls.__new__(cls)`` where no
+        class of the family defines ``__new__`` and every base is in scope),
+        which reads no member by name (audit round 6, T22)."""
+        if len(node.args) == 1 and not node.keywords:
+            made = self._made_instance(node)
+            if made is not None and made[0] != "call" and self._allocates_only(*made):
+                return
         for keyword in node.keywords:
             if keyword.arg is None:
                 self._hand_on(keyword.value)  # ``f(**obj)`` calls ``obj.keys()``
@@ -2079,6 +2256,23 @@ class _ReferenceCollector(ast.NodeVisitor):
                             return
         for value in [*values, *keywords]:
             self._hand_on(value)
+
+    def _allocates_only(self, how: str, cls: str) -> bool:
+        """Whether a ``__new__`` call making ``cls`` (``_made_instance``)
+        runs ``object.__new__`` alone: called on ``object``, or no class in
+        the MRO of ``cls`` or of a subclass of it defines ``__new__`` and
+        all their bases are in scope."""
+        if how == "object":
+            return True
+        indexer = self.indexer
+        for c in (cls, *indexer._descendants.get(cls, ())):
+            for m in indexer._mro(c):
+                cscope = indexer.class_scopes[m]
+                if not cscope.complete or "__new__" in cscope.members:
+                    return False
+                if "__new__" in cscope.bindings:
+                    return False
+        return True
 
     def _hand_on(self, expr: ast.expr) -> None:
         """``expr`` is given to code that may read any attribute of it by
@@ -3146,10 +3340,31 @@ def _merged(*found: dict[str, bool]) -> dict[str, bool]:
     return out
 
 
-def _part_of(roots: dict[str, bool], *, copy: bool) -> dict[str, bool]:
+def _part_of(roots: dict[str, bool], *, copy: bool, attr: str = "") -> dict[str, bool]:
     """What is held in, or made of, the objects of ``roots``: an item or an
-    attribute of them (no copy), or a new container of them (``copy``)."""
-    return {root: copy for root in roots if root != _NAMESPACE}
+    attribute of them (no copy), or a new container of them (``copy``). What
+    a fresh instance holds is no longer the new object itself (``attr``: the
+    attribute it is reached through)."""
+    return {_instance_part(root, attr): copy for root in roots if root != _NAMESPACE}
+
+
+def _instance_part(root: str, attr: str = "") -> str:
+    """``root``, or for a fresh instance (``FRESH``) what is part of it:
+    reached through attribute ``attr``, or anyhow."""
+    if root.startswith(FRESH):
+        return f"{INSTANCE}{'.' + attr if attr else ''}:{root.rpartition(':')[2]}"
+    return root
+
+
+def instance_root(root: str) -> tuple[str, str] | None:
+    """(how, class id) of a ``FRESH`` root (how it was made), and of an
+    ``INSTANCE`` one ("" or ``.`` and the attribute it was reached
+    through); None for any other."""
+    for prefix in (FRESH, INSTANCE):
+        if root.startswith(prefix):
+            how, _, cls = root[len(prefix) :].partition(":")
+            return how, cls
+    return None
 
 
 # Calls in a class body giving each instance its own object (dataclasses,

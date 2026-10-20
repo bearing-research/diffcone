@@ -819,7 +819,13 @@ class Resolver(FirstPass):
                 fscope.self_name = params[0].arg
                 fscope.self_class = class_scope.id
                 fscope.method = symbol_id
-                fscope.self_is_class = _has_decorator(node, "classmethod")
+                # ``__new__``, ``__init_subclass__`` and ``__class_getitem__``
+                # take the class without saying so (audit round 6, T22).
+                fscope.self_is_class = _has_decorator(node, "classmethod") or node.name in (
+                    "__new__",
+                    "__init_subclass__",
+                    "__class_getitem__",
+                )
         fscope.rebound = frozenset(_rebound_names(node))
         if node.decorator_list:
             fscope.param_values = parametrized_values(node, scope, header.literal_bound)

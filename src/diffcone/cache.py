@@ -53,6 +53,10 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 58: an instance an in-scope class makes (``Store()``, ``cls.__new__(cls)``)
+#     is no root of the class; a write in place into it writes the class
+#     when the class holds state, and ``__new__``/``__init_subclass__`` take
+#     the class (audit round 6, T22);
 # 57: a write in place into a module variable holding an instance of an
 #     in-scope class with class-level state writes the class and its
 #     in-scope bases too (audit round 6, T21);
@@ -103,7 +107,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 57
+INDEX_FORMAT = 58
 
 
 def _indexer_fingerprint() -> str:

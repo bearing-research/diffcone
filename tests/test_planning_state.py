@@ -928,6 +928,190 @@ def test_t21_a_write_into_an_instance_of_a_class_without_state(repo, case):
     }
 
 
+# A fresh instance (``cls.__new__(cls)``, ``self.__class__.__new__(...)``,
+# ``Store()``) is not the class it was made from: binding an attribute on it
+# writes the instance alone. A write in place into it or into what one of its
+# attributes holds may reach a class-level container, as through a module
+# variable holding an instance (T21), and is a write of the class when the
+# class may hold state (audit round 6, T22).
+VERSION = (
+    "import re\n\n\nclass _Base:\n    __slots__ = ()\n\n\nclass Version(_Base):\n"
+    "    __slots__ = ('_v', '_key_cache')\n    __match_args__ = ('_v',)\n"
+    "    _regex = re.compile(r'[0-9]+')\n\n    def __init__(self, v):\n"
+    "        self._v = v\n        self._key_cache = None\n\n{method}\n\n"
+    "def peek(k):\n    return Version(k)._v\n"
+)
+VERSION_FILL = "from pkg.state import Version\n\n\ndef fill(k):\n    Version(k).{call}\n"
+REPLACE = "    def replace(self):\n        new = {new}\n{body}        return new\n"
+MAKE = "    @classmethod\n    def make(cls):\n        new = {new}\n{body}        return new\n"
+BINDS = "        new._key_cache = None\n        new._v = 'x'\n"
+FRESH_PRECISION = {
+    "self.__class__.__new__": (REPLACE, "self.__class__.__new__(self.__class__)", BINDS),
+    "type(self).__new__": (REPLACE, "type(self).__new__(type(self))", BINDS),
+    "object.__new__": (REPLACE, "object.__new__(self.__class__)", BINDS),
+    "cls.__new__": (MAKE, "cls.__new__(cls)", BINDS),
+    "super().__new__": (MAKE, "super().__new__(cls)", BINDS),
+    "an alternative constructor": (MAKE, "cls('x')", "        new._key_cache = None\n"),
+    "a write into an attribute, the class holding no state": (
+        REPLACE,
+        "self.__class__.__new__(self.__class__)",
+        "        new._key_cache = []\n        new._key_cache.append('x')\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(FRESH_PRECISION))
+def test_t22_an_attribute_bound_on_a_fresh_instance_is_no_class_state(repo, case):
+    """``new = self.__class__.__new__(self.__class__); new._v = v`` (as
+    ``Version.__replace__`` in packaging does) binds the attribute on the
+    new object only: the readers of ``Version`` read nothing it writes."""
+    template, new, body = FRESH_PRECISION[case]
+    method = template.format(new=new, body=body)
+    call = "make()" if template is MAKE else "replace()"
+    state = VERSION.format(method=method)
+    assert _state_plan(repo, state, VERSION_FILL.format(call=call)) == {"tests/test_a.py::test_a"}
+
+
+def test_t22_an_attribute_bound_on_a_fresh_instance_of_a_class_holding_state(repo):
+    """The class holds a container, but the bind is on the new object."""
+    state = (
+        "class Store:\n    _items = []\n\n    def copy(self):\n"
+        "        new = self.__class__.__new__(self.__class__)\n        new.v = 'x'\n"
+        "        return new\n\n\ndef peek(k):\n    return Store._items\n"
+    )
+    lib = "from pkg.state import Store\n\n\ndef fill(k):\n    Store().copy()\n"
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
+def test_t22_a_write_into_an_attribute_the_fresh_instance_owns(repo):
+    """``s.mine`` is bound in ``__init__`` and nowhere in a class body: a
+    write into it changes the new object's own list, not ``Store._items``."""
+    state = (
+        "class Store:\n    _items = []\n\n    def __init__(self):\n        self.mine = []\n\n\n"
+        "def peek(k):\n    return Store._items\n"
+    )
+    lib = "from pkg.state import Store\n\n\ndef fill(k):\n    s = Store()\n    s.mine.append('x')\n"
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
+FRESH_STORE = (
+    "class Store:\n    _items = []\n    _cache = {{}}\n{methods}\n\n"
+    "def peek(k):\n    return Store._items, Store._cache\n"
+)
+FRESH_WRITER = "from pkg.state import Store\n\n\ndef fill(k):\n{}"
+PUT_INTO = "\n\ndef _put(obj):\n    obj._items.append('x')\n"
+ADD_TO = "\n\ndef _add(d):\n    d.append('x')\n"
+
+
+def _method(head, new, write="new._items.append('x')"):
+    return f"\n{head}\n        new = {new}\n        {write}\n        return new\n"
+
+
+CLASSMETHOD = "    @classmethod\n    def make(cls):"
+COPY = "    def copy(self):"
+FRESH_SOUND = {
+    "a constructor's instance": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store()\n    s._items.append('x')\n"),
+    ),
+    "an item stored into the container": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store()\n    s._cache[k] = 'x'\n"),
+    ),
+    "an augmented container": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store()\n    s._items += ['x']\n"),
+    ),
+    "the class's __new__ called on it": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store.__new__(Store)\n    s._items.append('x')\n"),
+    ),
+    "cls.__new__ in a classmethod": (
+        FRESH_STORE.format(methods=_method(CLASSMETHOD, "cls.__new__(cls)")),
+        FRESH_WRITER.format("    Store.make()\n"),
+    ),
+    "object.__new__ in a classmethod": (
+        FRESH_STORE.format(methods=_method(CLASSMETHOD, "object.__new__(cls)")),
+        FRESH_WRITER.format("    Store.make()\n"),
+    ),
+    "an alternative constructor": (
+        FRESH_STORE.format(methods=_method(CLASSMETHOD, "cls()")),
+        FRESH_WRITER.format("    Store.make()\n"),
+    ),
+    "self.__class__.__new__": (
+        FRESH_STORE.format(methods=_method(COPY, "self.__class__.__new__(self.__class__)")),
+        FRESH_WRITER.format("    Store().copy()\n"),
+    ),
+    "type(self).__new__": (
+        FRESH_STORE.format(methods=_method(COPY, "type(self).__new__(type(self))")),
+        FRESH_WRITER.format("    Store().copy()\n"),
+    ),
+    "super().__new__ in __new__": (
+        FRESH_STORE.format(
+            methods="\n    def __new__(cls):\n        new = super().__new__(cls)\n"
+            "        new._items.append('x')\n        return new\n"
+        ),
+        FRESH_WRITER.format("    Store()\n"),
+    ),
+    "what a factory returns": (
+        FRESH_STORE.format(methods="") + "\n\ndef make():\n    return Store()\n",
+        "from pkg.state import make\n\n\ndef fill(k):\n    make()._items.append('x')\n",
+    ),
+    "a container handed to a writer": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store()\n    _add(s._items)\n") + ADD_TO,
+    ),
+    "the instance handed to a writer": (
+        FRESH_STORE.format(methods=""),
+        FRESH_WRITER.format("    s = Store.__new__(Store)\n    _put(s)\n") + PUT_INTO,
+    ),
+    "a method of the instance writing the container": (
+        FRESH_STORE.format(methods="\n    def put(self, v):\n        self._items.append(v)\n"),
+        FRESH_WRITER.format("    s = Store()\n    s.put('x')\n"),
+    ),
+    "a method of an instance __new__ made, writing the container": (
+        FRESH_STORE.format(methods="\n    def put(self, v):\n        self._items.append(v)\n"),
+        FRESH_WRITER.format("    s = Store.__new__(Store)\n    s.put('x')\n"),
+    ),
+    "a method of a copy self.__class__.__new__ made": (
+        FRESH_STORE.format(
+            methods="\n    def put(self, v):\n        self._items.append(v)\n"
+            + _method(COPY, "self.__class__.__new__(self.__class__)", "new.put('x')")
+        ),
+        FRESH_WRITER.format("    Store().copy()\n"),
+    ),
+    "an attribute other code puts on the class": (
+        FRESH_STORE.format(methods="") + "\n\ndef setup():\n    Store.extra = []\n",
+        FRESH_WRITER.format("    s = Store()\n    s.extra.append('x')\n"),
+    ),
+    "an attribute a __getattr__ may give": (
+        FRESH_STORE.format(
+            methods="\n    def __getattr__(self, name):\n        return self._cache[name]\n"
+        ),
+        FRESH_WRITER.format("    s = Store()\n    s.extra.append('x')\n"),
+    ),
+    "a module variable made by __new__": (
+        FRESH_STORE.format(methods="") + "\n\nSTORE = Store.__new__(Store)\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE._items.append('x')\n",
+    ),
+    "a singleton its __new__ keeps": (
+        "class S:\n    _instance = None\n\n    def __new__(cls):\n"
+        "        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n"
+        "        return cls._instance\n\n\ndef peek(k):\n    return S._instance.mode\n",
+        "from pkg.state import S\n\n\ndef fill(k):\n    s = S()\n    s.mode = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(FRESH_SOUND))
+def test_t22_a_write_into_a_fresh_instance_reaches_the_state_its_class_holds(repo, case):
+    """The bounds of the rule above: a write in place into a fresh instance
+    (into the class-level container one of its attributes is, however made
+    or handed on) is a write of the class when the class holds state, and
+    an instance a class's own ``__new__`` returns may be one it keeps."""
+    assert _state_plan(repo, *FRESH_SOUND[case]) == STATE_SELECTED
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

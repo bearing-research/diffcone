@@ -604,6 +604,52 @@ Further rules (pre-release audit, round 2):
   Store()`; a class attribute bound to one, `registry = Registry()`, whose
   own class is written only when it holds state), and a binding by a
   library call returning a project instance.
+* An instance an in-scope class makes is not the class (audit round 6,
+  T22; `references._made_instance`, `Indexer._instance_writes` after pass
+  2). A constructor call (`Store()`, a classmethod's `cls()`,
+  `type(self)()`, `self.__class__()`) and a `__new__` called with the class
+  (`cls.__new__(cls)`, `Store.__new__(Store)`,
+  `self.__class__.__new__(self.__class__)`, `type(self).__new__(type(self))`,
+  `super().__new__(cls)`, `object.__new__(cls)`) give the write tracing a
+  root of their own (`FRESH`, with how the instance was made), never the
+  class named as the call, its receiver or its first argument; what the
+  other arguments give it and what an in-scope `__new__` of the family
+  returns (`<result>:`, joined by `Indexer._result_writes`) stay roots, as
+  for any call. What such an instance holds (an attribute, an item, a
+  method's result, a name bound to part of it) is an `INSTANCE` root. A
+  write in place into either (`s._items.append(x)`, `s._cache[k] = v`,
+  `s._items += [x]`, `s.append(x)`, through a local alias, a factory's
+  result `make()._items.append(x)`, or handed to a callee writing its
+  parameter: the `instance:` pass) is recorded as `instance_writes` and
+  becomes, after pass 2, a `mutated_by` edge of the class and its in-scope
+  bases when one of them holds state (the T21 rule, `_classes_holding_state`;
+  an instance write does not itself count as storing onto the class). A
+  write reached through an attribute of the instance (`s._items.append(x)`:
+  the `INSTANCE` root keeps the first attribute) gives none when the
+  attribute is the instance's own (`_own_attribute`): no class of the family
+  (the MRO of the class and of each in-scope subclass) binds or defines it
+  in its body, defines `__getattr__`/`__getattribute__`, has a base outside
+  the index (`opaque`) or is stored onto by any code. Binding
+  or deleting an attribute on the instance itself (`new._key = None`,
+  `setattr(new, "k", v)`; not `new.k += v`, which may extend a class-level
+  list) changes that object alone when nothing but `object.__new__` made it
+  (`_allocated_fresh`): called on `object`, or no class in the MRO of the
+  class or of an in-scope subclass defines or binds `__new__` (for
+  `super().__new__`, but the class itself) or has a base outside the roots
+  that may (`external_base`; a builtin, typing or abc base does not), and
+  for a constructor none is decorated or has a metaclass (`plain`).
+  Otherwise the bind counts as a write in place: an in-scope `__new__`, a
+  library's, a class decorator or a metaclass may give back an object kept
+  elsewhere (a singleton). A method called on such an instance adds no
+  class edge (the method's own `self` writes reach the class, T6/T21). The
+  first parameter of `__new__`, `__init_subclass__` and `__class_getitem__`
+  is the class, as a classmethod's `cls` is (`cls._instance = x` in
+  `__new__` stores onto the class). `cls` handed to `object.__new__` alone
+  (one argument, no class of the family defining `__new__`, every base in
+  scope) does not make the class escape (`_handed_instances`). Not
+  modelled: an instance a library call makes, and a metaclass `__call__`
+  keeping instances in state of the metaclass (the class itself need not
+  hold any).
 * Project code run by naming it in a string (`indexer/scripts.py`). A
   string naming a `.py` file (a literal, or the last literal piece of a
   path built from literals: `os.path.join(ROOT, "scripts", "gen.py")`,

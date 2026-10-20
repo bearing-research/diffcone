@@ -223,21 +223,32 @@ everything.
       `registry` returns `_CACHE`;
     - `globals()["_CACHE"][k] = v`.
 
-    A class-level container is shared by every instance: when a
-    module-level name holds an instance of your class (`STORE = Store()`,
-    `STORE = make_store()`, or set by a function under `global`), a change
-    made through it (`STORE._cache[k] = v`, `STORE.cache()[k] = v`) is a
-    dependency of every reader of the class too (`Store._cache`,
-    `cls._cache`), as long as the class or one of your base classes binds
-    something mutable in its body or some code stores onto the class. A
-    class whose body holds only constants, methods and properties is not
-    affected. State a library base class keeps is not seen.
+    A class-level container is shared by every instance: a change made
+    through an instance of your class is a dependency of every reader of
+    the class too (`Store._cache`, `cls._cache`), as long as the class or
+    one of your base classes binds something mutable in its body or some
+    code stores onto the class. That holds for an instance a module-level
+    name holds (`STORE = Store()`, `STORE = make_store()`, or set by a
+    function under `global`: `STORE._cache[k] = v`, `STORE.cache()[k] =
+    v`), and for one a function makes (`s = Store()`, `new =
+    cls.__new__(cls)`, `make_store()`: `s._cache[k] = v`,
+    `new._items.append(x)`, or `s._items` handed to a function that
+    changes it). A class whose body holds only constants, methods and
+    properties is not affected, nor is an attribute of a new instance that
+    no class body binds (`s.mine.append(x)`, where only `__init__` sets
+    `self.mine`). State a library base class keeps is not seen.
 
     A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
-    then `cache[k] = v`, changes nothing shared, and a store on an
-    attribute of an instance no module variable or class holds
-    (`Config().mode = m`, or `self.items.append(x)` on such an instance)
-    is not followed as shared state.
+    then `cache[k] = v`, changes nothing shared. Setting an attribute on a
+    new instance (`Config().mode = m`, `new = cls.__new__(cls); new.mode =
+    m`) changes that instance only, unless the class or one of its bases
+    defines its own `__new__`, is decorated, has a metaclass or derives
+    from a library class: such an instance may be one kept elsewhere (a
+    singleton), and setting its attribute counts as a change of the
+    class's state. A method changing an attribute its instance owns
+    (`self.items.append(x)`, where `__init__` sets `self.items = []`) on an
+    instance no module variable or class holds is not followed as shared
+    state.
 
     A module-level constant nothing can change in place has no writers: a
     name your module binds once, to a string, a number, a tuple of such

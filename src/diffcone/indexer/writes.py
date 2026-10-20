@@ -157,9 +157,11 @@ RECEIVER = "self"
 HELD_BY = "@"
 
 # A pass record: (caller, what is handed on, callee or "", called name,
-# slot, receiver bound). What is handed on is ``param:<name>`` or
-# ``var:<symbol id>``; the slot is a positional index, ``=<keyword>`` or
-# RECEIVER.
+# slot, receiver bound). What is handed on is ``param:<name>``,
+# ``var:<symbol id>``, ``module:<name>`` or ``instance:[.<attribute>]:<class
+# id>`` (an instance of an in-scope class the caller made, or part of one,
+# reached through that attribute: audit round 6, T22); the slot is a
+# positional index, ``=<keyword>`` or RECEIVER.
 Pass = tuple[str, str, str, str, str, bool]
 
 
@@ -433,13 +435,19 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         if what is not None:
             handed.append((slot, what))
         else:  # through a name bound to part of it, a class (audit round 6, T6, T7)
-            handed += [(slot, f"var:{v}") for v in collector._handed_state(expr)]
+            handed += [(slot, w) for w in collector._handed_state(expr)]
     if isinstance(func, ast.Attribute) and func.attr not in CONTAINER_MUTATORS:
         what = _handed(collector, func.value, modules=False)
         if what is not None:
             handed.append((RECEIVER, what))
         else:
-            handed += [(RECEIVER, f"var:{v}") for v in collector._handed_state(func.value, True)]
+            # Not an instance of an in-scope class: the method's own writes
+            # of ``self`` reach the state its class holds (T21, T22).
+            handed += [
+                (RECEIVER, w)
+                for w in collector._handed_state(func.value, True)
+                if not w.startswith("instance:")
+            ]
     if not handed:
         return
     name = func.attr if isinstance(func, ast.Attribute) else (parts[-1] if parts else "")
@@ -871,6 +879,16 @@ def apply_writes(indexer: Resolver) -> None:
                                 out.edges.add(
                                     Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY)
                                 )
+            continue
+        if what.startswith("instance:"):
+            # An instance of an in-scope class (or part of one) handed to a
+            # written parameter: a write of the state its class holds, if
+            # any (Indexer._value_writes; audit round 6, T22).
+            how, _, cls = what[len("instance:") :].partition(":")
+            symbol = symbols.get(cls)
+            if symbol is not None and caller not in (cls, symbol.module):
+                if writes_through(record):
+                    out.instance_writes.add((cls, caller, how))
             continue
         if not what.startswith("var:"):
             continue

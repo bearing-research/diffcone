@@ -234,6 +234,17 @@ class _Output:
     # edge of the variable, but none of the class it holds an instance of,
     # whose state the method's own writes of ``self`` reach (T21).
     receiver_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (class, writer, how): a write into an instance of an in-scope class
+    # the code made (``s = Store(); s._items.append(x)``, ``new =
+    # cls.__new__(cls)``), or into part of one: a ``mutated_by`` edge of the
+    # class and its in-scope bases when one of them holds state. ``how`` is
+    # "" for a write in place, ``.`` and the attribute for one reached
+    # through that attribute of the instance (none when the attribute is the
+    # instance's own), or how the instance was made (references.FRESH) for an
+    # attribute bound on it, which changes the instance alone when nothing
+    # but ``object.__new__`` made it (Indexer._instance_writes; audit round
+    # 6, T22).
+    instance_writes: set[tuple[str, str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -282,6 +293,7 @@ class _Output:
         self.value_writes |= other.value_writes
         self.instance_bindings |= other.instance_bindings
         self.receiver_writes |= other.receiver_writes
+        self.instance_writes |= other.instance_writes
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -391,6 +403,7 @@ def _output_to_dict(out: _Output) -> dict:
         "result_writes": sorted(list(w) for w in out.result_writes),
         "value_writes": sorted(list(w) for w in out.value_writes),
         "instance_bindings": sorted(list(b) for b in out.instance_bindings),
+        "instance_writes": sorted(list(w) for w in out.instance_writes),
     }
 
 
@@ -475,6 +488,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
     out.value_writes = {(v, w) for v, w in data["value_writes"]}
     out.instance_bindings = {(v, o) for v, o in data["instance_bindings"]}
+    out.instance_writes = {(c, w, h) for c, w, h in data["instance_writes"]}
     return out
 
 
