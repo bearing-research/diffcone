@@ -1237,8 +1237,10 @@ using the previous one.</p>
 <a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">          </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">diffcone-results</span>
 </code></pre></div>
 <p>The job fails when a selected test fails, like any test job. It also fails
-when a selected test wasn't collected by pytest, and when discovery may be
-incomplete (unless you set <code>allow-incomplete-discovery: true</code>). The plan and
+when a selected test wasn't collected by pytest, when <code>command</code> never loaded
+diffcone's selection plugin (a wrapper, or a tox or nox target, that doesn't
+pass its arguments on to pytest), and when discovery may be incomplete (unless
+you set <code>allow-incomplete-discovery: true</code>). The plan and
 the run's JUnit XML are written to <code>diffcone-results/</code>; upload them with
 <code>if: always()</code> so they're kept when tests fail.</p>
 <p>The action plans the change the event brings, read from the event itself:</p>
@@ -1265,7 +1267,8 @@ something else, set <code>base</code>.</p>
 <div class="admonition important">
 <p class="admonition-title">Match the recording</p>
 <p><code>command</code> and <code>pytest-args</code> must be the same in both workflows, and the
-environment must match: the same Python version and installed packages.
+environment must match: the same Python version and installed packages,
+and the same <code>PYTEST_ADDOPTS</code> if you set it.
 Installing from a lock file makes this automatic.</p>
 <ul>
 <li>When the environment differs, diffcone runs a plan from the code

@@ -1265,7 +1265,7 @@ dependency of every reader of the class. When the class can't be known
 (<code>type(obj).mode = m</code> or <code>obj.__class__.items.append(x)</code>, where <code>obj</code>
 is a parameter or comes from a call), the code is a dependency of the
 readers of each of your classes that has that attribute (its body or
-one of its methods sets it), of each class deriving from a library
+one of its methods sets it, or other code gives it that attribute), of each class deriving from a library
 class, and of their subclasses, or of
 every class for a special attribute (<code>__doc__</code>), for an attribute none
 of your classes has, and for a name only known at run time
@@ -1281,9 +1281,12 @@ it holds when the code reaches the object by another name:</p>
 <li>a bound method: <code>put = _CACHE.__setitem__</code>, then <code>put(k, v)</code>;</li>
 <li>what one of your functions returns: <code>registry()[k] = v</code>, where
   <code>registry</code> returns <code>_CACHE</code>, and anything a function returns when a
-  decorator may keep its result (<code>functools.cache</code>, <code>lru_cache</code>,
-  <code>cached_property</code>, a memoizing decorator of yours): every call hands
-  back the same object;</li>
+  decorator may keep its result: any decorator but one known to hand
+  back the function or call it afresh (<code>property</code>, <code>staticmethod</code>,
+  <code>functools.wraps</code>, <code>contextmanager</code>, pytest's marks) or one of yours
+  that returns the function itself (so <code>functools.cache</code>, <code>lru_cache</code>,
+  <code>cached_property</code> and a memoizing decorator of yours all count):
+  every call may hand back the same object;</li>
 <li>what a lambda, a closure or a <code>functools.partial</code> bound to a name
   returns (<code>get_cache = lambda: _CACHE</code>, then <code>get_cache()[k] = v</code>);</li>
 <li><code>globals()["_CACHE"][k] = v</code>.</li>
@@ -1296,8 +1299,11 @@ name (<code>import_module</code>, <code>sys.modules</code>, <code>vars(module)[.
 <code>module.__dict__[...]</code>), <code>type.__setattr__(Config, ...)</code>, an item of
 <code>Sub.__mro__</code> or <code>Sub.__bases__</code> (also of <code>type(obj)</code>), and what a call
 handed the class gives back (<code>HANDLERS.get(k, Default)</code>). Calling such
-a name (<code>Alias()</code>, <code>functools.partial(Config)()</code>) makes an instance of
-the class. A method a library gives your class, called on the class
+a name (<code>Alias()</code>, <code>functools.partial(Config)()</code>,
+<code>getattr(module, "Config")()</code>) makes an instance of the class. A mock
+made with the class as its spec (<code>create_autospec(Config)</code>,
+<code>Mock(spec=Config)</code>) is not the class; what it wraps or returns
+(<code>wraps=Config</code>, <code>return_value=Config</code>) is. A method a library gives your class, called on the class
 itself, may keep state on it: <code>Base.register(Foo)</code> on a class deriving
 from <code>abc.ABC</code> (or with the <code>abc.ABCMeta</code> metaclass) and
 <code>Case.addClassCleanup(f)</code> on a <code>TestCase</code> are dependencies of every
@@ -1313,9 +1319,10 @@ outside its body (its module's top-level <code>Config.registry = {}</code>,
 another module, <code>setattr</code>, a decorator or metaclass of yours), or it
 has a decorator, a metaclass or a library base that may give it state
 (other than <code>dataclasses.dataclass</code>, <code>functools.total_ordering</code>,
-<code>typing.final</code> and <code>abc.ABCMeta</code>). <code>staticmethod(x)</code>, <code>classmethod(x)</code>
-and <code>property(x)</code> hold nothing only when <code>x</code> is a function. That holds for an instance a module-level
-name holds (<code>STORE = Store()</code>, <code>STORE = make_store()</code>, or set by a
+<code>typing.final</code> and <code>abc.ABCMeta</code>; <code>staticmethod(x)</code>, <code>classmethod(x)</code>
+and <code>property(x)</code> in its body hold nothing only when <code>x</code> is a
+function). The rule for class-level containers holds for an instance a
+module-level name holds (<code>STORE = Store()</code>, <code>STORE = make_store()</code>, or set by a
 function under <code>global</code>: <code>STORE._cache[k] = v</code>, <code>STORE.cache()[k] =
 v</code>), and for one a function makes (<code>s = Store()</code>, <code>new =
 cls.__new__(cls)</code>, <code>make_store()</code>: <code>s._cache[k] = v</code>,
@@ -1335,10 +1342,13 @@ shared dict (the Borg).</p>
 then <code>cache[k] = v</code>, changes nothing shared. Some copies may be the
 object, or hold it, and count as it: <code>copy.deepcopy(x)</code> and a pickle
 round trip (a <code>__deepcopy__</code> or <code>__reduce__</code> may hand back the
-original, and a class inside is not copied), <code>x.copy()</code> or
-<code>copy.copy(x)</code> of an object when a class of yours defines <code>copy</code> or
-<code>__copy__</code>, and <code>sum</code>, <code>abs</code> and <code>round</code>, which may return what they
-were given. Setting an attribute on a
+original, and a class inside is not copied), except a deep copy of a
+dict, list or set literal or of a module-level name bound to one;
+<code>x.copy()</code> when a class of yours defines <code>copy</code> or <code>__copy__</code>, and
+<code>copy.copy(x)</code> when one defines <code>__copy__</code>, <code>__reduce__</code> or
+<code>__reduce_ex__</code>; and <code>sum</code>, <code>abs</code>, <code>round</code>, <code>pow</code> and <code>divmod</code>, which
+may return what they were given. Either way, what the copy holds
+(a class, an instance, an inner list) is still the original's. Setting an attribute on a
 new instance (<code>Config().mode = m</code>, <code>new = cls.__new__(cls); new.mode =
 m</code>) changes that instance only, unless a class in its hierarchy (a
 base or a subclass) defines its own <code>__new__</code> or derives from a class
@@ -1429,8 +1439,11 @@ undone when the test ends.</p>
 <dt><strong>Tests are assumed not to depend on what an earlier test left behind.</strong></dt>
 <dd>
 <p>When code that runs inside one test changes module state
-(<code>server._state = make()</code>), diffcone counts that change for that test
-only, not for other tests that read the same state. Such code is:</p>
+(<code>server._state = make()</code>, or <code>os.environ["MODE"] = mode()</code>),
+diffcone counts that change for that test only, not for other tests
+that read the same state, with or without a recording; set an
+environment variable with <code>monkeypatch.setenv</code>, which undoes it when
+the test ends. Such code is:</p>
 <ul>
 <li>the test itself, and unittest's <code>setUp</code> and <code>tearDown</code>;</li>
 <li>a function-scoped fixture;</li>
@@ -1520,9 +1533,6 @@ of its sight:</p>
 <li>a file opened by compiled code rather than by Python (a certificate
   or key file that <code>ssl</code> hands to OpenSSL, say): a change to it doesn't
   reach the tests that load it;</li>
-<li>an environment variable a test's own code sets in <code>os.environ</code> and a
-  later test reads; set it with <code>monkeypatch.setenv</code> instead, which
-  undoes it when the test ends;</li>
 <li>a cache on disk (a pickle, an SQLite file, a cache directory) one
   test writes and a later one reads: the later test reads the file,
   not the code that wrote it; give each test its own directory
