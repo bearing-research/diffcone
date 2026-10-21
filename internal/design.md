@@ -401,7 +401,14 @@ Further rules (pre-release audit, round 2):
   the targets alone (runner-independent): the test modules are the
   modules among the targets' lifecycle dependencies (a discovered target
   lists its own module and the conftests that apply to it; a benchmark
-  module). Each lifecycle dependency that is a function-scoped fixture
+  module), except a module some target lists that holds none of that
+  target's entries and is neither a conftest nor a module defining a
+  fixture a target lists: discovery lists a module whose import-time code
+  writes process state as a dependency of every test
+  (`discovery/session_state.py`), and such a module, project code or a test
+  module, holds no isolated code (audit round 7: a project module calling
+  `os.environ.setdefault(...)` at import had every function taken for
+  isolated test code). Each lifecycle dependency that is a function-scoped fixture
   (`Symbol.fixture_scope`: a `fixture` decorator with no `scope` or the
   literal `"function"`) is isolated; and, in the test modules, each
   target's entry symbol that is a function or a method defined there (a
@@ -444,7 +451,11 @@ Further rules (pre-release audit, round 2):
   values fixed for the process or pure functions outside the index
   (`os.sep`, `os.path.dirname`, `sys.platform`, `re.compile`; not
   `os.environ`, `os.getcwd`, `os.path.abspath`); no parameter or local of
-  `W`; and nothing but `W` writes it (no other `mutated_by`, `registers`,
+  `W`; the value is one nothing can change in place (a constant, a string,
+  a tuple of such, a number, a compiled pattern, a `str` method's result
+  on such a value; not a container made on first use, `{}`, `dict()`,
+  `[]`, `sorted(...)`, which `W` or whatever it hands it to may fill:
+  audit round 7, U8); and nothing but `W` writes it (no other `mutated_by`, `registers`,
   `rebinds` or `writes` edge). Candidates are pass-1 facts (cached with
   the module); the decision runs over the whole index after pass 2. Then
   `W` computes the same value whoever runs it first and whenever, so
@@ -470,7 +481,11 @@ Further rules (pre-release audit, round 2):
   parameter is written as well (to a fixed point). A module-level variable
   handed to a written parameter (`set_mode(REG)`, `fill(cfg.REG)`), or the
   receiver of a method that writes its receiver (`registry.register(x)`),
-  gets a `mutated_by` edge to the caller. A callee that does not resolve
+  gets a `mutated_by` edge to the caller and to each callee that writes it
+  (`set_mode`, `register`; `writes._writers`): the callee is project code
+  even when only a test calls it, which the isolation assumption leaves out
+  as a writer, and a change to the callee changes what it stores (audit
+  round 7, U4). A callee that does not resolve
   (`obj.fill(REG)`, a method of a variable) is any in-scope function or
   method of that name, unless the variable's value is known: an instance of
   an in-scope class (that class's method only), a dict, list or set display
@@ -523,9 +538,30 @@ Further rules (pre-release audit, round 2):
   (`registry()[k] = v`): `return` statements record the roots of what the
   function returns (`state_returns`), the write records a `<result>:`
   marker of the callee (`result_writes`), and `Indexer._result_writes`
-  closes the two over calls between functions after pass 2. A copy is no
-  root (`dict(x)`, `list(x)`, `copy.copy(x)`, `x.copy()`, a fresh value:
-  `len`, `str`, `json.loads`, `copy.deepcopy`), nor, for an attribute
+  closes the two over calls between functions after pass 2. A function
+  whose result a decorator may keep (`functools.cache`, `lru_cache`,
+  `cached_property`, a project memoiser, any decorator other than the
+  documented ones that hand back a new call each time, `staticmethod`,
+  `contextmanager`, `wraps` and the like: `references.FRESH_RESULT_DECORATORS`,
+  or a project decorator returning the function itself) hands back the
+  same object every call, so what it returns is a root of its own
+  (`kept_results`), whatever its body returns (audit round 7, U7). A
+  write into the returned object itself (through a local bound to the
+  call, or the call's own item) changes nothing a `return` only copied
+  (`return dict(_cached())`: `whole_returns`, `direct_result_writes`); a
+  write into part of it does (`settings()["modes"].append(x)`). So is
+  what a callable that is no `def` returns: a lambda, a closure or a
+  `functools.partial` bound to a name, called through it or a local alias
+  (`<result>:` of the variable, which stands for the variable and what it
+  refers to). A copy is no root when it surely makes a new object:
+  `dict(x)`, `list(x)`, `copy.copy(x)` and `x.copy()` of a display or
+  of a module container (`x.copy()` and `copy.copy(x)` otherwise only when
+  no in-scope class defines `copy`/`__copy__`), and a fresh value: `len`,
+  `str`, `json.loads` without hooks. Not fresh: `copy.deepcopy` (a
+  `__deepcopy__` may return `self`, a class inside is copied by
+  reference), `pickle.loads` (a `__reduce__` may name a module object),
+  `sum` (it returns its start value for an empty iterable), `abs`,
+  `round`, `pow` and `divmod` (they call the project's hooks), nor, for an attribute
   bound on it, is a new instance (`Config().mode = m`; T22 below says when
   one counts), nor a class or function handed to a call. A local
   bound to state is handed on to a callee's written parameter as the state
@@ -537,6 +573,36 @@ Further rules (pre-release audit, round 2):
   `_CACHE = {"a": Store()}`: the variable is a dict display, so only the
   container mutators count), an object stored under an instance's attribute
   and written later (above; partly modelled by T23 below), a library function's result.
+  A lambda's write is no module top-level statement even where the lambda
+  is (module level, a class body, a parameter default): it runs when
+  called, so what it stores holds what its caller hands it, and the write
+  records an edge as one in a function's body does (audit round 7, U19).
+* Stores onto a module outside the roots, or into the environment, by
+  project code (audit round 7, U13; `Indexer._external_state_edges`). The
+  process writes `indexer/process.py` catalogues include an attribute
+  stored on a library module (`json.x = v`), `setattr(json, "x", v)`, a
+  change in place of its namespace (`json.__dict__.setdefault(...)`,
+  `vars(json)[k] = v`, `vars(json).update(...)`: the whole module) or of
+  what it holds (`json.registry.append(v)`, `json.conf.mode = v`), and
+  `os.environ`. After pass 2, each symbol reading what was stored gets a
+  `mutated_by` edge to the writer: a read of that attribute or below it
+  (`json.x`, `from json import x`, `getattr(json, "x")`), of the module as
+  a value or by a name nothing bounds (`getattr(json, name)`, `vars(json)`,
+  a module reached through a project module, `store.json.x`), any attribute
+  of it for a store of the whole module (`vars(json).update(...)`,
+  `setattr(json, name, v)`), and the environment (`os.environ`,
+  `os.getenv`) for a write of it. A store onto a module found at run time
+  (`sys.modules[name].x = v`, `setattr(import_module(n), k, v)`) reaches a
+  read of that attribute off any library module, and, by a name nothing
+  bounds, the reads of a module as a value or by a name nothing bounds,
+  not every attribute read of every library (a measured choice: on strata,
+  matching those made two serializer helpers writers of 7,300 readers; a
+  dynamic lookup on such a module stays bounded by `external_sites` as
+  before). Reads are recorded per symbol (`_Output.external_reads`, by
+  every dotted name a chain may stand for, `=json` for the module itself);
+  a store reads nothing. As for module variables, a
+  writer only isolated test code is dropped. Not followed: what a library,
+  a child process or a C extension reads of it.
 * A module variable whose value cannot change in place has no writers
   (audit round 6, T20; `literals.module_immutables` in pass 1,
   `Indexer._immutable_variables` after pass 2). Every write of what a

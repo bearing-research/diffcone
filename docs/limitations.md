@@ -233,7 +233,12 @@ everything.
       then `entry.append(v)`;
     - a bound method: `put = _CACHE.__setitem__`, then `put(k, v)`;
     - what one of your functions returns: `registry()[k] = v`, where
-      `registry` returns `_CACHE`;
+      `registry` returns `_CACHE`, and anything a function returns when a
+      decorator may keep its result (`functools.cache`, `lru_cache`,
+      `cached_property`, a memoizing decorator of yours): every call hands
+      back the same object;
+    - what a lambda, a closure or a `functools.partial` bound to a name
+      returns (`get_cache = lambda: _CACHE`, then `get_cache()[k] = v`);
     - `globals()["_CACHE"][k] = v`.
 
     A class is followed by another name as well: an alias (`Alias = Config`,
@@ -282,7 +287,13 @@ everything.
     shared dict (the Borg).
 
     A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
-    then `cache[k] = v`, changes nothing shared. Setting an attribute on a
+    then `cache[k] = v`, changes nothing shared. Some copies may be the
+    object, or hold it, and count as it: `copy.deepcopy(x)` and a pickle
+    round trip (a `__deepcopy__` or `__reduce__` may hand back the
+    original, and a class inside is not copied), `x.copy()` or
+    `copy.copy(x)` of an object when a class of yours defines `copy` or
+    `__copy__`, and `sum`, `abs` and `round`, which may return what they
+    were given. Setting an attribute on a
     new instance (`Config().mode = m`, `new = cls.__new__(cls); new.mode =
     m`) changes that instance only, unless a class in its hierarchy (a
     base or a subclass) defines its own `__new__` or derives from a class
@@ -341,7 +352,15 @@ everything.
 
 **Patches in tests.**
 :   A store on a module, yours or a library's, makes the code storing a
-    dependency of every reader. A patch undone when the test ends doesn't
+    dependency of every reader in your code: of a module variable, of that
+    attribute of a library module (`json.x = v`, then `json.x` or
+    `getattr(json, "x")`; any attribute for `vars(json).update(...)`), of
+    the environment for `os.environ`. What a library or a child process
+    reads of it is not followed, and neither is a store onto a module
+    found by name at run time under a name only known then
+    (`setattr(sys.modules[name], key, v)`) read as a plain attribute
+    (`json.x`): only code reading a module as a whole or by a computed name
+    (`getattr(json, key)`) depends on it. A patch undone when the test ends doesn't
     count:
 
     - a method of pytest's `monkeypatch` or pytest-mock's `mocker`, called
@@ -373,6 +392,10 @@ everything.
     - a function-scoped fixture;
     - a helper in a test module or `conftest.py` that only such code
       calls.
+
+    A module whose top-level code changes process state (`os.environ`,
+    `sys.path`) runs that code for the whole session, so none of its code
+    counts as such, a test module's tests included.
 
     A test or `setUp` that other code calls (a test module's top-level
     code, a session fixture) is not such code, and neither is a doctest's

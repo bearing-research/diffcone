@@ -945,7 +945,11 @@ def test_evp8_newly_running_a_writer_at_import_reaches_the_lookup(repo, how):
     ]
     plan = repo.plan(base, head, targets)
     assert selected(plan) == {"t::test_names", "t::test_writer", "bench.time_lookup"}
-    assert "dynamic_reference" in rules(plan, "t::test_names")
+    # ``getattr(builtins, name)`` reads what the test module stores on
+    # ``builtins``, now at import: a dependency (audit round 7, U13).
+    path = [s.target for s in reason(plan, "t::test_names").path]
+    assert path[:2] == ["tests.test_names.test_names", "pkg.names.lookup"]
+    assert path[2].startswith("tests.test_writer")
 
 
 DISCOVER_BASE = {
@@ -3272,3 +3276,52 @@ def test_a_module_handed_elsewhere_from_a_doctest_fixture_still_is(repo, body):
         "@pytest.fixture(autouse=True)\ndef add_doctest_imports(doctest_namespace):\n" + body
     )
     assert _graph_handles(repo, conftest) == {"tests.conftest.add_doctest_imports"}
+
+
+# --------------------------------------------------------------------------- cached scopes
+
+
+def test_u21_a_classmethods_lookup_on_cls_stays_dynamic_from_the_module_cache(repo):
+    """``getattr(cls.impl, name)`` in a classmethod reads the class's ``impl``
+    (here the metaclass's ``Beta``), not what ``__init__`` binds to
+    ``self.impl``. A scope served from the module cache once forgot it was a
+    classmethod's, bounded the lookup by ``Alpha`` and left the test out:
+    the repo fixture's warm-cache plan differed from the uncached one."""
+    plugins = (
+        "class Alpha:\n    @staticmethod\n    def run():\n        return 'a'\n\n\n"
+        "class Beta:\n    @staticmethod\n    def run():\n        return {beta!r}\n"
+    )
+    registry = (
+        "from calc.plugins import Alpha, Beta\n\n\n"
+        "class Meta(type):\n    impl = Beta\n\n\n"
+        "class Registry(metaclass=Meta):\n"
+        "    def __init__(self):\n        self.impl = Alpha\n\n"
+        "    @classmethod\n"
+        "    def call(cls, name):\n        return getattr(cls.impl, name)()\n"
+    )
+    base = repo.commit(
+        {
+            "calc/__init__.py": "",
+            "calc/plugins.py": plugins.format(beta="b"),
+            "calc/registry.py": registry,
+            "tests/test_reg.py": (
+                "from calc.registry import Registry\n\n\n"
+                "def method():\n    return 'r' + 'un'\n\n\n"
+                "def test_call():\n    assert Registry.call(method()) == 'b'\n\n\n"
+                "def test_other():\n    assert method()\n"
+            ),
+            "benchmarks/bench_reg.py": (
+                "from calc.registry import Registry\n\n\n"
+                "def time_call():\n    Registry.call('run')\n"
+            ),
+        }
+    )
+    head = repo.commit({"calc/plugins.py": plugins.format(beta="B")})
+    plan = repo.plan(
+        base,
+        head,
+        [asv_target("bench_reg.time_call", "benchmarks.bench_reg.time_call")],
+        discover_runners=["pytest"],
+    )
+    assert selected(plan) == {"tests/test_reg.py::test_call", "bench_reg.time_call"}
+    assert "dynamic_reference" in rules(plan, "tests/test_reg.py::test_call")

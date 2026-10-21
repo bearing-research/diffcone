@@ -3576,7 +3576,9 @@ def test_w5_code_a_hook_runs_reaches_every_test(repo, conftests):
     head = repo.commit({"pkg/modes.py": MODES.replace("'a'", "'b'")})
     plan = _noop_plan(repo, base, head, evidence)
     assert selected(plan) == {ENV, SUB}
-    assert rules(plan, ENV) == {"pytest_hook_changed"}
+    # Also the static reader of ``os.environ`` that ``apply`` writes
+    # (``executed_reader``; audit round 7, U13).
+    assert "pytest_hook_changed" in rules(plan, ENV)
     assert NOOP_BENCH.runner_id in unselected(plan)
 
 

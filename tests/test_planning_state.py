@@ -2896,6 +2896,66 @@ def test_a_change_to_the_lazy_constants_writer_reaches_its_callers(repo):
     }
 
 
+LAZY_STATE = """\
+_STATE = None
+
+
+def remember(mode=None):
+    global _STATE
+    if _STATE is None:
+        _STATE = {}
+    if mode is not None:
+        _STATE["mode"] = mode
+    return _STATE.get("mode")
+
+
+def configure():
+    remember("fast")
+"""
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "{}",
+        "dict()",
+        # Filled by a caller, through what the writer hands back.
+        "[]",
+    ],
+)
+def test_u8_a_lazily_made_container_its_writer_fills_is_state(repo, value):
+    """A container made on first use and then filled (``_STATE = {}``, then
+    ``_STATE["mode"] = mode``) holds what the calls handed it, not a value
+    computed the same whoever runs first: a change to ``configure`` reaches
+    the test reading the mode ``test_a`` left, as for ``_STATE = {}`` at
+    module level. Before: taken for a lazy constant, the fill was dropped."""
+    source = LAZY_STATE.replace("_STATE = {}\n", f"_STATE = {value}\n")
+    if value == "[]":
+        source = source.replace('_STATE["mode"] = mode', "_STATE.append(mode)").replace(
+            '_STATE.get("mode")', "(_STATE or [None])[-1]"
+        )
+    base = repo.commit(
+        {
+            **BASE,
+            "pkg/lib.py": source,
+            "tests/test_a.py": (
+                "from pkg.lib import configure\n\n\ndef test_a():\n    configure()\n"
+            ),
+            "tests/test_b.py": (
+                "from pkg.lib import remember\n\n\ndef test_b():\n    assert remember() == 'fast'\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/lib.py": source.replace('"fast"', '"slow"')})
+    benches = [asv_target("bench.time_remember", "pkg.lib.remember")]
+    plan = repo.plan(base, head, benches, discover_runners=["pytest"])
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "bench.time_remember",
+    }
+
+
 # ---------------------------------------------------- process state written by hooks and collection
 # Code a hook runs, or a collected module runs at import, runs before any
 # test: what it writes into the process (an environment variable,
@@ -2986,10 +3046,12 @@ def test_w11_code_a_hook_runs_reaches_every_test(repo, conftests):
 
 def test_w11_collection_hook_writing_nothing_stays_scoped(repo):
     """A sub-conftest's ``pytest_generate_tests`` that writes no process
-    state reaches only the tests under it."""
+    state reaches only the tests under it. (Without ``envsetup``, whose
+    ``apply`` writes the environment ``test_env`` reads: U13.)"""
+    files = {k: v for k, v in HOOK_FILES.items() if k != "tests/envsetup.py"}
     base = repo.commit(
         {
-            **HOOK_FILES,
+            **files,
             "tests/sub/conftest.py": (
                 "from pkg.modes import mode\n\n\ndef pytest_generate_tests(metafunc):\n"
                 "    metafunc.config.mode = mode()\n"
@@ -4239,3 +4301,451 @@ def test_a_function_a_higher_order_builtin_calls_on_items_writes_them(repo, call
         }
     )
     assert "pkg.reg.setup" in _mutated_by(repo, "pkg.reg.REGS")
+
+
+# ----------------------------------------------------- state a test leaves through project code
+# ``test_a_fill`` calls project code that writes state (``m.fill()``), and
+# ``test_b_read`` and a benchmark read it back: a change to ``compute``,
+# which the writer stores the result of, reaches both readers. The writer
+# runs inside one test, but it is project code: the isolation assumption
+# covers only what the test's own code stores.
+
+LEFT_COMPUTE = "def compute(k):\n    return k * 2\n\n\n"
+LEFT_TESTS = (
+    "import json\nimport os\n\nfrom pkg import store as m\n\n\n"
+    "def test_a_fill():\n    {fill}\n\n\n"
+    "def test_b_read():\n    assert {read}\n\n\n"
+    "def test_c_other():\n    assert m.compute\n"
+)
+LEFT_BENCH = (
+    "import json\nimport os\n\nfrom pkg import store as m\n\n\n"
+    "def time_read():\n    assert {read}\n"
+)
+LEFT_READ = asv_target("bench_s.time_read", "benchmarks.bench_s.time_read")
+LEFT_ALL = {
+    "tests/test_s.py::test_a_fill",
+    "tests/test_s.py::test_b_read",
+    "tests/test_s.py::test_c_other",
+    "bench_s.time_read",
+}
+LEFT_UNREAD = {"tests/test_s.py::test_a_fill", "tests/test_s.py::test_c_other"}
+
+
+def _left_by(repo, store, fill, read, head_store=None):
+    """Plan a change to ``compute`` (or ``store`` to ``head_store``) with a
+    test filling through ``fill`` and readers evaluating ``read``."""
+    base = repo.commit(
+        {
+            **BASE,
+            "pkg/store.py": LEFT_COMPUTE + store,
+            "tests/test_s.py": LEFT_TESTS.format(fill=fill, read=read),
+            "benchmarks/bench_s.py": LEFT_BENCH.format(read=read),
+        }
+    )
+    if head_store is None:
+        head = repo.commit({"pkg/store.py": LEFT_COMPUTE.replace("k * 2", "k * 3") + store})
+    else:
+        head = repo.commit({"pkg/store.py": LEFT_COMPUTE + head_store})
+    plan = repo.plan(base, head, [LEFT_READ, NOOP], discover_runners=["pytest"])
+    assert unselected(plan) >= {"bench_noop.time_noop"}
+    return selected(plan)
+
+
+LEFT_CONF = """\
+class Conf:
+    def __init__(self):
+        self.value = 0
+
+    def load(self):
+        self.value = compute(1)
+
+
+CONF = Conf()
+"""
+SETTINGS_OBJ = """\
+class Settings:
+    def __init__(self):
+        self.opts = {}
+
+    def configure(self, **o):
+        self.opts.update(o)
+        self.opts["debug"] = bool(o.get("debug"))
+
+
+SETTINGS = Settings()
+
+
+def get_opt(n):
+    return SETTINGS.opts.get(n)
+"""
+U4_CASES = {
+    "receiver_attribute": (LEFT_CONF, "m.CONF.load()", "m.CONF.value == 2", None),
+    "setattr_on_self": (
+        LEFT_CONF.replace("self.value = compute(1)", "setattr(self, 'value', compute(1))"),
+        "m.CONF.load()",
+        "m.CONF.value == 2",
+        None,
+    ),
+    "instance_dict": (
+        LEFT_CONF.replace("self.value = compute(1)", "self.__dict__['value'] = compute(1)"),
+        "m.CONF.load()",
+        "m.CONF.value == 2",
+        None,
+    ),
+    "the_method_itself_changes": (
+        SETTINGS_OBJ,
+        "m.SETTINGS.configure(debug=1)",
+        "m.get_opt('debug') is True",
+        SETTINGS_OBJ.replace('bool(o.get("debug"))', 'o.get("debug")'),
+    ),
+    "a_parameter": (
+        "REG = {}\n\n\ndef set_mode(d):\n    d['mode'] = compute(1)\n\n\n"
+        "def mode():\n    return REG.get('mode')\n",
+        "m.set_mode(m.REG)",
+        "m.mode() == 2",
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(U4_CASES))
+def test_u4_project_code_writing_through_a_receiver_or_parameter_is_a_writer(repo, case):
+    """``CONF.load()`` from a test stores into the module's ``CONF``
+    through ``self``: ``load`` (project code) is a writer of ``CONF``, not
+    only the test calling it, which the isolation assumption leaves out. So
+    a change to ``load`` or to what it stores reaches every reader of
+    ``CONF``. Before: only the caller was credited, and dropped."""
+    store, fill, read, head = U4_CASES[case]
+    expected = LEFT_ALL if head is None else LEFT_ALL - {"tests/test_s.py::test_c_other"}
+    assert _left_by(repo, store, fill, read, head) == expected
+
+
+U7_CASES = {
+    # A memoised result: every call hands back the same object.
+    "functools_cache": (
+        "import functools\n\n\n@functools.cache\ndef settings():\n    return {}\n\n\n"
+        "def fill():\n    settings()['mode'] = compute(1)\n\n\ndef peek():\n"
+        "    return settings()['mode']\n"
+    ),
+    "lru_cache_instance": (
+        "from functools import lru_cache\n\n\nclass Settings:\n    mode = None\n\n\n"
+        "@lru_cache\ndef get_settings():\n    return Settings()\n\n\n"
+        "def fill():\n    s = get_settings()\n    s.mode = compute(1)\n\n\n"
+        "def peek():\n    return get_settings().mode\n"
+    ),
+    "cached_classmethod": (
+        "import functools\n\n\nclass Conf:\n    @classmethod\n    @functools.cache\n"
+        "    def get(cls):\n        return cls()\n\n\n"
+        "def fill():\n    Conf.get().mode = compute(1)\n\n\ndef peek():\n"
+        "    return Conf.get().mode\n"
+    ),
+    "project_memoiser": (
+        "def memo(fn):\n    kept = {}\n\n    def wrapper():\n        if 'v' not in kept:\n"
+        "            kept['v'] = fn()\n        return kept['v']\n\n    return wrapper\n\n\n"
+        "@memo\ndef settings():\n    return {}\n\n\n"
+        "def fill():\n    settings()['mode'] = compute(1)\n\n\ndef peek():\n"
+        "    return settings()['mode']\n"
+    ),
+    "through_a_getter": (
+        "import functools\n\n\n@functools.cache\ndef _settings():\n    return {}\n\n\n"
+        "def settings():\n    return _settings()\n\n\n"
+        "def fill():\n    settings()['mode'] = compute(1)\n\n\ndef peek():\n"
+        "    return _settings()['mode']\n"
+    ),
+    "lru_cache_called": (
+        "import functools\n\n\ndef _get():\n    return {}\n\n\nget = functools.lru_cache(_get)\n\n"
+        "\n"
+        "def fill():\n    get()['k'] = compute(1)\n\n\ndef peek():\n    return get()['k']\n"
+    ),
+    # A copy of a memoised result holds what the result holds.
+    "an_item_of_a_copy_of_it": (
+        "import functools\n\n\n@functools.cache\n"
+        "def _settings():\n    return {'modes': []}\n\n\n"
+        "def settings():\n    return dict(_settings())\n\n\n"
+        "def fill():\n    settings()['modes'].append(compute(1))\n\n\n"
+        "def peek():\n    return _settings()['modes'][0]\n"
+    ),
+    # A copy that may be the original, or hold it.
+    "deepcopy_keeps_a_class": (
+        "import copy\n\n\nclass Store:\n    _cache = {}\n\n\n"
+        "def fill():\n    copy.deepcopy({'kind': Store})['kind']._cache['k'] = compute(1)\n\n\n"
+        "def peek():\n    return Store._cache['k']\n"
+    ),
+    "deepcopy_hook_returns_self": (
+        "import copy\n\n\nclass Reg:\n    def __init__(self):\n        self.mode = None\n\n"
+        "    def __deepcopy__(self, memo):\n        return self\n\n\nREG = Reg()\n\n\n"
+        "def fill():\n    c = copy.deepcopy(REG)\n    c.mode = compute(1)\n\n\n"
+        "def peek():\n    return REG.mode\n"
+    ),
+    "deepcopy_of_an_enum_member": (
+        "import copy\nimport enum\n\n\nclass Mode(enum.Enum):\n    A = 1\n\n\n"
+        "def fill():\n    copy.deepcopy(Mode.A).tag = compute(1)\n\n\n"
+        "def peek():\n    return Mode.A.tag\n"
+    ),
+    "pickle_round_trip": (
+        "import pickle\n\n\nclass Reg:\n    def __init__(self):\n        self.mode = None\n\n"
+        "    def __reduce__(self):\n        return 'REG'\n\n\nREG = Reg()\n\n\n"
+        "def fill():\n    c = pickle.loads(pickle.dumps(REG))\n    c.mode = compute(1)\n\n\n"
+        "def peek():\n    return REG.mode\n"
+    ),
+    "copy_method_returns_self": (
+        "class Reg:\n    def __init__(self):\n        self.mode = None\n\n"
+        "    def copy(self):\n        return self\n\n\nREG = Reg()\n\n\n"
+        "def fill():\n    c = REG.copy()\n    c.mode = compute(1)\n\n\n"
+        "def peek():\n    return REG.mode\n"
+    ),
+    # A callable that is no def.
+    "lambda_getter": (
+        "_CACHE = {}\nget_cache = lambda: _CACHE  # noqa: E731\n\n\n"
+        "def fill():\n    get_cache()['k'] = compute(1)\n\n\ndef peek():\n    return _CACHE['k']\n"
+    ),
+    "lambda_through_a_local": (
+        "_CACHE = {}\nget_cache = lambda: _CACHE  # noqa: E731\n\n\n"
+        "def fill():\n    g = get_cache\n    g()['k'] = compute(1)\n\n\ndef peek():\n"
+        "    return _CACHE['k']\n"
+    ),
+    "closure_getter": (
+        "def _make():\n    d = {}\n\n    def get():\n        return d\n\n    return get\n\n\n"
+        "get_cache = _make()\n\n\n"
+        "def fill():\n    get_cache()['k'] = compute(1)\n\n\ndef peek():\n"
+        "    return get_cache()['k']\n"
+    ),
+    "partial_over_a_container": (
+        "import functools\n\n_CACHE = {}\n\n\ndef _get(d):\n    return d\n\n\n"
+        "get_cache = functools.partial(_get, _CACHE)\n\n\n"
+        "def fill():\n    get_cache()['k'] = compute(1)\n\n\ndef peek():\n    return _CACHE['k']\n"
+    ),
+    # Builtins that may hand back what they were given.
+    "sum_with_a_start": (
+        "SHARED = []\n\n\ndef fill():\n    sum([], SHARED).append(compute(1))\n\n\n"
+        "def peek():\n    return SHARED[0]\n"
+    ),
+    "abs_hook_returns_self": (
+        "class V:\n    def __init__(self):\n        self.mode = None\n\n"
+        "    def __abs__(self):\n        return self\n\n\nV0 = V()\n\n\n"
+        "def fill():\n    abs(V0).mode = compute(1)\n\n\ndef peek():\n    return V0.mode\n"
+    ),
+    "round_hook_returns_self": (
+        "class V:\n    def __init__(self):\n        self.mode = None\n\n"
+        "    def __round__(self, n=None):\n        return self\n\n\nV0 = V()\n\n\n"
+        "def fill():\n    round(V0).mode = compute(1)\n\n\ndef peek():\n    return V0.mode\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(U7_CASES))
+def test_u7_a_call_that_may_hand_back_shared_state_is_no_fresh_value(repo, case):
+    """A write into what a call returns is a write of module state unless
+    the call surely makes a new object: a memoised function hands back the
+    same one each time, a deep copy or a pickle round trip may be the
+    original or hold it (``__deepcopy__``, ``__reduce__``, a class inside),
+    an in-scope ``copy`` may ``return self``, a lambda, closure or partial
+    may hand back a module container, and ``sum``, ``abs``, ``round`` call
+    the project's hooks or return a start value. Before: each was taken for
+    a fresh value, and the write dropped."""
+    assert _left_by(repo, U7_CASES[case], "m.fill()", "m.peek() == 2") == LEFT_ALL
+
+
+@pytest.mark.parametrize(
+    "store",
+    [
+        # Made by each call: nothing a later reader sees.
+        "def settings():\n    return {}\n\n\n"
+        "def fill():\n    settings()['mode'] = compute(1)\n\n\n"
+        "def peek():\n    return settings().get('mode', 2)\n",
+        # The same through a decorator that hands the function back.
+        "def traced(fn):\n    return fn\n\n\n@traced\ndef settings():\n    return {}\n\n\n"
+        "def fill():\n    settings()['mode'] = compute(1)\n\n\n"
+        "def peek():\n    return settings().get('mode', 2)\n",
+        # A new dict made of what a memoised function returns: storing into
+        # the new dict changes nothing the function keeps.
+        "import functools\n\n\n@functools.cache\ndef _settings():\n    return {}\n\n\n"
+        "def settings():\n    return dict(_settings())\n\n\n"
+        "def fill():\n    env = settings()\n    env['mode'] = compute(1)\n"
+        "    env |= {'k': 1}\n\n\n"
+        "def peek():\n    return _settings().get('mode', 2)\n",
+        # The same of a module variable (before: a write of ``_STATE``).
+        "_STATE = {}\n\n\ndef settings():\n    return dict(_STATE)\n\n\n"
+        "def fill():\n    env = settings()\n    env['mode'] = compute(1)\n\n\n"
+        "def peek():\n    return _STATE.get('mode', 2)\n",
+    ],
+    ids=[
+        "new_each_call",
+        "through_a_passive_decorator",
+        "a_copy_of_a_memoised_result",
+        "a_copy_of_a_module_dict",
+    ],
+)
+def test_u7_a_write_into_a_fresh_value_reaches_no_reader(repo, store):
+    """The other side of U7: what a call surely makes new is no state, so a
+    change to what is stored in it reaches no reader of the original. A
+    function returning a new dict made of state (``return dict(_STATE)``)
+    hands back no state for a write into that dict itself; a write into an
+    item of it still writes the state (``an_item_of_a_copy_of_it`` above)."""
+    assert _left_by(repo, store, "m.fill()", "m.peek() == 2") == LEFT_UNREAD
+
+
+U13_CASES = {
+    "attribute": (
+        "import json\n\n\ndef install():\n    json.pkg_value = compute(1)\n\n\n"
+        "def mode():\n    return json.pkg_value\n",
+        "m.mode() == 2",
+    ),
+    "setattr_getattr": (
+        "import json\n\n\ndef install():\n    setattr(json, 'pkg_value', compute(1))\n\n\n"
+        "def mode():\n    return getattr(json, 'pkg_value', None)\n",
+        "m.mode() == 2",
+    ),
+    "namespace_setdefault": (
+        "import json\n\n\ndef install():\n"
+        "    json.__dict__.setdefault('pkg_reg', {})[1] = compute(1)\n\n\n"
+        "def mode():\n    return json.pkg_reg[1]\n",
+        "m.mode() == 2",
+    ),
+    "vars_update": (
+        "import json\n\n\ndef install():\n    vars(json).update(pkg_value=compute(1))\n\n\n"
+        "def mode():\n    return json.pkg_value\n",
+        "m.mode() == 2",
+    ),
+    "vars_item": (
+        "import json\n\n\ndef install():\n    vars(json)['pkg_value'] = compute(1)\n\n\n"
+        "def mode():\n    return json.pkg_value\n",
+        "m.mode() == 2",
+    ),
+    "in_place_of_what_it_holds": (
+        "import json\n\njson.pkg_items = []\n\n\ndef install():\n"
+        "    json.pkg_items.append(compute(1))\n\n\ndef mode():\n    return json.pkg_items[0]\n",
+        "m.mode() == 2",
+    ),
+    "a_submodule": (
+        "import os.path\n\n\ndef install():\n    os.path.pkg_value = compute(1)\n\n\n"
+        "def mode():\n    return os.path.pkg_value\n",
+        "m.mode() == 2",
+    ),
+    "from_import_reader": (
+        "import logging\n\n\ndef install():\n    logging.pkg_value = compute(1)\n\n\n"
+        "def mode():\n    from logging import pkg_value\n\n    return pkg_value\n",
+        "m.mode() == 2",
+    ),
+    "read_by_the_test": (
+        "import json\n\n\ndef install():\n    json.pkg_value = compute(1)\n",
+        "json.pkg_value == 2",
+    ),
+    "environ_item": (
+        "import os\n\n\ndef install():\n    os.environ['PKG_VALUE'] = str(compute(1))\n\n\n"
+        "def mode():\n    return int(os.environ['PKG_VALUE'])\n",
+        "m.mode() == 2",
+    ),
+    "environ_getenv": (
+        "from os import environ\n\n\ndef install():\n"
+        "    environ.update(PKG_VALUE=str(compute(1)))\n\n\n"
+        "def mode():\n    return int(os.getenv('PKG_VALUE'))\n",
+        "m.mode() == 2",
+    ),
+    "environ_read_by_the_test": (
+        "import os\n\n\ndef install():\n    os.environ['PKG_VALUE'] = str(compute(1))\n",
+        "os.environ['PKG_VALUE'] == '2'",
+    ),
+    # A module found at run time: the attribute read off any module.
+    "a_module_found_at_run_time": (
+        "import sys\n\n\ndef install(name='json'):\n"
+        "    sys.modules[name].pkg_value = compute(1)\n\n\n"
+        "def mode():\n    return json.pkg_value\n",
+        "m.mode() == 2",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(U13_CASES))
+def test_u13_a_store_onto_a_library_module_reaches_its_readers(repo, case):
+    """Project code storing onto a module outside the roots (``json.x =
+    v``, ``setattr(json, "x", v)``, ``vars(json)[...]``, in place of what
+    it holds) or into ``os.environ`` leaves it for every later reader in
+    the process: each symbol reading that attribute (``json.x``,
+    ``getattr(json, ...)``) or the environment depends on the writer.
+    Before: the store was recorded, but no reader depended on it."""
+    store, read = U13_CASES[case]
+    if case == "environ_getenv":
+        store = "import os\n" + store
+    if case.startswith("a_"):
+        store = "import json\n" + store
+    assert _left_by(repo, store, "m.install()", read) == LEFT_ALL
+
+
+def test_u13_a_store_onto_another_attribute_reaches_no_reader(repo):
+    """The writes are matched by attribute: storing ``json.pkg_other`` is
+    nothing a reader of ``json.pkg_value`` sees."""
+    store = (
+        "import json\n\njson.pkg_value = 2\n\n\ndef install():\n    json.pkg_other = compute(1)\n\n"
+        "\n"
+        "def mode():\n    return json.pkg_value\n"
+    )
+    assert _left_by(repo, store, "m.install()", "m.mode() == 2") == LEFT_UNREAD
+
+
+def test_u13_a_module_writing_process_state_at_import_is_no_test_code(repo):
+    """``pkg.store`` writes ``os.environ`` at import, so discovery lists it
+    as a lifecycle dependency of every test (code collection runs that
+    leaves process state behind). That makes it no test module: its
+    functions are project code, and ``set_mode``, called from one test, is
+    a writer of ``_MODE`` for the readers in others. Before: every function
+    of such a module counted as isolated test code, and the write was
+    dropped."""
+    store = (
+        "import os\n\nos.environ.setdefault('PKG_FLAG', '1')\n_MODE = {}\n\n\n"
+        "def set_mode(v):\n    _MODE['m'] = compute(v)\n\n\n"
+        "def get_mode():\n    return _MODE['m']\n"
+    )
+    assert _left_by(repo, store, "m.set_mode(1)", "m.get_mode() == 2") == LEFT_ALL
+
+
+U19_CASES = {
+    "module_level_lambda": (
+        "_ITEMS = []\n_add = lambda v: _ITEMS.append(v)  # noqa: E731\n\n\n"
+        "def fill(k):\n    _add(compute(k))\n\n\ndef first():\n    return _ITEMS[0]\n",
+        "m.fill(1)",
+    ),
+    "class_body_lambda": (
+        "_ITEMS = []\n\n\nclass Sink:\n    add = lambda self, v: _ITEMS.append(v)  # noqa: E731\n\n"
+        "\n"
+        "def fill(k):\n    Sink().add(compute(k))\n\n\ndef first():\n    return _ITEMS[0]\n",
+        "m.fill(1)",
+    ),
+    "default_argument": (
+        "_ITEMS = []\n\n\ndef fill(k, sink=lambda v: _ITEMS.append(v)):\n    sink(compute(k))\n\n\n"
+        "def first():\n    return _ITEMS[0]\n",
+        "m.fill(1)",
+    ),
+    "keyword_only_default": (
+        "_ITEMS = []\n\n\ndef fill(k, *, sink=lambda v: _ITEMS.append(v)):\n    sink(compute(k))\n"
+        "\n\n"
+        "def first():\n    return _ITEMS[0]\n",
+        "m.fill(1)",
+    ),
+    "method_default": (
+        "_ITEMS = []\n\n\nclass S:\n    def fill(self, k, sink=lambda v: _ITEMS.append(v)):\n"
+        "        sink(compute(k))\n\n\ndef first():\n    return _ITEMS[0]\n",
+        "m.S().fill(1)",
+    ),
+    "setitem_call": (
+        "_D = {}\n_put = lambda k, v: _D.__setitem__(k, v)  # noqa: E731\n\n\n"
+        "def fill(k):\n    _put('x', compute(k))\n\n\ndef first():\n    return _D['x']\n",
+        "m.fill(1)",
+    ),
+    "in_a_table": (
+        "_ITEMS = []\nOPS = {'add': lambda v: _ITEMS.append(v)}\n\n\n"
+        "def fill(k):\n    OPS['add'](compute(k))\n\n\ndef first():\n    return _ITEMS[0]\n",
+        "m.fill(1)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(U19_CASES))
+def test_u19_a_lambda_writing_module_state_writes_it_for_its_callers(repo, case):
+    """A lambda bound at module level, in a class body or as a parameter
+    default runs only when called: what it stores holds what its caller
+    handed it, so a change to the caller (``fill``, or ``compute`` it calls)
+    reaches the readers. Before: the lambda's write was taken for one the
+    module's own hash covers, made once at import."""
+    store, fill = U19_CASES[case]
+    assert _left_by(repo, store, fill, "m.first() == 2") == LEFT_ALL

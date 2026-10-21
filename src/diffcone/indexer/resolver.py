@@ -33,7 +33,11 @@ from diffcone.indexer.definitions import (
 )
 from diffcone.indexer.facts import _FuncParams, _Output
 from diffcone.indexer.literals import NESTED_SCOPES, _LocalBindings
-from diffcone.indexer.references import PICKLING_HOOKS, _ReferenceCollector
+from diffcone.indexer.references import (
+    FRESH_RESULT_DECORATORS,
+    PICKLING_HOOKS,
+    _ReferenceCollector,
+)
 from diffcone.indexer.scopes import (
     ClassScope,
     External,
@@ -760,6 +764,42 @@ class Resolver(FirstPass):
                     return True
         return False
 
+    def _keeps_result(self, decorators: list[ast.expr], module: ModuleScope, where: Scope) -> bool:
+        """Whether what a call of the decorated function returns may be
+        what an earlier call returned (``_Output.kept_results``; audit round
+        7, U7): any decorator but one known to hand back the function itself
+        or a wrapper calling it afresh each time (``FRESH_RESULT_DECORATORS``,
+        the inert typing ones, ``pytest.mark``), or a project decorator (or
+        decorator factory) that returns what it decorates (``passive_decorator``
+        / ``passive_factory`` "same"). ``functools.cache``, a project
+        decorator returning a wrapper and one from outside the index keep."""
+        stars = self._star_bases(module)
+        shadowed = _header_names(where)
+        for dec in decorators:
+            if _is_inert_decorator(dec, module, shadowed, stars):
+                continue
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            names = _canonical_names(target, module, shadowed, stars)
+            if names and all(
+                n in FRESH_RESULT_DECORATORS or n.startswith("pytest.mark.") for n in names
+            ):
+                continue
+            parts = _flatten_chain(target)
+            node = self.resolve_chain(parts, where) if parts else None
+            if isinstance(node, Resolved) and not node.detail:
+                symbol = self.index.symbols.get(node.symbol)
+                how = (
+                    None
+                    if symbol is None
+                    else symbol.passive_factory
+                    if isinstance(dec, ast.Call)
+                    else symbol.passive_decorator
+                )
+                if how == SAME:
+                    continue
+            return True
+        return False
+
     def _decorators_may_read_docs(
         self, decorators: list[ast.expr], module: ModuleScope, where: Scope
     ) -> bool:
@@ -894,6 +934,8 @@ class Resolver(FirstPass):
         self._record_decorations(symbol_id, node.decorator_list, scope, outer_scope)
         if self._memoizing(node.decorator_list, scope, outer_scope):
             self.out.memoized.add(symbol_id)
+        if self._keeps_result(node.decorator_list, scope, outer_scope):
+            self.out.kept_results.add(symbol_id)
         self._decorated_at_import(
             symbol_id, node.decorator_list, scope, outer_scope, class_scope, accessors
         )

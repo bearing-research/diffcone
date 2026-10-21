@@ -57,6 +57,8 @@ from diffcone.model import (
 #     what each class is given (writes.ClassRecord), shared objects bound in
 #     methods, nested classes' state, library methods on a class and
 #     ``type()`` of three arguments (audit round 7, U2, U3, U11, U12);
+# 63: SourceIndex.decorator_symbols goes through the whole-index cache
+#     (audit round 7, U27); the state rules of round 7's state batch;
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -115,7 +117,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 62
+INDEX_FORMAT = 63
 
 
 def _indexer_fingerprint() -> str:
@@ -211,6 +213,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "class_bases": {c: list(b) for c, b in sorted(index.class_bases.items())},
         "open_classes": sorted(index.open_classes),
         "doc_decorated": sorted(index.doc_decorated),
+        "decorator_symbols": sorted(index.decorator_symbols),
         "scripts": dict(sorted(index.scripts.items())),
         "script_refs": sorted(list(r) for r in index.script_refs),
         "process_writes": sorted(list(w) for w in index.process_writes),
@@ -272,6 +275,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         class_bases={c: tuple(b) for c, b in data["class_bases"].items()},
         open_classes=set(data["open_classes"]),
         doc_decorated=set(data["doc_decorated"]),
+        decorator_symbols=set(data["decorator_symbols"]),
         scripts=dict(data["scripts"]),
         script_refs={(s, p) for s, p in data["script_refs"]},
         process_writes={(s, w) for s, w in data["process_writes"]},
@@ -330,7 +334,10 @@ class ModuleCache:
     the file read-only and work on a directory that cannot be written."""
 
     def __init__(self, directory: Path) -> None:
-        self.path = directory / "modules.sqlite"
+        # Absolute, so that the read-only URI below can be formed: a relative
+        # directory (the default ``--repo .``) once made every read a miss
+        # (audit round 7, U24).
+        self.path = (directory / "modules.sqlite").absolute()
         # Hit and miss counters: test instrumentation, nothing reads them else.
         self.facts_hits = 0
         self.facts_misses = 0

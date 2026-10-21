@@ -19,7 +19,11 @@ state back only when every name is the restoring one):
   ``pandas.options.display.width = 9``), or a call of a mutating method on
   one (``os.environ.update``, ``sys.path.insert``);
 * a store onto an external module's attribute (``sys.stdout = ...``,
-  ``tempfile.tempdir = ...``), and ``setattr``/``delattr`` on one;
+  ``tempfile.tempdir = ...``), and ``setattr``/``delattr`` on one; a change
+  in place of its namespace (``json.__dict__.setdefault(...)``,
+  ``vars(json)[k] = v``: ``setattr(json)``) or of what one of its
+  attributes holds (``json.registry.append(v)``, ``json.conf.mode = v``:
+  ``json.registry``, ``json.conf``);
 * a call of ``STATE_CALLS`` (``os.putenv``, ``warnings.filterwarnings``,
   ``locale.setlocale``, ``numpy.random.seed``, ...), and of a configuring
   method on a logger ``logging.getLogger(...)`` returns;
@@ -40,6 +44,11 @@ object reached through a name bound to it (``env = os.environ``, then
 ``env["MODE"] = ...`` or ``patch.dict(env, ...)``). Writes to module state
 inside the source roots are not recorded here: those are variables with
 ``mutated_by`` edges.
+
+Project code reading what project code stored this way gets a ``mutated_by``
+edge to the writer after pass 2 (Indexer._external_state_edges: a reader of
+the attribute, of the module as a value, of the environment); what a
+library or a child process reads is not followed (audit round 7, U13).
 """
 
 from __future__ import annotations

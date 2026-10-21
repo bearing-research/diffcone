@@ -26,8 +26,11 @@ Pass 2 records, per function (cacheable per module):
 
 After pass 2 (``apply_writes``), a parameter handed to a callee's written
 parameter is written too, until nothing changes; then every variable handed
-to a written parameter gets a ``mutated_by`` edge to the caller (unless its
-value cannot change in place: Indexer._value_writes), and so does
+to a written parameter gets a ``mutated_by`` edge to the caller and to each
+callee writing it (``_writers``: the callee is project code even when only
+a test calls it, which the isolation assumption drops as a writer; audit
+round 7, U4), unless its value cannot change in place
+(Indexer._value_writes), and so does
 every variable of a module handed to one (and of its submodules: which of
 its attributes the callee writes is not recorded). A callee
 that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
@@ -935,7 +938,7 @@ def apply_writes(indexer: Resolver) -> ClassRecord:
     returned: dict[str, set[str]] = defaultdict(set)
     for function, root in out.state_returns:
         returned[function].add(root)
-    stack = sorted({callee for _, callee, _ in out.result_writes})
+    stack = sorted({callee for _, callee, _ in out.result_writes | out.direct_result_writes})
     stack += [first for *_, kind, first, _ in out.held_binds if kind == "result"]
     seen_results: set[str] = set()
     written_returns: set[str] = set()
@@ -1024,13 +1027,18 @@ def apply_writes(indexer: Resolver) -> ClassRecord:
             if c in indexer.class_scopes
         )
 
-    def writes_through(record: Pass) -> bool:
+    def writing_callees(record: Pass) -> list[str]:
+        """The callees of ``record`` that write what it hands them."""
         _, _, _, _, slot, bound = record
+        found: list[str] = []
         for callee in callees(record):
             param = slot_param(callee, slot, bound)
             if param is not None and (callee, param) in writes:
-                return True
-        return False
+                found.append(callee)
+        return found
+
+    def writes_through(record: Pass) -> bool:
+        return bool(writing_callees(record))
 
     # How each written parameter is written (``param_flavors``): a parameter
     # handed itself on is written as the callee writes its own, one handed
@@ -1176,28 +1184,31 @@ def apply_writes(indexer: Resolver) -> ClassRecord:
             cls, _, inner = what[len(HELD_WHAT) :].partition("|")
             how = written_flavors(record)
             if how is not None and safe.writes(cls, how):
-                handed_written(caller, inner, False, how)
+                for writer in _writers(caller, writing_callees(record)):
+                    handed_written(writer, inner, False, how)
             continue
         if what.startswith("module:"):
             # A module handed to a written parameter: any of its variables
             # (and its submodules') may be what the callee writes.
             module = what[len("module:") :]
-            if writes_through(record):
+            for writer in _writers(caller, writing_callees(record)):
                 for m in sorted(module_variables):
                     if m == module or m.startswith(module + "."):
                         for variable in module_variables[m]:
-                            if caller not in (variable, m):
+                            if writer not in (variable, m):
                                 out.edges.add(
-                                    Edge(variable, caller, EdgeKind.REFERENCES, MUTATED_BY)
+                                    Edge(variable, writer, EdgeKind.REFERENCES, MUTATED_BY)
                                 )
             continue
         if what.startswith(ANY_CLASS_WHAT):
             how = written_flavors(record)
             if how is not None:
-                handed_written(caller, what, record[4] == RECEIVER, how)
+                for writer in _writers(caller, writing_callees(record)):
+                    handed_written(writer, what, record[4] == RECEIVER, how)
             continue
-        if writes_through(record):
-            handed_written(caller, what, record[4] == RECEIVER, written_flavors(record))
+        how = written_flavors(record)
+        for writer in _writers(caller, writing_callees(record)):
+            handed_written(writer, what, record[4] == RECEIVER, how)
     _apply_held_binds(indexer, safe)
     _record_any_class_writes(out, owners)
     return class_record
@@ -1376,6 +1387,20 @@ class ClassRecord:
         for var, _ in out.typed_writes:
             found |= self.types.get(var, set())
         return found
+
+
+def _writers(caller: str, callees: list[str]) -> list[str]:
+    """Who writes what a call hands a callee that writes it: the caller,
+    which decides what is handed and with what, and each such callee
+    itself, which does the writing whoever calls it. A test calling
+    ``SETTINGS.configure(debug=1)`` is code the isolation assumption leaves
+    out (planner.isolated_test_code), but ``configure`` is not: a change to
+    it reaches the readers of ``SETTINGS`` through its own edge (audit round
+    7, U4). Where the caller is other code, the callee adds nothing new: the
+    caller depends on it already."""
+    if not callees:
+        return []
+    return list(dict.fromkeys([caller, *callees]))
 
 
 class AnyClassOwners:

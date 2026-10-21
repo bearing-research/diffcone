@@ -24,7 +24,14 @@ A module variable ``V`` is a *candidate* of the module-level function ``W``
   ``__file__``/``__name__``/``__package__``, and names bound by an import
   (at module level, or in ``W``'s own scope); no parameter or other local of
   ``W``, no lambda, comprehension, walrus, ``await`` or ``yield``. The
-  dotted names those imports make it read are recorded for the decision.
+  dotted names those imports make it read are recorded for the decision;
+* ``expr`` gives a value nothing can change in place (``_immutable``: a
+  constant, a string, a tuple of such, a builtin giving a number, a string
+  or a tuple of such, a pure function outside the index, a ``str`` method
+  of such a value, a value fixed for the process). A container made on
+  first use (``V = {}``, ``dict()``, ``[]``, ``sorted(...)``) is state:
+  ``W`` or whoever it hands the container to may fill it, and that fill
+  holds what the calls handed it (audit round 7, U8).
 
 The *decision* runs once the index is built (``decide``, giving
 ``SourceIndex.lazy_constants``), over the whole index, so a cold and a warm
@@ -61,7 +68,8 @@ change.
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+import functools
+from collections.abc import Callable, Iterable, Mapping
 
 from diffcone.indexer.scopes import ImportBinding, resolve_relative_module
 from diffcone.indexer.syntax import FUNC_NODES
@@ -326,6 +334,7 @@ def candidates(
         if not isinstance(node, _NESTED):
             stack.extend(ast.iter_child_nodes(node))
     found: dict[str, Candidate] = {}
+    values: dict[str, tuple[ast.expr, _Resolve]] = {}
     for func in writers:
         defs = [s.name for s in tree.body if isinstance(s, (*FUNC_NODES, ast.ClassDef))]
         if defs.count(func.name) != 1 or func.name in top_bound:
@@ -419,18 +428,205 @@ def candidates(
                 tuple(sorted(set(guard) | named - {name})),
                 tuple(sorted(dotted)),
             )
+            values[name] = (
+                assign.value,
+                functools.partial(
+                    _name_read,
+                    declared=declared,
+                    local_imports=local_imports,
+                    other_locals=other_locals,
+                    imports=imports,
+                    alt_imports=alt_imports,
+                    top_bound=top_bound | defined_at_top,
+                ),
+            )
     # A candidate whose guard or value names a name that is none (of the
-    # same writer) is none, to a fixed point.
+    # same writer) is none, and so is one whose value may change in place
+    # (a container its writer or anyone it hands the value to may fill:
+    # audit round 7, U8), to a fixed point.
     while True:
         bad = {
             name
             for name, (writer, named, _) in found.items()
             if any(found.get(n, ("",))[0] != writer for n in named)
+            or not _immutable(values[name][0], set(found), values[name][1])
         }
         if not bad:
             return found
         for name in bad:
             del found[name]
+
+
+# Builtins whose result nothing can change in place, whatever they are
+# handed; and those whose result is one of (or made of) what they are
+# handed (``max([], default=x)``, ``sum(xs, [])``, ``tuple([[]])``).
+_IMMUTABLE_RESULTS = frozenset(
+    {
+        "all",
+        "any",
+        "bin",
+        "bool",
+        "bytes",
+        "chr",
+        "float",
+        "format",
+        "frozenset",
+        "hex",
+        "int",
+        "isinstance",
+        "issubclass",
+        "len",
+        "oct",
+        "ord",
+        "range",
+        "repr",
+        "str",
+    }
+)
+_IMMUTABLE_OF_ARGUMENTS = frozenset({"abs", "divmod", "max", "min", "pow", "round", "sum", "tuple"})
+# Values outside the index that can change in place.
+_MUTABLE_EXTERNAL = frozenset({"sys.implementation"})
+
+
+def _immutable(value: ast.expr, candidates: set[str], resolve: _Resolve) -> bool:
+    """Whether nothing can change ``value`` in place: a constant, an
+    f-string, a tuple of such, an operator over such, a builtin of
+    ``_IMMUTABLE_RESULTS`` (``tuple``/``frozenset`` of immutable items,
+    ``_IMMUTABLE_OF_ARGUMENTS`` of immutable arguments), a pure function
+    outside the index (``PURE_EXTERNAL``: a string, a tuple of strings, a
+    compiled pattern) or a ``str`` method on an immutable value, a value
+    fixed for the process other than a namespace, a module's own dunder,
+    another candidate whose value is (``candidates``, decided by the caller
+    to a fixed point). Names are read as the writer reads them
+    (``resolve``: ``_name_read``). Not a dict, list or set (a display or a
+    call), ``sorted``, an iterator (``reversed``, ``zip``: reading it
+    consumes it), an in-scope module (whose attributes can be bound), or a
+    method of a fixed value giving a list (``os.sep.split``)."""
+
+    def rec(v: ast.expr) -> bool:
+        return _immutable(v, candidates, resolve)
+
+    if isinstance(value, (ast.Constant, ast.JoinedStr, ast.Compare)):
+        return True  # a ``Compare`` gives a bool
+    if isinstance(value, ast.Tuple):
+        return all(rec(e) for e in value.elts)
+    if isinstance(value, ast.BinOp):
+        return rec(value.left) and rec(value.right)
+    if isinstance(value, ast.UnaryOp):
+        return rec(value.operand)
+    if isinstance(value, ast.BoolOp):
+        return all(rec(v) for v in value.values)
+    if isinstance(value, ast.IfExp):
+        return rec(value.body) and rec(value.orelse)
+    if isinstance(value, ast.Subscript):
+        return rec(value.value)
+    if isinstance(value, (ast.Name, ast.Attribute)):
+        dotted = _canonical(value, resolve)
+        if dotted is None:
+            return False
+        if dotted.startswith("="):
+            return dotted[1:].split(".")[0] in candidates
+        parts = dotted.split(".")
+        if parts[-1] in MODULE_DUNDERS:
+            return True  # a str or None (``decide`` checks no module binds one)
+        return dotted not in _MUTABLE_EXTERNAL and any(
+            ".".join(parts[:i]) in EXTERNAL_VALUES for i in range(1, len(parts) + 1)
+        )
+    if isinstance(value, ast.Call):
+        arguments = [*value.args, *(k.value for k in value.keywords)]
+        func = value.func
+        if isinstance(func, ast.Name) and resolve(func.id) == "":  # a builtin
+            if func.id in _IMMUTABLE_RESULTS:
+                return True
+            if func.id in ("tuple", "frozenset"):
+                return all(_immutable_items(a, candidates, resolve) for a in arguments)
+            if func.id in _IMMUTABLE_OF_ARGUMENTS:
+                return all(rec(a) for a in arguments)
+            return False
+        dotted = _canonical(func, resolve)
+        if dotted is not None and dotted in PURE_EXTERNAL - EXTERNAL_VALUES:
+            return True
+        # A str method giving a str, a number or a tuple, called on an
+        # immutable value (``os.sep.join(parts)``).
+        return isinstance(func, ast.Attribute) and func.attr in _STR_METHODS and rec(func.value)
+    return False
+
+
+_Resolve = Callable[[str], "str | None"]
+
+
+def _canonical(node: ast.expr, resolve: _Resolve) -> str | None:
+    """The dotted name a name chain reads (``=name.rest`` for a declared
+    global, ``name.rest`` for a builtin or the module's own dunder), or
+    None when it is not a chain of names or its head is a local."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    head = resolve(node.id)
+    if head is None:
+        return None
+    if head == "":
+        head = node.id
+    return ".".join([head, *reversed(parts)])
+
+
+# Methods of ``str`` whose result nothing can change in place (not ``split``,
+# ``splitlines``: lists).
+_STR_METHODS = frozenset(
+    {
+        "capitalize",
+        "casefold",
+        "center",
+        "count",
+        "encode",
+        "endswith",
+        "expandtabs",
+        "find",
+        "format",
+        "index",
+        "join",
+        "ljust",
+        "lower",
+        "lstrip",
+        "partition",
+        "removeprefix",
+        "removesuffix",
+        "replace",
+        "rfind",
+        "rindex",
+        "rjust",
+        "rpartition",
+        "rstrip",
+        "startswith",
+        "strip",
+        "swapcase",
+        "title",
+        "upper",
+        "zfill",
+    }
+)
+
+
+def _immutable_items(value: ast.expr, candidates: set[str], resolve: _Resolve) -> bool:
+    """Whether every item iterating ``value`` gives is a value nothing can
+    change in place (what ``tuple(value)`` holds): a display, ``sorted``,
+    ``reversed``, ``list``, ``set``, ``tuple`` or ``frozenset`` of such
+    items, a value that is itself immutable (a string's characters, a
+    tuple's items, a range's numbers)."""
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return all(_immutable(e, candidates, resolve) for e in value.elts)
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id in ("sorted", "reversed", "list", "set", "tuple", "frozenset")
+        and resolve(value.func.id) == ""
+        and len(value.args) == 1
+    ):
+        return _immutable_items(value.args[0], candidates, resolve)
+    return _immutable(value, candidates, resolve)
 
 
 def _top_bound_count(tree: ast.Module, name: str) -> int:
