@@ -56,6 +56,17 @@ selection rules.
   discovered at that commit: pytest's rootdir lies outside the repository
   (a configuration file in a directory above it), so plans would find no
   recording for any test and select them all.
+- A test not all of whose cases ran in the recording (deselected by
+  `-k`, `-m` or `--deselect`, or cut short by `-x` or `--maxfail`, in the
+  arguments, `addopts` or `PYTEST_ADDOPTS`) gets no record, so every plan
+  selects it until it is recorded whole; `collect` says how many tests
+  have no record. A record of only some cases was taken for the whole
+  test, so a later break in a case it never ran went unselected.
+- `run --collect` runs with `--maxfail=0`, as `collect` does, and keeps
+  every flag of the record it replaces.
+- `PYTEST_ADDOPTS` is part of the recorded environment: a plan with
+  different options plans without the recording.
+- The evidence store format is 7: record again after upgrading.
 
 ### Running and checking
 
@@ -69,6 +80,16 @@ selection rules.
   only, without diffcone's own run.
 - `diffcone report` counts a pull-request run that failed after a good
   plan as a problem.
+  So do a plan that failed and a run that refused, so `comment:
+  on-problem` comments on a pull request that ran no tests.
+- `diffcone run` exits 3 when the selection plugin did not run (a command
+  or wrapper that drops its arguments, a tox or nox target without
+  `{posargs}`): the selected tests never ran, and it exited 0.
+- `diffcone validate` and `corpus` compare outcomes case by case: a case
+  that changed to an outcome another case of the same test already had
+  was no change.
+- The `run` action's `selected` output and the `check` action use what
+  ran (`ran.json`), not the plan, when they differ.
 
 ### Fixed
 
@@ -205,6 +226,11 @@ selection rules.
   one outside every test (locale tests that query at import, pytest-benchmark
   in every run) planned every change as select-everything there. POSIX
   was not affected.
+- A test runner called from project code with a directory of non-Python
+  files (`pytest.main(["--verbose", "docs"])` over doctest text files),
+  a word after an option diffcone does not know, or no path at all, is
+  taken to run anything. The directory was taken for the option's
+  argument and its tests were never selected.
 
 ## [0.4.0] - 2026-10-14
 
