@@ -54,6 +54,11 @@ class ClassScope:
     # (``functools.total_ordering``; literals.class_kept): instances are
     # made as the body and bases say (audit round 6, T23).
     kept: bool = True
+    # No decorator or metaclass may give the class state, or give back an
+    # instance, that its body and bases do not show: ``kept``, or decorated
+    # only by ``dataclasses.dataclass`` (literals.class_adds_no_state;
+    # audit round 6, T26, and round 7, U14).
+    adds_no_state: bool = True
     # The names the class body only annotates (``_cache: int | None``):
     # ``bindings`` has them, but they bind nothing at class level
     # (literals.class_declared; audit round 6, T23).

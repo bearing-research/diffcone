@@ -25,6 +25,7 @@ from diffcone.testing import (
     reason,
     rules,
     selected,
+    touched,
     unselected,
 )
 
@@ -5377,3 +5378,485 @@ def test_t20_no_state_filled_into_an_immutable_variable(repo, lib, readers):
     plan = repo.plan(base, head, [*ASV, PEEK_BENCH], discover_runners=["pytest"], evidence=ev)
     reading = {"tests/test_z.py::test_z", PEEK_BENCH.runner_id} if readers else set()
     assert selected(plan) == {"tests/test_a.py::test_a", *reading}
+
+
+# --------------------------------------------------------------------------- stores the chain makes
+
+# ``compute`` changes; test_a runs ``fill``, which can store its result
+# somewhere; test_z reads it there and runs nothing that computed it. The
+# benchmark of ``fill`` is planned statically, an unrelated one is not
+# selected.
+FILL_BENCH = {
+    "benchmarks/bench_lib.py": "from pkg.lib import fill\n\n\ndef time_fill():\n    fill(2)\n",
+    "benchmarks/bench_other.py": "def time_other():\n    pass\n",
+}
+BENCH_FILL = asv_target("bench_lib.time_fill", "benchmarks.bench_lib.time_fill")
+BENCH_OTHER_LIB = asv_target("bench_other.time_other", "benchmarks.bench_other.time_other")
+FILLED_A, FILLED_Z = "tests/test_a.py::test_a", "tests/test_z.py::test_z"
+
+
+def _fill_plan(repo, lib, read, *, extra=None):
+    """Plan ``compute``'s change from evidence of test_a running ``fill(2)``
+    and test_z running ``lib.<read>``."""
+    lib = "def compute(k):\n    return k * 2\n\n\n" + lib
+    files = {
+        **BENCH_PKG,
+        **FILL_BENCH,
+        "pkg/lib.py": lib,
+        "tests/test_a.py": "from pkg.lib import fill\n\n\ndef test_a():\n    fill(2)\n",
+        "tests/test_z.py": f"from pkg import lib\n\n\ndef test_z():\n    lib.{read}\n",
+        **(extra or {}),
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("k * 2", "k * 3", 1)})
+    return _evidence_plan(repo, base, head, evidence, [BENCH_FILL, BENCH_OTHER_LIB])
+
+
+ENGINE = "class Engine:\n    def run(self, k):\n        return compute(k)\n\n\n"
+CLASS_STORE = (
+    "class Store:\n    _cache = {}\n\n    def put(self, k, v):\n        self._cache[k] = v\n\n"
+    "    def get(self, k):\n        return self._cache.get(k)\n\n\n"
+)
+# (the code before ``fill``, its body, what test_z runs)
+KNOWN_RECEIVERS = {
+    "a module instance": (
+        ENGINE + "ENGINE = Engine()\n_D = {}\n\n\n",
+        "_D[k] = ENGINE.run(k)",
+        "peek(2)",
+    ),
+    "a constructor's result": (ENGINE + "_D = {}\n\n\n", "_D[k] = Engine().run(k)", "peek(2)"),
+    "a local bound to one": (
+        ENGINE + "_D = {}\n\n\n",
+        "e = Engine()\n    _D[k] = e.run(k)",
+        "peek(2)",
+    ),
+    "a factory's result": (
+        ENGINE + "_D = {}\n\n\ndef make():\n    return Engine()\n\n\n",
+        "_D[k] = make().run(k)",
+        "peek(2)",
+    ),
+    "class state through a method": (
+        CLASS_STORE + "STORE = Store()\n\n\n",
+        "STORE.put(k, compute(k))",
+        "Store().get(2)",
+    ),
+    "an attribute holding one": (
+        CLASS_STORE + "class App:\n    def __init__(self):\n        self.store = Store()\n\n"
+        "    def fill(self, k):\n        self.store.put(k, compute(k))\n\n\nAPP = App()\n\n\n",
+        "APP.fill(k)",
+        "Store().get(2)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(KNOWN_RECEIVERS))
+def test_u5_a_method_on_a_receiver_of_a_known_class_is_followed(repo, case):
+    """Audit round 7, U5: the chain back from ``compute`` stopped at a
+    method called on an instance (``ENGINE.run(k)``, ``Engine().run(k)``, a
+    local or a factory's result bound to one), and the code the chain calls
+    at a method of one (``STORE.put``, or ``self.store.put`` where ``store``
+    is only ever a ``Store``, which stores into ``Store._cache``), though
+    the index knows the instance's class (SourceIndex.typed_calls): test_z,
+    reading what test_a stored, was left out."""
+    before, body, read = KNOWN_RECEIVERS[case]
+    lib = before + f"def fill(k):\n    {body}\n\n\ndef peek(k):\n    return _D.get(k)\n"
+    plan = _fill_plan(repo, lib, read)
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+    assert rules(plan, FILLED_Z) == {"executed_reader"}
+
+
+def test_u5_a_method_name_on_an_unknown_receiver_is_not_followed(repo):
+    """The guard for U5 (internal/evidence_design.md): a method called on a
+    receiver of unknown type is not taken for every method of its name.
+    ``fill`` hands ``compute``'s result to ``obj.run`` on a parameter;
+    ``Recorder.run`` stores, but nothing says ``obj`` is a ``Recorder``."""
+    lib = (
+        "class Recorder:\n    seen = []\n\n    def run(self, v):\n        self.seen.append(v)\n\n"
+        "    def last(self):\n        return self.seen[-1] if self.seen else None\n\n\n"
+        "class Plain:\n    def run(self, v):\n        return v\n\n\n"
+        "def fill(k, obj=Plain()):\n    obj.run(compute(k))\n"
+    )
+    plan = _fill_plan(repo, lib, "Recorder().last()")
+    assert selected(plan) == {FILLED_A, BENCH_FILL.runner_id}
+
+
+# (the property, ``__setattr__`` or ``__delattr__`` that stores into ``_D``,
+# what ``fill`` does)
+ATTRIBUTE_HOOKS = {
+    "a property setter": (
+        "    @property\n    def mode(self):\n        return None\n\n"
+        "    @mode.setter\n    def mode(self, v):\n        _D['mode'] = v\n",
+        "CONF.mode = compute(k)",
+    ),
+    "__setattr__": (
+        "    def __setattr__(self, name, v):\n        _D[name] = v\n",
+        "CONF.mode = compute(k)",
+    ),
+    "setattr() with a literal name": (
+        "    def __setattr__(self, name, v):\n        _D[name] = v\n",
+        "setattr(CONF, 'mode', compute(k))",
+    ),
+    "__delattr__": (
+        "    def __delattr__(self, name):\n        _D[name] = compute(2)\n",
+        "del CONF.mode",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(ATTRIBUTE_HOOKS))
+def test_u18_binding_an_attribute_runs_the_setter(repo, case):
+    """Audit round 7, U18: ``CONF.mode = compute(k)`` runs the property's
+    setter (or ``__setattr__``, ``__delattr__`` for ``del``), which stores
+    into ``_D``; evidence followed no call there, so test_z, reading ``_D``,
+    was left out."""
+    hook, body = ATTRIBUTE_HOOKS[case]
+    lib = (
+        "_D = {}\n\n\nclass Conf:\n" + hook + "\n\nCONF = Conf()\n\n\n"
+        f"def fill(k):\n    {body}\n\n\ndef peek(k):\n    return _D.get('mode')\n"
+    )
+    plan = _fill_plan(repo, lib, "peek(2)")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+# (how ``load`` binds ``value`` on the module's ``CONF``, what ``fill`` runs)
+RECEIVER_BINDS = {
+    "self.x = v": ("    value = 0\n\n    def load(self, k):\n        self.value = compute(k)\n",),
+    "setattr(self, 'x', v)": (
+        "    value = 0\n\n    def load(self, k):\n        setattr(self, 'value', compute(k))\n",
+    ),
+    "self.__dict__['x'] = v": (
+        "    value = 0\n\n    def load(self, k):\n        self.__dict__['value'] = compute(k)\n",
+    ),
+    "setattr(self, name, v)": (
+        "    value = 0\n\n    def load(self, k, name='value'):\n"
+        "        setattr(self, name, compute(k))\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(RECEIVER_BINDS))
+def test_u4_an_attribute_bound_on_the_receiver_reaches_its_readers(repo, case):
+    """Audit round 7, U4 (evidence): ``self.value = v`` (or through
+    ``setattr``, ``__dict__``) was a store into the receiver whose readers
+    were the class family's members only, never code reading ``.value`` off
+    the instance (``CONF.value`` in a module function): test_z was left
+    out. The attribute's name is kept (``@self.value``; ``@self.*`` for a
+    name known at run time: every attribute the family binds)."""
+    (cls,) = RECEIVER_BINDS[case]
+    lib = (
+        "class Conf:\n" + cls + "\n\nCONF = Conf()\n\n\n"
+        "def fill(k):\n    CONF.load(k)\n\n\ndef value():\n    return CONF.value\n"
+    )
+    plan = _fill_plan(repo, lib, "value()")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+def test_u4_re_initialising_a_module_instance_reaches_its_attribute_readers(repo):
+    """U4: ``reset`` re-initialises the module's ``CONF`` (made without
+    running ``__init__``), binding what ``__init__`` binds: ``value``, read
+    off the instance by a module function test_z runs."""
+    lib = (
+        "class Conf:\n    def __init__(self, k=2):\n        self.value = compute(k)\n\n"
+        "    def reset(self):\n        self.__init__()\n\n\n"
+        "CONF = Conf.__new__(Conf)\n\n\n"
+        "def fill(k):\n    CONF.reset()\n\n\ndef value():\n    return CONF.value\n"
+    )
+    plan = _fill_plan(repo, lib, "value()")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+# ``Engine``'s calls give back one shared instance: what ``__init__`` binds
+# lands on an object every later caller holds.
+SINGLETONS = {
+    "a metaclass __call__": (
+        "class Single(type):\n    _made = {}\n\n    def __call__(cls, *args):\n"
+        "        if cls not in cls._made:\n            cls._made[cls] = super().__call__(*args)\n"
+        "        return cls._made[cls]\n\n\nclass Engine(metaclass=Single):\n"
+    ),
+    "a class decorator's closure": (
+        "def singleton(cls):\n    made = {}\n\n    def get(*args):\n        if cls not in made:\n"
+        "            made[cls] = cls(*args)\n        return made[cls]\n\n    return get\n\n\n"
+        "@singleton\nclass Engine:\n"
+    ),
+    "__new__": (
+        "class Engine:\n    _one = None\n\n    def __new__(cls):\n        if cls._one is None:\n"
+        "            cls._one = super().__new__(cls)\n        return cls._one\n\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(SINGLETONS))
+def test_u14_an_initialiser_of_a_shared_instance_stores_into_it(repo, case):
+    """Audit round 7, U14: what ``__init__`` binds on its receiver was
+    taken for a fresh object's (``FRESH_INITS``), but calling ``Engine``
+    gives back the one instance a metaclass, a decorator's closure or
+    ``__new__`` keeps (SourceIndex.shared_instances): test_z, reading
+    ``table`` off the instance test_a made, was left out."""
+    lib = SINGLETONS[case] + (
+        "    def __init__(self):\n        if not hasattr(self, 'table'):\n"
+        "            self.table = compute(2)\n\n"
+        "    def peek(self):\n        return self.table\n\n\n"
+        "def fill(k):\n    Engine()\n"
+    )
+    plan = _fill_plan(repo, lib, "Engine().peek()")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+def test_u20_subscripting_a_class_in_a_test_module_reaches_its_readers(repo):
+    """Audit round 7, U20: a test module's ``Alias = Reg["x"]`` runs
+    ``Reg.__class_getitem__`` while pytest imports it, which stores into
+    ``Reg._seen``; test_z, in another module, reads it there. Changing the
+    subscript selected only test_a: what the module's code runs at import
+    did not include ``__class_getitem__``."""
+    lib = (
+        "class Reg:\n    _seen = {}\n\n    def __class_getitem__(cls, key):\n"
+        "        cls._seen[key] = key\n        return cls\n\n"
+        "    @classmethod\n    def peek(cls, key):\n        return cls._seen.get(key)\n"
+    )
+    test_a = 'from pkg.lib import Reg\n\nAlias = Reg["x"]\n\n\ndef test_a():\n    assert Alias\n'
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "pkg/lib.py": lib,
+            "tests/test_a.py": test_a,
+            "tests/test_z.py": "from pkg.lib import Reg\n\n\ndef test_z():\n    Reg.peek('x')\n",
+            "tests/test_other.py": "def test_other():\n    pass\n",
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"tests/test_a.py": test_a.replace('"x"', '"y"')})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {FILLED_A, FILLED_Z}
+
+
+# (how ``fill`` hands ``compute``'s result to ``_impl``, which stores it)
+ALIASES = {
+    "a module alias": "_put = _impl\n\n\ndef fill(k):\n    _put(k, compute(k))\n",
+    "a staticmethod on a class": (
+        "class Store:\n    put = staticmethod(_impl)\n\n\n"
+        "def fill(k):\n    Store.put(k, compute(k))\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(ALIASES))
+def test_u23_the_descent_follows_a_function_through_an_alias(repo, case):
+    """Audit round 7, U23: the code the chain calls (E36's descent) was
+    followed through functions, methods and classes only, so ``_put = _impl``
+    and ``put = staticmethod(_impl)`` dropped ``_impl``'s store into
+    ``_CACHE``: test_z, reading it, was left out."""
+    lib = (
+        "_CACHE = {}\n\n\ndef _impl(k, v):\n    _CACHE[k] = v\n\n\n"
+        + ALIASES[case]
+        + "\n\ndef peek(k):\n    return _CACHE.get(k)\n"
+    )
+    plan = _fill_plan(repo, lib, "peek(2)")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+def test_u13_project_code_storing_onto_a_library_module_is_not_isolated(repo):
+    """Audit round 7, U13 (evidence): a lookup on a library module whose
+    only writer is project code that ran inside tests was taken for one
+    only a test running the writer can see (``_only_in_tests``), but
+    ``install`` leaves ``json.pkg_value`` for every later test: test_z,
+    whose ``read`` looks it up by a name nothing bounds, was left out. Only
+    test code is isolated."""
+    lib = (
+        "import json\n\n\ndef fill(k):\n    setattr(json, 'pkg_value', compute(k))\n\n\n"
+        "def read(name='pkg_value'):\n    return getattr(json, name, None)\n"
+    )
+    plan = _fill_plan(repo, lib, "read()")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+# (the store ``get`` makes through what a method of the receiver returns,
+# whether it reaches ``_data``)
+RESULT_STORES = {
+    "a method's result": ("self._table()[k] = compute(k)", True),
+    "a local bound to it": ("t = self._table()\n        t[k] = compute(k)", True),
+    "getattr with a literal": ("getattr(self, '_data')[k] = compute(k)", True),
+    "a method returning another's result": ("self._outer()[k] = compute(k)", True),
+    "a fresh result": ("out = self._fresh()\n        out[k] = compute(k)", False),
+}
+RESULT_LIB = """\
+class Store:
+    def __init__(self):
+        self._data = {{}}
+
+    def _table(self):
+        return self._data
+
+    def _outer(self):
+        return self._table()
+
+    def _fresh(self):
+        return {{}}
+
+    def get(self, k):
+        {store}
+        return k
+
+    def peek(self, k):
+        return self._data.get(k)
+
+
+def fill(k):
+    return Store().get(k)
+"""
+RESULT_FIXTURE = {
+    "tests/conftest.py": "import pytest\n\nfrom pkg.lib import Store\n\n\n"
+    "@pytest.fixture(scope='session')\ndef store():\n    return Store()\n",
+    "tests/test_a.py": "def test_a(store):\n    store.get(2)\n",
+    "tests/test_z.py": "def test_z(store):\n    store.peek(2)\n",
+}
+
+
+@pytest.mark.parametrize("case", list(RESULT_STORES))
+def test_u15_a_store_through_what_a_receiver_method_returns(repo, case):
+    """Audit round 7, U15: a store through a call's result was no store
+    (``self._table()[k] = v`` where ``_table`` returns ``self._data``, a
+    local bound to it, ``getattr(self, "_data")``), so test_z, reading the
+    session fixture's ``Store`` that test_a filled, was left out. It counts
+    when the method may return the receiver's state (``receiver_returns``);
+    a store into what ``_fresh`` returns, a new dict, is none."""
+    store, reaches = RESULT_STORES[case]
+    lib = RESULT_LIB.format(store=store)
+    plan = _fill_plan(repo, lib, "Store()", extra=RESULT_FIXTURE)
+    reading = {FILLED_Z} if reaches else set()
+    assert selected(plan) == {FILLED_A, BENCH_FILL.runner_id, *reading}
+
+
+# A memoiser applied by a call: ``get`` keeps ``_get``'s results.
+REMEMBER = (
+    "def remember(f):\n    kept = {}\n\n    def wrapper(k):\n        if k not in kept:\n"
+    "            kept[k] = f(k)\n        return kept[k]\n\n    return wrapper\n\n\n"
+)
+APPLIED_MEMOISERS = {
+    "a project memoiser": REMEMBER + "get = remember(_get)\n",
+    "a memoiser factory": (
+        "def memoize(maxsize=None):\n    return remember\n\n\n"
+        + REMEMBER
+        + "get = memoize()(_get)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(APPLIED_MEMOISERS))
+def test_u17_a_memoiser_applied_by_a_call_keeps_results(repo, case):
+    """Audit round 7, U17: ``get = remember(_get)`` (or a factory's
+    decorator applied the same way) wraps ``_get`` as ``@remember`` would,
+    but only the decorator form was read (``Resolver._memoizing``,
+    ``decorations``): test_z, served what test_a's call kept, was left
+    out."""
+    lib = (
+        "def _get(k):\n    return compute(k)\n\n\n"
+        + APPLIED_MEMOISERS[case]
+        + "\n\ndef fill(k):\n    return get(k)\n"
+    )
+    plan = _fill_plan(repo, lib, "get(2)")
+    assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
+
+
+# ``load`` keeps what it reads from ``pkg/data.json`` (or below ``pkg/data``)
+# for every later test. Three tests use it; only the first to run reads the
+# file.
+DATA_LOADERS = {
+    "a module cache": (
+        "import json\nimport pathlib\n\n_D = {}\n\n\ndef load():\n    if 'v' not in _D:\n"
+        "        path = pathlib.Path(__file__).parent / 'data.json'\n"
+        "        _D.update(json.loads(path.read_text()))\n    return _D['v']\n",
+        {"pkg/data.json": '{"v": 2}\n'},
+        {"pkg/data.json": '{"v": 3}\n'},
+    ),
+    "a singleton's attribute": (
+        "import json\nimport pathlib\n\n\nclass Config:\n    def __init__(self):\n"
+        "        self.data = None\n\n    def get(self):\n        if self.data is None:\n"
+        "            path = pathlib.Path(__file__).parent / 'data.json'\n"
+        "            self.data = json.loads(path.read_text())\n        return self.data['v']\n\n\n"
+        "CONFIG = Config()\n\n\ndef load():\n    return CONFIG.get()\n",
+        {"pkg/data.json": '{"v": 2}\n'},
+        {"pkg/data.json": '{"v": 3}\n'},
+    ),
+    "a directory's entries": (
+        "import os\n\n_NAMES = []\n\n\ndef load():\n    if not _NAMES:\n"
+        "        here = os.path.dirname(__file__)\n"
+        "        _NAMES.extend(sorted(os.listdir(os.path.join(here, 'data'))))\n"
+        "    return len(_NAMES)\n",
+        {"pkg/data/one.txt": "1\n"},
+        {"pkg/data/two.txt": "2\n"},
+    ),
+    "a source file read as data": (
+        "import pathlib\n\n_D = {}\n\n\ndef load():\n    if 'v' not in _D:\n"
+        "        path = pathlib.Path(__file__).parent / 'version.py'\n"
+        "        _D['v'] = path.read_text()\n    return _D['v']\n",
+        {"pkg/version.py": "VERSION = '1'\n"},
+        {"pkg/version.py": "VERSION = '2'\n"},
+    ),
+}
+DATA_TESTS = "from pkg.loader import load\n\n\n" + "".join(
+    f"def test_{n}():\n    load()\n\n\n" for n in ("a", "b", "c")
+)
+
+
+@pytest.mark.parametrize("reverse", [False, True], ids=["forward", "reverse-checked"])
+@pytest.mark.parametrize("case", list(DATA_LOADERS))
+def test_u6_a_changed_file_a_test_kept_reaches_later_tests(repo, case, reverse):
+    """Audit round 7, U6: a changed data file selected only the tests that
+    opened it, but the first test to call ``load`` keeps what it read (in a
+    module dict, a singleton's attribute, a list of a directory's entries,
+    the text of a source file), and every later test is served that. The
+    code a test touching the file ran is followed as code storing a result
+    is (``_file_readers``). Recorded with ``--reverse-check``, the first
+    and the last test each read the file and the middle one never does: it
+    is selected too."""
+    loader, data, change = DATA_LOADERS[case]
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/loader.py": loader,
+            **data,
+            "tests/test_load.py": DATA_TESTS,
+        }
+    )
+    evidence = repo.collect(reverse_check=reverse)
+    head = repo.commit(change)
+    plan = _evidence_plan(repo, base, head, evidence, [NOOP_BENCH])
+    # A file the index does not read selects every benchmark statically.
+    benches = set() if change.keys() == {"pkg/version.py"} else {NOOP_BENCH.runner_id}
+    assert selected(plan) == {f"tests/test_load.py::test_{n}" for n in ("a", "b", "c")} | benches
+
+
+def test_u6_lines_a_traceback_showed_seed_nothing(repo):
+    """Audit round 7, U6 (the precision side): a test formatting a
+    traceback reads, through ``linecache``, every source file the traceback
+    passes through (``child.SHOWN``). The test is selected for touching the
+    file, but what it ran is no reader of the file's data: test_z, reading
+    the ``_D`` test_a filled, is not selected for an edit to ``fail``
+    (flask: an edit to ``app.py`` selected every test)."""
+    lib = (
+        "_D = {}\n\n\ndef remember():\n    _D['k'] = 1\n\n\n"
+        "def peek():\n    return _D.get('k')\n\n\n"
+        "def fail():\n    raise ValueError('no')\n"
+    )
+    test_a = (
+        "import traceback\n\nfrom pkg.lib import fail, remember\n\n\n"
+        "def test_a():\n    remember()\n    try:\n        fail()\n"
+        "    except ValueError:\n        assert 'fail' in traceback.format_exc()\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/lib.py": lib,
+            "tests/test_a.py": test_a,
+            "tests/test_z.py": "from pkg.lib import peek\n\n\ndef test_z():\n    peek()\n",
+        }
+    )
+    evidence = repo.collect()
+    assert "pkg/lib.py/:lines" in touched(evidence, FILLED_A)
+    head = repo.commit({"pkg/lib.py": lib.replace("'no'", "'no!'")})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {FILLED_A}

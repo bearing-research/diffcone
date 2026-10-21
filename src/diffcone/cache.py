@@ -53,6 +53,9 @@ from diffcone.model import (
 )
 
 # Bump whenever the indexer's output for the same input can change.
+# 62: typed_calls and shared_instances; receiver attribute stores keep
+#     their name (``@self.x``), re-initialisation is ``@init``; memoisers
+#     applied by a call (audit round 7, U4, U5, U14, U15, U16, U17, U18);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -111,7 +114,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 61
+INDEX_FORMAT = 62
 
 
 def _indexer_fingerprint() -> str:
@@ -215,6 +218,8 @@ def index_to_dict(index: SourceIndex) -> dict:
         "handed": sorted(list(h) for h in index.handed),
         "memoized": sorted(index.memoized),
         "decorations": sorted(list(d) for d in index.decorations),
+        "typed_calls": sorted(list(t) for t in index.typed_calls),
+        "shared_instances": sorted(index.shared_instances),
         "lazy_constants": dict(sorted(index.lazy_constants.items())),
         "cython": {
             path: {
@@ -276,6 +281,8 @@ def index_from_dict(data: dict) -> SourceIndex:
         handed={(a, b, c) for a, b, c in data["handed"]},
         memoized=set(data["memoized"]),
         decorations={(a, b) for a, b in data["decorations"]},
+        typed_calls={(a, b) for a, b in data["typed_calls"]},
+        shared_instances=set(data["shared_instances"]),
         lazy_constants=dict(data["lazy_constants"]),
         cython={
             path: CythonModule(

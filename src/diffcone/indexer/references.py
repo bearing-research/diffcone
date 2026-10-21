@@ -127,6 +127,7 @@ from diffcone.indexer.writes import (
     observe_assign,
     observe_augassign,
     observe_call,
+    observe_return,
 )
 from diffcone.model import (
     DISCARDED_IMPORT,
@@ -1666,6 +1667,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     root = held[1]  # what a caller writing into the instance may change
                 if root != _NAMESPACE and root != f"{RESULT}{self.source}":
                     self.indexer.out.state_returns.add((self.source, root))
+            observe_return(self, node.value)
         self.generic_visit(node)
 
     def _namespace_item(self, key: ast.expr | None) -> dict[str, bool]:

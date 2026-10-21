@@ -525,6 +525,13 @@ LISTING_EVENTS = frozenset({"os.listdir", "os.scandir"})
 # edit to any direct entry may have been read. The fold and the planner
 # read the suffix (evidence_plan._file).
 SCANNED = "/*"
+# A file whose lines ``linecache`` read inside a test (a traceback or a
+# warning formatted, ``inspect.getsource``) is recorded with this suffix
+# instead: the test touched it, but what it read are lines to show, which
+# planning does not follow into project state (evidence_plan's
+# ``_file_readers`` seeds nothing from it; audit round 7, U6). A file has
+# no entries, so the suffix names no real path.
+SHOWN = "/:lines"
 # Events after which a path may resolve through other links: the memo of
 # real paths is dropped.
 LINK_EVENTS = frozenset({"os.symlink", "os.rename", "os.remove", "os.rmdir", "os.link"})
