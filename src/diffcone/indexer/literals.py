@@ -834,14 +834,34 @@ _DESCRIPTORS = frozenset(
 _BLOCKS = (ast.If, ast.Try, ast.While, *((ast.TryStar,) if hasattr(ast, "TryStar") else ()))
 
 
-def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...] | None:
+def module_functions(found: Bindings | None, tree: ast.Module) -> frozenset[str]:
+    """The module-level names a ``def`` binds and nothing else binds: a
+    function wherever the module reads them (``class_state``)."""
+    if found is None:
+        return frozenset()
+    counts = found[0]
+    return frozenset(
+        stmt.name
+        for stmt in iter_scope_statements(tree.body)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and counts.get(stmt.name) == 1
+    )
+
+
+def class_state(
+    found: Bindings | None, body: list[ast.stmt], functions: frozenset[str] = frozenset()
+) -> tuple[str, ...] | None:
     """Whether the class whose body is ``body`` (in a module whose
-    ``module_bindings`` are ``found``) holds
-    state of its own that can change in place (audit round 6, T21): None
-    when its body binds a name (outside its ``def``s and nested classes) to
-    anything ``module_immutables`` would not call immutable, other than a
-    function, a descriptor (``property``, ``cached_property``) or a
-    dataclass field (whose default, if any, is immutable). Otherwise what
+    ``module_bindings`` are ``found`` and whose ``module_functions`` are
+    ``functions``) holds state of its own that can change in place (audit
+    round 6, T21): None when its body binds a name (outside its ``def``s)
+    to anything ``module_immutables`` would not call immutable, other than
+    a function, a descriptor wrapper of functions (``property(get)``,
+    ``staticmethod(f)``, ``classmethod(lambda c: c)``; of anything else it
+    hands out that object), a descriptor (``cached_property``) or a
+    dataclass field (whose default, if any, is immutable), or when a class
+    nested in it may hold state (reached through the outer class, its
+    instances and ``self``: ``OUTER.Meta.registry``; one with a base or a
+    decorator that may add state may) (audit round 7, U11). Otherwise what
     that rests on, as there: the module's names its values read and
     ``module:<m>`` per standard-library module called."""
     if found is None:
@@ -850,6 +870,24 @@ def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...]
     once = {name for name, n in counts.items() if n == 1 and name not in declared}
     rests: set[str] = set()
     value = _ImmutableValue(imports, once, counts, rests)
+    bound: dict[str, int] = {}
+    own_defs: set[str] = set()
+    for stmt in iter_scope_statements(body):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            own_defs.add(stmt.name)
+        names = {stmt.name} if isinstance(stmt, (*DEF_NODES, ast.ClassDef)) else set()
+        for name in names | _collect_store_names(stmt):
+            bound[name] = bound.get(name, 0) + 1
+
+    def function(expr: ast.expr) -> bool:
+        """``expr`` is certainly a function where the class body reads it."""
+        if isinstance(expr, ast.Lambda):
+            return True
+        if not isinstance(expr, ast.Name):
+            return False
+        if expr.id in bound:
+            return expr.id in own_defs and bound[expr.id] == 1
+        return expr.id in functions
 
     def stateless(expr: ast.expr) -> bool:
         if isinstance(expr, ast.Lambda):
@@ -861,7 +899,16 @@ def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...]
                 and func.id in _DESCRIPTOR_BUILTINS
                 and func.id not in counts
             ):
-                return True
+                # ``property(get, set, None, "doc")``: what it wraps.
+                wrapped = [*expr.args, *(k.value for k in expr.keywords)]
+                return all(
+                    function(a)
+                    or (
+                        isinstance(a, ast.Constant)
+                        and (a.value is None or isinstance(a.value, str))
+                    )
+                    for a in wrapped
+                )
             named = value._canonical(func)
             if named is not None and named[0] in _DESCRIPTORS:
                 rests.add(EXTERNAL_DEPENDENCY + named[1])
@@ -869,6 +916,14 @@ def class_state(found: Bindings | None, body: list[ast.stmt]) -> tuple[str, ...]
         return value.check(expr)
 
     for stmt in iter_scope_statements(body):
+        if isinstance(stmt, ast.ClassDef):
+            if stmt.bases or not class_adds_no_state(found, [stmt]):
+                return None
+            inner = class_state(found, stmt.body, functions)
+            if inner is None:
+                return None
+            rests.update(inner)
+            continue
         if isinstance(stmt, (*DEF_NODES, *_BLOCKS, ast.Pass)):
             continue
         if isinstance(stmt, (ast.Assign, ast.AnnAssign)):

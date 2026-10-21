@@ -51,9 +51,15 @@ class ClassScope:
     plain: bool = True
     # Plain, or decorated only by decorators that give back the class itself
     # with no hook on making an instance or setting an attribute
-    # (``functools.total_ordering``; literals.class_kept): instances are
+    # (``functools.total_ordering``, ``typing.final``), and naming no
+    # metaclass but ``abc.ABCMeta`` (literals.class_kept): instances are
     # made as the body and bases say (audit round 6, T23).
     kept: bool = True
+    # A decorator or metaclass may give the class attributes its body does
+    # not bind, by names nothing bounds (``not
+    # literals.class_adds_no_state``): it may hold state and own any name
+    # (writes.ClassRecord; audit round 7, U3).
+    unbounded: bool = False
     # The names the class body only annotates (``_cache: int | None``):
     # ``bindings`` has them, but they bind nothing at class level
     # (literals.class_declared; audit round 6, T23).

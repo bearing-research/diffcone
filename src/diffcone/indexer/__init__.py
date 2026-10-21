@@ -53,13 +53,29 @@ Supported subset (see internal/design.md):
   ``Indexer._immutable_variables``), and so has a class attribute bound once
   to such a value or a class-level table of them nothing changes
   (``literals.class_immutables``, ``class_tables``);
+* a class reached by any other name is written by binds and changes
+  through that name: a module or local alias, a dict, tuple or loop over
+  classes, a parameter's default, ``getattr(module, "C")``, a module handle
+  (``import_module``, ``sys.modules``, ``vars(m)[...]``, ``m.__dict__[...]``),
+  ``type.__setattr__``, an item of ``C.__mro__``/``__bases__``, what a call
+  handed the class gives back; calling such a name, or
+  ``functools.partial(C)``, makes an instance (``writes.variable_classes``);
 * in-place writes through an instance of an in-scope class (a module
   variable holding one, or one a function makes) reaching the state its
-  class holds (``literals.class_state``, ``Indexer._instance_writes``); what
+  class holds (``literals.class_state``, a nested class's included,
+  ``Indexer._instance_writes``), and the object a method bound the
+  attribute to when it may be shared (a module variable, a class
+  attribute, a mutable default, the Borg's ``__dict__``:
+  ``Indexer._shared_writes``); every attribute a class is given anywhere
+  (its body, top-level code, other modules, decorators and metaclasses,
+  ``setattr``) is one record (``writes.ClassRecord``) that every rule
+  asking whether a class holds state or owns an attribute reads; what
   a constructor is handed is part of the instance, so a change in place of
   the instance writes it (``writes._HeldSafety``); a write onto the class
   of an object of unknown type (``type(o).x = v``) writes every class that
-  may own the attribute (``writes.AnyClassOwners``);
+  may own the attribute (``writes.AnyClassOwners``); a method a library
+  base or metaclass gives a class, called on the class (``Base.register``
+  of an ABC, ``addClassCleanup``), writes it;
 * project code run by naming it in a string: a ``.py`` path, ``-m NAME``,
   ``-c CODE``, and a Python command whose program cannot be named
   (``scripts.py``); a module loaded from a file by path
@@ -84,7 +100,7 @@ Supported subset (see internal/design.md):
   a literal ``import_module("m")`` result included;
 * the ``__init__``/``__new__`` a class's creation runs (an ``enum`` base,
   an in-scope metaclass), and the ``__init_subclass__`` and metaclass hooks
-  every class statement runs;
+  every class statement and ``type(name, bases, ns)`` runs;
 * the order of a module's or class's top-level statements (a reorder is a
   definition change; two adjacent plain ``def``s trading places is none);
 * writes of process-global state outside the source roots (``process.py``),

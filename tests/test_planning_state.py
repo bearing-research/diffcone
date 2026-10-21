@@ -1761,6 +1761,426 @@ def test_t25_an_unrelated_attribute_keeps_immutable_class_attributes(repo):
     assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
 
 
+# A class is the same object whatever name reaches it: bound to another name
+# at module level or in a function, held in a container, a parameter's
+# default, looked up on its module however obtained (``getattr``,
+# ``import_module``, ``sys.modules``, ``vars``, ``__dict__``), handed to a
+# call and given back, or one of another class's ``__mro__``/``__bases__``.
+# Binding an attribute on it changes class state whatever its body holds, and
+# calling it makes an instance (audit round 7, U2).
+CONSTANT_CONF = "class Conf:\n    mode = None\n\n\ndef peek(k):\n    return Conf.mode\n"
+HOLDING_CONF = "class Conf:\n    items = []\n\n\ndef peek(k):\n    return Conf.items\n"
+CONF_FILL = "from pkg.state import Conf\n\n\ndef fill(k):\n{}"
+STATE_FILL = "from pkg import state\n\n\ndef fill(k):\n{}"
+DEFAULT = (
+    "class Default:\n    calls = []\n\n\nHANDLERS = {}\n\n\n"
+    "def peek(k):\n    return Default.calls\n"
+)
+MRO_STATE = (
+    "class Base:\n    registry = {}\n\n\nclass Sub(Base):\n    pass\n\n\n"
+    "def peek(k):\n    return Base.registry.get(k)\n"
+)
+SUB_FILL = "from pkg.state import Sub\n\n\ndef fill(k):\n{}"
+UNKNOWN_SUB = "    _set(Sub())\n\n\ndef _set(o):\n{}"
+CLASS_BY_ANOTHER_NAME = {
+    "a module-level alias": (
+        CONSTANT_CONF + "\n\nAlias = Conf\n",
+        "from pkg.state import Alias\n\n\ndef fill(k):\n    Alias.mode = 'x'\n",
+    ),
+    "a local alias": (CONSTANT_CONF, CONF_FILL.format("    c = Conf\n    c.mode = 'x'\n")),
+    "a dict of classes (Flask's config_by_name)": (
+        "class Config:\n    DEBUG = False\n\n\n"
+        "class TestingConfig(Config):\n    TESTING = True\n\n\n"
+        "config_by_name = dict(dev=Config, test=TestingConfig)\n\n\n"
+        "def peek(k):\n    return TestingConfig.DEBUG\n",
+        "from pkg.state import config_by_name\n\n\ndef fill(k):\n"
+        "    config_by_name['test'].DEBUG = 'x'\n",
+    ),
+    "a dict display of classes": (
+        CONSTANT_CONF + "\n\nKINDS = {'c': Conf}\n",
+        "from pkg.state import KINDS\n\n\ndef fill(k):\n    KINDS['c'].mode = 'x'\n",
+    ),
+    "a loop over a tuple of classes": (
+        CONSTANT_CONF + "\n\nALL = (Conf,)\n",
+        "from pkg.state import ALL\n\n\ndef fill(k):\n    for c in ALL:\n        c.mode = 'x'\n",
+    ),
+    "a parameter's default": (
+        CONSTANT_CONF,
+        "from pkg.state import Conf\n\n\ndef fill(k, klass=Conf):\n    klass.mode = 'x'\n",
+    ),
+    "a parameter's default, changed in place": (
+        HOLDING_CONF,
+        "from pkg.state import Conf\n\n\ndef fill(k, klass=Conf):\n    klass.items.append('x')\n",
+    ),
+    "getattr on its module": (
+        CONSTANT_CONF,
+        STATE_FILL.format("    getattr(state, 'Conf').mode = 'x'\n"),
+    ),
+    "import_module": (
+        CONSTANT_CONF,
+        "import importlib\n\n\ndef fill(k):\n"
+        "    importlib.import_module('pkg.state').Conf.mode = 'x'\n",
+    ),
+    "import_module, changed in place": (
+        HOLDING_CONF,
+        "import importlib\n\n\ndef fill(k):\n"
+        "    importlib.import_module('pkg.state').Conf.items.append('x')\n",
+    ),
+    "sys.modules": (
+        CONSTANT_CONF,
+        "import sys\n\nimport pkg.state  # noqa: F401\n\n\ndef fill(k):\n"
+        "    sys.modules['pkg.state'].Conf.mode = 'x'\n",
+    ),
+    "vars() of its module": (
+        CONSTANT_CONF,
+        STATE_FILL.format("    vars(state)['Conf'].mode = 'x'\n"),
+    ),
+    "its module's __dict__": (
+        HOLDING_CONF,
+        STATE_FILL.format("    state.__dict__['Conf'].items.append('x')\n"),
+    ),
+    "type.__setattr__": (
+        CONSTANT_CONF,
+        CONF_FILL.format("    type.__setattr__(Conf, 'mode', 'x')\n"),
+    ),
+    "handed to a call and given back": (
+        CONSTANT_CONF,
+        CONF_FILL.format("    ident(Conf).mode = 'x'\n") + "\n\ndef ident(c):\n    return c\n",
+    ),
+    "the default of dict.get": (
+        DEFAULT,
+        "from pkg.state import HANDLERS, Default\n\n\ndef fill(k):\n"
+        "    HANDLERS.get(k, Default).calls.append('x')\n",
+    ),
+    "the default of getattr": (
+        DEFAULT,
+        "from pkg import state\nfrom pkg.state import Default\n\n\ndef fill(k):\n"
+        "    h = getattr(state, k, Default)\n    h.calls.append('x')\n",
+    ),
+    "an item of a subclass's __mro__": (
+        MRO_STATE,
+        SUB_FILL.format("    Sub.__mro__[1].registry[k] = 'x'\n"),
+    ),
+    "an item of a subclass's __bases__": (
+        MRO_STATE,
+        SUB_FILL.format("    Sub.__bases__[0].registry[k] = 'x'\n"),
+    ),
+    "the __mro__ of a fresh instance's type": (
+        MRO_STATE,
+        SUB_FILL.format("    type(Sub()).__mro__[1].registry[k] = 'x'\n"),
+    ),
+    "the __mro__ of type(self)": (
+        MRO_STATE.replace(
+            "class Sub(Base):\n    pass\n",
+            "class Sub(Base):\n    def put(self, k):\n"
+            "        type(self).__mro__[1].registry[k] = 'x'\n",
+        ),
+        SUB_FILL.format("    Sub().put(k)\n"),
+    ),
+    "the __mro__ of an unknown object's type": (
+        MRO_STATE,
+        SUB_FILL.format(UNKNOWN_SUB.format("    type(o).__mro__[1].registry['k'] = 'x'\n")),
+    ),
+    "a loop over an unknown object's __mro__": (
+        MRO_STATE,
+        SUB_FILL.format(
+            UNKNOWN_SUB.format(
+                "    for klass in type(o).__mro__:\n        klass.registry['k'] = 'x'\n"
+            )
+        ),
+    ),
+    "the __bases__ of an unknown object's __class__": (
+        MRO_STATE,
+        SUB_FILL.format(UNKNOWN_SUB.format("    o.__class__.__bases__[0].registry['k'] = 'x'\n")),
+    ),
+    "an instance made through a local bound to the class": (
+        HOLDING_CONF,
+        CONF_FILL.format("    c = Conf\n    s = c()\n    s.items.append('x')\n"),
+    ),
+    "an instance made through a module-level alias": (
+        HOLDING_CONF + "\n\nLegacy = Conf\n",
+        "from pkg.state import Legacy\n\n\ndef fill(k):\n    Legacy().items.append('x')\n",
+    ),
+    "an instance made through an alias, handed on": (
+        HOLDING_CONF + "\n\nLegacy = Conf\n",
+        "from pkg.state import Legacy\n\n\ndef fill(k):\n    put(Legacy())\n\n\n"
+        "def put(o):\n    o.items.append('x')\n",
+    ),
+    "a module instance made through an alias": (
+        HOLDING_CONF + "\n\nLegacy = Conf\nSTORE = Legacy()\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE.items.append('x')\n",
+    ),
+    "an instance made through functools.partial": (
+        HOLDING_CONF,
+        "import functools\n\nfrom pkg.state import Conf\n\n\ndef fill(k):\n"
+        "    functools.partial(Conf)().items.append('x')\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(CLASS_BY_ANOTHER_NAME))
+def test_u2_a_class_reached_by_another_name_is_written(repo, case):
+    """``config_by_name['test'].DEBUG = x``, ``Alias.X = x``, ``getattr(state,
+    'C').X = x``, ``Sub.__mro__[1].registry[k] = v``: each writes the class
+    its readers name, whatever its body binds."""
+    assert _state_plan(repo, *CLASS_BY_ANOTHER_NAME[case]) == STATE_SELECTED
+
+
+TD = "class TD:\n    DAYS = 'days'\n\n\ndef peek(k):\n    return TD.DAYS\n"
+TD_FILL = (
+    "from pkg import state\nfrom pkg.state import TD\n\n\ndef fill(k):\n    TD.DAYS.append('x')\n"
+)
+BOUND_ANEW_BY_ANOTHER_NAME = {
+    "an alias at its module's top level": (TD + "\n\n_c = TD\n_c.DAYS = []\n", TD_FILL),
+    "getattr on its module": (TD, TD_FILL + REBIND.format("getattr(state, 'TD').DAYS = []")),
+    "a parameter's default": (TD, TD_FILL + "\n\ndef rebind(c=TD):\n    c.DAYS = []\n"),
+    "a dict of classes": (
+        TD + "\n\nKINDS = {'td': TD}\n",
+        TD_FILL + REBIND.format("state.KINDS['td'].DAYS = []"),
+    ),
+    "type.__setattr__": (TD, TD_FILL + REBIND.format("type.__setattr__(TD, 'DAYS', [])")),
+    "its module's __dict__": (TD, TD_FILL + REBIND.format("state.__dict__['TD'].DAYS = []")),
+}
+
+
+@pytest.mark.parametrize("case", list(BOUND_ANEW_BY_ANOTHER_NAME))
+def test_u2_a_class_attribute_bound_anew_by_another_name_may_change(repo, case):
+    """T24's "bound once to an immutable value, never bound again" is
+    withdrawn by a binding through any of those names."""
+    assert _state_plan(repo, *BOUND_ANEW_BY_ANOTHER_NAME[case]) == STATE_SELECTED
+
+
+# Whatever gives a class an attribute (its body, its module's top-level code,
+# another module, a decorator or a metaclass, ``setattr`` with a computed name
+# or in a loop) gives it state: one record of those, read by every rule that
+# asks whether a class holds state, owns an attribute or may have one an
+# unknown object's class is written under (audit round 7, U3).
+OTHER_OWNER = "\n\nclass Other:\n    registry = None\n"
+REGISTRY_READ = "\n\ndef peek(k):\n    return Conf.registry.get(k)\n"
+GIVEN = {
+    "its module's top-level code": "class Conf:\n    pass\n\n\nConf.registry = {}\n",
+    "setattr at its module's top level": (
+        "class Conf:\n    pass\n\n\nsetattr(Conf, 'registry', {})\n"
+    ),
+    "setattr in a loop": (
+        "class Conf:\n    pass\n\n\nfor _k in ('registry',):\n    setattr(Conf, _k, {})\n"
+    ),
+    "a project decorator": (
+        "def reg(c):\n    c.registry = {}\n    return c\n\n\n@reg\nclass Conf:\n    pass\n"
+    ),
+    "a project metaclass": (
+        "class Meta(type):\n    def __init__(cls, *a):\n        super().__init__(*a)\n"
+        "        cls.registry = {}\n\n\nclass Conf(metaclass=Meta):\n    pass\n"
+    ),
+    "a classmethod run at import": (
+        "class Conf:\n    @classmethod\n    def setup(cls):\n        cls.registry = {}\n\n\n"
+        "Conf.setup()\n"
+    ),
+}
+GIVEN_WRITERS = {
+    "a fresh instance": ("", CONF_FILL.format("    s = Conf()\n    s.registry[k] = 'x'\n")),
+    "a module-level instance": (
+        "\n\nSTORE = Conf()\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE.registry[k] = 'x'\n",
+    ),
+    "an instance handed on": (
+        "",
+        CONF_FILL.format("    put(Conf(), k)\n") + "\n\ndef put(o, k):\n    o.registry[k] = 'x'\n",
+    ),
+    "the class of an instance handed on": (
+        "",
+        CONF_FILL.format("    put(Conf(), k)\n")
+        + "\n\ndef put(o, k):\n    type(o).registry[k] = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("writer", list(GIVEN_WRITERS))
+@pytest.mark.parametrize("given", list(GIVEN))
+def test_u3_an_attribute_given_outside_the_class_body_is_class_state(repo, given, writer):
+    """``Conf.registry = {}`` at top level (or by ``setattr``, a decorator, a
+    metaclass): ``STORE.registry[k] = v`` and ``type(o).registry[k] = v``
+    write what readers of ``Conf.registry`` read."""
+    more, lib = GIVEN_WRITERS[writer]
+    state = GIVEN[given] + OTHER_OWNER + more + REGISTRY_READ
+    assert _state_plan(repo, state, lib) == STATE_SELECTED
+
+
+def test_u3_an_attribute_given_by_another_module_is_class_state(repo):
+    """Another module's ``state.Conf.registry = {}`` gives the class the
+    attribute too (T25's owners)."""
+    state = "class Conf:\n    pass\n" + OTHER_OWNER + REGISTRY_READ
+    lib = CONF_FILL.format("    put(Conf(), k)\n") + (
+        "\n\ndef put(o, k):\n    type(o).registry[k] = 'x'\n"
+    )
+    extra = {"pkg/__init__.py": "from pkg import state as _s\n\n_s.Conf.registry = {}\n"}
+    assert _state_plan(repo, state, lib, extra=extra) == STATE_SELECTED
+
+
+def test_u3_a_method_writing_an_attribute_given_at_top_level(repo):
+    """``STORE.add(k)`` where ``add`` stores into ``self.registry``, which
+    the module's top-level code put on the class."""
+    state = (
+        "class Conf:\n    def add(self, k):\n        self.registry[k] = 'x'\n\n\n"
+        "Conf.registry = {}\nSTORE = Conf()\n" + REGISTRY_READ
+    )
+    lib = "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE.add(k)\n"
+    assert _state_plan(repo, state, lib) == STATE_SELECTED
+
+
+# A class body read whole: a nested class's state is the outer class's too
+# (reached through it, its instances and ``self``); ``staticmethod(x)`` and
+# the other descriptor wrappers are stateless only around a function; and an
+# attribute ``__init__`` binds to an object that may be shared (a parameter's
+# default, a module variable, a class attribute, the Borg ``self.__dict__ =
+# shared``) is no object of the instance's own (audit round 7, U11).
+OUTER = (
+    "class Outer:\n    class Meta:\n        registry = []\n\n{body}\n\n"
+    "def peek(k):\n    return Outer.Meta.registry\n"
+)
+HANDLER = "class Handler:\n    def __init__(self):\n        self.calls = []\n\n\n"
+CLASS_BODY_STATE = {
+    "a nested class through a module-level instance": (
+        OUTER.format(body="") + "\n\nOUTER = Outer()\n",
+        "from pkg.state import OUTER\n\n\ndef fill(k):\n    OUTER.Meta.registry.append('x')\n",
+    ),
+    "a nested class through a fresh instance": (
+        OUTER.format(body=""),
+        "from pkg.state import Outer\n\n\ndef fill(k):\n    o = Outer()\n"
+        "    o.Meta.registry.append('x')\n",
+    ),
+    "a nested class through self": (
+        OUTER.format(body="    def add(self, k):\n        self.Meta.registry.append('x')\n"),
+        "from pkg.state import Outer\n\n\ndef fill(k):\n    Outer().add(k)\n",
+    ),
+    "a nested class through an instance handed on": (
+        OUTER.format(body=""),
+        "from pkg.state import Outer\n\n\ndef fill(k):\n    put(Outer())\n\n\n"
+        "def put(o):\n    o.Meta.registry.append('x')\n",
+    ),
+    "staticmethod of an instance": (
+        HANDLER + "class Conf:\n    handler = staticmethod(Handler())\n\n\nSTORE = Conf()\n\n\n"
+        "def peek(k):\n    return Conf.handler.calls\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE.handler.calls.append('x')\n",
+    ),
+    "staticmethod of a list": (
+        "class Conf:\n    hooks = staticmethod([])\n\n\ndef peek(k):\n    return Conf.hooks\n",
+        "from pkg.state import Conf\n\n\ndef fill(k):\n    Conf().hooks.append('x')\n",
+    ),
+    "a parameter's mutable default bound in __init__": (
+        "class Bag:\n    def __init__(self, items=[]):\n        self.items = items\n\n\n"
+        "def peek(k):\n    return Bag().items\n",
+        "from pkg.state import Bag\n\n\ndef fill(k):\n    Bag().items.append('x')\n",
+    ),
+    "a module variable bound in __init__": (
+        "_ITEMS = []\n\n\nclass Bag:\n    def __init__(self):\n        self.items = _ITEMS\n\n\n"
+        "def peek(k):\n    return Bag().items\n",
+        "from pkg.state import Bag\n\n\ndef fill(k):\n    b = Bag()\n    b.items.append('x')\n",
+    ),
+    "a module variable bound in __init__, read directly": (
+        "_ITEMS = []\n\n\nclass Bag:\n    def __init__(self):\n        self.items = _ITEMS\n\n\n"
+        "def peek(k):\n    return _ITEMS\n",
+        "from pkg.state import Bag\n\n\ndef fill(k):\n    b = Bag()\n    b.items.append('x')\n",
+    ),
+    "what a getter returns, bound in __init__": (
+        "_ITEMS = []\n\n\ndef registry():\n    return _ITEMS\n\n\nclass Bag:\n"
+        "    def __init__(self):\n        self.items = registry()\n\n\n"
+        "def peek(k):\n    return _ITEMS\n",
+        "from pkg.state import Bag\n\n\ndef fill(k):\n    Bag().items.append('x')\n",
+    ),
+    "a class attribute bound in __init__": (
+        "class Bag:\n    _shared = []\n\n    def __init__(self):\n"
+        "        self.items = self._shared\n\n\ndef peek(k):\n    return Bag._shared\n",
+        "from pkg.state import Bag\n\n\ndef fill(k):\n    b = Bag()\n    b.items.append('x')\n",
+    ),
+    "the Borg's shared class dict": (
+        "class Borg:\n    _shared = {}\n\n    def __init__(self):\n"
+        "        self.__dict__ = self._shared\n\n\ndef peek(k):\n    return Borg().mode\n",
+        "from pkg.state import Borg\n\n\ndef fill(k):\n    b = Borg()\n    b.mode = 'x'\n",
+    ),
+    "the Borg's shared module dict": (
+        "_SHARED = {}\n\n\nclass Borg:\n    def __init__(self):\n"
+        "        self.__dict__ = _SHARED\n\n\n"
+        "def peek(k):\n    return Borg().mode\n",
+        "from pkg.state import Borg\n\n\ndef fill(k):\n    Borg().mode = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(CLASS_BODY_STATE))
+def test_u11_state_in_a_nested_class_a_wrapper_or_an_object_init_shares(repo, case):
+    """``OUTER.Meta.registry.append(x)``, ``staticmethod(Handler())``,
+    ``self.items = _ITEMS`` in ``__init__`` then ``Bag().items.append(x)``:
+    each writes state other code reads."""
+    assert _state_plan(repo, *CLASS_BODY_STATE[case]) == STATE_SELECTED
+
+
+OWN_STILL = {
+    "a display bound in __init__": (
+        "class Bag:\n    kind = 'bag'\n\n    def __init__(self, items=None):\n"
+        "        self.items = []\n        self.more = items or {}\n\n\n"
+        "STORE = Bag()\n\n\ndef peek(k):\n    return Bag.kind\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE.items.append('x')\n",
+    ),
+    "staticmethod of a function": (
+        "def _f():\n    return 1\n\n\nclass Conf:\n    f = staticmethod(_f)\n"
+        "    g = classmethod(lambda c: c)\n\n    def __init__(self):\n        self._own = {}\n\n\n"
+        "STORE = Conf()\n\n\ndef peek(k):\n    return Conf.f\n",
+        "from pkg.state import STORE\n\n\ndef fill(k):\n    STORE._own['k'] = 'x'\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(OWN_STILL))
+def test_u11_an_instance_s_own_fresh_object_is_still_no_class_state(repo, case):
+    """The bound of the rule above: ``self.items = []`` is the instance's own,
+    and ``staticmethod(f)`` of a function holds nothing."""
+    assert _state_plan(repo, *OWN_STILL[case]) == {"tests/test_a.py::test_a"}
+
+
+# State a library keeps on a project class: ``ABCMeta``'s registry
+# (``Base.register(Foo)``), ``TestCase.addClassCleanup``, and ``type(name,
+# bases, ns)`` running an in-scope base's ``__init_subclass__`` (audit round
+# 7, U12).
+REGISTERS = "from pkg.state import {cls}, Foo\n\n\ndef fill(k):\n    if k == 'x':\n"
+LIBRARY_STATE = {
+    "an abc.ABC's register": (
+        "import abc\n\n\nclass Base(abc.ABC):\n    pass\n\n\nclass Foo:\n    pass\n\n\n"
+        "def peek(k):\n    return isinstance(Foo(), Base)\n",
+        REGISTERS.format(cls="Base") + "        Base.register(Foo)\n",
+    ),
+    "an ABCMeta class's register": (
+        "import abc\n\n\nclass Base(metaclass=abc.ABCMeta):\n    pass\n\n\n"
+        "class Foo:\n    pass\n\n\n"
+        "def peek(k):\n    return isinstance(Foo(), Base)\n",
+        REGISTERS.format(cls="Base") + "        Base.register(Foo)\n",
+    ),
+    "an ABC's subclass's register": (
+        "import abc\n\n\nclass Base(abc.ABC):\n    pass\n\n\nclass Mid(Base):\n    pass\n\n\n"
+        "class Foo:\n    pass\n\n\ndef peek(k):\n    return isinstance(Foo(), Mid)\n",
+        REGISTERS.format(cls="Mid") + "        Mid.register(Foo)\n",
+    ),
+    "a library base's method": (
+        "import unittest\n\n\nclass Case(unittest.TestCase):\n    pass\n\n\n"
+        "def peek(k):\n    return Case._class_cleanups\n",
+        "from pkg.state import Case\n\n\ndef fill(k):\n    Case.addClassCleanup(print, 'x')\n",
+    ),
+    "type() with an in-scope base": (
+        "class Base:\n    subs = []\n\n    def __init_subclass__(cls, **kw):\n"
+        "        Base.subs.append(cls.__name__)\n\n\ndef peek(k):\n    return Base.subs\n",
+        "from pkg.state import Base\n\n\ndef fill(k):\n    type('x', (Base,), {})\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(LIBRARY_STATE))
+def test_u12_state_a_library_keeps_on_a_project_class(repo, case):
+    """``Base.register(Foo)`` on an ABC changes what ``isinstance(x, Base)``
+    answers; ``addClassCleanup`` keeps its callback on the class; ``type()``
+    of an in-scope base runs its ``__init_subclass__``."""
+    assert _state_plan(repo, *LIBRARY_STATE[case]) == STATE_SELECTED
+
+
 # ------------------------------------------------- import-time writes to another module's variables
 # Code that runs at import (a library module, a conftest, a test module's top
 # level, a decorator or a default) and writes another module's variable

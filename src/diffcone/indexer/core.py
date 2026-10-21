@@ -18,6 +18,7 @@ from diffcone.indexer.facts import (
     _output_from_dict,
     _output_to_dict,
     _tuples,
+    apply_fact,
     symbol_from_dict,
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
@@ -25,6 +26,7 @@ from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal
 from diffcone.indexer.references import (
     RESULT,
     SETITEM,
+    SHARED_ONLY,
     any_class_root,
     class_attribute_root,
     instance_root,
@@ -48,7 +50,7 @@ from diffcone.indexer.uses import (
     USE,
     UseRecord,
 )
-from diffcone.indexer.writes import AnyClassOwners, apply_writes
+from diffcone.indexer.writes import ClassRecord, apply_writes
 from diffcone.model import (
     ANY_MODULE,
     EXTERNAL_WRITTEN,
@@ -86,6 +88,9 @@ class _Reach:
 
 class Indexer(DynamicBounds):
     """Builds a SourceIndex from a snapshot: ``Indexer(snapshot).build()``."""
+
+    # What each class is given anywhere (writes.ClassRecord), from apply_writes.
+    _class_record: ClassRecord
 
     def build(self) -> SourceIndex:
         cache = self.module_cache
@@ -198,7 +203,7 @@ class Indexer(DynamicBounds):
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
         try:
-            apply_writes(self)
+            self._class_record = apply_writes(self)
             self._result_writes()
             self._external_lookups()
             self._table_imports()
@@ -544,6 +549,7 @@ class Indexer(DynamicBounds):
                 base_names=[list(c) if c is not None else None for c in data["base_names"]],
                 plain=bool(data["plain"]),
                 kept=bool(data["kept"]),
+                unbounded=bool(data["unbounded"]),
                 declared={str(n) for n in data["declared"]},
                 tables=frozenset(str(n) for n in data["tables"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
@@ -883,20 +889,22 @@ class Indexer(DynamicBounds):
     def _mutations(
         self, mutated: dict[str, set[str]], any_container: set[str]
     ) -> dict[str, set[str]]:
-        """For each module-level variable, the in-scope code the use records
-        say changes what it holds or rebinds it through a module object pass
-        2 does not resolve to its module (a handle bounded to known modules:
-        ``import_module("pkg.reg").TABLE[k] = v``, ``sys.modules[...]``, a
-        function-local or star import); through a module found at run time
-        (``import_module(name).TABLE[k] = v``, an unpickled object's
-        attribute), whichever module's variable of the name written; and an
-        item stored into, or a mutator called on, an object nothing names (an
-        unpickled object, a ``gc`` list's element): any container variable.
-        Code a module or a variable is handed to is followed in pass 2
-        (``indexer/writes.py``); a library writing into one is not."""
+        """For each module-level variable and class, the in-scope code the
+        use records say changes what it holds or rebinds it through a module
+        object pass 2 may not resolve to its module (a handle bounded to
+        known modules: ``import_module("pkg.reg").TABLE[k] = v``,
+        ``sys.modules[...]``, a function-local or star import; pass 2 roots
+        the literal ones too, audit round 7, U2); through a module found at
+        run time (``import_module(name).TABLE[k] = v``, an unpickled
+        object's attribute), whichever module's variable or class of the
+        name written; and an item stored into, or a mutator called on, an
+        object nothing names (an unpickled object, a ``gc`` list's element):
+        any container variable. Code a module or a variable is handed to is
+        followed in pass 2 (``indexer/writes.py``); a library writing into
+        one is not."""
         found: dict[str, set[str]] = {}
         for symbol in self.index.symbols.values():
-            if symbol.kind != SymbolKind.VARIABLE:
+            if symbol.kind not in (SymbolKind.VARIABLE, SymbolKind.CLASS):
                 continue
             module, name = symbol.module, symbol.name
             by = set(mutated.get(symbol.id, ())) | mutated.get(f"{ANY}.{name}", set())
@@ -935,14 +943,13 @@ class Indexer(DynamicBounds):
                             stack.append(callee)
             return found
 
-        owners: AnyClassOwners | None = None
+        owners = self._class_record.owners
         for writer, callee, module in sorted(self._global.result_writes):
             for root in sorted(state_of(callee)):
                 member = any_class_root(root)
                 if member is not None:
                     # The class of an object of unknown type (``return
                     # type(o)``): each class that may own what is written (T25).
-                    owners = owners or AnyClassOwners(self)
                     owners.record(self._global, member or "*", writer, module)
                     continue
                 named = class_attribute_root(root)
@@ -977,20 +984,36 @@ class Indexer(DynamicBounds):
                         self._global.own_class_writes.add((root, "*"))
                     continue
                 self._global.value_writes.add((root, writer))
+                if symbol.kind in (SymbolKind.CLASS, SymbolKind.VARIABLE):
+                    # Any attribute of the class (or of one the variable
+                    # holds) may be bound on what the call returns (U2, U3).
+                    self._global.class_binds.add((root, "*"))
+                    if symbol.kind == SymbolKind.VARIABLE:
+                        self._global.typed_writes.add((root, writer))
 
     def _value_writes(self) -> None:
         """The ``mutated_by`` edges of changes in place of what a module
         variable, class or function holds (``value_writes``), but none from a
         variable that cannot change in place (``_immutable_variables``): its
         readers read what they read before, whatever the writer does (audit
-        round 6, T20)."""
+        round 6, T20). A change of a variable that may hold a class itself
+        (``typed_writes``: ``Alias.X = v``, ``KINDS["c"].items.append(v)``)
+        writes that class, its in-scope bases and its nested classes (audit
+        round 7, U2); one into an instance a variable holds, the class when
+        it holds state (T21)."""
         immutable = self._immutable_variables()
+        record = self._class_record
+        self._shared_writes()
         self._class_attribute_writes(immutable)
-        classes = self._instance_classes()
         holding = self._classes_holding_state(immutable)
         for state, writer in sorted(self._global.receiver_writes - self._global.value_writes):
             if state not in immutable:
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        for var, writer in sorted(self._global.typed_writes):
+            for cls in sorted(record.types.get(var, ())):
+                for c in sorted(self._reached(self._mro(cls))):
+                    if c != writer:
+                        self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
         for state, writer in sorted(self._global.value_writes):
             if state in immutable:
                 continue
@@ -999,13 +1022,73 @@ class Indexer(DynamicBounds):
             # ``STORE.cache()[k] = v``) may be one into state its class
             # holds: a ``mutated_by`` edge from the class and its in-scope
             # bases when one of them holds any (audit round 6, T21).
-            for cls in sorted(classes.get(state, ())):
+            classes = record.instances.get(state, set()) | record.types.get(state, set())
+            for cls in sorted(classes):
                 mro = self._mro(cls)
                 if any(c in holding for c in mro):
-                    for c in mro:
+                    for c in sorted(self._reached(mro)):
                         if c != writer:
                             self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._instance_writes(holding)
+
+    def _reached(self, classes: list[str]) -> set[str]:
+        """``classes`` and the classes nested in them, at any depth: state
+        reached through a class or its instances (``OUTER.Meta.registry``;
+        audit round 7, U11)."""
+        found = set(classes)
+        stack = list(classes)
+        nested = self._class_record.nested
+        while stack:
+            for inner in nested.get(stack.pop(), ()):
+                if inner not in found:
+                    found.add(inner)
+                    stack.append(inner)
+        return found
+
+    def _shared_writes(self) -> None:
+        """A write into an attribute of an instance that a method bound to
+        an object that may be shared (``attr_shares``: a module variable, a
+        class attribute, a parameter's mutable default) writes that object
+        (audit round 7, U11): reached through the attribute (``s.items
+        .append(x)``), into the instance itself or a module variable holding
+        one (any attribute), and, for an attribute bound on a fresh instance
+        whose ``__dict__`` a method binds to a shared one (the Borg), that
+        dict. Before ``_class_attribute_writes``, which decides the class
+        attributes among them."""
+        record = self._class_record
+        if not record.shares:
+            return
+        out = self._global
+        done: set[tuple[str, tuple[str, str, str]]] = set()
+        while True:
+            pending: set[tuple[str, tuple[str, str, str]]] = set()
+            for ident, writer, how in out.instance_writes:
+                for cls in record.classes(ident):
+                    for c in self._family(cls):
+                        table = record.shares.get(c, {})
+                        if how[:1] in (".", SHARED_ONLY):
+                            names = [how[1:]]
+                        elif how:
+                            names = ["__dict__"]  # an attribute bound on a fresh one
+                        else:
+                            names = list(table)
+                        pending.update((writer, f) for n in names for f in table.get(n, ()))
+            for state, writer in out.value_writes:
+                for cls in record.instances.get(state, ()):
+                    for c in self._family(cls):
+                        for facts in record.shares.get(c, {}).values():
+                            pending.update((writer, f) for f in facts)
+            pending -= done
+            if not pending:
+                return
+            done |= pending
+            for writer, fact in sorted(pending):
+                if fact[1] != writer:
+                    apply_fact(out, writer, fact)
+            if any(fact[0] == "result" for _, fact in pending):
+                # What a call returned and a method bound (``self.items =
+                # registry()``): joined as any write into a result is.
+                self._result_writes()
 
     def _class_attribute_writes(self, immutable: set[str]) -> None:
         """A change in place of what a class attribute holds
@@ -1013,24 +1096,26 @@ class Indexer(DynamicBounds):
         ``value_writes`` one), unless the attribute cannot change in place:
         its class's body binds it once to an immutable value
         (``ClassScope.immutables``) resting on immutable variables and
-        standard-library modules no project module shadows, no class of the
-        attribute class's MRO is decorated, has a metaclass other than
-        ``abc.ABCMeta`` or a base outside the source roots that may do
-        anything to the class, no class of its family customises attribute
+        standard-library modules no project module shadows, every class of
+        the attribute class's MRO is kept (no decorator but an inert one,
+        ``functools.total_ordering`` or ``typing.final``, no metaclass but
+        ``abc.ABCMeta``: ``ClassScope.immutables`` is None otherwise) and
+        has no base outside the source roots that may do anything to the
+        class, no class of its family customises attribute
         reads (``__getattribute__``) and no code writes a class of its
         family itself (``Store.x = v``, ``setattr(cls, ...)``, the class
-        handed to a writer: an edge or a value write), which may bind the
-        attribute anew, and no top-level code of its module binds the
-        attribute or writes the class otherwise (``own_class_writes``)
-        (audit round 6, T24). Computed over the whole index on every build
-        from facts a cold and a warm build share."""
+        handed to a writer: an edge or a value write, through any name:
+        writes.ClassRecord.written), which may bind the attribute anew, and
+        nothing gives a class of its family the attribute outside its body
+        (ClassRecord.given: its module's top-level code, other code, a
+        decorator or metaclass) (audit round 6, T24; round 7, U2, U3).
+        Computed over the whole index on every build from facts a cold and
+        a warm build share."""
         pending = self._global.attr_value_writes
         if not pending:
             return
-        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
-        written |= {state for state, _ in self._global.value_writes}
-        written |= {state for state, _ in self._global.receiver_writes}
-        own = self._global.own_class_writes
+        record = self._class_record
+        written = record.written()
         modules = self.index.modules
         decided: dict[tuple[str, str], bool] = {}
 
@@ -1055,7 +1140,8 @@ class Indexer(DynamicBounds):
                 member = self.class_scopes[c]
                 if c in written or "__getattribute__" in member.members.keys() | member.bindings:
                     return False
-                if (c, attr) in own or (c, "*") in own:
+                given = record.given(c)
+                if attr in given or "*" in given:
                     return False
             return True
 
@@ -1078,30 +1164,34 @@ class Indexer(DynamicBounds):
         metaclass, which may give back an object kept elsewhere) it counts
         as a write in place. A write reached through an attribute
         (``s._items.append(x)``: ``.``-prefixed ``how``) is one into the
-        instance's own object when no class of the family binds or defines
-        the attribute (``_own_attribute``) (audit round 6, T22)."""
+        instance's own object when no class of the family has the attribute
+        at class level (``_own_attribute``) (audit round 6, T22); through an
+        attribute a method binds on ``self`` (``-``-prefixed), what the
+        method bound there, decided by ``_shared_writes`` (audit round 7,
+        U11). The class id may be a module variable's (``Legacy()``): each
+        class it may hold (U2)."""
         if not self._global.instance_writes:
             return
-        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
-        written |= {state for state, _ in self._global.value_writes}
-        written |= {state for state, _ in self._global.receiver_writes}
+        record = self._class_record
+        written = record.written()
         own: dict[tuple[str, str], bool] = {}
-        for cls, writer, how in sorted(self._global.instance_writes):
-            if cls not in self.class_scopes:
+        for ident, writer, how in sorted(self._global.instance_writes):
+            if how.startswith(SHARED_ONLY):
                 continue
-            if how:
-                if (cls, how) not in own:
-                    if how.startswith("."):
-                        own[(cls, how)] = self._own_attribute(cls, how[1:], written)
-                    else:
-                        own[(cls, how)] = self._allocated_fresh(cls, how)
-                if own[(cls, how)]:
-                    continue
-            mro = self._mro(cls)
-            if any(c in holding for c in mro):
-                for c in mro:
-                    if c != writer:
-                        self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
+            for cls in sorted(record.classes(ident)):
+                if how:
+                    if (cls, how) not in own:
+                        if how.startswith("."):
+                            own[(cls, how)] = self._own_attribute(cls, how[1:], written)
+                        else:
+                            own[(cls, how)] = self._allocated_fresh(cls, how)
+                    if own[(cls, how)]:
+                        continue
+                mro = self._mro(cls)
+                if any(c in holding for c in mro):
+                    for c in sorted(self._reached(mro)):
+                        if c != writer:
+                            self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _family(self, cls: str) -> set[str]:
         """The in-scope classes an instance of ``cls`` or of an in-scope
@@ -1113,17 +1203,23 @@ class Indexer(DynamicBounds):
 
     def _own_attribute(self, cls: str, attr: str, written: set[str]) -> bool:
         """Whether ``attr`` of an instance of ``cls`` (or of a subclass) is
-        the instance's own: no class of the family binds or defines it in
-        its body (a class-level object, or a method or property whose result
-        may be one), customises attribute lookup (``__getattr__``,
-        ``__getattribute__``), has a base outside the index (``opaque``), or
-        is stored onto by code (which may put ``attr`` on the class)."""
+        the instance's own: no class of the family has it at class level
+        (its body binds or defines it, a class-level object or a method or
+        property whose result may be one, or anything gives it the
+        attribute: writes.ClassRecord), customises attribute lookup
+        (``__getattr__``, ``__getattribute__``), has a base outside the
+        index (``opaque``), is written by code (which may put ``attr`` on
+        the class), or has a method that binds ``self.<attr>`` to an object
+        that may be shared (``attr_shares``; audit round 7, U3, U11)."""
+        record = self._class_record
         for c in sorted(self._family(cls)):
             cscope = self.class_scopes[c]
             names = cscope.members.keys() | cscope.bindings
-            if attr in names or "__getattr__" in names or "__getattribute__" in names:
+            if record.class_level(c, attr) or "__getattr__" in names:
                 return False
-            if cscope.opaque or c in written:
+            if "__getattribute__" in names or cscope.opaque or c in written:
+                return False
+            if attr in record.shares.get(c, {}):
                 return False
         return True
 
@@ -1137,8 +1233,12 @@ class Indexer(DynamicBounds):
         does not), and none is decorated or has a metaclass, which may give
         back another class with its own ``__new__``: for a constructor call
         none at all (``plain``), for ``cls.__new__(cls)`` none but the inert
-        ones (``kept``: ``functools.total_ordering``, ``abc.ABCMeta``)."""
+        ones (``kept``: ``functools.total_ordering``, ``typing.final``,
+        ``abc.ABCMeta``), and no method binds ``self.__dict__`` or
+        ``self.__class__`` to an object that may be shared (the Borg:
+        ``attr_shares``; audit round 7, U11)."""
         family = self._family(cls)
+        shares = self._class_record.shares
         if how == "super":
             family.discard(cls)
         for c in sorted(family):
@@ -1149,67 +1249,9 @@ class Indexer(DynamicBounds):
                 return False
             if how == "new" and not cscope.kept:
                 return False
+            if shares.get(c, {}).keys() & {"__dict__", "__class__"}:
+                return False
         return True
-
-    def _instance_classes(self) -> dict[str, set[str]]:
-        """Module variable -> the in-scope classes it may hold an instance of
-        (or be): what its bindings hold (``instance_bindings``), through
-        what the functions called return (``returns``, ``state_returns``),
-        other variables, and what such an instance holds under an attribute
-        a method binds to an instance or a factory's result
-        (``attr_writes``). Computed over the whole index on every build
-        from facts a cold and a warm build share (audit round 6, T21)."""
-        bindings: dict[str, set[str]] = defaultdict(set)
-        for var, origin in self._global.instance_bindings:
-            bindings[var].add(origin)
-        if not bindings:
-            return {}
-        returned: dict[str, set[str]] = defaultdict(set)
-        for function, root in self._global.state_returns:
-            returned[function].add(root)
-        returns, symbols = self._global.returns, self.index.symbols
-        held: dict[str, set[str]] = defaultdict(set)
-        for w in self._global.attr_writes:
-            if w.binding is not None and w.binding[0] == "instance":
-                held[w.cls].add(f"class:{w.binding[1]}")
-            elif w.binding is not None and w.binding[0] == "factory":
-                held[w.cls].add(f"call:{w.binding[1]}")
-        found: dict[str, set[str]] = {}
-        for start in sorted(bindings):
-            classes: set[str] = set()
-            seen: set[str] = set()
-            stack = [f"var:{start}"]
-            while stack:
-                origin = stack.pop()
-                if origin in seen:
-                    continue
-                seen.add(origin)
-                kind, _, ident = origin.partition(":")
-                if kind == "class":
-                    if ident in self.class_scopes and ident not in classes:
-                        classes.add(ident)
-                        # What its instances hold under an attribute
-                        # (``self.store = Store()``) is reached through them.
-                        for c in self._mro(ident):
-                            stack.extend(held.get(c, ()))
-                elif kind == "var":
-                    stack.extend(bindings.get(ident, ()))
-                elif kind == "call":
-                    classes.update(c for c in returns.get(ident, ()) if c in self.class_scopes)
-                    for root in returned.get(ident, ()):
-                        named = class_attribute_root(root)
-                        if named is not None:
-                            stack.append(f"class:{named[0]}")  # what it holds: any
-                        elif root.startswith(RESULT):
-                            stack.append("call:" + root[len(RESULT) :])
-                        elif (symbol := symbols.get(root)) is not None:
-                            if symbol.kind == SymbolKind.CLASS:
-                                stack.append(f"class:{root}")
-                            elif symbol.kind == SymbolKind.VARIABLE:
-                                stack.append(f"var:{root}")
-            if classes:
-                found[start] = classes
-        return found
 
     def _classes_holding_state(self, immutable: set[str]) -> set[str]:
         """The in-scope classes that may hold state of their own that can
@@ -1222,15 +1264,18 @@ class Indexer(DynamicBounds):
         (``stateless`` is None: ``literals.class_adds_no_state``) or a base
         outside the source roots (``external_base``) may give it some its
         body does not show (a singleton a decorator keeps, a library base's
-        registry) (audit round 6, T21, T26)."""
+        registry) (audit round 6, T21, T26), or anything gives it an
+        attribute outside its body (writes.ClassRecord; audit round 7, U3).
+        What a method binds on ``self`` to an object that may be shared is
+        that object's state, not the class's (``_shared_writes``)."""
         modules = self.index.modules
-        written = {e.source for e in self.index.edges if e.detail == MUTATED_BY}
-        written |= {state for state, _ in self._global.value_writes}
-        written |= {state for state, _ in self._global.receiver_writes}
+        record = self._class_record
+        written = record.written()
         found: set[str] = set()
         for cls, cscope in self.class_scopes.items():
             rests = cscope.stateless
             holds = rests is None or cls in written or cscope.external_base
+            holds = holds or bool(record.given(cls))
             for rest in rests or ():
                 if holds:
                     break

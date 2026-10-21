@@ -206,7 +206,7 @@ class _Output:
     test_runs: set[tuple[str, str, str]] = field(default_factory=set)
     # (kind, id): a class whose instance or a function whose result is
     # handed to code the analysis does not follow (``references.py``,
-    # ``_handed_on``); the classes join ``SourceIndex.escaped_classes``.
+    # ``_handed_instances``); the classes join ``SourceIndex.escaped_classes``.
     handed_instances: set[tuple[str, str]] = field(default_factory=set)
     # State reached through what a function returns (references.py,
     # ``_rooted_write``; audit round 6, T7), joined after pass 2
@@ -224,9 +224,10 @@ class _Output:
     # edges of their own.
     value_writes: set[tuple[str, str]] = field(default_factory=set)
     # (module variable, what a binding of it holds): ``class:<id>`` an
-    # instance of an in-scope class (or the class), ``call:<id>`` what an
+    # instance of an in-scope class (the id may be a variable called as one),
+    # ``type:<id>`` the class itself (U2), ``call:<id>`` what an
     # in-scope function returns, ``var:<id>`` another module variable's
-    # value; joined after pass 2 (Indexer._instance_classes; audit round 6,
+    # value; joined after pass 2 (writes.variable_classes; audit round 6,
     # T21).
     instance_bindings: set[tuple[str, str]] = field(default_factory=set)
     # (state, writer): ``value_writes`` made only by handing the variable to
@@ -251,10 +252,36 @@ class _Output:
     # cannot change in place and nothing binds it anew (references.ATTR,
     # Indexer._class_attribute_writes; audit round 6, T24).
     attr_value_writes: set[tuple[str, str, str]] = field(default_factory=set)
-    # (class, attribute or ``*``): classes their own module's top-level code
-    # writes (an edge the module's hash covers, but a class attribute may be
-    # bound anew: ``Arrow.min = ...`` binds ``min``; T24).
+    # (class or module variable, attribute or ``*``): what a module's own
+    # top-level code binds or changes on a class (``Conf.registry = {}``,
+    # ``setattr(Conf, k, v)``, ``_c = Conf; _c.X = v``), which its hash
+    # covers (no edge): the class is given the attribute (writes.ClassRecord;
+    # audit round 6, T24; round 7, U3).
     own_class_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (class or module variable, attribute or ``*``): what any other code
+    # binds or augments on a class, or on the class a variable holds (a
+    # ``value_writes`` edge besides): the class is given the attribute
+    # (writes.ClassRecord; audit round 7, U3).
+    class_binds: set[tuple[str, str]] = field(default_factory=set)
+    # (module variable, writer): a ``value_writes`` change that, when the
+    # variable holds a class itself (``Alias = Conf``, ``KINDS = {"c":
+    # Conf}``), writes that class: an attribute bound on it, or anything
+    # changed through an item or attribute of it, not an item stored into
+    # the variable's own container (audit round 7, U2).
+    typed_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (class, attribute, kind, first, second): a method of the class binds
+    # ``self.<attribute>`` to an object that may be shared (a module
+    # variable, a class attribute, a parameter's mutable default): a write
+    # into that attribute of an instance writes what the fact
+    # (``apply_fact``) names, and the attribute is not the instance's own
+    # (writes.ClassRecord; audit round 7, U11).
+    attr_shares: set[tuple[str, str, str, str, str]] = field(default_factory=set)
+    # (class, writer, kind, first, second): a method no in-scope class of
+    # the MRO defines called on the class itself (``Base.register(Foo)``):
+    # the write the fact (``apply_fact``) names, when a class of the MRO has
+    # a library base, a decorator or a metaclass (writes.apply_writes; audit
+    # round 7, U12).
+    library_calls: set[tuple[str, str, str, str, str]] = field(default_factory=set)
     # (attribute or ``*``, writer, the writer's module for code its hash
     # covers or ""): a write onto the class of an object of unknown type
     # (``type(o).x = v``, ``o.__class__.items.append(x)``,
@@ -331,6 +358,10 @@ class _Output:
         self.instance_writes |= other.instance_writes
         self.attr_value_writes |= other.attr_value_writes
         self.own_class_writes |= other.own_class_writes
+        self.class_binds |= other.class_binds
+        self.typed_writes |= other.typed_writes
+        self.attr_shares |= other.attr_shares
+        self.library_calls |= other.library_calls
         self.any_class_writes |= other.any_class_writes
         self.held_binds |= other.held_binds
         self.attr_values |= other.attr_values
@@ -389,6 +420,10 @@ def apply_fact(out: _Output, writer: str, fact: tuple[str, ...]) -> None:
         out.result_writes.add((writer, first, second))
     elif kind == "own":
         out.own_class_writes.add((first, second))
+    elif kind == "bind":
+        out.class_binds.add((first, second))
+    elif kind == "typed":
+        out.typed_writes.add((first, writer))
     elif kind == "anyclass":
         out.any_class_writes.add((first, writer, second))
 
@@ -466,6 +501,10 @@ def _output_to_dict(out: _Output) -> dict:
         "instance_writes": sorted(list(w) for w in out.instance_writes),
         "attr_value_writes": sorted(list(w) for w in out.attr_value_writes),
         "own_class_writes": sorted(out.own_class_writes),
+        "class_binds": sorted(out.class_binds),
+        "typed_writes": sorted(out.typed_writes),
+        "attr_shares": sorted(out.attr_shares),
+        "library_calls": sorted(out.library_calls),
         "any_class_writes": sorted(list(w) for w in out.any_class_writes),
         "held_binds": sorted(list(b) for b in out.held_binds),
         "attr_values": sorted(list(v) for v in out.attr_values),
@@ -558,6 +597,10 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.instance_writes = {(c, w, h) for c, w, h in data["instance_writes"]}
     out.attr_value_writes = {(c, a, w) for c, a, w in data["attr_value_writes"]}
     out.own_class_writes = {(c, a) for c, a in data["own_class_writes"]}
+    out.class_binds = {(c, a) for c, a in data["class_binds"]}
+    out.typed_writes = {(v, w) for v, w in data["typed_writes"]}
+    out.attr_shares = {(c, a, k, f, s) for c, a, k, f, s in data["attr_shares"]}
+    out.library_calls = {(c, w, k, f, s) for c, w, k, f, s in data["library_calls"]}
     out.any_class_writes = {(a, w, m) for a, w, m in data["any_class_writes"]}
     out.held_binds = {(c, a, w, k, f, s) for c, a, w, k, f, s in data["held_binds"]}
     out.attr_values = {(c, a, bool(ok)) for c, a, ok in data["attr_values"]}
@@ -616,6 +659,7 @@ def _facts_to_dict(
                 "base_names": c.base_names,
                 "plain": c.plain,
                 "kept": c.kept,
+                "unbounded": c.unbounded,
                 "declared": sorted(c.declared),
                 "tables": sorted(c.tables),
                 "match_args": list(c.match_args) if c.match_args is not None else None,
