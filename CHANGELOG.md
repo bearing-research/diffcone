@@ -186,6 +186,25 @@ selection rules.
   that define or set it, classes deriving from a library class, and their
   subclasses (every class, for a special attribute, a computed name or an
   attribute no class sets). A mock's class is its own.
+- State held on a class was followed only through the class's own name and
+  the attributes its body binds. Now:
+  - a class reached by another name is written through it: an alias, a
+    dict, tuple or loop over classes, a parameter default, `getattr(module,
+    "C")`, `import_module`, `sys.modules`, `vars(module)`, `type.__setattr__`,
+    an item of `__mro__` or `__bases__`, or the result of a call given the
+    class (`HANDLERS.get(kind, Default).calls.append(v)`); calling an alias
+    or `functools.partial(C)` makes an instance;
+  - an attribute a class is given anywhere (its module's top-level code,
+    another module, a decorator, a metaclass, `setattr`) is class state,
+    shared by its instances;
+  - a nested class's state, `staticmethod`, `classmethod` or `property` of
+    something other than a function, and an attribute `__init__` binds to
+    an object that may be shared (a module variable, a class attribute, a
+    mutable default, `self.__dict__ = shared`) are followed;
+  - `register` on an abstract base class, other library methods called on
+    a class of yours with a library base, decorator or metaclass
+    (`addClassCleanup`, `model_rebuild`), and `type(name, bases, ns)` with
+    a base of yours, write the class.
 - `pytest.importorskip("pkg.mod")`, `importlib.util.find_spec`,
   `pkgutil.resolve_name`, `pydoc.locate` and `pkgutil.iter_modules` or
   `walk_packages` over a package were not imports: a change that made the
