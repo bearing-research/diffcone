@@ -1845,9 +1845,14 @@ class _HeldSafety:
 
     def family(self, cls: str) -> set[str] | None:
         """The family of ``cls`` (its MRO and its in-scope subclasses'), or
-        None when one of them may make or customise the instance."""
+        None when one of them may make or customise the instance, or ``cls``
+        is a variable called as a class (``Alias = Box``: U2), whose classes
+        are not known here (audit round 7, U33)."""
         if cls not in self._family:
             indexer = self.indexer
+            if cls not in indexer.class_scopes:
+                self._family[cls] = None
+                return None
             found: set[str] | None = set()
             for c in (cls, *indexer._descendants.get(cls, ())):
                 found.update(indexer._mro(c))

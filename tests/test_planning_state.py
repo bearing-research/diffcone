@@ -2005,6 +2005,34 @@ def test_u2_a_mock_with_a_class_as_its_spec_is_no_part_of_it(repo, case):
     assert _state_plan(repo, CONFIG, lib) == {"tests/test_a.py::test_a"}
 
 
+HELD_BY_A_BOX = (
+    "_ITEMS = []\n\n\nclass Box:\n    def __init__(self, items):\n"
+    "        self.items = items\n\n\n{}\n\n\ndef peek(k):\n    return _ITEMS\n"
+)
+BOX_FILLER = (
+    "from pkg.state import {0}, _ITEMS\n\n\ndef tag(b):\n    b.label = 'x'\n\n\n"
+    "def fill(k):\n    tag({0}(_ITEMS))\n"
+)
+
+
+@pytest.mark.parametrize("alias", ["Alias = Box", "Alias = Box if True else None"])
+def test_u33_an_alias_called_with_what_it_holds_plans_conservatively(repo, alias):
+    """Calling an alias of a class makes an instance (U2), and what its
+    constructor was handed is held by it (T23): the alias is no class, so
+    whether a callee binding only attributes of the instance leaves what it
+    holds alone is unknown, and the write counts (urllib3's
+    ``VerifiedHTTPSConnection = HTTPSConnection`` crashed every plan)."""
+    state = HELD_BY_A_BOX.format(alias)
+    assert _state_plan(repo, state, BOX_FILLER.format("Alias")) == STATE_SELECTED
+
+
+def test_u33_the_class_itself_called_with_what_it_holds_is_a_new_object(repo):
+    """The same through the class itself: binding an attribute of a fresh
+    instance leaves what its constructor was handed alone (T23)."""
+    state = HELD_BY_A_BOX.format("Alias = Box")
+    assert _state_plan(repo, state, BOX_FILLER.format("Box")) == {"tests/test_a.py::test_a"}
+
+
 # Whatever gives a class an attribute (its body, its module's top-level code,
 # another module, a decorator or a metaclass, ``setattr`` with a computed name
 # or in a loop) gives it state: one record of those, read by every rule that
