@@ -2383,7 +2383,15 @@ def test_g(k):
 
 
 @needs_monitoring
-@pytest.mark.parametrize("workers", [[], ["-p", "xdist", "-n", "2"]], ids=["serial", "xdist"])
+@pytest.mark.parametrize(
+    "workers",
+    [
+        pytest.param([], id="serial"),
+        # xdist's workers are children of the controller: on Windows no
+        # record follows them, and the plan selects everything.
+        pytest.param(["-p", "xdist", "-n", "2"], id="xdist", marks=posix_children),
+    ],
+)
 def test_u1_a_recording_that_deselected_a_case_has_no_record_of_its_test(repo, workers, capfd):
     """Recorded with ``-m "not slow"``, test_f's slow case never ran: a record
     of its other case is no record of the test, which a change only the slow
