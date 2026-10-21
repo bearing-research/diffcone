@@ -205,6 +205,30 @@ selection rules.
     a class of yours with a library base, decorator or metaclass
     (`addClassCleanup`, `model_rebuild`), and `type(name, bases, ns)` with
     a base of yours, write the class.
+- A project function that writes module state through an object it is
+  handed or called on (`SETTINGS.configure(debug=1)` writing
+  `self.opts`) is a writer of that state itself: called from a test, the
+  write was left to the test, which planning assumes isolated, so a change
+  to the function reached no reader.
+- An object is taken for new only when it surely is. A memoised
+  function's result (`functools.cache`, `lru_cache`, a memoiser of yours),
+  a deep copy or pickle round trip (which may hand back a class, a function,
+  an enum member or the object itself), a copy method that may return its
+  object, the result of a lambda, closure or `functools.partial` over a
+  module container, and `sum`, `abs`, `round`, `pow` and `divmod` (which
+  may return what they are handed) may be shared state.
+- A lazily initialised module value that is then changed in place
+  (`if _STATE is None: _STATE = {}` followed by `_STATE["mode"] = m`) is no
+  constant: its readers depend on the code that fills it.
+- Project code that stores onto a library module (`json.mode = m`,
+  `setattr`, `vars()` or `__dict__`, a change in place of what a library
+  attribute holds) or into `os.environ` is a dependency of the code that
+  reads it there (`os.getenv` included). Library code and child processes
+  reading the environment are not followed.
+- A write inside a lambda (`_add = lambda v: _ITEMS.append(v)`) is a
+  write of whoever calls it.
+- A project module that writes process state when it is imported was
+  taken for test code, so its writes were assumed isolated.
 - `pytest.importorskip("pkg.mod")`, `importlib.util.find_spec`,
   `pkgutil.resolve_name`, `pydoc.locate` and `pkgutil.iter_modules` or
   `walk_packages` over a package were not imports: a change that made the
@@ -250,6 +274,14 @@ selection rules.
   a word after an option diffcone does not know, or no path at all, is
   taken to run anything. The directory was taken for the option's
   argument and its tests were never selected.
+- The module cache was written but never read when the cache directory
+  was relative (the default `--repo .`, and every action): planning again
+  re-read every file.
+- A cached index kept no decorator symbols, so the same plan run twice could
+  select more the second time; a cached module lost whether a method's
+  receiver is its class, and a change in a base class's own bases did not
+  refresh cached resolution of its subclasses. The index cache format
+  changes: the first plan after upgrading rebuilds it.
 
 ## [0.4.0] - 2026-10-14
 
