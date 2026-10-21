@@ -42,9 +42,10 @@ class FixtureRepo:
     """A throwaway git repository built from dicts of file contents.
 
     With ``check_cache`` (diffcone's own suite turns it on) every ``plan``
-    call is also planned through a cold and a warm cache in ``cache_dir``
-    (default: ``.fixture-cache`` beside the repository) and the reports are
-    asserted equal, which triples its cost."""
+    call is also planned through a cold cache, its whole-index entries and a
+    warm module cache in ``cache_dir`` (default: ``.fixture-cache`` beside
+    the repository) and the reports are asserted equal, which triples its
+    cost."""
 
     def __init__(
         self, path: Path, *, check_cache: bool = False, cache_dir: Path | None = None
@@ -107,21 +108,22 @@ class FixtureRepo:
 
     def _check_cache_invisible(self, result, base, head, manifest, source_roots, kwargs) -> None:
         """The caches are an optimisation only: a plan served cold (module
-        facts and resolution computed and stored) and one served warm (every
+        facts and resolution computed and stored), one served from the
+        whole-index entries the cold plan stored, and one served warm (every
         module's facts and resolution loaded, whole-index entries removed so
         the module cache is what answers) must equal the uncached plan."""
         directory = self.cache_dir
         shutil.rmtree(directory, ignore_errors=True)
         expected = json.dumps(to_dict(result), sort_keys=True)
-        for warm in (False, True):
-            if warm:
+        for served in ("cold", "whole-index", "warm"):
+            if served == "warm":
                 shutil.rmtree(directory / "index", ignore_errors=True)
             cache = IndexCache(directory)
             again = plan(
                 self.path, base, head, manifest, source_roots=source_roots, cache=cache, **kwargs
             )
             got = json.dumps(to_dict(again), sort_keys=True)
-            assert got == expected, f"{'warm' if warm else 'cold'} cached plan differs"
+            assert got == expected, f"{served} cached plan differs"
 
     def collect(
         self,

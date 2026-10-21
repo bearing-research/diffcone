@@ -206,13 +206,45 @@ NAME_RESOLVERS = frozenset({"pkgutil.resolve_name", "pydoc.locate"})
 MODULE_LISTINGS = frozenset({"pkgutil.iter_modules", "pkgutil.walk_packages"})
 CASTS = frozenset({"typing.cast", "typing_extensions.cast"})
 
+# Decorators that hand back the function itself or a wrapper calling it
+# afresh on every call, so what a call returns is no earlier call's result
+# (Resolver._keeps_result; any other decorator may keep one: audit round 7,
+# U7). By canonical name; builtins where the module does not rebind them.
+FRESH_RESULT_DECORATORS = frozenset(
+    {
+        *(
+            f"{prefix}{name}"
+            for prefix in ("", "builtins.")
+            for name in ("staticmethod", "classmethod", "property")
+        ),
+        "abc.abstractmethod",
+        "abc.abstractclassmethod",
+        "abc.abstractstaticmethod",
+        "abc.abstractproperty",
+        "contextlib.contextmanager",
+        "contextlib.asynccontextmanager",
+        "functools.wraps",
+        "functools.singledispatch",
+        "functools.singledispatchmethod",
+        "functools.total_ordering",
+        "pytest.fixture",
+        "pytest.yield_fixture",
+        "warnings.deprecated",
+        "typing_extensions.deprecated",
+    }
+)
+
 # What a write through a name bound to part of another object changes
 # (``_state_roots``): calls whose result holds nothing of their arguments, and
 # those making a new container of their elements (a shallow copy: writing
-# into it changes nothing else, writing into an element does).
+# into it changes nothing else, writing into an element does). Not ``abs``,
+# ``round``, ``pow``, ``divmod`` or ``sum``: a special method may return the
+# object itself (``__abs__``), ``sum([], start)`` returns ``start``; not
+# ``copy.deepcopy``, which hands back a class, a function, an enum member or
+# what ``__deepcopy__`` returns (``_copy_is_new``), nor ``pickle.loads``,
+# whose ``__reduce__`` may name a module's own object (audit round 7, U7).
 FRESH_CALLS = frozenset(
     {
-        "abs",
         "all",
         "any",
         "ascii",
@@ -221,8 +253,6 @@ FRESH_CALLS = frozenset(
         "bytes",
         "callable",
         "chr",
-        "copy.deepcopy",
-        "divmod",
         "float",
         "format",
         "hasattr",
@@ -233,19 +263,18 @@ FRESH_CALLS = frozenset(
         "isinstance",
         "issubclass",
         "json.dumps",
-        "json.loads",
         "len",
         "oct",
         "ord",
-        "pickle.dumps",
-        "pickle.loads",
-        "pow",
         "print",
         "repr",
-        "round",
         "str",
-        "sum",
     }
+)
+# ``json.loads`` builds its result afresh unless a hook gives it something.
+JSON_LOADS = frozenset({"json.loads", "json.load"})
+JSON_HOOKS = frozenset(
+    {"object_hook", "object_pairs_hook", "parse_float", "parse_int", "parse_constant", "cls"}
 )
 SHALLOW_CALLS = frozenset(
     {
@@ -261,6 +290,15 @@ SHALLOW_CALLS = frozenset(
         "tuple",
     }
 )
+# The special methods by which ``copy.copy``/``copy.deepcopy`` (and a
+# ``.copy()`` of the class's own) let a class decide what a copy is: any of
+# them in scope may hand back the object itself (``_copy_is_new``).
+COPY_HOOKS = {
+    "copy": ("copy", "__copy__"),
+    "__copy__": ("copy", "__copy__"),
+    "copy.copy": ("__copy__", "__reduce__", "__reduce_ex__"),
+    "copy.deepcopy": ("__deepcopy__", "__reduce__", "__reduce_ex__"),
+}
 # This module's namespace as a value (``globals()``): an item of it is the
 # module variable of that name (_state_roots).
 _NAMESPACE = "<namespace>"
@@ -547,6 +585,22 @@ class _ReferenceCollector(ast.NodeVisitor):
         chain = ".".join(parts)
         if not (mark and self._write_reference(node, rest, mark)):
             self.indexer._record(self.source, node, kind=kind, chain=chain)
+        if isinstance(node, External) and not mark:
+            # What of the library module the code reads (a store onto it,
+            # ``json.x = v``, reads nothing of it), for a write onto it
+            # elsewhere (Indexer._external_state_edges; U13).
+            names = [
+                n
+                for n in self._canonical_names(parts)
+                if n == node.module or n.startswith(node.module + ".")
+            ]
+            # The module itself read as a value (``=json``: what reads it may
+            # read any attribute), or reached through a project module's
+            # binding (``store.json.x``).
+            for name in names or [node.module]:
+                if name == node.module:
+                    name = "=" + name
+                self.indexer.out.external_reads.add((self.source, name))
         if isinstance(node, External) and node.module.split(".")[0] in GRAPH_MODULES:
             # ``gc.get_objects``: a member that hands out objects nothing
             # names (the bare module is its import, or a value the use scan
@@ -1084,6 +1138,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         roots = self._state_roots(obj, frozenset())
         own = isinstance(obj, ast.Name) and self._is_local(obj.id)
+        # The in-scope functions whose returned object ``obj`` itself is.
+        immediate = self._immediate_results(obj, frozenset())
         out = self.indexer.out
         for root, copy in sorted(roots.items()):
             if root == _NAMESPACE or (copy and own):
@@ -1101,11 +1157,14 @@ class _ReferenceCollector(ast.NodeVisitor):
                     else:
                         apply_fact(out, self.source, fact)
                 continue
-            for fact in self._root_facts(root, bound=bound, attr=attr, member=member):
+            direct = root.startswith(RESULT) and root[len(RESULT) :] in immediate
+            for fact in self._root_facts(
+                root, bound=bound, attr=attr, member=member, direct=direct
+            ):
                 apply_fact(out, self.source, fact)
 
     def _root_facts(
-        self, root: str, *, bound: bool, attr: str, member: str = ""
+        self, root: str, *, bound: bool, attr: str, member: str = "", direct: bool = False
     ) -> list[tuple[str, str, str]]:
         """What a write into what ``root`` names records (``apply_fact``):
         ``value``, a change in place of a module variable, class or
@@ -1113,7 +1172,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         attribute holds (Indexer._class_attribute_writes); ``instance``, of an
         instance of an in-scope class or part of one (Indexer._instance_writes);
         ``result``, of what a call of an in-scope function returns
-        (Indexer._result_writes); ``own``, a class written by its own
+        (Indexer._result_writes; ``direct_result`` when the write is into
+        the returned object itself, ``direct``); ``own``, a class written by its own
         module's top-level code, which is part of the module's hash but may
         bind a class attribute anew (T24): the attribute ``attr``, any for
         ``*`` or a change in place of the class itself; ``anyclass``, of a
@@ -1122,6 +1182,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         code its hash covers, decided after pass 2 (writes.AnyClassOwners;
         T25)."""
         here = self.scope.module.name
+        # A write in a lambda's body runs when the lambda is called, not
+        # where it stands, as a bound mutator taken as a value does: at
+        # module level, in a class body or in a parameter default it is no
+        # write the module's own hash covers, and whoever holds the lambda
+        # (the variable, the class, the function whose default it is)
+        # writes (audit round 7, U19).
+        bound = bound or any(isinstance(n, ast.Lambda) for n in self._stack)
         unhashed = not self.skip_defs or (bound and self.source != here)
         symbols = self.indexer.index.symbols
         reached = any_class_root(root)
@@ -1145,8 +1212,10 @@ class _ReferenceCollector(ast.NodeVisitor):
             return [("instance", cls, how)]
         if root.startswith(RESULT):
             # What a call returns, known after pass 2 (a copy included:
-            # what it returns may hold the state it copied).
-            return [("result", root[len(RESULT) :], here if self.skip_defs and not bound else "")]
+            # what it returns may hold the state it copied, though a write
+            # into the copy itself changes none: ``direct``).
+            kind = "direct_result" if direct else "result"
+            return [(kind, root[len(RESULT) :], here if self.skip_defs and not bound else "")]
         named = class_attribute_root(root)
         if named is not None:
             cls, name = named
@@ -1611,19 +1680,29 @@ class _ReferenceCollector(ast.NodeVisitor):
         elif parts is not None and not self._is_local(parts[0]):
             if self._only(parts, FRESH_CALLS):
                 return {}
+            if self._only(parts, JSON_LOADS) and not any(
+                k.arg in JSON_HOOKS for k in node.keywords
+            ):
+                return {}
             if len(node.args) == 2 and not node.keywords and self._only(parts, CASTS):
                 return self._state_roots(node.args[1], seen)  # ``cast(T, x)`` is ``x``
             copy = self._only(parts, SHALLOW_CALLS)
+            for hooked in ("copy.copy", "copy.deepcopy"):
+                if self._only(parts, frozenset({hooked})):
+                    copy = self._copy_is_new(hooked, node.args[0] if node.args else None)
         found = _merged(
             *(self._state_roots(a, seen) for a in args if not self._names_definition(a)),
             {f"{RESULT}{callee}": False for callee in self._callees(parts)},
+            self._callable_roots(func, parts, seen),
         )
         if isinstance(func, ast.Attribute) and not self._names_definition(func.value):
             receiver = self._state_roots(func.value, seen)
             if _NAMESPACE in receiver:
                 return self._namespace_method(func.attr, node)
             if receiver:
-                copy = func.attr in ("copy", "__copy__")
+                copy = func.attr in ("copy", "__copy__") and self._copy_is_new(
+                    func.attr, func.value
+                )
                 # A method of a class of unknown type gives what a class
                 # owning that method holds (T25).
                 receiver = {
@@ -1631,6 +1710,112 @@ class _ReferenceCollector(ast.NodeVisitor):
                 }
                 found = _merged(found, receiver)
         return _part_of(found, copy=copy)
+
+    def _copy_is_new(self, how: str, value: ast.expr | None) -> bool:
+        """Whether a copy (``how``: ``copy.copy``, ``copy.deepcopy``, a
+        ``.copy()``/``.__copy__()`` method) of ``value`` is certainly a new
+        object: ``value`` is a display or a module variable bound to one (a
+        builtin container, whose copy is new whatever classes define), or,
+        for a shallow copy, no in-scope class defines a special method
+        (``COPY_HOOKS``) that may hand back the object itself. A deep copy
+        of an object of unknown type is not: it may be a class, a function
+        or an enum member, which ``deepcopy`` hands back as they are (audit
+        round 7, U7)."""
+        if value is None:
+            return False
+        if isinstance(value, (ast.Dict, ast.List, ast.Set, *_COMPREHENSIONS)):
+            return True
+        parts = _flatten_chain(value)
+        if parts is not None and not self._is_local(parts[0]):
+            node = self.indexer.resolve_chain(parts, self.scope)
+            if isinstance(node, Resolved) and not node.detail:
+                symbol = self.indexer.index.symbols.get(node.symbol)
+                scope = self.indexer.scopes.get(symbol.module) if symbol is not None else None
+                if (
+                    symbol is not None
+                    and symbol.kind == SymbolKind.VARIABLE
+                    and scope is not None
+                    and symbol.name in scope.containers
+                ):
+                    return True
+        if how == "copy.deepcopy":
+            return False
+        hooks = COPY_HOOKS[how]
+        return not any(
+            name in cscope.members or name in cscope.bindings
+            for cscope in self.indexer.class_scopes.values()
+            for name in hooks
+        )
+
+    def _callable_roots(
+        self, func: ast.expr, parts: list[str] | None, seen: frozenset
+    ) -> dict[str, bool]:
+        """What calling a callable that is no ``def`` or class hands back may
+        be part of: a module variable holding it (``get = lambda: _CACHE``,
+        ``get = partial(_get, _CACHE)``, ``get = lru_cache(_get)``, a closure
+        a factory made), also through a local name bound to one or to a
+        function, an item of a table of callables (``OPS["k"]()``) or a
+        call's result (``factory()()``): ``RESULT`` of each, joined after
+        pass 2 (Indexer._result_writes: a variable gives itself and what it
+        refers to; audit round 7, U7)."""
+        roots: dict[str, bool] = {}
+        local = isinstance(func, ast.Name) and self._is_local(func.id)
+        if local or isinstance(func, (ast.Subscript, ast.Call)):
+            roots = self._state_roots(func, seen)
+        elif parts is not None and not self._is_local(parts[0]):
+            node = self.indexer.resolve_chain(parts, self.scope)
+            if isinstance(node, Resolved) and not node.detail:
+                roots = {node.symbol: False}
+        found: dict[str, bool] = {}
+        symbols = self.indexer.index.symbols
+        for root in roots:
+            if root.startswith(RESULT):
+                found[root] = False
+                continue
+            symbol = symbols.get(root)
+            if symbol is None:
+                continue
+            # A function named directly is ``_callees``'s.
+            if symbol.kind == SymbolKind.VARIABLE or (
+                symbol.kind == SymbolKind.FUNCTION and (local or not isinstance(func, ast.Name))
+            ):
+                found[f"{RESULT}{symbol.id}"] = False
+        return found
+
+    def _immediate_results(self, obj: ast.expr, seen: frozenset) -> frozenset[str]:
+        """The in-scope functions of which ``obj`` is surely the returned
+        object itself, not something made of it or holding it: a call of
+        one (through ``cast``, ``await``), or a local every binding of which
+        is one (``env = settings()``). A write into ``obj`` then changes
+        nothing a ``return`` of theirs only copied (``return
+        dict(_cached())``: Indexer._result_writes; audit round 7, U7)."""
+        if isinstance(obj, (ast.Await, ast.NamedExpr)):
+            return self._immediate_results(obj.value, seen)
+        if isinstance(obj, ast.Call):
+            parts = _flatten_chain(obj.func)
+            if (
+                parts is not None
+                and len(obj.args) == 2
+                and not obj.keywords
+                and not self._is_local(parts[0])
+                and self._only(parts, CASTS)
+            ):
+                return self._immediate_results(obj.args[1], seen)
+            return frozenset(self._callees(parts))
+        if isinstance(obj, ast.Name) and self._is_local(obj.id):
+            owner = self._binding_scope(obj.id)
+            if owner is None or (id(owner), obj.id) in seen:
+                return frozenset()
+            seen = seen | {(id(owner), obj.id)}
+            sources = self._sources_in(owner).get(obj.id, ())
+            found: set[str] = set()
+            for value, how in sources:
+                got = self._immediate_results(value, seen) if how == VALUE else frozenset()
+                if not got:
+                    return frozenset()
+                found |= got
+            return frozenset(found)
+        return frozenset()
 
     def _callees(self, parts: list[str] | None) -> list[str]:
         """The in-scope functions and methods a call of ``parts`` runs, when
@@ -1660,12 +1845,14 @@ class _ReferenceCollector(ast.NodeVisitor):
             and self.scope.literal_parent is None
             and isinstance(self.scope.literal_node, FUNC_NODES)
         ):
-            for root in self._state_roots(node.value, frozenset()):
+            for root, copy in self._state_roots(node.value, frozenset()).items():
                 held = held_root(root)
                 if held is not None:
                     root = held[1]  # what a caller writing into the instance may change
                 if root != _NAMESPACE and root != f"{RESULT}{self.source}":
                     self.indexer.out.state_returns.add((self.source, root))
+                    if not copy or held is not None:
+                        self.indexer.out.whole_returns.add((self.source, root))
         self.generic_visit(node)
 
     def _namespace_item(self, key: ast.expr | None) -> dict[str, bool]:
@@ -3180,6 +3367,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self._process_write(f"{module}.{sub.attr}")
                 if sub.attr in LOGGER_MUTATORS and self._is_logger(sub.value):
                     self._process_write(f"logging.getLogger().{sub.attr}")
+            # A change in place of what a library module holds
+            # (``json.registry["k"] = v``, ``json.conf.mode = v``; U13).
+            held = sub.value if isinstance(sub, ast.Attribute) else expr
+            for name in self._library_attributes(held):
+                self._process_write(name)
+            if (module := self._module_namespace(held)) is not None:
+                self._process_write(f"setattr({module})")  # ``vars(json)["k"] = v``
             chain = _flatten_chain(expr)
             for name in sorted(self._canonical_names(chain) if chain else ()):
                 obj = state_object(name)
@@ -3198,6 +3392,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         (indexer/process.py)."""
         self._patched_state(node)
         func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in STATE_MUTATORS
+            and (module := self._module_namespace(func.value)) is not None
+        ):
+            # ``json.__dict__.setdefault(k, v)``, ``vars(json).update(...)`` (U13).
+            self._process_write(f"setattr({module})")
         if parts is None:
             if (
                 isinstance(func, ast.Attribute)
@@ -3213,6 +3414,9 @@ class _ReferenceCollector(ast.NodeVisitor):
                 obj = state_object(name)
                 if obj is not None:
                     self._process_write(obj)
+            if isinstance(func, ast.Attribute):
+                for name in self._library_attributes(func.value):
+                    self._process_write(name)  # ``json.registry.append(x)`` (U13)
         if (
             len(parts) == 1
             and parts[0] in ("setattr", "delattr")
@@ -3222,6 +3426,38 @@ class _ReferenceCollector(ast.NodeVisitor):
             module = self._written_module(node.args[0])
             if module is not None:
                 self._process_write(f"{parts[0]}({module})")
+
+    def _module_namespace(self, expr: ast.expr) -> str | None:
+        """The external module (or ``*``) whose namespace ``expr`` is:
+        ``json.__dict__``, ``vars(json)``; a change in place of it stores
+        onto the module as ``setattr`` does (audit round 7, U13)."""
+        if isinstance(expr, ast.Attribute) and expr.attr == "__dict__":
+            return self._written_module(expr.value)
+        if (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "vars"
+            and not self._is_shadowed("vars")
+            and len(expr.args) == 1
+        ):
+            return self._written_module(expr.args[0])
+        return None
+
+    def _library_attributes(self, expr: ast.expr) -> list[str]:
+        """The dotted names of what ``expr`` holds when it is an attribute
+        of a module outside the source roots, not the module itself nor a
+        process-wide object ``STATE_OBJECTS`` names (``json.registry``:
+        ``json.registry``): a change in place of it is a write of process
+        state (audit round 7, U13)."""
+        module = self._external_module(expr)
+        chain = _flatten_chain(expr)
+        if module is None or chain is None or len(chain) < 2:
+            return []
+        return sorted(
+            name
+            for name in self._canonical_names(chain)
+            if state_object(name) is None and name != module and not name.endswith(".__dict__")
+        )
 
     def _canonical_names(self, parts: list[str]) -> frozenset[str]:
         """Every dotted name a chain may refer to through the scope's import

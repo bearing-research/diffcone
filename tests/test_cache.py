@@ -127,7 +127,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 61
+    assert cache_mod.INDEX_FORMAT == 62
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -336,11 +336,21 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
         {
             "pkg/__init__.py": "",
             "pkg/ops.py": "class Handler:\n    def handle(self):\n        return 1\n",
-            "pkg/run.py": (
-                "from pkg.ops import Handler\n\n\n"
-                "def go(obj, name):\n    return getattr(obj, name)()\n\n\n"
-                "def main():\n    return go(Handler(), 'handle')\n"
+            "pkg/deco.py": (
+                "def documented(fn):\n    fn.doc = (fn.__doc__ or '').upper()\n    return fn\n"
             ),
+            "pkg/run.py": (
+                "from pkg.ops import Handler\nfrom pkg.deco import documented\n\n\n"
+                "def go(obj, name):\n    return getattr(obj, name)()\n\n\n"
+                "@documented\ndef main():\n    return go(Handler(), 'handle')\n"
+            ),
+            "pkg/more.py": (
+                "import json\nimport os\n\n\n"
+                "def look(name):\n    return globals()[name]\n\n\n"
+                "def fill(store):\n    store['k'] = json.dumps(1)\n\n\n"
+                "os.environ['X'] = '1'\n\nif __name__ == '__main__':\n    fill({})\n"
+            ),
+            "data.txt": "x\n",
             "tests/test_ops.py": "from pkg.run import main\n\n\ndef test_x():\n    assert main()\n",
         }
     )
@@ -349,6 +359,31 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
     restored = index_from_dict(index_to_dict(index))
     for field in dataclasses.fields(SourceIndex):
         assert getattr(restored, field.name) == getattr(index, field.name), field.name
+    # An empty field proves nothing: the fixture fills every field but those
+    # listed (audit round 7, U27: ``decorator_symbols`` was empty here, and
+    # lost by the cache). A field added to SourceIndex lands here until the
+    # fixture fills it or it joins the list.
+    empty = {f.name for f in dataclasses.fields(SourceIndex) if not getattr(index, f.name)}
+    assert empty == {
+        "any_module_readers",
+        "attribute_modules",
+        "cython",
+        "errors",
+        "escaped_modules",
+        "external_sites",
+        "failed_modules",
+        "file_modes",
+        "handed",
+        "lazy_constants",
+        "memoized",
+        "module_reach",
+        "module_writers",
+        "open_classes",
+        "reflection",
+        "script_refs",
+        "scripts",
+        "table_imports",
+    }
 
 
 def test_planning_suspends_the_cyclic_collector_and_restores_it(repo, monkeypatch):
@@ -531,6 +566,118 @@ def test_t2_an_excluded_file_added_is_in_the_resolution_fingerprint(repo, tmp_pa
     assert {d.target.runner_id for d in fresh.decisions if d.selected} == {
         "tests/test_h.py::test_h"
     }
+
+
+def test_u24_the_module_cache_answers_from_a_relative_directory(repo, monkeypatch):
+    """``--repo .`` gives a relative cache directory: reads once formed a URI
+    from it, which raised, so every read was a miss (and the file grew)."""
+    from pathlib import Path
+
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    monkeypatch.chdir(repo.path)
+    snap = read_snapshot(repo.path, base, ["."])
+    build_index(snap, module_cache=ModuleCache(Path(".diffcone/cache")))
+    mc = ModuleCache(Path(".diffcone/cache"))
+    assert index_to_dict(build_index(snap, module_cache=mc)) == index_to_dict(build_index(snap))
+    assert (mc.facts_hits, mc.facts_misses) == (3, 0)
+    assert (mc.resolved_hits, mc.resolved_misses) == (3, 0)
+
+
+def test_u24_planning_again_from_the_cli_reads_the_module_cache(repo, monkeypatch, capsys):
+    """The default invocation, ``diffcone plan`` in the repository with no
+    ``--repo``: planning the working tree a second time serves every module
+    from the cache."""
+    from diffcone.cache import ModuleCache
+
+    repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    monkeypatch.chdir(repo.path)
+    (repo.path / "pkg/ops.py").write_text(OPS.replace("a + b", "b + a"))
+    seen: list[ModuleCache] = []
+    original = ModuleCache.__init__
+
+    def record(self, directory):
+        original(self, directory)
+        seen.append(self)
+
+    monkeypatch.setattr(ModuleCache, "__init__", record)
+    argv = ["plan", "--base", "HEAD", "--head", "WORKTREE", "--discover", "pytest"]
+    main(argv)
+    main(argv)
+    capsys.readouterr()
+    assert seen and seen[-1].resolved_hits > 0 and seen[-1].resolved_misses == 0
+
+
+def test_u28_a_bases_chain_is_in_the_resolution_fingerprint(repo, tmp_path):
+    """A subclass's resolution asks whether an in-scope base is of the Enum
+    family (creating the class then runs ``__init__`` per member), read off
+    the base's chains as written. ``abc.ABC`` -> ``enum.Enum`` in another
+    module, with both imported all along, left the subclass module's cached
+    resolution without its creation edges."""
+    from diffcone.cache import ModuleCache
+    from diffcone.indexer import build_index
+    from diffcone.snapshot import read_snapshot
+
+    a = (
+        "import abc\nimport enum\n\n\nclass Base({base}):\n"
+        "    def __init__(self, v):\n        self.label = str(v)\n"
+    )
+    b = "from calc.a import Base\n\n\nclass Color(Base):\n    RED = 1\n"
+    first = repo.commit(
+        {"calc/__init__.py": "", "calc/a.py": a.format(base="abc.ABC"), "calc/b.py": b}
+    )
+    second = repo.commit({"calc/a.py": a.format(base="enum.Enum")})
+    mc = ModuleCache(tmp_path / "c")
+    build_index(read_snapshot(repo.path, first, ["."]), module_cache=mc)
+    snap = read_snapshot(repo.path, second, ["."])
+    cached = build_index(snap, module_cache=mc)
+    assert index_to_dict(cached) == index_to_dict(build_index(snap))
+    assert any(
+        e.source == "calc.b.Color" and e.target == "calc.a.Base.__init__" for e in cached.edges
+    )
+
+
+def test_u21_every_scope_field_read_after_resolution_is_cached():
+    """A parameter dynamic keeps its function's scope until after every
+    module is resolved; the module cache stores the part read then. A field
+    added to Scope is either stored or listed here as read only during the
+    module's own resolution (``self_is_class`` once was neither)."""
+    import dataclasses
+
+    from diffcone.indexer.facts import _scope_from_dict, _scope_to_dict
+    from diffcone.indexer.scopes import ModuleScope, Scope
+
+    module = ModuleScope(name="m", path="m.py", is_package=False, tree=None)
+    scope = Scope(
+        module=module,
+        self_name="cls",
+        self_class="m.C",
+        self_is_class=True,
+        class_members={"x": "m.C.x"},
+        locals={"cls"},
+        param_aliases={"p": "m.P"},
+    )
+    stored = set(_scope_to_dict(scope)) - {"module"}
+    unstored = {f.name for f in dataclasses.fields(Scope)} - stored - {"module"}
+    assert unstored == {
+        "literal_node",
+        "literal_parent",
+        "literal_bound",
+        "literal_extra",
+        "_literal_cache",
+        "_pristine_cache",
+        "params",
+        "rebound",
+        "param_values",
+        "method",
+        "class_level",
+    }
+    back = _scope_from_dict(_scope_to_dict(scope), {"m": module})
+    for name in stored:
+        assert getattr(back, name) == getattr(scope, name), name
 
 
 # --------------------------------------------------------------------------- revisions as given

@@ -178,6 +178,11 @@ class _Output:
     # (Indexer._external_lookups).
     external_writes: set[tuple[str, str]] = field(default_factory=set)
     external_lookups: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # (symbol, dotted name): an attribute chain of a module outside the
+    # roots the symbol reads, by each canonical name it may stand for
+    # (``json.mode``, ``os.environ.get``): matched after pass 2 against the
+    # process writes (Indexer._external_state_edges; audit round 7, U13).
+    external_reads: set[tuple[str, str]] = field(default_factory=set)
     # Dynamic imports whose name this module's own literal tables bound:
     # (symbol, detail, the names they give). Which code may change those
     # tables only the whole tree tells (SourceIndex.table_imports).
@@ -198,6 +203,12 @@ class _Output:
     held_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
     handed: set[tuple[str, str, str]] = field(default_factory=set)
     memoized: set[str] = field(default_factory=set)
+    # Functions and methods a decorator not known to call them afresh each
+    # time wraps (``functools.cache``, ``lru_cache``, a project decorator
+    # returning a wrapper, one from outside the index): what a call returns
+    # may be what an earlier call returned, so a write into it is a write of
+    # the function's state (Indexer._result_writes; audit round 7, U7).
+    kept_results: set[str] = field(default_factory=set)
     # (symbol, path suffix) of each ``.py`` file a string names
     # (diffcone.indexer.scripts), matched against the files after pass 2.
     script_paths: set[tuple[str, str]] = field(default_factory=set)
@@ -216,6 +227,14 @@ class _Output:
     # place into what a call of an in-scope function returns.
     state_returns: set[tuple[str, str]] = field(default_factory=set)
     result_writes: set[tuple[str, str, str]] = field(default_factory=set)
+    # The (function, root) of ``state_returns`` some ``return`` hands back as
+    # the object itself, not only in a new container of it (``return
+    # dict(_cached())``); and the result writes into the returned object
+    # itself (a local bound to the call, the call's own item), which change
+    # nothing a copy was made from (Indexer._result_writes; audit round 7,
+    # U7).
+    whole_returns: set[tuple[str, str]] = field(default_factory=set)
+    direct_result_writes: set[tuple[str, str, str]] = field(default_factory=set)
     # (state, writer): a ``mutated_by`` edge of a change in place of what a
     # module variable (or class, or function) holds, kept apart until every
     # module is known: a variable whose value cannot change in place gets
@@ -311,6 +330,7 @@ class _Output:
         self.doc_decorated |= other.doc_decorated
         self.decorations |= other.decorations
         self.external_writes |= other.external_writes
+        self.external_reads |= other.external_reads
         self.external_lookups |= other.external_lookups
         self.table_imports |= other.table_imports
         self.param_writes |= other.param_writes
@@ -320,11 +340,14 @@ class _Output:
         self.held_passes |= other.held_passes
         self.handed |= other.handed
         self.memoized |= other.memoized
+        self.kept_results |= other.kept_results
         self.script_paths |= other.script_paths
         self.test_runs |= other.test_runs
         self.handed_instances |= other.handed_instances
         self.state_returns |= other.state_returns
         self.result_writes |= other.result_writes
+        self.whole_returns |= other.whole_returns
+        self.direct_result_writes |= other.direct_result_writes
         self.value_writes |= other.value_writes
         self.instance_bindings |= other.instance_bindings
         self.receiver_writes |= other.receiver_writes
@@ -347,7 +370,11 @@ def _tuples(value: list | None) -> tuple[str, ...] | None:
 
 def _scope_to_dict(scope: Scope) -> dict:
     """The part of a function scope that deferred parameter-dynamic expansion
-    resolves names against (module, imports, locals, self, aliases)."""
+    resolves names against (module, imports, locals, self, aliases): every
+    field ``Resolver._lookup_base`` and ``DynamicBounds._receiver_classes``
+    read. The rest (literal bindings, parameters, ``method``) is read only
+    while the module is resolved, never after (tests/test_cache.py holds
+    the list)."""
     return {
         "module": scope.module.name,
         "local_imports": {k: [b.module, b.attr] for k, b in scope.local_imports.items()},
@@ -357,6 +384,10 @@ def _scope_to_dict(scope: Scope) -> dict:
         "locals": sorted(scope.locals),
         "self_name": scope.self_name,
         "self_class": scope.self_class,
+        # ``cls`` rather than ``self`` (DynamicBounds._receiver_classes;
+        # audit round 7, U21).
+        "self_is_class": scope.self_is_class,
+        "class_members": scope.class_members,
         "param_aliases": scope.param_aliases,
     }
 
@@ -371,6 +402,8 @@ def _scope_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> Scope:
         locals=set(data["locals"]),
         self_name=data["self_name"],
         self_class=data["self_class"],
+        self_is_class=bool(data["self_is_class"]),
+        class_members=dict(data["class_members"]),
         param_aliases=dict(data["param_aliases"]),
     )
 
@@ -387,6 +420,8 @@ def apply_fact(out: _Output, writer: str, fact: tuple[str, ...]) -> None:
         out.instance_writes.add((first, writer, second))
     elif kind == "result":
         out.result_writes.add((writer, first, second))
+    elif kind == "direct_result":
+        out.direct_result_writes.add((writer, first, second))
     elif kind == "own":
         out.own_class_writes.add((first, second))
     elif kind == "anyclass":
@@ -424,6 +459,7 @@ def _output_to_dict(out: _Output) -> dict:
         "doc_decorated": sorted(out.doc_decorated),
         "decorations": sorted(list(d) for d in out.decorations),
         "external_writes": sorted(list(w) for w in out.external_writes),
+        "external_reads": sorted(list(r) for r in out.external_reads),
         "external_lookups": sorted(list(x) for x in out.external_lookups),
         "table_imports": sorted([s, d, list(n)] for s, d, n in out.table_imports),
         "process_writes": sorted(list(w) for w in out.process_writes),
@@ -456,11 +492,14 @@ def _output_to_dict(out: _Output) -> dict:
         "computed_passes": sorted(list(c) for c in out.computed_passes),
         "held_passes": sorted(list(h) for h in out.held_passes),
         "memoized": sorted(out.memoized),
+        "kept_results": sorted(out.kept_results),
         "script_paths": sorted(list(p) for p in out.script_paths),
         "test_runs": sorted(list(t) for t in out.test_runs),
         "handed_instances": sorted(list(h) for h in out.handed_instances),
         "state_returns": sorted(list(r) for r in out.state_returns),
         "result_writes": sorted(list(w) for w in out.result_writes),
+        "whole_returns": sorted(list(r) for r in out.whole_returns),
+        "direct_result_writes": sorted(list(w) for w in out.direct_result_writes),
         "value_writes": sorted(list(w) for w in out.value_writes),
         "instance_bindings": sorted(list(b) for b in out.instance_bindings),
         "instance_writes": sorted(list(w) for w in out.instance_writes),
@@ -518,6 +557,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.doc_decorated = set(data["doc_decorated"])
     out.decorations = {(a, b, c) for a, b, c in data["decorations"]}
     out.external_writes = {(m, w) for m, w in data["external_writes"]}
+    out.external_reads = {(s, d) for s, d in data["external_reads"]}
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
     out.table_imports = {(s, d, tuple(n)) for s, d, n in data["table_imports"]}
     out.process_writes = {(s, w) for s, w in data["process_writes"]}
@@ -548,11 +588,14 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.computed_passes = {(a, b, c, d) for a, b, c, d in data["computed_passes"]}
     out.held_passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["held_passes"]}
     out.memoized = set(data["memoized"])
+    out.kept_results = set(data["kept_results"])
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
     out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
     out.state_returns = {(f, r) for f, r in data["state_returns"]}
     out.result_writes = {(w, c, m) for w, c, m in data["result_writes"]}
+    out.whole_returns = {(f, r) for f, r in data["whole_returns"]}
+    out.direct_result_writes = {(w, c, m) for w, c, m in data["direct_result_writes"]}
     out.value_writes = {(v, w) for v, w in data["value_writes"]}
     out.instance_bindings = {(v, o) for v, o in data["instance_bindings"]}
     out.instance_writes = {(c, w, h) for c, w, h in data["instance_writes"]}

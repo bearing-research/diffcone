@@ -1927,6 +1927,11 @@ def _runner_dependency_fallbacks(
 # changes what it holds or installs (the edge's target): writers.
 _WRITER_MARKS = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
 
+
+def _is_conftest(module: str) -> bool:
+    return module.rsplit(".", 1)[-1] == "conftest"
+
+
 # Methods unittest calls around each test of their class.
 _PER_TEST_HOOKS = frozenset({"setUp", "tearDown", "asyncSetUp", "asyncTearDown"})
 # Edge details from a class to its own method that say the runtime may call
@@ -1942,7 +1947,11 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     code, from the targets alone (runner-independent). The test modules are
     the modules among the targets' lifecycle dependencies (a discovered
     target lists its own module, and the conftests that apply to it; a
-    benchmark module). Isolated: each lifecycle dependency that is a
+    benchmark module), except one a target lists that holds none of its
+    entries and is neither a conftest nor a module defining a fixture a
+    target lists: a module whose import-time code writes process state that
+    every test inherits (discovery/session_state.py), project code or a test
+    module (audit round 7). Isolated: each lifecycle dependency that is a
     function-scoped fixture (``Symbol.fixture_scope``); and, in the test
     modules, each target's entry symbol when it is a function or a method
     defined there (a test, a benchmark: each benchmark runs in a fresh
@@ -1970,6 +1979,27 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         )
 
     isolated: set[str] = set()
+    targets = list(targets)
+    # A module some target lists that holds none of its entries: a conftest,
+    # a plugin module, or code pytest runs while collecting that writes
+    # process state (a project module ``os.environ.setdefault(...)`` at
+    # import: discovery/session_state.py), which is no test code (audit
+    # round 7: such a module's functions were taken for isolated test code).
+    # A conftest, or a module defining a fixture some target lists (a plugin
+    # module), stays test code.
+    listed_elsewhere: set[str] = set()
+    fixture_modules: set[str] = set()
+    for target in targets:
+        entry_modules = {s.module for s in defined.get(target.entry_symbol, ())}
+        for dep in target.lifecycle_dependencies:
+            found = defined.get(dep, ())
+            if not found:
+                continue
+            if all(s.kind == SymbolKind.MODULE for s in found):
+                if dep not in entry_modules:
+                    listed_elsewhere.add(dep)
+            elif all(s.fixture_scope for s in found):
+                fixture_modules |= {s.module for s in found}
     test_modules: set[str] = set()
     # Code the runner itself calls per test: isolated without a caller.
     called_by_runner: set[str] = set()
@@ -1977,7 +2007,9 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
         modules = {
             dep
             for dep in target.lifecycle_dependencies
-            if dep in defined and all(s.kind == SymbolKind.MODULE for s in defined[dep])
+            if dep in defined
+            and all(s.kind == SymbolKind.MODULE for s in defined[dep])
+            and (dep not in listed_elsewhere or _is_conftest(dep) or dep in fixture_modules)
         }
         test_modules |= modules
         if callable_code(target.entry_symbol) and all(

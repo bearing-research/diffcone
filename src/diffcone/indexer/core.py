@@ -22,6 +22,7 @@ from diffcone.indexer.facts import (
 )
 from diffcone.indexer.lazy import decide as decide_lazy_constants
 from diffcone.indexer.literals import EXTERNAL_DEPENDENCY, literal_base, literal_keys
+from diffcone.indexer.process import STATE_CALLS, state_object
 from diffcone.indexer.references import (
     RESULT,
     SETITEM,
@@ -210,6 +211,7 @@ class Indexer(DynamicBounds):
             self._write_only_references()
             self._module_reach()
             self._install_edges()
+            self._external_state_edges()
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
@@ -919,15 +921,57 @@ class Indexer(DynamicBounds):
         returned: dict[str, set[str]] = defaultdict(set)
         for function, root in self._global.state_returns:
             returned[function].add(root)
-        closed: dict[str, set[str]] = {}
+        kept = self._global.kept_results
+        symbols = self.index.symbols
+        held: dict[str, set[str]] = defaultdict(set)
+        if any(
+            (s := symbols.get(callee)) is not None and s.kind == SymbolKind.VARIABLE
+            for _, callee, _ in self._global.result_writes | self._global.direct_result_writes
+        ):
+            # What a variable holding a callable that is no ``def`` refers to
+            # (``get = lambda: _CACHE``, ``partial(_get, _CACHE)``, ``_make()``).
+            for edge in self.index.edges:
+                target = symbols.get(edge.target)
+                if (
+                    edge.kind == EdgeKind.REFERENCES
+                    and edge.detail != MUTATED_BY
+                    and target is not None
+                    and target.kind in (SymbolKind.VARIABLE, SymbolKind.CLASS, SymbolKind.FUNCTION)
+                    and edge.source != edge.target
+                ):
+                    held[edge.source].add(edge.target)
+        whole = self._global.whole_returns
+        closed: dict[tuple[str, bool], set[str]] = {}
 
-        def state_of(function: str) -> set[str]:
-            found = closed.get(function)
+        def state_of(function: str, direct: bool) -> set[str]:
+            """What a call of ``function`` may return: the state its returns
+            name, through the calls they return; the function itself when a
+            decorator may serve an earlier call's result (``kept_results``);
+            for a variable called (a lambda, a closure a factory made, a
+            ``partial``, a memoiser applied by a call), the variable and
+            what its value refers to, a function's result included (audit
+            round 7, U7). ``direct``: for a write into the returned object
+            itself, which changes nothing a ``return`` only copied
+            (``whole_returns``: ``return dict(_cached())``)."""
+            found = closed.get((function, direct))
             if found is None:
-                found = closed[function] = set()
+                found = closed[function, direct] = set()
                 seen, stack = {function}, [function]
                 while stack:
-                    for root in returned.get(stack.pop(), ()):
+                    current = stack.pop()
+                    symbol = symbols.get(current)
+                    if current in kept:
+                        found.add(current)
+                    if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
+                        found.add(current)
+                        for target in sorted(held.get(current, ())):
+                            found.add(target)
+                            if symbols[target].kind == SymbolKind.FUNCTION and target not in seen:
+                                seen.add(target)
+                                stack.append(target)
+                    for root in returned.get(current, ()):
+                        if direct and (current, root) not in whole:
+                            continue
                         if not root.startswith(RESULT):
                             found.add(root)
                         elif (callee := root[len(RESULT) :]) not in seen:
@@ -936,8 +980,12 @@ class Indexer(DynamicBounds):
             return found
 
         owners: AnyClassOwners | None = None
-        for writer, callee, module in sorted(self._global.result_writes):
-            for root in sorted(state_of(callee)):
+        writes = sorted(
+            {(w, False) for w in self._global.result_writes}
+            | {(w, True) for w in self._global.direct_result_writes}
+        )
+        for (writer, callee, module), direct in writes:
+            for root in sorted(state_of(callee, direct)):
                 member = any_class_root(root)
                 if member is not None:
                     # The class of an object of unknown type (``return
@@ -977,6 +1025,80 @@ class Indexer(DynamicBounds):
                         self._global.own_class_writes.add((root, "*"))
                     continue
                 self._global.value_writes.add((root, writer))
+
+    def _external_state_edges(self) -> None:
+        """A store onto a module outside the source roots (``json.mode = v``,
+        ``setattr(json, "mode", v)``, ``json.__dict__.setdefault(...)``, a
+        change in place of what one holds: ``json.registry.append(x)``) or
+        into the environment (``os.environ["MODE"] = v``) by project code is
+        seen by every later reader in the process: each symbol reading that
+        attribute of the module (``json.mode``, ``getattr(json, "mode")``,
+        anything off ``json`` for a store by a name nothing bounds), or the
+        environment (``os.environ``, ``os.getenv``), gets a ``mutated_by``
+        edge to the writer, as a reader of a module variable does through
+        the variable (audit round 7, U13). What a library or a child process
+        reads of it is not followed. A writer only a test runs is left out
+        by the isolation assumption, as for module variables."""
+        # top-level module -> (reader, dotted name, the module read as a value)
+        reads: dict[str, set[tuple[str, str, bool]]] = defaultdict(set)
+        for reader, dotted in self._global.external_reads:
+            whole = dotted.startswith("=")
+            dotted = dotted.removeprefix("=")
+            reads[dotted.split(".")[0]].add((reader, dotted, whole))
+        if not reads:
+            return
+        writes: set[tuple[str, str, str]] = set()  # (writer, module, attribute or "*")
+        for writer, what in self._global.process_writes:
+            if what in ("os.environ", "os.environb"):
+                writes.add((writer, "os", "<environ>"))
+            elif what.startswith(("setattr(", "delattr(")) and what.endswith(")"):
+                writes.add((writer, what[what.index("(") + 1 : -1], "*"))
+            elif "(" not in what and state_object(what) is None and what not in STATE_CALLS:
+                module, _, attr = what.rpartition(".")
+                if module:
+                    writes.add((writer, module, attr))
+        # A store onto a module the code names is matched by its attribute;
+        # the module-wide use record is for a store the process writes do not
+        # name (the module reached by another name, or found at run time).
+        named = {(writer, module) for writer, module, _ in writes}
+        for mode, module, writer in self._use_external:
+            if mode == "write" and (writer, module) not in named:
+                writes.add((writer, module, "*"))
+        environ = ("os.environ", "os.environb", "os.getenv", "os.getenvb")
+        for writer, module, attr in sorted(writes):
+            if module.endswith(ANY):
+                # A module found at run time, or one whose name starts so.
+                prefix = module[: -len(ANY)]
+                candidates = [
+                    r for found in reads.values() for r in found if r[1].startswith(prefix)
+                ]
+            else:
+                candidates = list(reads.get(module.split(".")[0], ()))
+            for reader, dotted, whole in sorted(candidates):
+                if reader == writer:
+                    continue
+                if attr == "<environ>":
+                    hit = any(dotted == e or dotted.startswith(e + ".") for e in environ)
+                elif whole:
+                    # The module read as a value or by a name nothing bounds
+                    # (``getattr(json, name)``, ``vars(json)``): any store
+                    # onto it.
+                    hit = module.endswith(ANY) or dotted == module
+                elif module.endswith(ANY):
+                    # A module found at run time: a read of that attribute
+                    # off any module, not, for a store by a name nothing
+                    # bounds, every attribute read of every library (a
+                    # lookup on one stays bounded by external_sites).
+                    hit = attr != "*" and f".{attr}." in f".{dotted.partition('.')[2]}."
+                else:
+                    target = module if attr == "*" else f"{module}.{attr}"
+                    hit = (
+                        dotted == target
+                        or dotted.startswith(target + ".")
+                        or (attr == "*" and dotted.startswith(module + "."))
+                    )
+                if hit:
+                    self.index.edges.add(Edge(reader, writer, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _value_writes(self) -> None:
         """The ``mutated_by`` edges of changes in place of what a module
@@ -1630,13 +1752,19 @@ class Indexer(DynamicBounds):
 
     def _environment_fingerprint(self) -> str:
         """Digest of everything a module's resolution reads from other
-        modules: their observable facts plus every class's resolved bases,
-        and the root specs (whether ``__name__`` is a module's runtime name)."""
+        modules: their observable facts plus every class's bases (resolved
+        and as written), and the root specs (whether ``__name__`` is a module's runtime name)."""
         paths = {scope.path for scope in self.scopes.values()}
         material = [
             sorted(self.snapshot.source_roots),
             [[m, self.scopes[m].env_digest] for m in sorted(self.scopes)],
-            [[c, cs.bases, cs.complete] for c, cs in sorted(self.class_scopes.items())],
+            # The bases as written too: a subclass's resolution asks whether
+            # an in-scope base is of the Enum family, read off its chains
+            # (Resolver._instantiates_at_creation; audit round 7, U28).
+            [
+                [c, cs.bases, cs.complete, cs.base_chains]
+                for c, cs in sorted(self.class_scopes.items())
+            ],
             # A loader of a path with a literal prefix reads which ``.py``
             # files no module name maps to (references._file_loader).
             sorted(

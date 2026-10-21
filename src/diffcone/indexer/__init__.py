@@ -43,11 +43,14 @@ Supported subset (see internal/design.md):
   attribute unbounded;
 * in-place writes of a module variable or of state held on a class,
   directly, through ``cls``/``type(self)``, through a local name, an item,
-  ``globals()`` or a function's result bound to it (``references.py``), or
-  through a parameter or receiver the callee writes (``writes.py``); a variable filled once by the
-  one function writing it, with a value nothing can see differently
-  (``global V; if V is None: V = os.path.dirname(pkg.__file__)``), is a
-  lazy constant (``lazy.py``); a variable bound once to a value nothing can
+  ``globals()`` or a function's result bound to it (``references.py``: a
+  memoised function's result, a lambda's, a deep copy's is the state
+  itself), or through a parameter or receiver the callee writes, the
+  callee a writer as well as its caller (``writes.py``); a variable filled
+  once by the one function writing it, with a value nothing can see
+  differently (``global V; if V is None: V =
+  os.path.dirname(pkg.__file__)``, not a container it may fill), is a lazy
+  constant (``lazy.py``); a variable bound once to a value nothing can
   change in place (a string, a number, a tuple of such, ``re.compile(...)``)
   that nothing binds anew has no writers (``literals.module_immutables``,
   ``Indexer._immutable_variables``), and so has a class attribute bound once
@@ -88,7 +91,10 @@ Supported subset (see internal/design.md):
 * the order of a module's or class's top-level statements (a reorder is a
   definition change; two adjacent plain ``def``s trading places is none);
 * writes of process-global state outside the source roots (``process.py``),
-  and the stores a test makes that are undone when it ends (``patches.py``).
+  and the stores a test makes that are undone when it ends (``patches.py``);
+  project code reading an attribute of a library module, or the
+  environment, depends on project code storing there
+  (``Indexer._external_state_edges``).
 
 Deliberately unsupported: type inference, dynamic dispatch on unknown
 receivers, decorators that rewrite call targets.

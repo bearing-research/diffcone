@@ -1277,6 +1277,24 @@ LAZY_CASES: dict[str, tuple[str, dict[str, str], dict[str, str]]] = {
         {"pkg/other.py": "import pkg.m\n\n\ndef f():\n    pkg.m._RE.flags = 1\n"},
         {},
     ),
+    # A value that can change in place is no constant, whoever fills it
+    # (audit round 7, U8): its writer, or a caller it hands the value to.
+    "a dict its writer fills": (
+        _lazy_value("{}").replace("    return _RE\n", "    _RE['k'] = 1\n    return _RE\n"),
+        {},
+        {},
+    ),
+    "a dict() handed back": (_lazy_value("dict()"), {}, {}),
+    "a list display": (_lazy_value("['a']"), {}, {}),
+    "a sorted list": (_lazy_value("sorted(['b', 'a'])"), {}, {}),
+    "a tuple holding a list": (_lazy_value("('a', [])"), {}, {}),
+    "a fixed value's list method": (_lazy_value("os.sep.split('/')"), {}, {}),
+    "an in-scope module": (_lazy_value("pkg", "import pkg"), {}, {}),
+    "an imported pure function": (
+        _lazy_value("dirname(__file__)", "from os.path import dirname"),
+        {},
+        LAZY_RE,
+    ),
 }
 
 
@@ -1364,4 +1382,9 @@ def test_t20_an_immutable_variable_keeps_its_rebinding_edges():
     writers = {
         (e.source, e.target) for e in idx.edges if e.detail == "mutated_by" and "pkg.m" in e.source
     }
-    assert writers == {("pkg.m.Y", "pkg.w.fill"), ("pkg.m.Y", "pkg.w.rebind")}
+    # ``put`` writes what ``fill`` hands it, whoever calls it (audit round 7, U4).
+    assert writers == {
+        ("pkg.m.Y", "pkg.w.fill"),
+        ("pkg.m.Y", "pkg.w.put"),
+        ("pkg.m.Y", "pkg.w.rebind"),
+    }
