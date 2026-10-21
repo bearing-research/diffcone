@@ -67,6 +67,30 @@ selection rules.
 - `PYTEST_ADDOPTS` is part of the recorded environment: a plan with
   different options plans without the recording.
 - The evidence store format is 7: record again after upgrading.
+- With a recording, more of the state tests share is followed:
+  - a method, property setter or `__setattr__` called on an object whose
+    class is known (`ENGINE = Engine()`, `Engine().run(k)`, a local or an
+    attribute holding one), both from a change up to what stores its result
+    and from a store down to what it writes; an object of unknown type is
+    still not followed;
+  - an attribute bound on an object (`self.value = compute()`,
+    `setattr(self, name, v)`), reaching the code that reads it off the
+    object (`CONF.value`);
+  - a store through what a method returns (`self._table()[k] = v`);
+  - what an initialiser binds on an object that calling its class may give
+    back again (a metaclass `__call__`, a class decorator, `__new__`, a
+    library base);
+  - a function reached through an alias (`_put = _impl`,
+    `staticmethod(_impl)`), `__class_getitem__`, and a memoiser applied by
+    a call (`get = cached(cache={})(_get)`);
+  - project code storing onto a library module during a test, which was
+    taken for test code;
+  - a changed data file a test read: what that test ran stored is seeded,
+    so a later test served what it loaded is selected. Lines read only to
+    show a traceback are not data.
+- The recorder clears a `functools` cache over another wrapper
+  (`singledispatch`, `staticmethod`, `functools.partial`, a class, a
+  callable object); one it cannot clear is planned as a memoiser.
 
 ### Running and checking
 
