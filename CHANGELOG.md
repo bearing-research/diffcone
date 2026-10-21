@@ -8,6 +8,8 @@ selection rules.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-21
+
 ### Planning
 
 - `diffcone.toml` takes `[index] exclude`, patterns for `.py` files to
@@ -1103,6 +1105,7 @@ The first release.
   `actions/check`) to record nightly on the default branch and plan, run
   and check each pull request against it; see `docs/ci.md`.
 
+[0.5.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.5.0
 [0.4.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.4.0
 [0.3.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.3.0
 [0.2.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.2.0
