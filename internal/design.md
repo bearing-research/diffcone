@@ -574,8 +574,8 @@ Further rules (pre-release audit, round 2):
   name nothing bounds (`setattr(import_module(name), attr, v)`) is no
   rebinding of any particular variable.
 * A write into an instance writes the state its class holds (audit round
-  6, T21; `Indexer._instance_classes` and `_classes_holding_state` after
-  pass 2). Pass 2 records what each binding of a module variable holds
+  6, T21; `writes.variable_classes` and `Indexer._classes_holding_state`
+  after pass 2). Pass 2 records what each binding of a module variable holds
   (`instance_bindings`: `STORE = Store()`, `global _S; _S = Store()`,
   `mod.X = make()`, an annotation naming a class, through conditions,
   `or`, `await` and a local bound once): an in-scope class called or
@@ -588,11 +588,14 @@ Further rules (pre-release audit, round 2):
   v`, `STORE.cache()[k] = v`, a local alias, a getter's result) is then
   also a `mutated_by` edge from each class it may hold an instance of and
   that class's in-scope bases, when one of them may hold state of its own:
-  its body binds a name (outside its `def`s and nested classes) to
-  anything the T20 rule would not call immutable, other than a function, a
-  descriptor (`property`, `staticmethod`, `classmethod`,
-  `functools.cached_property`) or a dataclass field with no mutable
-  default (`literals.class_state`, `ClassScope.stateless`), or some code
+  its body binds a name (outside its `def`s; a nested class's body counts,
+  and a nested class with a base or a decorator that may add state holds
+  some: audit round 7, U11) to anything the T20 rule would not call
+  immutable, other than a function, a descriptor (`property`,
+  `staticmethod`, `classmethod` of a function or lambda, `functools
+  .cached_property`) or a dataclass field with no mutable default
+  (`literals.class_state`, `ClassScope.stateless`), anything gives it an
+  attribute outside its body (`writes.ClassRecord`, below), or some code
   stores onto the class (a `mutated_by` edge of its own: `cls._cache =
   {}`). So a reader of the class (`Store._cache.get(k)`, `cls._cache` in a
   classmethod, a base's `Base._cache`) reads the write; an instance of a
@@ -636,8 +639,10 @@ Further rules (pre-release audit, round 2):
   the `INSTANCE` root keeps the first attribute) gives none when the
   attribute is the instance's own (`_own_attribute`): no class of the family
   (the MRO of the class and of each in-scope subclass) binds or defines it
-  in its body, defines `__getattr__`/`__getattribute__`, has a base outside
-  the index (`opaque`) or is stored onto by any code. Binding
+  in its body or is given it anywhere (`ClassRecord.given`), defines
+  `__getattr__`/`__getattribute__`, has a base outside the index
+  (`opaque`), is stored onto by any code, or has a method binding
+  `self.<attr>` to an object that may be shared (`attr_shares`). Binding
   or deleting an attribute on the instance itself (`new._key = None`,
   `setattr(new, "k", v)`; not `new.k += v`, which may extend a class-level
   list) changes that object alone when nothing but `object.__new__` made it
@@ -648,7 +653,8 @@ Further rules (pre-release audit, round 2):
   none is decorated or has a metaclass: for a constructor none at all
   (`plain`), for `cls.__new__(cls)` none but the inert ones (`kept`), since
   a decorator may give back a subclass whose `__new__` keeps an instance
-  (T26).
+  (T26), and no method binds `self.__dict__` or `self.__class__` to an
+  object that may be shared (the Borg; U11).
   Otherwise the bind counts as a write in place: an in-scope `__new__`, a
   library's, a class decorator or a metaclass may give back an object kept
   elsewhere (a singleton). A method called on such an instance adds no
@@ -676,9 +682,11 @@ Further rules (pre-release audit, round 2):
   `abc.ABCMeta`), every base is in scope, the module names no namespace
   (as for T20), and nothing may bind it anew: no class of the family (MRO
   and in-scope subclasses) has a `mutated_by` edge of its own, is written
-  in place, or defines `__getattribute__`, and no top-level code of its own
-  module binds that attribute or writes the class otherwise
-  (`own_class_writes`, per attribute: `Arrow.min = ...` binds `min` only).
+  in place, or defines `__getattribute__`, through any name (U2), and
+  nothing gives a class of the family that attribute outside its body
+  (`ClassRecord.given`: top-level code of its module, `own_class_writes`,
+  per attribute: `Arrow.min = ...` binds `min` only; any other code,
+  `class_binds`; a decorator or metaclass that may add state, any).
   What a builtin returns may be its argument (`m = min(m, self._N); m += 1`
   keeps the root, as it may be `_N`); results of builtins of a fixed
   immutable type (`len`, `int`, `str`, `repr`, ...:
@@ -713,9 +721,11 @@ Further rules (pre-release audit, round 2):
   value, a local that may be any of these: `o = Store() if c else p`) the
   class is unknown, and the write tracing gives the root `<anyclass>:`
   with the attribute it is reached through (`type(o).items`, a method's
-  result: `type(o).registry()`) or none; `__name__`, `__qualname__`,
-  `__mro__` and `__bases__`, whose types `type` enforces, hold nothing a
-  write can change. A write into it (a bind, augment or
+  result: `type(o).registry()`) or none; `__name__` and `__qualname__`,
+  whose types `type` enforces, hold nothing a write can change, while an
+  item of `__mro__`, `__bases__` or `__base__` is a class (of a known
+  class, each in-scope class of its MRO or a subclass's; of an unknown
+  one, any: U2). A write into it (a bind, augment or
   delete of an attribute, `setattr`/`delattr`, an item stored or a
   container mutator on an attribute, `vars(type(o))`/`__dict__`, through
   a local alias, `type(o)` handed to a callee that writes its parameter,
@@ -723,9 +733,10 @@ Further rules (pre-release audit, round 2):
   writing into it) records `any_class_writes` (attribute, writer, module
   for top-level code). After pass 2 each becomes a `value_writes` entry,
   so a `mutated_by` edge, of each owner: an in-scope class whose body
-  binds or defines the attribute, or whose methods bind it on `self` or
+  binds or defines the attribute, whose methods bind it on `self` or
   `cls` (`attr_writes`; which object it is is not known, so an instance
-  attribute counts), every class with a base outside the index
+  attribute counts), or that is given it anywhere (`ClassRecord.given`,
+  `*` giving every name; U3), every class with a base outside the index
   (`opaque`), and every in-scope subclass of those; every in-scope class
   for a special name (`__doc__`, `__repr__`: every class has them), for an
   attribute no class binds or defines (only such code gives a class one,
@@ -744,6 +755,46 @@ Further rules (pre-release audit, round 2):
   class of the project then counts as written. Not modelled: an in-scope
   `__new__` giving back an instance of a class outside the family (the
   class of what a construction makes is taken to be the family's).
+* What each in-scope class is given anywhere is one record
+  (`writes.ClassRecord`, audit round 7, U3), computed once after pass 2 and
+  read by every rule above that asks whether a class holds state, owns an
+  attribute or may be the unknown class written (`_classes_holding_state`,
+  `_own_attribute`, `_allocated_fresh`, `_class_attribute_writes`,
+  `literal_table`, `AnyClassOwners`): the class body; its module's
+  top-level code (`own_class_writes`) and any other code (`class_binds`),
+  on the class or on a module variable that may hold it; a decorator or
+  metaclass that may add state (`ClassScope.unbounded`: any name);
+  `setattr` with a computed name or in a loop (any); and the attributes
+  methods bind on `self`/`cls`, with those bound to an object that may be
+  shared (`attr_shares`: a module variable, a class attribute, a
+  parameter's mutable default, `self.__dict__ = shared`). Pass 2 roots a
+  class reached by another name at the class (U2): a module or local
+  alias, a dict, tuple or loop over classes, a parameter's default,
+  `getattr(module, "C")`, a module handle (`import_module`, `sys.modules`,
+  `vars(m)[...]`, `m.__dict__[...]`), `type.__setattr__(C, ...)`, an item
+  of `C.__mro__`/`__bases__`, and a call's result when the call is handed
+  the class (`HANDLERS.get(k, Default)`, `ident(C)`; any value handed to a
+  call is a root of its result, a function named as one excepted). A
+  module variable's bindings say which classes it may be
+  (`instance_bindings`' `type:` origins, `writes.variable_classes`); a
+  write through it other than an item stored into its own container
+  (`typed_writes`) is a `mutated_by` edge of each such class, its in-scope
+  bases and its nested classes, whatever they hold. Calling such a name
+  (`Legacy()`, a local bound to the class, `functools.partial(C)()`) makes
+  an instance (`references._class_named`). A write into an attribute of an
+  instance that a method bound to a shared object writes that object
+  (`Indexer._shared_writes`, before T24 decides class attributes), and the
+  attribute is not the instance's own (U11). A class's state includes its
+  nested classes': an instance write that reaches the class reaches them
+  (`Indexer._reached`). A method called on an in-scope class itself that no
+  class of its MRO defines in scope, when one has a library base, a
+  decorator or a metaclass (`Base.register(Foo)` of an `abc.ABC` or
+  `ABCMeta` class, `TestCase.addClassCleanup`), writes every in-scope class
+  of the MRO (U12; special methods and `mro` excepted), and `type(name,
+  bases, ns)` runs the hooks a class statement runs and writes each
+  in-scope base. Not modelled: a class handed to a constructor (no `HELD`
+  root), a local bound to one of several classes (`c = A if k else B;
+  c()`), and shares in `_HeldSafety`.
 * An instance holds what its constructor was handed (audit round 6, T23;
   `HELD` roots and `held:` passes, `writes._HeldSafety` after pass 2). An
   explicit call of an in-scope class (`Tokenizer(src, rules=RULES)`) gives

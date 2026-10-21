@@ -205,6 +205,9 @@ NAME_RESOLVERS = frozenset({"pkgutil.resolve_name", "pydoc.locate"})
 # packages among them too).
 MODULE_LISTINGS = frozenset({"pkgutil.iter_modules", "pkgutil.walk_packages"})
 CASTS = frozenset({"typing.cast", "typing_extensions.cast"})
+# Calls whose result calls what they are handed first (``partial(C)()`` makes
+# a ``C``: ``_class_named``).
+PARTIALS = frozenset({"functools.partial"})
 
 # What a write through a name bound to part of another object changes
 # (``_state_roots``): calls whose result holds nothing of their arguments, and
@@ -276,9 +279,15 @@ RESULT = "<result>:"
 # ``INSTANCE``, ``.`` and the attribute it was reached through (``s._items``)
 # or nothing (an item, a method's result), ``:`` and the class id: what such
 # an instance holds or is part of, where a write may be one into its class's
-# state (audit round 6, T22).
+# state (audit round 6, T22). ``SHARED_ONLY`` in place of ``.``: through
+# ``self`` in a method, an attribute a method of the class stores on
+# ``self``, which is the instance's own object unless the method binds it to
+# one that may be shared (audit round 7, U11). The class id may be a module
+# variable's, for an instance made by calling what the variable holds
+# (``Legacy = Conf; Legacy()``; U2).
 FRESH = "<fresh>:"
 INSTANCE = "<instance>:"
+SHARED_ONLY = "-"
 # Builtins whose result is of a builtin type nothing can change in place,
 # whatever they are handed (``_immutable_typed``).
 IMMUTABLE_TYPED_CALLS = frozenset(
@@ -330,7 +339,11 @@ ANY_CLASS = "<anyclass>:"
 # Attributes every class has whose value ``type`` keeps of a type nothing can
 # change in place (assigning another type raises): what a class of unknown
 # type holds there is no state (T25).
-_FIXED_CLASS_ATTRIBUTES = frozenset({"__name__", "__qualname__", "__mro__", "__bases__"})
+_FIXED_CLASS_ATTRIBUTES = frozenset({"__name__", "__qualname__"})
+# Attributes every class has that hold other classes: an item of one is a
+# class, written as any (``Sub.__mro__[1].registry[k] = v``; audit round 7,
+# U2).
+CLASS_LISTS = frozenset({"__mro__", "__bases__", "__base__"})
 # unittest.mock's mocks: each instance has a class of its own (``type(m).p =
 # PropertyMock()`` changes that mock alone), so ``type(m)`` is no class of the
 # project (T25).
@@ -971,7 +984,7 @@ class _ReferenceCollector(ast.NodeVisitor):
         Store()``, ``global _S; _S = make()``, ``mod.X = Y``) where that may
         be an instance of an in-scope class, or the class: a write in place
         into the variable may be one into state the class holds
-        (Indexer._instance_classes; audit round 6, T21)."""
+        (writes.variable_classes; audit round 6, T21)."""
         if isinstance(target, (ast.Tuple, ast.List)):
             pairs = (
                 zip(target.elts, value.elts, strict=True)
@@ -995,18 +1008,27 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         origins = self._held_origins(value, 0)
         if annotation is not None:
+            # ``STORE: Store = make()``: an instance of the class annotated.
             for sub in ast.walk(annotation):
                 if isinstance(sub, (ast.Name, ast.Attribute)):
-                    origins |= {o for o in self._held_origins(sub, 0) if o.startswith("class:")}
+                    origins |= {
+                        "class:" + o[len("type:") :]
+                        for o in self._held_origins(sub, 0)
+                        if o.startswith("type:")
+                    }
         for origin in sorted(origins):
             self.indexer.out.instance_bindings.add((symbol.id, origin))
 
     def _held_origins(self, expr: ast.expr, depth: int) -> set[str]:
         """``_held_instance``'s origins of what ``expr`` evaluates to: an
-        in-scope class called or named (``class:``), an in-scope function
-        or method called (``call:``), a module variable (``var:``), through
-        conditions, ``or``/``and``, ``await``, a container display's items
-        and a local bound once."""
+        instance of an in-scope class called (``class:``; the id may be a
+        module variable's, called as a class: ``Legacy()``), an in-scope
+        class itself (``type:``: ``Alias = Conf``; audit round 7, U2), an
+        in-scope function or method called (``call:``), a module variable
+        (``var:``), through conditions, ``or``/``and``, ``await``, a
+        container display's items, a local bound once and what any call but
+        a fresh value's may give back of what it is handed (``dict(dev=
+        Config)``, ``ident(Conf)``)."""
         if depth > 8:
             return set()
         if isinstance(expr, ast.IfExp):
@@ -1025,24 +1047,34 @@ class _ReferenceCollector(ast.NodeVisitor):
             source = self._local_source(expr.id)
             return self._held_origins(source, depth + 1) if source is not None else set()
         call = isinstance(expr, ast.Call)
-        if isinstance(expr, ast.Call) and (made := self._made_instance(expr)) is not None:
-            return {f"class:{made[1]}"}  # ``Store.__new__(Store)`` too (T22)
+        handed: set[str] = set()
+        if isinstance(expr, ast.Call):
+            if (made := self._made_instance(expr)) is not None:
+                return {f"class:{made[1]}"}  # ``Store.__new__(Store)`` too (T22)
+            func = _flatten_chain(expr.func)
+            fresh = func is not None and (
+                (len(func) == 1 and func[0] in FRESH_CALLS and not self._is_shadowed(func[0]))
+                or (len(func) > 1 and not self._is_local(func[0]) and self._only(func, FRESH_CALLS))
+            )
+            if not fresh:
+                for arg in [*expr.args, *(k.value for k in expr.keywords)]:
+                    handed |= self._held_origins(arg, depth + 1)
         parts = _flatten_chain(expr.func if isinstance(expr, ast.Call) else expr)
         if parts is None or self._is_local(parts[0]):
-            return set()
+            return handed
         node = self.indexer.resolve_chain(parts, self.scope)
         if not isinstance(node, Resolved) or node.detail:
-            return set()
+            return handed
         symbol = self.indexer.index.symbols.get(node.symbol)
         if symbol is None:
-            return set()
-        if symbol.kind == SymbolKind.CLASS:
-            return {f"class:{symbol.id}"}
+            return handed
+        if not call and symbol.kind == SymbolKind.CLASS:
+            return {f"type:{symbol.id}"}
         if call and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
-            return {f"call:{symbol.id}"}
+            return {f"call:{symbol.id}"} | handed
         if not call and symbol.kind == SymbolKind.VARIABLE:
             return {f"var:{symbol.id}"}
-        return set()
+        return handed
 
     def _value_write(self, state: str) -> None:
         """A change in place of what ``state`` (a module variable, class or
@@ -1084,6 +1116,9 @@ class _ReferenceCollector(ast.NodeVisitor):
             return
         roots = self._state_roots(obj, frozenset())
         own = isinstance(obj, ast.Name) and self._is_local(obj.id)
+        # An item stored into, or a mutator called on, a variable's own
+        # object changes that container, not a class it holds (U2).
+        container = not attr and not member and self._direct(obj, 0)
         out = self.indexer.out
         for root, copy in sorted(roots.items()):
             if root == _NAMESPACE or (copy and own):
@@ -1101,11 +1136,41 @@ class _ReferenceCollector(ast.NodeVisitor):
                     else:
                         apply_fact(out, self.source, fact)
                 continue
-            for fact in self._root_facts(root, bound=bound, attr=attr, member=member):
+            facts = self._root_facts(
+                root, bound=bound, attr=attr, member=member, container=container
+            )
+            for fact in facts:
                 apply_fact(out, self.source, fact)
 
+    def _direct(self, expr: ast.expr, depth: int) -> bool:
+        """Whether ``expr`` is a module variable's (or class's) own object:
+        its name, a chain to it, or a local every binding of which is one."""
+        if isinstance(expr, ast.Attribute):
+            chain = _flatten_chain(expr)
+            if chain is None or self._is_local(chain[0]) or chain[0] == self.scope.self_name:
+                return False
+            node = self.indexer.resolve_chain(chain, self.scope)
+            return isinstance(node, Resolved) and not node.detail
+        if not isinstance(expr, ast.Name):
+            return False
+        if not self._is_local(expr.id):
+            return True
+        owner = self._binding_scope(expr.id)
+        if owner is None or depth > 3:
+            return False
+        sources = self._sources_in(owner).get(expr.id, ())
+        return bool(sources) and all(
+            how == VALUE and self._direct(value, depth + 1) for value, how in sources
+        )
+
     def _root_facts(
-        self, root: str, *, bound: bool, attr: str, member: str = ""
+        self,
+        root: str,
+        *,
+        bound: bool,
+        attr: str,
+        member: str = "",
+        container: bool = False,
     ) -> list[tuple[str, str, str]]:
         """What a write into what ``root`` names records (``apply_fact``):
         ``value``, a change in place of a module variable, class or
@@ -1113,14 +1178,17 @@ class _ReferenceCollector(ast.NodeVisitor):
         attribute holds (Indexer._class_attribute_writes); ``instance``, of an
         instance of an in-scope class or part of one (Indexer._instance_writes);
         ``result``, of what a call of an in-scope function returns
-        (Indexer._result_writes); ``own``, a class written by its own
-        module's top-level code, which is part of the module's hash but may
-        bind a class attribute anew (T24): the attribute ``attr``, any for
-        ``*`` or a change in place of the class itself; ``anyclass``, of a
-        class of unknown type (``type(o).x = v``): the attribute it binds
-        or is reached through (``*``: any), and the writer's module for
-        code its hash covers, decided after pass 2 (writes.AnyClassOwners;
-        T25)."""
+        (Indexer._result_writes); ``own``, a class (or a variable that may
+        hold one) written by its own module's top-level code, which is part
+        of the module's hash but gives the class the attribute ``attr``,
+        any for ``*`` or a change in place of the class itself (T24, U3);
+        ``bind``, the same by any other code, besides its ``value`` edge
+        (U3); ``typed``, a change of a variable that writes the class it may
+        hold (anything but a ``container`` change of the variable's own
+        object, U2); ``anyclass``, of a class of unknown type (``type(o).x
+        = v``): the attribute it binds or is reached through (``*``: any),
+        and the writer's module for code its hash covers, decided after
+        pass 2 (writes.AnyClassOwners; T25)."""
         here = self.scope.module.name
         unhashed = not self.skip_defs or (bound and self.source != here)
         symbols = self.indexer.index.symbols
@@ -1162,12 +1230,24 @@ class _ReferenceCollector(ast.NodeVisitor):
         symbol = symbols.get(root)
         if symbol is None or symbol.id == self.source:
             return []
+        name = attr or member
         if symbol.module == here and not unhashed:
-            # A module's own top-level code is part of its hash.
-            if symbol.kind != SymbolKind.CLASS:
-                return []
-            return [("own", symbol.id, attr or "*")]  # the attribute it binds
-        return [("value", symbol.id, "")]
+            # A module's own top-level code is part of its hash, but gives a
+            # class it writes the attribute it binds (``_c = TD; _c.X = []``
+            # through a variable holding the class: U2).
+            if symbol.kind == SymbolKind.CLASS:
+                return [("own", symbol.id, name or "*")]
+            if symbol.kind == SymbolKind.VARIABLE and not container:
+                return [("own", symbol.id, name or "*")]
+            return []
+        found = [("value", symbol.id, "")]
+        if symbol.kind == SymbolKind.CLASS and name:
+            found.append(("bind", symbol.id, name))
+        elif symbol.kind == SymbolKind.VARIABLE and not container:
+            found.append(("typed", symbol.id, ""))
+            if name:
+                found.append(("bind", symbol.id, name))
+        return found
 
     def _handed_state(self, expr: ast.expr, receiver: bool = False) -> list[str]:
         """The module variables and classes whose state a call is handed in
@@ -1177,10 +1257,14 @@ class _ReferenceCollector(ast.NodeVisitor):
         result, a class itself as an argument (``configure(Config)``). A
         copy is no state handed on; nor is a class a method is called on
         (``Base.method(self)``: a classmethod writing ``cls`` is a write of
-        its own). As writes.py's passes give them: ``var:<id>``, and
-        ``instance:<class id>`` for an instance of an in-scope class or
-        part of one (a write of the class's state when it holds any: audit
-        round 6, T22)."""
+        its own). As writes.py's passes give them (``_handed_root``):
+        ``var:<id>`` for a module variable or class, ``attr:<attribute>:<class
+        id>`` for what a class attribute holds (T24), ``instance:<how>:<class
+        id>`` for an instance of an in-scope class or part of one (a write of
+        the class's state when it holds any: audit round 6, T22),
+        ``anyclass:<attribute>`` for the class of an object of unknown type
+        (T25), each one held by a fresh instance as ``held:<class>|...``
+        (T23)."""
         if receiver and self._names_definition(expr):
             return []
         found: list[str] = []
@@ -1201,8 +1285,10 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _handed_root(self, root: str) -> list[str]:
         """``_handed_state`` of one root: ``var:<id>`` for a module variable
         or class, ``attr:<attribute>:<class id>`` for what a class attribute
-        holds (T24), ``instance:...`` for an instance of an in-scope class or
-        part of one."""
+        holds (T24), ``instance:<how>:<id>`` for an instance of an in-scope
+        class or part of one (the id a module variable's for an instance of
+        the class it holds: U2), ``anyclass:<attribute>`` for a class of
+        unknown type."""
         symbols = self.indexer.index.symbols
         made = instance_root(root)
         if made is not None:
@@ -1274,6 +1360,62 @@ class _ReferenceCollector(ast.NodeVisitor):
             SymbolKind.METHOD,
         )
 
+    def _names_function(self, expr: ast.expr) -> bool:
+        """``expr`` names an in-scope function or method itself."""
+        parts = _flatten_chain(expr)
+        if parts is None or self._is_local(parts[0]) or parts[0] == self.scope.self_name:
+            return False
+        node = self.indexer.resolve_chain(parts, self.scope)
+        if not isinstance(node, Resolved) or node.detail:
+            return False
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        return symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+
+    def _module_named(self, expr: ast.expr) -> str | None:
+        """The in-scope module ``expr`` is: a name bound to it, or one
+        obtained by a literal name (``import_module("m")``,
+        ``sys.modules["m"]``, a local bound once to one of those)."""
+        found = self._obtained_module(expr)
+        if found is None and isinstance(expr, ast.Name) and self._is_local(expr.id):
+            source = self._local_source(expr.id)
+            found = self._obtained_module(source) if source is not None else None
+        if found is not None:
+            return found if found in self.indexer.scopes else None
+        chain = _flatten_chain(expr)
+        if chain is None or self._is_local(chain[0]) or chain[0] == self.scope.self_name:
+            return None
+        node = self.indexer.resolve_chain(chain, self.scope)
+        if isinstance(node, ModuleNode) and node.module in self.indexer.scopes:
+            return node.module
+        return None
+
+    def _module_members_named(
+        self, module: ast.expr, key: ast.expr | None
+    ) -> dict[str, bool] | None:
+        """The roots of the members of the in-scope module ``module`` names
+        that ``key`` may name (``getattr(state, "Conf")``, ``vars(state)
+        ["Conf"]``, ``state.__dict__["Conf"]``): each of its variables and
+        classes when nothing bounds the key. None when ``module`` is no
+        in-scope module (audit round 7, U2)."""
+        name = self._module_named(module)
+        if name is None:
+            return None
+        names = self.scope.string_candidates(key) if key is not None else None
+        symbols = self.indexer.index.symbols
+        if names is None:
+            return {
+                s.id: False
+                for s in symbols.values()
+                if s.module == name
+                and s.container == name
+                and s.kind in (SymbolKind.VARIABLE, SymbolKind.CLASS)
+            }
+        found: dict[str, bool] = {}
+        for member in names:
+            node = self.indexer.resolve_dotted([*name.split("."), member])
+            found = _merged(found, self._symbol_roots(node) if node is not None else {})
+        return found
+
     def _state_roots(self, expr: ast.AST, seen: frozenset) -> dict[str, bool]:
         """The module variables, classes and functions whose state ``expr``
         may be (part of): symbol id -> whether ``expr`` is only a new
@@ -1298,6 +1440,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         if isinstance(expr, ast.Attribute):
             return self._attribute_roots(expr, seen)
         if isinstance(expr, ast.Subscript):
+            namespace = self._namespace_of(expr.value)
+            if namespace is not None:
+                # ``vars(state)["Conf"]``, ``state.__dict__["Conf"]`` (U2).
+                members = self._module_members_named(namespace, expr.slice)
+                if members is not None:
+                    return members
             inner = self._state_roots(expr.value, seen)
             if _NAMESPACE in inner:
                 return self._namespace_item(expr.slice)
@@ -1318,6 +1466,22 @@ class _ReferenceCollector(ast.NodeVisitor):
         elif isinstance(expr, _COMPREHENSIONS):
             parts = [g.iter for g in expr.generators]
         return _part_of(_merged(*(self._state_roots(p, seen) for p in parts)), copy=True)
+
+    def _namespace_of(self, expr: ast.expr) -> ast.expr | None:
+        """``x`` of ``vars(x)`` or ``x.__dict__``: whose namespace ``expr``
+        is."""
+        if isinstance(expr, ast.Attribute) and expr.attr == "__dict__":
+            return expr.value
+        if (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "vars"
+            and not self._is_shadowed("vars")
+            and len(expr.args) == 1
+            and not expr.keywords
+        ):
+            return expr.args[0]
+        return None
 
     def _name_roots(self, name: str, seen: frozenset) -> dict[str, bool]:
         scope = self.scope
@@ -1357,6 +1521,14 @@ class _ReferenceCollector(ast.NodeVisitor):
             if how != VALUE:  # an element, what entering gives, a holder
                 roots = _part_of(roots, copy=False)
             found = _merged(found, roots)
+        if isinstance(owner, (*FUNC_NODES, ast.Lambda)):
+            # A parameter's default (``def fill(k, klass=Conf)``): what it
+            # names, unless a call hands it something else (U2).
+            for param, default in _defaults(owner.args):
+                chain = _flatten_chain(default) if param == name else None
+                if chain is not None and chain[0] not in _parameter_names(owner.args):
+                    node = self.indexer.resolve_chain(chain, self.scope)
+                    found = _merged(found, self._resolved_roots(node, chain[-1]) or {})
         return found
 
     def _sources_in(self, owner: ast.AST) -> dict[str, list[tuple[ast.expr, str]]]:
@@ -1389,33 +1561,69 @@ class _ReferenceCollector(ast.NodeVisitor):
         scope = self.scope
         if expr.attr == "__class__" and self._is_self(expr.value) and not scope.self_is_class:
             return {scope.self_class: False} if scope.self_class else {}
+        if expr.attr in CLASS_LISTS:
+            return self._class_list_roots(expr, seen)
         chain = _flatten_chain(expr)
         if chain is not None and not self._is_local(chain[0]):
             if chain[0] == scope.self_name and not scope.self_is_class:
                 if len(chain) == 2 and scope.self_class is not None:
                     return self._instance_roots(chain)
             else:
-                node = self.indexer.resolve_chain(chain, scope)
-                if isinstance(node, Resolved):
-                    symbol = self.indexer.index.symbols.get(node.symbol)
-                    if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
-                        if not node.detail:
-                            return {symbol.id: False}
-                    elif symbol is not None and symbol.kind == SymbolKind.CLASS:
-                        if node.detail == "":
-                            return {symbol.id: False}
-                        if node.detail == f"attribute:{chain[-1]}":
-                            # What a class attribute holds (T24): the class's
-                            # state, unless it cannot change in place.
-                            found = {_class_attribute(symbol.id, chain[-1]): False}
-                            for other, detail in node.overrides:
-                                if detail == f"attribute:{chain[-1]}":
-                                    found[_class_attribute(other, chain[-1])] = False
-                            return found
+                found = self._resolved_roots(self.indexer.resolve_chain(chain, scope), chain[-1])
+                if found is not None:
+                    return found
+        if (held := self._module_chain(expr)) is not None:
+            # ``import_module("pkg.state").Conf``, ``sys.modules[...].X``:
+            # the member of the module named by a literal (U2).
+            found = self._resolved_roots(self.indexer.resolve_dotted(held), held[-1])
+            if found is not None:
+                return found
         inner = self._state_roots(expr.value, seen)
         if expr.attr == "__class__":
             return _class_of(inner, self._made_here(expr.value))
         return _part_of(inner, copy=False, attr=expr.attr)
+
+    def _resolved_roots(self, node: Node, attr: str) -> dict[str, bool] | None:
+        """The roots of what a chain ending in ``attr`` resolves to: a module
+        variable or a class itself, or what a class attribute holds; None
+        for anything else."""
+        if not isinstance(node, Resolved):
+            return None
+        symbol = self.indexer.index.symbols.get(node.symbol)
+        if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
+            if not node.detail:
+                return {symbol.id: False}
+        elif symbol is not None and symbol.kind == SymbolKind.CLASS:
+            if node.detail == "":
+                return {symbol.id: False}
+            if node.detail == f"attribute:{attr}":
+                # What a class attribute holds (T24): the class's state,
+                # unless it cannot change in place.
+                found = {_class_attribute(symbol.id, attr): False}
+                for other, detail in node.overrides:
+                    if detail == f"attribute:{attr}":
+                        found[_class_attribute(other, attr)] = False
+                return found
+        return None
+
+    def _class_list_roots(self, expr: ast.Attribute, seen: frozenset) -> dict[str, bool]:
+        """``X.__mro__``, ``X.__bases__``, ``X.__base__``: the classes they
+        hold (an item of them is one; U2). Of a class the analysis knows,
+        each in-scope class of its MRO or of a subclass's (``type(self)``
+        and ``cls`` may be one); of a variable that may hold a class, the
+        variable (decided after pass 2); of a class of unknown type, a
+        class of unknown type."""
+        found: dict[str, bool] = {}
+        for root in self._state_roots(expr.value, seen):
+            if root == ANY_CLASS:
+                found[ANY_CLASS] = False
+            elif root in self.indexer.class_scopes:
+                for sub in (root, *self.indexer._descendants.get(root, ())):
+                    for cls in self.indexer._mro(sub):
+                        found[cls] = False
+            elif any_class_root(root) is None and instance_root(root) is None:
+                found = _merged(found, _part_of({root: False}, copy=False))
+        return found
 
     def _made_here(self, expr: ast.expr, depth: int = 0) -> bool:
         """Whether ``expr`` is certainly an object made where it is used: a
@@ -1424,7 +1632,8 @@ class _ReferenceCollector(ast.NodeVisitor):
         or a local name every binding of which is one of those (no
         parameter). Its class is then known (T25)."""
         if isinstance(expr, ast.Call):
-            if self._made_instance(expr) is not None:
+            made = self._made_instance(expr)
+            if made is not None and made[1] in self.indexer.class_scopes:
                 return True
             parts = _flatten_chain(expr.func)
             return (
@@ -1449,14 +1658,32 @@ class _ReferenceCollector(ast.NodeVisitor):
     def _instance_roots(self, chain: list[str]) -> dict[str, bool]:
         """``self.<attr>``: the class whose body binds ``attr`` (and each
         subclass binding it again), when the instance has no object of its
-        own there."""
+        own there; a class nested in the class (``self.Meta``); and
+        otherwise what the instance holds under ``attr``, which is the
+        instance's own object or not as decided after pass 2 (an attribute
+        given to the class outside its body, or bound in a method to an
+        object that may be shared: Indexer._instance_writes; audit round
+        7, U3, U11)."""
+        cls = self.scope.self_class
+        assert cls is not None
         node = self.indexer.resolve_chain(chain, self.scope)
+        attr = chain[1]
+        # A method of the class storing ``self.<attr>`` gives the instance an
+        # object of its own there, unless that object is shared (``-``);
+        # otherwise the class may be given it elsewhere (``.``).
+        owned = f"{INSTANCE}{SHARED_ONLY}{attr}:{cls}"
         if not isinstance(node, Resolved):
-            return {}
+            if self._class_held(cls, attr):
+                return {f"{INSTANCE}.{attr}:{cls}": False}
+            return {owned: False}
         found: dict[str, bool] = {}
+        symbols = self.indexer.index.symbols
         for cid, detail in [(node.symbol, node.detail), *node.overrides]:
-            if detail == f"attribute:{chain[1]}" and self._class_held(cid, chain[1]):
-                found[_class_attribute(cid, chain[1])] = False
+            if detail == f"attribute:{attr}":
+                held = self._class_held(cid, attr)
+                found[_class_attribute(cid, attr) if held else owned] = False
+            elif not detail and (s := symbols.get(cid)) is not None and s.kind == SymbolKind.CLASS:
+                found[cid] = False  # a nested class (U11)
         return found
 
     def _class_held(self, cid: str, attr: str) -> bool:
@@ -1483,11 +1710,28 @@ class _ReferenceCollector(ast.NodeVisitor):
             found = self._class_nodes[cid] = (module.tree, _find_class(module.tree.body, path))
         return found[1]
 
-    def _class_named(self, expr: ast.expr) -> str | None:
+    def _class_named(self, expr: ast.expr, variables: bool = False, depth: int = 0) -> str | None:
         """The in-scope class ``expr`` names: a class (``Store``), a
         classmethod's ``cls``, ``type(self)`` or ``self.__class__`` (the
-        method's class, or a subclass of it)."""
+        method's class, or a subclass of it), a local every binding of which
+        names the same one (``c = Store``), ``functools.partial`` of one;
+        with ``variables``, a module variable too (``Legacy = Store``),
+        whose class is known after pass 2 (audit round 7, U2)."""
         scope = self.scope
+        if depth > 4:
+            return None
+        if isinstance(expr, ast.Call) and expr.args and not isinstance(expr.args[0], ast.Starred):
+            func = _flatten_chain(expr.func)
+            if func is not None and not self._is_local(func[0]) and self._only(func, PARTIALS):
+                return self._class_named(expr.args[0], variables, depth + 1)
+        if isinstance(expr, ast.Name) and self._is_local(expr.id) and expr.id != scope.self_name:
+            owner = self._binding_scope(expr.id)
+            sources = self._sources_in(owner).get(expr.id, ()) if owner is not None else ()
+            named = {
+                self._class_named(value, variables, depth + 1) if how == VALUE else None
+                for value, how in sources
+            }
+            return named.pop() if len(named) == 1 else None
         if scope.self_class is not None:
             if isinstance(expr, ast.Name) and expr.id == scope.self_name:
                 return scope.self_class if scope.self_is_class else None
@@ -1515,7 +1759,13 @@ class _ReferenceCollector(ast.NodeVisitor):
         if not isinstance(node, Resolved) or node.detail:
             return None
         symbol = self.indexer.index.symbols.get(node.symbol)
-        return symbol.id if symbol is not None and symbol.kind == SymbolKind.CLASS else None
+        if symbol is None:
+            return None
+        if symbol.kind == SymbolKind.CLASS:
+            return symbol.id
+        if variables and symbol.kind == SymbolKind.VARIABLE and symbol.name == parts[-1]:
+            return symbol.id  # the variable itself, not a method of its value
+        return None
 
     def _made_instance(self, node: ast.Call) -> tuple[str, str] | None:
         """(how, class id) when the call makes an instance of an in-scope
@@ -1546,7 +1796,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             if on is None:
                 return None
             return ("new", cls) if on in self.indexer._mro(cls) else None
-        cls = self._class_named(func)
+        cls = self._class_named(func, variables=True)
         return ("call", cls) if cls is not None else None
 
     def _new_results(self, cls: str) -> dict[str, bool]:
@@ -1584,7 +1834,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             # What the constructor was handed is held by the new instance,
             # not the instance itself (T23).
             found = {_held(cls, root): copy for root, copy in found.items()}
-        if how != "object":
+        if how != "object" and cls in self.indexer.class_scopes:
             found = _merged(found, self._new_results(cls))
         return _merged(found, {f"{FRESH}{how}:{cls}": False})
 
@@ -1607,6 +1857,13 @@ class _ReferenceCollector(ast.NodeVisitor):
                 )
             if func.id in FRESH_CALLS:
                 return {}
+            if func.id == "getattr" and len(node.args) in (2, 3) and not node.keywords:
+                members = self._module_members_named(node.args[0], node.args[1])
+                if members is not None:
+                    # ``getattr(state, "Conf", Default)``: the member, or the
+                    # default (a class handed in is a root as any value: U2).
+                    rest = node.args[2:]
+                    return _merged(members, *(self._state_roots(a, seen) for a in rest))
             copy = func.id in SHALLOW_CALLS
         elif parts is not None and not self._is_local(parts[0]):
             if self._only(parts, FRESH_CALLS):
@@ -1614,8 +1871,11 @@ class _ReferenceCollector(ast.NodeVisitor):
             if len(node.args) == 2 and not node.keywords and self._only(parts, CASTS):
                 return self._state_roots(node.args[1], seen)  # ``cast(T, x)`` is ``x``
             copy = self._only(parts, SHALLOW_CALLS)
+        # What a call returns may be anything it is handed, a class too
+        # (``HANDLERS.get(k, Default)``, ``ident(Conf)``: U2), but not a
+        # function named as one (``sorted(xs, key=f)``).
         found = _merged(
-            *(self._state_roots(a, seen) for a in args if not self._names_definition(a)),
+            *(self._state_roots(a, seen) for a in args if not self._names_function(a)),
             {f"{RESULT}{callee}": False for callee in self._callees(parts)},
         )
         if isinstance(func, ast.Attribute) and not self._names_definition(func.value):
@@ -1969,6 +2229,105 @@ class _ReferenceCollector(ast.NodeVisitor):
             )
         return False
 
+    def _attr_share(self, target: ast.expr, value: ast.expr) -> None:
+        """``self.<attr> = value`` in a method: when ``value`` may be an
+        object other code holds (a module variable, a class attribute, a
+        parameter's mutable default, the Borg's ``self.__dict__ = shared``),
+        a write into that attribute of an instance writes it, and the
+        attribute is not the instance's own (``attr_shares``; audit round 7,
+        U11). A fresh object (a display, a constructor call, a copy) and a
+        plain parameter are the instance's own."""
+        scope = self.scope
+        cls = scope.self_class
+        if (
+            cls is None
+            or scope.self_is_class
+            or not isinstance(target, ast.Attribute)
+            or not self._is_self(target.value)
+        ):
+            return
+        facts: set[tuple[str, str, str]] = set()
+        for root, copy in self._state_roots(value, frozenset()).items():
+            if copy or root == _NAMESPACE or root.startswith(FRESH) or held_root(root):
+                continue
+            facts.update(self._root_facts(root, bound=False, attr=""))
+        if self._mutable_default(value):
+            facts.add(("value", self.source, ""))
+        for kind, first, second in sorted(facts):
+            self.indexer.out.attr_shares.add((cls, target.attr, kind, first, second))
+
+    def _mutable_default(self, value: ast.expr) -> bool:
+        """Whether ``value`` names a parameter of this function whose
+        default is an object made once, when the function was defined
+        (``def __init__(self, items=[])``), and kept by the function."""
+        owner = self._binding_scope_node()
+        if not isinstance(owner, (*FUNC_NODES, ast.Lambda)):
+            return False
+        names = {n.id for n in ast.walk(value) if isinstance(n, ast.Name)}
+        for name, default in _defaults(owner.args):
+            if name in names and not isinstance(default, (ast.Constant, ast.Name, ast.Attribute)):
+                return True
+        return False
+
+    def _binding_scope_node(self) -> ast.AST | None:
+        """The function this statement is in (``_binding_scope`` of none)."""
+        for node in reversed(self._stack):
+            if isinstance(node, (*FUNC_NODES, ast.Lambda)):
+                return node
+        root = self.scope
+        while root.literal_parent is not None:
+            root = root.literal_parent
+        return root.literal_node
+
+    def _type_creation(self, node: ast.Call) -> None:
+        """``type(name, bases, ns)``: making a class runs code of its
+        in-scope bases and metaclass as a ``class`` statement does
+        (``__init_subclass__``: Resolver.class_creation), and that code may
+        change each base (a registry of subclasses): a write of each
+        (audit round 7, U12)."""
+        spec = node.args[1]
+        elts = spec.elts if isinstance(spec, (ast.Tuple, ast.List)) else [spec]
+        bases = [
+            cid
+            for elt in elts
+            if not isinstance(elt, ast.Starred)
+            and (cid := self._class_named(elt)) is not None
+            and cid in self.indexer.class_scopes
+        ]
+        if not bases:
+            return
+        self.indexer.class_creation(self.source, bases, node.keywords, self.scope)
+        for cid in bases:
+            for fact in self._root_facts(cid, bound=False, attr=""):
+                apply_fact(self.indexer.out, self.source, fact)
+
+    def _library_class_method(self, func: ast.Attribute) -> None:
+        """A method called on an in-scope class itself that no class of its
+        MRO in scope defines, when the class has a base outside the source
+        roots or a decorator or metaclass (``Base.register(Foo)`` on an
+        ``abc`` class, ``Case.addClassCleanup(f)`` on a ``TestCase``): the
+        library's method may keep state on the class (an ABC's registry,
+        the cleanups) that other code reads, so it writes each in-scope
+        class of the MRO (audit round 7, U12). Not a special method, nor
+        ``mro``, which read the class. Whether a class of the MRO is plain
+        is decided after pass 2 (``library_calls``: writes.apply_writes),
+        since another module's decorators are no part of this one's
+        environment fingerprint."""
+        name = func.attr
+        if name == "mro" or (name.startswith("__") and name.endswith("__")):
+            return
+        cls = self._class_named(func.value)
+        scopes = self.indexer.class_scopes
+        if cls is None or cls not in scopes:
+            return
+        if isinstance(self.indexer.lookup_in_class(cls, name), Resolved):
+            return
+        out = self.indexer.out
+        for c in self.indexer._mro(cls):
+            if c in scopes:
+                for fact in self._root_facts(c, bound=False, attr=""):
+                    out.library_calls.add((cls, self.source, *fact))
+
     def visit_Assign(self, node: ast.Assign) -> None:
         observe_assign(self, node.targets)
         if len(node.targets) == 1:
@@ -2003,6 +2362,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                     self._mutation_target(sub, True)  # rebinding a ``global`` variable
             self._target_write(target)
             self._held_instance(target, node.value)
+            self._attr_share(target, node.value)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -2030,6 +2390,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             self._stash_binding(node.target, node.value)
             self._stash_value(node.target, node.value)
             self._held_instance(node.target, node.value, node.annotation)
+            self._attr_share(node.target, node.value)
         self.visit(node.target)
         self.visit(node.annotation)
         if node.value is not None:
@@ -2081,7 +2442,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         ):
             # ``setattr(Config, "mode", v)``, ``heappush(queue, x)``.
             if id(node) not in self.scope.module.undone():
-                binds = parts is not None and parts[-1] in ("setattr", "delattr")
+                binds = parts is not None and parts[-1] in (
+                    "setattr",
+                    "delattr",
+                    "__setattr__",
+                    "__delattr__",
+                )
                 names = (
                     self.scope.string_candidates(node.args[1])
                     if binds and len(node.args) > 1
@@ -2098,6 +2464,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             if receiver is None and node.args and self._is_self(node.args[0]):
                 receiver = node.args[0]
             self._reflective_write(receiver, None)
+        if isinstance(node.func, ast.Attribute):
+            self._library_class_method(node.func)
         if self._unpickler_load(node):
             self._unpickle(node, "Unpickler.load")
         if parts is not None:
@@ -2157,6 +2525,8 @@ class _ReferenceCollector(ast.NodeVisitor):
             if builtin and parts[0] == "type" and len(node.args) == 1:
                 if (cls := self._self_class(node.args[0])) is not None:
                     self.indexer.escape_class_family(cls)
+            if builtin and parts[0] == "type" and len(node.args) == 3:
+                self._type_creation(node)
             if parts[-1] in ("setattr", "delattr") or patch_target_form(parts) in (
                 OBJECT,
                 MULTIPLE,
@@ -3816,9 +4186,19 @@ def _find_class(body: list[ast.stmt], path: list[str]) -> ast.ClassDef | None:
     return None
 
 
-def _within(block: list, node: ast.AST) -> bool:
-    """Whether ``node`` is one of ``block``'s nodes (by identity)."""
-    return any(n is node for n in block)
+def _defaults(args: ast.arguments) -> list[tuple[str, ast.expr]]:
+    """Each parameter that has a default, with it."""
+    positional = [a.arg for a in args.posonlyargs + args.args]
+    found = list(
+        zip(positional[len(positional) - len(args.defaults) :], args.defaults, strict=True)
+    )
+    found += [(a.arg, d) for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True) if d]
+    return found
+
+
+def _parameter_names(args: ast.arguments) -> set[str]:
+    every = args.posonlyargs + args.args + args.kwonlyargs
+    return {a.arg for a in every + [a for a in (args.vararg, args.kwarg) if a]}
 
 
 def _elements(expr: ast.expr | None) -> list[ast.expr]:

@@ -236,13 +236,34 @@ everything.
       `registry` returns `_CACHE`;
     - `globals()["_CACHE"][k] = v`.
 
+    A class is followed by another name as well: an alias (`Alias = Config`,
+    `c = Config`), a dict, tuple or loop over classes
+    (`config_by_name["test"].DEBUG = True`), a parameter's default
+    (`def f(klass=Config)`), `getattr(module, "Config")`, the module got by
+    name (`import_module`, `sys.modules`, `vars(module)[...]`,
+    `module.__dict__[...]`), `type.__setattr__(Config, ...)`, an item of
+    `Sub.__mro__` or `Sub.__bases__` (also of `type(obj)`), and what a call
+    handed the class gives back (`HANDLERS.get(k, Default)`). Calling such
+    a name (`Alias()`, `functools.partial(Config)()`) makes an instance of
+    the class. A method a library gives your class, called on the class
+    itself, may keep state on it: `Base.register(Foo)` on a class deriving
+    from `abc.ABC` (or with the `abc.ABCMeta` metaclass) and
+    `Case.addClassCleanup(f)` on a `TestCase` are dependencies of every
+    reader of the class, as is `type("Name", (Base,), {})`, which runs
+    `Base.__init_subclass__`.
+
     A class-level container is shared by every instance: a change made
     through an instance of your class is a dependency of every reader of
     the class too (`Store._cache`, `cls._cache`), as long as the class or
-    one of your base classes binds something mutable in its body, some
-    code stores onto the class, or it has a decorator, a metaclass or a
-    library base that may give it state (other than `dataclasses.dataclass`,
-    `functools.total_ordering`, `typing.final` and `abc.ABCMeta`). That holds for an instance a module-level
+    one of your base classes binds something mutable in its body (a class
+    nested in it included: `OUTER.Meta.registry.append(x)`, `self.Meta
+    .registry`), some code stores onto the class or gives it an attribute
+    outside its body (its module's top-level `Config.registry = {}`,
+    another module, `setattr`, a decorator or metaclass of yours), or it
+    has a decorator, a metaclass or a library base that may give it state
+    (other than `dataclasses.dataclass`, `functools.total_ordering`,
+    `typing.final` and `abc.ABCMeta`). `staticmethod(x)`, `classmethod(x)`
+    and `property(x)` hold nothing only when `x` is a function. That holds for an instance a module-level
     name holds (`STORE = Store()`, `STORE = make_store()`, or set by a
     function under `global`: `STORE._cache[k] = v`, `STORE.cache()[k] =
     v`), and for one a function makes (`s = Store()`, `new =
@@ -250,8 +271,15 @@ everything.
     `new._items.append(x)`, or `s._items` handed to a function that
     changes it). Otherwise a class whose body holds only constants,
     methods and properties is not affected, nor is an attribute of a new
-    instance that no class body binds (`s.mine.append(x)`, where only
-    `__init__` sets `self.mine`).
+    instance that no class body binds and that its methods set to a new
+    object (`s.mine.append(x)`, where only `__init__` sets `self.mine =
+    []`). An attribute a method sets to an object that may be shared (a
+    module-level name, a class attribute, a parameter's mutable default:
+    `self.items = _ITEMS`, `self.items = self._shared`, `def
+    __init__(self, items=[])`) is that object: changing it through any
+    instance is a dependency of the object's readers. So is setting an
+    attribute on an instance whose `__init__` sets `self.__dict__` to a
+    shared dict (the Borg).
 
     A copy is not the object: `cache = dict(_CACHE)` or `_CACHE.copy()`,
     then `cache[k] = v`, changes nothing shared. Setting an attribute on a

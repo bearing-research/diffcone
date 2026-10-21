@@ -47,6 +47,7 @@ from diffcone.indexer.literals import (
     class_tables,
     make_evaluator,
     module_bindings,
+    module_functions,
     module_immutables,
 )
 from diffcone.indexer.scopes import (
@@ -182,9 +183,10 @@ class FirstPass(IndexerState):
         found = self._class_bindings[scope.name]
         if not class_adds_no_state(found, nodes):
             return None
+        functions = module_functions(found, scope.tree) if scope.tree is not None else frozenset()
         rests: set[str] = set()
         for node in nodes:
-            these = class_state(found, node.body)
+            these = class_state(found, node.body, functions)
             if these is None:
                 return None
             rests.update(these)
@@ -451,6 +453,7 @@ class FirstPass(IndexerState):
                 cscope = ClassScope(id=symbol_id, module=scope, enclosing=class_scope)
                 cscope.plain = plain
                 cscope.stateless = self._class_state(scope, nodes)
+                cscope.unbounded = not class_adds_no_state(self._class_bindings[scope.name], nodes)
                 cscope.immutables = class_immutables(self._class_bindings[scope.name], nodes)
                 cscope.kept = class_kept(self._class_bindings[scope.name], nodes)
                 cscope.declared = class_declared(nodes)

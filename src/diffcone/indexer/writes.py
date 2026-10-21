@@ -137,6 +137,8 @@ ARGUMENT_MUTATORS = frozenset(
         "delattr",
         "object.__setattr__",
         "object.__delattr__",
+        "type.__setattr__",  # a class's own attribute (U2)
+        "type.__delattr__",
         "dict.update",
         "dict.setdefault",
         "dict.pop",
@@ -765,21 +767,25 @@ def returns_third_party(indexer: Resolver, node: ast.AST, scope: Scope) -> bool:
 # --------------------------------------------------------------------------- after pass 2
 
 
-def apply_writes(indexer: Resolver) -> None:
+def apply_writes(indexer: Resolver) -> ClassRecord:
     """Close parameter writes over the calls that hand parameters on, then
     give each variable handed to a written parameter a ``mutated_by`` edge
-    to the caller (see the module docstring)."""
+    to the caller (see the module docstring). Gives back the record of
+    what each class is given (ClassRecord), which the decisions after it
+    read."""
     out = indexer.out
     params = out.func_params
+    _apply_library_calls(indexer)
+    class_record = ClassRecord(indexer)
     # Writes onto a class of unknown type are writes of the classes that may
     # own the attribute, before anything asks which classes are written (T25).
-    owners = AnyClassOwners(indexer)
+    owners = class_record.owners
     _record_any_class_writes(out, owners)
     writes: set[tuple[str, str]] = set(out.param_writes)
     if not writes:
         _apply_held_binds(indexer, _HeldSafety(indexer))
         _record_any_class_writes(out, owners)
-        return
+        return class_record
     symbols = indexer.index.symbols
     by_name: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
@@ -891,7 +897,7 @@ def apply_writes(indexer: Resolver) -> None:
     # records, its module's top-level code, and (whatever the callee does)
     # any call it is handed to other than as the receiver of a method, or
     # as what a constructor was handed.
-    tables_written = {(c, a) for c, a, _ in out.attr_value_writes} | out.own_class_writes
+    tables_written = {(c, a) for c, a, _ in out.attr_value_writes}
     for record in passes:
         what = record[1]
         if what.startswith(HELD_WHAT):
@@ -904,9 +910,7 @@ def apply_writes(indexer: Resolver) -> None:
     for _, _, _, kind, first, second in out.held_binds:
         if kind == "attribute":
             tables_written.add((first, second))
-    classes_written = {e.source for e in indexer.index.edges if e.detail == MUTATED_BY}
-    classes_written |= {state for state, _ in out.value_writes}
-    classes_written |= {state for state, _ in out.receiver_writes}
+    classes_written = class_record.written()
     # What is decided only below or after this function counts as written
     # however it ends: a class (or an instance of it, which reads the table
     # through the class) handed to a call other than as a method's receiver,
@@ -922,6 +926,7 @@ def apply_writes(indexer: Resolver) -> None:
             continue
         if what.startswith("var:"):
             classes_written.add(what[len("var:") :])
+            classes_written |= class_record.classes(what[len("var:") :])
         elif what.startswith("instance:"):
             classes_written.add(what.rpartition(":")[2])
         elif what.startswith(ANY_CLASS_WHAT):
@@ -950,18 +955,20 @@ def apply_writes(indexer: Resolver) -> None:
             tables_written.add((cls, attr))
         elif root.startswith(("<fresh>:", "<instance>")):
             classes_written.add(root.rpartition(":")[2])
+            classes_written |= class_record.instances.get(root.rpartition(":")[2], set())
         elif root.startswith("<anyclass>:"):
             classes_written.update(owners.owners(root[len("<anyclass>:") :] or "*"))
         else:
             classes_written.add(root)
+            classes_written |= class_record.classes(root)
     table_cache: dict[tuple[str, str], bool] = {}
 
     def literal_table(cls: str, attr: str) -> bool:
         """Whether class ``cls``'s attribute ``attr`` is a literal table
         (``ClassScope.tables``) nothing may change or bind anew: every class
         of its MRO kept and in scope, no class of its family written as a
-        whole, storing the attribute or changing it in place, or customising
-        attribute reads."""
+        whole, given the attribute outside its body (ClassRecord), changing
+        it in place, or customising attribute reads."""
         key = (cls, attr)
         if key not in table_cache:
             cscope = indexer.class_scopes.get(cls)
@@ -980,7 +987,8 @@ def apply_writes(indexer: Resolver) -> None:
                     if (
                         c in classes_written
                         or (c, attr) in tables_written
-                        or (c, "*") in tables_written
+                        or attr in class_record.given(c)
+                        or "*" in class_record.given(c)
                         or "__getattribute__" in member.members.keys() | member.bindings
                     ):
                         found = False
@@ -1137,8 +1145,11 @@ def apply_writes(indexer: Resolver) -> None:
             # A module's own top-level statements naming the variable are
             # part of its hash already (a class among them may have an
             # attribute bound anew: Indexer._class_attribute_writes).
-            if symbol is not None and symbol.kind == SymbolKind.CLASS and caller != variable:
-                out.own_class_writes.add((variable, "*"))
+            # A class among them, or held by one, may be given an attribute
+            # (Indexer._class_attribute_writes, ClassRecord).
+            if symbol is not None and symbol.kind in (SymbolKind.CLASS, SymbolKind.VARIABLE):
+                if caller != variable:
+                    out.own_class_writes.add((variable, "*"))
             return
         # What the variable holds is written: no edge if it cannot be
         # (Indexer._value_writes). As the receiver of a method that writes
@@ -1148,6 +1159,13 @@ def apply_writes(indexer: Resolver) -> None:
             out.receiver_writes.add((variable, caller))
         else:
             out.value_writes.add((variable, caller))
+        if not receiver:
+            # A class the variable holds, or the class itself, is given what
+            # the callee binds on it (``configure(KINDS["c"])``; U2, U3).
+            if symbol.kind == SymbolKind.VARIABLE:
+                out.typed_writes.add((variable, caller))
+            for name in owners.names(ANY_CLASS_WHAT, flavors):
+                out.class_binds.add((variable, name))
 
     for record in passes:
         caller, what = record[0], record[1]
@@ -1179,9 +1197,185 @@ def apply_writes(indexer: Resolver) -> None:
                 handed_written(caller, what, record[4] == RECEIVER, how)
             continue
         if writes_through(record):
-            handed_written(caller, what, record[4] == RECEIVER)
+            handed_written(caller, what, record[4] == RECEIVER, written_flavors(record))
     _apply_held_binds(indexer, safe)
     _record_any_class_writes(out, owners)
+    return class_record
+
+
+def _apply_library_calls(indexer: Resolver) -> None:
+    """A method a library gives a class, called on the class itself
+    (``library_calls``): a write of each in-scope class of its MRO when one
+    of them has a base outside the index, a decorator or a metaclass,
+    which may define it (audit round 7, U12)."""
+    out, scopes = indexer.out, indexer.class_scopes
+    decided: dict[str, bool] = {}
+    for cls, writer, kind, first, second in sorted(out.library_calls):
+        if cls not in decided:
+            mro = [c for c in indexer._mro(cls) if c in scopes]
+            decided[cls] = any(scopes[c].opaque or not scopes[c].plain for c in mro)
+        if decided[cls]:
+            apply_fact(out, writer, (kind, first, second))
+
+
+def variable_classes(indexer: Resolver) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Module variable -> the in-scope classes it may hold an instance of,
+    and -> those it may hold themselves (``Alias = Conf``, ``KINDS = {"c":
+    Conf}``, ``ALL = (Conf,)``, what a call handed a class gives back; audit
+    round 7, U2): what its bindings hold (``instance_bindings``: ``class:``
+    an instance, its id a class's or a variable's called as one; ``type:``
+    a class itself), through what the functions called return
+    (``returns``, ``state_returns``), other variables, and what such an
+    instance holds under an attribute a method binds to an instance or a
+    factory's result (``attr_writes``). Computed over the whole index on
+    every build from facts a cold and a warm build share (audit round 6,
+    T21)."""
+    out = indexer.out
+    bindings: dict[str, set[str]] = defaultdict(set)
+    for var, origin in out.instance_bindings:
+        bindings[var].add(origin)
+    if not bindings:
+        return {}, {}
+    returned: dict[str, set[str]] = defaultdict(set)
+    for function, root in out.state_returns:
+        returned[function].add(root)
+    returns, symbols, scopes = out.returns, indexer.index.symbols, indexer.class_scopes
+    held: dict[str, set[str]] = defaultdict(set)
+    for w in out.attr_writes:
+        if w.binding is not None and w.binding[0] == "instance":
+            held[w.cls].add(f"class:{w.binding[1]}")
+        elif w.binding is not None and w.binding[0] == "factory":
+            held[w.cls].add(f"call:{w.binding[1]}")
+    instances: dict[str, set[str]] = {}
+    types: dict[str, set[str]] = {}
+    for start in sorted(bindings):
+        made: set[str] = set()
+        kinds: set[str] = set()
+        seen: set[tuple[str, bool]] = set()
+        # (origin, whether what it gives is called: an instance of it)
+        stack = [(f"var:{start}", False)]
+        while stack:
+            origin, called = stack.pop()
+            if (origin, called) in seen:
+                continue
+            seen.add((origin, called))
+            kind, _, ident = origin.partition(":")
+            symbol = symbols.get(ident)
+            if kind in ("class", "type") and symbol is not None:
+                instance = called or kind == "class"
+                if symbol.kind == SymbolKind.VARIABLE:
+                    stack.append((f"var:{ident}", instance))
+                elif ident in scopes and not instance:
+                    kinds.add(ident)
+                elif ident in scopes and ident not in made:
+                    made.add(ident)
+                    # What its instances hold under an attribute
+                    # (``self.store = Store()``) is reached through them.
+                    for c in indexer._mro(ident):
+                        stack.extend((h, False) for h in held.get(c, ()))
+            elif kind == "var":
+                stack.extend((o, called) for o in bindings.get(ident, ()))
+            elif kind == "call":
+                made.update(c for c in returns.get(ident, ()) if c in scopes)
+                for root in returned.get(ident, ()):
+                    if root.startswith("<attr>:"):
+                        # What a class attribute holds: any of the class's.
+                        stack.append((f"class:{root.rpartition(':')[2]}", called))
+                    elif root.startswith("<result>:"):
+                        stack.append(("call:" + root[len("<result>:") :], called))
+                    elif (returned_symbol := symbols.get(root)) is not None:
+                        if returned_symbol.kind == SymbolKind.CLASS:
+                            stack.append((f"type:{root}", called))
+                        elif returned_symbol.kind == SymbolKind.VARIABLE:
+                            stack.append((f"var:{root}", called))
+        if made:
+            instances[start] = made
+        if kinds:
+            types[start] = kinds
+    return instances, types
+
+
+class ClassRecord:
+    """Every attribute each in-scope class is given anywhere, computed once
+    and read by every rule that asks whether a class holds state, owns an
+    attribute or may be an unknown object's class written under a name
+    (Indexer._classes_holding_state, ``_own_attribute``,
+    ``_allocated_fresh``, ``_class_attribute_writes``, ``literal_table``,
+    AnyClassOwners; audit round 7, U3). Its sources: the class body
+    (``members``, ``bindings``); its own module's top-level code
+    (``own_class_writes``) and any other code (``class_binds``), on the
+    class or on a module variable holding it (``variable_classes``); a
+    decorator or metaclass that may give it names nothing bounds
+    (``ClassScope.unbounded``: ``*``, any); ``setattr`` with a computed name
+    (``*``); and what methods bind on ``self`` or ``cls`` (``attr_writes``,
+    ``methods``) and bind there to an object that may be shared
+    (``attr_shares``, ``shares``). Read live: what is decided after pass 2
+    adds to it."""
+
+    def __init__(self, indexer: Resolver) -> None:
+        self._indexer = indexer
+        out = indexer.out
+        scopes = indexer.class_scopes
+        self.instances, self.types = variable_classes(indexer)
+        self.methods: dict[str, set[str]] = defaultdict(set)
+        for w in out.attr_writes:
+            if w.cls in scopes:
+                self.methods[w.cls].add(w.attr)
+        self.shares: dict[str, dict[str, set[tuple[str, str, str]]]] = {}
+        for cls, attr, kind, first, second in out.attr_shares:
+            if cls in scopes:
+                self.shares.setdefault(cls, {}).setdefault(attr, set()).add((kind, first, second))
+        self._unbounded = {cid for cid, cscope in scopes.items() if cscope.unbounded}
+        # The classes nested in each (``class Outer: class Meta: ...``).
+        self.nested: dict[str, list[str]] = defaultdict(list)
+        for cid, cscope in sorted(scopes.items()):
+            if cscope.enclosing is not None:
+                self.nested[cscope.enclosing.id].append(cid)
+        self._given: dict[str, set[str]] = {}
+        self._sizes: tuple[int, int] | None = None
+        self.owners = AnyClassOwners(indexer, self)
+
+    def classes(self, ident: str) -> set[str]:
+        """The in-scope classes ``ident`` is, or may hold itself (a module
+        variable bound to a class)."""
+        if ident in self._indexer.class_scopes:
+            return {ident}
+        return self.types.get(ident, set())
+
+    def given(self, cls: str) -> set[str]:
+        """The names given to ``cls`` outside its body (``*``: any)."""
+        out = self._indexer.out
+        sizes = (len(out.own_class_writes), len(out.class_binds))
+        if sizes != self._sizes:
+            self._sizes = sizes
+            given: dict[str, set[str]] = defaultdict(set)
+            for ident, name in out.own_class_writes | out.class_binds:
+                for c in self.classes(ident):
+                    given[c].add(name)
+            for c in self._unbounded:
+                given[c].add("*")
+            self._given = given
+        return self._given.get(cls, set())
+
+    def class_level(self, cls: str, attr: str) -> bool:
+        """Whether ``cls`` may have ``attr`` on the class itself: its body
+        binds or defines it, or something gives it."""
+        cscope = self._indexer.class_scopes[cls]
+        given = self.given(cls)
+        return attr in cscope.members or attr in cscope.bindings or attr in given or "*" in given
+
+    def written(self) -> set[str]:
+        """What some code writes as a whole: the sources of ``mutated_by``
+        edges and of ``value_writes`` and ``receiver_writes``, and the
+        classes a written variable may hold (``typed_writes``)."""
+        indexer = self._indexer
+        out = indexer.out
+        found = {e.source for e in indexer.index.edges if e.detail == MUTATED_BY}
+        found |= {state for state, _ in out.value_writes}
+        found |= {state for state, _ in out.receiver_writes}
+        for var, _ in out.typed_writes:
+            found |= self.types.get(var, set())
+        return found
 
 
 class AnyClassOwners:
@@ -1191,34 +1385,46 @@ class AnyClassOwners:
     ``c.x``, or returned to a caller writing it; audit round 6, T25). The
     object may be an instance of any class, but binding ``x`` on it, or
     changing what it holds under ``x``, matters to the readers of a class
-    that may have ``x``: one whose body binds or defines it, or whose
+    that may have ``x``: one whose body binds or defines it, whose
     methods bind it on ``self`` or ``cls`` (an instance's own attribute may
-    be a class's too, since which one the object is is not known), one with
-    a base outside the index (which may define it), and every in-scope
+    be a class's too, since which one the object is is not known), or that
+    is given it elsewhere (ClassRecord: ``*`` gives it every name; U3), one
+    with a base outside the index (which may define it), and every in-scope
     subclass of those. A special name (``__doc__``, ``__repr__``,
     ``__dict__``) every class has, an attribute no class binds or defines
     (which only code like this gives a class, for readers such as
     ``getattr(Conf, "flag", None)``), and an attribute named only at run
     time (``*``), are any class's."""
 
-    def __init__(self, indexer: Resolver) -> None:
+    def __init__(self, indexer: Resolver, record: ClassRecord) -> None:
         scopes = indexer.class_scopes
         self._indexer = indexer
-        self._named: dict[str, set[str]] = defaultdict(set)
+        self._record = record
+        self._body: dict[str, set[str]] = defaultdict(set)
         for cid, cscope in scopes.items():
             for name in cscope.members.keys() | cscope.bindings:
-                self._named[name].add(cid)
-        for w in indexer.out.attr_writes:
-            if w.cls in scopes:
-                self._named[w.attr].add(w.cls)
+                self._body[name].add(cid)
+        for cid, names in record.methods.items():
+            for name in names:
+                self._body[name].add(cid)
         self._opaque = {cid for cid, cscope in scopes.items() if cscope.opaque}
         self._found: dict[str, list[str]] = {}
+        self._sizes: tuple[int, int] | None = None
 
     def owners(self, name: str) -> list[str]:
+        out = self._indexer.out
+        sizes = (len(out.own_class_writes), len(out.class_binds))
+        if sizes != self._sizes:
+            # What is given to classes grows as writes are decided.
+            self._sizes, self._found = sizes, {}
         found = self._found.get(name)
         if found is None:
             indexer = self._indexer
-            named = self._named.get(name)
+            named = set(self._body.get(name, ()))
+            for cid in indexer.class_scopes:
+                given = self._record.given(cid)
+                if name in given or "*" in given:
+                    named.add(cid)
             if name == "*" or (name.startswith("__") and name.endswith("__")) or not named:
                 found = sorted(indexer.class_scopes)
             else:
