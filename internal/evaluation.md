@@ -1528,6 +1528,84 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## Before 0.5.0: audit round 6 (2026-10-20)
+
+Measured on v0.4.0 (5a19079), the round's main after T19-T22 (02e8497),
+after T23/T24 (52a4b53), after T25 (66db5a8; 098e970 with its notes) and
+after T26 (8224339 and the commit after it).
+Workspace: the acb19380 `.spike` (census JSONs, `corpus-r6/`,
+`corpus-final/`, `evcorpus/{e36,r6,final}`, `strata-final098.json`).
+
+**Census** (42 repositories, 333 640 targets over their plans):
+
+| | selected | |
+|---|---|---|
+| v0.4.0 | 315 752 | 93.3 % |
+| 02e8497 | 320 760 | 94.4 % |
+| 52a4b53, 66db5a8, T26 | 315 774 | 93.4 % |
+
+The only move from v0.4.0 is flake8 (+22, 1715 -> 1737): a real class
+write, `cls.with_doctest = ...` (T6). packaging went 6 292 -> 11 278 of
+11 278 on 02e8497 (a constructor argument written through the instance,
+T23; the fresh-instance half was T22) and back to 6 292 with T23. T25
+moved no plan; its cost is `mutated_by` edges in networkx (2 577 -> 3 206,
+`create_using=G.__class__` handed to `empty_graph`, whose
+`create_using.clear()` counts as a write of any class). T26's first
+draft, counting every class keyword, took twine 984 -> 1 308 of 1 308 (a
+`TypedDict` with `total=False` filled in `metadata_dictionary`); with
+class keywords other than `metaclass` accepted, the census equals T25's.
+
+**Fixture and collection checks** (02e8497): 0 missed fixtures in every
+repository; the collection gaps are the known, flagged ones (alembic,
+scrapy and pygments plugin-collected files, itsdangerous, pytest-asyncio's
+unparsed file).
+
+**Corpus** (`diffcone corpus --coverage`, last 6 Python-changing commits):
+on 02e8497, 150 validated pairs over 42 repositories, 0 outcome misses,
+coverage recall 100 % everywhere (dateutil's errors are its own base
+collection error under pytest 9.1). Re-run on 098e970 for the
+repositories T23-T25 change (packaging, scrapy, flask, networkx): 17
+validated pairs, 0 outcome misses, coverage recall 100 % (545, 8 321, 93
+and 972 affected tests). T26 only widens selection, so this holds for it.
+
+**Evidence corpus** (8 suites, `REPLAY=1`, against `evcorpus/e36`, the
+round base 1430e5e): 0 misses everywhere.
+
+| repo | e36 | 02e8497 | 098e970 |
+|---|---|---|---|
+| arrow | 2 839 | 4 152 | 2 846 |
+| marshmallow | 1 246 | 1 881 | 1 238 |
+| more-itertools | 2 013 | 2 054 | 2 054 |
+| typer | 5 632 | 5 652 | 5 652 |
+| boltons, flask, jinja, pluggy | unchanged | | |
+
+* arrow +7 (pair c61de92997, a version bump): executed code stores into
+  state on `Arrow`, `Locale` and `_locale_map` (T19's stores), and
+  `Arrow.range` and `Arrow.__format__` look names up by a name nothing
+  bounds, so they see `arrow._version`. 02e8497's +1 313 (two pairs 49 ->
+  702 of 708) was T24 (`min(m, self._MONTHS_PER_YEAR)` then `m += 1`).
+* marshmallow -8 (pair 902f99c415, the URL regex): the base selected nine
+  `*_repr` tests through `Validator.__repr__ reads Predicate.__init__ can
+  run _regex_generator`, a false path; `URL.__init__` and `__repr__` never
+  read the regex memo, and every test running `RegexMemoizer.__call__` is
+  still selected (plus `test_set_value`). 02e8497's +635 (pair
+  7dff08fcb7, 3 -> 646) was T24 (`TimeDelta(TimeDelta.DAYS)`).
+* more-itertools +41 and typer +20: T19 (every store onto an object, a
+  class or a closure counts).
+
+**strata** (edc32ce0 -> 1241020210 from its recording): 6 231 of 6 231 on
+02e8497 and 098e970 (v0.4.0: 661): 6 015 `executed_reader`, 210
+`lookup_site`, 62 `subprocess`; no fallback, no analysis error. The rise
+is the round's store rules (T19, T21) on strata's shared state; making it
+precise is roadmap item 21.
+
+**Test suite time.** The suite (2 353 tests) ran serially: about 30
+minutes locally, 70-104 minutes on the Windows runners. With pytest-xdist
+(1fa2ede) one file runs 3-4 times faster (test_scenarios.py, back to back
+on a loaded machine: 355 s / 304 s serially, 83 s / 106 s with `-n 4`) and
+the CI test jobs take 2.4-5 min on Ubuntu, 13-20 on macOS, 26-42 on
+Windows.
+
 ## pandas plans that fit in memory (audit E37, 2026-10-19)
 
 A pandas evidence plan (the first item 19 pair, 25 620 targets) peaked at a
