@@ -1722,6 +1722,17 @@ selection rules.</p>
   discovered at that commit: pytest's rootdir lies outside the repository
   (a configuration file in a directory above it), so plans would find no
   recording for any test and select them all.</li>
+<li>A test not all of whose cases ran in the recording (deselected by
+  <code>-k</code>, <code>-m</code> or <code>--deselect</code>, or cut short by <code>-x</code> or <code>--maxfail</code>, in the
+  arguments, <code>addopts</code> or <code>PYTEST_ADDOPTS</code>) gets no record, so every plan
+  selects it until it is recorded whole; <code>collect</code> says how many tests
+  have no record. A record of only some cases was taken for the whole
+  test, so a later break in a case it never ran went unselected.</li>
+<li><code>run --collect</code> runs with <code>--maxfail=0</code>, as <code>collect</code> does, and keeps
+  every flag of the record it replaces.</li>
+<li><code>PYTEST_ADDOPTS</code> is part of the recorded environment: a plan with
+  different options plans without the recording.</li>
+<li>The evidence store format is 7: record again after upgrading.</li>
 </ul>
 <h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1734,7 +1745,17 @@ selection rules.</p>
 <li><code>diffcone check</code> (and the <code>check</code> action) says when it compared the plan
   only, without diffcone's own run.</li>
 <li><code>diffcone report</code> counts a pull-request run that failed after a good
-  plan as a problem.</li>
+  plan as a problem.
+  So do a plan that failed and a run that refused, so <code>comment:
+  on-problem</code> comments on a pull request that ran no tests.</li>
+<li><code>diffcone run</code> exits 3 when the selection plugin did not run (a command
+  or wrapper that drops its arguments, a tox or nox target without
+  <code>{posargs}</code>): the selected tests never ran, and it exited 0.</li>
+<li><code>diffcone validate</code> and <code>corpus</code> compare outcomes case by case: a case
+  that changed to an outcome another case of the same test already had
+  was no change.</li>
+<li>The <code>run</code> action's <code>selected</code> output and the <code>check</code> action use what
+  ran (<code>ran.json</code>), not the plan, when they differ.</li>
 </ul>
 <h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1871,6 +1892,11 @@ selection rules.</p>
   one outside every test (locale tests that query at import, pytest-benchmark
   in every run) planned every change as select-everything there. POSIX
   was not affected.</li>
+<li>A test runner called from project code with a directory of non-Python
+  files (<code>pytest.main(["--verbose", "docs"])</code> over doctest text files),
+  a word after an option diffcone does not know, or no path at all, is
+  taken to run anything. The directory was taken for the option's
+  argument and its tests were never selected.</li>
 </ul>
 <h2 id="040-2026-10-14"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.4.0">0.4.0</a> - 2026-10-14<a class="headerlink" href="#040-2026-10-14" title="Permanent link">&para;</a></h2>
 <p>Upgrading from 0.3.0: make your execution-evidence recordings again. The

@@ -1217,7 +1217,9 @@ could skip tests. <code>3</code> wins when both apply. A manifest written by
 <code>discover</code> keeps its notes, so a plan made from it exits <code>3</code> as well.</p>
 <p><code>run</code> exits with the runner's own code (0 when nothing ran because
 nothing was selected, or with <code>--dry-run</code>; pytest's <code>5</code>, no test ran, counts as <code>0</code>), and with <code>3</code>
-when a selected test was not collected. It refuses with <code>2</code> when the
+when a selected test was not collected or the selection plugin never ran
+(a wrapper in <code>--command</code> that does not pass its arguments on to pytest).
+It refuses with <code>2</code> when the
 working tree differs from the snapshot the plan analysed (unless
 <code>--allow-mismatched-worktree</code>) or <code>--repo</code> is not the top of a git
 repository, and with <code>3</code> when discovery may be incomplete (unless
@@ -1229,8 +1231,9 @@ not a miss when the plan said its discovery is incomplete (the plan's
 failure of the full run was selected, <code>1</code> when the plan missed one, <code>2</code>
 when an input cannot be read. <code>report</code> exits <code>0</code> when the runs it read
 show no problem, <code>1</code> when they show one (a miss, a check that reached no
-verdict, a selected test pytest did not collect, a pull-request run that
-failed after a good plan, an artifact it could not read), <code>2</code> on errors. <code>collect</code>, <code>prune</code> and
+verdict, a selected test pytest did not collect, a pull-request run whose
+plan failed, that was refused, or that failed after a good plan, an
+artifact it could not read), <code>2</code> on errors. <code>collect</code>, <code>prune</code> and
 <code>evidence</code> exit <code>0</code> on success (<code>collect</code> records whatever the suite's own
 results) and <code>2</code> on errors. An internal error exits <code>2</code> in every command.</p>
 <h2 id="diffcone-plan"><code>diffcone plan</code><a class="headerlink" href="#diffcone-plan" title="Permanent link">&para;</a></h2>

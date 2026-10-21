@@ -1178,7 +1178,13 @@ report:</p>
 <li>Tests with no recording (new tests, for example), tests whose
   recording was unstable, and tests that failed or errored while they were
   recorded are always selected: a failing test's recording stops where it
-  failed.</li>
+  failed. So is a test only some of whose cases ran while it was recorded
+  (the others deselected, or not reached): its recording covers only
+  those cases.</li>
+<li>A recording describes the tests as they ran with the arguments it was
+  made with. If you plan or run with pytest options that change what a
+  test does (a conftest option such as <code>--runslow</code> or <code>--backend</code>), make
+  the recording with the same options.</li>
 <li>
 <p>Processes a test starts:</p>
 <ul>
@@ -1258,7 +1264,7 @@ match the recording:</p>
 <li>the installed packages;</li>
 <li>your <code>PYTHONPATH</code>;</li>
 <li>a few environment variables (<code>TZ</code>, <code>LANG</code>, <code>LC_ALL</code>,
-  <code>PYTHONWARNINGS</code>, <code>VIRTUAL_ENV</code>).</li>
+  <code>PYTHONWARNINGS</code>, <code>VIRTUAL_ENV</code>, <code>PYTEST_ADDOPTS</code>).</li>
 </ul>
 <p>It sets <code>PYTHONHASHSEED</code> to the recorded value itself. With <code>--dry-run</code>,
 nothing is checked.</p>
@@ -1292,9 +1298,19 @@ arguments and source roots the recording was made with. If the recording
 was made with <code>--reverse-check</code>, <code>run --collect</code> runs the selected tests a
 second time in reverse order, so the new records are checked the same way.</p>
 <p>If the environment differs, or pytest is interrupted or ends with an error
-of its own (not a test failure), no recording is written. A run stopped
-at a failure (<code>-x</code>) still writes one, and the tests it didn't reach are
-selected until they are recorded again.</p>
+of its own (not a test failure), no recording is written. Like <code>collect</code>,
+<code>run --collect</code> adds <code>--maxfail=0</code>, so an <code>-x</code> or <code>--maxfail</code> in your
+arguments or <code>addopts</code> doesn't stop it at a failure. If something else
+stops it early (<code>--sw</code>, a plugin), the tests it didn't finish have no
+record in the new recording, and every plan selects them until they are
+recorded again. A test that failed when it was recorded keeps that mark,
+and stays selected, until you record the full suite again.</p>
+<p>A test has a record only if all of its cases ran. A case left out by <code>-k</code>,
+<code>-m</code> or <code>--deselect</code> (on the command line, in <code>addopts</code> or in
+<code>PYTEST_ADDOPTS</code>) or by a conftest leaves the whole test without a record,
+so every plan selects it. <code>collect</code> says how many collected tests have no
+record. <code>PYTEST_ADDOPTS</code> is part of the recorded environment: a run with a
+different value runs the static plan instead.</p>
 <p>In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See <a href="../../ci/">CI</a>.</p>
 <h2 id="cython">Cython<a class="headerlink" href="#cython" title="Permanent link">&para;</a></h2>

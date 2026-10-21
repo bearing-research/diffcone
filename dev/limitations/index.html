@@ -1237,7 +1237,11 @@ after <code>env X=1</code>, <code>uv run</code> or <code>timeout 30</code>, and 
 <li>When the program is built at run time, the test is selected for any
   change: a path from a variable or the environment, <code>-c</code> code
   assembled from pieces, a program that imports by a computed name or
-  changes <code>sys.path</code>, <code>*args</code>, a directory, or <code>unittest discover</code>.</li>
+  changes <code>sys.path</code>, <code>*args</code>, a directory, <code>unittest discover</code>, or a
+  test runner given no file at all (<code>pytest.main(["-q"])</code> collects
+  your whole suite). A word after an option diffcone doesn't know to
+  take a value (<code>--verbose docs</code>) counts as a path the runner
+  collects.</li>
 <li>Console scripts your project installs and files outside your source
   roots aren't seen.</li>
 </ul>

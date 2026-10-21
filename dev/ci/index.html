@@ -1298,9 +1298,10 @@ write JUnit XML (<code>--junitxml=full.xml</code>) and upload it, then add:</p>
 <a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">        </span><span class="nt">with</span><span class="p">:</span>
 <a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">          </span><span class="nt">full</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">full/full.xml</span>
 </code></pre></div>
-<p>The check writes its result to the job summary. A miss is a new failure
-of the full run that the plan didn't select, or that diffcone's own run
-didn't execute. It doesn't fail the workflow unless you set
+<p>The check writes its result to the job summary. It checks the plan that
+ran: when the environment differed from the recording's, the plan from the
+code. A miss is a new failure of the full run that the plan didn't select,
+or that diffcone's own run didn't execute. It doesn't fail the workflow unless you set
 <code>fail-on-miss: true</code>, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses. Without
@@ -1433,11 +1434,20 @@ completed in this many hours before it; default <code>24</code>), <code>workflow
 that workflow's runs; default all), <code>artifact-prefix</code> (default
 <code>diffcone-</code>), <code>report-label</code> and <code>miss-label</code> (set either to an empty
 string to skip that issue), and <code>comment</code> (<code>always</code>, the default, or
-<code>on-problem</code>: comment only when there is a miss, a failed check, a
-pull request whose selected tests pytest did not collect or that failed to
-run them after planning (<code>diffcone run</code> refused, or pytest was interrupted
-or could not start), or an incomplete report; the job summary always has
-the report). It reads what
+<code>on-problem</code>: comment only when there is a problem; the job summary
+always has the report). The problems are:</p>
+<ul>
+<li>a miss;</li>
+<li>a check that failed to reach a verdict;</li>
+<li>a pull-request run that ran none of its selected tests: its plan
+  failed, <code>diffcone run</code> refused it (discovery may be incomplete and
+  <code>allow-incomplete-discovery</code> is off, or the working tree differs from
+  the plan's), or pytest was interrupted or could not start;</li>
+<li>a pull-request run whose selected tests pytest did not collect, or whose
+  command never loaded diffcone's selection plugin;</li>
+<li>an incomplete report (an artifact it could not read).</li>
+</ul>
+<p>The report reads what
 <code>run</code> and <code>record</code> upload from the same release on, so give all the
 actions the same tag.</p>
 <p>Each miss issue has a link that opens a new issue on diffcone's tracker
@@ -1525,7 +1535,9 @@ selective runs to compare, as <code>NAME=JUNIT</code> pairs), <code>fail-on-miss
 <code>false</code>) and <code>diffcone-ref</code>. <code>report</code> also takes <code>github-token</code> (default
 the workflow's token, which reads the runs and posts the issues) and
 <code>diffcone-ref</code>.</p>
-<p>Outputs: <code>run</code> sets <code>selected</code> (how many tests the plan selected);
+<p>Outputs: <code>run</code> sets <code>selected</code> (how many tests the plan that ran
+selected: the plan from the code when the environment differed from the
+recording's);
 <code>record</code> sets <code>results</code> (the directory to upload) and, with <code>check</code>,
 <code>misses</code>; <code>report</code> sets <code>ok</code> and <code>report</code> (the directory holding
 <code>report.md</code> and <code>report.json</code>).</p>

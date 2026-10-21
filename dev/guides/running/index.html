@@ -1068,7 +1068,10 @@ kept too.</p>
 <a href="../../reference/cli/#exit-codes">exit codes</a>):</p>
 <ul>
 <li>if a selected test wasn't collected and pytest otherwise succeeded, it
-  exits <code>3</code>, since the run may have skipped tests;</li>
+  exits <code>3</code>, since the run may have skipped tests. So it does when no
+  pytest process loaded diffcone's selection plugin: a wrapper script or a
+  tox, nox or make target in <code>--command</code> that doesn't pass its arguments
+  on to pytest runs something other than the selection;</li>
 <li>if nothing ran because nothing was selected, it exits <code>0</code>.</li>
 </ul>
 <p>Discovery reads the same pytest options the run will use: those after
