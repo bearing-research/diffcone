@@ -902,10 +902,13 @@ _STATELESS_CLASS_DECORATORS = _INERT_CLASS_DECORATORS | {"dataclasses.dataclass"
 def class_adds_no_state(found: Bindings | None, nodes: list[ast.ClassDef]) -> bool:
     """Whether the class statement gives the class no state beyond what its
     body binds: every decorator one of ``_STATELESS_CLASS_DECORATORS`` (a
-    call of one with constant keyword arguments only) and no keyword but a
-    metaclass of ``_PLAIN_METACLASSES``, each named through an import its
+    call of one with constant keyword arguments only) and a metaclass, if
+    named, one of ``_PLAIN_METACLASSES``, each named through an import its
     module binds once. Any other decorator or metaclass may keep something
-    on the class (a singleton, a registry) (audit round 6, T26)."""
+    on the class (a singleton, a registry). Other class keywords
+    (``total=False``) go to the bases' ``__init_subclass__`` or metaclass,
+    whose state the bases account for (an in-scope base's writes of
+    ``cls``, a library base's ``external_base``) (audit round 6, T26)."""
     for node in nodes:
         if not (node.decorator_list or node.keywords):
             continue
@@ -926,8 +929,10 @@ def class_adds_no_state(found: Bindings | None, nodes: list[ast.ClassDef]) -> bo
             if named is None or named[0] not in _STATELESS_CLASS_DECORATORS:
                 return False
         for keyword in node.keywords:
+            if keyword.arg != "metaclass":
+                continue
             named = canonical(keyword.value)
-            if keyword.arg != "metaclass" or named is None or named[0] not in _PLAIN_METACLASSES:
+            if named is None or named[0] not in _PLAIN_METACLASSES:
                 return False
     return True
 

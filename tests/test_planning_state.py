@@ -915,6 +915,12 @@ INSTANCE_OF_A_CLASS_WITHOUT_STATE = {
         "STORE = Store()\n\n\ndef peek(k):\n    return Store.kind\n",
         STORE_WRITER.format("    STORE.items[k] = 'x'\n"),
     ),
+    "a TypedDict with a class keyword": (
+        "from typing import TypedDict\n\n\nclass Store(TypedDict, total=False):\n"
+        "    items: dict\n\n\ndef make():\n    s = Store(items={})\n    s['items'] = {}\n"
+        "    return s\n\n\ndef peek(k):\n    return Store.__annotations__\n",
+        "from pkg.state import make\n\n\ndef fill(k):\n    make()['k'] = 'x'\n",
+    ),
     "a frozen dataclass": (
         "from dataclasses import dataclass, field\n\n\n@dataclass(frozen=True)\nclass Store:\n"
         "    kind: str = 'store'\n    items: dict = field(default_factory=dict)\n\n\n"
