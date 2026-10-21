@@ -1528,6 +1528,94 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## Before 0.5.0: audit round 7 (2026-10-21)
+
+Measured on v0.4.0 (5a19079), round 6's end (88407f9), the round's main
+after its four fix batches (68e28cb), after U31/U32 (20d8edb) and after
+U33 (bdcc8a0). Workspace: the acb19380 `.spike` (`census-{u7,u8,u9}.json`,
+`corpus-u8/`, `corpus-u9/`, `evcorpus/{u7,u8,u9}`, `logs/u8`, `logs/u9`).
+
+**Census** (42 repositories, 333 640 targets over 334 plans):
+
+| | selected | |
+|---|---|---|
+| v0.4.0 | 315 752 | 93.3 % |
+| round 6's end (as recorded above) | 315 774 | 93.4 % |
+| bdcc8a0 | 316 108 | 94.0 % |
+
+Three repositories moved from round 6's end:
+
+* twine +324 (984 -> 1 308 of 1 308; two plans, d465cb0930 5 -> 165 and
+  1ebc6dea39 1 -> 165, planned with both trees): a test edited or added
+  reaches `upload` -> `PackageFile.from_filename`, which now writes
+  class state of `Distribution`. `DIST_TYPES[dtype](filename)` calls a
+  class out of a dict of classes, which makes an instance since U2; `SDist`
+  defines `__new__`, so `self.filename = filename` in `__init__` may bind
+  on a shared object (T22's rule); and a test's definition change counts
+  as import-time code calling what it names. `tests/conftest.py` imports
+  `twine.settings` -> `twine.repository` -> `PackageFile`, so every test
+  reads `Distribution`. (The census labelled t26b, T26's first draft,
+  already showed 1 308 for another reason; comparing against it hid this
+  move, so compare against the final tree of a round.)
+* flake8 +7 (1 737 -> 1 744): U4's writer crediting
+  (`PER_FILE_IGNORES_UNPARSED mutated_by StyleGuide.handle_error`) and
+  stdin tests. The round's main had 1 771: U2 made
+  `mock.create_autospec(BaseFormatter, instance=True)` part of
+  `BaseFormatter`, fixed as U32 (one plan 142 -> 115, round 6: 110).
+* packaging +3 (6 292 -> 6 295): U4, `ELFFile.__init__` credited as the
+  writer of what it is handed.
+
+urllib3 crashed on every plan from the round's main until U33 (`KeyError`
+in `_mro` for `VerifiedHTTPSConnection = HTTPSConnection`, plan exit 2).
+`census_compare.py` reported it as "no common commits"; it now lists
+failed plans and exits 1.
+
+**Fixture and collection checks** (20d8edb; urllib3 on bdcc8a0): 0 missed
+fixtures in every repository; the collection gaps are the known, flagged
+ones (alembic, scrapy and pygments plugin-collected files, itsdangerous,
+pytest-asyncio's unparsed file). more-itertools and pygments have no
+pytest configuration, so `check-one.sh` (no `--rootdir`) collects from the
+directory above them: an artifact of the script, as in round 6.
+
+**Corpus** (`diffcone corpus --coverage`, last 6 Python-changing commits):
+150 validated pairs over 42 repositories (144 on 20d8edb, urllib3's 6 on
+bdcc8a0), the same pairs as round 6; 0 outcome misses, coverage recall
+100 % wherever it is defined (dateutil's error is its own base collection
+error under pytest 9.1).
+
+**Evidence corpus** (8 suites, recorded at store format 7 on 68e28cb,
+replayed with 20d8edb and bdcc8a0; typer recorded again on bdcc8a0):
+0 misses everywhere.
+
+| repo | round 6's end | bdcc8a0 |
+|---|---|---|
+| marshmallow | 1 238 | 1 248 |
+| more-itertools | 2 054 | 2 059 |
+| typer | 5 652 | 5 695 |
+| arrow, boltons, flask, jinja, pluggy | unchanged | |
+
+* typer +43 (pairs 99eb220df7 +21 and b15210b71a +22, each base recorded
+  with 88407f9 and with the round's code, nothing dropped): `typer._click.globals.push_context` and
+  `typer._click.utils._detect_program_name` look names up by a name
+  nothing bounds and can see `typer`, whose `__version__` changed; the
+  round's stores through receivers of a known class, constructors that
+  may hand back an object in use and call results (U5, U14, U15) now show
+  them storing into `Context`, `ArgumentInfo` and others (one test of
+  b15210b71a through `typer.main.except_hook`).
+* marshmallow +10 (pair 902f99c415, 588 -> 598): `Url.__init__` storing
+  onto its `String` base (1 test), and nine `*_repr` tests through
+  `_TemporalField._bind_to_schema`, which typed receivers (U5) let reach
+  `RegexMemoizer._regex_generator`; likely a false path, as round 6's
+  `Validator.__repr__` one was.
+* more-itertools +5 (pair fbb9a98d8c, 47 -> 52): `SequenceView` derives
+  from `collections.abc.Sequence`, a library base, so calling it may hand
+  back an object in use (U14) and its `__init__`'s stores count.
+
+**strata** (edc32ce0 -> 1241020210, recorded on 68e28cb at format 7,
+Python 3.13): 6 229 of 6 231 on 68e28cb, 20d8edb and bdcc8a0 (round 6:
+6 231): 6 116 `executed_reader`, 107 `lookup_site`, 63 `subprocess`, 17
+`no_evidence`; no fallback, no analysis error.
+
 ## Before 0.5.0: audit round 6 (2026-10-20)
 
 Measured on v0.4.0 (5a19079), the round's main after T19-T22 (02e8497),
