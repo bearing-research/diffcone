@@ -1950,6 +1950,61 @@ def test_u2_a_class_attribute_bound_anew_by_another_name_may_change(repo, case):
     assert _state_plan(repo, *BOUND_ANEW_BY_ANOTHER_NAME[case]) == STATE_SELECTED
 
 
+MOCK_WRITER = (
+    "from unittest import mock\n\nfrom pkg.state import Config\n\n\ndef fill(k):\n    {}\n"
+)
+WRITES_THROUGH_A_MOCK = {
+    "wraps=": "mock.Mock(wraps=Config).items.append('x')",
+    "wraps, positional": "mock.Mock(None, None, None, Config).items.append('x')",
+    "return_value=": "mock.MagicMock(return_value=Config).return_value.items.append('x')",
+}
+
+
+@pytest.mark.parametrize("case", list(WRITES_THROUGH_A_MOCK))
+def test_u2_a_mock_wrapping_a_class_writes_it(repo, case):
+    """A mock hands on what it wraps or returns: a change in place through
+    it changes the class."""
+    lib = MOCK_WRITER.format(WRITES_THROUGH_A_MOCK[case])
+    assert _state_plan(repo, CONFIG, lib) == STATE_SELECTED
+
+
+INSTANCE_OF_A_CLASS_HANDED_BACK = {
+    "getattr on its module": (
+        "from pkg import state\n\n\n"
+        "def fill(k):\n    getattr(state, 'Config')().items.append('x')\n"
+    ),
+    "a mock's return value": MOCK_WRITER.format(
+        "mock.MagicMock(return_value=Config)().items.append('x')"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(INSTANCE_OF_A_CLASS_HANDED_BACK))
+def test_u2_an_instance_of_a_class_a_call_hands_back_shares_its_state(repo, case):
+    """Calling the class a call hands back makes an instance of it, which
+    shares what its class holds, as ``Config()`` does."""
+    assert _state_plan(repo, CONFIG, INSTANCE_OF_A_CLASS_HANDED_BACK[case]) == STATE_SELECTED
+
+
+MOCK_OF_A_CLASS = {
+    "create_autospec, an instance": "mock.create_autospec(Config, instance=True).mode = 'x'",
+    "create_autospec": "mock.create_autospec(Config).items.append('x')",
+    "spec=": "mock.MagicMock(spec=Config).items.append('x')",
+    "spec_set=": "mock.Mock(spec_set=Config).mode = 'x'",
+    "spec, positional": "mock.Mock(Config).items.append('x')",
+}
+
+
+@pytest.mark.parametrize("case", list(MOCK_OF_A_CLASS))
+def test_u2_a_mock_with_a_class_as_its_spec_is_no_part_of_it(repo, case):
+    """A class handed to a call is part of what it returns (U2), but a mock
+    copies only its spec's shape: writing into the mock changes a new
+    object, not the class (flake8's ``create_autospec(BaseFormatter,
+    instance=True)`` made every write into the mock one of the class)."""
+    lib = MOCK_WRITER.format(MOCK_OF_A_CLASS[case])
+    assert _state_plan(repo, CONFIG, lib) == {"tests/test_a.py::test_a"}
+
+
 # Whatever gives a class an attribute (its body, its module's top-level code,
 # another module, a decorator or a metaclass, ``setattr`` with a computed name
 # or in a loop) gives it state: one record of those, read by every rule that

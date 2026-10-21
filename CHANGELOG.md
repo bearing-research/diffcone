@@ -216,8 +216,10 @@ selection rules.
     dict, tuple or loop over classes, a parameter default, `getattr(module,
     "C")`, `import_module`, `sys.modules`, `vars(module)`, `type.__setattr__`,
     an item of `__mro__` or `__bases__`, or the result of a call given the
-    class (`HANDLERS.get(kind, Default).calls.append(v)`); calling an alias
-    or `functools.partial(C)` makes an instance;
+    class (`HANDLERS.get(kind, Default).calls.append(v)`; a mock made with
+    the class as its spec is not the class); calling an alias,
+    `functools.partial(C)` or a class a call hands back
+    (`getattr(module, "C")()`) makes an instance;
   - an attribute a class is given anywhere (its module's top-level code,
     another module, a decorator, a metaclass, `setattr`) is class state,
     shared by its instances;

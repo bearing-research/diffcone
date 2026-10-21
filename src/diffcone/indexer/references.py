@@ -1923,6 +1923,15 @@ class _ReferenceCollector(ast.NodeVisitor):
         func = node.func
         args = [*node.args, *(k.value for k in node.keywords)]
         parts = _flatten_chain(func)
+        if parts is not None and not self._is_local(parts[0]) and self._only(parts, MOCK_CALLS):
+            # A mock is a new object, whatever it copies the shape of: its
+            # spec (the first argument, ``spec=``, ``spec_set=``) is no part
+            # of it, though what it wraps or hands back is (``wraps=``,
+            # ``return_value=``, ``side_effect=``).
+            args = [
+                *node.args[1:],
+                *(k.value for k in node.keywords if k.arg not in ("spec", "spec_set")),
+            ]
         copy = False
         if isinstance(func, ast.Name) and not self._is_shadowed(func.id):
             if func.id == "globals" and not args:
@@ -2049,6 +2058,10 @@ class _ReferenceCollector(ast.NodeVisitor):
                 symbol.kind == SymbolKind.FUNCTION and (local or not isinstance(func, ast.Name))
             ):
                 found[f"{RESULT}{symbol.id}"] = False
+            elif symbol.kind == SymbolKind.CLASS and not isinstance(func, ast.Name):
+                # A class a call hands back, called (``getattr(state,
+                # "Conf")()``): an instance of it, as ``Conf()`` makes (U2).
+                found[f"{FRESH}call:{symbol.id}"] = False
         return found
 
     def _immediate_results(self, obj: ast.expr, seen: frozenset) -> frozenset[str]:
