@@ -116,7 +116,13 @@ report:
 - Tests with no recording (new tests, for example), tests whose
   recording was unstable, and tests that failed or errored while they were
   recorded are always selected: a failing test's recording stops where it
-  failed.
+  failed. So is a test only some of whose cases ran while it was recorded
+  (the others deselected, or not reached): its recording covers only
+  those cases.
+- A recording describes the tests as they ran with the arguments it was
+  made with. If you plan or run with pytest options that change what a
+  test does (a conftest option such as `--runslow` or `--backend`), make
+  the recording with the same options.
 - Processes a test starts:
     - **Followed.** A Python process started with `subprocess` (directly,
       through `asyncio`, or through `uv run`) records itself on Linux and
@@ -197,7 +203,7 @@ match the recording:
 - the installed packages;
 - your `PYTHONPATH`;
 - a few environment variables (`TZ`, `LANG`, `LC_ALL`,
-  `PYTHONWARNINGS`, `VIRTUAL_ENV`).
+  `PYTHONWARNINGS`, `VIRTUAL_ENV`, `PYTEST_ADDOPTS`).
 
 It sets `PYTHONHASHSEED` to the recorded value itself. With `--dry-run`,
 nothing is checked.
@@ -242,9 +248,20 @@ was made with `--reverse-check`, `run --collect` runs the selected tests a
 second time in reverse order, so the new records are checked the same way.
 
 If the environment differs, or pytest is interrupted or ends with an error
-of its own (not a test failure), no recording is written. A run stopped
-at a failure (`-x`) still writes one, and the tests it didn't reach are
-selected until they are recorded again.
+of its own (not a test failure), no recording is written. Like `collect`,
+`run --collect` adds `--maxfail=0`, so an `-x` or `--maxfail` in your
+arguments or `addopts` doesn't stop it at a failure. If something else
+stops it early (`--sw`, a plugin), the tests it didn't finish have no
+record in the new recording, and every plan selects them until they are
+recorded again. A test that failed when it was recorded keeps that mark,
+and stays selected, until you record the full suite again.
+
+A test has a record only if all of its cases ran. A case left out by `-k`,
+`-m` or `--deselect` (on the command line, in `addopts` or in
+`PYTEST_ADDOPTS`) or by a conftest leaves the whole test without a record,
+so every plan selects it. `collect` says how many collected tests have no
+record. `PYTEST_ADDOPTS` is part of the recorded environment: a run with a
+different value runs the static plan instead.
 
 In CI, a common setup records the full suite once a night on your default
 branch and plans each pull request from it. See [CI](../ci.md).

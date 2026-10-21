@@ -25,7 +25,10 @@ kept too.
 [exit codes](../reference/cli.md#exit-codes)):
 
 - if a selected test wasn't collected and pytest otherwise succeeded, it
-  exits `3`, since the run may have skipped tests;
+  exits `3`, since the run may have skipped tests. So it does when no
+  pytest process loaded diffcone's selection plugin: a wrapper script or a
+  tox, nox or make target in `--command` that doesn't pass its arguments
+  on to pytest runs something other than the selection;
 - if nothing ran because nothing was selected, it exits `0`.
 
 Discovery reads the same pytest options the run will use: those after

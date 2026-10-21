@@ -165,6 +165,91 @@ _MODULE_RUNNING_RUNNERS = frozenset(
 _RUNNER_OPTIONS_WITH_ARGUMENT = frozenset(
     {"-k", "-m", "-p", "-o", "-W", "-c", "-n", "-r", "-t", "-C"}
 )
+# Long options of the code runners and their common plugins that take an
+# argument as the next word (``--tb short``). After any other ``--long``
+# option a bare word is read as an argument of the runner's own, never
+# taken for the option's: ``--verbose docs`` collects ``docs``.
+_RUNNER_LONG_OPTIONS_WITH_ARGUMENT = frozenset(
+    {
+        # pytest
+        "--tb",
+        "--show-capture",
+        "--rootdir",
+        "--basetemp",
+        "--confcutdir",
+        "--config-file",
+        "--override-ini",
+        "--junitxml",
+        "--junit-xml",
+        "--junit-prefix",
+        "--durations",
+        "--durations-min",
+        "--maxfail",
+        "--deselect",
+        "--ignore",
+        "--ignore-glob",
+        "--capture",
+        "--color",
+        "--code-highlight",
+        "--import-mode",
+        "--pastebin",
+        "--pdbcls",
+        "--doctest-glob",
+        "--doctest-report",
+        "--log-level",
+        "--log-format",
+        "--log-date-format",
+        "--log-cli-level",
+        "--log-cli-format",
+        "--log-cli-date-format",
+        "--log-file",
+        "--log-file-mode",
+        "--log-file-level",
+        "--log-file-format",
+        "--log-file-date-format",
+        "--log-auto-indent",
+        "--log-disable",
+        "--report-log",
+        # pytest-xdist, pytest-cov, pytest-timeout, pytest-randomly and others
+        "--dist",
+        "--numprocesses",
+        "--maxprocesses",
+        "--max-worker-restart",
+        "--tx",
+        "--cov",
+        "--cov-report",
+        "--cov-config",
+        "--cov-fail-under",
+        "--cov-context",
+        "--timeout",
+        "--timeout-method",
+        "--randomly-seed",
+        "--random-order-seed",
+        "--random-order-bucket",
+        "--count",
+        "--repeat-scope",
+        "--reruns",
+        "--reruns-delay",
+        "--only-rerun",
+        "--asyncio-mode",
+        "--hypothesis-profile",
+        "--hypothesis-seed",
+        "--html",
+        "--json-report-file",
+        # unittest
+        "--pattern",
+        "--start-directory",
+        "--top-level-directory",
+        # coverage
+        "--rcfile",
+        "--source",
+        "--include",
+        "--omit",
+        "--data-file",
+        "--context",
+        "--concurrency",
+    }
+)
 # ``coverage`` subcommands other than ``run`` run no code of the project.
 _COVERAGE_INERT = frozenset(
     {"report", "xml", "html", "json", "lcov", "combine", "erase", "debug", "annotate"}
@@ -1370,14 +1455,31 @@ def _module_names(collector: _ReferenceCollector, expr: ast.expr) -> tuple[str, 
 
 def _is_directory(collector: _ReferenceCollector, text: str) -> bool:
     """Whether a literal names a directory under the roots (``tests``,
-    ``tests/unit/``), by any path suffix."""
+    ``tests/unit/``), by any path suffix: one holding Python files, or only
+    other files (data, doctest text files: ``other_file_directories``)."""
     prefix = text.replace("\\", "/").strip("/")
     if not prefix or _GLOB.search(prefix):
         return True
+    snapshot = collector.indexer.snapshot
     return any(
         path.startswith(prefix + "/") or f"/{prefix}/" in f"/{path}"
-        for path in [*collector.indexer.snapshot.files, *collector.indexer.excluded_paths]
+        for path in [*snapshot.files, *collector.indexer.excluded_paths]
+    ) or any(
+        directory == prefix or directory.endswith("/" + prefix)
+        for directory in other_file_directories(snapshot)
     )
+
+
+def other_file_directories(snapshot) -> list[str]:
+    """Every directory holding a file under the roots that is not Python
+    (``Snapshot.other_files``), sorted: what ``_is_directory`` reads of
+    them, so the environment fingerprint covers it."""
+    found: set[str] = set()
+    for path in snapshot.other_files:
+        parts = path.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            found.add("/".join(parts[:i]))
+    return sorted(found)
 
 
 def test_file(collector: _ReferenceCollector, text: str, runner: str) -> bool:
@@ -1412,7 +1514,10 @@ def _runner_args_known(collector: _ReferenceCollector, items: list[ast.expr], ru
     node id or module a test runner runs is a file run whole
     (``test_file``) or, for another runner, a script, and no argument is a
     directory to collect from, ``discover``, or a bare word the runner
-    would look for."""
+    would look for. A test runner given no file or module collects its
+    default (``testpaths``, the current directory; ``unittest``'s
+    discovery): unbounded."""
+    named = False  # a test runner was given a file or module to run
     i = 0
     while i < len(items):
         item = items[i]
@@ -1426,6 +1531,7 @@ def _runner_args_known(collector: _ReferenceCollector, items: list[ast.expr], ru
                 path = _string(_unwrap(_last_piece(_unwrap(item))))
                 if path is None or not test_file(collector, path, runner):
                     return False  # a path or a word from elsewhere
+                named = True
             elif not _script_known(collector, item):
                 return False
             i += 1
@@ -1439,21 +1545,16 @@ def _runner_args_known(collector: _ReferenceCollector, items: list[ast.expr], ru
                 return all(_runner_args_known(collector, items[i + 2 :], r) for r in runners)
             i += 2
             continue
-        if text.startswith("--") and "=" not in text and i + 1 < len(items):
-            # ``--tb short``: the next bare word is its argument, unless it
-            # is a path or a module the runner would run.
-            following = _string(items[i + 1])
-            if (
-                following is not None
-                and not following.startswith("-")
-                and "/" not in following
-                and "::" not in following
-                and not following.endswith((".py", ".pyw"))
-                and not (runner in TEST_RUNNERS and _is_directory(collector, following))
-                and not (runner == "unittest" and following in collector.indexer.scopes)
-            ):
-                i += 2
-                continue
+        if text in _NOTHING_RUNS:
+            return True
+        if text in _RUNNER_LONG_OPTIONS_WITH_ARGUMENT and i + 1 < len(items):
+            # ``--tb short``: the next word is its argument. After any other
+            # ``--long`` option (a flag such as ``--verbose``, or a plugin's
+            # option nothing here knows) the next word is read as one of the
+            # runner's own arguments: ``--verbose docs`` collects ``docs``,
+            # which might hold anything (audit U22).
+            i += 2
+            continue
         if text.startswith("-"):
             i += 2 if text in _RUNNER_OPTIONS_WITH_ARGUMENT else 1
             continue
@@ -1467,10 +1568,11 @@ def _runner_args_known(collector: _ReferenceCollector, items: list[ast.expr], ru
                 return False
             if not test_file(collector, text, runner):
                 return False
+            named = True
         elif _is_directory(collector, text) or not text.endswith((".py", ".pyw")):
             return False  # a directory: whatever it holds may run
         i += 1
-    return True
+    return named or runner not in TEST_RUNNERS
 
 
 def runner_list_known(collector: _ReferenceCollector, expr: ast.expr | None, runner: str) -> bool:

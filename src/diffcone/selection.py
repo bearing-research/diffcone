@@ -15,9 +15,11 @@ the environment:
 
 * ``DIFFCONE_SELECT``: a directory holding ``selected``, one selected test per
   line (``path::Class::test``, parameter cases folded), and ``targets``, every
-  target of the plan; each process writes ``missing-<pid>`` there, the
-  selected tests it did not collect, leaving out those under a directory or
-  module that skipped at collection, and ``unknown-<pid>``, the collected
+  target of the plan; each process that collects writes ``missing-<pid>``
+  there, the selected tests it did not collect, leaving out those under a
+  directory or module that skipped at collection (written when it collected
+  nothing too: ``run`` takes a run without one for a command that never
+  loaded this plugin), and ``unknown-<pid>``, the collected
   tests that are no target at all: those are kept and run, since the plan
   cannot say whether a change reaches them (a plugin's own collection, an
   option discovery did not see);

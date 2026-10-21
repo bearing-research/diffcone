@@ -38,9 +38,10 @@ inputs:
   comment:
     description: >-
       When to comment the report on the report issue: "always", or
-      "on-problem" (a miss, a failed check, a pull request whose selected
-      tests pytest did not collect or that failed to run them after
-      planning, an incomplete report). The job summary always has it.
+      "on-problem" (a miss, a failed check, a pull request whose plan
+      failed, whose run was refused or failed, or whose selected tests
+      pytest did not collect, an incomplete report). The job summary always
+      has it.
     default: "always"
   report-label:
     description: >-

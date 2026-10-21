@@ -2928,6 +2928,68 @@ def test_r14_a_directory_or_a_run_from_elsewhere_is_unbounded(repo, call):
     assert rules(plan, T_A.runner_id) == {"dynamic_reference"}
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        "pytest.main(['--verbose', 'docs'])",
+        "pytest.main(['--driver', 'docs'])",
+        "subprocess.run([sys.executable, '-m', 'pytest', '--verbose', 'docs'])",
+        "subprocess.run([sys.executable, '-m', 'unittest', 'docs'])",
+        "pytest.main(['-q', '-p', 'no:cacheprovider'])",
+        "pytest.main(['--cov', 'tests/inner/check_inner.py'])",
+        "subprocess.run([sys.executable, '-m', 'unittest', '-v'])",
+    ],
+    ids=[
+        "after-a-flag",
+        "after-a-plugin-option",
+        "subprocess",
+        "unittest-name",
+        "no-path",
+        "only-an-options-argument",
+        "unittest-discovers",
+    ],
+)
+def test_u22_a_directory_of_doctest_files_given_to_a_runner_is_unbounded(repo, call):
+    """``docs/`` holds a doctest text file only: the word after ``--verbose``
+    (a flag) or an option nothing knows was taken for the option's argument
+    unless it named a directory holding a ``.py`` file, so the run was
+    "known" and ran nothing; the doctest calling ``pkg.other.g`` broke
+    unseen. The word is now one of the runner's own arguments, and a
+    directory is one that holds any file. A runner given no file at all
+    collects its default (``testpaths``; unittest discovers), which was
+    taken for a run of nothing."""
+    base = repo.commit(
+        {
+            **BASE,
+            **INNER,
+            "pkg/other.py": "def g():\n    return 1\n",
+            "docs/test_doc.txt": ">>> from pkg.other import g\n>>> g()\n1\n",
+            "tests/test_a.py": (
+                f"import pytest\nimport subprocess\nimport sys\n\n\ndef test_a():\n    {call}\n"
+            ),
+        }
+    )
+    head = repo.commit({"pkg/other.py": "def g():\n    return 2\n"})
+    plan = _plan(repo, base, head, T_A, T_C)
+    assert selected(plan) == {T_A.runner_id}
+    assert rules(plan, T_A.runner_id) == {"dynamic_reference"}
+
+
+def test_u22_the_argument_of_a_known_long_option_is_no_path(repo):
+    """``--tb short`` and ``--rootdir docs``: their words are arguments, so
+    the file the run names still runs whole and bounds it."""
+    text = (
+        "import pytest\n\n\ndef test_a():\n"
+        f"    assert pytest.main(['--tb', 'short', '--rootdir', 'docs', '{INNER_PATH}']) == 0\n"
+    )
+    base = repo.commit({**BASE, **INNER, "docs/notes.txt": "x\n", "tests/test_a.py": text})
+    plan = _plan(repo, base, repo.commit({**INNER, "pkg/ops.py": OPS_VALUE}), T_A, T_C)
+    assert selected(plan) == {T_A.runner_id}
+    assert rules(plan, T_A.runner_id) == {"dependency"}
+    plan = _plan(repo, base, repo.commit({**INNER, "pkg/ops.py": OPS_OTHER}), T_A, T_C)
+    assert selected(plan) == set()
+
+
 # --------------------------------------------------------------------------- strings and escapes
 # Names in strings and objects handed to code outside the roots.
 

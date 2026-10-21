@@ -61,7 +61,14 @@ What it records, per test (parameter cases folded into their function, as
 * whether it ran code compiled from text no file of the checkout holds (a
   doctest's examples, a ``timeit`` statement; ``child.text_code``). The
   project code other threads are in the middle of when a window opens is
-  credited to it, as those threads run beside its test.
+  credited to it, as those threads run beside its test;
+* how many of its cases the process collected (``pytest_itemcollected``,
+  before any plugin deselects) and how many it ran, each with a sum of the
+  cases' node id hashes (``cases``): the fold keeps no record of a test
+  whose cases did not all run in some process (deselected by ``-k``, ``-m``,
+  ``--deselect`` or a conftest, or not reached after ``-x``, ``--maxfail``,
+  ``--sw`` or a plugin stopped the session), since the record covers part of
+  the test only.
 
 Outside every test window it records the code and paths of imports,
 collection and hooks; for each code object run by an import, the innermost
@@ -163,7 +170,18 @@ FLAG_FAILED = 8
 # another environment than the interpreter's, which a suite treating
 # warnings as errors fails on), and a tool run from its own environment
 # (``uv run`` elsewhere) hands its own to the suite.
-ENV_VARIABLES = ("PYTHONHASHSEED", "TZ", "LANG", "LC_ALL", "PYTHONWARNINGS", "VIRTUAL_ENV")
+# ``PYTEST_ADDOPTS``: pytest arguments, which may stop the session early,
+# deselect cases or change what a test does (a conftest's own option), and
+# which no command a store records names.
+ENV_VARIABLES = (
+    "PYTHONHASHSEED",
+    "TZ",
+    "LANG",
+    "LC_ALL",
+    "PYTHONWARNINGS",
+    "VIRTUAL_ENV",
+    "PYTEST_ADDOPTS",
+)
 
 
 def _variables() -> tuple[str, ...]:
@@ -325,6 +343,12 @@ import_dirs: dict[str, set[str]] = {}
 fixture_windows: dict[tuple[str, str, str], dict] = {}
 collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
+# Per test (parameters folded): how many of its cases this process collected
+# and ran, each beside a sum of the cases' node id hashes (``_case_hash``).
+# The fold adds up the runs of every process: a test some of whose cases
+# never ran (deselected by ``-k``/``-m``/``--deselect`` or a conftest, not
+# reached after a stop) has a record of part of the test only.
+cases: dict[str, list[int]] = {}
 used_fixtures: dict[str, list] = {}
 live: list[tuple] = []  # accounted spawns not yet known to have ended
 # Processes no record follows that may outlive the window that started them
@@ -1354,6 +1378,26 @@ def pytest_collection_modifyitems(session, config, items):
     return result
 
 
+def _case_hash(nodeid: str) -> int:
+    return int.from_bytes(hashlib.blake2b(nodeid.encode(), digest_size=8).digest(), "little")
+
+
+def _count_case(nodeid: str, slot: int) -> None:
+    """Count the case ``nodeid`` as collected (``slot`` 0) or run (2)."""
+    entry = cases.setdefault(fold_nodeid(nodeid), [0, 0, 0, 0])
+    entry[slot] += 1
+    entry[slot + 1] = (entry[slot + 1] + _case_hash(nodeid)) % (1 << 64)
+
+
+def pytest_itemcollected(item):
+    # As each item is collected, before any plugin deselects or reorders.
+    if recording:
+        try:
+            _count_case(item.nodeid, 0)
+        except Exception as exc:
+            _error("itemcollected", exc)
+
+
 def _collector_file(collector) -> str | None:
     """The checkout file of a test module or class pytest is collecting
     (``Module``, ``Class``, a doctest module: every item it yields has that
@@ -1522,6 +1566,7 @@ def pytest_runtest_protocol(item, nextitem):
                         _merge(mine, shared)
             if writer is not None:
                 writer.add(fold_nodeid(item.nodeid), mine)
+            _count_case(item.nodeid, 2)
         except Exception as exc:
             _error("runtest_protocol", exc)
 
@@ -1606,6 +1651,7 @@ def _finish():
         "environment_at_start": environment_at_start,
         "wrote_tests": writer is not None,
         "collected": sorted(collected) if collection_ran else None,
+        "cases": {name: entry for name, entry in sorted(cases.items())},
         "errors": errors,
     }
     with open(os.path.join(OUT, f"process-{os.getpid()}.json"), "w", encoding="utf-8") as f:

@@ -56,7 +56,10 @@ from diffcone.model import (
 # window are folded into the phase that made them, and what no record
 # shows there is kept (``import_flagged``); inert probes are accounted;
 # text code is flagged.
-STORE_FORMAT = 6
+# 7: a test some of whose cases did not run has no record (``cases``; it was
+# a record of the cases that ran), and ``PYTEST_ADDOPTS`` is part of the
+# environment.
+STORE_FORMAT = 7
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -326,6 +329,8 @@ class _Raw:
     # code (``__annotate__``), and through any other code.
     outside_annotations: set[str] = field(default_factory=set)
     outside_code: set[str] = field(default_factory=set)
+    # Tests some of whose cases no process ran (``collect.cases``).
+    partial: set[str] = field(default_factory=set)
 
     @property
     def annotations_only(self) -> set[str]:
@@ -440,11 +445,23 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
     environments: list[dict] = []
     seen_pids = set()
     children = _Children(directory, owners, {m.split(".")[0] for m in project_modules})
+    # Per test: the (count, hash sum) of the cases each collecting process
+    # collected, and of those every process ran, added up.
+    collected_cases: dict[str, set[tuple[int, int]]] = defaultdict(set)
+    ran_cases: dict[str, list[int]] = {}
     for process_file in processes:
         with open(process_file, encoding="utf-8") as f:
             data = json.load(f)
         pid = str(data["pid"])
         seen_pids.add(pid)
+        if data.get("cases") is None:
+            raise EvidenceError(f"process {pid} did not count the cases it collected and ran")
+        for name, (n_collected, h_collected, n_ran, h_ran) in data["cases"].items():
+            if data.get("collected") is not None:
+                collected_cases[name].add((n_collected, h_collected))
+            ran = ran_cases.setdefault(name, [0, 0])
+            ran[0] += n_ran
+            ran[1] = (ran[1] + h_ran) % (1 << 64)
         if data["errors"]:
             raise EvidenceError(
                 "the recorder failed inside the suite, so the record may be incomplete: "
@@ -629,6 +646,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             dirs |= f_dirs
             flags |= f_flags
         raw.tests[name] = (symbols, paths, dirs, flags)
+    # A test's record is whole only if every case collected ran, in some
+    # process (an xdist worker collects them all and runs its share). One
+    # case deselected, or not reached after a stop, leaves a record of the
+    # others: what that case runs is in no record.
+    raw.partial = {
+        name
+        for name in raw.tests
+        if len(collected_cases.get(name, ())) != 1
+        or {tuple(ran_cases.get(name, ()))} != collected_cases[name]
+    }
     return raw
 
 
@@ -706,6 +733,12 @@ def fold(
     raws = [_read_raw(d, owners, project_modules) for d in directories]
     if len(raws) > 1 and raws[1].environment != raws[0].environment:
         raise EvidenceError("the two collections ran in different environments")
+    # A test some of whose cases did not run has no record: it is selected
+    # until a run records it whole.
+    partial = set().union(*(raw.partial for raw in raws))
+    for raw in raws:
+        for name in partial:
+            raw.tests.pop(name, None)
     unstable: set[str] = set()
     tests: dict[str, tuple[set[str], set[str], set[str], int]] = {}
     # Stability is judged on symbols and tracked data files. pytest stats
@@ -782,8 +815,11 @@ def advance(
 
     A test the plan did not select runs identically at C and at ``commit``,
     so its record carries over. A rerun test takes its fresh record, keeping
-    an ``unstable`` flag a partial run cannot re-check; one that recorded
-    nothing is dropped and has no evidence from here on. When ``previous``
+    the old record's flags: what the test did at C that one run need not
+    repeat (an ``unstable`` record a run in one order cannot re-check, a
+    failure, a process it started) still holds until a whole recording.
+    One that recorded nothing, or only some of its cases (``fold``), is
+    dropped and has no evidence from here on. When ``previous``
     was order-checked and ``fresh`` was not, the fresh records are unstable.
     Process-wide data
     is the union of both: the run imported only what its tests needed, and a
@@ -815,7 +851,7 @@ def advance(
     if fresh is not None:
         for name, record in fresh.tests.items():
             old = previous.tests.get(name)
-            tests[name] = (fresh, record, (old.flags & FLAG_UNSTABLE if old else 0) | unchecked)
+            tests[name] = (fresh, record, (old.flags if old else 0) | unchecked)
     symbol_table = sorted({ev.symbols[i] for ev, r, _ in tests.values() for i in r.symbols})
     path_table = sorted({ev.paths[i] for ev, r, _ in tests.values() for i in r.paths | r.dirs})
     sid = {s: i for i, s in enumerate(symbol_table)}

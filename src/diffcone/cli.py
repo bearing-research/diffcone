@@ -19,7 +19,8 @@ tree it would run differs, under the source roots, from the snapshot the plan
 analysed, unless --allow-mismatched-worktree is given; otherwise it exits with
 the runner's exit code (0 when nothing ran because nothing was selected, or
 with --dry-run; pytest's
-5 counts as 0), or 3 when a selected target was not collected. With
+5 counts as 0), or 3 when a selected target was not collected or no process
+loaded the selection plugin (a wrapper that drops its arguments). With
 --allow-incomplete-discovery pytest runs even when nothing was selected: the
 tests it collects that are no target are kept. ``validate`` exits
 0 when every outcome change was selected (a test that is not a target is
@@ -28,8 +29,9 @@ incomplete), 1 when some were missed, 2 on
 errors. ``check`` exits 0 when every new failure of the full run was
 selected, 1 when the plan missed one, 2 when an input cannot be read.
 ``report`` exits 0 when the CI runs it reads show no problem (a miss, a check
-with no verdict, an uncollected selected test, a run that failed after a good
-plan, an unreadable artifact), 1 otherwise, 2 when the directory cannot be read.
+with no verdict, an uncollected selected test, a pull-request run whose plan
+failed, that was refused or that failed after a good plan, an unreadable
+artifact), 1 otherwise, 2 when the directory cannot be read.
 """
 
 from __future__ import annotations
@@ -615,6 +617,15 @@ def _collect(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+    unrecorded = sorted(ev.collected - set(ev.tests)) if ev.collected is not None else []
+    if unrecorded:
+        print(
+            f"diffcone: {len(unrecorded)} collected test(s) have no record (e.g. "
+            f"{unrecorded[0]}): some or all of their cases did not run (deselected by -k, -m, "
+            "--deselect or a conftest, or not reached after the session stopped), so every "
+            "plan selects them",
+            file=sys.stderr,
+        )
     if ev.import_flagged:
         where = sorted(
             m[len(UNINDEXED_MODULE) :] if m.startswith(UNINDEXED_MODULE) else m or "a hook"
@@ -789,9 +800,10 @@ def _outputs_in(repo: str, output: str | None) -> list[str]:
 
 def _run_exit_code(returncode: int, missing: bool) -> int:
     """``run``'s exit code from the runner's. Selected targets that did not run
-    make it 3 (the run may have skipped tests) unless the runner failed on its
-    own; pytest's 5 (no tests ran) is 0 when every selected test was collected
-    and skipped or deselected by the project's own options."""
+    (or may not have: the selection plugin never ran) make it 3 (the run may
+    have skipped tests) unless the runner failed on its own; pytest's 5 (no
+    tests ran) is 0 when every selected test was collected and skipped or
+    deselected by the project's own options."""
     if missing:
         return returncode if returncode not in (0, 5) else 3
     return 0 if returncode == 5 else returncode
@@ -1081,6 +1093,14 @@ def _main(argv: list[str] | None) -> int:
                     "say whether the change reaches them",
                     file=sys.stderr,
                 )
+            if outcome.plugin_missing and outcome.returncode is not None:
+                print(
+                    "diffcone: error: the selection plugin did not run: no process of "
+                    f"{outcome.command[0]!r} loaded -p diffcone_select and collected, so what ran "
+                    "is not the selection and the selected tests may not have run (does the "
+                    "command pass its arguments on to pytest?)",
+                    file=sys.stderr,
+                )
             if outcome.missing:
                 print(
                     f"diffcone: error: pytest did not collect {len(outcome.missing)} selected "
@@ -1128,7 +1148,9 @@ def _main(argv: list[str] | None) -> int:
                     "not know",
                     file=sys.stderr,
                 )
-            return _run_exit_code(outcome.returncode, bool(outcome.missing))
+            return _run_exit_code(
+                outcome.returncode, bool(outcome.missing) or outcome.plugin_missing
+            )
         if args.command == "validate":
             result = build_plan(load_evidence())
             validation = validate_pytest(

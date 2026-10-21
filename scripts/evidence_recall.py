@@ -55,6 +55,7 @@ from diffcone.execution import (
     fold_nodeid,
     merge_coverage,
     run_with_evidence,
+    target_outcome,
 )
 from diffcone.planner import plan
 
@@ -94,14 +95,15 @@ def main() -> int:
     done = set()
     if results.exists():
         done = {json.loads(line)["commit"] for line in results.read_text().splitlines()}
-    runs: dict[str, tuple[dict[str, str], Path]] = {}  # commit -> (outcomes, coverage db)
+    # commit -> (each test's case outcomes, coverage db)
+    runs: dict[str, tuple[dict[str, dict[str, str]], Path]] = {}
     stores: dict[str, Path] = {}
     anchor = None
     for i, commit in enumerate(commits):
         short = commit[:10]
         is_anchor = i == 0 if args.advance else i % args.every == 0
         cov_db = out / f"cov-{short}.db"
-        outcomes_file = out / f"outcomes-{short}.json"
+        outcomes_file = out / f"cases-{short}.json"
         if commit in done and not is_anchor:
             print(f"{short} done", flush=True)
             continue
@@ -177,7 +179,7 @@ def main() -> int:
         changed = sorted(
             n
             for n in set(base_outcomes) | set(head_outcomes)
-            if base_outcomes.get(n) != head_outcomes.get(n)
+            if target_outcome(n, base_outcomes.get(n), head_outcomes.get(n), False).changed
         )
         outcome_missed = [n for n in changed if n in known and n not in selected]
         unknown_changed = [n for n in changed if n not in known]

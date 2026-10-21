@@ -191,7 +191,11 @@ everything.
     - When the program is built at run time, the test is selected for any
       change: a path from a variable or the environment, `-c` code
       assembled from pieces, a program that imports by a computed name or
-      changes `sys.path`, `*args`, a directory, or `unittest discover`.
+      changes `sys.path`, `*args`, a directory, `unittest discover`, or a
+      test runner given no file at all (`pytest.main(["-q"])` collects
+      your whole suite). A word after an option diffcone doesn't know to
+      take a value (`--verbose docs`) counts as a path the runner
+      collects.
     - Console scripts your project installs and files outside your source
       roots aren't seen.
 

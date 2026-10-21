@@ -184,6 +184,10 @@ class RunResult:
     # Collected tests that are no target of the plan: kept and run (see
     # selection.py), and reported.
     unknown: list[str] = field(default_factory=list)
+    # pytest ran, but no process of it loaded the selection plugin (a wrapper
+    # that drops its arguments, a tox or make target without ``{posargs}``):
+    # what ran is not the selection, and the selected tests may not have run.
+    plugin_missing: bool = False
 
 
 def _mismatch_matters(path: str, roots: list[str]) -> bool:
@@ -531,6 +535,10 @@ def run_selected(
         ]
         if reports:
             result.missing = sorted(set.intersection(*reports))
+        else:
+            # Every process that loads the plugin and collects writes one,
+            # empty or not: none means none did.
+            result.plugin_missing = True
         result.unknown = sorted(
             {
                 line
@@ -552,10 +560,26 @@ class TargetOutcome:
     head: str | None
     selected: bool
     known_at_head: bool = True  # a target of the plan (exists in the head snapshot)
+    # The parameter cases run at both snapshots whose outcome changed, as
+    # (case, base, head): ``base`` and ``head`` fold the cases into the set
+    # of their outcomes, and a case changing to an outcome another case
+    # already had leaves that set as it was.
+    cases: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def changed(self) -> bool:
-        return self.base != self.head
+        return self.base != self.head or bool(self.cases)
+
+    @property
+    def transition(self) -> str:
+        """``base -> head``, with the first case that changed when the folds
+        alone do not show it."""
+        text = f"{self.base} -> {self.head}"
+        if self.cases:
+            case, before, after = self.cases[0]
+            more = f", and {len(self.cases) - 1} more case(s)" if len(self.cases) > 1 else ""
+            text += f" ({case}: {before} -> {after}{more})"
+        return text
 
     @property
     def removed(self) -> bool:
@@ -682,20 +706,67 @@ def fold_nodeid(nodeid: str) -> str:
     return re.sub(r"\[.*\]$", "", nodeid)
 
 
-def parse_outcome_lines(lines: list[str]) -> dict[str, str]:
+_OUTCOME_ORDER = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
+
+
+def parse_outcome_cases(lines: list[str]) -> dict[str, dict[str, str]]:
     """Map pytest node ids (parameter cases folded into their function) to
-    the outcomes the selection plugin wrote for them (``nodeid<TAB>OUTCOME``
-    lines), in a fixed order and joined with ``+`` (``PASSED+SKIPPED``).
-    The fold must not depend on the order the cases ran in: under
-    pytest-xdist that order varies from run to run, and a fold that kept
-    the first or last case would report changes that never happened."""
-    order = ("PASSED", "SKIPPED", "XFAIL", "XPASS", "FAILED", "ERROR")
-    seen: dict[str, set[str]] = {}
+    each case's outcomes as the selection plugin wrote them
+    (``nodeid<TAB>OUTCOME`` lines), in a fixed order and joined with ``+``
+    (``FAILED+ERROR``: a failed call and a failed teardown). Nothing depends
+    on the order the cases ran in: under pytest-xdist that order varies
+    from run to run, and the controller writes its workers' reports too."""
+    seen: dict[str, dict[str, set[str]]] = {}
     for line in lines:
         nodeid, _, outcome = line.rpartition("\t")
-        if nodeid and outcome in order:
-            seen.setdefault(fold_nodeid(nodeid), set()).add(outcome)
-    return {nodeid: "+".join(o for o in order if o in found) for nodeid, found in seen.items()}
+        if nodeid and outcome in _OUTCOME_ORDER:
+            seen.setdefault(fold_nodeid(nodeid), {}).setdefault(nodeid, set()).add(outcome)
+    return {
+        test: {case: _joined(found) for case, found in cases.items()}
+        for test, cases in seen.items()
+    }
+
+
+def _joined(outcomes: set[str]) -> str:
+    return "+".join(o for o in _OUTCOME_ORDER if o in outcomes)
+
+
+def fold_outcomes(cases: dict[str, str]) -> str:
+    """A test's cases folded into the set of their outcomes (``PASSED+FAILED``)."""
+    return _joined({o for outcome in cases.values() for o in outcome.split("+")})
+
+
+def parse_outcome_lines(lines: list[str]) -> dict[str, str]:
+    """Each test's outcomes, its cases folded (``parse_outcome_cases``)."""
+    return {test: fold_outcomes(cases) for test, cases in parse_outcome_cases(lines).items()}
+
+
+def target_outcome(
+    runner_id: str,
+    base: dict[str, str] | None,
+    head: dict[str, str] | None,
+    selected: bool,
+    known_at_head: bool = True,
+) -> TargetOutcome:
+    """Compare a test's cases at two snapshots: the folds, and each case run
+    at both (a case added or removed counts when it changes the fold, as a
+    test added or removed does)."""
+    cases: tuple[tuple[str, str, str], ...] = ()
+    if base is not None and head is not None:
+        # A test without parameters is its own one case: the folds say it all.
+        cases = tuple(
+            (case, base[case], head[case])
+            for case in sorted(base.keys() & head.keys())
+            if base[case] != head[case] and case != runner_id
+        )
+    return TargetOutcome(
+        runner_id,
+        fold_outcomes(base) if base is not None else None,
+        fold_outcomes(head) if head is not None else None,
+        selected,
+        known_at_head=known_at_head,
+        cases=cases,
+    )
 
 
 def copy_generated_modules(repo: Path, checkout: Path) -> list[str]:
@@ -790,7 +861,7 @@ class _Checkout:
 
 @dataclass
 class _SuiteRun:
-    outcomes: dict[str, str]
+    outcomes: dict[str, dict[str, str]]  # test -> case -> outcome (parse_outcome_cases)
     log: str
     returncode: int
     coverage_db: Path | None = None
@@ -943,7 +1014,7 @@ def _run_full_pytest(
                 f"the suite stopped early{where}: {stopped}; comparing its outcomes would miss "
                 f"the tests that never ran\n{log[-2000:]}"
             )
-        yield _SuiteRun(parse_outcome_lines(lines), log, proc.returncode, db, argv)
+        yield _SuiteRun(parse_outcome_cases(lines), log, proc.returncode, db, argv)
 
 
 # Last on the suite's command line: no stop at a failure.
@@ -1231,8 +1302,8 @@ def merge_coverage(
 _OutcomeKey = tuple[str, bool, str | None]
 
 
-class OutcomeCache(dict[_OutcomeKey, dict[str, str]]):
-    """(commit sha, ran under coverage, hash seed) -> per-test outcomes, plus the
+class OutcomeCache(dict[_OutcomeKey, dict[str, dict[str, str]]]):
+    """(commit sha, ran under coverage, hash seed) -> per-case outcomes, plus the
     coverage database of every snapshot that ran under coverage (copied into
     a temporary directory that lives until ``close``), so a base that is not
     run again can still be attributed for a later pair.
@@ -1278,15 +1349,15 @@ class OutcomeCache(dict[_OutcomeKey, dict[str, str]]):
                 self._directory = None
             self._databases.clear()
 
-    def lookup(self, key: _OutcomeKey) -> dict[str, str] | None:
+    def lookup(self, key: _OutcomeKey) -> dict[str, dict[str, str]] | None:
         with self._lock:
             return self.get(key)
 
-    def offer(self, key: _OutcomeKey, value: dict[str, str]) -> None:
+    def offer(self, key: _OutcomeKey, value: dict[str, dict[str, str]]) -> None:
         with self._lock:
             self.setdefault(key, value)
 
-    def reuse_or_run(self, key: _OutcomeKey, run) -> dict[str, str]:
+    def reuse_or_run(self, key: _OutcomeKey, run) -> dict[str, dict[str, str]]:
         value = self.lookup(key)
         if value is not None:
             return value
@@ -1345,7 +1416,7 @@ def _validate_pytest(
     base_key = (plan.base.commit, coverage, seed)
     base_log = ""
 
-    def run_base() -> dict[str, str]:
+    def run_base() -> dict[str, dict[str, str]]:
         # Same instrumentation on both sides: with --coverage the base suite
         # also runs under the tracer, and its database is kept so tests that
         # executed a symbol deleted in head can be attributed too.
@@ -1413,7 +1484,7 @@ def _validate_pytest(
     )
     for runner_id in ids:
         validation.outcomes.append(
-            TargetOutcome(
+            target_outcome(
                 runner_id,
                 base_outcomes.get(runner_id),
                 head_outcomes.get(runner_id),
@@ -1424,8 +1495,21 @@ def _validate_pytest(
     return validation
 
 
+def _cases_record(o: TargetOutcome) -> dict:
+    """``cases``, the parameter cases whose outcome changed, when any did."""
+    if not o.cases:
+        return {}
+    return {"cases": [{"case": c, "base": base, "head": head} for c, base, head in o.cases]}
+
+
 def _outcome_record(o: TargetOutcome) -> dict:
-    return {"runner_id": o.runner_id, "base": o.base, "head": o.head, "target": o.known_at_head}
+    return {
+        "runner_id": o.runner_id,
+        "base": o.base,
+        "head": o.head,
+        "target": o.known_at_head,
+        **_cases_record(o),
+    }
 
 
 def validation_to_dict(v: Validation) -> dict:
@@ -1458,6 +1542,7 @@ def validation_to_dict(v: Validation) -> dict:
                 "head": o.head,
                 "selected": o.selected,
                 "target": o.known_at_head,
+                **_cases_record(o),
             }
             for o in v.outcomes
         ],
@@ -1531,17 +1616,17 @@ def validation_to_text(v: Validation) -> str:
         f"(caught {len(v.caught)}, missed {len(v.missed)})",
     ]
     for o in v.missed:
-        lines.append(f"  {_miss_label(o.known_at_head)} {o.runner_id}: {o.base} -> {o.head}")
+        lines.append(f"  {_miss_label(o.known_at_head)} {o.runner_id}: {o.transition}")
     if v.discovery_incomplete and v.outside_targets:
         lines.append(f"  {len(v.outside_targets)} outcome change(s) {OUTSIDE_INCOMPLETE}:")
         for o in v.outside_targets[:20]:
-            lines.append(f"    {o.runner_id}: {o.base} -> {o.head}")
+            lines.append(f"    {o.runner_id}: {o.transition}")
         if len(v.outside_targets) > 20:
             lines.append(f"    ... and {len(v.outside_targets) - 20} more")
     if v.removed:
         lines.append(f"  removed at head (not misses): {len(v.removed)}")
     for o in v.caught:
-        lines.append(f"  caught {o.runner_id}: {o.base} -> {o.head}")
+        lines.append(f"  caught {o.runner_id}: {o.transition}")
     if v.coverage is None:
         lines.append(
             "  note: outcome-based only; behaviour changes that keep the same pass/fail outcome "
@@ -1892,8 +1977,7 @@ def corpus_to_text(report: CorpusReport) -> str:
             )
             for o in v.missed:
                 lines.append(
-                    f"      {_miss_label(o.known_at_head)} outcome {o.runner_id}: "
-                    f"{o.base} -> {o.head}"
+                    f"      {_miss_label(o.known_at_head)} outcome {o.runner_id}: {o.transition}"
                 )
             if c is not None:
                 for h in c.missed:
@@ -2302,6 +2386,12 @@ def run_with_evidence(
         env["DIFFCONE_CHECK_ENV"] = plan.evidence["environment_hash"]
         env["DIFFCONE_CHECK_REPORT"] = str(report)
         plugins = ["-p", PLUGIN]
+        # A run that records runs the selection whole, as ``collect`` runs
+        # the suite (``_collect_argv``): ``--maxfail=0`` last overrides an
+        # ``-x`` of ``addopts`` or the arguments. A stop it cannot override
+        # (``--sw``, a plugin's) leaves the tests it cut short with part of
+        # their cases recorded, which the fold drops.
+        recording = [NO_MAXFAIL] if advance_from is not None else []
         if advance_from is not None:
             modules = _python_module_names(plan.head_index, plan.source_roots)
             env["DIFFCONE_COLLECT_PACKAGES"] = _packages(modules)
@@ -2311,7 +2401,7 @@ def run_with_evidence(
                 "pytest",
                 cwd=cwd,
                 command=command,
-                extra=[*plugins, *(extra or [])],
+                extra=[*plugins, *(extra or []), *recording],
                 env=env,
             )
             if result.returncode is None:
@@ -2400,7 +2490,7 @@ def _reverse_run(
             "pytest",
             cwd=cwd,
             command=command,
-            extra=["-p", PLUGIN, *(extra or [])],
+            extra=["-p", PLUGIN, *(extra or []), NO_MAXFAIL],
             env=reverse_env,
         )
     finally:

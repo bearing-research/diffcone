@@ -152,9 +152,10 @@ write JUnit XML (`--junitxml=full.xml`) and upload it, then add:
           full: full/full.xml
 ```
 
-The check writes its result to the job summary. A miss is a new failure
-of the full run that the plan didn't select, or that diffcone's own run
-didn't execute. It doesn't fail the workflow unless you set
+The check writes its result to the job summary. It checks the plan that
+ran: when the environment differed from the recording's, the plan from the
+code. A miss is a new failure of the full run that the plan didn't select,
+or that diffcone's own run didn't execute. It doesn't fail the workflow unless you set
 `fail-on-miss: true`, but an error in the check itself (an input it can't
 read) always fails the step. Tests that already failed in
 the nightly run are reported as already failing, not as misses. Without
@@ -302,11 +303,20 @@ completed in this many hours before it; default `24`), `workflow` (only
 that workflow's runs; default all), `artifact-prefix` (default
 `diffcone-`), `report-label` and `miss-label` (set either to an empty
 string to skip that issue), and `comment` (`always`, the default, or
-`on-problem`: comment only when there is a miss, a failed check, a
-pull request whose selected tests pytest did not collect or that failed to
-run them after planning (`diffcone run` refused, or pytest was interrupted
-or could not start), or an incomplete report; the job summary always has
-the report). It reads what
+`on-problem`: comment only when there is a problem; the job summary
+always has the report). The problems are:
+
+- a miss;
+- a check that failed to reach a verdict;
+- a pull-request run that ran none of its selected tests: its plan
+  failed, `diffcone run` refused it (discovery may be incomplete and
+  `allow-incomplete-discovery` is off, or the working tree differs from
+  the plan's), or pytest was interrupted or could not start;
+- a pull-request run whose selected tests pytest did not collect, or whose
+  command never loaded diffcone's selection plugin;
+- an incomplete report (an artifact it could not read).
+
+The report reads what
 `run` and `record` upload from the same release on, so give all the
 actions the same tag.
 
@@ -388,7 +398,9 @@ selective runs to compare, as `NAME=JUNIT` pairs), `fail-on-miss` (default
 the workflow's token, which reads the runs and posts the issues) and
 `diffcone-ref`.
 
-Outputs: `run` sets `selected` (how many tests the plan selected);
+Outputs: `run` sets `selected` (how many tests the plan that ran
+selected: the plan from the code when the environment differed from the
+recording's);
 `record` sets `results` (the directory to upload) and, with `check`,
 `misses`; `report` sets `ok` and `report` (the directory holding
 `report.md` and `report.json`).

@@ -6,7 +6,9 @@ description: >-
   missed a failure, or when an input cannot be read.
 inputs:
   results:
-    description: The directory diffcone run wrote (plan.json, diffcone.xml, baseline.xml).
+    description: >-
+      The directory diffcone run wrote (ran.json or plan.json, diffcone.xml,
+      baseline.xml).
     default: diffcone-results
   full:
     description: JUnit XML of the full run.
@@ -49,11 +51,15 @@ runs:
         for o in $OTHERS; do runs+=(--run "$o"); done
         baseline=()
         [ -f "$RESULTS/baseline.xml" ] && baseline=(--baseline "$RESULTS/baseline.xml")
+        # The plan that ran (ran.json: the static one when the environment
+        # differed from the recording's), else the plan.
+        plan="$RESULTS/plan.json"
+        [ -f "$RESULTS/ran.json" ] && plan="$RESULTS/ran.json"
         status=0
-        diffcone check --plan "$RESULTS/plan.json" --full "$FULL" \
+        diffcone check --plan "$plan" --full "$FULL" \
           "${baseline[@]}" "${runs[@]}" --format markdown -o "$RUNNER_TEMP/verdict.md" || status=$?
         cat "$RUNNER_TEMP/verdict.md" >> "$GITHUB_STEP_SUMMARY"
-        diffcone check --plan "$RESULTS/plan.json" --full "$FULL" \
+        diffcone check --plan "$plan" --full "$FULL" \
           "${baseline[@]}" "${runs[@]}" --format json -o "$RESULTS/verdict.json" || true
         if [ "$status" -ge 2 ] || { [ "$status" -eq 1 ] && [ "$FAIL" = "true" ]; }; then
           exit "$status"

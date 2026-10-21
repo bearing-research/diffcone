@@ -40,7 +40,9 @@ inputs:
     default: "false"
 outputs:
   selected:
-    description: How many tests the plan selected.
+    description: >-
+      How many tests the plan that ran selected (the static plan's when the
+      environment differed from the recording's).
     value: ${{ steps.run.outputs.selected }}
 runs:
   using: composite
@@ -171,14 +173,18 @@ runs:
           context "$rc" ""
           exit "$rc"
         fi
-        "$py" -c "import json; p = json.load(open('diffcone-results/plan.json')); \
-          print('selected=%d' % len(p['selected_targets']))" | tr -d '\r' >> "$GITHUB_OUTPUT"
         allow=(); [ "$ALLOW_INCOMPLETE" = "true" ] && allow=(--allow-incomplete-discovery)
         # ``-o``: the plan that ran (the static one when the environment
-        # differs from the recording's), for the report.
+        # differs from the recording's), for the report and the check.
+        rm -f diffcone-results/ran.json
         status=0
         diffcone run --base "$BASE" --head HEAD --discover pytest "${roots[@]}" \
           "${evidence[@]}" "${allow[@]}" --command "$COMMAND" -o diffcone-results/ran.json -- \
           "${args[@]}" --junitxml=diffcone-results/diffcone.xml || status=$?
         context "$rc" "$status"
+        # What ran, when the run wrote it; else what was planned.
+        ran=diffcone-results/plan.json
+        [ -f diffcone-results/ran.json ] && ran=diffcone-results/ran.json
+        "$py" -c "import json, sys; p = json.load(open(sys.argv[1])); \
+          print('selected=%d' % len(p['selected_targets']))" "$ran" | tr -d '\r' >> "$GITHUB_OUTPUT"
         exit "$status"

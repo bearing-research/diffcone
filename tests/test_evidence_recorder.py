@@ -2291,3 +2291,196 @@ def test_e11_the_recorded_environment_holds_virtual_env(repo, monkeypatch):
     monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else")
     ev = repo.collect()
     assert ev.environment["variables"]["VIRTUAL_ENV"] == "/somewhere/else"
+
+
+# --------------------------------------------------------------------------- whole records (U1)
+
+PICK = """\
+def via_a():
+    return 1
+
+
+def via_b():
+    return 2
+
+
+def pick(k):
+    return via_a() if k == "a" else via_b()
+
+
+def other():
+    return 0
+"""
+PICK_TESTS = """\
+import pytest
+
+from calc.ops import other, pick
+
+
+@pytest.fixture(scope="module", params=["a", "b"])
+def k(request):
+    return request.param
+
+
+def test_f(k):
+    assert pick(k) in (1, 2)
+
+
+def test_g(k):
+    assert other() == 0
+"""
+PICK_FILES = {
+    ".gitignore": "__pycache__/\n.diffcone/\n.pytest_cache/\n",
+    "calc/__init__.py": "",
+    "calc/ops.py": PICK,
+    "tests/__init__.py": "",
+    "tests/test_x.py": PICK_TESTS,
+}
+F, G = "tests/test_x.py::test_f", "tests/test_x.py::test_g"
+# ``pick``'s body changes (test_f is selected) and test_g breaks; the module
+# fixture orders the cases f[a], g[a], f[b], g[b].
+PICK_EDITED = PICK.replace("    return via_a()", "    k = k\n    return via_a()").replace(
+    "def other():\n    return 0", "def other():\n    return 1"
+)
+# test_g passes again; only test_f's case b reaches the break.
+PICK_BROKEN_B = PICK_EDITED.replace("    return 2\n", "    return 3\n").replace(
+    "def other():\n    return 1", "def other():\n    return 0"
+)
+BENCH_OTHER = asv_target("bench.time_other", "calc.ops.other")
+
+
+def _run_collect_cli(repo, base, head, *extra):
+    from diffcone.cli import main
+
+    args = ["run", "--repo", str(repo.path), "--base", base, "--head", head]
+    args += ["--discover", "pytest", "--command", f"{sys.executable} -m pytest"]
+    return main(args + ["--evidence", "auto", "--collect", "--no-cache", *extra])
+
+
+def _store_at(repo, rev):
+    from diffcone.evidence import list_stores, load_store
+
+    commit = repo.git("rev-parse", rev).strip()
+    (store,) = [s for s in list_stores(repo.path) if s.commit == commit]
+    return load_store(store.path)
+
+
+SLOW_CASE_TESTS = """\
+import pytest
+
+from calc.ops import other, pick
+
+
+@pytest.mark.parametrize("k", ["a", pytest.param("b", marks=pytest.mark.slow)])
+def test_f(k):
+    assert pick(k) in (1, 2)
+
+
+@pytest.mark.parametrize("k", ["a", "b", "c"])
+def test_g(k):
+    assert other() == 0
+"""
+
+
+@needs_monitoring
+@pytest.mark.parametrize("workers", [[], ["-p", "xdist", "-n", "2"]], ids=["serial", "xdist"])
+def test_u1_a_recording_that_deselected_a_case_has_no_record_of_its_test(repo, workers, capfd):
+    """Recorded with ``-m "not slow"``, test_f's slow case never ran: a record
+    of its other case is no record of the test, which a change only the slow
+    case reaches must select. Before: test_f's record held case a only, and
+    the plan selected nothing. Under xdist each worker runs a share of the
+    cases, and the shares add up to whole records (test_g's)."""
+    pytest.importorskip("xdist")
+    from diffcone.cli import main
+
+    files = {
+        **PICK_FILES,
+        "tests/test_x.py": SLOW_CASE_TESTS,
+        "pyproject.toml": "[tool.pytest.ini_options]\nmarkers = ['slow']\n",
+    }
+    base = repo.commit(files)
+    args = ["collect", "--repo", str(repo.path), "--command", f"{sys.executable} -m pytest"]
+    assert main([*args, "--", *workers, "-m", "not slow"]) == 0
+    assert "1 collected test(s) have no record (e.g. tests/test_x.py::test_f)" in (
+        capfd.readouterr().err
+    )
+    ev = _store_at(repo, base)
+    assert set(ev.tests) == {G}
+    assert ev.collected == {F, G}
+    head = repo.commit({"calc/ops.py": PICK.replace("    return 2\n", "    return 3\n")})
+    plan = _plan(repo, base, head, ev, [BENCH_OTHER])
+    assert selected(plan) == {F}
+    assert "no_evidence" in rules(plan, F)
+
+
+@needs_monitoring
+def test_u1_run_collect_runs_the_selection_whole_despite_an_x_in_addopts(repo):
+    """``addopts = -x`` stopped ``run --collect`` after test_g[a] failed, and
+    test_f's fresh record held case a only: the next change, reaching case b
+    alone, was missed. Like ``collect``, the run now adds ``--maxfail=0``."""
+    files = {**PICK_FILES, "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-x'\n"}
+    repo.commit(files)
+    ev = repo.collect()
+    c2 = repo.commit({"calc/ops.py": PICK_EDITED})
+    assert _run_collect_cli(repo, ev.commit, c2) == 1  # test_g fails
+    advanced = _store_at(repo, c2)
+    assert {"calc.ops.via_a", "calc.ops.via_b"} <= executed(advanced, F)
+    c3 = repo.commit({"calc/ops.py": PICK_BROKEN_B})
+    plan = _plan(repo, c2, c3, advanced, [BENCH_OTHER])
+    assert F in selected(plan)
+    assert BENCH_OTHER.runner_id in selected(plan)
+
+
+@needs_monitoring
+def test_u1_run_collect_stopped_early_leaves_the_tests_it_cut_short_unrecorded(repo):
+    """A conftest that sets ``maxfail`` itself stops the session at the first
+    failure whatever ``--maxfail`` says, and pytest exits 1 as for any
+    failure: test_f ran case a only, and test_g case a only. Neither has a
+    record in the advanced store, so both stay selected. Before: test_f's
+    record of case a carried on, and the change to ``via_b`` was missed."""
+    conftest = "def pytest_configure(config):\n    config.option.maxfail = 1\n"
+    repo.commit({**PICK_FILES, "tests/conftest.py": conftest})
+    ev = repo.collect()
+    assert set(ev.tests) == {F, G}
+    c2 = repo.commit({"calc/ops.py": PICK_EDITED})
+    assert _run_collect_cli(repo, ev.commit, c2) == 1
+    advanced = _store_at(repo, c2)
+    assert set(advanced.tests) == set()
+    c3 = repo.commit({"calc/ops.py": PICK_BROKEN_B})
+    plan = _plan(repo, c2, c3, advanced, [BENCH_OTHER])
+    assert selected(plan) == {F, G, BENCH_OTHER.runner_id}
+
+
+@needs_monitoring
+def test_u1_the_recorded_environment_holds_pytest_addopts(repo, monkeypatch):
+    """``PYTEST_ADDOPTS`` carries pytest arguments no recorded command names
+    (``-x``, ``-m``, a conftest's own option): a run under another value is
+    not the recorded one, so ``run --evidence`` plans from the code."""
+    repo.commit(PICK_FILES)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-p no:randomly")
+    ev = repo.collect()
+    assert ev.environment["variables"]["PYTEST_ADDOPTS"] == "-p no:randomly"
+
+
+def test_u1_advance_keeps_the_old_records_flags():
+    """What a test did when recorded that one run need not repeat (a failure,
+    a process it started, an unstable record) stays on its fresh record."""
+    from diffcone.evidence import FLAG_FAILED, FLAG_UNSTABLE, Evidence, TestRecord, advance
+
+    def evidence(commit, flags):
+        return Evidence(
+            commit=commit,
+            source_roots=["."],
+            environment={},
+            environment_hash="e",
+            command="pytest",
+            created=0.0,
+            symbols=["calc.ops.pick"],
+            paths=[],
+            tests={F: TestRecord(frozenset({0}), frozenset(), frozenset(), flags)},
+        )
+
+    old = evidence("c1", FLAG_FAILED | FLAG_SUBPROCESS | FLAG_UNSTABLE)
+    assert advance(old, evidence("c2", 0), {F}, "c2").tests[F].flags == (
+        FLAG_FAILED | FLAG_SUBPROCESS | FLAG_UNSTABLE
+    )

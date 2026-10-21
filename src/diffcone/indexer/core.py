@@ -30,7 +30,7 @@ from diffcone.indexer.references import (
     instance_root,
 )
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
-from diffcone.indexer.scripts import apply_scripts
+from diffcone.indexer.scripts import apply_scripts, other_file_directories
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
 from diffcone.indexer.uses import (
     ANY,
@@ -1645,6 +1645,9 @@ class Indexer(DynamicBounds):
             # An import or a run of a file ``[index] exclude`` keeps out is an
             # unknown dependency (Resolver.excluded_import).
             self.excluded_paths,
+            # A test runner given a directory that holds no Python file
+            # collects from it all the same (scripts._is_directory).
+            other_file_directories(self.snapshot),
         ]
         return _digest(json.dumps(material))
 

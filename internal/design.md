@@ -821,7 +821,14 @@ Further rules (pre-release audit, round 2):
   (R14); a directory given to `pytester.copy_example` runs every `.py`
   file under it, each whole as above; any other directory, `unittest
   discover`, `pytest.main()` reading `sys.argv`, `doctest.testfile` or a
-  bare word the runner would collect from is unbounded; `coverage`'s other subcommands run nothing. A `-m`
+  bare word the runner would collect from is unbounded; `coverage`'s other subcommands run nothing.
+  The word after a long option is that option's argument only for the
+  options known to take one (`--tb`, `--rootdir`, `--cov`, ...:
+  `scripts._RUNNER_LONG_OPTIONS_WITH_ARGUMENT`); after any other
+  (`--verbose`, a plugin's option) it is one of the runner's own
+  arguments, so `pytest.main(['--verbose', 'docs'])` collects from `docs`
+  and is unbounded, whatever `docs` holds (audit U22). A directory is one
+  that holds a Python file or any other file under the roots. A `-m`
   name that is a parameter is bounded by the call sites' literals, as
   `import_module` of one is. A `.py` file under the roots that no module
   name maps to
@@ -2682,7 +2689,11 @@ three after a plan exists, `collect` to record execution evidence.
   tests out of a run by the cache or by name (`--lf`, `--ff`, `--nf`,
   `--sw`, `-k`, `-m`, `--deselect`), where it is written and how to run
   without it (round 5, R16: `--lf` with a last-failed cache drops whole
-  files while collecting). The cost is one full collection. `--dry-run` prints the equivalent command
+  files while collecting). Every process that loads the plugin and
+  collects writes its report of missing tests, empty or not; when pytest ran
+  and none did (a wrapper in `--command` that drops its arguments, a tox or
+  make target without `{posargs}`), what ran is not the selection, and `run`
+  exits 3 as for an uncollected target (audit U9). The cost is one full collection. `--dry-run` prints the equivalent command
   with node ids appended. ASV gets a `--bench` regex. That regex is
   `^(name|name|...)($|\()`, not `...$`: ASV matches it against a benchmark's
   name, and against `name(param0, param1, ...)` for a parameterised one, so
@@ -2698,8 +2709,12 @@ three after a plan exists, `collect` to record execution evidence.
   selection plugin, which writes one outcome line per report with the node
   id made relative to the repository (pytest's own is relative to its
   rootdir, which lies below the repository in a monorepo; the plan's ids
-  are repository-relative), folding parameter cases into their function
-  and keeping the worst outcome. `--maxfail=0` goes last on the command
+  are repository-relative). A test's outcome changes when the set of its
+  cases' outcomes changes, or when a case run at both snapshots changes
+  (audit U10: a case breaking beside one that always failed leaves the set
+  as it was); the change is attributed to the test function, and the
+  comparison does not depend on the order xdist ran the cases in.
+  `run --collect` adds `--maxfail=0` as `collect` does. `--maxfail=0` goes last on the command
   line so an `-x`/`--maxfail` in `addopts` or the command does not stop
   either suite (a test failing at both snapshots would otherwise end both
   runs before the test whose outcome changed, and the oracle would say OK);

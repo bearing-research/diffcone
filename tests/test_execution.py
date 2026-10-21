@@ -2273,3 +2273,114 @@ def test_t15_an_ignored_generated_version_module_is_environment_not_a_difference
     # A working-tree base reads it.
     plan_worktree = repo.plan("WORKTREE", head, [], discover_runners=["pytest"])
     assert "pkg/_version.py" in (worktree_mismatch(repo.path, plan_worktree) or "")
+
+
+# A wrapper that runs pytest without passing its arguments on.
+RUNTESTS = (
+    "import sys\n\nimport pytest\n\n"
+    "sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/unit']))\n"
+)
+WRAPPED = {
+    "calc/__init__.py": "",
+    "calc/ops.py": "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n",
+    "tests/__init__.py": "",
+    "tests/unit/__init__.py": "",
+    "tests/unit/test_sub.py": (
+        "from calc.ops import sub\n\n\ndef test_sub():\n    assert sub(2, 1) == 1\n"
+    ),
+    "tests/integration/__init__.py": "",
+    "tests/integration/test_add.py": (
+        "from calc.ops import add\n\n\ndef test_add():\n    assert add(1, 1) == 2\n"
+    ),
+    "runtests.py": RUNTESTS,
+    ".gitignore": "__pycache__/\n",
+}
+
+
+def test_u9_run_fails_when_the_selection_plugin_never_ran(repo, capfd):
+    """The command drops ``-p diffcone_select``: it ran the unit tests, the
+    selected test_add never ran, and ``run`` exited 0. No process wrote the
+    plugin's report, so what ran is not the selection: exit 3. Run directly,
+    the same selection writes its report and passes."""
+    base = repo.commit(WRAPPED)
+    ops = WRAPPED["calc/ops.py"]
+    head = repo.commit({"calc/ops.py": ops.replace("return a + b", "return a + b + 1")})
+    common = ["run", "--repo", str(repo.path), "--base", base, "--head", head]
+    common += ["--discover", "pytest", "--allow-incomplete-discovery"]
+    code = main([*common, "--command", f"{PY} runtests.py"])
+    err = capfd.readouterr().err
+    assert code == 3, err
+    assert "the selection plugin did not run" in err
+    assert "1 of 2 pytest target(s) selected" in err
+    code = main([*common, "--command", PYTEST_NO_CACHE])
+    err = capfd.readouterr().err
+    assert code == 1, err  # test_add ran, and failed
+    assert "selection plugin" not in err
+
+
+def test_u10_a_case_changing_to_an_outcome_another_case_had_is_a_change():
+    base = {"t.py::f[a]": "PASSED", "t.py::f[b]": "PASSED", "t.py::f[c]": "FAILED"}
+    head = {**base, "t.py::f[b]": "FAILED"}
+    o = execution.target_outcome("t.py::f", base, head, False)
+    assert (o.base, o.head) == ("PASSED+FAILED", "PASSED+FAILED")
+    assert o.changed and o.cases == (("t.py::f[b]", "PASSED", "FAILED"),)
+    assert o.transition == "PASSED+FAILED -> PASSED+FAILED (t.py::f[b]: PASSED -> FAILED)"
+    # A case added or removed counts as it did folded: when it changes the fold.
+    assert not execution.target_outcome(
+        "t.py::f", base, {**base, "t.py::f[d]": "PASSED"}, False
+    ).changed
+    assert execution.target_outcome("t.py::f", {"t.py::f[a]": "PASSED"}, base, False).changed
+    # Each case's own outcomes, in any order the processes wrote them.
+    lines = ["t.py::f[a]\tFAILED", "t.py::f[b]\tPASSED", "t.py::f[a]\tERROR", "t.py::f[b]\tPASSED"]
+    assert execution.parse_outcome_cases(lines) == {
+        "t.py::f": {"t.py::f[a]": "FAILED+ERROR", "t.py::f[b]": "PASSED"}
+    }
+    assert execution.parse_outcome_cases(lines[::-1]) == execution.parse_outcome_cases(lines)
+
+
+SOME_FAIL = """\
+import pytest
+
+from calc.ops import pick
+
+
+@pytest.mark.parametrize("k", ["a", "b", "c"])
+def test_f(k):
+    assert k != "c"
+    assert pick(k) in (1, 2)
+
+
+def test_g():
+    assert True
+"""
+
+
+def test_u10_validate_sees_a_case_break_beside_a_case_that_always_failed(repo, capsys):
+    """test_f[c] fails at both commits; test_f[b] breaks. Folded into the set
+    of their outcomes, both sides were PASSED+FAILED, and ``validate`` called
+    a plan that left test_f out correct (here a manifest gives test_f a
+    wrong entry, so the plan misses it)."""
+    ops = (
+        "def via_a():\n    return 1\n\n\ndef via_b():\n    return 2\n\n\n"
+        "def pick(k):\n    return via_a() if k == 'a' else via_b()\n"
+    )
+    files = {"calc/__init__.py": "", "calc/ops.py": ops, "tests/__init__.py": "",
+             "tests/test_x.py": SOME_FAIL}  # fmt: skip
+    base = repo.commit(files)
+    head = repo.commit({"calc/ops.py": ops.replace("return 2", "return 3")})
+    targets = [
+        py_target("tests/test_x.py::test_f", "tests.test_x.test_g"),  # wrong on purpose
+        py_target("tests/test_x.py::test_g", "tests.test_x.test_g"),
+    ]
+    plan = repo.plan(base, head, targets)
+    assert not any(d.selected for d in plan.decisions)
+    v = validate_pytest(plan, repo=repo.path, command=PYTEST_NO_CACHE)
+    assert [o.runner_id for o in v.missed] == ["tests/test_x.py::test_f"]
+    assert v.missed[0].cases == (("tests/test_x.py::test_f[b]", "PASSED", "FAILED"),)
+    assert not v.ok
+    text = execution.validation_to_text(v)
+    assert "(tests/test_x.py::test_f[b]: PASSED -> FAILED)" in text
+    (record,) = validation_to_dict_local(v)["missed"]
+    assert record["cases"] == [
+        {"case": "tests/test_x.py::test_f[b]", "base": "PASSED", "head": "FAILED"}
+    ]

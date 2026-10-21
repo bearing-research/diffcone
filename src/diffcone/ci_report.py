@@ -104,19 +104,28 @@ class Report:
     not_collected: int = 0
     malformed: int = 0
     run_failed: int = 0
+    # Pull-request runs that ran no selection: the plan failed (``plan``
+    # exited 2), or ``run`` refused an incomplete discovery (exit 3).
+    plan_failed: int = 0
+    refused: int = 0
+
+    @property
+    def missed(self) -> bool:
+        return bool(self.misses or self.earlier_misses or self.unlisted_misses)
 
     @property
     def ok(self) -> bool:
         """No confirmed miss, no check that failed to reach a verdict, no
-        selected test left uncollected or unrun and no artifact that cannot
-        be read."""
+        pull-request run that ran no selection (its plan failed, ``run``
+        refused it, or the run failed after a good plan), no selected test
+        left uncollected and no artifact that cannot be read."""
         return not (
-            self.misses
-            or self.earlier_misses
-            or self.unlisted_misses
+            self.missed
             or self.check_errors
             or self.not_collected
             or self.run_failed
+            or self.plan_failed
+            or self.refused
             or self.malformed
         )
 
@@ -249,6 +258,8 @@ class _Totals:
     check_errors: int = 0
     not_collected: int = 0
     run_failed: int = 0
+    plan_failed: int = 0
+    refused: int = 0
 
 
 def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Totals) -> None:
@@ -283,12 +294,15 @@ def _add(art: Artifact, context: dict[str, Any], cell: CellReport, totals: _Tota
             and context.get("run_exit") == 3
         )
         if plan_exit not in (0, 1, 3):
+            # No plan, so no test ran: as much a problem as a failed run.
             cell.plan_failed += 1
+            totals.plan_failed += 1
         elif refused:
             cell.refused += 1
+            totals.refused += 1
         elif context.get("run_exit") == 3:
-            # ``run`` exits 3 when pytest did not collect selected targets:
-            # they did not run.
+            # ``run`` exits 3 when pytest did not collect selected targets,
+            # or no process loaded the selection plugin: they did not run.
             cell.not_collected += 1
             totals.not_collected += 1
         elif context.get("run_exit") not in (0, 1):
@@ -383,6 +397,8 @@ def build(artifacts: list[Artifact]) -> Report:
         not_collected=totals.not_collected,
         malformed=malformed,
         run_failed=totals.run_failed,
+        plan_failed=totals.plan_failed,
+        refused=totals.refused,
     )
 
 
@@ -441,6 +457,8 @@ def to_dict(report: Report) -> dict[str, Any]:
         "check_errors": report.check_errors,
         "not_collected": report.not_collected,
         "run_failed": report.run_failed,
+        "plan_failed": report.plan_failed,
+        "refused": report.refused,
         "malformed": report.malformed,
     }
 
@@ -468,7 +486,8 @@ def _share(value: float | None) -> str:
 
 def to_markdown(report: Report) -> str:
     lines = [
-        f"### diffcone report: {'no miss' if report.ok else 'MISSES'}",
+        "### diffcone report: "
+        + ("no miss" if report.ok else "MISSES" if report.missed else "PROBLEMS"),
         "",
         f"{report.runs} workflow run(s) ({report.pull_request_runs} pull request, "
         f"{report.push_runs} push"
@@ -511,7 +530,21 @@ def to_markdown(report: Report) -> str:
     if report.not_collected:
         lines += [
             f"**{report.not_collected} pull-request run(s) did not run selected tests**: "
-            "pytest did not collect them (discovery and collection disagree); see the jobs' logs.",
+            "pytest did not collect them (discovery and collection disagree), or the command "
+            "did not load diffcone's selection plugin; see the jobs' logs.",
+            "",
+        ]
+    if report.plan_failed:
+        lines += [
+            f"**{report.plan_failed} pull-request run(s) produced no plan**, so they ran no "
+            "test; see the jobs' logs.",
+            "",
+        ]
+    if report.refused:
+        lines += [
+            f"**{report.refused} pull-request run(s) were refused**: discovery may be short of "
+            "what pytest collects, and the run was not allowed to go ahead "
+            "(allow-incomplete-discovery), so they ran no test; see the jobs' logs.",
             "",
         ]
     if report.run_failed:

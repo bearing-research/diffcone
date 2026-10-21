@@ -484,7 +484,7 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
 
     report = ci_report.build(ci_report.load(tmp_path / "runs"))
     cell = report.cells[0]
-    assert report.ok
+    assert not report.ok and report.refused == 1  # a refused run ran no test (U25)
     assert (cell.pull_requests, cell.refused, cell.without_context) == (1, 1, 0)
     assert (cell.pushes, cell.checked) == (3, 0)
     assert dict(cell.not_checked) == {
@@ -1442,3 +1442,84 @@ def test_t4_a_push_of_several_commits_plans_them_all(repo, tmp_path):
     done, chosen, context = step("gone", {"before": "f" * 40, "after": head})
     assert chosen == {"tests/test_ops.py::test_add", "tests/test_ops.py::test_mul"}
     assert "cannot be fetched" in context["base_note"]
+
+
+def test_u25_a_failed_plan_or_a_refused_run_is_a_problem(tmp_path):
+    """A pull request whose plan failed (``plan`` exited 2) or whose run was
+    refused (discovery incomplete, not allowed) ran no test, yet the report
+    said "no miss" and exited 0, so ``comment: on-problem`` stayed silent."""
+    for event_id, context in ((1, _pr(plan_exit=2, run_exit=None)), (2, _pr(3, 3))):
+        root = tmp_path / str(event_id)
+        _run(
+            root,
+            event_id,
+            "pull_request",
+            str(event_id) * 40,
+            {"diffcone-a": {"context.json": context}},
+        )
+        report = ci_report.build(ci_report.load(root))
+        assert not report.ok and not report.missed
+        text = ci_report.to_markdown(report)
+        assert text.startswith("### diffcone report: PROBLEMS\n")
+        data = ci_report.to_dict(report)
+        assert (data["plan_failed"], data["refused"]) == ((1, 0) if event_id == 1 else (0, 1))
+    assert "**1 pull-request run(s) produced no plan**" in ci_report.to_markdown(
+        ci_report.build(ci_report.load(tmp_path / "1"))
+    )
+    assert "**1 pull-request run(s) were refused**" in ci_report.to_markdown(
+        ci_report.build(ci_report.load(tmp_path / "2"))
+    )
+    # Allowed, exit 3 is a selected test pytest did not collect: also a problem.
+    root = tmp_path / "3"
+    _run(root, 3, "pull_request", "3" * 40, {"diffcone-a": {"context.json": _pr(3, 3, allow=True)}})
+    report = ci_report.build(ci_report.load(root))
+    assert (report.refused, report.not_collected, report.ok) == (0, 1, False)
+
+
+def _target(test: str) -> dict:
+    return {"runner": "pytest", "runner_id": f"tests/test_a.py::{test}"}
+
+
+@posix_only
+def test_u26_the_check_and_the_selected_output_read_the_plan_that_ran(tmp_path):
+    """With an environment unlike the recording's, ``run`` runs the static
+    plan and writes it to ran.json; the check read plan.json (the evidence
+    plan, which left test_x out) and flagged a miss for a test the static
+    plan ran, and ``selected`` counted the evidence plan's tests."""
+    results = tmp_path / "diffcone-results"
+    results.mkdir()
+    planned = {"status": "complete", "selected_targets": [_target("test_y")],
+               "unselected_targets": [_target("test_x")]}  # fmt: skip
+    ran = {"status": "complete", "selected_targets": [_target("test_x"), _target("test_y")],
+           "unselected_targets": []}  # fmt: skip
+    (results / "plan.json").write_text(json.dumps(planned))
+    (results / "ran.json").write_text(json.dumps(ran))
+    (tmp_path / "full.xml").write_text(_junit(["test_x"], ["test_y"]))
+    (results / "diffcone.xml").write_text(_junit(["test_x"], ["test_y"]))
+    env = {"RESULTS": str(results), "FULL": str(tmp_path / "full.xml"), "OTHERS": "",
+           "FAIL": "true", "RUNNER_TEMP": str(tmp_path),
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")}  # fmt: skip
+    done = _bash(_step("check", "Check"), tmp_path, env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "### diffcone check: no miss\n" in (tmp_path / "summary").read_text()
+    # Without ran.json (the run never wrote one), the plan is checked.
+    (results / "ran.json").unlink()
+    done = _bash(_step("check", "Check"), tmp_path, env)
+    assert done.returncode == 1, done.stdout + done.stderr
+
+    # The run action's ``selected``: the lines after the run.
+    text = (ACTIONS / "run" / "action.yml").read_text()
+    start = text.index("        # What ran, when")
+    snippet = textwrap.dedent(text[start : text.index('        exit "$status"', start)])
+    output = tmp_path / "output"
+    env = {"py": sys.executable, "GITHUB_OUTPUT": str(output)}
+    for files, count in (({"ran.json": ran}, 2), ({}, 1)):
+        work = tmp_path / f"run-{count}"
+        (work / "diffcone-results").mkdir(parents=True)
+        (work / "diffcone-results" / "plan.json").write_text(json.dumps(planned))
+        for name, data in files.items():
+            (work / "diffcone-results" / name).write_text(json.dumps(data))
+        output.write_text("")
+        done = _bash(snippet, work, env)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert output.read_text() == f"selected={count}\n"

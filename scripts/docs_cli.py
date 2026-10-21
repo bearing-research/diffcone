@@ -47,7 +47,9 @@ could skip tests. `3` wins when both apply. A manifest written by
 
 `run` exits with the runner's own code (0 when nothing ran because
 nothing was selected, or with `--dry-run`; pytest's `5`, no test ran, counts as `0`), and with `3`
-when a selected test was not collected. It refuses with `2` when the
+when a selected test was not collected or the selection plugin never ran
+(a wrapper in `--command` that does not pass its arguments on to pytest).
+It refuses with `2` when the
 working tree differs from the snapshot the plan analysed (unless
 `--allow-mismatched-worktree`) or `--repo` is not the top of a git
 repository, and with `3` when discovery may be incomplete (unless
@@ -60,8 +62,9 @@ not a miss when the plan said its discovery is incomplete (the plan's
 failure of the full run was selected, `1` when the plan missed one, `2`
 when an input cannot be read. `report` exits `0` when the runs it read
 show no problem, `1` when they show one (a miss, a check that reached no
-verdict, a selected test pytest did not collect, a pull-request run that
-failed after a good plan, an artifact it could not read), `2` on errors. `collect`, `prune` and
+verdict, a selected test pytest did not collect, a pull-request run whose
+plan failed, that was refused, or that failed after a good plan, an
+artifact it could not read), `2` on errors. `collect`, `prune` and
 `evidence` exit `0` on success (`collect` records whatever the suite's own
 results) and `2` on errors. An internal error exits `2` in every command.
 """
