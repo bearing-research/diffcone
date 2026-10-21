@@ -1680,8 +1680,9 @@ selection rules.</p>
   leave out of the analysis (deliberately invalid test data, as in a
   formatter's or a linter's test suite). A matching file is read as a data
   file: plans no longer degrade, <code>collect</code> records the checkout, and a
-  change to one selects everything in a plan without a recording and the
-  tests that read it or ran its code in one with. What an excluded file
+  change to one selects everything in a plan without a recording; with
+  one, the tests that read the file as data, and every test when a test
+  imported or ran its code. What an excluded file
   runs is not read, so code that imports or runs one (an import,
   <code>import_module</code>, <code>runpy</code>, a subprocess, a file loader) is selected on any
   change, with a reason naming the file; with a recording, a change to an
@@ -1750,7 +1751,8 @@ selection rules.</p>
   an <code>append</code>, or a write under a branch on the result) was not followed:
   a test that read what an earlier test stored there, without running
   <code>compute</code>, was not selected when <code>compute</code> changed. Every in-place write
-  of the code that code calls is now followed.</li>
+  of the functions that code calls is now followed, where diffcone can
+  tell which function a call runs.</li>
 <li>With a recording, a cache kept on an object, a class, a closure or a
   function attribute counted a store only when the stored value named the
   changed code directly. A value computed through a variable, a table or
@@ -1786,9 +1788,17 @@ selection rules.</p>
   class-level state, when the class or one of its bases holds some. It
   does now. Setting an attribute on a new instance (<code>new =
   cls.__new__(cls); new._key = None</code>, as copy and replace methods do) is
-  not a change to the class, unless the class's own <code>__new__</code> may hand
-  out an instance in use (a singleton). In <code>__new__</code>, <code>__init_subclass__</code>
+  not a change to the class, unless a <code>__new__</code> in the class's hierarchy,
+  a library base, or a decorator or metaclass may hand out an instance in
+  use (a singleton). In <code>__new__</code>, <code>__init_subclass__</code>
   and <code>__class_getitem__</code>, <code>cls</code> is the class.</li>
+<li>A class whose body binds only constants and methods was taken to hold
+  no state even when a decorator, a metaclass or a library base may give
+  it some (a decorator keeping a singleton or a registry on the class),
+  so changes made through its instances reached none of its readers. Such
+  a class now counts as holding state, unless the decorator or metaclass
+  is one that adds no state (<code>dataclasses.dataclass</code>,
+  <code>functools.total_ordering</code>, <code>typing.final</code>, <code>abc.ABCMeta</code>).</li>
 <li>A module constant that cannot change in place (a string, a number, a
   tuple of such, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code>) and that no
   code binds again gained a writer from every function that passed it to
@@ -1809,8 +1819,10 @@ selection rules.</p>
   place (<code>tok.rules["x"] = 1</code>, a method changing what <code>__init__</code> stored)
   makes that code a dependency of the readers of <code>RULES</code>. Setting or
   counting up the instance's own attributes (<code>tok.position += 1</code>) does
-  not, unless the class can run code when they are set (<code>__setattr__</code>,
-  a property, <code>__new__</code>, a decorator, a metaclass or a library base).</li>
+  not, unless the class can run code when they are set (<code>__new__</code>,
+  <code>__setattr__</code>, <code>__delattr__</code>, <code>__getattr__</code>, <code>__getattribute__</code>, a
+  class attribute of that name, a decorator, a metaclass or a library
+  base) or the attribute is a special one (<code>__dict__</code>).</li>
 <li>A write onto the class of an object whose type is not known
   (<code>type(obj).x = v</code>, <code>obj.__class__.items.append(v)</code>, <code>setattr(type(obj),
   name, v)</code>, or <code>type(obj)</code> handed to a function that sets <code>c.x</code>) only

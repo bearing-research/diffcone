@@ -1054,7 +1054,7 @@ everything.</p>
 <dt><strong>Changes that run on import reach every importer.</strong></dt>
 <dd>
 <p>A change to code that runs when a module is imported (a module-level
-statement, a constant, a class body, a decorator) selects every target
+statement, a class body, a decorator) selects every target
 whose module imports that module, directly or indirectly. In a codebase
 where most modules import a few central ones, such a change selects
 most tests.</p>
@@ -1282,23 +1282,27 @@ it holds when the code reaches the object by another name:</p>
 <p>A class-level container is shared by every instance: a change made
 through an instance of your class is a dependency of every reader of
 the class too (<code>Store._cache</code>, <code>cls._cache</code>), as long as the class or
-one of your base classes binds something mutable in its body or some
-code stores onto the class. That holds for an instance a module-level
+one of your base classes binds something mutable in its body, some
+code stores onto the class, or it has a decorator, a metaclass or a
+library base that may give it state (other than <code>dataclasses.dataclass</code>,
+<code>functools.total_ordering</code>, <code>typing.final</code> and <code>abc.ABCMeta</code>). That holds for an instance a module-level
 name holds (<code>STORE = Store()</code>, <code>STORE = make_store()</code>, or set by a
 function under <code>global</code>: <code>STORE._cache[k] = v</code>, <code>STORE.cache()[k] =
 v</code>), and for one a function makes (<code>s = Store()</code>, <code>new =
 cls.__new__(cls)</code>, <code>make_store()</code>: <code>s._cache[k] = v</code>,
 <code>new._items.append(x)</code>, or <code>s._items</code> handed to a function that
-changes it). A class whose body holds only constants, methods and
-properties is not affected, nor is an attribute of a new instance that
-no class body binds (<code>s.mine.append(x)</code>, where only <code>__init__</code> sets
-<code>self.mine</code>). State a library base class keeps is not seen.</p>
+changes it). Otherwise a class whose body holds only constants,
+methods and properties is not affected, nor is an attribute of a new
+instance that no class body binds (<code>s.mine.append(x)</code>, where only
+<code>__init__</code> sets <code>self.mine</code>).</p>
 <p>A copy is not the object: <code>cache = dict(_CACHE)</code> or <code>_CACHE.copy()</code>,
 then <code>cache[k] = v</code>, changes nothing shared. Setting an attribute on a
 new instance (<code>Config().mode = m</code>, <code>new = cls.__new__(cls); new.mode =
-m</code>) changes that instance only, unless the class or one of its bases
-defines its own <code>__new__</code>, is decorated, has a metaclass or derives
-from a library class: such an instance may be one kept elsewhere (a
+m</code>) changes that instance only, unless a class in its hierarchy (a
+base or a subclass) defines its own <code>__new__</code> or derives from a class
+of an installed package, or the class is decorated or has a metaclass
+(for <code>cls.__new__(cls)</code>, one other than <code>functools.total_ordering</code>,
+<code>typing.final</code> or <code>abc.ABCMeta</code>): such an instance may be one kept elsewhere (a
 singleton), and setting its attribute counts as a change of the
 class's state. A method changing an attribute its instance owns
 (<code>self.items.append(x)</code>, where <code>__init__</code> sets <code>self.items = []</code>) on an
@@ -1323,19 +1327,22 @@ rules=RULES)</code>) is part of the new instance. Changing the instance in
 place (<code>tok.rules["x"] = 1</code>, calling one of its methods, <code>__init__</code>
 changing what it stored) changes the object, so it is a dependency of
 every reader of <code>RULES</code>. Setting an attribute on the instance
-(<code>tok.position = 0</code>, but not <code>__dict__</code> or <code>__class__</code>), or adding a number or string to one that only
-ever holds such values (<code>tok.position += 1</code>), in that code or in a
-function it hands the instance to, is not, as long as no class involved
-defines <code>__new__</code>,
-<code>__setattr__</code>, <code>__getattr__</code> or a property of that name, or has a
-decorator (other than <code>functools.total_ordering</code> or <code>typing.final</code>), a
-metaclass or a library base.</p>
+(<code>tok.position = 0</code>; not a special attribute such as <code>__dict__</code>), or
+adding a number or string to one that only ever holds such values
+(<code>tok.position += 1</code>), in that code or in a function it hands the
+instance to, is not, as long as no class involved defines <code>__new__</code>,
+<code>__setattr__</code>, <code>__delattr__</code>, <code>__getattr__</code> or <code>__getattribute__</code>,
+binds that name in its body to anything but a constant (a property,
+another descriptor, a list), or has a decorator (other than
+<code>functools.total_ordering</code> or <code>typing.final</code>), a metaclass (other than
+<code>abc.ABCMeta</code>) or a library base.</p>
 <p>Not followed:</p>
 <ul>
 <li>an object stored away and changed later under another name
   (<code>self.store = store</code>, then <code>self.store[k] = v</code>), unless the instance
-  holding it was made by calling your class with it in the function that
-  changes it or hands it on (an instance kept in a module variable,
+  holding it was made by calling your class with it, in the function
+  that changes it or hands it on or in a function of yours that returns
+  it (an instance kept in a module variable,
   <code>TOK = Tokenizer(RULES)</code>, is not followed back to <code>RULES</code>);</li>
 <li>an object a library function returns that your code then changes;</li>
 <li>a method called on an item of a module-level dict or list
