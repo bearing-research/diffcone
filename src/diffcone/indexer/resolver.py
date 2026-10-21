@@ -74,6 +74,21 @@ from diffcone.model import (
 )
 from diffcone.snapshot import excluded_files
 
+# The ``functools`` caches the recorder clears before every test when it can
+# see the project's code under them (collect._project_function).
+_FUNCTOOLS_CACHES = frozenset({"functools.cache", "functools.lru_cache"})
+# Wrappers that keep the function reachable (``__func__``, ``fget``,
+# ``__wrapped__`` and its ``__module__``).
+_TRANSPARENT_WRAPPERS = frozenset(
+    {
+        "staticmethod",
+        "classmethod",
+        "property",
+        "warnings.deprecated",
+        "typing_extensions.deprecated",
+    }
+)
+
 
 def _with_alternatives(bindings: list[Node]) -> Node:
     """The node for a name bound several ways: the first binding (a
@@ -516,6 +531,7 @@ class Resolver(FirstPass):
                 if isinstance(value, ast.expr):
                     for call in _outermost_calls(value):
                         collector.visit(call)
+                    self._applied_decorators(owner, value, scope, module_scope)
             elif _is_main_guard(stmt, scope):
                 assert isinstance(stmt, ast.If)
                 collector.visit(stmt.test)
@@ -713,12 +729,20 @@ class Resolver(FirstPass):
         return symbol.passive_decorator
 
     def _record_decorations(
-        self, symbol_id: str, decorators: list[ast.expr], module: ModuleScope, where: Scope
+        self,
+        symbol_id: str,
+        decorators: list[ast.expr],
+        module: ModuleScope,
+        where: Scope,
+        *,
+        applied: bool = False,
     ) -> None:
         """For each decorator not known inert: the in-scope function it
         resolves to and the in-scope object it is an attribute of
         (``show`` in ``@show.register(int)``, ``app`` in ``@app.command``).
-        A decorator may keep the function it decorates there."""
+        A decorator may keep the function it decorates there. ``applied``:
+        applied by a call (``_applied_decorators``)."""
+        found = self.out.applied if applied else self.out.decorations
         stars = self._star_bases(module)
         for dec in decorators:
             if _is_inert_decorator(dec, module, _header_names(where), stars):
@@ -735,7 +759,39 @@ class Resolver(FirstPass):
                 if isinstance(receiver, Resolved) and receiver.symbol != symbol_id:
                     receiver_id = receiver.symbol
             if decorator_id or receiver_id:
-                self.out.decorations.add((symbol_id, decorator_id, receiver_id))
+                found.add((symbol_id, decorator_id, receiver_id))
+
+    def _applied_decorators(
+        self, variable: str, value: ast.expr, module: ModuleScope, where: Scope
+    ) -> None:
+        """A module variable bound to a decorator applied by a call to an
+        in-scope function (``get = remember(_get)``, ``get =
+        cachetools.cached(cache={})(_get)``, ``get = cache(deprecated(_get))``):
+        recorded as the decorator form is (``_record_decorations``), and a
+        memoiser (``_memoizing``) keeps results of what the variable holds
+        (SourceIndex.memoized; audit round 7, U17). Any call handed a
+        function as its one positional argument counts: whatever it builds
+        may hold the function and call it later."""
+        decorators: list[ast.expr] = []
+        expr = value
+        while (
+            isinstance(expr, ast.Call)
+            and len(expr.args) == 1
+            and not isinstance(expr.args[0], ast.Starred)
+            and len(decorators) < 8
+        ):
+            decorators.append(expr.func)
+            expr = expr.args[0]
+        parts = _flatten_chain(expr) if decorators else None
+        node = self.resolve_chain(parts, where) if parts else None
+        if not isinstance(node, Resolved) or node.detail:
+            return
+        symbol = self.index.symbols.get(node.symbol)
+        if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            return
+        self._record_decorations(symbol.id, decorators, module, where, applied=True)
+        if self._memoizing(decorators, module, where):
+            self.out.memoized.add(variable)
 
     def _memoizing(self, decorators: list[ast.expr], module: ModuleScope, where: Scope) -> bool:
         """Whether a decorator is known to serve a kept result without
@@ -749,12 +805,23 @@ class Resolver(FirstPass):
         decorator a memoiser, selects every test of a project whose routes
         or commands are decorated)."""
         stars = self._star_bases(module)
-        for dec in decorators:
+        for i, dec in enumerate(decorators):
             if _is_inert_decorator(dec, module, _header_names(where), stars):
                 continue
             target = dec.func if isinstance(dec, ast.Call) else dec
             names = _canonical_names(target, module, _header_names(where), stars)
             if names and any(_memoizing_decorator(n) for n in names):
+                return True
+            if (
+                names
+                and names & _FUNCTOOLS_CACHES
+                and any(self._opaque_wrapper(inner, module, where) for inner in decorators[i + 1 :])
+            ):
+                # A ``functools`` cache the recorder clears only when it can
+                # see the project's code under it (collect._project_function):
+                # over a wrapper from outside the index that may not say
+                # (no ``__wrapped__``, its own ``__module__``), it may serve
+                # a result kept by an earlier test (audit round 7, U16).
                 return True
             parts = _flatten_chain(target)
             node = self.resolve_chain(parts, where) if parts else None
@@ -799,6 +866,30 @@ class Resolver(FirstPass):
                     continue
             return True
         return False
+
+    def _opaque_wrapper(self, dec: ast.expr, module: ModuleScope, where: Scope) -> bool:
+        """Whether a decorator may wrap a function in an object from outside
+        the index that hides it (``_memoizing``): not a builtin that keeps
+        it reachable (``staticmethod``, ``classmethod``, ``property``),
+        ``functools`` (whose wrappers copy ``__module__`` and set
+        ``__wrapped__``), nor code of the index."""
+        if _is_inert_decorator(dec, module, _header_names(where), self._star_bases(module)):
+            return False
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        names = _canonical_names(target, module, _header_names(where), self._star_bases(module))
+        if names and all(n in _TRANSPARENT_WRAPPERS or n.startswith("functools.") for n in names):
+            return False
+        parts = _flatten_chain(target)
+        node = self.resolve_chain(parts, where) if parts else None
+        if isinstance(node, Resolved) and not node.detail:
+            symbol = self.index.symbols.get(node.symbol)
+            if symbol is not None and symbol.kind in (
+                SymbolKind.FUNCTION,
+                SymbolKind.METHOD,
+                SymbolKind.CLASS,
+            ):
+                return False
+        return True
 
     def _decorators_may_read_docs(
         self, decorators: list[ast.expr], module: ModuleScope, where: Scope

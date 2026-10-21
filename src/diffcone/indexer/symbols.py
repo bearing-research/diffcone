@@ -456,6 +456,7 @@ class FirstPass(IndexerState):
                 cscope.unbounded = not class_adds_no_state(self._class_bindings[scope.name], nodes)
                 cscope.immutables = class_immutables(self._class_bindings[scope.name], nodes)
                 cscope.kept = class_kept(self._class_bindings[scope.name], nodes)
+                cscope.adds_no_state = class_adds_no_state(self._class_bindings[scope.name], nodes)
                 cscope.declared = class_declared(nodes)
                 cscope.tables = class_tables(nodes)
                 for n in nodes:

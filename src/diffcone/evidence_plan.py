@@ -158,10 +158,13 @@ without dynamic-reference pseudo-seeds: a test that executed a dynamic
 site is in the record through the code it reached, so the lookup sites
 that can see an escalated module join E instead. Every symbol of an
 escalated module joins E too. A lookup on an external module that only
-code running inside tests writes to joins E only for a change to code that
-runs at import (which may now write there): what it finds of the
+code running inside tests writes to joins E only for a change to code
+that runs at import (which may now write there): what it finds of the
 project's, a test's record holds through the writer
-(``_Observers._only_in_tests``, ``import_sites``). Any such lookup joins
+(``_Observers._only_in_tests``, ``import_sites``). A writer that is not a
+test's own code (project code a test runs) leaves what it stored for later
+tests, so a change the chain carries to it reaches the lookup too
+(``_writer_sites``; audit round 7, U13). Any such lookup joins
 E for an import-time change only when the changed code can run one of its
 writers (``_forward``).
 
@@ -183,7 +186,7 @@ from collections.abc import Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 
-from diffcone.child import SCANNED
+from diffcone.child import SCANNED, SHOWN
 from diffcone.classify import (
     ChangeKind,
     SymbolChange,
@@ -234,8 +237,10 @@ from diffcone.model import (
     RUNS_PROGRAM,
     RUNS_SCRIPT,
     RUNS_TEXT,
+    STORE_ANY_ATTRIBUTE,
     STORE_CLOSURE,
     STORE_PARAM,
+    STORE_REINIT,
     STORE_SELF,
     WRITES,
     EdgeKind,
@@ -311,10 +316,38 @@ GRAPH_ATTRIBUTES = frozenset(
     }
 )
 
-# What calling or creating a class runs.
+# What calling, creating or subscripting a class runs.
 _CONSTRUCTORS = frozenset(
-    {"__new__", "__init__", "__post_init__", "__call__", "__init_subclass__", "__set_name__"}
+    {
+        "__new__",
+        "__init__",
+        "__post_init__",
+        "__call__",
+        "__init_subclass__",
+        "__set_name__",
+        "__class_getitem__",
+    }
 )
+
+
+def _on_receiver(where: str) -> bool:
+    """Whether a store (``SourceIndex.stores``) is into the receiver
+    itself: ``@self``, ``@self.<attr>``, ``@init``."""
+    return where == STORE_SELF or where.startswith(STORE_SELF + ".") or where == STORE_REINIT
+
+
+def _receiver_attributes(wheres: Iterable[str]) -> set[str]:
+    """The attributes stores bind on their receiver (``@self.x``) or store
+    into through it (``self._cache[k] = v``: ``_cache``)."""
+    found: set[str] = set()
+    for where in wheres:
+        if where.startswith(STORE_SELF + "."):
+            name = where[len(STORE_SELF) + 1 :]
+            if name != STORE_ANY_ATTRIBUTE:
+                found.add(name)
+        elif not where.startswith("@"):
+            found.add(where)
+    return found
 
 
 # The kinds of dynamic lookup (UnresolvedKind.DYNAMIC details), by what the site can see.
@@ -593,6 +626,10 @@ class _Observers:
         # variables each function writes into in place (``mutated_by``).
         self.calls: dict[str, set[str]] = defaultdict(set)
         self.writes: dict[str, set[str]] = defaultdict(set)
+        # Code reading an attribute off a class or module (an "attribute:"
+        # edge) -> what it reads it off: ``Store.put`` where the class binds
+        # ``put = staticmethod(_impl)`` (``_handed_to``).
+        self.attribute_of: dict[str, set[str]] = defaultdict(set)
         self.holds: dict[str, set[str]] = defaultdict(set)
         self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
         self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
@@ -620,6 +657,7 @@ class _Observers:
                     )
                     if mark.startswith("attribute:"):
                         self.attribute_readers[mark[len("attribute:") :]].add(edge.source)
+                        self.attribute_of[edge.source].add(edge.target)
                     if mark == MUTATED_BY:
                         self.writes[edge.target].add(edge.source)
                     elif mark != REGISTERS:
@@ -679,6 +717,16 @@ class _Observers:
                     site_writers[(symbol, SiteKind.ANY)].update(writers)
                 if not (writers and self._only_in_tests(writers)):
                     self.sites.append((symbol, SiteKind.ANY))
+        # A method called (or a property accessor or attribute hook run) on
+        # a receiver whose class the index knows (``ENGINE.run(k)``,
+        # ``Engine().run(k)``: SourceIndex.typed_calls) is a call like a
+        # resolved one; a receiver of unknown type stays unfollowed (audit
+        # round 7, U5, U18).
+        for index in (c_index, other):
+            for caller, method in index.typed_calls:
+                self.calls[caller].add(method)
+        # Classes calling which may give back an object already in use.
+        self.shared_instances = c_index.shared_instances | other.shared_instances
         # A table getter whose writers all run only inside test windows
         # obtains a test module only in a test that ran one of them (and
         # never outside every test); otherwise it is any getter.
@@ -768,6 +816,12 @@ class _Observers:
         self.direct: dict[str, Reason] = {}
         self.fallbacks: list[Fallback] = []
         self.files: dict[str, tuple[str, bool]] = {}  # changed path -> (what, names too)
+        # The code a test that touched a changed file ran -> why: it may have
+        # kept what it read there for later tests (``_stored_results``; U6).
+        self._file_seeds: dict[str, Reason] = {}
+        self._seeded: set[str] = set()
+        self._sites_read: set[tuple[str, str]] = set()
+        self._handed_to_found: list[tuple[str, str, str]] = []
         # Changed files under the roots the index does not read.
         self.unanalysed = _changed_unanalysed_files(c_index, other)
         # Where a ``build.py`` is a build script (planner.is_build_script).
@@ -830,6 +884,15 @@ class _Observers:
         self.import_sites: dict[tuple[str, str], frozenset[str]] = {
             site: frozenset(writers) for site, writers in sorted(site_writers.items())
         }
+        # Writer -> the lookups on an external module it writes to that a
+        # later test may see (``_stored_results``; audit round 7, U13): all
+        # but a test's own code (the isolation assumption), whether or not
+        # the site is a lookup site of its own.
+        self._writer_sites: dict[str, set[str]] = defaultdict(set)
+        for site, writers in sorted(site_writers.items()):
+            for writer in writers:
+                if not (writer in self.test_code.isolated and self._only_in_tests({writer})):
+                    self._writer_sites[writer].add(site[0])
         # Code that can call what no edge shows: a lookup by a name nothing
         # bounds, an import of a module named at run time, a graph walk.
         self._opaque_callers = (
@@ -1015,7 +1078,11 @@ class _Observers:
         outside every test. A lookup on an external module written by such
         writers finds the project's code only in a test that ran one of them
         (roadmap item 14); code run at import (module or class top-level
-        code, a decorator) leaves what it did for every later test."""
+        code, a decorator) leaves what it did for every later test. So does
+        project code a test runs (``configure()`` storing onto a library
+        module): the isolation assumption covers a test's own code only, so
+        a change the chain carries to such a writer reaches the lookup
+        (``_writer_sites``; audit round 7, U13)."""
         for sid in code:
             symbol = self.symbols.get(sid)
             if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
@@ -1217,8 +1284,16 @@ class _Observers:
         The code the chain calls, transitively, is followed the same way
         (``_handed_to``, audit E36): ``get`` handing ``compute(k)`` to
         ``_put(k, v)``, which writes ``_CACHE``. ``functools`` caches need
-        none of this: the recorder clears them before every test. True when
-        a variable was found, since its readers may in turn be stored.
+        none of this: the recorder clears them before every test, over
+        another wrapper too (collect._project_function); one over a library
+        decorator that may hide the function is planned as a memoiser
+        (``memoized``, below; audit round 7, U16). A lookup on an external
+        module the chain, or what it calls, writes to reads what it stored
+        there (``_writer_sites``: ``setattr(json, "mode", compute(1))`` read by
+        ``getattr(json, name)``; U13). The code a test that touched a changed
+        file ran is followed as the chain is, without its callers or callees
+        (``_file_readers``; U6). True when a variable or a site was found,
+        since its readers may in turn be stored.
 
         A cache held elsewhere than a module variable (audit round 5, R22) is
         found the same way: code in the chain, or code it calls
@@ -1235,15 +1310,23 @@ class _Observers:
         receiver lands on an object created for that call, which nothing
         else holds yet. Whoever then keeps it is the code creating it, which
         can run the change too and whose own store is followed, or a
-        fixture, whose setup is credited to every test using it; an
+        fixture, whose setup is credited to every test using it; not when
+        calling its class may give back an object already in use
+        (``SourceIndex.shared_instances``: a metaclass's ``__call__``, a
+        decorator's closure, a ``__new__``; audit round 7, U14). An
         explicit ``obj.__init__()``, ``Base.__init__(self)`` or
         ``super().__init__()`` outside an initialiser re-initialises an
         object in use and is a store into it by the caller
         (indexer/writes.py). What reads it
         is whoever reads that state: the code reading the attribute by name
         (for a store through ``self``, ``cls``, a parameter, a function or a
-        class), every member of the class for a store into the receiver
-        itself (``self.x = v``, ``self.put(k, v)``), the storing
+        class), every member of the class's family for a store into the
+        receiver itself (``self[k] = v``, ``self.put(k, v)``) and, for an
+        attribute bound on it, the readers of that attribute by name
+        (``self.x = v`` read as ``CONF.x``; every attribute the family binds
+        or stores into for a name known only at run time or a store through
+        what a method of the receiver returns, what the initialisers bind
+        for a re-initialisation: audit round 7, U4, U15), the storing
         code itself for a closure, and the readers of the attribute a caller
         handed for a parameter container (``fill(self._cache, k)``:
         ``handed``); each is observed, and the storing code too, so every
@@ -1281,10 +1364,39 @@ class _Observers:
                 if caller not in self._runs_e and caller in self.symbols:
                     self._runs_e[caller] = self._runs_e[node]
                     queue.append(caller)
-        for callee, caller, ran in self._handed_to(joined):
+        self._handed_to_found = self._handed_to(joined)
+        for callee, caller, ran in self._handed_to_found:
             for variable in sorted(self.writes.get(callee, ())):
                 if variable not in self._followed and variable in self.symbols:
                     found.append((variable, callee, ran, caller))
+        # What a test touching a changed file ran (``_file_readers``): it may
+        # have kept what it read there. Each is followed once.
+        seeds = [s for s in sorted(self._file_seeds) if s not in self._seeded]
+        self._seeded.update(seeds)
+        for seed in seeds:
+            for variable in sorted(self.writes.get(seed, ())):
+                if variable not in self._followed and variable in self.symbols:
+                    found.append((variable, seed, seed, None))
+        # A lookup on an external module the chain, or what it calls, writes
+        # to may find what an earlier test stored there (``setattr(json,
+        # "mode", compute(1))``, read by ``getattr(json, name)``): it reads
+        # that store, as a variable's readers do (audit round 7, U13).
+        writing = [(n, self._runs_e[n], None) for n in joined]
+        writing += [(callee, ran, caller) for callee, caller, ran in self._handed_to_found]
+        read_sites = False
+        for writer, ran, caller in writing:
+            for site in sorted(self._writer_sites.get(writer, ())):
+                if (site, writer) in self._sites_read:
+                    continue
+                self._sites_read.add((site, writer))
+                read_sites = True
+                why = self._why(ran)
+                label = (
+                    f"{writer if caller is None else caller} can run {ran} and "
+                    f"{'' if caller is None else f'calls {writer}, which '}writes onto an "
+                    f"external module {site} looks up ({why.detail})"
+                )
+                self._reader(site, changed.get(why.changed_symbol or ""), label, in_tests=True)
         for variable, writer, ran, caller in found:
             if variable in self._followed:
                 continue
@@ -1293,7 +1405,7 @@ class _Observers:
                 # seen by that test alone, which runs the writer itself.
                 continue
             self._followed.add(variable)
-            why = self.E.get(ran) or self.guarded[ran][0][2]
+            why = self._why(ran)
             change = changed.get(why.changed_symbol or "")
             ran_by = (
                 f"{writer} can run {ran} and"
@@ -1326,12 +1438,19 @@ class _Observers:
             for node, ran in sorted(self._runs_e.items())
             if (node in self.stores or node in self.memoized) and node not in self._stored_seen
         )
+        for seed in seeds:
+            if (
+                seed not in keepers
+                and (seed in self.stores or seed in self.memoized)
+                and seed not in self._stored_seen
+            ):
+                keepers[seed] = (seed, None)
         kept = False
         for keeper, (ran, caller) in sorted(keepers.items()):
             if keeper in self.test_code.isolated and self._only_in_tests({keeper}):
                 self._stored_seen.add(keeper)
                 continue  # the isolation assumption, as above
-            why = self.E.get(ran) or self.guarded[ran][0][2]
+            why = self._why(ran)
             change = changed.get(why.changed_symbol or "")
             if keeper in self.memoized:
                 self._stored_seen.add(keeper)
@@ -1344,8 +1463,9 @@ class _Observers:
                 self._readers(keeper, change, label, in_tests=True, content_only=True)
                 self._sites(self.symbols[keeper], change, label, in_tests=True)
             wheres = set(self.stores.get(keeper, ()))
-            if self.symbols[keeper].name in FRESH_INITS:
-                wheres.discard(STORE_SELF)  # bound on a fresh object
+            if self.symbols[keeper].name in FRESH_INITS and not self._shared(keeper):
+                # Bound on a fresh object (``self.x = v``, ``super().__init__()``).
+                wheres = {w for w in wheres if not _on_receiver(w)}
             if not wheres:
                 continue
             self._stored_seen.add(keeper)
@@ -1362,7 +1482,17 @@ class _Observers:
             self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
                 self._reader(reader, change, label, in_tests=True)
-        return bool(found) or kept
+        return bool(found) or kept or read_sites
+
+    def _why(self, ran: str) -> Reason:
+        """Why ``ran``, which some code storing results can run, is followed:
+        it is in E, a guarded reader, or code a test touching a changed file
+        ran (``_file_readers``)."""
+        if ran in self.E:
+            return self.E[ran]
+        if self.guarded.get(ran):
+            return self.guarded[ran][0][2]
+        return self._file_seeds[ran]
 
     def _handed_to(self, joined: list[str]) -> list[tuple[str, str, str]]:
         """The code the chain's functions that joined it this round call,
@@ -1370,9 +1500,14 @@ class _Observers:
         what that can run). It may store what it is handed, the chain's
         result (audit E36: ``_put(k, compute(k))``), or something a branch
         on that result decides, so every write it makes in place counts, as
-        for the chain itself. Calls are the resolved references and, for a
-        class, what creating or calling it runs (not ``__init_subclass__``
-        or ``__set_name__``, which a class statement runs at import); a
+        for the chain itself. Calls are the resolved references, the methods
+        and attribute hooks of receivers of a known class
+        (``SourceIndex.typed_calls``: ``STORE.put(k, v)``, ``CONF.mode = v``;
+        audit round 7, U5, U18), for a class, what creating, calling or
+        subscripting it runs (not ``__init_subclass__`` or ``__set_name__``,
+        which a class statement runs at import), and for a variable or a
+        class attribute read off its class, the functions its value refers
+        to (``_put = _impl``, ``put = staticmethod(_impl)``: U23); a
         method of a value of unknown type is not taken for every method of
         its name, as for ``SourceIndex.stores`` (R22, docs/limitations.md). A
         module's top-level code runs at import, which the import rules
@@ -1401,6 +1536,13 @@ class _Observers:
                         for c in self._constructors(target)
                         if c.rsplit(".", 1)[-1] not in ("__init_subclass__", "__set_name__")
                     )
+                    if target in self.attribute_of.get(node, ()):
+                        # ``Store.put(k, v)`` with ``put = staticmethod(_impl)``:
+                        # what the class body refers to may be what is called.
+                        callees.update(self._held_code(target))
+                elif symbol.kind == SymbolKind.VARIABLE:
+                    # ``_put(k, v)`` with ``_put = _impl`` (audit round 7, U23).
+                    callees.update(self._held_code(target))
             for callee in sorted(callees):
                 if callee in self._runs_e or callee in handed:
                     continue
@@ -1408,6 +1550,24 @@ class _Observers:
                 found.append((callee, caller, ran))
                 queue.append((callee, caller, ran))
         return found
+
+    def _held_code(self, holder: str) -> set[str]:
+        """The functions and methods a variable's value or a class body
+        refers to, which calling what it holds may run (``_put = _impl``,
+        ``put = staticmethod(_impl)``)."""
+        return {
+            t
+            for t in self.calls.get(holder, ())
+            if (symbol := self.symbols.get(t)) is not None
+            and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+            and symbol.container != holder
+        }
+
+    def _shared(self, member: str) -> bool:
+        """Whether ``member``'s class may be called for an object already in
+        use (``SourceIndex.shared_instances``)."""
+        container = self.symbols[member].container if member in self.symbols else None
+        return container is not None and container in self.shared_instances
 
     def _state_readers(
         self, keeper: str, wheres: set[str], change: SymbolChange | None, label: str
@@ -1423,15 +1583,37 @@ class _Observers:
         container = self.symbols.get(symbol.container or "")
         cls = container.id if container is not None and container.kind == SymbolKind.CLASS else None
         attrs: set[str] = set()
+        family = (
+            sorted(self._related(cls, BASES) | self._related(cls, SUBCLASSES))
+            if cls is not None
+            else []
+        )
+        family_code = {
+            m
+            for c in family
+            for m in self.members.get(c, ())
+            if self.symbols[m].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+        }
         for where in wheres:
-            if where == STORE_SELF:
-                if cls is not None:
-                    for c in sorted(self._related(cls, BASES) | self._related(cls, SUBCLASSES)):
-                        readers |= {
-                            m
-                            for m in self.members.get(c, ())
-                            if self.symbols[m].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
-                        }
+            if _on_receiver(where):
+                # The receiver itself: every member of the class's family,
+                # and the readers of what is bound on it by name (``CONF.value``
+                # after ``self.value = v``; U4): the attribute bound, every
+                # attribute the family binds on its receiver or stores into
+                # (for one known only at run time), or what the initialisers
+                # bind (re-initialised).
+                readers |= family_code
+                if where == STORE_REINIT:
+                    for member in sorted(family_code):
+                        if self.symbols[member].name in FRESH_INITS:
+                            attrs |= _receiver_attributes(self.stores.get(member, ()))
+                elif where != STORE_SELF:
+                    name = where[len(STORE_SELF) + 1 :]
+                    if name != STORE_ANY_ATTRIBUTE:
+                        attrs.add(name)
+                    else:
+                        for member in sorted(family_code):
+                            attrs |= _receiver_attributes(self.stores.get(member, ()))
             elif where == STORE_PARAM:
                 attrs |= self.handed_to.get(keeper, set())
             elif where != STORE_CLOSURE:
@@ -1449,6 +1631,9 @@ class _Observers:
         """The code that can run ``symbol`` (``_stored_results``), one step
         back: what references it (a call, or a read of the function as a
         value, which reaches the readers of a variable or class holding it),
+        what calls it on a receiver of a known class (``typed_calls``: a
+        module instance, a constructor's or factory's result, a local bound
+        to one; audit round 7, U5),
         what the project declares, the decorator function wrapping it
         (``SourceIndex.decorations``), and for a special method (a constructor
         among them), the code naming its class or a subclass, which stands in
@@ -2665,15 +2850,39 @@ class _Observers:
         return frozenset()
 
     def _constructors(self, cls: str) -> list[str]:
-        """What calling or creating ``cls`` can run: the constructors,
-        ``__call__``, ``__init_subclass__`` and ``__set_name__`` of it and
-        its ancestors."""
-        return [
+        """What calling, creating or subscripting ``cls`` can run: the
+        constructors, ``__call__``, ``__init_subclass__``, ``__set_name__``
+        and ``__class_getitem__`` of it and its ancestors. For a class whose
+        call may give back an object already in use
+        (``SourceIndex.shared_instances``: a metaclass, a decorator, a
+        ``__new__``), also what its class statement refers to: the decorator
+        function whose closure the name may now be, and the ``__call__`` of
+        a metaclass (audit round 7, U14)."""
+        ancestors = self._related(cls, BASES)
+        found = [
             member
-            for current in sorted(self._related(cls, BASES))
+            for current in sorted(ancestors)
             for member in self.members.get(current, ())
             if member.rsplit(".", 1)[-1] in _CONSTRUCTORS
         ]
+        if cls not in self.shared_instances:
+            return found
+        extra: set[str] = set()
+        for current in sorted(ancestors):
+            for target in self.calls.get(current, ()):
+                symbol = self.symbols.get(target)
+                if symbol is None or target in ancestors:
+                    continue
+                if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                    extra.add(target)
+                elif symbol.kind == SymbolKind.CLASS:
+                    extra.update(
+                        member
+                        for meta in self._related(target, BASES)
+                        for member in self.members.get(meta, ())
+                        if member.rsplit(".", 1)[-1] == "__call__"
+                    )
+        return found + sorted(extra - set(found))
 
     def _module_symbols(self, module: str, why: str) -> None:
         """Every symbol of a module whose import-time state may differ: code
@@ -2974,6 +3183,7 @@ class _Observers:
                         module,
                         f"{path} {what}, and {where} was touched while {module} was imported",
                     )
+        self._file_readers(path, what, names=names)
         if not source and self._imported_in_a_test(path):
             # The first test to import it ran its code, and its record holds
             # the file; every later test may use the module, or what it
@@ -2986,6 +3196,42 @@ class _Observers:
             )
         self.files[path] = (what, names)
 
+    def _file_readers(self, path: str, what: str, *, names: bool) -> None:
+        """The code a test that touched ``path`` ran (opened or stat'ed it,
+        scanned or, for ``names``, listed a directory above it): what it read
+        there may be kept in state a later test reads without touching the
+        file (``_D`` filled from ``data.json`` on the first ``load()``, a
+        singleton's attribute, a zone cache), as collection-time code may
+        keep what it computed. Each function and method such a test ran is a
+        seed of ``_stored_results``: the variables it writes and the state it
+        stores into are followed to their readers (audit round 7, U6). What
+        the test itself ran needs no ascent or descent: its record holds the
+        whole chain. Lines ``linecache`` read (a traceback or a warning
+        formatted, ``inspect.getsource``: ``child.SHOWN``) seed nothing:
+        a traceback formats every source file it passes through, and taking
+        each for data selects every test of a project that logs one. What
+        project code keeps of such lines (a formatted traceback, a
+        function's source) is not followed (docs/limitations.md)."""
+        ev = self.evidence
+        opened = ev.path_ids([path])
+        scanned = ev.path_ids([_scanned(path)])
+        listed = ev.path_ids(_ancestors(path)) if names else frozenset()
+        for test, record in sorted(ev.tests.items()):
+            if not (record.paths & opened or record.dirs & (scanned | listed)):
+                continue
+            why = Reason(
+                Rule.TOUCHED_FILE,
+                f"{test} touched {path} in the evidence run; {path} {what}",
+            )
+            for sid in sorted(ev.executed(record)):
+                symbol = self.symbols.get(sid)
+                if (
+                    symbol is not None
+                    and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+                    and sid not in self._file_seeds
+                ):
+                    self._file_seeds[sid] = why
+
     def _imported_in_a_test(self, path: str) -> bool:
         """Whether code of ``path``, a file the index does not read, ran
         inside a test window at C (``Evidence.test_window_code``); for a store
@@ -2995,12 +3241,7 @@ class _Observers:
             return ev.has(set(ev.test_window_code), path)
         if not path.endswith(".py"):
             return False
-        folded = path.casefold() if ev.case_insensitive else path
-        ids = {
-            i
-            for i, p in enumerate(ev.paths)
-            if (p.casefold() if ev.case_insensitive else p) == folded
-        }
+        ids = ev.path_ids([path, path + SHOWN])
         return any(ids & record.paths for record in ev.tests.values())
 
 
@@ -3283,6 +3524,8 @@ def _evidence_decision(
                 how = None
                 if evidence.has(touched, path):
                     how = f"opened or stat'ed {path}"
+                elif evidence.has(touched, path + SHOWN):
+                    how = f"read {path}'s lines through linecache"
                 elif evidence.has(listed, _scanned(path)):
                     how = f"scanned {_scanned(path)[: -len(SCANNED)] or 'the checkout root'}"
                 elif names:

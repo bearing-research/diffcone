@@ -197,6 +197,16 @@ class Evidence:
             self._folded[:] = [*self._folded[-1:], (paths, folded)]
         return path.casefold() in folded
 
+    def path_ids(self, paths: Iterable[str]) -> frozenset[int]:
+        """The indices into ``paths`` of each of ``paths`` (in any spelling
+        when the file system folds case)."""
+        wanted = {p.casefold() if self.case_insensitive else p for p in paths}
+        return frozenset(
+            i
+            for i, p in enumerate(self.paths)
+            if (p.casefold() if self.case_insensitive else p) in wanted
+        )
+
     def seen_by(self, where: dict[str, frozenset[str]], path: str) -> frozenset[str]:
         """``where[path]`` (``import_paths``, ``import_dirs``), in any
         spelling when the file system folds case."""

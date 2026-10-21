@@ -46,7 +46,9 @@ What it records, per test (parameter cases folded into their function, as
   recorder cannot resolve flags the test (``FLAG_SUBPROCESS``: it read
   what no record names). A directory listed with ``os.scandir`` is also
   recorded as scanned (``child.SCANNED``), since the entries' ``stat()``
-  and type checks raise no event. A touch by the import system finding
+  and type checks raise no event. A file whose lines ``linecache`` reads
+  or checks inside a test (a traceback, a warning, ``inspect.getsource``)
+  is recorded as shown (``child.SHOWN``). A touch by the import system finding
   modules is not the test's; one by a library's top-level code that an
   import ran (matplotlib reading ``./matplotlibrc``) is;
 * the processes it started through ``subprocess.Popen`` (POSIX), which
@@ -145,6 +147,7 @@ import struct
 import subprocess
 import sys
 import threading
+import types
 import zlib
 from pathlib import Path
 from typing import Any
@@ -745,6 +748,9 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
     if active:
         # Inside a test anything counts: a library or plugin reading a file
         # for the test (a data-directory fixture copying files) included.
+        # Lines linecache reads are recorded as shown (child.SHOWN).
+        if not listing and _through_linecache():
+            spellings = {s + child.SHOWN for s in spellings}
         for w in active:
             w["dirs" if listing else "paths"].update(spellings)
     elif actor in ("project", "library"):
@@ -757,6 +763,22 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
         phase = _phase()
         for spelling in spellings:
             seen.setdefault(spelling, set()).add(phase)
+
+
+def _through_linecache() -> bool:
+    """Whether ``linecache`` is reading or checking the file (for a
+    traceback, a warning, ``inspect.getsource``), with no project frame
+    between it and the read."""
+    frame = sys._getframe(2)
+    for _ in range(8):
+        if frame is None:
+            return False
+        if frame.f_globals.get("__name__") == "linecache":
+            return True
+        if _relative(frame.f_code.co_filename) is not None:
+            return False
+        frame = frame.f_back
+    return False
 
 
 _inert_pending = False
@@ -1156,9 +1178,52 @@ def _wrap_stat(original):
 # --------------------------------------------------------------------------- caches
 
 
+def _project_module(name: object) -> bool:
+    """Whether the module named ``name`` is a file of the checkout."""
+    module = sys.modules.get(name) if isinstance(name, str) else None
+    file = getattr(module, "__file__", None)
+    return isinstance(file, str) and _relative(file) is not None
+
+
 def _project_function(func) -> bool:
-    code = getattr(getattr(func, "__wrapped__", None), "__code__", None)
-    return code is not None and _relative(code.co_filename) is not None
+    """Whether a ``functools`` cache wraps project code: some layer of what
+    it wraps (through ``__wrapped__`` chains, ``__func__`` of a
+    ``staticmethod``, ``classmethod`` or bound method, ``partial.func``, a
+    callable object's ``__call__``) is a function of the checkout or a class
+    defined there, or the wrapper took the ``__module__`` of a module of the
+    checkout (a library decorator in between: ``warnings.deprecated``,
+    ``singledispatch``, a retry wrapper; audit round 7, U16)."""
+    try:
+        if _project_module(getattr(func, "__module__", None)):
+            return True
+        stack = [getattr(func, "__wrapped__", None)]
+        for _ in range(64):
+            if not stack:
+                break
+            obj = stack.pop()
+            if obj is None:
+                continue
+            code = getattr(obj, "__code__", None)
+            if isinstance(code, types.CodeType) and _relative(code.co_filename) is not None:
+                return True
+            if isinstance(obj, type):
+                if _project_module(obj.__module__):
+                    return True
+                continue
+            if isinstance(code, types.CodeType):
+                stack.append(getattr(obj, "__wrapped__", None))
+                continue
+            for attr in ("__wrapped__", "__func__", "func"):
+                stack.append(getattr(obj, attr, None))
+            call = next(
+                (c.__dict__["__call__"] for c in type(obj).__mro__ if "__call__" in c.__dict__),
+                None,
+            )
+            if isinstance(call, types.FunctionType):
+                stack.append(call)
+    except Exception:
+        return False
+    return False
 
 
 _lru_cache = functools.lru_cache

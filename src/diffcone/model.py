@@ -270,10 +270,17 @@ MUTATED_BY = "mutated_by"
 REGISTERS = "registers"
 # Where a store goes (SourceIndex.stores), when not an attribute name: the
 # receiver itself, another parameter itself, a variable of an enclosing
-# function.
+# function. An attribute bound or deleted on the receiver itself (``self.x =
+# v``, ``setattr(self, "x", v)``, ``self.__dict__["x"] = v``) is
+# ``STORE_SELF`` + ``.x``, one whose name is known only at run time (or an
+# item stored into what a call on the receiver returns: ``self._table()[k] =
+# v``) ``.*``; ``STORE_REINIT`` re-initialises the receiver
+# (``self.__init__()``), binding what the class's initialisers bind.
 STORE_SELF = "@self"
 STORE_PARAM = "@param"
 STORE_CLOSURE = "@closure"
+STORE_REINIT = "@init"
+STORE_ANY_ATTRIBUTE = "*"
 # Initialisers run on a fresh object when its class is called: what they
 # bind on the receiver itself no other test can hold yet (an explicit
 # ``obj.__init__()`` stores into ``obj`` instead: indexer/writes.py).
@@ -490,14 +497,33 @@ class SourceIndex:
     # the index used as a descriptor): their readers see what the first
     # reader computed. A decorator of the index that is a function runs
     # recorded code and is not here; ``functools.cache``/``lru_cache`` are
-    # cleared by the recorder before every test; a memoiser the analysis
-    # does not know is not seen (docs/limitations.md). Evidence mode only.
+    # cleared by the recorder before every test, unless applied over a
+    # wrapper from outside the index the recorder may not see through
+    # (``@cache @retry``), which is here; a memoiser the analysis does not
+    # know is not seen (docs/limitations.md). A module variable bound to a
+    # memoiser applied by a call (``get = cached(cache={})(_get)``) is here
+    # too. Evidence mode only.
     memoized: set[str] = field(default_factory=set)
     # (decorated function, the decorator function of the index): the
-    # decorator's wrapper may run the function it decorates. Evidence mode
-    # follows it as a caller (``_stored_results``); static planning does
-    # not use it.
+    # decorator's wrapper may run the function it decorates, applied with
+    # ``@`` or by a call (``get = remember(_get)``). Evidence mode follows it
+    # as a caller (``_stored_results``); static planning does not use it.
     decorations: set[tuple[str, str]] = field(default_factory=set)
+    # (caller, method): a method called on a receiver whose class the index
+    # knows (a module variable holding an instance, a constructor's or a
+    # factory's result, a local bound to one: ``ENGINE.run(k)``,
+    # ``Engine().run(k)``; ``Indexer._typed_calls``), and the property setter
+    # or ``__setattr__`` an attribute bound on one runs (``CONF.mode = v``).
+    # No ``references`` edge says so (static planning matches such calls by
+    # name). Evidence mode follows them as calls.
+    typed_calls: set[tuple[str, str]] = field(default_factory=set)
+    # Classes whose call may hand back an object already in use: a class of
+    # its family (its MRO, or a subclass's) defines ``__new__``, has a base
+    # outside the source roots, or a decorator or metaclass that may keep
+    # instances (a singleton: ``literals.class_adds_no_state``; audit round
+    # 6, T26). What an initialiser of one binds on its receiver may land on
+    # a shared object (``Indexer._shared_instances``). Evidence mode only.
+    shared_instances: set[str] = field(default_factory=set)
     # Lazily initialised constants: module variable -> the one function
     # that fills it (``global V; if V is None: V = <pure expr>``;
     # diffcone.indexer.lazy). That function computes the same value whoever

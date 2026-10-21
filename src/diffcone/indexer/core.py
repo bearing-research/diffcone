@@ -32,7 +32,7 @@ from diffcone.indexer.references import (
     class_attribute_root,
     instance_root,
 )
-from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope
+from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope, Resolved
 from diffcone.indexer.scripts import apply_scripts, other_file_directories
 from diffcone.indexer.syntax import TOO_DEEP, _digest, decode_source
 from diffcone.indexer.uses import (
@@ -51,7 +51,12 @@ from diffcone.indexer.uses import (
     USE,
     UseRecord,
 )
-from diffcone.indexer.writes import ClassRecord, apply_writes
+from diffcone.indexer.writes import (
+    HELD_BY,
+    ClassRecord,
+    _attribute_values,
+    apply_writes,
+)
 from diffcone.model import (
     ANY_MODULE,
     EXTERNAL_WRITTEN,
@@ -226,6 +231,8 @@ class Indexer(DynamicBounds):
             for state, writer in sorted(undecided):  # every one, undecided
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         self._lazy_constants()
+        self._typed_calls()
+        self._shared_instances()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
         # nothing resolves, so holding it depends on its members.
@@ -456,7 +463,9 @@ class Indexer(DynamicBounds):
         self.index.decorator_symbols = {
             decorator for _, decorator, _ in self._global.decorations if decorator
         }
-        for decorated, decorator, receiver in sorted(self._global.decorations):
+        for decorated, decorator, receiver in sorted(
+            self._global.decorations | self._global.applied
+        ):
             if decorator:
                 symbol = self.index.symbols.get(decorator)
                 if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
@@ -552,6 +561,7 @@ class Indexer(DynamicBounds):
                 plain=bool(data["plain"]),
                 kept=bool(data["kept"]),
                 unbounded=bool(data["unbounded"]),
+                adds_no_state=bool(data["adds_no_state"]),
                 declared={str(n) for n in data["declared"]},
                 tables=frozenset(str(n) for n in data["tables"]),
                 match_args=tuple(data["match_args"]) if data["match_args"] is not None else None,
@@ -1374,6 +1384,109 @@ class Indexer(DynamicBounds):
             if shares.get(c, {}).keys() & {"__dict__", "__class__"}:
                 return False
         return True
+
+    def _typed_calls(self) -> None:
+        """``SourceIndex.typed_calls``: a method called, or a property
+        accessor or attribute hook run, on a receiver whose class the whole
+        index knows though pass 2 could not name it (``receiver_calls``): a
+        module variable bound to an instance (``ENGINE = Engine()``, through
+        other variables and factories, as ``writes.variable_classes`` follows
+        them), a constructor's or factory's result (``Engine().run(k)``), a
+        local bound to either, and an attribute of ``self`` every write of
+        which binds one (``self.store.put(k, v)``: ``_attribute_values``,
+        W21). Resolved through each class's MRO, with
+        ``__getattr__`` when the name is not found, a property's setter or
+        deleter and ``__setattr__``/``__delattr__`` for a binding or a
+        deletion. Evidence planning follows these as calls (audit round 7,
+        U5, U18); a receiver of unknown type stays unfollowed."""
+        records = self._global.receiver_calls
+        if not records:
+            return
+        bindings: dict[str, set[str]] = defaultdict(set)
+        for var, origin in self._global.instance_bindings:
+            bindings[var].add(origin)
+        returned: dict[str, set[str]] = defaultdict(set)
+        for function, root in self._global.state_returns:
+            returned[function].add(root)
+        returns, symbols = self._global.returns, self.index.symbols
+        classes_of: dict[str, set[str]] = {}
+
+        def classes(start: str) -> set[str]:
+            """The in-scope classes what ``start`` (an origin) may be an
+            instance of."""
+            if start in classes_of:
+                return classes_of[start]
+            found: set[str] = set()
+            seen: set[str] = set()
+            stack = [start]
+            while stack:
+                origin = stack.pop()
+                if origin in seen:
+                    continue
+                seen.add(origin)
+                kind, _, ident = origin.partition(":")
+                if origin.startswith(HELD_BY):
+                    cls, _, attr = origin[len(HELD_BY) :].rpartition(".")
+                    held = _attribute_values(self, cls, attr) if cls in self.class_scopes else None
+                    found.update(c for c in held or () if c in self.class_scopes)
+                elif kind == "class":
+                    if ident in self.class_scopes:
+                        found.add(ident)
+                elif kind == "var":
+                    stack.extend(bindings.get(ident, ()))
+                elif kind == "call":
+                    found.update(c for c in returns.get(ident, ()) if c in self.class_scopes)
+                    for root in returned.get(ident, ()):
+                        if root.startswith(RESULT):
+                            stack.append("call:" + root[len(RESULT) :])
+                        elif (symbol := symbols.get(root)) is not None:
+                            if symbol.kind == SymbolKind.VARIABLE:
+                                stack.append(f"var:{root}")
+            classes_of[start] = found
+            return found
+
+        hooks = {"call": ("__getattr__",), "set": ("__setattr__",), "del": ("__delattr__",)}
+        for caller, origin, attr, how in sorted(records):
+            for cls in sorted(classes(origin)):
+                hit = self.lookup_in_class(cls, attr)
+                named = (
+                    isinstance(hit, Resolved)
+                    and not hit.detail
+                    and (target := symbols.get(hit.symbol)) is not None
+                    and target.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+                )
+                if named:
+                    assert isinstance(hit, Resolved)
+                    self.index.typed_calls.add((caller, hit.symbol))
+                for hook in hooks[how]:
+                    if how == "call" and named:
+                        continue
+                    found = self.lookup_in_class(cls, hook)
+                    if isinstance(found, Resolved) and not found.detail:
+                        self.index.typed_calls.add((caller, found.symbol))
+        self.index.typed_calls = {(a, b) for a, b in self.index.typed_calls if a != b}
+
+    def _shared_instances(self) -> None:
+        """``SourceIndex.shared_instances``: the classes calling which may
+        give back an object already in use rather than a new one, so that
+        what an initialiser binds on its receiver may land on an object
+        other code holds (a singleton): some class of its family defines
+        ``__new__``, has a base outside the source roots that may, or has a
+        decorator or metaclass that may keep an instance or give back
+        another callable (``adds_no_state`` false: the exception
+        ``_classes_holding_state`` makes, audit round 6, T26; round 7,
+        U14)."""
+        for cls in sorted(self.class_scopes):
+            for c in sorted(self._family(cls)):
+                cscope = self.class_scopes[c]
+                if (
+                    "__new__" in cscope.members
+                    or "__new__" in cscope.bindings
+                    or cscope.external_base
+                    or not cscope.adds_no_state
+                ):
+                    self.index.shared_instances.add(cls)
+                    break
 
     def _classes_holding_state(self, immutable: set[str]) -> set[str]:
         """The in-scope classes that may hold state of their own that can

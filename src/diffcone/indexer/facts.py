@@ -168,6 +168,11 @@ class _Output:
     # (decorated symbol, decorator symbol or "", receiver symbol or ""): who
     # may hold the decorated function afterwards (see Indexer._registrations).
     decorations: set[tuple[str, str, str]] = field(default_factory=set)
+    # The same for a decorator applied by a call (``get = remember(_get)``,
+    # ``get = cached(cache={})(_get)``): who may hold and call the function,
+    # but no ``decorator_symbols`` entry, whose docstring reads the
+    # decorator-form ``doc_decorated`` covers (audit round 7, U17).
+    applied: set[tuple[str, str, str]] = field(default_factory=set)
     # External modules in-scope code writes attributes onto (``logging.x =
     # ...``, ``setattr(logging, ...)``, ``patch("logging.x", ...).start()``;
     # not a store undone after the test, indexer/patches.py), as (module,
@@ -209,6 +214,20 @@ class _Output:
     # may be what an earlier call returned, so a write into it is a write of
     # the function's state (Indexer._result_writes; audit round 7, U7).
     kept_results: set[str] = field(default_factory=set)
+    # (caller, what the receiver is, attribute, how): a method called
+    # (``call``) or an attribute bound or deleted (``set``, ``del``) on a
+    # receiver whose class pass 2 cannot name but the whole index may
+    # (writes.observe_receiver: ``class:``, ``call:`` or ``var:`` as in
+    # ``instance_bindings``), resolved into SourceIndex.typed_calls after
+    # pass 2 (Indexer._typed_calls; audit round 7, U5, U18).
+    receiver_calls: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # (function, where, methods): a store through what methods of the
+    # receiver return (``self._table()[k] = v``: ``_table``), kept as a
+    # store when one of each may return the receiver's state; (method,
+    # methods): a method that returns its receiver's state, if the methods
+    # its chain calls on the receiver do too (writes.apply_writes; U15).
+    result_stores: set[tuple[str, str, str]] = field(default_factory=set)
+    receiver_returns: set[tuple[str, str]] = field(default_factory=set)
     # (symbol, path suffix) of each ``.py`` file a string names
     # (diffcone.indexer.scripts), matched against the files after pass 2.
     script_paths: set[tuple[str, str]] = field(default_factory=set)
@@ -356,6 +375,7 @@ class _Output:
         self.open_classes |= other.open_classes
         self.doc_decorated |= other.doc_decorated
         self.decorations |= other.decorations
+        self.applied |= other.applied
         self.external_writes |= other.external_writes
         self.external_reads |= other.external_reads
         self.external_lookups |= other.external_lookups
@@ -368,6 +388,9 @@ class _Output:
         self.handed |= other.handed
         self.memoized |= other.memoized
         self.kept_results |= other.kept_results
+        self.receiver_calls |= other.receiver_calls
+        self.result_stores |= other.result_stores
+        self.receiver_returns |= other.receiver_returns
         self.script_paths |= other.script_paths
         self.test_runs |= other.test_runs
         self.handed_instances |= other.handed_instances
@@ -493,6 +516,7 @@ def _output_to_dict(out: _Output) -> dict:
         "open_classes": sorted(out.open_classes),
         "doc_decorated": sorted(out.doc_decorated),
         "decorations": sorted(list(d) for d in out.decorations),
+        "applied": sorted(list(d) for d in out.applied),
         "external_writes": sorted(list(w) for w in out.external_writes),
         "external_reads": sorted(list(r) for r in out.external_reads),
         "external_lookups": sorted(list(x) for x in out.external_lookups),
@@ -528,6 +552,9 @@ def _output_to_dict(out: _Output) -> dict:
         "held_passes": sorted(list(h) for h in out.held_passes),
         "memoized": sorted(out.memoized),
         "kept_results": sorted(out.kept_results),
+        "receiver_calls": sorted(list(c) for c in out.receiver_calls),
+        "result_stores": sorted(list(c) for c in out.result_stores),
+        "receiver_returns": sorted(list(c) for c in out.receiver_returns),
         "script_paths": sorted(list(p) for p in out.script_paths),
         "test_runs": sorted(list(t) for t in out.test_runs),
         "handed_instances": sorted(list(h) for h in out.handed_instances),
@@ -595,6 +622,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.open_classes = set(data["open_classes"])
     out.doc_decorated = set(data["doc_decorated"])
     out.decorations = {(a, b, c) for a, b, c in data["decorations"]}
+    out.applied = {(a, b, c) for a, b, c in data["applied"]}
     out.external_writes = {(m, w) for m, w in data["external_writes"]}
     out.external_reads = {(s, d) for s, d in data["external_reads"]}
     out.external_lookups = {(a, b, c, d) for a, b, c, d in data["external_lookups"]}
@@ -628,6 +656,9 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.held_passes = {(a, b, c, d, e, bool(f)) for a, b, c, d, e, f in data["held_passes"]}
     out.memoized = set(data["memoized"])
     out.kept_results = set(data["kept_results"])
+    out.receiver_calls = {(a, b, c, d) for a, b, c, d in data["receiver_calls"]}
+    out.result_stores = {(a, b, c) for a, b, c in data["result_stores"]}
+    out.receiver_returns = {(a, b) for a, b in data["receiver_returns"]}
     out.script_paths = {(a, b) for a, b in data["script_paths"]}
     out.test_runs = {(a, b, c) for a, b, c in data["test_runs"]}
     out.handed_instances = {(a, b) for a, b in data["handed_instances"]}
@@ -703,6 +734,7 @@ def _facts_to_dict(
                 "plain": c.plain,
                 "kept": c.kept,
                 "unbounded": c.unbounded,
+                "adds_no_state": c.adds_no_state,
                 "declared": sorted(c.declared),
                 "tables": sorted(c.tables),
                 "match_args": list(c.match_args) if c.match_args is not None else None,

@@ -415,28 +415,40 @@ everything.
     write counts that the code able to run a change makes, itself or
     through a function it calls (`_put(key, compute(key))`), into a module
     variable, a class, an object (`self._cache[k] = v`,
-    `self.__dict__[k] = v`, `setattr(self, k, v)`), a closure or a
-    function attribute, whatever it stores: a computed value, a constant,
-    a registration, or a value it stores only on some branch, since what
-    it stores may depend on the change in ways the code doesn't show. So
-    does a result kept by a memoising decorator. The one exception is what
-    `__init__` (or a dataclass's `__post_init__`) sets on the object it is
-    building: no other test can hold that object yet. Calling
+    `self.__dict__[k] = v`, `setattr(self, k, v)`, `self._table()[k] = v`),
+    a closure or a function attribute, whatever it stores: a computed
+    value, a constant, a registration, or a value it stores only on some
+    branch, since what it stores may depend on the change in ways the code
+    doesn't show. So does a result kept by a memoising decorator. An
+    attribute set on an object (`self.value = v`) is read by the object's
+    own methods and by any code reading `.value` off it (`CONF.value`). The one
+    exception is what `__init__` (or a dataclass's `__post_init__`) sets on
+    the object it is building: no other test can hold that object yet,
+    unless calling the class can give back an object made earlier (a
+    metaclass, a class decorator or a `__new__` that keeps one). Calling
     `obj.__init__()`, `Base.__init__(obj)` or `super().__init__()` again on
     an object in use counts as writing into it.
+
+    A test that read a file that changed (opened it, or listed its
+    directory when it was added or removed) counts as having filled a cache
+    with it: what the code it ran stores is followed the same way, so a
+    later test served what an earlier one loaded from the file is selected.
 
     A decorator counts as memoising when diffcone knows it (`functools`,
     `cachetools`, Django's and Werkzeug's `cached_property`, and others) or
     its name says so (`cached_property`, `cached`, `memoize`, `memoized`,
-    `cachedmethod`).
+    `cachedmethod`), applied with `@` or by a call (`get =
+    cachetools.cached(cache={})(_get)`).
 
     Not followed:
 
     - a cache kept by an installed package's decorator under another name;
     - a cache filled through code diffcone can't follow from the code that
-      ran the change: a method that stores somewhere other than its own
-      object (`_STORE.put(k, v)` writing a module-level `_D`,
-      `Engine().run(k)`), a method of an attribute set in several ways
+      ran the change: a method of an object whose class the code doesn't
+      tell (`store.put(k, v)` with `store` passed in; a module-level
+      instance, a new instance or a local holding one, `_STORE.put(k, v)`,
+      `Engine().run(k)`, are followed, and so are their property setters),
+      a method of an attribute set in several ways
       (`self._cache.set(k, compute(k))`), a bound method kept in a variable
       (`put = _STORE.put`), an object called like a function (`__call__`),
       or a list or table of functions (`for cb in _HOOKS: cb(v)`,
@@ -446,7 +458,12 @@ everything.
       resumes;
     - a value a test computes and hands to code of your project that keeps
       it (`store(compute(2))` in the test itself): it counts for that test
-      only, as described above.
+      only, as described above;
+    - source lines Python's `linecache` read for a test (to format a
+      traceback or a warning, or for `inspect.getsource`) that your code
+      then keeps (`self.errors.append(traceback.format_exc())`): the test
+      that read them is selected when the file changes, but a later test
+      reading what was kept is not.
 
     If later tests depend on such a cache, declare the dependency in
     [`diffcone.toml`](reference/declarations.md) (an `[[edges]]` entry

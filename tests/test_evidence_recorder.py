@@ -2492,3 +2492,66 @@ def test_u1_advance_keeps_the_old_records_flags():
     assert advance(old, evidence("c2", 0), {F}, "c2").tests[F].flags == (
         FLAG_FAILED | FLAG_SUBPROCESS | FLAG_UNSTABLE
     )
+
+
+# A ``functools`` cache over project code the recorder must see through to
+# clear it before each test: test_a fills it, test_z would be served from it
+# and run nothing of ``compute``.
+FUNCTOOLS_CACHES = {
+    "over singledispatch": (
+        "@functools.cache\n@functools.singledispatch\ndef get(k):\n    return compute(k)\n"
+    ),
+    "over staticmethod": (
+        "class C:\n    @functools.cache\n    @staticmethod\n    def get(k):\n"
+        "        return compute(k)\n\n\nget = C.get\n"
+    ),
+    "over a partial": (
+        "def _get(base, k):\n    return compute(k) + base\n\n\n"
+        "get = functools.cache(functools.partial(_get, 0))\n"
+    ),
+    "on a class": (
+        "@functools.cache\nclass Settings:\n    def __init__(self, k):\n"
+        "        self.v = compute(k)\n\n\ndef get(k):\n    return Settings(k).v\n"
+    ),
+    "over a callable object": (
+        "class Wrap:\n    def __init__(self, f):\n        self.f = f\n\n"
+        "    def __call__(self, k):\n        return self.f(k)\n\n\n"
+        "get = functools.lru_cache(maxsize=None)(Wrap(compute))\n"
+    ),
+}
+CACHE_BENCH = asv_target("bench_get.time_get", "benchmarks.bench_get.time_get")
+
+
+@needs_monitoring
+@pytest.mark.parametrize("case", list(FUNCTOOLS_CACHES))
+def test_u16_a_functools_cache_over_a_wrapper_is_cleared_before_each_test(repo, case):
+    """Audit round 7, U16: the recorder cleared a ``functools`` cache only
+    when what it wraps directly was a function of the checkout
+    (``__wrapped__.__code__``), so a cache over ``singledispatch``, a
+    ``staticmethod``, a ``partial``, a class or a callable object kept
+    test_a's result for test_z, whose record then held nothing of the
+    change. It unwraps them now, and takes a wrapper whose ``__module__``
+    is the checkout's for project code (collect._project_function). The
+    benchmark is planned statically."""
+    lib = "import functools\n\n\ndef compute(k):\n    return k * 2\n\n\n" + FUNCTOOLS_CACHES[case]
+    base = repo.commit(
+        {
+            ".gitignore": "__pycache__/\n.diffcone/\n",
+            "pkg/__init__.py": "",
+            "pkg/lib.py": lib,
+            "tests/__init__.py": "",
+            "tests/test_a.py": "from pkg.lib import get\n\n\ndef test_a():\n    get(2)\n",
+            "tests/test_z.py": "from pkg.lib import get\n\n\ndef test_z():\n    get(2)\n",
+            "benchmarks/__init__.py": "",
+            "benchmarks/bench_get.py": "from pkg.lib import get\n\n\ndef time_get():\n    get(2)\n",
+        }
+    )
+    evidence = repo.collect()
+    assert "pkg.lib.compute" in executed(evidence, "tests/test_z.py::test_z")
+    head = repo.commit({"pkg/lib.py": lib.replace("k * 2", "k * 3")})
+    plan = _plan(repo, base, head, evidence, [CACHE_BENCH])
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_z.py::test_z",
+        CACHE_BENCH.runner_id,
+    }

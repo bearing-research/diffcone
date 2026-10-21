@@ -306,7 +306,10 @@ Further rules (pre-release audit, round 2):
   with `__init_subclass__` get `references` edges (detail `registers`) to
   what they hold. Impact through such an edge is REGISTERED: it reaches the
   code that later calls the registry, not the import-time code that
-  registers.
+  registers. A decorator applied by a call at module level
+  (`get = register(_get)`, `put = remember(cache)(_put)`: a chain of
+  calls ending in a function of the scope) records the same way (audit
+  round 7, U17).
 * Decoration is a call: `@deco def f` runs `deco(f)` when the statement
   runs, at import, and the decorator may call `f` then, or return a wrapper
   that calls it later with arguments of its own. A decorator known to call
