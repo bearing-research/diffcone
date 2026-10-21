@@ -65,8 +65,10 @@ the default and the reference.
 * Reports are deterministic.
 * Evidence narrows only pytest targets that have a record. Anything a record
   cannot vouch for falls back to static planning or selects the target:
-  - a test with no record, an unstable record, a subprocess no record
-    follows, or text a library compiled and ran for it (a doctest);
+  - a test with no record (also one some of whose cases did not run while
+    recorded), an unstable record, a record of a test that failed or
+    errored while recorded, a subprocess no record follows, or text a
+    library compiled and ran for it (a doctest);
   - a change that ran at import, or a module-level change;
   - a file no test's record sees.
   The recorder must never change a test's outcome: it prints nothing, and
@@ -76,7 +78,8 @@ the default and the reference.
 
 Any change that can **narrow** selection (a new resolution rule, a relaxed
 propagation rule, a new hash exclusion) must ship with a regression scenario
-in `tests/test_scenarios.py` that:
+in the test file for that behaviour (`tests/test_scenarios.py`,
+`tests/test_planning_*.py`, `tests/test_evidence_scenarios.py`) that:
 
 * builds a fixture repository with before/after commits;
 * includes both pytest- and ASV-labelled targets;

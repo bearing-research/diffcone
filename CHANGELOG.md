@@ -64,8 +64,9 @@ selection rules.
   test, so a later break in a case it never ran went unselected.
 - `run --collect` runs with `--maxfail=0`, as `collect` does, and keeps
   every flag of the record it replaces.
-- `PYTEST_ADDOPTS` is part of the recorded environment: a plan with
-  different options plans without the recording.
+- `PYTEST_ADDOPTS` is part of the recorded environment: `diffcone run`
+  with different options runs the plan from the code instead of the
+  recording.
 - The evidence store format is 7: record again after upgrading.
 - With a recording, more of the state tests share is followed:
   - a method, property setter or `__setattr__` called on an object whose
@@ -102,10 +103,10 @@ selection rules.
   `_version.py` that only binds constants.
 - `diffcone check` (and the `check` action) says when it compared the plan
   only, without diffcone's own run.
-- `diffcone report` counts a pull-request run that failed after a good
-  plan as a problem.
-  So do a plan that failed and a run that refused, so `comment:
-  on-problem` comments on a pull request that ran no tests.
+- `diffcone report` counts a pull-request run that ran none of its
+  selected tests as a problem (a plan that failed, a run that was refused,
+  or one that failed after a good plan), so `comment: on-problem` comments
+  on a pull request that ran no tests.
 - `diffcone run` exits 3 when the selection plugin did not run (a command
   or wrapper that drops its arguments, a tox or nox target without
   `{posargs}`): the selected tests never ran, and it exited 0.

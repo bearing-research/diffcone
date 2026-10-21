@@ -218,7 +218,7 @@ everything.
     (`type(obj).mode = m` or `obj.__class__.items.append(x)`, where `obj`
     is a parameter or comes from a call), the code is a dependency of the
     readers of each of your classes that has that attribute (its body or
-    one of its methods sets it), of each class deriving from a library
+    one of its methods sets it, or other code gives it that attribute), of each class deriving from a library
     class, and of their subclasses, or of
     every class for a special attribute (`__doc__`), for an attribute none
     of your classes has, and for a name only known at run time
@@ -234,9 +234,12 @@ everything.
     - a bound method: `put = _CACHE.__setitem__`, then `put(k, v)`;
     - what one of your functions returns: `registry()[k] = v`, where
       `registry` returns `_CACHE`, and anything a function returns when a
-      decorator may keep its result (`functools.cache`, `lru_cache`,
-      `cached_property`, a memoizing decorator of yours): every call hands
-      back the same object;
+      decorator may keep its result: any decorator but one known to hand
+      back the function or call it afresh (`property`, `staticmethod`,
+      `functools.wraps`, `contextmanager`, pytest's marks) or one of yours
+      that returns the function itself (so `functools.cache`, `lru_cache`,
+      `cached_property` and a memoizing decorator of yours all count):
+      every call may hand back the same object;
     - what a lambda, a closure or a `functools.partial` bound to a name
       returns (`get_cache = lambda: _CACHE`, then `get_cache()[k] = v`);
     - `globals()["_CACHE"][k] = v`.
@@ -249,8 +252,11 @@ everything.
     `module.__dict__[...]`), `type.__setattr__(Config, ...)`, an item of
     `Sub.__mro__` or `Sub.__bases__` (also of `type(obj)`), and what a call
     handed the class gives back (`HANDLERS.get(k, Default)`). Calling such
-    a name (`Alias()`, `functools.partial(Config)()`) makes an instance of
-    the class. A method a library gives your class, called on the class
+    a name (`Alias()`, `functools.partial(Config)()`,
+    `getattr(module, "Config")()`) makes an instance of the class. A mock
+    made with the class as its spec (`create_autospec(Config)`,
+    `Mock(spec=Config)`) is not the class; what it wraps or returns
+    (`wraps=Config`, `return_value=Config`) is. A method a library gives your class, called on the class
     itself, may keep state on it: `Base.register(Foo)` on a class deriving
     from `abc.ABC` (or with the `abc.ABCMeta` metaclass) and
     `Case.addClassCleanup(f)` on a `TestCase` are dependencies of every
@@ -267,9 +273,10 @@ everything.
     another module, `setattr`, a decorator or metaclass of yours), or it
     has a decorator, a metaclass or a library base that may give it state
     (other than `dataclasses.dataclass`, `functools.total_ordering`,
-    `typing.final` and `abc.ABCMeta`). `staticmethod(x)`, `classmethod(x)`
-    and `property(x)` hold nothing only when `x` is a function. That holds for an instance a module-level
-    name holds (`STORE = Store()`, `STORE = make_store()`, or set by a
+    `typing.final` and `abc.ABCMeta`; `staticmethod(x)`, `classmethod(x)`
+    and `property(x)` in its body hold nothing only when `x` is a
+    function). The rule for class-level containers holds for an instance a
+    module-level name holds (`STORE = Store()`, `STORE = make_store()`, or set by a
     function under `global`: `STORE._cache[k] = v`, `STORE.cache()[k] =
     v`), and for one a function makes (`s = Store()`, `new =
     cls.__new__(cls)`, `make_store()`: `s._cache[k] = v`,
@@ -290,10 +297,13 @@ everything.
     then `cache[k] = v`, changes nothing shared. Some copies may be the
     object, or hold it, and count as it: `copy.deepcopy(x)` and a pickle
     round trip (a `__deepcopy__` or `__reduce__` may hand back the
-    original, and a class inside is not copied), `x.copy()` or
-    `copy.copy(x)` of an object when a class of yours defines `copy` or
-    `__copy__`, and `sum`, `abs` and `round`, which may return what they
-    were given. Setting an attribute on a
+    original, and a class inside is not copied), except a deep copy of a
+    dict, list or set literal or of a module-level name bound to one;
+    `x.copy()` when a class of yours defines `copy` or `__copy__`, and
+    `copy.copy(x)` when one defines `__copy__`, `__reduce__` or
+    `__reduce_ex__`; and `sum`, `abs`, `round`, `pow` and `divmod`, which
+    may return what they were given. Either way, what the copy holds
+    (a class, an instance, an inner list) is still the original's. Setting an attribute on a
     new instance (`Config().mode = m`, `new = cls.__new__(cls); new.mode =
     m`) changes that instance only, unless a class in its hierarchy (a
     base or a subclass) defines its own `__new__` or derives from a class
@@ -385,8 +395,11 @@ everything.
 
 **Tests are assumed not to depend on what an earlier test left behind.**
 :   When code that runs inside one test changes module state
-    (`server._state = make()`), diffcone counts that change for that test
-    only, not for other tests that read the same state. Such code is:
+    (`server._state = make()`, or `os.environ["MODE"] = mode()`),
+    diffcone counts that change for that test only, not for other tests
+    that read the same state, with or without a recording; set an
+    environment variable with `monkeypatch.setenv`, which undoes it when
+    the test ends. Such code is:
 
     - the test itself, and unittest's `setUp` and `tearDown`;
     - a function-scoped fixture;
@@ -479,9 +492,6 @@ everything.
     - a file opened by compiled code rather than by Python (a certificate
       or key file that `ssl` hands to OpenSSL, say): a change to it doesn't
       reach the tests that load it;
-    - an environment variable a test's own code sets in `os.environ` and a
-      later test reads; set it with `monkeypatch.setenv` instead, which
-      undoes it when the test ends;
     - a cache on disk (a pickle, an SQLite file, a cache directory) one
       test writes and a later one reads: the later test reads the file,
       not the code that wrote it; give each test its own directory

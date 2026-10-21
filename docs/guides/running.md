@@ -150,7 +150,9 @@ diffcone validate --base main --head HEAD --discover pytest \
 Commits are checked out into temporary worktrees; `WORKTREE` runs in
 place. With `--coverage` (which needs pytest-cov installed where your tests
 run), it also records which tests executed changed code, and reports any
-such test that wasn't selected.
+such test that wasn't selected. Each parametrized case is compared on its
+own: a case whose result changed is a change of its test, even when another
+case of it already had that result.
 
 A miss comes in two kinds:
 

@@ -235,7 +235,7 @@ reported as a miss.
 ## Storage and lifecycle
 
 `.diffcone/evidence/<commit>-<environment hash>.sqlite`:
-`meta` (JSON values: the store `format`, 3; commit, source roots,
+`meta` (JSON values: the store `format`, 7; commit, source roots,
 environment and its hash, the environment at the start when the run
 changed it, command, time; the import and hook phases, the files and
 directories imports read, the phases flagged, the `preloaded` modules,
@@ -244,8 +244,9 @@ advanced from and the last full one, the tests collected), `symbols`
 (index to symbol id), `paths` (index to repository path), `sets`
 (deduplicated compressed bitmaps over those tables: parametrized tests
 share sets), `tests` (`target`, and the set ids of its `symbols`, `paths`
-and `dirs`, and `flags`: subprocess, unstable, text code), `import_by`
-(symbol, the module whose import ran it). Expected
+and `dirs`, and `flags`: subprocess, unstable, text code, failed), `import_by`
+(symbol, the module whose import ran it), `collect_by` (symbol, the test
+module pytest was collecting when it ran). Expected
 size for pandas: about 26 000 targets over about 37 000 symbols, which is
 tens of megabytes before deduplication. That has to be measured (spike).
 

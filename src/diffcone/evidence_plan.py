@@ -84,7 +84,10 @@ observed by"), and a test is selected when its record meets E:
   module's file selects everything only when it is a build script as
   static planning judges it
   (planner.is_build_script: ``setup.py``, a ``build.py`` at the root or
-  beside the project's metadata, not ``pkg/build.py``);
+  beside the project's metadata, not ``pkg/build.py``). What a test that
+  touched a changed file ran seeds the stored-results rule below, since it
+  may have kept what it read (``_file_readers``), except lines
+  ``linecache`` read (``child.SHOWN``: a traceback's text);
 * a Cython source (``.pyx``, ``.pxd``, ``.pxi``), at function level: a
   changed body reaches the tests that ran the function in a profiled
   build, and for one such a build does not always report (``nogil``,
@@ -113,13 +116,16 @@ process-global state or can reach pytest's session-wide objects (a
 ``.session``, ``.stash`` or ``.pluginmanager``: ``_collection_reach``). A
 lookup site in E is a reader too, followed into the import, collection or
 hook that ran it. Once E is
-built, the variables written in place by code that can run a member of E,
+built, the variables written in place by code that can run a member of E
+(through resolved references and calls on receivers of a known class,
+``SourceIndex.typed_calls``),
 and by the code that code calls, transitively (``_handed_to``), whatever
 they store (a cache an earlier test filled), are changed values for the
 code reading them inside tests (``_stored_results``); code in that chain,
 or code it calls, storing anything through a receiver, a closure or a
 function's or class's attribute (``SourceIndex.stores``; not an
-initialiser's bindings on its own fresh receiver) is read by every test
+initialiser's bindings on its own fresh receiver, unless calling the class
+may hand back an object in use: ``SourceIndex.shared_instances``) is read by every test
 that executed the code reading that state, and
 code whose decorator keeps its result (``SourceIndex.memoized``:
 ``cached_property``) by its readers. A target whose lifecycle

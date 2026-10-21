@@ -61,6 +61,15 @@ to the class's ``__init__`` as its receiver, so ``self.d = d`` in
 ``__init__`` then ``self.d[k] = v`` in ``__init__`` or a method called on
 the instance writes what the caller handed.
 
+After pass 2, ``ClassRecord`` gathers every attribute each class is given
+anywhere (its body, its module's top-level code, ``class_binds``, other
+modules, decorators and metaclasses as ``*``, a computed ``setattr``,
+method binds and shares) and is what every class-state rule reads (audit
+round 7, U3); ``variable_classes`` says which classes a module variable may
+hold an instance of or be (U2); and a method a library gives a class,
+called on the class itself, writes it (``library_calls``,
+``_apply_library_calls``, U12).
+
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v`` on an instance not
 made by an explicit call of its class; a parameter

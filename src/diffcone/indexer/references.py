@@ -8,7 +8,11 @@ variables and classes, reached directly, through ``cls``/``type(self)``,
 through items and method results of a root, through any local name bound
 to one (``aliases.name_sources``), ``globals()``, or what an in-scope
 function returns (``state_returns``/``result_writes``, closed after pass 2
-by ``Indexer._result_writes``). Copies are no roots. Each root gets a
+by ``Indexer._result_writes``). A copy is no root only when it is
+certainly new (a builtin container's, or one no in-scope class can hook:
+``_copy_is_new``); a deep copy of an unknown object, a pickle round trip and
+what a function whose result may be kept returns (``kept_results``) are
+the state itself (audit round 7, U7). Each root gets a
 ``mutated_by`` edge to the writer (``_rooted_write``), after pass 2 and
 unless the root is a variable whose value cannot change in place
 (``value_writes``, Indexer._value_writes); rebinding a variable is an edge of
@@ -16,8 +20,10 @@ its own (``_mutation_target``).
 
 An instance an in-scope class makes (``Store()``, ``cls()``,
 ``cls.__new__(cls)``, ``self.__class__.__new__(self.__class__)``,
-``super().__new__(cls)``, ``object.__new__(cls)``: ``_made_instance``) is a
-root of its own (``FRESH``), never the class it was made from, and what it
+``super().__new__(cls)``, ``object.__new__(cls)``: ``_made_instance``; also
+calling a class alias or ``functools.partial(C)``, ``_class_named``, and a
+class a call hands back, ``_callable_roots``, U31) is a root of its own
+(``FRESH``), never the class it was made from, and what it
 holds is ``INSTANCE``. A write in place into either, or either handed to a
 callee writing its parameter, is a write of the class's state when the
 class holds any (``instance_writes``, decided after pass 2 by

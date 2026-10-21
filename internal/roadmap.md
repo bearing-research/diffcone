@@ -241,7 +241,9 @@ store for head:
 * *Selected tests get the fresh record*, folded against head's index. A
   selected test that produced none (not collected, an error before its
   protocol) is dropped from the store, so the next plan selects it as
-  `no_evidence`. Its `unstable` flag is carried over. When the store
+  `no_evidence`; so is one with a record for only some of its cases. The
+  old record's flags (unstable, failed, subprocess) carry over to the fresh
+  one, and `run --collect` adds `--maxfail=0`. When the store
   was order-checked (`collect --reverse-check`), the run also runs the
   selection a second time in reverse order, and a fresh record that differs
   between the two is unstable, as in `collect` (audit round 3, EVP-4: the
@@ -271,8 +273,9 @@ collection error, usage error), or when folding refuses the records.
 evidence planning already makes; an unsound plan would now also leave a
 stale record behind, so a miss can outlive its commit. A full `collect`
 resets the line, and the union of process-wide data only grows until
-one does (more escalation, never less). The run uses
-`-p no:cacheprovider`, as `collect` does.
+one does (more escalation, never less). The run keeps pytest's cache
+plugin on an empty cache directory of its own (`DIFFCONE_CACHE_DIR`), as
+`collect` does.
 
 **Done when.** On pandas, the 24 commits of the recall range are planned
 in a chain, each from the store advanced at its parent, with 100 % recall
@@ -754,8 +757,7 @@ action.
 
 ## 12. A test run that changes its own environment (strata trial)
 
-**Status.** Implemented (2026-10-08), unreleased; drop this item once a
-release carries it. Two of strata's test files ran
+**Status.** Implemented (2026-10-08), released in 0.4.0. Two of strata's test files ran
 `uv run` in a notebook whose interpreter was the test interpreter, and
 `uv` synced the notebook's `orjson>=3.10` into the test environment:
 orjson 3.12.0 (the lock) became 3.13.0 during every recording. The
@@ -798,7 +800,7 @@ environment, and the report shows it per cell.
 
 ## 13. Readers of a test fake's member (strata trial)
 
-**Status.** Implemented (2026-10-08), unreleased. On `0da0faf7`, with
+**Status.** Implemented (2026-10-08), released in 0.4.0. On `0da0faf7`, with
 the recording at its parent, evidence selects 2 384 of 5 827 tests (40.9
 %, from 3 135, 53.8 %). The name-match readers fell from 1 849 to 612: 588
 of those come from a library change in `server.py` and 4 from test-code
@@ -900,7 +902,7 @@ check` against a full run at `0da0faf7` showing no miss.
 
 ## 14. Lookups on an external module the project writes to, under evidence (strata trial)
 
-**Status.** Implemented (2026-10-08), unreleased. With item 13, `0da0faf7`
+**Status.** Implemented (2026-10-08), released in 0.4.0. With item 13, `0da0faf7`
 selects 1 921 of 5 827 tests (33.0 %). `diffcone check` against full runs
 at `0da0faf7` and its parent finds no miss, but that commit has no new
 failure, so it could not have shown one. A lookup by a name nothing bounds on an
@@ -921,7 +923,9 @@ lookup sites select 1 524 tests: `analyze_cell` is among the sites for
 site can find of the project's is only what project code stored on the
 module. When every writer of that store is a function or method that ran
 only inside test windows at C, the writer is in the record of every test
-where the store was visible:
+where the store was visible (project code a test calls is never such a
+writer since audit round 7, U13: `configure()` storing onto `json` in one
+test reaches later tests' lookups when the chain reaches it):
 
 * a write in a test or a fixture (`monkeypatch.setattr`, `mock.patch`)
   ran in that test's window, or in a shared fixture credited to every
@@ -987,7 +991,7 @@ detected, so the lookup was already bounded.
 
 ## 15. Recording inside child processes (strata trial)
 
-**Status.** Implemented (2026-10-09), unreleased. A recording of
+**Status.** Implemented (2026-10-09), released in 0.4.0. A recording of
 strata's unit suite at `a54a387` flags 28 of 5 817 tests for a subprocess,
 down from 608. A body-only edit of a library function a few dozen tests
 run now selects 61, 91 and 88 tests (three functions), down from 639, 669
@@ -1131,7 +1135,7 @@ comparing `os.environ` whole would see.
 
 ## 16. The environment's own code and its metadata scans are not the project's (strata trial)
 
-**Status.** Implemented (2026-10-09), unreleased. A recording of strata at
+**Status.** Implemented (2026-10-09), released in 0.4.0. A recording of strata at
 `edc32ce0` through `uv run pytest` (CI's command) holds no path touched
 outside every test without a module to credit it to; recorded the old way
 it held the checkout root, `tests`, every collected test file and the
@@ -1208,8 +1212,7 @@ version control and edits them (no known case) would lose their reads.
 
 ## 17. Targets the project always runs (`always_run` in `diffcone.toml`)
 
-**Status.** Implemented (2026-10-09), unreleased; drop this item once a
-release carries it. As first sketched: some tests are not worth planning: an
+**Status.** Implemented (2026-10-09), released in 0.4.0. As first sketched: some tests are not worth planning: an
 end-to-end suite that drives the whole product (strata's E2E job, its
 notebook-harness tests, which run cells through `exec` and so are
 selected by nearly any change anyway). Running them on every pull request
@@ -1429,7 +1432,11 @@ bound to `None` at module level and every other write is in one function
 `W`, inside an `if V is None` guard (or `if V is None or ...` over lazy
 constants of the same `W`), assigning a value that uses none of `W`'s
 parameters and reads no variable the project writes; and every read of
-`V` is in `W`. A write to a lazy constant does not count as a write
+`V` is in `W`. (As shipped, the rule is design.md's lazy-constant rule:
+the value must also be one nothing can change in place, so a container
+made on first use, `{}` or `dict()`, is no lazy constant (audit round 7,
+U8), and static planning drops the edge only when nothing but `W` depends
+on `V`.) A write to a lazy constant does not count as a write
 (`mutated_by`/`_import_writes`/the state rules) for any change but a
 change to `W` itself or to what its value reads. *Why sound:* the value is
 the same whoever runs `W` first and whenever; nothing outside `W` can see

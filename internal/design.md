@@ -843,14 +843,18 @@ Further rules (pre-release audit, round 2):
   `vars(m)[...]`, `m.__dict__[...]`), `type.__setattr__(C, ...)`, an item
   of `C.__mro__`/`__bases__`, and a call's result when the call is handed
   the class (`HANDLERS.get(k, Default)`, `ident(C)`; any value handed to a
-  call is a root of its result, a function named as one excepted). A
+  call is a root of its result, a function named as one and a mock's spec
+  excepted: the first argument, `spec=` and `spec_set=` of a `MOCK_CALLS`
+  call such as `create_autospec(C)`, while what a mock wraps or hands back,
+  `wraps=`, `return_value=`, `side_effect=`, is part of it; U32). A
   module variable's bindings say which classes it may be
   (`instance_bindings`' `type:` origins, `writes.variable_classes`); a
   write through it other than an item stored into its own container
   (`typed_writes`) is a `mutated_by` edge of each such class, its in-scope
   bases and its nested classes, whatever they hold. Calling such a name
   (`Legacy()`, a local bound to the class, `functools.partial(C)()`) makes
-  an instance (`references._class_named`). A write into an attribute of an
+  an instance (`references._class_named`), and so does calling a class a
+  call hands back (`getattr(state, "Config")()`; `_callable_roots`, U31). A write into an attribute of an
   instance that a method bound to a shared object writes that object
   (`Indexer._shared_writes`, before T24 decides class attributes), and the
   attribute is not the instance's own (U11). A class's state includes its
@@ -1852,9 +1856,11 @@ of something cacheable:
   is taken of everything a module's resolution can read from other
   modules: each module's observable facts (names, kinds, members, imports,
   bindings, star imports; digested once per file and stored with its
-  facts) plus every class's resolved bases and completeness, and the
-  source-root specs (whether a module's `__name__` is its indexed name
-  depends on them). A body edit
+  facts) plus every class's bases, resolved and as written (`base_chains`,
+  U28), and their completeness, the source-root specs (whether a module's
+  `__name__` is its indexed name depends on them), the `.py` files no
+  module name maps to, the excluded paths and the directories holding no
+  Python file (U22). A body edit
   leaves it unchanged; adding, removing or renaming a symbol changes it.
 * **Resolution, per module.** Pass 2 writes (edges, unresolved and
   external references, call sites, escapes, parameter tables, deferred
@@ -2984,9 +2990,11 @@ is implemented. In short:
   unless the code that ran it then can write process-global state or reach
   pytest's session, which makes it a hook's.
 * A pytest target is always selected, whatever E says, when:
-  - it has no record, or its record is unstable, started a subprocess or
-    ran code compiled from text no file holds, such as a doctest
-    (`no_evidence`, `unstable`, `subprocess`, `text_code`);
+  - it has no record (a test some of whose cases did not run while
+    recorded has none), or it failed or errored while recorded, or its
+    record is unstable, started a subprocess or ran code compiled from
+    text no file holds, such as a doctest (`no_evidence`, `unstable`,
+    `subprocess`, `text_code`);
   - its entry or a container of it changed (`changed_target`);
   - a conftest or fixture change puts it in scope (`test_scope`);
   - pytest collected its module running changed code or code reading a
@@ -2999,7 +3007,10 @@ The index carries fields only evidence mode reads (`model.SourceIndex`
 documents each): `cython` (Cython sources at function level),
 `class_attributes` (per-attribute hashes of class bodies), `open_classes`,
 `table_imports`, `stores` and `handed` (stores into state outliving a
-call), `memoized` and `decorations`. Static planning ignores them, so
+call), `memoized`, `decorations`, `typed_calls` (methods called, and
+setters run, on receivers of a known class: U5, U18) and
+`shared_instances` (classes whose call may hand back an object in use:
+U14). Static planning ignores them, so
 static plans do not depend on them. Two more are read by both: of
 `reflection` (sites that observe names or signatures without naming them)
 static planning uses only a listing of an external module in-scope code

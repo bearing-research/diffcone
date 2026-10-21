@@ -86,8 +86,10 @@ jobs:
 ```
 
 The job fails when a selected test fails, like any test job. It also fails
-when a selected test wasn't collected by pytest, and when discovery may be
-incomplete (unless you set `allow-incomplete-discovery: true`). The plan and
+when a selected test wasn't collected by pytest, when `command` never loaded
+diffcone's selection plugin (a wrapper, or a tox or nox target, that doesn't
+pass its arguments on to pytest), and when discovery may be incomplete (unless
+you set `allow-incomplete-discovery: true`). The plan and
 the run's JUnit XML are written to `diffcone-results/`; upload them with
 `if: always()` so they're kept when tests fail.
 
@@ -116,7 +118,8 @@ something else, set `base`.
 !!! important "Match the recording"
 
     `command` and `pytest-args` must be the same in both workflows, and the
-    environment must match: the same Python version and installed packages.
+    environment must match: the same Python version and installed packages,
+    and the same `PYTEST_ADDOPTS` if you set it.
     Installing from a lock file makes this automatic.
 
     - When the environment differs, diffcone runs a plan from the code
