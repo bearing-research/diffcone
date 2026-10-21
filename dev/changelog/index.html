@@ -1882,8 +1882,10 @@ selection rules.</p>
     dict, tuple or loop over classes, a parameter default, <code>getattr(module,
     "C")</code>, <code>import_module</code>, <code>sys.modules</code>, <code>vars(module)</code>, <code>type.__setattr__</code>,
     an item of <code>__mro__</code> or <code>__bases__</code>, or the result of a call given the
-    class (<code>HANDLERS.get(kind, Default).calls.append(v)</code>); calling an alias
-    or <code>functools.partial(C)</code> makes an instance;</li>
+    class (<code>HANDLERS.get(kind, Default).calls.append(v)</code>; a mock made with
+    the class as its spec is not the class); calling an alias,
+    <code>functools.partial(C)</code> or a class a call hands back
+    (<code>getattr(module, "C")()</code>) makes an instance;</li>
 <li>an attribute a class is given anywhere (its module's top-level code,
     another module, a decorator, a metaclass, <code>setattr</code>) is class state,
     shared by its instances;</li>
