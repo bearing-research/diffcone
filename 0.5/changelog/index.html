@@ -1,0 +1,2899 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Which tests and benchmarks a change to Python code can affect, and why">
+      
+      
+      
+        <link rel="canonical" href="https://bearing-research.github.io/diffcone/0.5/changelog/">
+      
+      
+        <link rel="prev" href="../limitations/">
+      
+      
+        <link rel="next" href="../development/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.68">
+    
+    
+      
+        <title>Changelog - diffcone</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="diffcone" class="md-header__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            diffcone
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Changelog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="diffcone" class="md-nav__button md-logo" aria-label="diffcone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    diffcone
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/bearing-research/diffcone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    bearing-research/diffcone
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  How it works
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Guides
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Guides
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/planning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Planning
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Running and checking
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/evidence/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Execution evidence
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ci/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  CI with GitHub Actions
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Commands
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/report/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Report
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/discovery/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Static discovery
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/manifest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Target manifest
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/declarations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  diffcone.toml
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../limitations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Limitations
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Changelog
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        [Unreleased]
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#050-2026-10-21" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.0 - 2026-10-21
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.0 - 2026-10-21">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-10-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.4.0 - 2026-10-14
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 - 2026-10-14">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static analysis
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-check-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running, check and validate
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI actions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-10-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.2.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 - 2026-10-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Platforms
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#planning_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2026-10-07" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.1.0 - 2026-10-07
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 - 2026-10-07">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence-opt-in-python-312-in-the-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence (opt-in, Python 3.12+ in the project)
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Development
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#unreleased" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        [Unreleased]
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#050-2026-10-21" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.5.0 - 2026-10-21
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.5.0 - 2026-10-21">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#040-2026-10-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.4.0 - 2026-10-14
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.4.0 - 2026-10-14">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fixed_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Fixed
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#static-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Static analysis
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-check-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running, check and validate
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci-actions" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI actions
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#030-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.3.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.3.0 - 2026-10-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ci_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#020-2026-10-08" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.2.0 - 2026-10-08
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.2.0 - 2026-10-08">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#platforms" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Platforms
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#planning_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discovery_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Discovery
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#010-2026-10-07" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        0.1.0 - 2026-10-07
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="0.1.0 - 2026-10-07">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#planning_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#running-and-checking_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#execution-evidence-opt-in-python-312-in-the-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence (opt-in, Python 3.12+ in the project)
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ci_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        CI
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+    <a href="https://github.com/bearing-research/diffcone/edit/main/docs/changelog.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-file-pen" viewBox="0 0 24 24"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="changelog">Changelog<a class="headerlink" href="#changelog" title="Permanent link">&para;</a></h1>
+<p>All notable changes to diffcone. The format follows
+<a href="https://keepachangelog.com/en/1.1.0/">Keep a Changelog</a>; versions follow
+<a href="https://semver.org/">Semantic Versioning</a>, and before 1.0 a minor version
+may change the report schema, the cache and evidence store formats, or
+selection rules.</p>
+<h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h2 id="050-2026-10-21"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.5.0">0.5.0</a> - 2026-10-21<a class="headerlink" href="#050-2026-10-21" title="Permanent link">&para;</a></h2>
+<h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone.toml</code> takes <code>[index] exclude</code>, patterns for <code>.py</code> files to
+  leave out of the analysis (deliberately invalid test data, as in a
+  formatter's or a linter's test suite). A matching file is read as a data
+  file: plans no longer degrade, <code>collect</code> records the checkout, and a
+  change to one selects everything in a plan without a recording; with
+  one, the tests that read the file as data, and every test when a test
+  imported or ran its code. What an excluded file
+  runs is not read, so code that imports or runs one (an import,
+  <code>import_module</code>, <code>runpy</code>, a subprocess, a file loader) is selected on any
+  change, with a reason naming the file; with a recording, a change to an
+  excluded file a test imported selects every test. Discovery's notes on
+  an excluded plugin, base class or benchmark file name the exclusion. The
+  report lists each snapshot's patterns (<code>analysis.&lt;side&gt;.excluded</code>).</li>
+</ul>
+<h3 id="discovery">Discovery<a class="headerlink" href="#discovery" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Under <code>--doctest-modules</code>, a docstring set when the module is imported
+  (<code>f.__doc__ = ...</code>, a string built from parts) is read when its text can
+  be worked out. Otherwise (a decorator of yours rewrites it, or the value
+  is imported or computed) a function whose written docstring has
+  examples has its doctest always selected, and one without is reported
+  (exit 3).</li>
+<li>Tests bound by a call (<code>test_one = make(1)</code>, <code>functools.partial</code>), a
+  lambda, <code>globals()</code> or <code>setattr</code>, and pytest-bdd's <code>scenarios()</code>, are
+  reported (exit 3). Module data that merely has a test's name is not.</li>
+<li>A <code>usefixtures</code> mark discovery cannot read (a non-literal argument, a
+  decorator or factory that applies it, <code>pytestmark = marks()</code>) counts as
+  every visible fixture.</li>
+<li>Test classes pytest does not collect (an inherited <code>__init__</code> or
+  <code>__new__</code>, a dataclass or attrs class) are no longer targets: <code>run</code>
+  reported them as selected tests pytest did not collect.</li>
+</ul>
+<h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>schema_version</code> 4: selected and unselected target records no longer
+  list <code>lifecycle_dependencies</code>. Each target repeated every fixture,
+  hook and module it depends on, nine tenths of a large suite's plan
+  (850 MB for one of 25 000 tests, now 40 MB). Discovery's output still lists them, and
+  the ones that selected a target are in its explanation.</li>
+</ul>
+<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>collect</code> warns when none of the tests it recorded is among the tests
+  discovered at that commit: pytest's rootdir lies outside the repository
+  (a configuration file in a directory above it), so plans would find no
+  recording for any test and select them all.</li>
+<li>A test not all of whose cases ran in the recording (deselected by
+  <code>-k</code>, <code>-m</code> or <code>--deselect</code>, or cut short by <code>-x</code> or <code>--maxfail</code>, in the
+  arguments, <code>addopts</code> or <code>PYTEST_ADDOPTS</code>) gets no record, so every plan
+  selects it until it is recorded whole; <code>collect</code> says how many tests
+  have no record. A record of only some cases was taken for the whole
+  test, so a later break in a case it never ran went unselected.</li>
+<li><code>run --collect</code> runs with <code>--maxfail=0</code>, as <code>collect</code> does, and keeps
+  every flag of the record it replaces.</li>
+<li><code>PYTEST_ADDOPTS</code> is part of the recorded environment: <code>diffcone run</code>
+  with different options runs the plan from the code instead of the
+  recording.</li>
+<li>The evidence store format is 7: record again after upgrading.</li>
+<li>With a recording, more of the state tests share is followed:</li>
+<li>a method, property setter or <code>__setattr__</code> called on an object whose
+    class is known (<code>ENGINE = Engine()</code>, <code>Engine().run(k)</code>, a local or an
+    attribute holding one), both from a change up to what stores its result
+    and from a store down to what it writes; an object of unknown type is
+    still not followed;</li>
+<li>an attribute bound on an object (<code>self.value = compute()</code>,
+    <code>setattr(self, name, v)</code>), reaching the code that reads it off the
+    object (<code>CONF.value</code>);</li>
+<li>a store through what a method returns (<code>self._table()[k] = v</code>);</li>
+<li>what an initialiser binds on an object that calling its class may give
+    back again (a metaclass <code>__call__</code>, a class decorator, <code>__new__</code>, a
+    library base);</li>
+<li>a function reached through an alias (<code>_put = _impl</code>,
+    <code>staticmethod(_impl)</code>), <code>__class_getitem__</code>, and a memoiser applied by
+    a call (<code>get = cached(cache={})(_get)</code>);</li>
+<li>project code storing onto a library module during a test, which was
+    taken for test code;</li>
+<li>a changed data file a test read: what that test ran stored is seeded,
+    so a later test served what it loaded is selected. Lines read only to
+    show a traceback are not data.</li>
+<li>The recorder clears a <code>functools</code> cache over another wrapper
+  (<code>singledispatch</code>, <code>staticmethod</code>, <code>functools.partial</code>, a class, a
+  callable object); one it cannot clear is planned as a memoiser.</li>
+</ul>
+<h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone run --allow-incomplete-discovery</code> starts pytest even when
+  nothing is selected, with every target deselected, so the tests
+  discovery does not know about still run (<code>--dry-run</code> says so).</li>
+<li><code>diffcone run</code> no longer refuses to run because of its own results
+  (<code>diffcone-results/</code>) in a flat layout, or a generated, git-ignored
+  <code>_version.py</code> that only binds constants.</li>
+<li><code>diffcone check</code> (and the <code>check</code> action) says when it compared the plan
+  only, without diffcone's own run.</li>
+<li><code>diffcone report</code> counts a pull-request run that ran none of its
+  selected tests as a problem (a plan that failed, a run that was refused,
+  or one that failed after a good plan), so <code>comment: on-problem</code> comments
+  on a pull request that ran no tests.</li>
+<li><code>diffcone run</code> exits 3 when the selection plugin did not run (a command
+  or wrapper that drops its arguments, a tox or nox target without
+  <code>{posargs}</code>): the selected tests never ran, and it exited 0.</li>
+<li><code>diffcone validate</code> and <code>corpus</code> compare outcomes case by case: a case
+  that changed to an outcome another case of the same test already had
+  was no change.</li>
+<li>The <code>run</code> action's <code>selected</code> output and the <code>check</code> action use what
+  ran (<code>ran.json</code>), not the plan, when they differ.</li>
+</ul>
+<h3 id="fixed">Fixed<a class="headerlink" href="#fixed" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Planning a large suite took far more memory than it needed: every test
+  carried its own copy of the dependencies all tests share (code run
+  while pytest collects), in the dependency graph and in the cached
+  discovery results. On a suite of 25 000 tests a plan peaked at 21 GB,
+  more than a standard CI runner has, and took up to 90 minutes; it now
+  peaks at 5.5 GB and takes under two minutes, and a cached discovery
+  result is 9 MB instead of 680 MB. Plans are unchanged. Discovery
+  cached by an earlier version is redone once.</li>
+<li>With a recording, a module cache filled by a function the cache's
+  caller calls (<code>_put(key, compute(key))</code>, a method, a chain of helpers,
+  an <code>append</code>, or a write under a branch on the result) was not followed:
+  a test that read what an earlier test stored there, without running
+  <code>compute</code>, was not selected when <code>compute</code> changed. Every in-place write
+  of the functions that code calls is now followed, where diffcone can
+  tell which function a call runs.</li>
+<li>With a recording, a cache kept on an object, a class, a closure or a
+  function attribute counted a store only when the stored value named the
+  changed code directly. A value computed through a variable, a table or
+  <code>super()</code>, read off a changed constant, or the writer's own literal could
+  leave a later test that read the cache unselected. Every store counts
+  now, as for module variables, including stores through <code>__dict__</code> and
+  <code>vars()</code>. What <code>__init__</code> sets on the object it is building does not
+  count; calling <code>__init__</code> again on an object in use does.</li>
+<li>With a recording, a module the analysis does not read (outside the
+  source roots) that a test imported was credited to that test alone,
+  though later tests use it without running any of it: a change to it now
+  selects every test. A recording made by an earlier version does not say
+  which such files a test imported, so any <code>.py</code> file a test touched
+  counts.</li>
+<li>A write to state held on a class (<code>Config.mode = m</code>,
+  <code>Config.items.append(x)</code>, <code>setattr(Config, ...)</code>, <code>cls._instance = ...</code>,
+  <code>type(self)._cache[k] = v</code>) did not make the writer a dependency of the
+  class's readers; nor did a write to a module variable under another
+  name: a local alias (<code>cache = _CACHE</code>), an item of it, a bound method,
+  <code>globals()["_CACHE"]</code>, or what one of your functions returns
+  (<code>registry()[k] = v</code>). Both are followed now, with and without a
+  recording. Copies (<code>dict(_CACHE)</code>, <code>.copy()</code>) and an instance's own
+  attributes are not shared state.</li>
+<li>A write into state a class holds, made through a module-level instance
+  of it (<code>STORE._cache[k] = v</code>, or <code>STORE.cache()[k] = v</code> where <code>cache</code>
+  returns the class-level <code>_cache</code>), did not make the writer a dependency
+  of the code that reads that state through the class. It does now, with
+  and without a recording.</li>
+<li>The same held for an instance a function makes itself: a change in
+  place through it (<code>s = Store(); s._items.append(x)</code>, an instance made
+  with <code>cls.__new__(cls)</code> or returned by a factory, or one handed to a
+  function that changes it) did not reach the code that reads the
+  class-level state, when the class or one of its bases holds some. It
+  does now. Setting an attribute on a new instance (<code>new =
+  cls.__new__(cls); new._key = None</code>, as copy and replace methods do) is
+  not a change to the class, unless a <code>__new__</code> in the class's hierarchy,
+  a library base, or a decorator or metaclass may hand out an instance in
+  use (a singleton). In <code>__new__</code>, <code>__init_subclass__</code>
+  and <code>__class_getitem__</code>, <code>cls</code> is the class.</li>
+<li>A class whose body binds only constants and methods was taken to hold
+  no state even when a decorator, a metaclass or a library base may give
+  it some (a decorator keeping a singleton or a registry on the class),
+  so changes made through its instances reached none of its readers. Such
+  a class now counts as holding state, unless the decorator or metaclass
+  is one that adds no state (<code>dataclasses.dataclass</code>,
+  <code>functools.total_ordering</code>, <code>typing.final</code>, <code>abc.ABCMeta</code>).</li>
+<li>A module constant that cannot change in place (a string, a number, a
+  tuple of such, <code>re.compile(...)</code>, <code>textwrap.dedent(...)</code>) and that no
+  code binds again gained a writer from every function that passed it to
+  a call or used what its methods return (SQL handed to
+  <code>conn.executescript</code>, <code>PATTERN.match(s)</code>). Such false writers made every
+  reader of the constant depend on unrelated code. Binding the name again
+  (<code>global</code>, <code>module.NAME = ...</code>, <code>setattr</code>) still counts.</li>
+<li>The same holds for a class attribute your class body binds once to
+  such a value (<code>DAYS = "days"</code>, <code>_MONTHS = 12</code>) and that no code binds
+  again: handing <code>TimeDelta.DAYS</code> to a function, or <code>m = min(m,
+  self._MONTHS)</code>, is no longer a change to the class, and neither is
+  calling a method on an item of a class-level table of strings and
+  numbers that nothing changes (<code>self.timeframes[k].format(n)</code>). When
+  such a table can change, a method called on its items counts as a
+  change.</li>
+<li>An object handed to a constructor of your class (<code>Tokenizer(source,
+  rules=RULES)</code>) is part of the new instance: changing the instance in
+  place (<code>tok.rules["x"] = 1</code>, a method changing what <code>__init__</code> stored)
+  makes that code a dependency of the readers of <code>RULES</code>. Setting or
+  counting up the instance's own attributes (<code>tok.position += 1</code>) does
+  not, unless the class can run code when they are set (<code>__new__</code>,
+  <code>__setattr__</code>, <code>__delattr__</code>, <code>__getattr__</code>, <code>__getattribute__</code>, a
+  class attribute of that name, a decorator, a metaclass or a library
+  base) or the attribute is a special one (<code>__dict__</code>).</li>
+<li>A write onto the class of an object whose type is not known
+  (<code>type(obj).x = v</code>, <code>obj.__class__.items.append(v)</code>, <code>setattr(type(obj),
+  name, v)</code>, or <code>type(obj)</code> handed to a function that sets <code>c.x</code>) only
+  counted as a change to the object. It now makes the writer a dependency
+  of the readers of every class that may have that attribute: the classes
+  that define or set it, classes deriving from a library class, and their
+  subclasses (every class, for a special attribute, a computed name or an
+  attribute no class sets). A mock's class is its own.</li>
+<li>State held on a class was followed only through the class's own name and
+  the attributes its body binds. Now:</li>
+<li>a class reached by another name is written through it: an alias, a
+    dict, tuple or loop over classes, a parameter default, <code>getattr(module,
+    "C")</code>, <code>import_module</code>, <code>sys.modules</code>, <code>vars(module)</code>, <code>type.__setattr__</code>,
+    an item of <code>__mro__</code> or <code>__bases__</code>, or the result of a call given the
+    class (<code>HANDLERS.get(kind, Default).calls.append(v)</code>; a mock made with
+    the class as its spec is not the class); calling an alias,
+    <code>functools.partial(C)</code> or a class a call hands back
+    (<code>getattr(module, "C")()</code>) makes an instance;</li>
+<li>an attribute a class is given anywhere (its module's top-level code,
+    another module, a decorator, a metaclass, <code>setattr</code>) is class state,
+    shared by its instances;</li>
+<li>a nested class's state, <code>staticmethod</code>, <code>classmethod</code> or <code>property</code> of
+    something other than a function, and an attribute <code>__init__</code> binds to
+    an object that may be shared (a module variable, a class attribute, a
+    mutable default, <code>self.__dict__ = shared</code>) are followed;</li>
+<li><code>register</code> on an abstract base class, other library methods called on
+    a class of yours with a library base, decorator or metaclass
+    (<code>addClassCleanup</code>, <code>model_rebuild</code>), and <code>type(name, bases, ns)</code> with
+    a base of yours, write the class.</li>
+<li>A project function that writes module state through an object it is
+  handed or called on (<code>SETTINGS.configure(debug=1)</code> writing
+  <code>self.opts</code>) is a writer of that state itself: called from a test, the
+  write was left to the test, which planning assumes isolated, so a change
+  to the function reached no reader.</li>
+<li>An object is taken for new only when it surely is. A memoised
+  function's result (<code>functools.cache</code>, <code>lru_cache</code>, a memoiser of yours),
+  a deep copy or pickle round trip (which may hand back a class, a function,
+  an enum member or the object itself), a copy method that may return its
+  object, the result of a lambda, closure or <code>functools.partial</code> over a
+  module container, and <code>sum</code>, <code>abs</code>, <code>round</code>, <code>pow</code> and <code>divmod</code> (which
+  may return what they are handed) may be shared state.</li>
+<li>A lazily initialised module value that is then changed in place
+  (<code>if _STATE is None: _STATE = {}</code> followed by <code>_STATE["mode"] = m</code>) is no
+  constant: its readers depend on the code that fills it.</li>
+<li>Project code that stores onto a library module (<code>json.mode = m</code>,
+  <code>setattr</code>, <code>vars()</code> or <code>__dict__</code>, a change in place of what a library
+  attribute holds) or into <code>os.environ</code> is a dependency of the code that
+  reads it there (<code>os.getenv</code> included). Library code and child processes
+  reading the environment are not followed.</li>
+<li>A write inside a lambda (<code>_add = lambda v: _ITEMS.append(v)</code>) is a
+  write of whoever calls it.</li>
+<li>A project module that writes process state when it is imported was
+  taken for test code, so its writes were assumed isolated.</li>
+<li><code>pytest.importorskip("pkg.mod")</code>, <code>importlib.util.find_spec</code>,
+  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code> and <code>pkgutil.iter_modules</code> or
+  <code>walk_packages</code> over a package were not imports: a change that made the
+  module fail to import, or changed what it does when imported, did not
+  select the test. They are now.</li>
+<li>Discovery missed fixtures a test requests outside its own signature:
+  <code>request</code> handed to a helper, an alias of <code>request.getfixturevalue</code>,
+  <code>lf()</code>/<code>lazy_fixture()</code> in a parametrization, a hook adding to
+  <code>item.fixturenames</code> or to the <code>usefixtures</code> option; an autouse fixture
+  under another name for the decorator (<code>from pytest import fixture as
+  fx</code>); and a module stored into <code>doctest_namespace</code> by subscript
+  (<code>doctest_namespace["pkg"] = pkg</code>). They are dependencies now.</li>
+<li>The <code>run</code> action planned only the last commit (<code>HEAD^1</code>): a push of
+  several commits, a merge-queue group or a pull request checked out at
+  its head planned part of the change. It plans the event's own change
+  now (a pull request on top of its target branch, every commit of a
+  push, the whole merge-queue group), and a branch name, tag or <code>HEAD~n</code>
+  as <code>base</code> works in a shallow checkout. With no base (a new branch, a
+  manual run) or an event base that cannot be fetched, it runs every test
+  and says why.</li>
+<li>The <code>record</code> action's check counted any failed plan as an unusable
+  recording and passed; it fails now when the plan fails without the
+  recording too.</li>
+<li>The <code>run</code> and <code>record</code> actions deepen a shallow checkout with an
+  absolute depth. They used <code>git fetch --deepen</code>, which GitHub serves only
+  from a commit a branch or pull request still points at: a re-run, or a
+  run whose pull request had moved on, checked out a merge commit since
+  replaced, the base never arrived and the job failed with no plan (and
+  blamed the recording). A base still missing is no longer reported as an
+  unusable recording.</li>
+<li><code>diffcone report</code> (and the <code>report</code> action) kept every plan it read
+  whole. A plan made from a recording explains each target, tens of
+  megabytes for a large suite, so a day of such plans could exhaust the
+  runner's memory and stop the report. It keeps only what it reads.</li>
+<li>On Windows, the recorder no longer treats a system query (<code>locale -a</code>,
+  <code>git rev-parse</code> and the other read-only <code>git</code> queries, <code>ps</code>, <code>uname</code>) as
+  a process it cannot follow. It did, so a recording of a suite that runs
+  one outside every test (locale tests that query at import, pytest-benchmark
+  in every run) planned every change as select-everything there. POSIX
+  was not affected.</li>
+<li>A test runner called from project code with a directory of non-Python
+  files (<code>pytest.main(["--verbose", "docs"])</code> over doctest text files),
+  a word after an option diffcone does not know, or no path at all, is
+  taken to run anything. The directory was taken for the option's
+  argument and its tests were never selected.</li>
+<li>The module cache was written but never read when the cache directory
+  was relative (the default <code>--repo .</code>, and every action): planning again
+  re-read every file.</li>
+<li>A cached index kept no decorator symbols, so the same plan run twice could
+  select more the second time; a cached module lost whether a method's
+  receiver is its class, and a change in a base class's own bases did not
+  refresh cached resolution of its subclasses. The index cache format
+  changes: the first plan after upgrading rebuilds it.</li>
+</ul>
+<h2 id="040-2026-10-14"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.4.0">0.4.0</a> - 2026-10-14<a class="headerlink" href="#040-2026-10-14" title="Permanent link">&para;</a></h2>
+<p>Upgrading from 0.3.0: make your execution-evidence recordings again. The
+store format is now 6 (0.3.0 wrote 1): <code>--evidence auto</code> skips an older
+recording, naming one is an error, and the <code>run</code> action plans from the
+code until <code>record</code> makes a new one. Expect plans to select more tests
+than 0.3.0 did: most of the changes below close cases where diffcone
+missed an affected test. The JSON report keeps schema version 3 and gains
+fields: <code>always_run</code> and <code>analysis.counts.always_run</code>;
+<code>environment_checked</code> and <code>preloaded_modules</code> in <code>analysis.evidence</code>;
+<code>rootdir</code>, <code>configfile</code>, <code>junit_prefix</code> and <code>run_arguments</code> in pytest's
+<code>discovery[].config</code>; and <code>evidence_not_used</code> in the plan <code>run -o</code> writes.
+<code>check --format json</code> gains <code>mapping.rootdir</code> and <code>mapping.junit_prefix</code>.
+New discovery notes: <code>unparsable_config</code> (discovery incomplete),
+<code>unreadable_plugins</code> and <code>plugin_outside_roots</code>.</p>
+<h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: the tests (or
+  benchmarks) whose id matches a pattern are selected in every plan, with
+  or without a recording, and the report gives the entry as the reason and
+  counts the targets each entry matched; the text report flags an entry
+  that matches nothing. A malformed entry, or one naming an unknown
+  runner, is an analysis error, so the plan selects everything rather than
+  quietly leaving those tests out. <code>diffcone report</code> computes a job's
+  selected share without them.</li>
+<li>A test is selected when the fixtures, hooks or plugins around it change
+  though its own code did not (rule <code>lifecycle_changed</code>), for example when
+  another test module adds a plugin to <code>pytest_plugins</code>; with a recording,
+  compared with what ran around it when it was recorded. pytest plugin
+  modules are dependencies of every test, since their import-time code
+  runs for the whole session.</li>
+<li>diffcone now assumes a test does not depend on what an earlier test left
+  behind. A change to module state made by code that runs only inside one
+  test counts for that test only, not for the other tests and benchmarks
+  reading the same state: the test itself, a function-scoped fixture,
+  unittest's <code>setUp</code>/<code>tearDown</code>, and a helper in a test module or
+  conftest that only such code calls. A patch undone when the test ends
+  counts the same way, also for lookups on a library module it patches:
+  <code>monkeypatch</code> and <code>mocker</code> methods on pytest's fixtures, a <code>with
+  mock.patch(...)</code> block, a <code>@mock.patch(...)</code> decorator,
+  <code>MonkeyPatch.context()</code>, and a test or fixture that saves a module
+  attribute and puts it back. Still counted for every reader: a test
+  module's top-level code, wider-scoped fixtures, hooks, all project code
+  (a cache a test fills through it), a doctest's function, a manifest
+  entry on project code, a test or <code>setUp</code> that module-level code, a
+  wider-scoped fixture or a hook calls, and a store through a
+  <code>monkeypatch</code> that a wider-scoped fixture requests or the test module
+  overrides (one overridden in a parent conftest is still taken as
+  undone). If a test relies on an earlier test's state,
+  declare the dependency in <code>diffcone.toml</code>.</li>
+<li>A fixture or function that only empties or fills a module-level dict,
+  list or set (<code>REG.clear()</code>), or resets another module's variable
+  (<code>mod.X = None</code>), does not count as reading it: an autouse reset fixture
+  no longer selects every test when the code filling the registry
+  changes.</li>
+<li>An attribute read on an object of unknown type is matched to
+  module-level functions, classes and variables only in modules such an
+  object can be: modules passed around or bound to another name, obtained
+  by name or named in a string, and test modules and conftests, which
+  pytest hands out. A name bound only to modules (<code>m = ops</code>, then
+  <code>m.value()</code>) is followed like the import itself. Methods still match
+  whatever the receiver.</li>
+<li>A text a test writes or runs (<code>pytester.makepyfile</code>, <code>exec</code>, <code>-c</code> code)
+  whose template field the test's own parameter fills, when
+  <code>@pytest.mark.parametrize</code> on the test gives that parameter literal
+  values, is read once per value instead of counting as text built at run
+  time, which any change reached. A value that is not a literal, an
+  <code>indirect</code> parameter, another decorator on the test, or a parametrize
+  on its class or in <code>pytestmark</code> keeps the old rule.</li>
+<li>Indexing a very long function is no longer quadratic in its calls.</li>
+<li>Editing the docstring of a method under <code>@classmethod</code>, <code>@staticmethod</code>
+  or <code>@property</code> no longer counts as code run at import (which selected
+  every test importing the module): these builtins only copy the
+  docstring. Code that reads the docstring is still selected, and so is a
+  project decorator with one of those names.</li>
+</ul>
+<h3 id="fixed_1">Fixed<a class="headerlink" href="#fixed_1" title="Permanent link">&para;</a></h3>
+<h4 id="static-analysis">Static analysis<a class="headerlink" href="#static-analysis" title="Permanent link">&para;</a></h4>
+<ul>
+<li>A change to a dependency, build or CI file outside the source roots
+  selected nothing when the roots don't hold the repository root. These
+  now select every target: lock files (<code>uv.lock</code>, <code>poetry.lock</code>, any
+  <code>*.lock</code>, <code>pylock.toml</code>, <code>conda-lock.yml</code>), <code>requirements*</code> files (also
+  <code>dev-requirements.txt</code>, <code>Requirements.txt</code>, <code>requirements.pip</code>),
+  <code>environment*</code> files, a <code>.txt</code>/<code>.yml</code>/<code>.yaml</code> file in a directory named
+  <code>deps</code> or <code>dependencies</code>, a workspace member's <code>pyproject.toml</code>,
+  <code>uv.toml</code>, <code>hatch.toml</code>, <code>poetry.toml</code>, <code>pdm.toml</code>, <code>pytest.toml</code>,
+  <code>.env</code> and <code>.pth</code> files, <code>sitecustomize.py</code>, <code>noxfile.py</code>,
+  <code>.github/workflows/</code>, checker configurations that pytest plugins run as
+  tests (<code>mypy.ini</code>, <code>ruff.toml</code>), compiled sources, anything under a
+  <code>*.dist-info</code>, <code>*.egg-info</code> or <code>*.egg</code> directory, a build script
+  anywhere under a root (a nested <code>setup.py</code>), and a lock-file change
+  between <code>INDEX</code> and <code>WORKTREE</code>. Evidence mode treats them the same way.</li>
+<li>A name taken from a dict, list or set written in the code
+  (<code>getattr(handlers, NAMES[key])</code>, a lazy-export table) is bounded by it
+  only while every use of the table is a read: a table changed through an
+  alias, a helper it is passed to, its module (<code>core.TABLE[k] = v</code>),
+  <code>globals()</code>, <code>vars()</code>, <code>sys.modules</code>, <code>monkeypatch</code> or <code>mock.patch</code> (an
+  object or a dotted string) is no longer read as its literal. A
+  parameter or class-body name that shares its name with such a table is
+  no longer bounded by it.</li>
+<li>A lookup on a standard-library or third-party module
+  (<code>getattr(logging, name)</code>) counts writes that reach the module
+  indirectly: an alias, a helper it is passed to, a loop, <code>__setattr__</code>,
+  <code>vars()</code>, a module found at run time, a submodule handed on
+  (<code>register(os.path)</code>). Handing a library object such as
+  <code>datetime.timezone.utc</code> to a call does not make every lookup on that
+  library depend on the caller.</li>
+<li>Modules whose name is known only at run time: once code can reach one,
+  no literal table is bounded. A name that starts with fixed text
+  (<code>import_module(f"plugins.{name}")</code>) stands for the modules with that
+  prefix; a new <code>types.ModuleType</code> is no project module unless it is
+  installed in <code>sys.modules</code> under one's name; <code>exec(code, namespace)</code>
+  does not reach the calling module; <code>m.__dict__["X"] = v</code> changes only
+  <code>X</code>. <code>runpy.run_module(name)</code>, <code>runpy.run_path(path)</code> and <code>python -m
+  &lt;name&gt;</code> with a name nothing bounds count as an import of any module, as
+  <code>importlib.import_module(name)</code> does.</li>
+<li>An object put in <code>sys.modules</code> (assignment, <code>setdefault</code>, <code>update</code>,
+  <code>monkeypatch.setitem</code>, <code>mock.patch.dict</code>) was ignored. It is now the
+  module of that name: lookups on that module see it, and while it stays
+  installed, the module's importers depend on the code that installed it.
+  Without a recording, code that installs an object under a name computed
+  at run time makes every test importing a project module depend on it.</li>
+<li>A change to a module-level variable made through a module object the
+  analysis did not resolve to the variable's module is a dependency of
+  the variable's readers: <code>importlib.import_module("pkg.reg").TABLE["x"]
+  = f</code>, <code>sys.modules[...]</code>, a function-local import, a star import, or a
+  module passed to a helper that writes into it. A function's
+  <code>__globals__</code>, a frame's <code>f_globals</code>, <code>pickle.loads</code>,
+  <code>pkgutil.resolve_name</code>, <code>pydoc.locate</code>, <code>gc.get_objects()</code> and
+  <code>importlib.util.module_from_spec</code> copies are recognised as ways to
+  change a module's tables, and a lookup by a computed name on a module
+  sees objects other code puts on that module. Star-imported names
+  (<code>from sys import *</code>, then <code>modules[...]</code>) are seen too.</li>
+<li>State changed through an argument or a receiver (<code>register(REGISTRY)</code>,
+  <code>registry.add(x)</code>) did not reach its readers, in either mode; nor did a
+  change to code that may call such a writer differently, or a write
+  through a module attribute and an item (<code>store._CACHE["k"].append(x)</code>,
+  <code>del store._CACHE[k]</code>). A method called on an instance attribute
+  (<code>self._client.get()</code>) counts as that class's method only when every
+  assignment of the attribute creates an instance of one class (or of a
+  third-party class), and a module-level object made by a third-party
+  call is changed only by methods of classes deriving from a third-party
+  class; calls on such attributes are still matched by name. A function
+  a module-level variable's initialiser calls runs at import, so a change
+  to it reaches the module's importers.</li>
+<li>Changing the arguments of a call made at import time (<code>X =
+  set_mode("slow")</code>, a class attribute, a decorator's or default's
+  argument) did not select the tests that read the state the callee
+  changes. An import added to or removed from a module that starts or
+  stops running another module's import-time code reaches the readers of
+  what that code writes (a registry filled at import), in both modes;
+  added imports stay non-structural otherwise.</li>
+<li>Moving a module's or a class's statements around (a constant moved
+  below the decorator that reads it, two <code>@register</code> functions swapped, a
+  <code>def</code> moved below a <code>try</code>/<code>except</code> import of the same name) was no
+  change at all: the order of statements both sides have is now part of
+  the definition, so a reorder reaches importers. Only swapping
+  neighbouring plain <code>def</code>s (no decorator that does anything, no
+  annotation evaluated at import) still selects nothing.</li>
+<li>A decorator diffcone can't show leaves the function alone (one from an
+  installed package, or a project decorator that calls or registers it)
+  makes the decorated function count as code that runs on import, and its
+  parameters are no longer bounded by its call sites. A name imported in
+  a <code>try</code>/<code>except</code> or <code>if</code>/<code>else</code>, rebound by a star import, or redefined
+  in the module is no longer taken for <code>typing.final</code>, a quiet decorator
+  or a structural base; attribute uses of a name bound several ways
+  depend on every binding.</li>
+<li>A local name, parameter or function-local import was taken for a
+  module-level import or builtin of the same name, and a call of an
+  unresolved function named <code>rebinds</code>, <code>registers</code> or <code>mutated_by</code> for one
+  of diffcone's own kinds of dependency.</li>
+<li>A dynamic import, script path or <code>getattr</code> receiver bounded by its call
+  sites is unbounded when a caller may be unseen (a call through an object
+  of unknown type, an unseen construction).</li>
+<li>Reading members by name or wholesale is a dependency: an attribute a
+  class does not define (<code>C.__doc__</code>, <code>C.__type_params__</code>, one a decorator
+  sets), <code>C.__dict__[name]</code> and <code>obj.__dict__[name]</code>, <code>mod.__dict__[name]</code>
+  and <code>inspect.getmembers(mod)</code> (a test parametrized over a module's
+  functions), <code>match</code> class patterns, <code>operator.attrgetter</code>/
+  <code>methodcaller</code> and <code>str.format</code> fields (<code>'{0.attr}'</code>); a non-literal
+  name is a dynamic reference. <code>C.__subclasses__()</code>, <code>C.__mro__</code> and
+  <code>C.__bases__</code> reach the classes they return.</li>
+<li>Code that passes a module to other code (<code>read(ops, name)</code>) depends on
+  that module's functions and on what its imports bind (<code>api.core.TABLE</code>);
+  a module from a literal <code>import_module("pkg.sub")</code> or <code>__import__</code> that
+  is handed on counts as handed on. An instance handed to code outside the
+  project (<code>json.dump(x, w)</code>, <code>print(file=w)</code>, <code>dict(obj)</code>,
+  <code>csv.writer(w)</code>) depends on every method of its class, not only its
+  dunder methods.</li>
+<li>A class obtained by a name nothing resolves (<code>m.Alt()</code> on an object of
+  unknown type, a lazy <code>__getattr__</code> export) reaches its <code>__init__</code> and
+  <code>__new__</code>. A class with an <code>enum.Enum</code>-family base or an in-scope
+  metaclass depends on its <code>__init__</code>/<code>__new__</code>, which run when the class
+  is created (<code>Color.RED.code</code> reaches <code>Color.__init__</code>); <code>dir(mod)</code>
+  depends on <code>mod.__dir__</code>, and <code>dir</code>, <code>hasattr</code> and <code>vars</code> of a library
+  module your code writes to are lookup sites.</li>
+<li>A docstring-only change selects the tests that read that docstring, in
+  both modes, also through a parameter (<code>inspect.getdoc(fn)</code> in a
+  helper), <code>getattr(obj, "__doc__")</code> and a module's <code>__doc__</code>.</li>
+<li>A change to PEP 695/696 type parameters (bounds, defaults, their number)
+  was no change at all; a bound or default naming project code is now a
+  dependency. A subscript in an evaluated annotation (<code>X: Registry["k"] =
+  1</code>) counts as code that runs on import.</li>
+<li>Code a test runs in a new process: a test running a script path, <code>-m
+  module</code> or <code>-c</code> code named in the code did not depend on it. A module's
+  file is an import of it; a <code>.py</code> file no module name maps to
+  (<code>scripts/gen-data.py</code>) is read as <code>-c</code> code is (what it imports counts,
+  and a change to the file reaches the test; if it imports by a name it
+  computes, any change does); a Python command whose program is
+  built at run time is affected by any change. A child whose interpreter
+  is not the first word (<code>env X=1 python -m ...</code>, <code>uv run python ...</code>,
+  <code>timeout 30 python ...</code>, <code>asyncio.create_subprocess_exec(sys.executable,
+  ...)</code>, <code>os.execl</code>) is followed. <code>python -c</code> code that changes
+  <code>sys.path</code>, <code>sys.meta_path</code> or <code>sys.modules</code> by any assignment, deletion
+  or augmented assignment, or calls <code>os.chdir</code>, can import anything.</li>
+<li>Text a test writes out and runs (<code>exec</code>, <code>eval</code>, <code>compile</code>, <code>timeit</code>,
+  <code>pytester.makepyfile</code>) is read as the code it is: its imports and calls
+  count. Text built at run time from pieces that are not written out can
+  import anything.</li>
+<li>A test file given to a test runner (<code>python -m pytest path</code>,
+  <code>pytest.main([...])</code>, <code>python -m unittest module</code>, <code>unittest.main
+  (module=...)</code>, <code>loadTestsFromName</code>) counted as an import; it runs whole,
+  conftests and fixtures included. <code>unittest</code> discovery,
+  <code>doctest.testfile</code>, <code>DocFileSuite</code> and <code>DocFileTest</code>, a directory or a
+  non-literal argument can run anything, so any change selects the test.</li>
+<li>Functions obtained from <code>pickle.load</code>/<code>loads</code> (and cloudpickle, dill,
+  joblib) or from a module loaded by a computed file path were invisible
+  without a recording; such code is now affected by any change. A round
+  trip (<code>loads(dumps(x))</code>, a temporary file), pickle bytes written in the
+  code and a path in the module's own directory are bounded by what they
+  load.</li>
+<li>Patches: one that may outlast its test (<code>patch(...).start()</code>, a patcher
+  kept for later, a <code>MonkeyPatch()</code> of your own, a <code>with mock.patch(...)</code>
+  around a fixture's <code>yield</code>, <code>setattr</code> on any other receiver) is a store
+  on the module it patches, so lookups on that module follow it, and set
+  in <code>sys.modules</code> that way it counts as installed for good. A <code>with
+  mock.patch.dict(os.environ)</code> or <code>warnings.catch_warnings()</code> block whose
+  body yields does not put the process state back. <code>mock.patch.multiple
+  ("pkg.mod", NAME=...)</code> depends on those names and the module; any dotted
+  patch target counts as an import of its module, also through a patcher
+  called on a value (<code>pytest.MonkeyPatch().setattr("pkg.mod.NAME",
+  ...)</code>).</li>
+<li>A write to process-global state (<code>os.environ</code>, warning filters,
+  <code>sys.path</code>) is recognised whichever import binds the name: <code>from os
+  import *</code>, an import in <code>try</code> with another in <code>except</code>, or a
+  function-local one. A <code>with</code> statement counts as putting state back only
+  when every binding of its name is the restoring one.</li>
+<li>Snapshots: <code>WORKTREE</code> did not see edits to files flagged
+  assume-unchanged or skip-worktree. It now reads git-ignored <code>.py</code> files
+  in directories git does not ignore as a whole (a generated
+  <code>_version.py</code>, <code>local_settings.py</code>); ignored directories are still
+  skipped. File mode changes (<code>chmod +x</code>) under the source roots are
+  changes, in commits and the working tree. A submodule under the roots
+  no longer makes every <code>WORKTREE</code> plan select everything (one checked out
+  at another commit, or with uncommitted edits, still counts as a
+  change); a path containing a line break, or a tracked file replaced by
+  a directory, no longer fails the plan.</li>
+<li>A file nested too deeply to analyse is an analysis error that selects
+  everything (a test, conftest or benchmark module: a file that did not
+  parse, which makes discovery incomplete), instead of a crash. A
+  <code>diffcone.toml</code> that is present but can't be read (left unmerged by a
+  conflicted merge) is an analysis error too; it was read as no file. A
+  manifest that is not valid JSON says so.</li>
+</ul>
+<h4 id="discovery_1">Discovery<a class="headerlink" href="#discovery_1" title="Permanent link">&para;</a></h4>
+<ul>
+<li>A fixture defined with a decorator whose name ends in <code>fixture</code>
+  (pytest-twisted's <code>async_fixture</code> and <code>async_yield_fixture</code>,
+  pytest-trio's <code>trio_fixture</code>) was not seen; when its name was also a
+  well-known plugin's (pytest-django's <code>client</code>), it was taken for that
+  plugin's fixture and what it requested reached nothing. Such decorators
+  now make fixtures, and a plugin's fixture name is no longer assumed when
+  the test's class, module, conftests or plugins define it in a way
+  diffcone can't read: the name is an unknown fixture, selected on every
+  change.</li>
+<li>An autouse fixture imported into a conftest, a test module or a plugin
+  (by name, through star imports at any depth, or as a module attribute)
+  was not a dependency of the tests it applies to; nor was a fixture with
+  <code>name=</code> imported under its function name.</li>
+<li>Conftests pytest loads at startup (in the <code>test*</code> directories of a path
+  it starts from) count even when ignored or under <code>norecursedirs</code>;
+  <code>--ignore</code>, <code>--ignore-glob</code> and <code>norecursedirs</code> apply only below the
+  paths pytest starts from, and not under a conftest whose
+  <code>pytest_ignore_collect</code> can return False.</li>
+<li><code>pytest_plugins</code> is read however it is built (<code>+</code>, <code>+=</code>, <code>.append</code>,
+  <code>.extend</code>, a comma-separated string, a variable) or imported from
+  another module; one that can't be read keeps every test selected
+  (<code>unreadable_plugins</code>), as does a plugin module in the repository
+  outside the source roots (<code>plugin_outside_roots</code>). The <code>pytest_*</code>
+  methods of an object registered as a plugin
+  (<code>config.pluginmanager.register(...)</code>), and plugins registered with
+  <code>import_plugin("name")</code>, apply to every test.</li>
+<li><code>pytestmark</code> lists built with <code>+</code>, <code>+=</code>, <code>.append</code> or <code>.extend</code>, or
+  imported, apply their <code>usefixtures</code>; <code>indirect=</code> given as a variable, as
+  the third positional argument or through <code>**kwargs</code> no longer drops the
+  fixture from the test's dependencies.</li>
+<li>Tests defined, aliased or marked <code>__test__ = True</code> inside <code>if</code>/<code>try</code>
+  blocks, and tests imported from such modules, are found; an imported
+  test discovery can't follow is reported, not dropped.</li>
+<li>Code pytest runs while collecting that changes the process (a conftest,
+  a test module or a module they import that sets an environment variable
+  or extends <code>sys.path</code> at import, a <code>pytest_generate_tests</code> that does,
+  also through a patch nothing undoes: <code>mock.patch.dict(os.environ,
+  ...).start()</code>, <code>pytest.MonkeyPatch().setenv(...)</code>, <code>syspath_prepend</code>)
+  is a dependency of every test.</li>
+<li>A collection hook imported into a conftest (by a star import, or from
+  outside the source roots), or a star import from outside the roots in a
+  conftest or plugin, makes discovery possibly incomplete.</li>
+<li>A <code>pytester</code>/<code>testdir</code> test depends on the project's registered plugins
+  (<code>pytest11</code> entry points, <code>pytest_plugins</code>, <code>-p</code>) and on what its inline
+  files import.</li>
+<li>ASV: <code>setUp</code> and <code>TearDown</code> in any case, and the benchmark class's
+  <code>__init__</code>, are dependencies of its benchmarks; a <code>timeraw_</code> benchmark
+  bound under another name, or renamed with <code>benchmark_name</code>, depends on
+  what its code imports; <code>benchmark_name</code> applies wherever the function is
+  bound, inherited methods included; <code>benchmark_dir: "."</code> finds
+  benchmarks.</li>
+</ul>
+<h4 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h4>
+<ul>
+<li>A module stored into pytest's <code>doctest_namespace</code> (pandas' autouse
+  <code>add_doctest_imports</code> does <code>doctest_namespace["pd"] = pd</code>) no longer
+  counts as handed to unknown code. When that module could reach <code>gc</code>,
+  every test that ran the fixture counted as able to look up anything, so
+  a docstring edit selected every test.</li>
+<li>A module variable filled once by one function and then only read (a
+  lazily computed constant such as pandas' <code>_pkg_dir</code> in
+  <code>find_stack_level</code>) no longer counts as state that function writes for
+  later tests: the value is the same whoever computes it first, so a
+  change that only makes the function run earlier or later reaches nothing
+  through it. A change to the function itself, or a reader outside it,
+  still counts.</li>
+<li>Code that ran while pytest collected a test file (building the ids of
+  parametrized tests, an <code>ids=</code> function, <code>pytest_generate_tests</code> and what
+  it calls) now selects that file's tests when it changes, and the tests
+  reading what it stored, instead of every test; so does a change to a
+  file read then. It still selects every test when what ran it can set
+  something for the whole process (an environment variable) or reaches
+  pytest's configuration or session (<code>.config</code>, <code>.session</code>, <code>.stash</code>,
+  <code>.pluginmanager</code>, another hook). Code run by session hooks
+  (<code>pytest_configure</code>, <code>pytest_collection_modifyitems</code>) selects every test
+  as before.</li>
+<li>A test that failed or errored while it was recorded is always selected:
+  its recording stops where it failed, so where it passes (a flaky failure,
+  a different environment) it can run code the recording never saw.
+  <code>VIRTUAL_ENV</code> is now part of the environment a recording is checked
+  against: a tool run from its own environment passes its <code>VIRTUAL_ENV</code> to
+  the suite, and IPython warns on one that is not the interpreter's.</li>
+<li>A test module listing the machine's locales while pytest collected it
+  (<code>locale -a</code>, as pandas' locale tests do) made every change select every
+  test. Listing locales runs no Python, and no longer counts as a process
+  the recording can't follow. Nor does <code>ninja</code>, which an editable
+  meson-python install (pandas) runs on import to rebuild compiled code.</li>
+<li>Before Python 3.14, a test that had a library evaluate string
+  annotations (<code>from __future__ import annotations</code>, forward references)
+  through <code>typing.get_type_hints</code>, as pydantic and FastAPI do, recorded
+  nothing of them, so a change to those annotations, or to a class they
+  name, did not select it. The recorder now credits the test with the
+  annotations' owner and what their names resolve to, through <code>typing</code>,
+  <code>annotationlib</code> and <code>inspect</code> alike; <code>inspect</code>'s evaluation no longer
+  counts as running text code, which selected the test on every change.</li>
+<li>A recording no longer disables pytest's cache plugin: a configured
+  <code>--failed-first</code> made recording a usage error. The plugin starts from
+  an empty cache of its own, so <code>--lf</code>/<code>--ff</code> neither narrow nor reorder
+  the recorded run, and the repository's <code>.pytest_cache</code> is left alone.</li>
+<li>Editing one test selected every test of its file: pytest looks up each
+  test's location as the test starts, which read the file inside the
+  test's record. That lookup is no longer recorded; a test that reads its
+  own file still is.</li>
+<li>On Python 3.14, editing the body of a function whose annotations were
+  read outside the tests selected every test, or every test importing its
+  module. Python 3.14 evaluates annotations in code of their own, which
+  pytest runs while collecting (reading a signature) and frameworks run at
+  import (FastAPI, dataclasses, pydantic). That code no longer counts as
+  the function running there, nor as reading a change its annotations
+  don't name; a change to the annotations still counts.</li>
+<li>Editing a test file selected every test when the suite was recorded
+  with a virtual environment inside the checkout (<code>uv run pytest</code> runs
+  <code>.venv/bin/pytest</code>): pytest reading files during collection looked like
+  the project reading them outside any test. An environment in the
+  checkout, or inside a source directory (where it hid that directory's
+  code or gave a false "installed copy" error), is now installed code.</li>
+<li>A session hook that lists installed distributions
+  (<code>importlib.metadata.distributions()</code>) made adding any file anywhere
+  select every test; those scans are no longer recorded.</li>
+<li>The recorder starts before pytest loads any <code>-p</code> plugin (<code>addopts</code>,
+  <code>PYTEST_ADDOPTS</code>, the command) and before a project <code>sitecustomize.py</code>,
+  so what they import is recorded. Modules imported before it could start
+  are listed (<code>preloaded_modules</code>), <code>collect</code> warns, and any change in
+  them is planned from the code.</li>
+<li>Files the recording missed are recorded: files a library reads while it
+  is imported (matplotlib's <code>matplotlibrc</code>), files reached through a
+  directory descriptor (<code>dir_fd=</code>, <code>os.listdir(fd)</code>, <code>os.fstat</code>), entries
+  of an <code>os.scandir</code> listing, <code>os.readlink</code>, <code>sqlite3</code> <code>file:</code> URIs,
+  symlinked paths, and on macOS and Windows a file opened under another
+  capitalisation. A descriptor the recorder cannot trace flags the test.</li>
+<li>A process started while a <code>conftest.py</code> is imported or in a hook was not
+  credited to anything; what it runs now counts as part of that import or
+  hook, and one the recording cannot follow makes every change plan from
+  the code (pytest-xdist workers are not affected). A test using a
+  <code>multiprocessing</code> pool, forkserver or forked process that an earlier
+  test started is always selected while that process runs.</li>
+<li>Tests that run code compiled from text no file holds (doctests,
+  <code>--doctest-modules</code>, <code>timeit</code>, a notebook kernel) are always selected
+  (rule <code>text_code</code>). A string <code>skipif</code> condition naming nothing of the
+  project and <code>autospec=True</code> mocks do not count as such text.</li>
+<li>A change to code that runs at import, or that ran during an import,
+  reaches the tests reading what it writes into another module, Cython
+  code included. Code that can obtain a test module without importing it
+  by name sees changes to it: library code importing one by a computed
+  name, an unpickler, a loader of a computed path. A lazy-export
+  <code>__getattr__</code> whose table only test-time code can change does not count
+  as such code, nor do <code>gc.get_stats()</code>, <code>gc.collect()</code> and
+  <code>gc.callbacks</code>, and <code>hasattr(obj, "name")</code> notices only <code>name</code>.
+  <code>pytest_plugins</code> in a test module selects every test when it changes.</li>
+<li>A function added, deleted or redefined with an annotation that calls
+  code (<code>def f(x: set_mode("fast"))</code>), or a module-level variable whose
+  annotation does, reaches what that code writes: before Python 3.14
+  annotations run with the definition. A definition whose annotations call
+  nothing is not escalated.</li>
+<li>Caches: a module-level cache filled by an earlier test hid the function
+  that filled it from later tests' records, in every order; a change to
+  that function now reaches the tests reading the cache. So does a cache
+  kept on an object, a class, a closure, a function attribute or in a
+  memoising decorator diffcone knows (<code>functools.cached_property</code>,
+  <code>cachetools</code>, Django's and Werkzeug's <code>cached_property</code>); a decorator
+  from an installed package it doesn't know is taken to keep nothing. A
+  store made by a test's own code counts for that test only.</li>
+<li>A non-literal <code>getattr</code> on a standard or third-party module sees
+  changes anywhere in the project, not only in its own imports, and a
+  test module's import-time change reaches lookups in library code.</li>
+<li>Code a hook ran that changed, or that reads a change, selects every
+  test.</li>
+<li>Cython: edits to blank lines or <code>#</code> lines inside a string in a function
+  body were ignored.</li>
+<li>A recording stored under a path containing <code>#</code>, <code>?</code> or <code>%</code> was skipped
+  as if there were none.</li>
+<li>When <code>run</code> couldn't use a recording because only <code>-O</code> or <code>PYTHONPATH</code>
+  differed, it listed no differences; every difference is now named.</li>
+</ul>
+<h4 id="running-check-and-validate">Running, check and validate<a class="headerlink" href="#running-check-and-validate" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>validate</code> and <code>corpus</code> could not run the suites of several projects.
+  A checkout of a commit lacks a git-ignored, build-generated module such
+  as the <code>_version.py</code> setuptools-scm or hatch-vcs writes, so the package
+  could not be imported; the repository's copy of each git-ignored module
+  inside a package is now copied into every checkout that lacks it
+  (not a conftest or test file; <code>--setup-command</code> runs after it). pytest's cache plugin is no longer
+  disabled, which made a configured <code>--failed-first</code> or <code>--lf</code> a usage
+  error; it starts from an empty cache of its own instead, so those options
+  neither narrow nor reorder the run, and the repository's <code>.pytest_cache</code>
+  is left alone (a run whose cache could not be moved is refused). With <code>--coverage</code>, a suite that did not run is reported
+  as such instead of as a missing coverage database; pytest-cov is loaded
+  with <code>-p</code> when plugin autoloading is disabled; the database's place is
+  set in diffcone's coverage config instead of <code>COVERAGE_FILE</code>, which the
+  tests' own processes inherited; and parallel parts beside it are read
+  too. Errors name the snapshot (<code>base &lt;commit&gt;</code> or <code>head</code>) whose suite
+  failed.</li>
+<li><code>validate</code> and <code>corpus</code> reported tests outside the target list as
+  misses even when the plan said discovery was incomplete (it exits 3,
+  and <code>run</code> refuses it). They are now listed as "outside the target list"
+  and don't fail the check, and coverage recall is measured over the
+  targets. When discovery claims to be complete, such a test is still a
+  miss, labelled <code>MISSED (not a target)</code>. The JSON gains
+  <code>discovery_incomplete</code>, <code>outside_targets</code> and a <code>target</code> flag on each
+  record; <code>counts.targets</code> now counts targets only.</li>
+<li><code>diffcone check</code> decided "already failing at the baseline" per test
+  function, so a parametrized case that failed at the baseline excused a
+  new failure of another case: a miss reported as clean. Cases are now
+  compared one by one.</li>
+<li><code>check</code> and <code>validate</code> work when pytest's rootdir lies below the
+  repository (an ini file in a subdirectory): the plan records pytest's
+  rootdir, configuration file and <code>--junit-prefix</code>, <code>check --rootdir</code> and
+  <code>--junit-prefix</code> override them, and a directory that fails to collect
+  counts as a collection failure of every test under it. Before, every
+  failure was an unknown miss, which the <code>record</code> action confirmed.</li>
+<li><code>validate</code>, <code>corpus</code> and <code>collect</code> run the whole suite whatever <code>-x</code> or
+  <code>--maxfail</code> is configured, and <code>validate</code> and <code>corpus</code> stop with exit
+  code 2 when the suite reported fewer outcomes than it collected: a miss
+  can no longer hide behind an early stop. <code>validate</code> runs pytest without
+  <code>-v</code> and reports the command line it ran.</li>
+<li><code>run</code> refuses a working tree that differs from the planned snapshot in
+  any file the plan would have selected on (data and configuration files
+  under the roots, <code>diffcone.toml</code>, runner configuration, build inputs,
+  conftests, ignored <code>.py</code> files, file modes, dirty submodules, files
+  flagged assume-unchanged or skip-worktree, <code>.py</code> files with non-ASCII
+  names) and names them.</li>
+<li><code>run</code>'s "did not collect" message names <code>--lf</code>, <code>--ff</code>, <code>--sw</code>, <code>-k</code>,
+  <code>-m</code> or <code>--deselect</code> among the effective pytest arguments and where
+  they are set.</li>
+<li><code>collect</code> and <code>run --collect</code> no longer refuse a clean checkout because
+  untracked bytecode or ASV output has a non-ASCII name; a renamed file
+  counts as both names.</li>
+<li><code>run --dry-run --evidence</code> prints a command you can run, without
+  diffcone's internal recorder plugin.</li>
+<li><code>discover</code> honours <code>--no-cache</code> and <code>--cache-dir</code>: it uses the same
+  cache as <code>plan</code>, and its output is unchanged.</li>
+<li>On Windows, a relative <code>--command</code> resolved for <code>validate</code> and <code>corpus</code>
+  was quoted for a POSIX shell, and one written with forward slashes
+  (<code>.venv/Scripts/python.exe</code>) was not resolved.</li>
+<li>An unexpected error in any command exits 2; <code>check</code>, <code>report</code>,
+  <code>collect</code> and <code>prune</code> exited 1, which <code>check</code> uses for a miss.</li>
+</ul>
+<h4 id="ci-actions">CI actions<a class="headerlink" href="#ci-actions" title="Permanent link">&para;</a></h4>
+<ul>
+<li>The <code>record</code> action with <code>check: true</code> could pass a push that had a
+  miss: a re-run of the job restored the newest recording instead of its
+  own commit's (so the kept verdict was lost and the push was re-checked
+  against a later baseline), and a check that crashed, or a re-run whose
+  JUnit could not be read, was recorded as checked with no miss. A
+  recording that is not from before the pushed commit is no longer
+  checked against. A re-run's other failures (when the job's pytest
+  arguments name a path after an option) no longer count as misses, and
+  the re-run of a missed test runs a <code>command</code> with quotes or spaces as
+  written.</li>
+<li><code>diffcone report</code> ignores recording artifacts uploaded by pull-request
+  runs (a pull request from a fork runs its own code), counts an artifact
+  it cannot read as a problem instead of failing, reports pull-request
+  runs whose selected tests pytest did not collect, keeps a test id with
+  backticks inside its code span, and escapes <code>|</code> in "not checked"
+  reasons.</li>
+<li>The <code>report</code> action failed whenever a job of a reported run had been
+  re-run (two artifacts of the same name); it reads the latest attempt's.
+  Its window starts at the last report that posted, so a run with only a
+  job summary (a manual run with posting off) no longer hides the runs
+  before it.</li>
+<li>The <code>record</code> action's re-run of a new unselected failure stopped at the
+  first failure when <code>pytest-args</code> or <code>addopts</code> had <code>-x</code> or <code>--maxfail</code>,
+  and the misses it never reached were reported as flaky. It now re-runs
+  with <code>--maxfail=0</code>, and a missed test the re-run did not run still
+  counts as a miss.</li>
+</ul>
+<h3 id="discovery_2">Discovery<a class="headerlink" href="#discovery_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>pytest options in <code>PYTEST_ADDOPTS</code>, plugins in <code>PYTEST_PLUGINS</code> and
+  pytest arguments written into the run's command are read: <code>plan</code> and
+  <code>discover</code> take <code>--command</code>, the CI actions pass it, and the report
+  lists what was read (<code>run_arguments</code>). A command whose pytest arguments
+  cannot be found is reported.</li>
+<li>Understood now: <code>.</code> as an argument, a <code>.txt</code> or <code>.rst</code> file named as an
+  argument (always a doctest), <code>--doctest-glob</code> patterns with a directory,
+  option values written as separate arguments (<code>--ignore tests/slow</code>),
+  absolute paths inside the repository, <code>-o name=value</code> overrides and
+  paths in <code>addopts</code>.</li>
+<li>A pytest configuration file below the repository root that pytest
+  would use (one nearer the paths it starts from than the root's) is not
+  read by discovery, so it makes discovery incomplete
+  (<code>unmodelled_runner_option</code>, exit code 3; <code>run</code> refuses without
+  <code>--allow-incomplete-discovery</code>).</li>
+<li>A pytest configuration file (<code>pytest.toml</code>, <code>pytest.ini</code>,
+  <code>pyproject.toml</code>, <code>tox.ini</code>, <code>setup.cfg</code>) or an <code>asv.conf.json</code> that
+  can't be parsed made discovery quietly use the defaults; it now makes
+  discovery incomplete (<code>unparsable_config</code>, exit code 3), as does a
+  <code>benchmark_dir</code> outside the repository.</li>
+<li><code>asv.conf.jsonc</code> is read like <code>asv.conf.json</code>, and trailing commas in
+  either are accepted, as asv allows.</li>
+</ul>
+<h3 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A Python process a test starts with <code>subprocess</code> (directly, through
+  <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and
+  the test is credited with what it ran instead of being selected for
+  every change; so is every test that runs while the process is still
+  running (a server or a warm worker another test started). A <code>python -c</code>
+  probe that runs project code is caught by its own recording, and a
+  project's own <code>sitecustomize.py</code> does not stop subprocesses from
+  recording themselves. A process started another way (<code>os.system</code>, a
+  shell, <code>multiprocessing</code>, anything on Windows), one that cannot record
+  itself (a replaced environment, <code>python -S</code>, Python before 3.12), one
+  whose recording was cut short (a full disk), and one running project
+  code from a <code>-c</code> snippet or a script outside the source roots still
+  select their test for every change.</li>
+<li>A test run that changes its own environment (a test that installs or
+  upgrades a package with the test interpreter) is named: <code>collect</code> warns
+  with the packages, the recording keeps the environment it started in,
+  and <code>run</code> says when it meets that environment. The recording is still
+  keyed by the environment at the end, so such a run plans from the code.</li>
+<li><code>plan --evidence</code> says the environment was not checked
+  (<code>environment_checked: false</code>): only <code>run</code> can check it, and its <code>-o</code>
+  report says <code>true</code> when the environment matched.</li>
+<li><code>run --collect</code> on a recording made with <code>--reverse-check</code> runs the
+  selected tests again in reverse order, so the advanced records are
+  order-checked too.</li>
+<li>A method or attribute added to (or changed or deleted on) a fake class
+  in a test module selects only the tests that ran library code calling a
+  method of that name (<code>x.read()</code>) and also ran code able to hand that
+  code a fake: code naming the class or a subclass, or finding it without
+  naming it (a base's <code>__subclasses__()</code>, <code>gc</code>, a frame's globals). A
+  fake built at import, in a decorator or during collection, or one whose
+  class or bases sit outside test code, still selects every such test.</li>
+<li>A lookup on a standard or third-party module that tests patch
+  (<code>dir(builtins)</code> or <code>hasattr(os, name)</code> in library code, with
+  <code>monkeypatch.setattr(builtins, ...)</code> in a test) no longer makes every
+  change anywhere select every test that ran the lookup: the tests that
+  patch the module are selected through their own code. A module written
+  at import or in a hook is treated as before, and a change to code that
+  runs at import still reaches the lookup when it can run a writer.</li>
+<li>Editing an ordinary module named <code>build.py</code> (not at the repository root
+  or beside <code>pyproject.toml</code>/<code>setup.cfg</code>) selects the tests that ran it,
+  as static planning does, instead of every test.</li>
+<li>Recordings no longer select every test for every change when pytest
+  plugins or test helpers ask the machine or the repository something
+  outside the tests: <code>git</code> reporting the commit, branch, remote or
+  configuration (pytest-benchmark does as it starts) and <code>ps</code>
+  (shellingham's shell detection) join <code>uname</code> and <code>locale</code>. A <code>git</code>
+  command that prints a file or writes still counts.</li>
+<li>Running the suite under coverage (<code>--cov</code> in <code>addopts</code>) no longer makes
+  every source file look read by the module importing it: coverage
+  resolving a file it is about to measure is nobody's read.</li>
+<li>Tests that build URLs with werkzeug (every Flask app) no longer count as
+  running code compiled from text, which selected them for every change.</li>
+<li>A change to a module no test imports (a Sphinx <code>docs/conf.py</code>) no
+  longer reaches code that looks names up on whatever it is handed (a
+  frame's globals, a function's <code>__code__</code>, <code>sys.modules</code>), which selected
+  every test importing that code. A module imported by any test, even
+  inside one, or by an import added in the same change, still does.</li>
+</ul>
+<h3 id="ci">CI<a class="headerlink" href="#ci" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>record</code> describes every recording for <code>diffcone report</code>, also without
+  <code>check</code> (a nightly recording) and when the recording failed: its
+  <code>results</code> output always holds <code>context.json</code>.</li>
+<li><code>report</code> takes <code>repository</code> (report on another repository's runs; a
+  public one needs no extra access), <code>issues-repository</code> and
+  <code>issues-token</code> (post the report and miss issues elsewhere, each source
+  repository with its own report issue), and <code>comment: on-problem</code>
+  (comment only on a miss, a failed check or an incomplete report). Miss
+  issues outside diffcone's tracker link to a pre-filled diffcone issue.</li>
+<li><code>run -o</code> adds <code>evidence_not_used</code> (why the recording was not used, and
+  what differed) to the plan it writes, and <code>diffcone report</code> shows those
+  differences per job.</li>
+</ul>
+<h2 id="030-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.3.0">0.3.0</a> - 2026-10-08<a class="headerlink" href="#030-2026-10-08" title="Permanent link">&para;</a></h2>
+<h3 id="ci_1">CI<a class="headerlink" href="#ci_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone report --dir DIR</code> reports on many CI runs of the actions: per
+  job, the share pull requests selected and why some were planned from the
+  code, and for pushes whether each was checked, its new failures, flaky
+  re-runs and misses. It exits 1 on a miss or a check that failed.</li>
+<li>A new <code>report</code> action runs it on a schedule over the recent runs'
+  artifacts, comments the report on an issue, and opens an issue for each
+  miss.</li>
+<li><code>run</code> and <code>record</code> write <code>context.json</code> (what they did, and why a plan
+  was made from the code or a push was not checked) into the results they
+  upload; <code>run</code> also writes <code>ran.json</code>, the plan that ran.</li>
+<li>The verdict <code>record</code> keeps for a re-run of the same commit
+  (<code>.diffcone/check.json</code>) also says whether the push was checked and
+  whether the check itself failed, so a re-run reports a failed check as
+  one rather than as a miss.</li>
+</ul>
+<h3 id="execution-evidence_3">Execution evidence<a class="headerlink" href="#execution-evidence_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>On Windows, <code>uv python list</code> run through the path <code>shutil.which</code> gives
+  (<code>...\uv.EXE</code>) is recognised as an inert query, as it is elsewhere; it
+  made a third of a Windows suite always selected.</li>
+</ul>
+<h2 id="020-2026-10-08"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.2.0">0.2.0</a> - 2026-10-08<a class="headerlink" href="#020-2026-10-08" title="Permanent link">&para;</a></h2>
+<h3 id="platforms">Platforms<a class="headerlink" href="#platforms" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Windows is tested in CI (Python 3.11-3.14): commands are split without
+  POSIX escapes, the recorder plugin is copied where a symlink is not
+  allowed, the recorder reads Windows command lines and existence checks and
+  matches short (8.3) path names, and the actions find Python and the
+  venv's <code>Scripts</code> directory.</li>
+</ul>
+<h3 id="ci_2">CI<a class="headerlink" href="#ci_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>record</code> takes <code>check: true</code> for a default branch whose every push runs
+  the full suite: it plans the push's own change from the previous
+  recording, records, and fails the job on a new failure the plan did not
+  select that fails again when re-run (a flaky one is only reported).
+  <code>fail-on-test-failure: true</code> fails the job on failing tests, as a plain
+  test run would. Pull requests then run only the selection.</li>
+</ul>
+<h3 id="planning_2">Planning<a class="headerlink" href="#planning_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A dynamic import through a literal table of tuples is bounded by the
+  table: a PEP 562 lazy-export <code>__getattr__</code> (<code>target =
+  _LAZY.get(name)</code>, then <code>import_module(target[0])</code>) no longer reaches every
+  module. <code>D.get(key)</code> reads a literal dict like <code>D[key]</code>.</li>
+<li>A lookup by a run-time name on a third-party or standard-library module
+  (<code>getattr(logging, level)</code>, <code>dir(builtins)</code>) no longer selects every test
+  that reaches it whenever anything in its import closure changes, unless
+  project code stores something on that module.</li>
+</ul>
+<h3 id="execution-evidence_4">Execution evidence<a class="headerlink" href="#execution-evidence_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A test that runs a <code>python -c</code> snippet that can't run project code (an
+  interpreter version check importing only built-in modules, with nothing
+  after the code and no <code>PYTHONPATH</code>-like environment) or <code>uv python list</code>
+  is no longer always selected.</li>
+<li>Editing a module that looks at its own file at import
+  (<code>Path(__file__).resolve()</code>) no longer replans all its importers from
+  the code: that stat records only that the file exists. Any other stat of
+  a source file during a test counts as reading it.</li>
+<li>A test that leaves a thread running is no longer always selected;
+  instead every test is credited with the code background threads are in
+  the middle of while it runs, which also covers a later test running
+  beside a thread that loops in one function.</li>
+</ul>
+<h3 id="discovery_3">Discovery<a class="headerlink" href="#discovery_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Test files and directories named after <code>--</code> replace <code>testpaths</code>, as in
+  pytest; a node id, or a path after an option that may take it as its
+  value, is reported instead of guessed.</li>
+<li><code>--ignore</code> and <code>--ignore-glob</code> (in <code>addopts</code> or after <code>--</code>) are honoured,
+  below the paths pytest starts from, as pytest applies them:
+  ignored tests are no longer targets, which <code>run</code> reported as selected
+  but not collected.</li>
+<li>Importing a library's test helper whose name looks like a test class
+  (<code>from fastapi.testclient import TestClient</code>, aiohttp's <code>TestServer</code>) no
+  longer reports an incomplete target list.</li>
+<li>A conftest pytest does not load (a sibling package's tests, outside
+  <code>testpaths</code>) is no longer read or reported.</li>
+</ul>
+<h2 id="010-2026-10-07"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.1.0">0.1.0</a> - 2026-10-07<a class="headerlink" href="#010-2026-10-07" title="Permanent link">&para;</a></h2>
+<p>The first release.</p>
+<h3 id="planning_3">Planning<a class="headerlink" href="#planning_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone plan</code> compares two snapshots (git revisions, the staged
+  <code>INDEX</code>, or the <code>WORKTREE</code>) and reports which tests and benchmarks a
+  change can affect, each with the dependency path or the fallback rule
+  that selected it. Both revisions are analysed; analysis never runs
+  project code. JSON (<code>schema_version</code> 3) and text reports; exit codes
+  distinguish a complete plan (0), a degraded one that selects everything
+  (1), no plan (2) and a target list that may be short of what the runner
+  collects (3).</li>
+<li>Static discovery of pytest tests (configuration, collection rules,
+  inheritance, star-imported suites, the fixture chain with fixtures bound
+  by alias or import, fixtures and marks inherited from base classes in
+  other modules, marks stored in variables, parametrized names supplied to
+  fixtures, plugins declared by plugins, and overrides of fixtures that
+  pytest and installed plugins request, tests bound by assignment,
+  <code>runTest</code>, pytest 9's <code>pytest.toml</code>, doctests with their fixtures,
+  session-wide hooks from any conftest, the <code>usefixtures</code> option, plugins
+  of sibling packages) and ASV benchmarks (<code>benchmark_name</code>, imported
+  <code>setup</code>, the code a <code>timeraw_</code> benchmark runs), without importing
+  project code; what it cannot see it reports. A conftest outside the
+  source roots keeps its tests always selected, and a changed runner
+  configuration or build file outside them selects everything.
+  <code>diffcone discover</code> writes the targets as a manifest.</li>
+<li>Dependencies the analysis cannot see can be declared in <code>diffcone.toml</code>.</li>
+<li>A target depends on everything it depended on at the base too, and on
+  its module's import even when a hand-written manifest does not list the
+  module; an added import selects the code that now resolves through it;
+  a docstring edit selects only where code runs or reads the docstring.
+  Unknown manifest keys are errors.</li>
+<li>Indexes, discovery and per-module results are cached under
+  <code>.diffcone/cache/</code>; a cached plan is identical to an uncached one.
+  <code>diffcone prune --keep REV</code> shrinks the cache to what planning at given
+  commits reads.</li>
+</ul>
+<h3 id="running-and-checking_1">Running and checking<a class="headerlink" href="#running-and-checking_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone run</code> plans and runs only the selected targets with pytest or
+  ASV; <code>diffcone validate</code> runs the whole suite at both snapshots and
+  checks the plan against outcome changes (and, with <code>--coverage</code>, against
+  what each test executed); <code>diffcone corpus</code> does so over a commit range.</li>
+<li><code>diffcone check</code> compares a plan with the JUnit XML of a full run, and of
+  other selective runs (pytest-testmon's, say), reporting every failure the
+  plan missed; Markdown output for CI job summaries.</li>
+</ul>
+<h3 id="execution-evidence-opt-in-python-312-in-the-project">Execution evidence (opt-in, Python 3.12+ in the project)<a class="headerlink" href="#execution-evidence-opt-in-python-312-in-the-project" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone collect</code> records what each test executed, at a commit;
+  <code>plan --evidence</code> selects the tests whose record meets the change, and
+  plans the rest statically or selects everything, saying which.
+  <code>run --collect</code> advances the record to the new commit. <code>--env-var</code>
+  records project variables that change what tests do. Tests that start a
+  subprocess or subinterpreter, or leave a thread running, are always
+  selected; a shared fixture computed once by one xdist worker is credited
+  to every test using it.</li>
+<li>Cython: with a <code>profile=True</code> build recorded on Python 3.13+, edits to
+  function bodies and to the names a file binds outside functions select
+  the tests that executed the code concerned.</li>
+<li>A recording settles what static discovery cannot know (whether a plugin
+  collects a class pytest's rules skip), so such plans no longer stop at
+  exit 3.</li>
+</ul>
+<h3 id="ci_3">CI<a class="headerlink" href="#ci_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Composite GitHub Actions (<code>actions/record</code>, <code>actions/run</code>,
+  <code>actions/check</code>) to record nightly on the default branch and plan, run
+  and check each pull request against it; see <code>docs/ci.md</code>.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../limitations/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Limitations">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7M19 12H5"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Limitations
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../development/" class="md-footer__link md-footer__link--next" aria-label="Next: Development">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Development
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2026 Bearing Research
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["content.code.copy","content.action.edit","navigation.footer","navigation.indexes","navigation.instant","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight","toc.follow"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"alias":true,"provider":"mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      
+    
+  </body>
+</html>
