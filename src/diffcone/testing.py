@@ -9,11 +9,13 @@ tests use; projects integrating diffcone can use them the same way.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 from diffcone.cache import IndexCache
 from diffcone.evidence import Evidence
@@ -136,18 +138,27 @@ class FixtureRepo:
         env_variables: list[str] | None = None,
     ) -> Evidence:
         """Record execution evidence (``diffcone collect``) at ``rev`` (default:
-        the clean checkout), running the suite with this interpreter's pytest."""
+        the clean checkout), running the suite with this interpreter's pytest.
+
+        The recorded suite gets a temporary root of its own
+        (``PYTEST_DEBUG_TEMPROOT``): under the shared one, pytest sessions
+        running beside it remove old numbered directories while the suite
+        is recorded, and what that session-time cleanup touches can flag
+        the recording's hook phase, which selects every test."""
         from diffcone.execution import collect_evidence  # runs project code
 
-        return collect_evidence(
-            self.path,
-            command=command or f"{sys.executable} -m pytest",
-            source_roots=source_roots or ["."],
-            rev=rev,
-            reverse_check=reverse_check,
-            extra=extra,
-            env_variables=env_variables,
-        ).evidence
+        root = self.path.parent / "pytest-temp-root"
+        root.mkdir(exist_ok=True)
+        with mock.patch.dict(os.environ, {"PYTEST_DEBUG_TEMPROOT": str(root)}):
+            return collect_evidence(
+                self.path,
+                command=command or f"{sys.executable} -m pytest",
+                source_roots=source_roots or ["."],
+                rev=rev,
+                reverse_check=reverse_check,
+                extra=extra,
+                env_variables=env_variables,
+            ).evidence
 
     def write_manifest(self, targets: list[dict], name: str = "targets.json") -> Path:
         path = self.path.parent / name
