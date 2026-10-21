@@ -1163,11 +1163,13 @@ report:</p>
   changes to it are always planned from the code.</li>
 <li>If one test fills a cache and later tests read it, every test that
   reads it counts. This covers caches in module variables, on objects and
-  classes, in closures, in function attributes and in <code>cached_property</code>.
-  <code>functools.cache</code> and <code>lru_cache</code> are cleared before each test instead.
+  classes, in closures, in function attributes and in <code>cached_property</code>,
+  and a cache filled from a file that changed. <code>functools.cache</code> and
+  <code>lru_cache</code> are cleared before each test instead, also over another
+  wrapper (<code>singledispatch</code>, <code>staticmethod</code>, <code>partial</code>, a class).
   Caches kept by an unknown memoising decorator, or filled by code
-  diffcone can't follow from the code that ran the change (a method
-  writing somewhere other than its own object, a table of callbacks), are
+  diffcone can't follow from the code that ran the change (a method of an
+  object whose class the code doesn't tell, a table of callbacks), are
   not seen, nor
   is what the recorder can't watch: files opened by compiled code, state
   kept on disk between tests (see
