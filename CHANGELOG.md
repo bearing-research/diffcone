@@ -8,6 +8,12 @@ selection rules.
 
 ## [Unreleased]
 
+### Running and checking
+
+- `diffcone corpus --jobs` no longer fails now and then with "git
+  worktree add: fatal: failed to read .git/worktrees/.../commondir": jobs
+  create and remove their checkouts one at a time.
+
 ### Planning
 
 - A `logging.Logger` subclass (set with `logging.setLoggerClass`) that

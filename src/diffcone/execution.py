@@ -805,6 +805,12 @@ def copy_generated_modules(repo: Path, checkout: Path) -> list[str]:
     return copied
 
 
+# ``git worktree add`` reads every other worktree's admin directory, and
+# fails on one another thread is still creating ("failed to read
+# .git/worktrees/<name>/commondir"): parallel corpus jobs take turns.
+_WORKTREE_LOCK = threading.Lock()
+
+
 class _Checkout:
     """A directory holding a snapshot: a temporary detached worktree for a
     commit (holding the repository's generated modules,
@@ -827,7 +833,8 @@ class _Checkout:
             # (.git/worktrees/<name>) after it, and parallel corpus jobs that
             # all used "checkout" raced on creating it.
             self.path = Path(self._tmp.name) / f"checkout-{Path(self._tmp.name).name}"
-            _git(self.repo, ["worktree", "add", "--detach", "-q", str(self.path), self.commit])
+            with _WORKTREE_LOCK:
+                _git(self.repo, ["worktree", "add", "--detach", "-q", str(self.path), self.commit])
             try:
                 copy_generated_modules(self.repo, self.path)
             except (GitError, OSError):
@@ -853,7 +860,8 @@ class _Checkout:
     def __exit__(self, *exc: object) -> None:
         if self._tmp is not None:
             try:
-                _git(self.repo, ["worktree", "remove", "--force", str(self.path)])
+                with _WORKTREE_LOCK:
+                    _git(self.repo, ["worktree", "remove", "--force", str(self.path)])
             except GitError:
                 pass
             self._tmp.cleanup()
