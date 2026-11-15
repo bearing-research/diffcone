@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -847,7 +858,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning" class="md-nav__link">
+  <a href="#planning_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -930,7 +941,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_1" class="md-nav__link">
+  <a href="#planning_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1124,7 +1135,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#planning_2" class="md-nav__link">
+  <a href="#planning_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1174,7 +1185,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_3" class="md-nav__link">
+  <a href="#planning_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1309,6 +1320,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#planning" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Planning
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#execution-evidence" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1359,7 +1381,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning" class="md-nav__link">
+  <a href="#planning_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1442,7 +1464,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_1" class="md-nav__link">
+  <a href="#planning_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1636,7 +1658,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#planning_2" class="md-nav__link">
+  <a href="#planning_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1686,7 +1708,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#planning_3" class="md-nav__link">
+  <a href="#planning_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
@@ -1774,6 +1796,18 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A <code>logging.Logger</code> subclass (set with <code>logging.setLoggerClass</code>) that
+  attaches fields to the record <code>self.makeRecord(...)</code> makes and passes
+  it to <code>self.handle(record)</code> no longer writes what it logs or the
+  logger itself: the record was taken as possibly any object handed to
+  the call, and <code>self.handle</code> as any method of the project named
+  <code>handle</code>, so a logging call made every logged object and every logger
+  written state, and changing it selected every test reading one. A
+  <code>makeRecord</code> or <code>handle</code> the project defines, and a handler's
+  <code>handle</code>, are still followed.</li>
+</ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A class that a changed function may write into, and that has no other
@@ -1813,7 +1847,7 @@ selection rules.</p>
   downloads made the next report read the whole window again.</li>
 </ul>
 <h2 id="050-2026-10-21"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.5.0">0.5.0</a> - 2026-10-21<a class="headerlink" href="#050-2026-10-21" title="Permanent link">&para;</a></h2>
-<h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
+<h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone.toml</code> takes <code>[index] exclude</code>, patterns for <code>.py</code> files to
   leave out of the analysis (deliberately invalid test data, as in a
@@ -2129,7 +2163,7 @@ fields: <code>always_run</code> and <code>analysis.counts.always_run</code>;
 <code>check --format json</code> gains <code>mapping.rootdir</code> and <code>mapping.junit_prefix</code>.
 New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 <code>unreadable_plugins</code> and <code>plugin_outside_roots</code>.</p>
-<h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
+<h3 id="planning_2">Planning<a class="headerlink" href="#planning_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone.toml</code> takes <code>[[always_run]]</code> entries: the tests (or
   benchmarks) whose id matches a pattern are selected in every plan, with
@@ -2789,7 +2823,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   <code>fail-on-test-failure: true</code> fails the job on failing tests, as a plain
   test run would. Pull requests then run only the selection.</li>
 </ul>
-<h3 id="planning_2">Planning<a class="headerlink" href="#planning_2" title="Permanent link">&para;</a></h3>
+<h3 id="planning_3">Planning<a class="headerlink" href="#planning_3" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A dynamic import through a literal table of tuples is bounded by the
   table: a PEP 562 lazy-export <code>__getattr__</code> (<code>target =
@@ -2832,7 +2866,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 </ul>
 <h2 id="010-2026-10-07"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.1.0">0.1.0</a> - 2026-10-07<a class="headerlink" href="#010-2026-10-07" title="Permanent link">&para;</a></h2>
 <p>The first release.</p>
-<h3 id="planning_3">Planning<a class="headerlink" href="#planning_3" title="Permanent link">&para;</a></h3>
+<h3 id="planning_4">Planning<a class="headerlink" href="#planning_4" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone plan</code> compares two snapshots (git revisions, the staged
   <code>INDEX</code>, or the <code>WORKTREE</code>) and reports which tests and benchmarks a
