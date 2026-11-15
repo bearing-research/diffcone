@@ -185,6 +185,22 @@ import, so a method added anywhere reached everything the loader ran
 there and selected every test. A read of `sys.modules` (an item, `.get`,
 iterating it) still sees every namespace.
 
+A plain function or method just added (no special name) is not seen by a
+site whose every lookup is a signature read (`inspect.signature(f)`,
+`getfullargspec`, `getcallargs`, without `eval_str`, `globals` or
+`locals`: `SIGNATURE_READ`), and the site is not followed for it
+(`_Observers.signature_sites`). A signature reflects the parameters of the
+object it is handed and, for a class, its special members; a new
+definition reaches it only once code hands it over, code that names it (a
+change of its own, planned as one) or looks it up by a name nothing bounds
+(a site of its own, which sees it). A changed definition and an added
+special method still reach such a site. strata checks its websocket
+handlers' signatures as a module is imported from a conftest. The same
+does not hold for a lookup on an external module the project writes to
+(`dir(builtins)`): a module handed on may be installed under that name
+(W17), and the lookup then searches project code; strata hands modules
+found at run time on in 52 places.
+
 **Compiled code.** A `.pyx` change is invisible to a Python tracer unless
 the extension is built with Cython's `profile=True` directive, whose
 functions raise the same `PY_START` events as Python code (roadmap items 7

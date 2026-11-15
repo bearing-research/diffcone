@@ -4471,6 +4471,54 @@ def test_a_read_of_sys_modules_by_a_name_nothing_bounds_still_sees_every_namespa
     assert "tests/test_other.py::test_other" in chosen
 
 
+HANDLERS = (
+    "import inspect\n\n\ndef on_open(path):\n    return path\n\n\n"
+    "HANDLERS = {{'open': on_open}}\n\n\n"
+    "def handler_args(handler):\n    return tuple(inspect.signature(handler{kw}).parameters)\n\n\n"
+    "for _handler in HANDLERS.values():\n    assert handler_args(_handler) == ('path',)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("kw", "added", "everything"),
+    [
+        # A plain method added: in no object's signature.
+        ("", "    def extra(self):\n        return 2\n", False),
+        # ``__init__`` is what a class's signature reads.
+        ("", "    def __init__(self, n=1):\n        self.n = n\n", True),
+        # ``eval_str`` evaluates annotations, by name, in their module.
+        (", eval_str=True", "    def extra(self):\n        return 2\n", True),
+    ],
+)
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_a_signature_read_at_import_sees_no_plain_method_added(repo, kw, added, everything):
+    """strata checks its handlers' signatures as a module is imported
+    (``inspect.signature(handler)``, from a conftest's import, so in a
+    hook). Taken as a lookup by a name nothing bounds, it saw every
+    namespace: a method added anywhere reached what it ran and selected
+    every test. A signature reflects the parameters of what it is handed
+    and, for a class, its special members."""
+    chosen = _evidence_selects(
+        repo,
+        {
+            "pkg/__init__.py": "",
+            "pkg/handlers.py": HANDLERS.format(kw=kw),
+            "pkg/work.py": WORKER,
+            "tests/__init__.py": "",
+            "tests/conftest.py": "import pkg.handlers  # noqa: F401\n",
+            "tests/test_work.py": (
+                "from pkg.work import Worker\n\n\ndef test_work():\n    assert Worker().run()\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+        {"pkg/work.py": WORKER + "\n" + added},
+    )
+    if everything:
+        assert "tests/test_other.py::test_other" in chosen
+    else:
+        assert "tests/test_other.py::test_other" not in chosen
+
+
 STAR = "__all__ = [{}]\n\n\ndef one():\n    return 1\n\n\ndef two():\n    return 2\n"
 
 

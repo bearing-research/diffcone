@@ -114,6 +114,7 @@ from diffcone.indexer.syntax import (
     REFLECTIVE_ATTRIBUTES,
     REFLECTIVE_BUILTINS,
     REFLECTIVE_CALLS,
+    SIGNATURE_CALLS,
     _flatten_chain,
     own_directory_join,
     reads_files,
@@ -144,6 +145,7 @@ from diffcone.model import (
     REBINDS,
     RUNS_PROGRAM,
     RUNS_TEXT,
+    SIGNATURE_READ,
     WRITES,
     Edge,
     EdgeKind,
@@ -2757,7 +2759,17 @@ class _ReferenceCollector(ast.NodeVisitor):
                         (self.source, module, "reflection", f"{name}()")
                     )
                 if not looked:
-                    self.indexer.out.reflection.add((self.source, f"{name}()"))
+                    canonical = self._canonical_names(parts)
+                    signature = (
+                        not builtin
+                        and canonical
+                        and canonical <= SIGNATURE_CALLS
+                        and not any(
+                            k.arg in (None, "eval_str", "globals", "locals") for k in node.keywords
+                        )
+                    )
+                    detail = SIGNATURE_READ if signature else f"{name}()"
+                    self.indexer.out.reflection.add((self.source, detail))
                 if (
                     node.args
                     and self._canonical_names(parts) & MEMBER_LISTINGS

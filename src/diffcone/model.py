@@ -128,6 +128,12 @@ GRAPH_INERT = frozenset(
 # SourceIndex.reflection detail of code that hands such a module on, or looks
 # a name up on it by a name nothing bounds: it may walk the object graph.
 GRAPH_HANDLE = ".<object graph module>"
+# SourceIndex.reflection detail of a signature read (``inspect.signature(f)``,
+# ``getfullargspec``, ``getcallargs``, without ``eval_str``, ``globals`` or
+# ``locals``): it reflects the parameters of the object it is handed, and for
+# a class or callable instance only special members (``__init__``,
+# ``__call__``, ``__signature__``, ``__wrapped__``); it looks no other name up.
+SIGNATURE_READ = "<signature read>()"
 # Edge detail from a module to code that installs something in
 # sys.modules under its name for good: importers depend on that code,
 # but the module does not run it (indexer.core._install_edges).

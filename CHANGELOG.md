@@ -22,6 +22,11 @@ selection rules.
 
 ### Execution evidence
 
+- A function or method just added is no longer seen by code that only
+  reads signatures (`inspect.signature(handler)`): run as a module was
+  imported by a conftest, it made any new function or method select
+  every test. An added special method (`__init__`) and
+  `inspect.signature(..., eval_str=True)` are still followed.
 - A store into `sys.modules` (`sys.modules[name] = module`, `del
   sys.modules[name]`) no longer counts as code that can look any name up:
   a module that registers a file it loads by path that way, imported by a

@@ -243,6 +243,7 @@ from diffcone.model import (
     RUNS_PROGRAM,
     RUNS_SCRIPT,
     RUNS_TEXT,
+    SIGNATURE_READ,
     STORE_ANY_ATTRIBUTE,
     STORE_CLOSURE,
     STORE_PARAM,
@@ -630,6 +631,10 @@ class _Observers:
         self.importers_of: dict[str, set[str]] = defaultdict(set)
         self.by_name: dict[str, set[str]] = defaultdict(set)
         self.sites: list[tuple[str, SiteKind]] = []
+        # Sites whose every lookup is a signature read (``SIGNATURE_READ``):
+        # blind to a plain function or method just added (``_sites``).
+        signature_reads: set[str] = set()
+        other_reads: set[str] = set()
         # Sites on an external module the project writes to -> the writers.
         # When only test-window code writes there (``_only_in_tests``), the
         # site is seen only by a change to code that runs at import and can
@@ -731,6 +736,7 @@ class _Observers:
                         site_writers[site].update(writers)
                     if not (writers and self._only_in_tests(writers)):
                         self.sites.append(site)
+                        other_reads.add(ref.symbol)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
                     self.names_used[ref.symbol].add(ref.name)
@@ -753,6 +759,7 @@ class _Observers:
                     site_writers[(symbol, SiteKind.ANY)].update(writers)
                 if not (writers and self._only_in_tests(writers)):
                     self.sites.append((symbol, SiteKind.ANY))
+                    (signature_reads if detail == SIGNATURE_READ else other_reads).add(symbol)
         # A method called (or a property accessor or attribute hook run) on
         # a receiver whose class the index knows (``ENGINE.run(k)``,
         # ``Engine().run(k)``: SourceIndex.typed_calls) is a call like a
@@ -827,6 +834,7 @@ class _Observers:
         self._runner_held: set[str] | None = None
         self.module_hands_on = {s for s in self.module_hands_on if self._in_test_code(s)}
         self.sites = sorted(set(self.sites))
+        self.signature_sites = frozenset(signature_reads - other_reads)
         self.members = _members_by_container(set(self.symbols))
         # Code that puts objects on a module only inside tests is seen by a
         # lookup there only in a test that ran it (W24).
@@ -3083,6 +3091,18 @@ class _Observers:
         join E, and are followed as readers (``_reader``, with ``in_tests``)."""
         handed: list[str] = []
         guarded: list[tuple[str, frozenset[str], str]] = []
+        # A plain function or method just added is in no object's signature:
+        # a signature read finds it only once code hands it over, code that
+        # names it (changed too, planned on its own) or looks it up (a site
+        # of its own). Not so a lookup on an external module the project
+        # writes to: a module handed on there may be installed under its
+        # name, and the lookup then searches project code (audit W17).
+        added_definition = (
+            change is not None
+            and ChangeKind.ADDED in change.changes
+            and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
+            and not _is_dunder(symbol.name)
+        )
         for site, detail in self._seeing_sites(
             symbol,
             imports=imports,
@@ -3091,6 +3111,8 @@ class _Observers:
             handed=handed,
             guarded=guarded,
         ):
+            if added_definition and site in self.signature_sites:
+                continue
             self._observe(site, Rule.LOOKUP_SITE, f"{detail}; {label}", change)
             followed = (site, in_tests) in self._sites_followed or (
                 site,

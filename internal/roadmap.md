@@ -1787,6 +1787,26 @@ on `sys.modules` is no longer recorded (narrows; scenarios
 `test_a_store_into_sys_modules_looks_no_name_up`, and a read still seeing
 every namespace).
 
+*Signature reads (implemented, 2026-11-15).* With the store gone, the
+same added method was seen by `ws._handler_args` (`inspect.signature(
+handler)` at import). A site whose every lookup is a signature read
+(`model.SIGNATURE_READ`) is blind to a plain function or method just
+added (`signature_sites`): the definition reaches it only through code
+that names it (changed) or looks it up (a site). Narrows; scenario
+`test_a_signature_read_at_import_sees_no_plain_method_added`, with an
+added `__init__` and `eval_str=True` still selecting everything. Tried
+and dropped: the same for lookups on an external module the project
+writes to (`dir(builtins)`, `getattr(logging, level)`, the next sites on
+strata). strata's writers there are 52 modules found at run time handed
+on, any of which may be installed under the module's name, and the
+lookup then searches project code (W17, which caught it).
+
+*Next on strata's PR pair.* A class whose only change is a gained
+dependency (`StrataConfig dependencies_added`) has its file counted as
+edited source (`run`: the paths of every change), so tests that read
+`src/strata/config.py` as a file at import escalate it. A purely
+relational change edits no file.
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit

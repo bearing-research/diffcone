@@ -41,6 +41,10 @@ REFLECTIVE_CALLS = frozenset(
 )
 
 
+# Of those, the calls that read an object's signature (model.SIGNATURE_READ).
+SIGNATURE_CALLS = frozenset({"inspect.signature", "inspect.getfullargspec", "inspect.getcallargs"})
+
+
 REFLECTIVE_ATTRIBUTES = frozenset(
     {
         "__dict__",
