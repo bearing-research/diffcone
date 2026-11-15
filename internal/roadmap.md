@@ -1764,6 +1764,18 @@ known to be `logging.Logger` keep the old matching (scenario
 when* the scenario passes and fails on the old code, and strata's
 `logger` variables have no `mutated_by` edge from a logging method.
 
+*What flagged the tests (implemented, 2026-11-15).* Some recordings flag
+nearly every test as starting a subprocess (one of two local strata
+recordings of the same commit flagged 7685 tests, the other 129; four of
+six CI cells), so every plan selects everything. The recorder now notes
+why it flags a window (`collect._cause`: the audit event or wrapped call
+and the innermost checkout line calling in, and for a process followed
+by pid and still running, what started it), the fold adds the first
+problem of a spawn whose processes ran unrecorded code, and `diffcone
+collect` prints the three causes that flagged the most tests
+(`Evidence.flag_causes`, never stored). *Next:* read the cause off
+strata's next main run (after a release), then decide the fix.
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit

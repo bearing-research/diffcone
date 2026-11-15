@@ -617,6 +617,20 @@ def _collect(args: argparse.Namespace) -> int:
         ),
         file=sys.stderr,
     )
+    if ev.flag_causes:
+        # What flagged the most tests: a process left running flags every
+        # test after it, and the flag selects the test on every change.
+        top = list(ev.flag_causes.items())[:FLAG_CAUSES_SHOWN]
+        print(
+            "diffcone: what flagged them: "
+            + "; ".join(f"{n} test(s): {cause}" for cause, n in top)
+            + (
+                f"; and {len(ev.flag_causes) - len(top)} other cause(s)"
+                if len(ev.flag_causes) > len(top)
+                else ""
+            ),
+            file=sys.stderr,
+        )
     unrecorded = sorted(ev.collected - set(ev.tests)) if ev.collected is not None else []
     if unrecorded:
         print(
@@ -748,6 +762,8 @@ CACHE_OPTIONS = {
     "--stepwise-skip": "stepwise",
 }
 NAME_OPTIONS = ("-k", "-m", "--deselect")
+# How many causes of the subprocess flag ``collect`` names.
+FLAG_CAUSES_SHOWN = 3
 
 
 def _deselecting_options(plan) -> list[str]:

@@ -1688,6 +1688,25 @@ def test_rec2_a_fork_that_has_ended_flags_no_later_test(repo):
     assert selected(other) == {OTHER_ID, "tests/test_fork.py::test_fork"}
 
 
+@needs_monitoring
+@posix_children
+def test_what_flagged_the_tests_is_named_with_where_it_started(repo):
+    """``diffcone collect`` names what flagged the most tests: a process a
+    test forked and left running flags every test while it runs, named with
+    the line of the checkout that started it."""
+    forks = (
+        "import os\nimport time\n\n\ndef test_fork():\n    pid = os.fork()\n"
+        "    if pid == 0:\n        time.sleep(3)\n        os._exit(0)\n\n\n"
+        "def test_after():\n    pass\n"
+    )
+    repo.commit({**BASE, "tests/test_fork.py": forks})
+    assert repo.collect().flag_causes == {
+        # Both tests: the forking one's later phases ran beside it too.
+        "still running: os.fork (tests/test_fork.py:6)": 2,
+        "os.fork (tests/test_fork.py:6)": 1,
+    }
+
+
 # The project's own sitecustomize.
 
 

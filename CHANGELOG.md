@@ -22,6 +22,10 @@ selection rules.
 
 ### Execution evidence
 
+- `diffcone collect` names what flagged the most tests as starting a
+  subprocess (always selected), with the line of the checkout that
+  started it and whether the process was still running when later tests
+  ran.
 - A class that a changed function may write into, and that has no other
   edge to it, is no longer read as its class body reading the change at
   import, which escalated its module: a test class whose new test called

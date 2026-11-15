@@ -381,6 +381,13 @@ import_spawns: list[tuple[tuple, str]] = []
 # The modules whose import ran what no record shows ("" for none).
 import_flagged: set[str] = set()
 flags_raised = 0  # how many times _flag ran: did a call flag its window?
+# Why a window was flagged, for ``diffcone collect`` to name what flagged
+# the most tests: a window's ``causes`` index ``cause_table``. And what
+# started each process in ``unfollowed``.
+cause_table: list[str] = []
+cause_ids: dict[str, int] = {}
+unfollowed_why: dict[int, str] = {}
+_CAUSES = 500  # distinct causes kept; any more share one
 caches: list = []
 recording = False
 # The checkout files of the modules imported before the recorder started.
@@ -393,7 +400,7 @@ _real = child.RealPaths()
 # process (an xdist worker) set up is credited too. ``spawns``: (spawner,
 # pid, start, argv, inert) of the processes it started, or that were still
 # running when it opened, through ``subprocess.Popen``.
-_SETS = ("codes", "paths", "dirs", "fixtures", "spawns")
+_SETS = ("codes", "paths", "dirs", "fixtures", "spawns", "causes")
 
 
 def _window() -> dict:
@@ -491,16 +498,66 @@ def _code_index(code, rel: str) -> int:
     return i
 
 
-def _flag(flag: int = FLAG_SUBPROCESS) -> None:
+def _flag(flag: int = FLAG_SUBPROCESS, cause: str = "") -> None:
     """Something ran that no record shows: in the open windows, or outside
     every window in the phase it belongs to (the module being imported, or
-    none: a hook or collection)."""
+    none: a hook or collection). ``cause`` says what, for the summary."""
     global flags_raised
     flags_raised += 1
+    cause_id = _cause(cause) if flag == FLAG_SUBPROCESS else None
     for w in _windows():
         w["flags"] |= flag
+        if cause_id is not None:
+            w["causes"].add(cause_id)
     if not active:
         import_flagged.add(importing[-1] if importing else "")
+
+
+def _summary(args) -> str:
+    """The command an audit event's arguments name, short."""
+    for arg in args or ():
+        if isinstance(arg, (str, bytes, os.PathLike)):
+            return os.fsdecode(arg)[:120]
+        if isinstance(arg, (list, tuple)) and arg:
+            return " ".join(os.fsdecode(a) if isinstance(a, (str, bytes)) else str(a) for a in arg)[
+                :120
+            ]
+    return ""
+
+
+def _cause(cause: str) -> int:
+    """The id of ``cause``, with the checkout code calling in, in
+    ``cause_table``."""
+    return _cause_text(f"{cause or 'something no record shows'} ({_site()})")
+
+
+def _cause_text(text: str) -> int:
+    text = text[:300]
+    i = cause_ids.get(text)
+    if i is None:
+        if len(cause_table) >= _CAUSES:
+            text = "other causes"
+            i = cause_ids.get(text)
+        if i is None:
+            i = cause_ids[text] = len(cause_table)
+            cause_table.append(text)
+    return i
+
+
+def _site() -> str:
+    """Where the checkout's innermost code calling in is, ``path:line``."""
+    try:
+        frame = sys._getframe(1)
+        while frame is not None:
+            name = frame.f_code.co_filename
+            if os.path.isabs(name) and name != __file__:
+                rel = _relative(name)
+                if rel is not None:
+                    return f"{rel}:{frame.f_lineno}"
+            frame = frame.f_back
+    except Exception:  # a diagnostic only
+        pass
+    return "no checkout code calling"
 
 
 def _error(where: str, exc: BaseException) -> None:
@@ -760,7 +817,7 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
         path = child.fd_path(path)
         if path is None:
             if listing:
-                _flag()
+                _flag(cause="a listing of a descriptor nothing resolves")
             return
     try:
         path = os.fsdecode(os.fspath(path))
@@ -853,7 +910,7 @@ def _audit(event, args):
                 _inert_pending = event == "subprocess.Popen"
             else:
                 _inert_pending = False
-                _flag()
+                _flag(cause=f"{event} {_summary(args)}".rstrip())
         elif event == "exec":
             caller = sys._getframe().f_back
             # An annotation evaluated from text: credited with what it reads
@@ -1036,6 +1093,9 @@ def _credit_live_children(window: dict) -> None:
         running = [pid for pid in unfollowed if _running(pid)]
         if running:
             window["flags"] |= FLAG_SUBPROCESS
+            for pid in running:
+                why = unfollowed_why.get(pid, "a process no record follows")
+                window["causes"].add(_cause_text(f"still running: {why}"))
         unfollowed[:] = running
     if not live or OUT is None:
         return
@@ -1123,6 +1183,8 @@ def _follow_pid(owner, name: str, pid_of, flagged: bool = False) -> None:
                 if isinstance(pid, int) and pid > 0:
                     known.add(pid)
                     unfollowed.append(pid)
+                    owner_name = getattr(owner, "__name__", type(owner).__name__)
+                    unfollowed_why[pid] = f"{owner_name}.{name} ({_site()})"
             except Exception as exc:
                 _error(f"follow {name}", exc)
         return result
@@ -1138,7 +1200,7 @@ def _flag_calls(module, name: str) -> None:
 
     @functools.wraps(original)
     def flagged(*args, **kwargs):
-        _flag()
+        _flag(cause=f"{module.__name__}.{name}")
         result = original(*args, **kwargs)
         if isinstance(result, int):
             # A forkserver or resource tracker: flagged here, and the
@@ -1177,7 +1239,8 @@ def _unaccounted_children() -> None:
             continue
         known.add(pid)
         unfollowed.append(pid)
-        _flag()
+        unfollowed_why[pid] = "a Python process started where no wrapper sees"
+        _flag(cause=unfollowed_why[pid])
 
 
 def _is_source(path) -> bool:
@@ -1201,7 +1264,7 @@ def _wrap_stat(original):
                 if dir_fd is not None:
                     joined = child.joined(path, dir_fd)
                     if joined is None:
-                        _flag()
+                        _flag(cause="a path relative to a descriptor nothing resolves")
                     else:
                         _touch(joined, own_source=_is_source(joined))
                 else:
@@ -1751,6 +1814,8 @@ def _finish():
         # spawns (indices into import_spawns) started then.
         "late_outside": sorted(late_codes),
         "late_spawns": late_spawns,
+        # What the windows' ``causes`` name (a diagnostic only).
+        "causes": cause_table,
         "preloaded": preloaded,
         "outside_modules": sorted(outside),
         # What each shared fixture ran here: a fixture computed once for

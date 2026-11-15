@@ -144,6 +144,11 @@ report:
       such as `git rev-parse`), on every platform.
 
     A project `sitecustomize.py` still runs in every child.
+
+    `diffcone collect` ends by naming what made the most tests always
+    selected, with the line of your code that started it, for example
+    `7600 test(s): still running: os.fork (src/pkg/metrics.py:42)`: a
+    process left running by one test is credited to every later one.
 - A process started outside every test (by a `conftest.py` as it is
   imported, or in a hook) counts as part of that import or hook: a change
   to what it ran is planned as a change to code that ran there. One that

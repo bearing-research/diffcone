@@ -25,7 +25,7 @@ import tempfile
 import time
 import zlib
 from bisect import bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Set
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -175,6 +175,10 @@ class Evidence:
     # by a run that ran nothing).
     collected: frozenset[str] | None = None
     location: Path | None = None
+    # Why the tests flagged as starting a subprocess were flagged -> how
+    # many: what ``diffcone collect`` reports. Set by ``fold`` only, never
+    # stored (a diagnostic, no input to planning).
+    flag_causes: dict[str, int] = field(default_factory=dict, repr=False, compare=False)
     _folded: list[tuple[set[str], set[str]]] = field(
         default_factory=list, repr=False, compare=False
     )
@@ -351,6 +355,10 @@ class _Raw:
     # Tests some of whose cases no process ran (``collect.cases``).
     partial: set[str] = field(default_factory=set)
     late_outside: set[str] = field(default_factory=set)
+    # Why a test, or a shared fixture (by key), was flagged as starting a
+    # subprocess (a diagnostic only: ``Evidence.flag_causes``).
+    causes: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    fixture_causes: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
     @property
     def annotations_only(self) -> set[str]:
@@ -387,6 +395,8 @@ class _Children:
         self.owners = owners
         self.packages = packages  # the project's top-level packages
         self.memo: dict[tuple, tuple[set[str], set[str], set[str], int]] = {}
+        # Why a spawn that flags flags (its first problem).
+        self.why: dict[tuple, str] = {}
         # The files whose code the processes ran, by spawn (``code_files``).
         self.files: dict[tuple, set[str]] = {}
 
@@ -394,6 +404,10 @@ class _Children:
         """The checkout files whose code the processes behind ``spawn`` (a
         spawn already resolved) ran."""
         return self.files.get(self._key(spawn), set())
+
+    def causes(self, spawns: Iterable) -> set[str]:
+        """Why the resolved ``spawns`` that flag flag."""
+        return {why for spawn in spawns if (why := self.why.get(self._key(spawn)))}
 
     @staticmethod
     def _key(spawn: list) -> tuple:
@@ -434,6 +448,13 @@ class _Children:
                     paths.add(path)
             paths |= {canonical(p) for p in record.paths}
             dirs |= {canonical(d) for d in record.dirs}
+        if flags:
+            command = " ".join(argv or ())[:120] or "a process"
+            self.why[key] = (
+                tree.problems[0][:300]
+                if tree.problems
+                else f"{command} ran code of a file the index does not hold"
+            )
         self.memo[key] = (symbols, paths, dirs, flags)
         return self.memo[key]
 
@@ -607,6 +628,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 raw.import_dirs[path].add(module)
             if c_flags:
                 raw.import_flagged.add(module)
+        cause_table = data.get("causes", [])
         for key, window in data.get("fixtures", {}).items():
             _fold_window(
                 raw.fixtures,
@@ -618,6 +640,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                 children,
                 raw.test_window_code,
             )
+            raw.fixture_causes[key] |= _window_causes(window, cause_table, children)
         tests_file = directory / f"tests-{pid}.bin"
         if data["wrote_tests"]:
             if not tests_file.exists():
@@ -646,6 +669,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
                     children,
                     raw.test_window_code,
                 )
+                raw.causes[name] |= _window_causes(record, cause_table, children)
                 raw.test_fixtures.setdefault(name, set()).update(record.get("fixtures", ()))
     orphans = [
         p
@@ -667,6 +691,7 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         symbols, paths, dirs, flags = raw.tests[name]
         for key in keys:
             f_symbols, f_paths, f_dirs, f_flags = raw.fixtures.get(key, (set(), set(), set(), 0))
+            raw.causes[name] |= raw.fixture_causes.get(key, set())
             symbols |= f_symbols
             paths |= f_paths
             dirs |= f_dirs
@@ -683,6 +708,16 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         or {tuple(ran_cases.get(name, ()))} != collected_cases[name]
     }
     return raw
+
+
+def _window_causes(window: dict, cause_table: list[str], children: _Children) -> set[str]:
+    """Why a window was flagged as starting a subprocess: what the recorder
+    noted (``collect._cause``), and the spawns it was credited with whose
+    processes ran what no record shows (folded first: ``_fold_window``)."""
+    if not window["flags"] & FLAG_SUBPROCESS and not window.get("spawns"):
+        return set()
+    noted = {cause_table[i] for i in window.get("causes", ()) if i < len(cause_table)}
+    return noted | children.causes(window.get("spawns", ()))
 
 
 def _fold_window(
@@ -807,6 +842,11 @@ def fold(
         )
         for name, (symbols, paths, dirs, flags) in sorted(tests.items())
     }
+    causes: Counter[str] = Counter()
+    for name, record in records.items():
+        if record.flags & FLAG_SUBPROCESS:
+            why = set().union(*(r.causes.get(name, set()) for r in raws))
+            causes.update(why or {"no cause noted"})
     return Evidence(
         commit=commit,
         source_roots=list(source_roots),
@@ -825,6 +865,7 @@ def fold(
             if any(r.collected is not None for r in raws)
             else None
         ),
+        flag_causes=dict(causes.most_common()),
     )
 
 
