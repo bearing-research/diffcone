@@ -41,7 +41,9 @@ mutators, which pass 2 already records as writes), or a third-party value
 (a call into a module outside the roots, or a project factory whose every
 ``return`` is one, ``cast(T, ...)`` included: only the call is trusted), whose
 methods are those of in-scope classes deriving from a third-party class
-(``logging.setLoggerClass(StructuredLogger)``). A method called on an
+(``logging.setLoggerClass(StructuredLogger)``). So is a method a
+``logging.Logger`` subclass calls on ``self`` and defines nowhere in scope
+(``self.handle(record)``: the library's own, ``LIBRARY_METHOD``). A method called on an
 instance attribute (``self._client.get(...)``) is one of what the attribute
 holds when every write of it says (a construction of a plainly built
 in-scope class, a third-party value: ``_attribute_values``), and any method
@@ -205,6 +207,10 @@ HELD_WHAT = "held:"
 # A pass record's callee ``@<class id>.<attribute>``: the method of that name
 # of whatever ``self.<attribute>`` holds in a method of the class.
 HELD_BY = "@"
+# A pass record's callee ``~``: a library method of that name, or one of an
+# in-scope class deriving from a library class (``self.handle(record)`` in a
+# ``logging.Logger`` subclass defining no ``handle``).
+LIBRARY_METHOD = "~"
 # A pass record's ``anyclass:<attribute>``: the class of an object of unknown
 # type, or what it holds under that attribute (references.ANY_CLASS; audit
 # round 6, T25).
@@ -822,6 +828,16 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             # attribute holds, typed after pass 2 when every binding of it
             # says (apply_writes, audit round 3, W21).
             callees.append(f"{HELD_BY}{collector.scope.self_class}.{parts[1]}")
+        if (
+            not callees
+            and isinstance(func, ast.Attribute)
+            and collector._library_logger(func.value, name)
+        ):
+            # ``self.handle(record)`` in a ``logging.Logger`` subclass that
+            # defines no ``handle``: the library's, which calls only what
+            # derives from a library class (a handler), never every method
+            # of that name.
+            callees.append(LIBRARY_METHOD)
     out = indexer.out.passes
     for slot, what in handed:
         for callee in callees or [""]:
@@ -1183,6 +1199,8 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
                     # Not found in scope: a third-party base's method.
                     found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
             return sorted(set(found))
+        if callee == LIBRARY_METHOD:
+            return [m for m in by_name.get(name, []) if derives_from_third_party(m)]
         if callee:
             return [callee]
         if slot == RECEIVER and what.startswith("attr:"):
@@ -1405,6 +1423,8 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
         if callee.startswith(HELD_BY):
             cls, _, attr = callee[len(HELD_BY) :].rpartition(".")
             return [] if attribute_values(cls, attr) is None else callees(record)
+        if callee == LIBRARY_METHOD:
+            return callees(record)
         return [callee] if callee else []
 
     # A method called on state stores into it when it writes its receiver

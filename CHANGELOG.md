@@ -8,6 +8,18 @@ selection rules.
 
 ## [Unreleased]
 
+### Planning
+
+- A `logging.Logger` subclass (set with `logging.setLoggerClass`) that
+  attaches fields to the record `self.makeRecord(...)` makes and passes
+  it to `self.handle(record)` no longer writes what it logs or the
+  logger itself: the record was taken as possibly any object handed to
+  the call, and `self.handle` as any method of the project named
+  `handle`, so a logging call made every logged object and every logger
+  written state, and changing it selected every test reading one. A
+  `makeRecord` or `handle` the project defines, and a handler's
+  `handle`, are still followed.
+
 ### Execution evidence
 
 - A class that a changed function may write into, and that has no other

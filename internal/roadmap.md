@@ -1740,6 +1740,30 @@ code would have run there at C. Scenarios: a reader in
 `pytest_sessionfinish` (still everything); the recorder test covers a
 thread a test starts.
 
+*Logging calls on a library logger subclass (implemented, 2026-11-15).*
+The fallbacks left after the hook split came from strata's
+`StructuredLogger(logging.Logger)`, set with `logging.setLoggerClass`.
+Its `_log_with_data` takes `self.makeRecord(...)`, attaches fields with
+`setattr(record, ...)` and calls `self.handle(record)`. Neither method is
+defined in scope, so the record was taken as possibly any object handed
+to the call (every object any caller logged was written) and
+`self.handle` matched every project method named `handle` by name (an
+unrelated `LocalRuns.handle` writes its instance, so every
+`logger.warning(...)` wrote the logger: 274 `mutated_by` edges onto
+module `logger` variables). *Mechanism:* in a plain class whose bases
+all name `logging.Logger` (or `RootLogger`) through its own module's
+imports, a method called on `self` that neither it nor an in-scope
+subclass defines is the library's: `self.makeRecord(...)` returns a new
+record (`references._library_logger`), and the pass record's callee is
+`writes.LIBRARY_METHOD`, which matches only methods of classes deriving
+from a library class (a handler's `handle`), as a `getLogger` value's
+methods already do. *Trade-off:* narrows; a project's own `makeRecord`
+or `handle`, a subclass defining one, a handler's `handle` and a base not
+known to be `logging.Logger` keep the old matching (scenario
+`test_a_library_logger_writes_neither_what_it_logs_nor_itself`). *Done
+when* the scenario passes and fails on the old code, and strata's
+`logger` variables have no `mutated_by` edge from a logging method.
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit

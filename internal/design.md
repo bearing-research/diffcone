@@ -498,7 +498,16 @@ Further rules (pre-release audit, round 2):
   logging.getLogger(name))`; only the call counts, not the annotation).
   A third-party value's methods are those of a third-party class or of an
   in-scope class deriving from one (`logging.setLoggerClass`), so only
-  those are matched; a test fake of the same name is not. A method called on
+  those are matched; a test fake of the same name is not. So is a method a
+  plain subclass of `logging.Logger` (its bases named through its own
+  module's imports) calls on `self` and that neither it nor an in-scope
+  subclass defines (`self.handle(record)`): the library's, which calls a
+  handler's `handle`, never a project `handle` of another class. And the
+  record such a class's `self.makeRecord(...)` makes is new, none of what
+  was logged (strata's `StructuredLogger` attaching fields with
+  `setattr(record, ...)` wrote every object any caller logged, and its
+  `self.handle(record)` matched an unrelated `handle` that writes its own
+  instance, so every `logger.warning(...)` wrote the logger). A method called on
   an instance attribute (`self._client.get(...)`) is likewise a method of
   what the attribute holds when every write of `self._client`, in any
   method of the class, of a subclass or of a class whose bases the index

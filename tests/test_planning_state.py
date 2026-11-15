@@ -362,6 +362,96 @@ def test_w4_a_method_called_on_a_variable_writes_it_when_it_may_be_ours(repo, va
     assert _static(repo, files, change) == want
 
 
+# A ``logging.Logger`` subclass in strata's shape: fields attached to the
+# record ``makeRecord`` makes, then ``self.handle(record)``.
+LIBRARY_LOGGER = """\
+import logging{imports}
+
+
+def _exc(exc_info):
+    if isinstance(exc_info, BaseException):
+        return (type(exc_info), exc_info, exc_info.__traceback__)
+    return exc_info
+
+
+class SLog({base}):
+    def _emit(self, level, msg, args, exc_info=None, **fields):
+        record = self.makeRecord(self.name, level, "f", 0, msg, args, _exc(exc_info))
+        setattr(record, "fields", fields)
+        self.handle(record)
+
+    def info(self, msg, *args, exc_info=None, **fields):
+        self._emit(logging.INFO, msg, args, exc_info=exc_info, **fields)
+{extra}
+
+logging.setLoggerClass(SLog)
+log = logging.getLogger("x")
+
+
+def get():
+    return log
+"""
+OWN_HANDLE = "\n    def handle(self, record):\n        self.last = record\n"
+OWN_MAKE_RECORD = "\n    def makeRecord(self, *args):\n        return args[5]\n"
+CONFTEST_LOGS = (
+    "from pkg.log import log\nfrom pkg.plain import THING\n\nlog.info('{}: %s', THING)\n"
+)
+LIBRARY_LOGGER_CASES = {
+    # The library's ``makeRecord`` and ``handle``: a new record, which holds
+    # none of what was logged, and a call of the logger's handlers, no
+    # other ``handle`` of the project's.
+    "logging.Logger": ({}, "", set()),
+    "an imported name": ({"imports": "\nfrom logging import Logger", "base": "Logger"}, "", set()),
+    # A handler (it derives from a library class) the logger may call.
+    "a handler's handle": ({}, "logging.Handler", {"b"}),
+    # The project's own: whatever they do. A ``makeRecord`` that may give
+    # back the logger, or a base not known to be ``logging.Logger``, writes
+    # the logger class ``logging.setLoggerClass`` set for every test.
+    "its own handle": ({"extra": OWN_HANDLE}, "", {"b"}),
+    "its own makeRecord": ({"extra": OWN_MAKE_RECORD}, "", None),
+    "another base": ({"base": "logging.LoggerAdapter"}, "", None),
+}
+
+
+@pytest.mark.parametrize("case", sorted(LIBRARY_LOGGER_CASES))
+def test_a_library_logger_writes_neither_what_it_logs_nor_itself(repo, case):
+    """strata's ``StructuredLogger`` took the record ``self.makeRecord(...)``
+    made for possibly any object it was handed, so ``setattr(record, ...)``
+    wrote everything any caller logged, and its ``self.handle(record)`` for
+    every project method named ``handle`` (one writing its own instance), so
+    every ``logger.warning(...)`` wrote the logger: changing a call that logs
+    selected every test reading a logger or a logged object (each strata
+    pull request). The library's methods write neither; a project's own
+    ``handle`` or ``makeRecord``, a handler's ``handle`` and a base not known
+    to be ``logging.Logger`` still may."""
+    fields, runs_base, reach = LIBRARY_LOGGER_CASES[case]
+    log = LIBRARY_LOGGER.format(**{"imports": "", "base": "logging.Logger", "extra": "", **fields})
+    imports = "import logging\n\n\n" if runs_base else ""
+    files = {
+        "pkg/log.py": log,
+        "pkg/runs.py": f"{imports}class Runs({runs_base}):{OWN_HANDLE}",
+        "pkg/plain.py": (
+            "class Plain:\n    def __init__(self):\n        self.n = 0\n\n\n"
+            "THING = Plain()\n\n\ndef peek():\n    return THING.n\n"
+        ),
+        "tests/sub/__init__.py": "",
+        "tests/sub/conftest.py": CONFTEST_LOGS.format("slow"),
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/test_b.py": "from pkg.log import get\n\n\ndef test_b():\n    assert get()\n",
+        "tests/test_c.py": (
+            "from pkg.plain import peek\n\n\ndef test_c():\n    assert peek() == 0\n"
+        ),
+    }
+    change = {"tests/sub/conftest.py": CONFTEST_LOGS.format("fast")}
+    if reach is None:
+        base = repo.commit({**UNRELATED_BASE, **files})
+        plan = repo.plan(base, repo.commit(change), [], discover_runners=["pytest"])
+        assert not unselected(plan)
+        return
+    want = {"tests/sub/test_a.py::test_a"} | {f"tests/test_{t}.py::test_{t}" for t in reach}
+    assert _static(repo, files, change) == want
+
+
 def test_w4_locals_bound_to_each_other_are_no_loop(repo):
     """``a = b[0]`` and ``b = a[0]``: following what a local holds stops."""
     files = {

@@ -406,6 +406,11 @@ MOCK_CALLS = frozenset(
     )
 )
 _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
+# ``logging.Logger`` methods that make a new ``LogRecord`` (``self.makeRecord(
+# ...)`` in a subclass that defines none of them): what they give back is
+# no object the project held, whatever they are handed.
+LOGGER_CLASSES = frozenset({"logging.Logger", "logging.RootLogger"})
+LOGGER_RECORD_METHODS = frozenset({"makeRecord"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
@@ -1939,6 +1944,12 @@ class _ReferenceCollector(ast.NodeVisitor):
                 *(k.value for k in node.keywords if k.arg not in ("spec", "spec_set")),
             ]
         copy = False
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in LOGGER_RECORD_METHODS
+            and self._library_logger(func.value, func.attr)
+        ):
+            return {}  # a new LogRecord
         if isinstance(func, ast.Name) and not self._is_shadowed(func.id):
             if func.id == "globals" and not args:
                 return {_NAMESPACE: False}
@@ -1994,6 +2005,39 @@ class _ReferenceCollector(ast.NodeVisitor):
                 }
                 found = _merged(found, receiver)
         return _part_of(found, copy=copy)
+
+    def _library_logger(self, receiver: ast.expr, method: str) -> bool:
+        """Whether ``receiver`` is ``self`` in a method of a class whose only
+        bases are ``logging.Logger`` (``LOGGER_CLASSES``, named through the
+        module's own imports), and neither it nor an in-scope subclass
+        defines ``method``: the call runs the library's own. strata's
+        ``StructuredLogger`` makes a record to attach fields to, whose
+        ``setattr(record, ...)`` wrote every object a caller logged, and
+        hands it to ``self.handle``, which is no project ``handle`` of
+        another class (writes.LIBRARY_METHOD)."""
+        if self.scope.self_is_class:
+            return False
+        cls = self._self_class(receiver)
+        cscope = self.indexer.class_scopes.get(cls) if cls is not None else None
+        if cscope is None or cscope.enclosing is not None or cscope.bases or not cscope.plain:
+            return False
+        module = cscope.module
+        if module.star_imports or not cscope.base_chains:
+            return False
+        for chain in cscope.base_chains:
+            if chain is None:
+                return False
+            binding = module.imports.get(chain[0])
+            if binding is None or module.alt_imports.get(chain[0]):
+                return False
+            if ".".join([binding.dotted, *chain[1:]]) not in LOGGER_CLASSES:
+                return False
+        return not any(
+            method in self.indexer.class_scopes[c].members
+            or method in self.indexer.class_scopes[c].bindings
+            for c in (cls, *self.indexer._descendants.get(cls, ()))
+            if c in self.indexer.class_scopes
+        )
 
     def _copy_is_new(self, how: str, value: ast.expr | None) -> bool:
         """Whether a copy (``how``: ``copy.copy``, ``copy.deepcopy``, a
