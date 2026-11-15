@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#planning" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -902,7 +913,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking" class="md-nav__link">
+  <a href="#running-and-checking_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1196,7 +1207,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking_1" class="md-nav__link">
+  <a href="#running-and-checking_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1320,6 +1331,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#running-and-checking" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Running and checking
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#planning" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1425,7 +1447,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking" class="md-nav__link">
+  <a href="#running-and-checking_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1719,7 +1741,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#running-and-checking_1" class="md-nav__link">
+  <a href="#running-and-checking_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Running and checking
@@ -1796,6 +1818,12 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>diffcone corpus --jobs</code> no longer fails now and then with "git
+  worktree add: fatal: failed to read .git/worktrees/.../commondir": jobs
+  create and remove their checkouts one at a time.</li>
+</ul>
 <h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A <code>logging.Logger</code> subclass (set with <code>logging.setLoggerClass</code>) that
@@ -1810,6 +1838,11 @@ selection rules.</p>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
+<li>A function or method just added is no longer seen by code that only
+  reads signatures (<code>inspect.signature(handler)</code>): run as a module was
+  imported by a conftest, it made any new function or method select
+  every test. An added special method (<code>__init__</code>) and
+  <code>inspect.signature(..., eval_str=True)</code> are still followed.</li>
 <li>A store into <code>sys.modules</code> (<code>sys.modules[name] = module</code>, <code>del
   sys.modules[name]</code>) no longer counts as code that can look any name up:
   a module that registers a file it loads by path that way, imported by a
@@ -1940,7 +1973,7 @@ selection rules.</p>
   (<code>singledispatch</code>, <code>staticmethod</code>, <code>functools.partial</code>, a class, a
   callable object); one it cannot clear is planned as a memoiser.</li>
 </ul>
-<h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
+<h3 id="running-and-checking_1">Running and checking<a class="headerlink" href="#running-and-checking_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone run --allow-incomplete-discovery</code> starts pytest even when
   nothing is selected, with every target deselected, so the tests
@@ -2909,7 +2942,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   <code>diffcone prune --keep REV</code> shrinks the cache to what planning at given
   commits reads.</li>
 </ul>
-<h3 id="running-and-checking_1">Running and checking<a class="headerlink" href="#running-and-checking_1" title="Permanent link">&para;</a></h3>
+<h3 id="running-and-checking_2">Running and checking<a class="headerlink" href="#running-and-checking_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>diffcone run</code> plans and runs only the selected targets with pytest or
   ASV; <code>diffcone validate</code> runs the whole suite at both snapshots and
