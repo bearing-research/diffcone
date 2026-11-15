@@ -1207,7 +1207,11 @@ report:</p>
   the repository (<code>uname</code>, <code>ps</code>, <code>locale -a</code>, read-only <code>git</code> commands
   such as <code>git rev-parse</code>), on every platform.</li>
 </ul>
-<p>A project <code>sitecustomize.py</code> still runs in every child.
+<p>A project <code>sitecustomize.py</code> still runs in every child.</p>
+<p><code>diffcone collect</code> ends by naming what made the most tests always
+selected, with the line of your code that started it, for example
+<code>7600 test(s): still running: os.fork (src/pkg/metrics.py:42)</code>: a
+process left running by one test is credited to every later one.
 - A process started outside every test (by a <code>conftest.py</code> as it is
   imported, or in a hook) counts as part of that import or hook: a change
   to what it ran is planned as a change to code that ran there. One that
