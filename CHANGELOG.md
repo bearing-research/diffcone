@@ -8,6 +8,23 @@ selection rules.
 
 ## [Unreleased]
 
+### Report
+
+- `schema_version` 5: a fallback that selects every target is written
+  once, in `fallback_decisions`, and each target's explanation names it
+  by its index (`"fallback": 0`) instead of repeating its detail. A
+  plan with 29 such fallbacks over 7 700 tests was 429 MB, 377 MB of it
+  those details. The text report lists the fallback decisions numbered
+  and points to them.
+
+### CI
+
+- The `report` action keeps only what the report reads of each artifact
+  as it downloads it (the context, the verdicts, and of a plan its counts,
+  recording and unselected targets), instead of extracting the whole
+  artifact: a window of a large suite's runs, kept whole, ran the runner
+  out of disk.
+
 ## [0.5.0] - 2026-10-21
 
 ### Planning

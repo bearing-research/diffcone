@@ -82,6 +82,40 @@ def test_plan_json_output(repo, capsys):
     assert capsys.readouterr().out == out
 
 
+def test_an_all_targets_fallback_is_written_once(repo, capsys):
+    """Every target carries an all-targets fallback as a reason: a plan
+    repeated each fallback's detail for each target (377 MB of a 429 MB
+    plan over 7694 targets). Each target's reason names the fallback by
+    its index in ``fallback_decisions``, where its detail is written once."""
+    base = repo.commit({"pkg/ops.py": OPS, "pkg/data.csv": "a\n", "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a"), "pkg/data.csv": "b\n"})
+    manifest = repo.write_manifest(TARGETS)
+    args = ["plan", "--repo", str(repo.path), "--base", base, "--head", head]
+    args += ["--targets", str(manifest), "--format"]
+    assert main([*args, "json"]) == 0
+    out = capsys.readouterr().out
+    report = json.loads(out)
+    assert report["schema_version"] == 5
+    (fallback,) = report["fallback_decisions"]
+    assert fallback["rule"] == "unanalysed_file_changed"
+    assert fallback["scope"] == "all_targets"
+    assert out.count(json.dumps(fallback["detail"])) == 1
+    explanations = {e["runner_id"]: e["reasons"] for e in report["dependency_explanations"]}
+    named = {"rule": "unanalysed_file_changed", "conservative": True, "fallback": 0}
+    assert explanations["bench.time_mul"] == [named]
+    # A reason with a path is written out as before.
+    dependency, fallback_reason = explanations["tests/test_ops.py::test_add"]
+    assert dependency["rule"] == "dependency"
+    assert dependency["changed_symbol"] == "pkg.ops.add"
+    assert fallback_reason == named
+
+    assert main([*args, "text"]) == 0
+    text = capsys.readouterr().out
+    assert text.count(fallback["detail"]) == 1
+    assert text.count("- unanalysed_file_changed: fallback decision 1 (below)") == 2
+    assert f"  1. unanalysed_file_changed (all_targets): {fallback['detail']}" in text
+
+
 def test_plan_text_output_and_degraded_exit_code(repo, capsys):
     base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
     head = repo.commit({"pkg/broken.py": "def (:\n"})

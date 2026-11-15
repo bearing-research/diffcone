@@ -22,7 +22,10 @@ from diffcone.planner import (
 # 3: analysis.evidence (null for a static plan) and the evidence reason rules
 # 4: target records drop lifecycle_dependencies (audit E37: 634 of a pandas
 #    plan's 709 MB; discovery's output keeps them)
-SCHEMA_VERSION = 4
+# 5: a reason an all-targets fallback gives names it by its index in
+#    fallback_decisions instead of repeating its detail (strata's 29 such
+#    details, repeated for each of 7694 targets, were 377 MB of a 429 MB plan)
+SCHEMA_VERSION = 5
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
@@ -46,7 +49,27 @@ SCOPE_DESCRIPTION = {
 }
 
 
-def _reason_dict(reason: Reason) -> dict[str, Any]:
+def _global_fallbacks(plan: Plan) -> dict[tuple[str, str], int]:
+    """Each all-targets fallback's (rule, detail), to its index in the
+    plan's fallbacks: every target carries it as a reason, so the report
+    writes it once and names it from each target."""
+    found: dict[tuple[str, str], int] = {}
+    for i, f in enumerate(plan.fallbacks):
+        if f.scope == "all_targets":
+            found.setdefault((f.rule, f.detail), i)
+    return found
+
+
+def _fallback_index(reason: Reason, fallbacks: dict[tuple[str, str], int]) -> int | None:
+    if reason.path or reason.changed_symbol is not None or reason.changes:
+        return None
+    return fallbacks.get((reason.rule, reason.detail))
+
+
+def _reason_dict(reason: Reason, fallbacks: dict[tuple[str, str], int]) -> dict[str, Any]:
+    index = _fallback_index(reason, fallbacks)
+    if index is not None:
+        return {"rule": reason.rule, "conservative": reason.conservative, "fallback": index}
     return {
         "rule": reason.rule,
         "conservative": reason.conservative,
@@ -82,6 +105,7 @@ def snapshot_to_dict(info: SnapshotInfo) -> dict[str, Any]:
 def to_dict(plan: Plan) -> dict[str, Any]:
     selected = [d for d in plan.decisions if d.selected]
     unselected = [d for d in plan.decisions if not d.selected]
+    fallbacks = _global_fallbacks(plan)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "degraded" if plan.degraded else "complete",
@@ -148,7 +172,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         ],
         "dependency_explanations": [
             {"runner": d.target.runner, "runner_id": d.target.runner_id}
-            | {"reasons": [_reason_dict(r) for r in d.reasons]}
+            | {"reasons": [_reason_dict(r, fallbacks) for r in d.reasons]}
             for d in selected
         ],
         "unresolved_relationships": [
@@ -260,11 +284,16 @@ def to_text(plan: Plan) -> str:
         lines.append("  (none)")
     lines.append("")
     selected = plan.selected
+    fallbacks = _global_fallbacks(plan)
     lines.append(f"selected targets ({len(selected)}):")
     for d in selected:
         flag = " (conservative)" if any(r.conservative for r in d.reasons) else ""
         lines.append(f"  {d.target.runner}: {d.target.runner_id}{flag}")
         for r in d.reasons:
+            index = _fallback_index(r, fallbacks)
+            if index is not None:
+                lines.append(f"    - {r.rule}: fallback decision {index + 1} (below)")
+                continue
             path = _format_path(r)
             lines.append(f"    - {r.rule}: {r.detail}")
             if path:
@@ -295,9 +324,9 @@ def to_text(plan: Plan) -> str:
     if plan.fallbacks:
         lines.append("")
         lines.append(f"fallback decisions ({len(plan.fallbacks)}):")
-        for f in plan.fallbacks:
+        for n, f in enumerate(plan.fallbacks, 1):
             where = f" [{f.target}]" if f.target else ""
-            lines.append(f"  {f.rule} ({f.scope}){where}: {f.detail}")
+            lines.append(f"  {n}. {f.rule} ({f.scope}){where}: {f.detail}")
     if plan.errors:
         lines.append("")
         lines.append(f"analysis errors ({len(plan.errors)}):")

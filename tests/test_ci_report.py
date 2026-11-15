@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -494,6 +495,83 @@ def test_the_actions_write_what_the_report_reads(tmp_path):
     }
 
 
+def _zip(path: Path, files: Mapping[str, str | bytes]) -> Path:
+    import zipfile
+
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return path
+
+
+def _big_plan() -> dict:
+    plan = _plan(2, 3, unselected=[("tests/t.py::c", "no change reaches it")])
+    plan["selected_targets"] = [{"runner_id": "tests/t.py::a"}, {"runner_id": "tests/t.py::b"}]
+    plan["dependency_explanations"] = [
+        {"runner_id": "tests/t.py::a", "reasons": [{"detail": 'x\n  "y": ' * 50}]}
+    ]
+    plan["fallback_decisions"] = [{"rule": "subprocess", "detail": "z"}]
+    return plan
+
+
+def test_an_artifact_is_cut_to_what_the_report_reads(tmp_path):
+    """The report action cuts each artifact as it downloads: a window of
+    strata's runs extracted whole (two 429 MB plans and two JUnit files per
+    job) ran the nightly report's runner out of disk. What ``load`` reads
+    of the cut artifact is what it reads of the whole."""
+    plan = _big_plan()
+    files = {
+        "context.json": json.dumps(_pr()),
+        "ran.json": json.dumps(plan, indent=2),
+        "plan.json": json.dumps(plan, indent=2),
+        "baseline.xml": "<testsuites/>",
+        "sub/context.json": "{}",
+    }
+    whole, cut = tmp_path / "whole", tmp_path / "cut"
+    _run(whole, 1, "pull_request", "1" * 40, {"diffcone-unit": {}})
+    _run(cut, 1, "pull_request", "1" * 40, {"diffcone-unit": {}})
+    import zipfile
+
+    archive = _zip(tmp_path / "a.zip", files)
+    zipfile.ZipFile(archive).extractall(whole / "1" / "diffcone-unit")
+    written = ci_report.extract(archive, cut / "1" / "diffcone-unit")
+    assert written == ["context.json", "ran.json"]
+    assert sorted(p.name for p in (cut / "1" / "diffcone-unit").iterdir()) == written
+    assert ci_report.load(cut) == ci_report.load(whole)
+    ran = json.loads((cut / "1" / "diffcone-unit" / "ran.json").read_text())
+    assert ran == ci_report._plan_read(plan)
+
+
+@pytest.mark.parametrize("layout", ["indented", "compact", "last"])
+def test_a_plan_cut_parses_as_the_whole(layout):
+    """Skipping the explanations is only a shortcut: a plan not laid out as
+    diffcone writes it, or with the explanations last, parses whole."""
+    plan = _big_plan()
+    if layout == "last":
+        plan["dependency_explanations"] = plan.pop("dependency_explanations")
+    text = json.dumps(plan) if layout == "compact" else json.dumps(plan, indent=2)
+    assert ci_report._plan_read(ci_report._plan_text(text)) == ci_report._plan_read(plan)
+
+
+def test_an_unreadable_ran_json_falls_back_to_plan_json(tmp_path):
+    """``load`` reads plan.json when ran.json is unreadable: the cut keeps
+    plan.json then, and writes nothing for an unreadable plan."""
+    plan = _big_plan()
+    archive = _zip(tmp_path / "a.zip", {"ran.json": "{not json", "plan.json": json.dumps(plan)})
+    assert ci_report.extract(archive, tmp_path / "a") == ["plan.json"]
+    archive = _zip(tmp_path / "b.zip", {"ran.json": b"\xff", "context.json": "[]"})
+    assert ci_report.extract(archive, tmp_path / "b") == ["context.json"]
+
+
+def test_the_cut_runs_as_a_module(tmp_path):
+    archive = _zip(tmp_path / "a.zip", {"ran.json": json.dumps(_big_plan())})
+    subprocess.run(
+        [sys.executable, "-m", "diffcone.ci_report", str(archive), str(tmp_path / "out")],
+        check=True,
+    )
+    assert (tmp_path / "out" / "ran.json").exists()
+
+
 FAKE_GH = """#!{python}
 import json, os, sys
 with open(os.environ["GH_LOG"], "a") as f:
@@ -641,6 +719,7 @@ def test_the_report_downloads_a_re_run_jobs_latest_artifact(tmp_path):
         "RUNS": str(runs),
         "RUNS_REPO": "o/s",
         "PREFIX": "diffcone-",
+        "DIFFCONE_PYTHON": sys.executable,
     }
     done = subprocess.run(
         ["bash", "-e", "-o", "pipefail"], input=script, text=True, env=env,
@@ -1168,7 +1247,7 @@ def test_ci6_a_report_that_posted_nothing_does_not_move_the_window(tmp_path):
         "GH_TOKEN": "x", "HOURS": "24", "WORKFLOW": "ci.yml", "PREFIX": "diffcone-",
         "RUNS": str(runs), "RUNS_REPO": "o/r", "GITHUB_REPOSITORY": "o/diffcone",
         "GITHUB_RUN_ID": "1", "MARKER": "posted-diffcone-report",
-        "FAKE_PY": sys.executable,
+        "FAKE_PY": sys.executable, "DIFFCONE_PYTHON": sys.executable,
     }  # fmt: skip
     done = subprocess.run(
         [shutil.which("bash") or "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",

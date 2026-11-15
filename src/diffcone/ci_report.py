@@ -16,6 +16,11 @@ pull-request runs (selected share, plans made from the code instead of a
 recording and why, refusals) and checked pushes (checked or not and why,
 new failures, flaky re-runs, confirmed misses), then each confirmed miss.
 It reads files only and runs nothing, like ``check``.
+
+``python -m diffcone.ci_report ARCHIVE DIR`` writes from one downloaded
+artifact (a zip) only what the report reads (``extract``): the report
+action runs it on each artifact as it downloads, so a day of runs takes
+what the report keeps, not what they uploaded.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from __future__ import annotations
 import copy
 import json
 import statistics
+import sys
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +38,8 @@ from typing import Any
 ARTIFACT_FILES = frozenset(
     {"context.json", "plan.json", "ran.json", "verdict.json", "rerun-verdict.json"}
 )
+# The plans, in the order ``load`` reads them: ran.json, else plan.json.
+PLAN_FILES = ("ran.json", "plan.json")
 
 
 # The events a recording runs on. A ``record`` context from any other run (a
@@ -166,6 +175,60 @@ def _plan_read(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     elif "unselected_targets" in plan:
         out["unselected_targets"] = unselected
     return out
+
+
+def _plan_text(text: str) -> Any:
+    """``json.loads`` of a plan, skipping ``dependency_explanations`` where
+    the plan is laid out as diffcone writes it (indented by two): nine
+    tenths of a large plan, which the report does not read. A raw newline
+    cannot fall inside a JSON string, so a newline, two spaces and a quote
+    starts a key of the top-level object; a cut anywhere else leaves text
+    that does not parse, and the whole is parsed instead."""
+    key = '\n  "dependency_explanations": '
+    start = text.find(key)
+    if start != -1:
+        end = text.find('\n  "', start + len(key))
+        if end != -1:
+            try:
+                data = json.loads(text[:start] + text[end:])
+            except ValueError:
+                pass
+            else:
+                if isinstance(data, dict):
+                    return data
+    return json.loads(text)
+
+
+def extract(archive: str | Path, directory: str | Path) -> list[str]:
+    """Write into ``directory`` the files of a downloaded artifact that
+    ``load`` reads, each plan cut to what ``_plan_read`` keeps: what
+    ``load`` then reads is what it reads of the whole artifact extracted.
+    A plan that is unreadable is not written (``load`` reads a missing one
+    and an unreadable one alike), and plan.json not at all when ran.json
+    is readable. Returns the names written."""
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+    with zipfile.ZipFile(archive) as zf:
+        # The files sit at the archive's top, as ``load`` reads them; only
+        # these fixed names are written, wherever the archive points.
+        members = {i.filename: i for i in zf.infolist() if i.filename in ARTIFACT_FILES}
+        for name in sorted(members.keys() - set(PLAN_FILES)):
+            (target / name).write_bytes(zf.read(members[name]))
+            written.append(name)
+        for name in PLAN_FILES:
+            if name not in members:
+                continue
+            try:
+                plan = _plan_text(zf.read(members[name]).decode("utf-8"))
+            except ValueError:
+                continue
+            if not isinstance(plan, dict):
+                continue
+            (target / name).write_text(json.dumps(_plan_read(plan)), "utf-8")
+            written.append(name)
+            break
+    return written
 
 
 def load(directory: str | Path) -> list[Artifact]:
@@ -614,3 +677,9 @@ def to_markdown(report: Report) -> str:
         )
         lines.append("")
     return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit("usage: python -m diffcone.ci_report ARCHIVE DIR")
+    extract(sys.argv[1], sys.argv[2])

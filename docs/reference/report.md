@@ -2,13 +2,13 @@
 
 `diffcone plan` prints a JSON report (`--format text` prints a readable
 summary of the same information). The report's format is versioned by
-`schema_version`, currently `4`.
+`schema_version`, currently `5`.
 
 ## Top-level fields
 
 | Field | Contents |
 |---|---|
-| `schema_version` | The report format version, `4`. |
+| `schema_version` | The report format version, `5`. |
 | `status` | `complete`, or `degraded` when an analysis error made diffcone select every target. |
 | `discovery_incomplete` | `true` when the runner may collect tests diffcone couldn't see; the plan then exits with code `3`. |
 | `analysis` | What was compared: both snapshots, the source roots, whether uncommitted files were analysed, counts, and the recording used, if any. |
@@ -109,6 +109,15 @@ it are in `dependency_explanations`.
 
 `conservative` is `true` when any of the rules is a fallback: something
 diffcone couldn't bound, so it selected the target to be safe.
+
+A fallback that selects every target is written once, in
+`fallback_decisions`. In each target's `dependency_explanations`, the
+reason it gives names it by its position in that list (counting from 0)
+instead of repeating its detail:
+
+```json
+{"rule": "unanalysed_file_changed", "conservative": true, "fallback": 0}
+```
 
 | Rule | Fallback | Meaning |
 |---|---|---|
