@@ -82,6 +82,11 @@ parameter ids, ``ids=`` callables, ``pytest_generate_tests`` for that
 module); and the code that ran outside every window, every import and
 every such collector (``hook_phase``: session hooks,
 ``pytest_collection_modifyitems``, a directory's or package's collection).
+Of all of it, what ran after the first test or shared fixture window
+opened is recorded again (``late_outside``, and ``late_spawns`` for the
+processes started then): code another thread ran between tests, a hook
+outside the test protocol, an import then, inside a test or not. Only that
+code can have read what a test wrote; the rest ran before any test did.
 A process started there is part of that phase (``import_spawns``, folded
 into it), and what no record shows there flags the phase
 (``import_flagged``: the module being imported, "" for none, while a
@@ -340,6 +345,14 @@ finished = False  # the process record is written
 # Ran outside every test window with no import running and no test module
 # or class being collected.
 hook_codes: set[int] = set()
+# Whether a test or shared fixture window has opened in this process, and
+# the code that ran after that outside every window (another thread between
+# tests, a hook outside the test protocol) or in an import, a test's too
+# (``late_codes``, ``_late``). Of what ran outside the tests, only that code
+# can have read what a test wrote (``late_outside``).
+tests_began = False
+late_codes: set[int] = set()
+late_spawns: list[int] = []  # import_spawns started after the first window
 # Opened or stat'ed, and listed, by project code outside every test window.
 import_paths: dict[str, set[str]] = {}
 import_dirs: dict[str, set[str]] = {}
@@ -424,6 +437,8 @@ def _credit_rows(rows: list, paths: list) -> None:
             table.append(list(row))
         for w in _windows():
             w["codes"].add(i)
+        if _late():
+            late_codes.add(i)
         if not active:
             if importing:
                 import_by.setdefault(i, set()).add(importing[-1])
@@ -431,6 +446,19 @@ def _credit_rows(rows: list, paths: list) -> None:
                 _outside(i)
     for rel in paths:
         _touch(os.path.join(_root, rel))
+
+
+def _tests_begin() -> None:
+    global tests_began
+    tests_began = True
+
+
+def _late() -> bool:
+    """Whether code running now is ``late_codes``: once the first window
+    opened, outside every window, or in an import (inside a test too: a
+    module imported then builds its state from what earlier tests wrote,
+    and later tests read it without running its code)."""
+    return tests_began and (not active or bool(importing))
 
 
 def _outside(i: int) -> None:
@@ -570,6 +598,10 @@ def _on_start(code, offset):
         i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
+        if code.co_name == "<module>" and tests_began:
+            late_codes.add(i)  # before ``importing`` holds it: ``_late``
+        elif _late():
+            late_codes.add(i)
         if not active and not importing and code.co_name != "<module>":
             _outside(i)
         if code.co_name == "<module>":
@@ -595,6 +627,8 @@ def _on_resume(code, offset):
         i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
+        if _late():
+            late_codes.add(i)
         if not active and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as exc:
@@ -614,6 +648,8 @@ def _on_throw(code, offset, exc):
             i = _code_index(code, rel)
         for w in _windows():
             w["codes"].add(i)
+        if _late():
+            late_codes.add(i)
         if not active and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as err:
@@ -954,7 +990,8 @@ def _inert_probe(event: str, args: tuple) -> bool:
 def _credit_running_threads(window: dict) -> None:
     """Credit ``window`` with the project code every other thread is in the
     middle of. A long-lived thread looping in one frame raises no event while
-    a later window is open, yet it runs beside that window's test."""
+    a later window is open, yet it runs beside that window's test, and
+    between tests (``late_codes``: windows open once tests began)."""
     me = threading.get_ident()
     for ident, frame in sys._current_frames().items():
         if ident == me:
@@ -963,7 +1000,9 @@ def _credit_running_threads(window: dict) -> None:
             code = frame.f_code
             rel = _code_path(code.co_filename)
             if rel is not None:
-                window["codes"].add(_code_index(code, rel))
+                i = _code_index(code, rel)
+                window["codes"].add(i)
+                late_codes.add(i)
             frame = frame.f_back
 
 
@@ -980,6 +1019,8 @@ def _spawned(pid: int, start: int, argv: list[str] | None, inert: bool = False) 
             for w in active:
                 w["spawns"].add(spawn)
         else:
+            if tests_began:
+                late_spawns.append(len(import_spawns))
             import_spawns.append((spawn, importing[-1] if importing else ""))
         live.append(spawn)
         accounted[pid] = start
@@ -1523,6 +1564,7 @@ def pytest_fixture_setup(fixturedef, request):
         _unaccounted_children()
     except Exception as exc:
         _error("children", exc)
+    _tests_begin()
     active.append(w)
     try:
         _credit_running_threads(w)
@@ -1582,6 +1624,7 @@ def pytest_runtest_protocol(item, nextitem):
         _unaccounted_children()  # started outside every window
     except Exception as exc:
         _error("children", exc)
+    _tests_begin()
     active.append(mine)
     importing.clear()  # no import is running when a test starts
     try:
@@ -1704,6 +1747,10 @@ def _finish():
         # import running -> the checkout files collected.
         "collect_by": {str(k): sorted(v) for k, v in collect_by.items()},
         "hook_phase": sorted(hook_codes),
+        # Of the code above, what ran after the first window opened, and the
+        # spawns (indices into import_spawns) started then.
+        "late_outside": sorted(late_codes),
+        "late_spawns": late_spawns,
         "preloaded": preloaded,
         "outside_modules": sorted(outside),
         # What each shared fixture ran here: a fixture computed once for

@@ -1717,20 +1717,28 @@ logging call, read by a lookup site that ran in a hook), and the plan
 still selects 7693 of 7693. Next: tell hook code that ran only before the
 first test from hook code that also ran between tests (below).
 
-*Hook code that ran only before the first test (planned, 2026-11-15).*
-The `pytest_hook_changed` fallback takes any code that ran outside every
+*Hook code that ran only before the first test (implemented, 2026-11-15).*
+The `pytest_hook_changed` fallback took any code that ran outside every
 test (`Evidence.hook_phase`) as able to read what a test wrote and pass
 it on to later tests. Code that ran only before the first test opened
 (`pytest_configure`, `pytest_sessionstart`, collection) cannot have seen
-a test's write. Mechanism: the recorder records the hook phase in two
-parts, before the first test window opens and after (between tests,
-teardown); `STORE_FORMAT` bumps. A write that can only happen while tests
-run (code that ran only inside tests at C, or new code no import-time code
-can reach) does not reach readers that ran only before the first test;
-everything else is as now. Sound: no test runs before the first test.
-Done when scenarios cover a hook reader before the first test (narrowed)
-and one in `pytest_runtest_setup` (still everything), and strata's pair is
-measured.
+a test's write. The recorder notes what ran outside every window once the
+first test or shared fixture window opened (`late_outside`: a hook after
+the tests, a thread running on between them, an import then, and what a
+process started then ran; `STORE_FORMAT` 8). State a writer writes in
+place (a class, module or variable whose only edges to it are
+`mutated_by`), when the writer ran at C only inside tests or is new, is
+followed in a third `in_tests` mode (`TEST_WRITES`), as is a variable
+whose only change is such writers it gained (`dependencies_added`): its readers are
+followed as for any change, except that one outside `late_outside` is
+not followed into the imports and hooks it ran in. Modules a writer
+writes onto are written state as classes are (their functions read it,
+their top-level code ran before). Sound: no test runs before the first
+test, and a writer called outside tests at the head through unchanged
+code would have run there at C. Scenarios: a reader in
+`pytest_collection_modifyitems` (narrowed) and one in
+`pytest_sessionfinish` (still everything); the recorder test covers a
+thread a test starts.
 
 ## 22. Plans that fit in memory: further (not planned)
 

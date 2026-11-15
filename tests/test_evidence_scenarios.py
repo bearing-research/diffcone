@@ -5985,3 +5985,105 @@ def test_the_state_a_changed_writer_writes_into_a_class_reaches_its_readers(repo
     }
     why = reason(plan, "tests/test_b.py::test_b", "executed_reader").detail
     assert "which may write into pkg.lib.Holder" in why
+
+
+# --------------------------------------------------------------------------- hooks before the tests
+TIMED_STATE = """\
+SEEN = []
+
+
+def note(n):
+    SEEN.append(n)
+
+
+def order_key(item):
+    return (len(SEEN), item.nodeid)
+
+
+def summary():
+    return len(SEEN)
+"""
+TIMED_TEST = "from pkg import state\n\n\ndef test_a():\n    state.note(1)\n"
+TIMED_EARLY = (
+    "from pkg.state import order_key\n\n\n"
+    "def pytest_collection_modifyitems(items):\n    items.sort(key=order_key)\n"
+)
+TIMED_LATE = (
+    "from pkg.state import summary\n\n\n"
+    "def pytest_sessionfinish(session):\n"
+    "    if summary() > 5:\n        session.exitstatus = 1\n"
+)
+
+
+def _timed(repo, conftest):
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/state.py": TIMED_STATE,
+            "tests/conftest.py": conftest,
+            "tests/test_a.py": TIMED_TEST,
+            "tests/test_b.py": "def test_b():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit(
+        {
+            "pkg/state.py": TIMED_STATE + "\n\ndef note_twice(n):\n    SEEN.extend((n, n))\n",
+            "tests/test_a.py": TIMED_TEST.replace("note(", "note_twice("),
+        }
+    )
+    return _noop_plan(repo, base, head, evidence), evidence
+
+
+def test_a_hook_that_ran_before_the_first_test_reads_nothing_a_new_writer_writes(repo):
+    """``note_twice``, new, writes ``SEEN``, and only ``test_a``, changed,
+    calls it; ``order_key`` reads ``SEEN``, in a hook that ran before any
+    test did (``pytest_collection_modifyitems``). Code nothing outside the
+    tests calls writes only while a test runs, so the hook read none of it,
+    and its reach (every test) is not selected: before, every change
+    adding such a writer of state some hook reads selected every test
+    (strata: each of its pull requests)."""
+    plan, evidence = _timed(repo, TIMED_EARLY)
+    assert "pkg.state.order_key" in evidence.hook_phase
+    assert "pkg.state.order_key" not in evidence.late_outside
+    assert not plan.fallbacks
+    assert selected(plan) == {"tests/test_a.py::test_a"}
+
+
+def test_a_hook_that_ran_after_a_test_may_read_what_a_new_writer_wrote(repo):
+    """The same, with ``SEEN`` read in ``pytest_sessionfinish``, after the
+    tests: what ``note_twice`` wrote decides the session's exit status, so
+    every test is selected."""
+    plan, evidence = _timed(repo, TIMED_LATE)
+    assert "pkg.state.summary" in evidence.late_outside
+    assert "pytest_hook_changed" in rules(plan, "tests/test_b.py::test_b")
+
+
+def test_a_module_a_test_imports_may_read_what_a_new_writer_wrote(repo):
+    """``test_b`` imports ``pkg.lazy`` inside the test, after ``test_a`` ran
+    the new ``note_twice``: its import-time state (``K``) is built from
+    ``SEEN`` as earlier tests left it, and later tests read it without
+    running the module's code, so the module is escalated as before."""
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/state.py": TIMED_STATE,
+            "pkg/lazy.py": "from pkg.state import SEEN\n\nK = len(SEEN)\n",
+            "tests/conftest.py": TIMED_EARLY,
+            "tests/test_a.py": TIMED_TEST,
+            "tests/test_b.py": "def test_b():\n    import pkg.lazy\n\n    assert pkg.lazy.K >= 0\n",
+        }
+    )
+    evidence = repo.collect()
+    assert "pkg.lazy" in evidence.late_outside
+    head = repo.commit(
+        {
+            "pkg/state.py": TIMED_STATE + "\n\ndef note_twice(n):\n    SEEN.extend((n, n))\n",
+            "tests/test_a.py": TIMED_TEST.replace("note(", "note_twice("),
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "pkg.lazy" in plan.evidence["escalated_modules"]
+    assert "tests/test_b.py::test_b" in selected(plan)

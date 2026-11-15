@@ -17,6 +17,14 @@ selection rules.
   write that code could reach, read in a pytest hook, selected every
   test. The class is followed as written state instead: the code naming
   it, its family's methods and the sites that can see it.
+- Code that ran outside every test only before the first test (a
+  `pytest_configure` or `pytest_collection_modifyitems` hook, collection)
+  is no longer taken to read what a test wrote: a change to a function
+  that only tests run, writing state such a hook reads, selected every
+  test. The recorder notes what ran outside the tests after the first
+  one opened (a hook after the tests, a thread between them); that still
+  selects every test. Modules a function writes onto are followed as
+  written state, as classes are. Evidence store format 8: record again.
 
 ### Report
 

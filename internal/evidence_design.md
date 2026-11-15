@@ -235,7 +235,7 @@ reported as a miss.
 ## Storage and lifecycle
 
 `.diffcone/evidence/<commit>-<environment hash>.sqlite`:
-`meta` (JSON values: the store `format`, 7; commit, source roots,
+`meta` (JSON values: the store `format`, 8; commit, source roots,
 environment and its hash, the environment at the start when the run
 changed it, command, time; the import and hook phases, the files and
 directories imports read, the phases flagged, the `preloaded` modules,
@@ -608,7 +608,16 @@ selection or states something the tables left implicit; none narrows it.
   A change to its annotations or definition is taken as before. A lookup or
   reflection site that joins E is a reader too: one that ran at import (a
   module-level `dir(pkg.reg)`) or in a hook is followed as readers are,
-  since no test's record holds it.
+  since no test's record holds it. A third: state written in place
+  (a `mutated_by` edge, and no other, from a class, module or variable to
+  the writer) by a writer that ran at C only inside tests, or is new, can
+  change only while a test runs; so can a variable whose only change is
+  writers of that kind it gained (`dependencies_added`, all `mutated_by`). Code that ran outside every test only
+  before the first test or shared fixture window opened read none of it;
+  the recorder notes the rest (`late_outside`, store format 8: a hook
+  after the tests, a thread running on between them, an import or a
+  process started then), and only that reaches `pytest_hook_changed` or
+  an escalation through such a write.
 * **Lifecycle changes since the recording** (W5). A test whose fixtures,
   hooks or plugins (its lifecycle dependencies, as discovery reads them)
   differ between C and the base or the head is selected
