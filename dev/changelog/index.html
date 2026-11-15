@@ -1810,6 +1810,10 @@ selection rules.</p>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
+<li>A store into <code>sys.modules</code> (<code>sys.modules[name] = module</code>, <code>del
+  sys.modules[name]</code>) no longer counts as code that can look any name up:
+  a module that registers a file it loads by path that way, imported by a
+  conftest, made any new function or method select every test.</li>
 <li><code>diffcone collect</code> names what flagged the most tests as starting a
   subprocess (always selected), with the line of the checkout that
   started it and whether the process was still running when later tests
