@@ -22,6 +22,10 @@ selection rules.
 
 ### Execution evidence
 
+- A store into `sys.modules` (`sys.modules[name] = module`, `del
+  sys.modules[name]`) no longer counts as code that can look any name up:
+  a module that registers a file it loads by path that way, imported by a
+  conftest, made any new function or method select every test.
 - `diffcone collect` names what flagged the most tests as starting a
   subprocess (always selected), with the line of the checkout that
   started it and whether the process was still running when later tests

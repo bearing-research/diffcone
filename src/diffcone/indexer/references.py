@@ -654,6 +654,20 @@ class _ReferenceCollector(ast.NodeVisitor):
         elif not self.skip_defs and node.id not in self.scope.locals:
             self._global_rebinding(node.id)
 
+    def _module_table_store(self, node: ast.Attribute) -> bool:
+        """``sys.modules[name] = module`` or ``del sys.modules[name]``: the
+        table is written, and no name is looked up in it (strata's harness
+        registering each sibling file it loads by path, which as a lookup
+        site saw every namespace). A read of it (``sys.modules[name]``,
+        ``.get``, iterating) still is one."""
+        parent = self._parent(node)
+        return (
+            node.attr == "modules"
+            and isinstance(parent, ast.Subscript)
+            and parent.value is node
+            and isinstance(parent.ctx, (ast.Store, ast.Del))
+        )
+
     def _self_class(self, node: ast.expr) -> str | None:
         """The class of the method this is in, when ``node`` is its ``self``
         or ``cls``."""
@@ -667,7 +681,7 @@ class _ReferenceCollector(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if not isinstance(node.ctx, ast.Load):
             self._attribute_write(node)
-        elif node.attr in REFLECTIVE_ATTRIBUTES:
+        elif node.attr in REFLECTIVE_ATTRIBUTES and not self._module_table_store(node):
             self.indexer.out.reflection.add((self.source, f".{node.attr}"))
         if (
             isinstance(node.ctx, ast.Load)

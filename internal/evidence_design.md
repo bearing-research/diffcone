@@ -177,6 +177,14 @@ head only an import added elsewhere can bring it in, which is a change
 planned on its own. Without that, a constant changed in `docs/conf.py`
 reached every frame reader that ran at import (jinja, boltons).
 
+A store into `sys.modules` (`sys.modules[name] = module`, `del
+sys.modules[name]`) is no lookup site: it writes the table and finds no
+name in it (`_ReferenceCollector._module_table_store`). strata's harness
+registers each sibling file it loads by path that way, from a conftest's
+import, so a method added anywhere reached everything the loader ran
+there and selected every test. A read of `sys.modules` (an item, `.get`,
+iterating it) still sees every namespace.
+
 **Compiled code.** A `.pyx` change is invisible to a Python tracer unless
 the extension is built with Cython's `profile=True` directive, whose
 functions raise the same `PY_START` events as Python code (roadmap items 7

@@ -4397,6 +4397,80 @@ def test_w25_evidence_mode_follows_no_install(repo):
     assert "tests/test_core.py::test_core" in selected(static)
 
 
+SIBLING_LOADER = (
+    "import importlib.util\nimport sys\nfrom pathlib import Path\n\n\n"
+    "def load(filename, name):\n"
+    "    path = Path(__file__).parent / filename\n"
+    "    spec = importlib.util.spec_from_file_location(name, path)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.modules[name] = module\n"
+    "    spec.loader.exec_module(module)\n"
+    "    return module\n\n\n"
+    "_helper = load('helper.py', '_pkg_helper')\n"
+)
+WORKER = "class Worker:\n    def run(self):\n        return 1\n"
+
+
+@pytest.mark.parametrize("store", ["sys.modules[name] = module", "del sys.modules[name]"])
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_a_store_into_sys_modules_looks_no_name_up(repo, store):
+    """strata's harness loads sibling files by path and registers each with
+    ``sys.modules[name] = module``. Taken as a lookup by a name nothing
+    bounds, it saw every namespace: a method added anywhere reached what
+    the loader ran at import (from a conftest, so in a hook) and selected
+    every test. Storing into ``sys.modules``, or deleting from it, looks
+    nothing up; a read of it still does."""
+    loader = SIBLING_LOADER.replace("sys.modules[name] = module", store)
+    if store.startswith("del"):
+        loader = loader.replace(store, f"sys.modules[name] = module\n    {store}")
+    chosen = _evidence_selects(
+        repo,
+        {
+            "pkg/__init__.py": "",
+            "pkg/loader.py": loader,
+            "pkg/helper.py": "def h():\n    return 1\n",
+            "pkg/work.py": WORKER,
+            "tests/__init__.py": "",
+            "tests/conftest.py": "import pkg.loader  # noqa: F401\n",
+            "tests/test_load.py": (
+                "from pkg.loader import _helper\n\n\ndef test_load():\n    assert _helper.h()\n"
+            ),
+            "tests/test_work.py": (
+                "from pkg.work import Worker\n\n\ndef test_work():\n    assert Worker().run()\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+        {"pkg/work.py": WORKER + "\n    def extra(self):\n        return 2\n"},
+    )
+    assert chosen == set()  # nothing calls the new method, nor can find it
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_a_read_of_sys_modules_by_a_name_nothing_bounds_still_sees_every_namespace(repo):
+    """``sys.modules[name]`` read: any module, and any name looked up on it."""
+    reader = (
+        "import sys\n\n\ndef find(name, attr):\n"
+        "    return getattr(sys.modules[name], attr, None)\n\n\n"
+        "FOUND = find('pkg.' + 'work', 'Worker')\n"
+    )
+    chosen = _evidence_selects(
+        repo,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reader.py": reader,
+            "pkg/work.py": WORKER,
+            "tests/__init__.py": "",
+            "tests/conftest.py": "import pkg.work  # noqa: F401\nimport pkg.reader  # noqa: F401\n",
+            "tests/test_work.py": (
+                "from pkg.work import Worker\n\n\ndef test_work():\n    assert Worker().run()\n"
+            ),
+            "tests/test_other.py": "def test_other():\n    pass\n",
+        },
+        {"pkg/work.py": WORKER + "\n    def extra(self):\n        return 2\n"},
+    )
+    assert "tests/test_other.py::test_other" in chosen
+
+
 STAR = "__all__ = [{}]\n\n\ndef one():\n    return 1\n\n\ndef two():\n    return 2\n"
 
 

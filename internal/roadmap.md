@@ -1776,6 +1776,17 @@ collect` prints the three causes that flagged the most tests
 (`Evidence.flag_causes`, never stored). *Next:* read the cause off
 strata's next main run (after a release), then decide the fix.
 
+*A store into `sys.modules` (implemented, 2026-11-15).* With the logger
+writes gone, strata's PR pair still fell back 16 times through
+`harness._load_local_module`, which loads sibling files by path and runs
+`sys.modules[name] = module`. Any `.modules` attribute was recorded as
+reflection, a lookup site of kind `ANY`, so the loader saw every namespace,
+including the PR's new `CellExecutor._promote_together`, and everything
+it ran when a conftest imported the harness. A subscript store or delete
+on `sys.modules` is no longer recorded (narrows; scenarios
+`test_a_store_into_sys_modules_looks_no_name_up`, and a read still seeing
+every namespace).
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit
