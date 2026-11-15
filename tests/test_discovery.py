@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 
 import pytest
@@ -4398,6 +4399,27 @@ CHAIN = "import a\n\n{0} = a" + ".b" * 1000 + "\n"
 LONG_CHAIN = "import a\n\nX = a" + ".b" * 100_000 + "\n"
 
 
+@pytest.fixture
+def parse_out_of_stack(monkeypatch):
+    """``ast.parse`` runs out of stack on the long chains, as it does on a
+    default stack. Python 3.14 bounds the parser by the C stack it really
+    has, and a large one (GitHub's Ubuntu 26.04 image) parses
+    ``LONG_CHAIN``, which is then analysed like any other module. Only
+    where the chain is code: the modules below start with it (``import
+    a``), the snippets parsed on their own too (``x = a.b...``); a module
+    holding one in a string parses."""
+    real = ast.parse
+
+    def parse(source, *args, **kwargs):
+        text = source if isinstance(source, str) else bytes(source).decode("utf-8", "replace")
+        code = text.lstrip().startswith(("import a\n", "x = a.b"))
+        if code and ".b" * 50_000 in text:
+            raise RecursionError("maximum recursion depth exceeded during compilation")
+        return real(source, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", parse)
+
+
 def _unparsed(result) -> set[str]:
     return {n.detail for n in result.notes if n.kind == "unparsed_file"}
 
@@ -4411,6 +4433,7 @@ def _unparsed(result) -> set[str]:
     ],
     ids=["module_binding", "class_binding", "parse"],
 )
+@pytest.mark.usefixtures("parse_out_of_stack")
 def test_l1_a_too_deep_test_module_leaves_discovery_incomplete(repo, tmp_path, module):
     base = repo.commit({**BENCH, **TESTS, "tests/test_x.py": module})
     head = repo.commit({"tests/test_ok.py": "def test_ok():\n    assert True\n"})
@@ -4427,6 +4450,7 @@ def test_l1_a_too_deep_test_module_leaves_discovery_incomplete(repo, tmp_path, m
     assert sorted(d["runner"] for d in stored) == ["asv", "asv"]
 
 
+@pytest.mark.usefixtures("parse_out_of_stack")
 def test_l1_a_too_deep_conftest_and_benchmark_module(repo):
     rev = repo.commit(
         {
@@ -4444,6 +4468,7 @@ def test_l1_a_too_deep_conftest_and_benchmark_module(repo):
     assert {t.runner_id for t in found.targets} == {"bench.time_noop"}
 
 
+@pytest.mark.usefixtures("parse_out_of_stack")
 def test_l1_a_too_deep_doctest_or_timeraw_snippet_is_unread(repo):
     """Code in a string (a doctest example, the code a ``timeraw_``
     benchmark returns) is parsed on its own: too deep, it is code that
