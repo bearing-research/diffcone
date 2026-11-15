@@ -1808,6 +1808,9 @@ selection rules.</p>
   recording and unselected targets), instead of extracting the whole
   artifact: a window of a large suite's runs, kept whole, ran the runner
   out of disk.</li>
+<li>The <code>report</code> action tries each listing and download three times before
+  counting it as an error: one server error (HTTP 502) among 5 000
+  downloads made the next report read the whole window again.</li>
 </ul>
 <h2 id="050-2026-10-21"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.5.0">0.5.0</a> - 2026-10-21<a class="headerlink" href="#050-2026-10-21" title="Permanent link">&para;</a></h2>
 <h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
