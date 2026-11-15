@@ -165,8 +165,20 @@ runs:
             print(run["databaseId"])
         PY
         count=0; errors=0
+        # GitHub answers a request now and then with a server error (502):
+        # each is tried three times before it counts as an error, which
+        # makes the next report read the whole window again.
+        retry() {
+          local n
+          for n in 1 2 3; do
+            "$@" && return 0
+            [ "$n" -lt 3 ] && sleep $((n * 15))
+          done
+          return 1
+        }
+        download() { gh api "$1" > "$2" < /dev/null; }
         while read -r id; do
-          if ! listed=$(gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
+          if ! listed=$(retry gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
             --jq ".artifacts[] | select(.expired | not) | select(.name | startswith(\"$PREFIX\")) | \"\(.id) \(.name)\"" \
             < /dev/null); then
             echo "::error::could not list the artifacts of run $id"
@@ -194,7 +206,7 @@ runs:
           # plan explains every target, and a window of a large suite's
           # runs held whole runs the runner out of disk.
           while read -r aid name; do
-            gh api "repos/$RUNS_REPO/actions/artifacts/$aid/zip" > "$RUNS/artifact.zip" < /dev/null \
+            retry download "repos/$RUNS_REPO/actions/artifacts/$aid/zip" "$RUNS/artifact.zip" \
               && "$DIFFCONE_PYTHON" -m diffcone.ci_report "$RUNS/artifact.zip" "$RUNS/runs/$id/$name" \
               && continue
             echo "::error::could not download $name of run $id"

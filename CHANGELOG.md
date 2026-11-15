@@ -42,6 +42,9 @@ selection rules.
   recording and unselected targets), instead of extracting the whole
   artifact: a window of a large suite's runs, kept whole, ran the runner
   out of disk.
+- The `report` action tries each listing and download three times before
+  counting it as an error: one server error (HTTP 502) among 5 000
+  downloads made the next report read the whole window again.
 
 ## [0.5.0] - 2026-10-21
 
