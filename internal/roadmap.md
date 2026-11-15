@@ -1673,6 +1673,65 @@ thread a test left running can leave state for later tests, but coarse:
 any change to such code selects everything. Not planned until the
 nightly data shows how often it decides a plan.
 
+*A class a writer writes into, read as its top-level code (2026-11-14).*
+Every strata pull request since 2026-11-03 selected every test in every
+cell. In two plans of one PR series, 74 of 76 all-targets fallbacks
+(`pytest_hook_changed`) pass through one link: "top-level code of
+`TestGate1` reads `LocalRuns.promote` added". A new test of `TestGate1`
+calls `LocalRuns(manager).promote(...)` on an object traced back to
+`self._cells(...)`, a staticmethod, so the indexer gives `TestGate1` a
+`mutated_by` edge to `promote` (and to the other methods called there):
+`promote` may write into the class. Evidence planning puts every
+`references` edge into `readers_of`, so `_reader` sees the class as
+reading `promote`, takes its top-level code for import-time code reading
+the change and escalates `tests.notebook.test_local_runs`; escalating a
+module follows each non-inert `def` of it as code run at import, body
+included, and those test bodies reach writes into state that code run
+in hooks reads, so everything is selected.
+
+*Mechanism.* A class whose only edges to a function, in either revision,
+are `mutated_by` (`EvidencePlanner.written_classes`) is written by it, not
+a reader: `_readers` hands it to `_written_class`, which follows it as a
+written variable is followed (observed; the code naming it, for its
+content; the methods of its family, ancestors and subclasses, which read
+it through `self`/`cls`; the sites that can see it), and does not
+escalate its module. A class with any other edge to the function (a
+body or decorator calling it) is read as before.
+
+*Trade-off.* Narrows: a class body ran when it was defined and cannot
+read what a later write stores. What the write stores is still followed
+to its readers, by name, through the class's methods, and by
+`_stored_results` and `_import_writes` when the writer runs in a test or
+at import.
+
+*Done when* a scenario reproduces the chain (a test class a new writer
+writes into, a test method whose header runs project code, a hook-time
+reader of what its body can write) and selects only that class's tests,
+a scenario keeps the readers of a written class's state selected, and a
+local recording of strata's PR pair (`56e79602` -> `fd36b04d`, 3.13)
+plans without the fallback. Status: implemented (2026-11-15). Measured on
+a local 3.13 recording at `56e79602` of the pair: 27 all-targets
+fallbacks before and after. The `TestGate1` link is gone, but the same
+step remains for variables and modules (a module's `logger` written by a
+logging call, read by a lookup site that ran in a hook), and the plan
+still selects 7693 of 7693. Next: tell hook code that ran only before the
+first test from hook code that also ran between tests (below).
+
+*Hook code that ran only before the first test (planned, 2026-11-15).*
+The `pytest_hook_changed` fallback takes any code that ran outside every
+test (`Evidence.hook_phase`) as able to read what a test wrote and pass
+it on to later tests. Code that ran only before the first test opened
+(`pytest_configure`, `pytest_sessionstart`, collection) cannot have seen
+a test's write. Mechanism: the recorder records the hook phase in two
+parts, before the first test window opens and after (between tests,
+teardown); `STORE_FORMAT` bumps. A write that can only happen while tests
+run (code that ran only inside tests at C, or new code no import-time code
+can reach) does not reach readers that ran only before the first test;
+everything else is as now. Sound: no test runs before the first test.
+Done when scenarios cover a hook reader before the first test (narrowed)
+and one in `pytest_runtest_setup` (still everything), and strata's pair is
+measured.
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit

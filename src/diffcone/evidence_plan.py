@@ -651,6 +651,11 @@ class _Observers:
         # (``writes`` edges) or to rebind it (``rebinds``), and the code
         # naming it any other way (a read): see ``_readers``.
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        # Per function, the classes it may write into (``mutated_by``) and the
+        # classes naming it any other way, in either revision: see
+        # ``written_classes``.
+        class_writes: dict[str, set[str]] = defaultdict(set)
+        class_reads: dict[str, set[str]] = defaultdict(set)
         for index in (c_index, other):
             for edge in index.edges:
                 mark = edge_mark(edge)
@@ -658,6 +663,10 @@ class _Observers:
                     continue  # static planning's: the record holds what ran
                 if edge.kind in (EdgeKind.REFERENCES, EdgeKind.DECLARED):
                     self.readers_of[edge.target].add(edge.source)
+                    source_symbol = index.symbols.get(edge.source)
+                    if source_symbol is not None and source_symbol.kind == SymbolKind.CLASS:
+                        held = class_writes if mark == MUTATED_BY else class_reads
+                        held[edge.target].add(edge.source)
                     written_only[edge.target][edge.source].add(
                         mark if mark in (WRITES, REBINDS) else ""
                     )
@@ -746,6 +755,16 @@ class _Observers:
             self.readers_of[decl.target].add(decl.source)
         self.write_sites: dict[str, set[str]] = defaultdict(set)
         self.rebind_sites: dict[str, set[str]] = defaultdict(set)
+        # A class whose only edges to a function say the function may write
+        # into it (``mutated_by``: onto the class, or an instance whose state
+        # it may hold) is written by that function, not a reader of it: its
+        # body ran when it was defined, and reads nothing the function does
+        # later (``_written_class``).
+        self.written_classes: dict[str, frozenset[str]] = {
+            target: frozenset(written - class_reads.get(target, set()))
+            for target, written in class_writes.items()
+            if written - class_reads.get(target, set())
+        }
         for target, sources in written_only.items():
             for source, details in sources.items():
                 if source in self.readers_of[target] and "" not in details:
@@ -2374,8 +2393,14 @@ class _Observers:
             readers |= matched
         readers.discard(target)
         readers -= exclude
+        written = self.written_classes.get(target, frozenset())
         for reader in sorted(readers):
             own = change is not None and target == change.id
+            if reader in written:
+                self._written_class(
+                    reader, change, label if own else f"{label} via {target}", in_tests=in_tests
+                )
+                continue
             self._reader(
                 reader,
                 change,
@@ -2383,6 +2408,35 @@ class _Observers:
                 in_tests=in_tests,
                 read=target.rsplit(".", 1)[-1],
             )
+
+    def _written_class(
+        self, cls: str, change: SymbolChange | None, label: str, *, in_tests: bool
+    ) -> None:
+        """``cls`` may be written by what ``label`` names (a ``mutated_by``
+        edge, and no other, to it): what it holds may change, as a written
+        variable's does (``_reader``), so the code reading that state joins
+        E: the code naming the class (its content, not its rebinding), the
+        methods of its family (its ancestors and subclasses: they read it
+        through ``self`` and ``cls``), and the sites that can see it, each
+        followed as a reader. Its top-level code is not one: the class body
+        ran when the class was defined and reads nothing a later write does.
+        Taken as one, a test class whose test calls a writer escalated its
+        module: every test method's body counted as code run at import, and
+        what those can reach, written into state a hook reads, selected
+        every test."""
+        if cls in self._followed:
+            return
+        self._followed.add(cls)
+        symbol = self.symbols[cls]
+        why = f"{label}, which may write into {cls}"
+        self._observe(cls, Rule.EXECUTED_READER, f"{cls}: {why}", change)
+        self._readers(cls, change, why, in_tests=in_tests, content_only=True)
+        family = self._related(cls, SUBCLASSES)
+        for c in sorted(_closure(family, self.bases) | family):
+            for member in sorted(self.members.get(c, ())):
+                if self.symbols[member].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                    self._reader(member, change, f"{why}, whose state it reads", in_tests=in_tests)
+        self._sites(symbol, change, why, at_import=not in_tests, in_tests=in_tests)
 
     def _guard(
         self, matched: set[str], cls: str, change: SymbolChange | None, label: str

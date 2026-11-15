@@ -5862,3 +5862,126 @@ def test_u6_lines_a_traceback_showed_seed_nothing(repo):
     head = repo.commit({"pkg/lib.py": lib.replace("'no'", "'no!'")})
     plan = _noop_plan(repo, base, head, evidence)
     assert selected(plan) == {FILLED_A}
+
+
+# ------------------------------------------------------------------ classes a change writes into
+
+WRITTEN_STATE = """\
+SEEN = []
+
+
+def note(n):
+    SEEN.append(n)
+
+
+def order_key(item):
+    return (len(SEEN), item.nodeid)
+
+
+def default():
+    return 1
+"""
+WRITTEN_TEST = """\
+from pkg.lib import other
+from pkg.state import default, note
+
+
+class TestK:
+    seen = []
+
+    def test_k(self, n=default()):
+        note(n)
+        assert other() == 1
+"""
+WRITTEN_K = "tests/test_k.py::TestK::test_k"
+WRITTEN_PROMOTE = "tests/test_k.py::TestK::test_promote"
+
+
+def test_a_test_class_a_new_writer_writes_into_reads_nothing_at_import(repo):
+    """``promote``, new, writes into ``TestK`` (``c.seen.append``), and a new
+    test of ``TestK`` calls it: ``TestK`` is written, not a reader of
+    ``promote``. Taken as its top-level code reading the change, it
+    escalated ``tests.test_k``, whose ``test_k`` (a default runs at import)
+    counted as code run at import; ``test_k`` can run ``note``, which writes
+    ``SEEN``, which ``order_key`` reads in a hook: every test was selected
+    (strata: 47 such fallbacks, through a test class whose new test called
+    ``promote``). What reads ``TestK``'s state is its own tests."""
+    conftest = (
+        "from pkg.state import order_key\n\n\n"
+        "def pytest_collection_modifyitems(items):\n    items.sort(key=order_key)\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/lib.py": "def other():\n    return 1\n",
+            "pkg/state.py": WRITTEN_STATE,
+            "tests/conftest.py": conftest,
+            "tests/test_k.py": WRITTEN_TEST,
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit(
+        {
+            "pkg/lib.py": "def other():\n    return 1\n\n\ndef promote(c):\n    c.seen.append(2)\n",
+            "tests/test_k.py": WRITTEN_TEST.replace("import other", "import other, promote")
+            + "\n    def test_promote(self):\n        promote(TestK)\n",
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert not plan.fallbacks
+    assert selected(plan) == {WRITTEN_K, WRITTEN_PROMOTE}
+    assert (
+        "which may write into tests.test_k.TestK"
+        in reason(plan, WRITTEN_K, "executed_reader").detail
+    )
+
+
+HOLDER = """\
+class Holder:
+    seen = []
+
+    def total(self):
+        return len(self.seen)
+
+
+def count():
+    return len(Holder.seen)
+
+
+def promote(c, n=1):
+    c.seen.append(n)
+"""
+
+
+def test_the_state_a_changed_writer_writes_into_a_class_reaches_its_readers(repo):
+    """``promote``'s default changes, and ``test_a`` runs it, writing into
+    ``Holder``: ``test_b`` reads ``Holder.seen`` by naming the class
+    (``count``) and ``test_c`` through a method (``total``), neither running
+    ``promote``. A later test sees what ``test_a`` stored, so both are
+    selected, and the unrelated ``test_d`` is not."""
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/lib.py": HOLDER,
+            "tests/test_a.py": "from pkg.lib import Holder, promote\n\n\n"
+            "def test_a():\n    promote(Holder)\n",
+            "tests/test_b.py": "from pkg.lib import count\n\n\n"
+            "def test_b():\n    assert count() >= 0\n",
+            "tests/test_c.py": "from pkg.lib import Holder\n\n\n"
+            "def test_c():\n    assert Holder().total() >= 0\n",
+            "tests/test_d.py": "def test_d():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": HOLDER.replace("n=1", "n=2")})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert selected(plan) == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "tests/test_c.py::test_c",
+    }
+    why = reason(plan, "tests/test_b.py::test_b", "executed_reader").detail
+    assert "which may write into pkg.lib.Holder" in why

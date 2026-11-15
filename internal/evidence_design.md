@@ -395,7 +395,15 @@ selection or states something the tables left implicit; none narrows it.
   - a variable (its initialiser captured the thing) is treated as changed
     itself, recursively;
   - a module's or class's top-level code escalates: that module is planned
-    statically as if its import-time code had changed.
+    statically as if its import-time code had changed;
+  - a class whose only edges to the thing say the thing may write into it
+    (`mutated_by`, in either revision) is no reader: it is written, and is
+    followed as a written variable is (the code naming it, for its
+    content; the methods of its family; the sites that can see it), not
+    escalated. Its body ran when it was defined and reads nothing a later
+    write stores; taken as a reader, a test class whose new test called a
+    writer escalated its module, and every strata plan selected every test
+    (roadmap item 21).
 
   The spike checked module and class readers only for variables; the
   implementation applies the rule to every change kind, because a changed

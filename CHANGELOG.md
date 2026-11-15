@@ -8,6 +8,16 @@ selection rules.
 
 ## [Unreleased]
 
+### Execution evidence
+
+- A class that a changed function may write into, and that has no other
+  edge to it, is no longer read as its class body reading the change at
+  import, which escalated its module: a test class whose new test called
+  the function made every test count as code run at import, and a
+  write that code could reach, read in a pytest hook, selected every
+  test. The class is followed as written state instead: the code naming
+  it, its family's methods and the sites that can see it.
+
 ### Report
 
 - `schema_version` 5: a fallback that selects every target is written
