@@ -1085,7 +1085,7 @@
 <h1 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h1>
 <p><code>diffcone plan</code> prints a JSON report (<code>--format text</code> prints a readable
 summary of the same information). The report's format is versioned by
-<code>schema_version</code>, currently <code>4</code>.</p>
+<code>schema_version</code>, currently <code>5</code>.</p>
 <h2 id="top-level-fields">Top-level fields<a class="headerlink" href="#top-level-fields" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1097,7 +1097,7 @@ summary of the same information). The report's format is versioned by
 <tbody>
 <tr>
 <td><code>schema_version</code></td>
-<td>The report format version, <code>4</code>.</td>
+<td>The report format version, <code>5</code>.</td>
 </tr>
 <tr>
 <td><code>status</code></td>
@@ -1299,6 +1299,12 @@ output (<code>diffcone discover -o targets.json</code>), and the ones that selec
 it are in <code>dependency_explanations</code>.</p>
 <p><code>conservative</code> is <code>true</code> when any of the rules is a fallback: something
 diffcone couldn't bound, so it selected the target to be safe.</p>
+<p>A fallback that selects every target is written once, in
+<code>fallback_decisions</code>. In each target's <code>dependency_explanations</code>, the
+reason it gives names it by its position in that list (counting from 0)
+instead of repeating its detail:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="p">{</span><span class="nt">"rule"</span><span class="p">:</span><span class="w"> </span><span class="s2">"unanalysed_file_changed"</span><span class="p">,</span><span class="w"> </span><span class="nt">"conservative"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"fallback"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">}</span>
+</code></pre></div>
 <table>
 <thead>
 <tr>
