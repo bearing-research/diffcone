@@ -10,6 +10,7 @@ from dataclasses import replace
 from diffcone.indexer.aliases import IMPORTED, OPAQUE, scope_aliases
 from diffcone.indexer.definitions import (
     _EXPLICIT_SPECIAL_METHODS,
+    _NAMESPACE_BASES,
     _STRUCTURAL_BASES,
     SAME,
     WRAPPER,
@@ -292,6 +293,23 @@ class Resolver(FirstPass):
         if node is None and names == {name[0]}:
             return False  # the builtin (``object``, ``Exception``)
         return not names <= _STRUCTURAL_BASES
+
+    def _namespace_base(self, cscope: ClassScope) -> bool:
+        """Whether a base may be a structural typing or abc base whose class
+        creation reads the class's namespace, though it calls nothing back
+        (``_calls_back``): ``abc.ABC`` (its metaclass collects the abstract
+        methods: deleting an implementation makes the class abstract),
+        ``Protocol`` (its members), ``NamedTuple`` and ``TypedDict`` (the
+        fields). ``Generic`` reads only the bases."""
+        enclosing = cscope.enclosing
+        shadowed = enclosing.members.keys() | enclosing.bindings if enclosing is not None else ()
+        for name in cscope.base_names:
+            if name is None:
+                continue
+            names = _chain_names(name, cscope.module, shadowed, self._star_bases(cscope.module))
+            if names and names & _NAMESPACE_BASES:
+                return True
+        return False
 
     def _star_bases(self, module: ModuleScope) -> StarBases:
         """What ``module``'s star imports may bind a name to, as dotted names
@@ -652,9 +670,11 @@ class Resolver(FirstPass):
                 )
                 self.out.class_bases[symbol_id] = tuple(sorted(set(cscope.bases)))
                 # Open: decorators or keywords, or a base outside the index
-                # that may consume the body (``Enum``, a framework model); not
-                # ``object``, ``Exception`` or a typing/abc base.
-                if not cscope.plain or cscope.external_base:
+                # that may consume the body (``Enum``, a framework model, and
+                # the typing/abc bases that read it: ``ABC``, ``Protocol``,
+                # ``NamedTuple``, ``TypedDict``); not ``object``,
+                # ``Exception`` or ``Generic``.
+                if not cscope.plain or cscope.external_base or self._namespace_base(cscope):
                     self.out.open_classes.add(symbol_id)
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):

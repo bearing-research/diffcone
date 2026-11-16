@@ -1691,7 +1691,7 @@ in hooks reads, so everything is selected.
 
 *Mechanism.* A class whose only edges to a function, in either revision,
 are `mutated_by` (`EvidencePlanner.written_classes`) is written by it, not
-a reader: `_readers` hands it to `_written_class`, which follows it as a
+a reader: `_readers` hands it to `_written` (was `_written_class`), which follows it as a
 written variable is followed (observed; the code naming it, for its
 content; the methods of its family, ancestors and subclasses, which read
 it through `self`/`cls`; the sites that can see it), and does not
@@ -1717,28 +1717,25 @@ logging call, read by a lookup site that ran in a hook), and the plan
 still selects 7693 of 7693. Next: tell hook code that ran only before the
 first test from hook code that also ran between tests (below).
 
-*Hook code that ran only before the first test (implemented, 2026-11-15).*
-The `pytest_hook_changed` fallback took any code that ran outside every
-test (`Evidence.hook_phase`) as able to read what a test wrote and pass
-it on to later tests. Code that ran only before the first test opened
-(`pytest_configure`, `pytest_sessionstart`, collection) cannot have seen
-a test's write. The recorder notes what ran outside every window once the
-first test or shared fixture window opened (`late_outside`: a hook after
-the tests, a thread running on between them, an import then, and what a
-process started then ran; `STORE_FORMAT` 8). State a writer writes in
-place (a class, module or variable whose only edges to it are
-`mutated_by`), when the writer ran at C only inside tests or is new, is
-followed in a third `in_tests` mode (`TEST_WRITES`), as is a variable
-whose only change is such writers it gained (`dependencies_added`): its readers are
-followed as for any change, except that one outside `late_outside` is
-not followed into the imports and hooks it ran in. Modules a writer
-writes onto are written state as classes are (their functions read it,
-their top-level code ran before). Sound: no test runs before the first
-test, and a writer called outside tests at the head through unchanged
-code would have run there at C. Scenarios: a reader in
-`pytest_collection_modifyitems` (narrowed) and one in
-`pytest_sessionfinish` (still everything); the recorder test covers a
-thread a test starts.
+*Hook code that ran only before the first test (implemented 2026-11-15,
+reverted after audit round 8, V2).* The `pytest_hook_changed` fallback
+takes any code that ran outside every test (`Evidence.hook_phase`) as able
+to read what a test wrote and pass it on to later tests. 3bce9a3 recorded
+what ran outside every window once the first test opened (`late_outside`,
+store format 8) and followed state only test code writes in a third mode
+(`TEST_WRITES`) in which code outside `late_outside` was not followed into
+the imports and hooks it ran in. The premise, "code that ran only before
+the first test reads nothing a test wrote", is unsound: code run at import
+or in an early hook keeps references to the objects a test later writes
+(`ITEMS.append(Holder())`, `VIEW = view()`, a registration call) and is
+read through them without naming the writer; a frame that starts before
+the first test runs across all of them (a plain `pytest_runtestloop`);
+and whether code ran "late" depends on the recording's order and xdist
+split (a new test sorting first, `-n 2`). The user accepted that this has
+no sound redesign for now: behaviour is v0.5.0's again (store format 7),
+and scenarios `test_v2_*` keep the cases selected. Any retry needs a
+premise that holds for code holding references, frames spanning tests and
+any test order.
 
 *Logging calls on a library logger subclass (implemented, 2026-11-15).*
 The fallbacks left after the hook split came from strata's
@@ -1799,7 +1796,17 @@ and dropped: the same for lookups on an external module the project
 writes to (`dir(builtins)`, `getattr(logging, level)`, the next sites on
 strata). strata's writers there are 52 modules found at run time handed
 on, any of which may be installed under the module's name, and the
-lookup then searches project code (W17, which caught it).
+lookup then searches project code (W17, which caught it). Audit round 8
+(V3) found the premise incomplete: class and module creation hand the
+whole namespace to code that never names a member (a metaclass's
+`__new__` or `__prepare__` mapping registering callables whose
+signatures are read later, `register_all(locals())` in a class body), and
+so does a decorator. The skip now holds only for a `def` that runs no code
+at import, in a class whose creation reads no namespace and a module whose
+top-level code is no lookup site (`_blind_signatures`), and an added or
+deleted member of a class whose creation does is planned as a change to
+the class's creation (V4, `_class_creation`); strata's plain handler
+methods keep the narrowing.
 
 *Next on strata's PR pair.* A class whose only change is a gained
 dependency (`StrataConfig dependencies_added`) has its file counted as

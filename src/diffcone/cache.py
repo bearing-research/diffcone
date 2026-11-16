@@ -62,6 +62,8 @@ from diffcone.model import (
 # 64: typed_calls and shared_instances; receiver attribute stores keep
 #     their name (``@self.x``), re-initialisation is ``@init``; memoisers
 #     applied by a call (audit round 7, U4, U5, U14, U15, U16, U17, U18);
+# 65: open classes include those with an ``abc.ABC``, ``Protocol``,
+#     ``NamedTuple`` or ``TypedDict`` base (audit round 8, V4);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -120,7 +122,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 64
+INDEX_FORMAT = 65
 
 
 def _indexer_fingerprint() -> str:

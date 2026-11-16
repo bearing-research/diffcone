@@ -51,12 +51,26 @@ observed by"), and a test is selected when its record meets E:
   (``Symbol.statement_layout``; R6). A special method (``__eq__``) is used without
   being named, so a change to one reaches every member of the class's
   hierarchy; a module's ``__getattr__``/``__dir__`` escalates its module;
+* class creation: a member added to or deleted from a class, or whose
+  definition or annotations changed, escalates the class's module when
+  creating the class hands its namespace to code that names no member
+  (``_class_creation``, ``_reads_namespace``: an open class or ancestor,
+  which includes an ``abc.ABC``, ``Protocol``, ``NamedTuple`` or
+  ``TypedDict`` base; an ancestor's ``__init_subclass__``; a body that is
+  a lookup site itself), and what a metaclass's ``__prepare__``,
+  ``__new__`` and ``__init__`` and the ancestors' ``__init_subclass__``
+  write is followed (``_creation_code``; audit round 8, V4);
 * an added or deleted name: its readers, the unbounded lookup and
   reflection sites that can see the namespace, and for a deletion the
   modules importing it (their import now fails); an added or deleted
   definition that runs code at import (a decorated function, one whose
   defaults or annotations call code, a class whose creation runs code)
-  escalates too;
+  escalates too. A site whose every lookup is a signature read
+  (``inspect.signature(f)``: ``signature_sites``) is not followed for a
+  plain function or method just added whose ``def`` runs no code and that
+  no class or module creation hands to code (``_blind_signatures``): it
+  reaches such a site only through code that names it or looks it up by
+  a name nothing bounds (V3);
 * module-level code: escalates the module, and so does a change to
   ``__all__`` (what star imports bind);
 * a docstring only: the code reading docstrings (``reads_docstrings``)
@@ -120,8 +134,11 @@ built, the variables written in place by code that can run a member of E
 (through resolved references and calls on receivers of a known class,
 ``SourceIndex.typed_calls``),
 and by the code that code calls, transitively (``_handed_to``), whatever
-they store (a cache an earlier test filled), are changed values for the
-code reading them inside tests (``_stored_results``); code in that chain,
+they store (a cache an earlier test filled), are changed values, whose
+readers are followed into the imports and hooks they ran in as any changed
+value's are (``_stored_results``: code run at import may keep a reference
+to what a test writes, and a hook may run between tests; audit round 8,
+V5); code in that chain,
 or code it calls, storing anything through a receiver, a closure or a
 function's or class's attribute (``SourceIndex.stores``; not an
 initialiser's bindings on its own fresh receiver, unless calling the class
@@ -131,6 +148,17 @@ code whose decorator keeps its result (``SourceIndex.memoized``:
 ``cached_property``) by its readers. A target whose lifecycle
 dependencies differ between C and either snapshot is selected
 (``lifecycle_changed``).
+
+Written state (``_written``, one path for every rule above that follows a
+write in place: ``_import_writes``, ``_stored_results``, the readers of a
+changed function): a variable, or a class whose only edges to the writer
+are ``mutated_by``, may hold something else, so the code naming it (not
+code only emptying or adding to it), the sites that can see it and, for a
+class, the methods of its family and the readers by name of each attribute
+the writer names on it (``Settings.debug = v`` read as
+``self.settings.debug``: V6) are followed as readers. A written class's
+own top-level code is no reader: its body ran when it was defined. Each is
+followed once per way it can be (V15).
 
 Neither rule counts a lazily initialised constant's own writer as a reader
 of its fill (``SourceIndex.lazy_constants``: ``global V; if V is None: V =
@@ -440,27 +468,6 @@ def _runs_at_import(change: SymbolChange) -> bool:
 # ``_Observers._related``: which way to follow the class graph.
 BASES = "bases"
 SUBCLASSES = "subclasses"
-# What a function can write into that its readers then read (``mutated_by``).
-WRITTEN_KINDS = (SymbolKind.CLASS, SymbolKind.MODULE, SymbolKind.VARIABLE)
-
-
-class _TestWrites:
-    """``in_tests`` for state that only code running inside a test writes
-    (``EvidencePlanner._write_mode``): falsy, so it is followed as a change is
-    (``in_tests=False``), except that code that ran outside every test
-    only before the first test opened (not in ``Evidence.late_outside``)
-    cannot have read it, and is not followed into the imports and hooks it
-    ran in."""
-
-    def __bool__(self) -> bool:
-        return False
-
-    def __repr__(self) -> str:
-        return "TEST_WRITES"
-
-
-TEST_WRITES = _TestWrites()
-InTests = bool | _TestWrites
 
 
 def _ancestors(path: str) -> list[str]:
@@ -662,6 +669,9 @@ class _Observers:
         # edge) -> what it reads it off: ``Store.put`` where the class binds
         # ``put = staticmethod(_impl)`` (``_handed_to``).
         self.attribute_of: dict[str, set[str]] = defaultdict(set)
+        # (code, class or module) -> the attributes the code names on it,
+        # read or written (``Settings.debug = v``): ``_written_attributes``.
+        self.named_on: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.holds: dict[str, set[str]] = defaultdict(set)
         self.imported_by: dict[str, set[str]] = defaultdict(set)  # importer -> imported
         self.names_used: dict[str, set[str]] = defaultdict(set)  # unresolved names
@@ -677,9 +687,9 @@ class _Observers:
         # (``writes`` edges) or to rebind it (``rebinds``), and the code
         # naming it any other way (a read): see ``_readers``.
         written_only: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
-        # Per function, the classes, modules and variables it may write into
-        # (``mutated_by``) and those naming it any other way, in either
-        # revision: see ``written_state``.
+        # Per function, the classes it may write into (``mutated_by``) and the
+        # classes naming it any other way, in either revision: see
+        # ``written_classes``.
         class_writes: dict[str, set[str]] = defaultdict(set)
         class_reads: dict[str, set[str]] = defaultdict(set)
         for index in (c_index, other):
@@ -690,7 +700,7 @@ class _Observers:
                 if edge.kind in (EdgeKind.REFERENCES, EdgeKind.DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     source_symbol = index.symbols.get(edge.source)
-                    if source_symbol is not None and source_symbol.kind in WRITTEN_KINDS:
+                    if source_symbol is not None and source_symbol.kind == SymbolKind.CLASS:
                         held = class_writes if mark == MUTATED_BY else class_reads
                         held[edge.target].add(edge.source)
                     written_only[edge.target][edge.source].add(
@@ -699,6 +709,7 @@ class _Observers:
                     if mark.startswith("attribute:"):
                         self.attribute_readers[mark[len("attribute:") :]].add(edge.source)
                         self.attribute_of[edge.source].add(edge.target)
+                        self.named_on[(edge.source, edge.target)].add(mark[len("attribute:") :])
                     if mark == MUTATED_BY:
                         self.writes[edge.target].add(edge.source)
                     elif mark != REGISTERS:
@@ -736,7 +747,9 @@ class _Observers:
                         site_writers[site].update(writers)
                     if not (writers and self._only_in_tests(writers)):
                         self.sites.append(site)
-                        other_reads.add(ref.symbol)
+                    # A lookup by a name: no signature site, listed in
+                    # ``sites`` or not (below).
+                    other_reads.add(ref.symbol)
                 elif ref.name:
                     self.by_name[ref.name].add(ref.symbol)
                     self.names_used[ref.symbol].add(ref.name)
@@ -759,7 +772,13 @@ class _Observers:
                     site_writers[(symbol, SiteKind.ANY)].update(writers)
                 if not (writers and self._only_in_tests(writers)):
                     self.sites.append((symbol, SiteKind.ANY))
-                    (signature_reads if detail == SIGNATURE_READ else other_reads).add(symbol)
+                (signature_reads if detail == SIGNATURE_READ else other_reads).add(symbol)
+        # A site with any lookup other than a signature read is no signature
+        # site, whether or not ``sites`` lists that lookup: one on an external
+        # module the project writes to, which only test code writes (seen
+        # through ``import_sites`` and ``_writer_sites`` instead), finds
+        # whatever a module handed on and installed under that name holds,
+        # project code included (audit W17; round 8, quality-6).
         # A method called (or a property accessor or attribute hook run) on
         # a receiver whose class the index knows (``ENGINE.run(k)``,
         # ``Engine().run(k)``: SourceIndex.typed_calls) is a call like a
@@ -783,13 +802,12 @@ class _Observers:
             self.readers_of[decl.target].add(decl.source)
         self.write_sites: dict[str, set[str]] = defaultdict(set)
         self.rebind_sites: dict[str, set[str]] = defaultdict(set)
-        # A class, module or variable whose only edges to a function say the
-        # function may write into it (``mutated_by``: onto the class, or an
-        # instance whose state it may hold; onto a module; into what a
-        # variable holds) is written by that function, not a reader of it: a
-        # class's or module's top-level code ran when it was defined, and
-        # reads nothing the function does later (``_written_state``).
-        self.written_state: dict[str, frozenset[str]] = {
+        # A class whose only edges to a function say the function may write
+        # into it (``mutated_by``: onto the class, or an instance whose state
+        # it may hold) is written by that function, not a reader of it: its
+        # body ran when it was defined, and reads nothing the function does
+        # later (``_written``).
+        self.written_classes: dict[str, frozenset[str]] = {
             target: frozenset(written - class_reads.get(target, set()))
             for target, written in class_writes.items()
             if written - class_reads.get(target, set())
@@ -834,6 +852,7 @@ class _Observers:
         self._runner_held: set[str] | None = None
         self.module_hands_on = {s for s in self.module_hands_on if self._in_test_code(s)}
         self.sites = sorted(set(self.sites))
+        self._site_symbols_of: frozenset[str] | None = None
         self.signature_sites = frozenset(signature_reads - other_reads)
         self.members = _members_by_container(set(self.symbols))
         # Code that puts objects on a module only inside tests is seen by a
@@ -888,18 +907,21 @@ class _Observers:
         self.seed_changes: set[str] = set()
         self.seed_nodes: dict[str, str] = {}
         self.escalated_modules: set[str] = set()
-        self._followed: set[str] = set()
-        # Written state followed only for what tests write (``TEST_WRITES``).
-        self._followed_after: set[str] = set()
-        # Per revision (C, then the other), each changed variable's outgoing
-        # edges: ``_gains_test_writers``.
-        self._out_edges: list[dict[str, set[tuple[EdgeKind, str, str]]]] | None = None
+        # What has been followed, by the way it was (audit round 8, V15): a
+        # variable that captured a changed value, all its readers
+        # (``_captured``); state written in place, its readers but the code
+        # only emptying or adding to it, with (True) or without (False) the
+        # lookups code run at import may write to (``_written``); and a
+        # class attribute written by name, by (class, attribute).
+        self._captured: set[str] = set()
+        self._written_marks: set[tuple[str, bool]] = set()
+        self._attributes_followed: set[tuple[str, str]] = set()
         self._ran_at_import: set[str] = set()  # what ``_import_writes`` followed
         self._variables_by_name: dict[str, set[str]] | None = None
         self._import_code_followed: set[str] = set()
         # Lookup and reflection sites in E, to be followed as readers.
-        self._sites_followed: set[tuple[str, InTests]] = set()
-        self._pending_sites: deque[tuple[str, SymbolChange | None, str, InTests]] = deque()
+        self._sites_followed: set[str] = set()
+        self._pending_sites: deque[tuple[str, SymbolChange | None, str]] = deque()
         # ``_stored_results``: code known to be able to run a member of E ->
         # that member; who calls what, backwards; lookup sites by namespace.
         self._runs_e: dict[str, str] = {}
@@ -1320,8 +1342,8 @@ class _Observers:
         to run a member of E may hold a result of (``_stored_results``)."""
         while True:
             while self._pending_sites:
-                site, change, label, in_tests = self._pending_sites.popleft()
-                self._reader(site, change, label, in_tests=in_tests)
+                site, change, label = self._pending_sites.popleft()
+                self._reader(site, change, label)
             if not self._stored_results():
                 break
 
@@ -1334,9 +1356,14 @@ class _Observers:
         transitively) may have stored what it returned into the variables it
         writes in place (``mutated_by``); each of those holds a changed value
         for the tests after, so its readers, and the sites that can see it,
-        join E. A test stores there only while tests run, so only code running
-        inside a test can have read it: no import or hook is followed
-        (``in_tests``). Every write counts, whatever it stores: what a
+        are followed as a changed value's are (``_written``): a reader that
+        ran in an import or a hook is followed into it. A test stores there
+        only while tests run, but code run at import may keep what it is
+        handed (``VIEW = view()``, ``ITEMS.append(Holder())``) and read it
+        later through that reference, and a hook may run between tests (an
+        outer ``pytest_runtest_protocol`` wrapper, ``pytest_runtestloop``),
+        when it ran in the recording's order (audit round 8, V2, V5).
+        Every write counts, whatever it stores: what a
         value derives from, statically, misses too many ways a chain
         reaches a store (the changed function's own literal, a changed
         constant, a call through a variable or a table, ``heapq.heappush``,
@@ -1396,7 +1423,14 @@ class _Observers:
         of it, so its readers (resolved and by name, guarded by who can hand
         them an instance) and sites are followed as for a changed value. The
         isolation assumption holds for both: a store by a test's own code is
-        seen by that test alone."""
+        seen by that test alone.
+
+        What reads a store a test made is followed as a changed value's
+        readers are, imports and hooks included: a function that ran in a
+        hook selects every test, one that ran in an import escalates that
+        module (it may have handed what it read to the module's state), and
+        a module's or class's top-level reader escalates its module (it may
+        hold a reference), as for ``_import_writes``."""
         changed = self._change_by_id
         queue: deque[str] = deque()
         for s in sorted({*self.E, *self.guarded}):
@@ -1417,7 +1451,7 @@ class _Observers:
             if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 joined.append(node)
                 for variable in sorted(self.writes.get(node, ())):
-                    if variable not in self._followed and variable in self.symbols:
+                    if self._written_new(variable, node, at_import=False):
                         found.append((variable, node, self._runs_e[node], None))
             by_name = node in changed and self._runs_e[node] == node
             for caller in sorted(self._callers_of(symbol, by_name=by_name)):
@@ -1427,7 +1461,7 @@ class _Observers:
         self._handed_to_found = self._handed_to(joined)
         for callee, caller, ran in self._handed_to_found:
             for variable in sorted(self.writes.get(callee, ())):
-                if variable not in self._followed and variable in self.symbols:
+                if self._written_new(variable, callee, at_import=False):
                     found.append((variable, callee, ran, caller))
         # What a test touching a changed file ran (``_file_readers``): it may
         # have kept what it read there. Each is followed once.
@@ -1435,7 +1469,7 @@ class _Observers:
         self._seeded.update(seeds)
         for seed in seeds:
             for variable in sorted(self.writes.get(seed, ())):
-                if variable not in self._followed and variable in self.symbols:
+                if self._written_new(variable, seed, at_import=False):
                     found.append((variable, seed, seed, None))
         # A lookup on an external module the chain, or what it calls, writes
         # to may find what an earlier test stored there (``setattr(json,
@@ -1456,15 +1490,12 @@ class _Observers:
                     f"{'' if caller is None else f'calls {writer}, which '}writes onto an "
                     f"external module {site} looks up ({why.detail})"
                 )
-                self._reader(site, changed.get(why.changed_symbol or ""), label, in_tests=True)
+                self._reader(site, changed.get(why.changed_symbol or ""), label)
         for variable, writer, ran, caller in found:
-            if variable in self._followed:
-                continue
             if writer in self.test_code.isolated and self._only_in_tests({writer}):
                 # The isolation assumption: what a test's own code stores is
                 # seen by that test alone, which runs the writer itself.
                 continue
-            self._followed.add(variable)
             why = self._why(ran)
             change = changed.get(why.changed_symbol or "")
             ran_by = (
@@ -1476,16 +1507,14 @@ class _Observers:
                 f"{ran_by} stores into {variable}, where a later test may "
                 f"read what an earlier one stored ({why.detail})"
             )
-            self._observe(variable, Rule.EXECUTED_READER, label, change)
-            self._readers(
+            self._written(
                 variable,
+                writer,
                 change,
                 label,
-                in_tests=True,
-                content_only=True,
+                at_import=False,
                 exclude=self._lazy_writer(variable, writer),
             )
-            self._sites(self.symbols[variable], change, label, in_tests=True)
         # Storing or memoised code anywhere in the chain or what it calls,
         # every round: both grow as E does.
         keepers: dict[str, tuple[str, str | None]] = {
@@ -1520,8 +1549,8 @@ class _Observers:
                     f"later readers ({why.detail})"
                 )
                 self._observe(keeper, Rule.EXECUTED_READER, label, change)
-                self._readers(keeper, change, label, in_tests=True, content_only=True)
-                self._sites(self.symbols[keeper], change, label, in_tests=True)
+                self._readers(keeper, change, label, content_only=True)
+                self._sites(self.symbols[keeper], change, label)
             wheres = set(self.stores.get(keeper, ()))
             if self.symbols[keeper].name in FRESH_INITS and not self._shared(keeper):
                 # Bound on a fresh object (``self.x = v``, ``super().__init__()``).
@@ -1541,7 +1570,7 @@ class _Observers:
             )
             self._observe(keeper, Rule.EXECUTED_READER, label, change)
             for reader in sorted(self._state_readers(keeper, wheres, change, label)):
-                self._reader(reader, change, label, in_tests=True)
+                self._reader(reader, change, label)
         return bool(found) or kept or read_sites
 
     def _why(self, ran: str) -> Reason:
@@ -2167,9 +2196,9 @@ class _Observers:
                     self._variables_by_name[symbol.name].add(symbol.id)
         for n in sorted(function.names):
             for variable in sorted(self._variables_by_name.get(n, ())):
-                if variable in self._followed:
+                if variable in self._captured:
                     continue
-                self._followed.add(variable)
+                self._captured.add(variable)
                 why = f"{variable} may be written by {cause}"
                 self._observe(variable, Rule.EXECUTED_READER, why, None)
                 self._readers(variable, None, why)
@@ -2210,6 +2239,7 @@ class _Observers:
             # A test's own change reaches the targets it is the entry of
             # (changed_target); anything else in test code reaches its scope.
             self._scope(symbol, change)
+        self._class_creation(change, label)
         if symbol.kind == SymbolKind.MODULE:
             if kinds & {ChangeKind.ADDED, ChangeKind.DELETED}:
                 self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
@@ -2262,17 +2292,14 @@ class _Observers:
             self._escalate_change(change, f"{label}: star imports of the module bind its names")
         if symbol.kind == SymbolKind.VARIABLE:
             self._observe(change.id, Rule.EXECUTED_CHANGED, label, change)
-            # Only gained writers that write while a test runs: what it holds
-            # differs only then (``TEST_WRITES``).
-            mode: InTests = TEST_WRITES if self._gains_test_writers(change) else False
-            self._readers(change.id, change, label, in_tests=mode)
+            self._readers(change.id, change, label)
             # A lookup by a name nothing bounds reads the value as well as
             # noticing the name come or go: a variable runs no code of its
             # own for the record to show. Its initialiser runs at import,
             # and may write somewhere unless it binds a literal on both sides
             # (an annotation evaluated at import is code too).
             runs_code = _runs_at_import(change)
-            self._sites(symbol, change, label, at_import=runs_code, in_tests=mode)
+            self._sites(symbol, change, label, at_import=runs_code)
             if ChangeKind.DELETED in kinds:
                 self._importers(change.id, change, label)
             if runs_code:
@@ -2320,40 +2347,10 @@ class _Observers:
             # A definition change that is only an added or deleted member is
             # that member's own change: code notices a new or missing
             # attribute only by looking it up, by name (a reader), by a name
-            # nothing bounds (a lookup site) or reflectively.
+            # nothing bounds (a lookup site) or reflectively, unless creating
+            # the class hands its namespace on (``_class_creation``).
             return
         self._escalate_change(change, f"{label}: not a kind evidence can bound")
-
-    def _gains_test_writers(self, change: SymbolChange) -> bool:
-        """Whether all that changed of a variable is code that may write
-        into it (``mutated_by`` edges it gained since C), each of which ran
-        at C only inside tests or is new (``_write_mode``)."""
-        if set(change.changes) != {ChangeKind.DEPENDENCIES_ADDED}:
-            return False
-        if self._out_edges is None:
-            wanted = {
-                c.id
-                for c in self.changes
-                if c.kind == SymbolKind.VARIABLE
-                and set(c.changes) == {ChangeKind.DEPENDENCIES_ADDED}
-            }
-            self._out_edges = []
-            for index in (self.c, self.other):
-                held: dict[str, set[tuple[EdgeKind, str, str]]] = defaultdict(set)
-                for edge in index.edges:
-                    if edge.source in wanted and edge.kind != EdgeKind.DEFINED_IN:
-                        held[edge.source].add((edge.kind, edge.target, edge.detail))
-                for ref in index.unresolved:
-                    if ref.symbol in wanted:
-                        held[ref.symbol].add((EdgeKind.REFERENCES, f"?{ref.kind}:{ref.name}", ""))
-                for ext in index.external:
-                    if ext.symbol in wanted:
-                        held[ext.symbol].add((EdgeKind.REFERENCES, f"!{ext.module}", ""))
-                self._out_edges.append(held)
-        before, after = (held.get(change.id, set()) for held in self._out_edges)
-        gained = after - before
-        writers = [t for kind, t, d in gained if kind == EdgeKind.REFERENCES and d == MUTATED_BY]
-        return bool(gained) and len(writers) == len(gained) and self._only_in_tests(writers)
 
     def _runs_on_creation(self, class_id: str) -> bool:
         """Whether creating the class may run code that reads its attributes:
@@ -2366,6 +2363,109 @@ class _Observers:
                 if cls != class_id and f"{cls}.__init_subclass__" in index.symbols:
                     return True
         return False
+
+    def _site_symbols(self) -> frozenset[str]:
+        """The symbols that are lookup or reflection sites (``sites``)."""
+        if self._site_symbols_of is None:
+            self._site_symbols_of = frozenset(site for site, _ in self.sites)
+        return self._site_symbols_of
+
+    def _reads_namespace(self, class_id: str) -> bool:
+        """Whether creating the class may hand its namespace to code that
+        never names its members (audit round 8, V3, V4): code its creation
+        runs (``_runs_on_creation``: a decorator, a metaclass, an ancestor's
+        ``__init_subclass__``, a base outside the index, or an ``abc.ABC``,
+        ``Protocol``, ``NamedTuple`` or ``TypedDict`` base:
+        ``SourceIndex.open_classes``), or its body when that is a lookup or
+        reflection site itself (``register_all(vars())``)."""
+        return self._runs_on_creation(class_id) or class_id in self._site_symbols()
+
+    def _class_creation(self, change: SymbolChange, label: str) -> None:
+        """A member added to or deleted from a class, or whose definition or
+        annotations changed, changes what creating the class hands on. When
+        that hands its namespace to code that never names the member
+        (``_reads_namespace``: a metaclass's ``__new__`` registering its
+        callables, ``ABCMeta`` collecting the abstract methods, so that
+        deleting an implementation makes ``Impl()`` raise, an ``Enum``, a
+        dataclass, ``__init_subclass__`` reading ``vars(cls)``,
+        ``register(vars())`` in the body), the module's import is planned as
+        changed (``_escalate_module``), and what creating the class runs
+        beyond its statement is followed for what it writes
+        (``_creation_code``; audit round 8, V4)."""
+        symbol = change.symbol
+        container = self.symbols.get(symbol.container or "")
+        if container is None or container.kind != SymbolKind.CLASS:
+            return
+        kinds = {
+            ChangeKind.ADDED,
+            ChangeKind.DELETED,
+            ChangeKind.DEFINITION_CHANGED,
+            ChangeKind.ANNOTATIONS_CHANGED,
+        }
+        if not kinds & set(change.changes) or not self._reads_namespace(container.id):
+            return
+        why = (
+            f"{label}: creating {container.id} hands its namespace to code (a decorator, "
+            "metaclass or base, an ancestor's __init_subclass__, its body)"
+        )
+        self._escalate_module(symbol.module, why)
+        self._import_writes(self._creation_code(container.id), change, why)
+
+    def _creation_code(self, class_id: str) -> list[str]:
+        """What creating the class runs beyond its own statement, which
+        ``_import_writes`` follows with the class: its ancestors'
+        ``__init_subclass__``, and the ``__prepare__``, ``__new__`` and
+        ``__init__`` of each class (and its ancestors) that an ancestor's
+        statement names and is no ancestor: a metaclass, which the index does
+        not tell from another name the statement uses."""
+        ancestors = self._related(class_id, BASES)
+        out: set[str] = set()
+        for ancestor in sorted(ancestors):
+            for member in self.members.get(ancestor, ()):
+                if ancestor != class_id and member.rsplit(".", 1)[-1] == "__init_subclass__":
+                    out.add(member)
+            for target in sorted(self.calls.get(ancestor, ())):
+                named = self.symbols.get(target)
+                if named is None or named.kind != SymbolKind.CLASS or target in ancestors:
+                    continue
+                for meta in sorted(self._related(target, BASES)):
+                    for member in self.members.get(meta, ()):
+                        if member.rsplit(".", 1)[-1] in ("__prepare__", "__new__", "__init__"):
+                            out.add(member)
+        return sorted(out)
+
+    def _blind_signatures(self, symbol: Symbol, change: SymbolChange | None) -> bool:
+        """Whether the sites whose every lookup is a signature read
+        (``signature_sites``) cannot see ``symbol`` for ``change``: a plain
+        function or method just added (no special name) whose ``def`` runs
+        no code at import (a decorator is handed it), in namespaces whose
+        creation hands it to no code: no class holding it reads its namespace
+        when created (``_reads_namespace``), and its module's top-level code
+        is no lookup site (``register_all(globals())``). A signature reflects
+        the parameters of the object it is handed and, for a class, its
+        special members; such a definition reaches it only once code hands
+        it over, code that names it (a change of its own, planned as one) or
+        looks it up by a name nothing bounds (a site with another lookup,
+        which is no signature site). Class creation hands the whole
+        namespace on without naming a member, so there the site is followed
+        (audit round 8, V3)."""
+        if change is None or ChangeKind.ADDED not in change.changes:
+            return False
+        if symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD) or _is_dunder(symbol.name):
+            return False
+        if _runs_at_import(change):
+            return False
+        container = symbol.container
+        while container:
+            holder = self.symbols.get(container)
+            if holder is None:
+                return False
+            if holder.kind == SymbolKind.CLASS and self._reads_namespace(holder.id):
+                return False
+            if holder.kind == SymbolKind.MODULE and holder.id in self._site_symbols():
+                return False
+            container = holder.container
+        return True
 
     def _class_body(self, symbol: Symbol, change: SymbolChange, label: str) -> None:
         before = self.c.class_attributes.get(symbol.id, {})
@@ -2421,19 +2521,18 @@ class _Observers:
         change: SymbolChange | None,
         label: str,
         *,
-        in_tests: InTests = False,
         content_only: bool = False,
         exclude: frozenset[str] = frozenset(),
     ) -> None:
-        """``in_tests``: what changed is what code running inside the tests
-        stored (``_stored_results``), which no import or hook that ran before
-        them can have read: function readers are observed, not followed into
-        what imports and hooks they ran in. ``content_only``: what ``target``
-        holds changed in place (code writing into it ran differently), so
-        code that only empties or adds to it (``X.clear()``) reads nothing
-        that changed. Code rebinding it from another module (``mod.X = v``)
-        reads nothing of it unless it was deleted. ``exclude``: readers that
-        cannot see the change (``_lazy_writer``)."""
+        """The code reading ``target`` joins E, each followed as a reader
+        (``_reader``); a class whose only edges to ``target`` say it may write
+        into the class is written state instead (``_written``).
+        ``content_only``: what ``target`` holds changed in place (code
+        writing into it ran differently), so code that only empties or adds
+        to it (``X.clear()``) reads nothing that changed. Code rebinding it
+        from another module (``mod.X = v``) reads nothing of it unless it was
+        deleted. ``exclude``: readers that cannot see the change
+        (``_lazy_writer``)."""
         readers = set(self.readers_of.get(target, ()))
         if content_only:
             readers -= self.write_sites.get(target, set())
@@ -2462,89 +2561,99 @@ class _Observers:
             readers |= matched
         readers.discard(target)
         readers -= exclude
-        written = self.written_state.get(target, frozenset())
-        mode = self._write_mode(target, in_tests) if written & readers else in_tests
+        written = self.written_classes.get(target, frozenset())
         for reader in sorted(readers):
             own = change is not None and target == change.id
+            why = label if own else f"{label} via {target}"
             if reader in written:
-                why = label if own else f"{label} via {target}"
-                kind = self.symbols[reader].kind
-                if kind == SymbolKind.CLASS or (kind == SymbolKind.MODULE and mode is not False):
-                    self._written_state(reader, change, why, in_tests=mode)
-                else:
-                    # A variable, or a module written by code that ran
-                    # outside the tests: its top-level code is escalated, as
-                    # any reader's is.
-                    self._reader(reader, change, why, in_tests=mode, read=None)
+                self._written(
+                    reader, target, change, f"{why}, which may write into {reader}", at_import=True
+                )
                 continue
-            self._reader(
-                reader,
-                change,
-                label if own else f"{label} via {target}",
-                in_tests=in_tests,
-                read=target.rsplit(".", 1)[-1],
-            )
+            self._reader(reader, change, why, read=target.rsplit(".", 1)[-1])
 
-    def _write_mode(self, writer: str, in_tests: InTests) -> InTests:
-        """How to follow what ``writer`` writes in place: as ``in_tests``
-        says, unless that is to follow it everywhere and ``writer`` ran at C
-        inside tests only (or is new): then it writes only while a test runs
-        (code run at import or in a hook that calls it is a change of its
-        own, or ran it at C), and ``TEST_WRITES``."""
-        if in_tests is not False:
-            return in_tests
-        return TEST_WRITES if self._only_in_tests([writer]) else False
-
-    def _first_follow(self, key: str, in_tests: InTests) -> bool:
-        """Whether ``key`` (written state) is followed now: once, except that
-        state followed only for a test's writes (``TEST_WRITES``) is followed
-        again for any other, which reaches further."""
-        if key in self._followed:
+    def _written_new(self, holder: str, writer: str, *, at_import: bool) -> bool:
+        """Whether following ``holder`` as written by ``writer``
+        (``_written``) reaches anything not followed yet."""
+        symbol = self.symbols.get(holder)
+        if symbol is None:
             return False
-        if in_tests is TEST_WRITES:
-            if key in self._followed_after:
-                return False
-            self._followed_after.add(key)
+        if (holder, True) not in self._written_marks and (
+            holder,
+            at_import,
+        ) not in self._written_marks:
             return True
-        self._followed.add(key)
-        return True
+        return symbol.kind == SymbolKind.CLASS and any(
+            (holder, a) not in self._attributes_followed
+            for a in self.named_on.get((writer, holder), ())
+        )
 
-    def _written_state(
-        self, holder: str, change: SymbolChange | None, label: str, *, in_tests: InTests
+    def _written(
+        self,
+        holder: str,
+        writer: str | None,
+        change: SymbolChange | None,
+        why: str,
+        *,
+        at_import: bool,
+        exclude: frozenset[str] = frozenset(),
     ) -> None:
-        """``holder``, a class, or a module only tests write onto
-        (``_readers``), may be written by what ``label`` names (a
-        ``mutated_by`` edge, and no other, to it): what it holds may
-        change, as a written variable's does (``_reader``), so the code
-        reading that state joins E: the code naming it (its content, not its
-        rebinding), its code (for a class, the methods of its family, its
-        ancestors and subclasses: they read it through ``self`` and ``cls``;
-        for a module, its functions and methods, which read its globals), and
-        the sites that can see it, each followed as a reader. Its top-level
-        code is not one: it ran when the class or module was defined and
-        reads nothing a later write stores. Taken as one, a test class whose
-        new test called a writer escalated its module: every test method's
-        body counted as code run at import, and what those can reach,
-        written into state a hook reads, selected every test."""
-        if not self._first_follow(holder, in_tests):
+        """``holder``, a variable or a class, may be written in place by
+        ``writer`` (a ``mutated_by`` edge), as ``why`` says: what it holds
+        may change, so the code reading that state joins E, each followed as
+        a reader is (``_reader``: into the import or hook it ran in, audit
+        round 8, V5): the code naming it (``_readers``, ``content_only``),
+        the sites that can see it (with ``at_import``, the lookups on an
+        external module code run at import may write to as well) and, for a
+        class, the methods of its family (its ancestors and subclasses: they
+        read it through ``self`` and ``cls``) and the readers by name of each
+        attribute ``writer`` names on it (``Settings.debug = v`` read as
+        ``self.settings.debug``; V6). A class's own top-level code is no
+        reader: its body ran when the class was defined and reads nothing a
+        later write does (taken as one, a test class whose new test called a
+        writer escalated its module, and every test method's body counted as
+        code run at import). One path for ``_import_writes``,
+        ``_stored_results`` and the readers of a changed writer (V15). Each
+        holder is followed once per way, a follow with ``at_import`` covering
+        one without, and each attribute once."""
+        symbol = self.symbols.get(holder)
+        if symbol is None:
             return
-        symbol = self.symbols[holder]
-        why = f"{label}, which may write into {holder}"
+        if symbol.kind == SymbolKind.CLASS and writer is not None:
+            self._written_attributes(holder, writer, change, why)
+        if (holder, True) in self._written_marks or (holder, at_import) in self._written_marks:
+            return
+        self._written_marks.add((holder, at_import))
         self._observe(holder, Rule.EXECUTED_READER, f"{holder}: {why}", change)
-        self._readers(holder, change, why, in_tests=in_tests, content_only=True)
+        self._readers(holder, change, why, content_only=True, exclude=exclude)
         if symbol.kind == SymbolKind.CLASS:
             family = self._related(holder, SUBCLASSES)
-            code = [
-                m
-                for c in sorted(_closure(family, self.bases) | family)
-                for m in sorted(self.members.get(c, ()))
-            ]
-        else:
-            code = [s.id for s in self._symbols_of(holder)]
-        for member in code:
-            if self.symbols[member].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
-                self._reader(member, change, f"{why}, whose state it reads", in_tests=in_tests)
-        self._sites(symbol, change, why, at_import=not in_tests, in_tests=in_tests)
+            for c in sorted(_closure(family, self.bases) | family):
+                for member in sorted(self.members.get(c, ())):
+                    if self.symbols[member].kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                        self._reader(member, change, f"{why}, whose state it reads")
+        self._sites(symbol, change, why, at_import=at_import)
+
+    def _written_attributes(
+        self, cls: str, writer: str, change: SymbolChange | None, why: str
+    ) -> None:
+        """The readers by name of the attributes ``writer`` names on ``cls``
+        (an ``attribute:`` edge: ``Settings.debug = v``, or a read of it),
+        which a write by name onto the class may bind: off the class or any
+        object (``self.settings.debug``), guarded for a test-code class as
+        a name match is (``_guard``). A write through ``cls`` or ``self`` is
+        a store (``_state_readers``); this is the same for one by name
+        (audit round 8, V6)."""
+        for attr in sorted(self.named_on.get((writer, cls), ())):
+            if (cls, attr) in self._attributes_followed:
+                continue
+            self._attributes_followed.add((cls, attr))
+            attribute = f"{why} (attribute {attr})"
+            readers = set(self.attribute_readers.get(attr, ())) | self._guard(
+                set(self.by_name.get(attr, ())), cls, change, attribute
+            )
+            for reader in sorted(readers):
+                self._reader(reader, change, attribute, read=attr)
 
     def _guard(
         self, matched: set[str], cls: str, change: SymbolChange | None, label: str
@@ -2623,39 +2732,30 @@ class _Observers:
         change: SymbolChange | None,
         label: str,
         *,
-        in_tests: InTests = False,
         read: str | None = None,
     ) -> None:
-        """``read``: the name ``reader`` reads (a variable's, an attribute's),
-        or None when it finds what changed by looking it up. With
-        ``TEST_WRITES`` (what changed is what a test's code wrote), code that
-        ran outside every test only before the first one did read none of
-        it there, and is not followed into that phase."""
+        """``reader`` reads what ``label`` names: a function or method joins
+        E and is followed into the imports, collection and hooks it ran in at
+        C (``_import_effect``); a variable captured the value and is followed
+        in turn; module or class top-level code escalates its module. This
+        holds for what a test stored as well (``_stored_results``): code run
+        at import may keep a reference to it, and a hook may run between
+        tests (audit round 8, V5). ``read``: the name ``reader`` reads (a
+        variable's, an attribute's), or None when it finds what changed by
+        looking it up."""
         symbol = self.symbols.get(reader)
         if symbol is None:
             return
-        before_tests = in_tests is TEST_WRITES and reader not in self.evidence.late_outside
         if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
             self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
-            if not in_tests and not before_tests:
-                self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
+            self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
         elif symbol.kind == SymbolKind.VARIABLE:
             # Its initialiser captured the value: it changed too.
-            if self._first_follow(reader, in_tests):
+            if reader not in self._captured:
+                self._captured.add(reader)
                 self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
-                self._readers(reader, change, label, in_tests=in_tests)
-                self._sites(
-                    symbol,
-                    change,
-                    f"{label}, captured by {reader}",
-                    at_import=not in_tests,
-                    in_tests=in_tests,
-                )
-        elif in_tests or before_tests:
-            # Module or class top-level code reads what a test stored only
-            # when the module is imported inside a test, whose record holds
-            # it, or after the first test (``late_outside``).
-            self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
+                self._readers(reader, change, label)
+                self._sites(symbol, change, f"{label}, captured by {reader}", at_import=True)
         else:
             # Module or class top-level code: import-time state.
             self._escalate_module(symbol.module, f"top-level code of {reader} reads {label}")
@@ -2865,9 +2965,9 @@ class _Observers:
                 f"collected a test module, with {symbol_id}, may write to; {label}",
                 change,
             )
-            if (site, False) not in self._sites_followed:
-                self._sites_followed.add((site, False))
-                self._pending_sites.append((site, change, f"{label}, seen by {site}", False))
+            if site not in self._sites_followed:
+                self._sites_followed.add(site)
+                self._pending_sites.append((site, change, f"{label}, seen by {site}"))
 
     def _collected_code(self, module: str) -> list[str]:
         """The symbols that ran at C while pytest collected ``module``."""
@@ -2992,20 +3092,16 @@ class _Observers:
                 continue
             self._ran_at_import.add(current)
             for variable in sorted(self.writes.get(current, ())):
-                written = self.symbols.get(variable)
-                if written is None or variable in self._followed:
+                if not self._written_new(variable, current, at_import=True):
                     continue
-                self._followed.add(variable)
-                why = f"{label}; it can run {current}, which writes into {variable}"
-                self._observe(variable, Rule.EXECUTED_READER, f"{variable}: {why}", change)
-                self._readers(
+                self._written(
                     variable,
+                    current,
                     change,
-                    why,
-                    content_only=True,
+                    f"{label}; it can run {current}, which writes into {variable}",
+                    at_import=True,
                     exclude=self._lazy_writer(variable, current),
                 )
-                self._sites(written, change, why, at_import=True)
             stack.extend(sorted(self.calls.get(current, ()), reverse=True))
 
     def _lazy_writer(self, variable: str, writer: str) -> frozenset[str]:
@@ -3085,24 +3181,12 @@ class _Observers:
         imports: bool = False,
         at_import: bool = False,
         runs: Iterable[str] | None = None,
-        in_tests: InTests = False,
     ) -> None:
         """The lookup and reflection sites that can see ``symbol``'s namespace
-        join E, and are followed as readers (``_reader``, with ``in_tests``)."""
+        join E, and are followed as readers (``_reader``)."""
         handed: list[str] = []
         guarded: list[tuple[str, frozenset[str], str]] = []
-        # A plain function or method just added is in no object's signature:
-        # a signature read finds it only once code hands it over, code that
-        # names it (changed too, planned on its own) or looks it up (a site
-        # of its own). Not so a lookup on an external module the project
-        # writes to: a module handed on there may be installed under its
-        # name, and the lookup then searches project code (audit W17).
-        added_definition = (
-            change is not None
-            and ChangeKind.ADDED in change.changes
-            and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD)
-            and not _is_dunder(symbol.name)
-        )
+        blind = self._blind_signatures(symbol, change)
         for site, detail in self._seeing_sites(
             symbol,
             imports=imports,
@@ -3111,20 +3195,16 @@ class _Observers:
             handed=handed,
             guarded=guarded,
         ):
-            if added_definition and site in self.signature_sites:
+            if blind and site in self.signature_sites:
                 continue
             self._observe(site, Rule.LOOKUP_SITE, f"{detail}; {label}", change)
-            followed = (site, in_tests) in self._sites_followed or (
-                site,
-                False,
-            ) in self._sites_followed
-            if not followed:
+            if site not in self._sites_followed:
                 # A site is a reader: one that runs at import (module or class
                 # top-level code, a variable's initialiser, a function an
                 # import or a hook ran) built state no test's record shows it
                 # reading. Followed from ``run`` (``_settle``).
-                self._sites_followed.add((site, in_tests))
-                self._pending_sites.append((site, change, f"{label}, seen by {site}", in_tests))
+                self._sites_followed.add(site)
+                self._pending_sites.append((site, change, f"{label}, seen by {site}"))
         for site, writers, detail in guarded:
             self.guarded[site].append(
                 (

@@ -59,10 +59,7 @@ from diffcone.model import (
 # 7: a test some of whose cases did not run has no record (``cases``; it was
 # a record of the cases that ran), and ``PYTEST_ADDOPTS`` is part of the
 # environment.
-# 8: what ran outside every test window after the first one opened
-# (``late_outside``), without which no hook reader can be told from one that
-# ran before every test.
-STORE_FORMAT = 8
+STORE_FORMAT = 7
 # The test started a process whose execution is not seen: another way than
 # subprocess.Popen, or one that recorded nothing (child.py).
 FLAG_SUBPROCESS = 1
@@ -126,12 +123,6 @@ class Evidence:
     # hooks, ``pytest_collection_modifyitems``, a directory's collection, a
     # collected file the index does not hold).
     hook_phase: frozenset[str] = frozenset()
-    # Symbols executed outside every test window after the first test or
-    # shared fixture window of their process opened (another thread between
-    # tests, a hook outside the test protocol, an import then): the only
-    # code outside the tests that can have read what a test wrote. What ran
-    # outside every window only before ran before any test.
-    late_outside: frozenset[str] = frozenset()
     # Symbols in the phases above whose only code that ran there was their
     # annotations' (Python 3.14 evaluates annotations lazily, in a code
     # object of their own, ``__annotate__``, that pytest calls while
@@ -354,7 +345,6 @@ class _Raw:
     outside_code: set[str] = field(default_factory=set)
     # Tests some of whose cases no process ran (``collect.cases``).
     partial: set[str] = field(default_factory=set)
-    late_outside: set[str] = field(default_factory=set)
     # Why a test, or a shared fixture (by key), was flagged as starting a
     # subprocess (a diagnostic only: ``Evidence.flag_causes``).
     causes: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
@@ -570,10 +560,6 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
             if symbol_of[i] is not None:
                 raw.hook_phase.add(symbol_of[i])
                 outside(i)
-        for i in data["late_outside"]:
-            if symbol_of[i] is not None:
-                raw.late_outside.add(symbol_of[i])
-        late_spawns = set(data["late_spawns"])
         for key, seen in (("import_paths", raw.import_paths), ("import_dirs", raw.import_dirs)):
             for path, modules in data[key].items():
                 for module_path in modules:
@@ -603,11 +589,9 @@ def _read_raw(directory: Path, owners: _Owners, project_modules: set[str]) -> _R
         # A process started outside every test window ran as part of the
         # phase that started it: what it ran is that import's (or, with no
         # import running, a hook's), and what no record shows flags it.
-        for n, (*spawn, module_path) in enumerate(data.get("import_spawns", ())):
+        for *spawn, module_path in data.get("import_spawns", ()):
             module = module_of(module_path)
             c_symbols, c_paths, c_dirs, c_flags = children(spawn, canonical)
-            if n in late_spawns:
-                raw.late_outside |= c_symbols
             raw.import_phase |= c_symbols
             raw.outside_code |= c_symbols
             for symbol in c_symbols:
@@ -980,7 +964,6 @@ def _process_wide(sources: list[_Raw] | list[Evidence]) -> dict[str, Any]:
     return {
         "import_phase": frozenset().union(*(s.import_phase for s in sources)),
         "hook_phase": frozenset().union(*(s.hook_phase for s in sources)),
-        "late_outside": frozenset().union(*(s.late_outside for s in sources)),
         "annotations_only": _annotations_only(sources),
         "import_by": _merged(s.import_by for s in sources),
         "collect_by": _merged(s.collect_by for s in sources),
@@ -1064,7 +1047,6 @@ def _write_tables(db: sqlite3.Connection, evidence: Evidence) -> None:
         "created": evidence.created,
         "import_phase": sorted(evidence.import_phase),
         "hook_phase": sorted(evidence.hook_phase),
-        "late_outside": sorted(evidence.late_outside),
         "annotations_only": sorted(evidence.annotations_only),
         "import_paths": {p: sorted(m) for p, m in evidence.import_paths.items()},
         "import_dirs": {p: sorted(m) for p, m in evidence.import_dirs.items()},
@@ -1154,7 +1136,6 @@ def load_store(path: Path) -> Evidence:
             tests=tests,
             import_phase=frozenset(meta["import_phase"]),
             hook_phase=frozenset(meta["hook_phase"]),
-            late_outside=frozenset(meta["late_outside"]),
             annotations_only=frozenset(meta.get("annotations_only", ())),
             import_by={s: frozenset(m) for s, m in import_by.items()},
             collect_by={s: frozenset(m) for s, m in sorted(collect_by.items())},

@@ -269,6 +269,9 @@ _STRUCTURAL_BASES = frozenset(
         "typing_extensions.TypedDict",
     }
 )
+# Of those, the bases whose class creation reads the class's namespace
+# (resolver._namespace_base: what open_classes holds).
+_NAMESPACE_BASES = _STRUCTURAL_BASES - {"typing.Generic", "typing_extensions.Generic"}
 
 
 # Reached explicitly: construction and class creation record their own edges.
