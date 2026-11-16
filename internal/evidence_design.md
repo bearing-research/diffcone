@@ -223,7 +223,8 @@ registers the class's callables, an `Enum` or a dataclass builds from the
 body. Such a class (`_reads_namespace`: it or an ancestor is open, which
 now includes an `abc.ABC`, `Protocol`, `NamedTuple` or `TypedDict` base,
 `SourceIndex.open_classes`, `INDEX_FORMAT` 65; an ancestor defines
-`__init_subclass__`; or its body is a lookup site) has its module's import
+`__init_subclass__`; or its body is a lookup site or passes `locals()` or
+`vars()` on, `register_all(locals())`, also open, `INDEX_FORMAT` 68) has its module's import
 planned as changed (`_class_creation`), and the `__prepare__`, `__new__`
 and `__init__` of the classes its ancestors' statements name (a
 metaclass) and the ancestors' `__init_subclass__` are followed for what

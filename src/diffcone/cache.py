@@ -70,6 +70,8 @@ from diffcone.model import (
 # 67: the logging library's callbacks and records, writes through ``*args``/
 #     ``**kwargs`` and starred arguments and through what a fresh object
 #     holds, module-level ``locals()`` (audit round 8, V1, V4, V7, V8, V9);
+# 68: open classes include those whose body hands ``locals()``/``vars()`` on
+#     (audit round 8, V4, evidence);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -128,7 +130,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 67
+INDEX_FORMAT = 68
 
 
 def _indexer_fingerprint() -> str:

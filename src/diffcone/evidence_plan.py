@@ -852,7 +852,8 @@ class _Observers:
         self._runner_held: set[str] | None = None
         self.module_hands_on = {s for s in self.module_hands_on if self._in_test_code(s)}
         self.sites = sorted(set(self.sites))
-        self._site_symbols_of: frozenset[str] | None = None
+        # The symbols that are lookup or reflection sites (fixed from here).
+        self.site_symbols = frozenset(site for site, _ in self.sites)
         self.signature_sites = frozenset(signature_reads - other_reads)
         self.members = _members_by_container(set(self.symbols))
         # Code that puts objects on a module only inside tests is seen by a
@@ -978,10 +979,7 @@ class _Observers:
         # Code that can call what no edge shows: a lookup by a name nothing
         # bounds, an import of a module named at run time, a graph walk.
         self._opaque_callers = (
-            {site for site, _ in self.sites}
-            | self.module_getters
-            | set(self.table_getters)
-            | self.graph_readers
+            self.site_symbols | self.module_getters | set(self.table_getters) | self.graph_readers
         )
         self._forward_of: dict[frozenset[str], frozenset[str]] = {}
         self._symbols_named: dict[str, set[str]] | None = None
@@ -2364,21 +2362,16 @@ class _Observers:
                     return True
         return False
 
-    def _site_symbols(self) -> frozenset[str]:
-        """The symbols that are lookup or reflection sites (``sites``)."""
-        if self._site_symbols_of is None:
-            self._site_symbols_of = frozenset(site for site, _ in self.sites)
-        return self._site_symbols_of
-
     def _reads_namespace(self, class_id: str) -> bool:
         """Whether creating the class may hand its namespace to code that
         never names its members (audit round 8, V3, V4): code its creation
         runs (``_runs_on_creation``: a decorator, a metaclass, an ancestor's
         ``__init_subclass__``, a base outside the index, or an ``abc.ABC``,
         ``Protocol``, ``NamedTuple`` or ``TypedDict`` base:
-        ``SourceIndex.open_classes``), or its body when that is a lookup or
-        reflection site itself (``register_all(vars())``)."""
-        return self._runs_on_creation(class_id) or class_id in self._site_symbols()
+        ``SourceIndex.open_classes``, which also holds a class whose body
+        passes ``locals()`` or ``vars()`` on, ``register_all(locals())``), or
+        its body when that is a lookup or reflection site itself."""
+        return self._runs_on_creation(class_id) or class_id in self.site_symbols
 
     def _class_creation(self, change: SymbolChange, label: str) -> None:
         """A member added to or deleted from a class, or whose definition or
@@ -2462,7 +2455,7 @@ class _Observers:
                 return False
             if holder.kind == SymbolKind.CLASS and self._reads_namespace(holder.id):
                 return False
-            if holder.kind == SymbolKind.MODULE and holder.id in self._site_symbols():
+            if holder.kind == SymbolKind.MODULE and holder.id in self.site_symbols:
                 return False
             container = holder.container
         return True

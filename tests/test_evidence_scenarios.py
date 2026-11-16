@@ -6564,3 +6564,55 @@ def test_v4_an_implementation_of_an_abstract_method_added_or_deleted(repo, edit)
     plan = _noop_plan(repo, base, head, evidence)
     assert "tests/test_use.py::test_use" in selected(plan)
     assert "tests/test_other.py::test_other" not in selected(plan)
+
+
+NAMESPACE_REG = (
+    "import inspect\n\nHANDLERS = []\n\n\ndef register_all(ns):\n"
+    "    HANDLERS.extend(v for k, v in list(ns.items()) if k.startswith('on_'))\n\n\n"
+    "def arities():\n    return [len(inspect.signature(h).parameters) for h in HANDLERS]\n\n\n"
+    "def names():\n    return [h.__name__ for h in HANDLERS]\n"
+)
+NAMESPACE_CLASS = (
+    "from pkg.reg import register_all\n\n\nclass Handlers:\n"
+    "    def on_open(path):\n        return path\n\n{extra}    register_all({ns}())\n"
+)
+NAMESPACE_CLOSE = "    def on_close(path, code):\n        return code\n\n"
+NAMESPACE_CHECKS = {
+    "signature": "import pkg.handlers  # noqa: F401\nfrom pkg.reg import arities\n\n\n"
+    "def test_check():\n    assert arities() == [1]\n",
+    "name": "import pkg.handlers  # noqa: F401\nfrom pkg.reg import names\n\n\n"
+    "def test_check():\n    assert names() == ['on_open']\n",
+}
+
+
+@pytest.mark.parametrize("read", list(NAMESPACE_CHECKS))
+@pytest.mark.parametrize("ns", ["locals", "vars"])
+@pytest.mark.parametrize("edit", ["added", "deleted"])
+def test_v4_a_class_body_handing_its_namespace_on(repo, edit, ns, read):
+    """``Handlers``'s body passes ``locals()`` (or ``vars()``) to
+    ``register_all``, which keeps every ``on_*`` member; ``arities`` reads
+    their signatures, ``names`` their names. Adding or deleting
+    ``on_close`` changes both, though nothing names it: the class's
+    creation hands its namespace on, and is planned as changed (sites sig3
+    S13, S13c). The static analysis selected the test; evidence did not."""
+    one = NAMESPACE_CLASS.format(extra="", ns=ns)
+    two = NAMESPACE_CLASS.format(extra=NAMESPACE_CLOSE, ns=ns)
+    before, after = (one, two) if edit == "added" else (two, one)
+    check = NAMESPACE_CHECKS[read]
+    if edit == "deleted":
+        check = check.replace("[1]", "[1, 2]").replace("['on_open']", "['on_open', 'on_close']")
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/reg.py": NAMESPACE_REG,
+            "pkg/handlers.py": before,
+            "tests/test_check.py": check,
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/handlers.py": after})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "tests/test_check.py::test_check" in selected(plan)
+    assert "tests/test_other.py::test_other" not in selected(plan)

@@ -144,6 +144,29 @@ def _header_names(where: Scope) -> set[str]:
     return where.locals | where.class_members.keys()
 
 
+def _hands_on_namespace(stmt: ast.ClassDef) -> bool:
+    """Whether the class body's own code (not its methods) calls ``locals()``
+    or ``vars()`` with no argument: the class namespace as it is being
+    built, which code handed it reads without naming a member
+    (``register_all(locals())``; audit round 8, V4). A lambda or
+    comprehension calling it counts too, and so does a rebound ``locals``:
+    the check may only over-approximate."""
+    stack: list[ast.AST] = [s for s in stmt.body if not isinstance(s, DEF_NODES)]
+    while stack:
+        node = stack.pop()
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("locals", "vars")
+            and not node.args
+            and not node.keywords
+        ):
+            return True
+        if not isinstance(node, DEF_NODES):
+            stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _outermost_calls(expr: ast.expr) -> list[ast.Call]:
     """The calls in ``expr`` that no other call encloses (a lambda's body
     does not run)."""
@@ -674,7 +697,12 @@ class Resolver(FirstPass):
                 # the typing/abc bases that read it: ``ABC``, ``Protocol``,
                 # ``NamedTuple``, ``TypedDict``); not ``object``,
                 # ``Exception`` or ``Generic``.
-                if not cscope.plain or cscope.external_base or self._namespace_base(cscope):
+                if (
+                    not cscope.plain
+                    or cscope.external_base
+                    or self._namespace_base(cscope)
+                    or _hands_on_namespace(stmt)
+                ):
                     self.out.open_classes.add(symbol_id)
                 self._resolve_definitions(scope, stmt.body, cscope.members, cscope)
             elif isinstance(stmt, FUNC_NODES):
