@@ -54,7 +54,14 @@ instance itself (``tok.position += 1``, through any number of callees:
 ``param_flavors``) does not when that runs no code of the class and the
 attribute only ever holds values that cannot change in place
 (writes._HeldSafety; T23). The initialiser's own writes through ``self``
-reach the arguments as a call handing them would."""
+reach the arguments as a call handing them would. The record a
+``logging.Logger`` subclass's ``self.makeRecord(...)`` makes holds what it
+was handed as a fresh ``LogRecord`` does (``HELD`` of ``writes.RECORD`` +
+the class, ``_logger_class``): changing ``record.args`` in place writes
+what was logged, binding an attribute of the record does not unless the
+record may be another object (decided after pass 2, writes._LoggingModel;
+audit round 8, V1). ``locals()`` in a module's own code is its namespace,
+as ``globals()`` is (``_namespace_builtin``; V4)."""
 
 from __future__ import annotations
 
@@ -62,7 +69,7 @@ import ast
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
-from diffcone.indexer.aliases import VALUE, name_sources
+from diffcone.indexer.aliases import STORED, VALUE, name_sources
 from diffcone.indexer.facts import _AttrRef, _AttrWrite, _CallSite, _ParamDynamic, apply_fact
 from diffcone.indexer.literals import _collect_store_names, _LocalBindings
 from diffcone.indexer.patches import (
@@ -130,10 +137,13 @@ from diffcone.indexer.writes import (
     ANY_CLASS_WHAT,
     ARGUMENT_MUTATORS,
     HELD_WHAT,
+    LOGGER_CLASSES,
+    RECORD,
     _whole_param,
     observe_assign,
     observe_augassign,
     observe_call,
+    observe_log_store,
     observe_return,
 )
 from diffcone.model import (
@@ -409,9 +419,8 @@ MOCK_CALLS = frozenset(
 )
 _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
 # ``logging.Logger`` methods that make a new ``LogRecord`` (``self.makeRecord(
-# ...)`` in a subclass that defines none of them): what they give back is
-# no object the project held, whatever they are handed.
-LOGGER_CLASSES = frozenset({"logging.Logger", "logging.RootLogger"})
+# ...)`` in a subclass): what they give back holds what they are handed
+# (writes.RECORD), unless the project may define the method or make records.
 LOGGER_RECORD_METHODS = frozenset({"makeRecord"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
@@ -643,6 +652,18 @@ class _ReferenceCollector(ast.NodeVisitor):
             self.indexer.out.unresolved.add(
                 UnresolvedReference(self.source, UnresolvedKind.ATTRIBUTE, name, chain)
             )
+
+    def _namespace_builtin(self, name: str) -> bool:
+        """Whether calling builtin ``name`` with no argument gives the
+        module's namespace: ``globals()`` anywhere, ``locals()`` in the
+        module's own code (a function's is a copy of its locals, a class
+        body's its namespace; audit round 8, V4)."""
+        if name == "globals":
+            return True
+        if name != "locals" or self.scope.class_level or self.scope.literal_parent is not None:
+            return False
+        symbol = self.indexer.index.symbols.get(self.source)
+        return symbol is not None and symbol.kind in (SymbolKind.MODULE, SymbolKind.VARIABLE)
 
     def _dynamic(self, detail: str) -> None:
         self.indexer.out.unresolved.add(
@@ -1614,6 +1635,12 @@ class _ReferenceCollector(ast.NodeVisitor):
         found: dict[str, bool] = {}
         for value, how in self._sources_in(owner).get(name, ()):
             roots = self._state_roots(value, seen)
+            if how == STORED:
+                # Stored into a fresh instance itself (``setattr(record,
+                # "fields", fields)``), it is a new part of that object, not
+                # part of what its constructor was handed (the store is a
+                # write of the instance, recorded as such; audit round 8, V1).
+                roots = {r: c for r, c in roots.items() if held_root(r) is None}
             if how != VALUE:  # an element, what entering gives, a holder
                 roots = _part_of(roots, copy=False)
             found = _merged(found, roots)
@@ -1960,14 +1987,27 @@ class _ReferenceCollector(ast.NodeVisitor):
                 *(k.value for k in node.keywords if k.arg not in ("spec", "spec_set")),
             ]
         copy = False
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr in LOGGER_RECORD_METHODS
-            and self._library_logger(func.value, func.attr)
-        ):
-            return {}  # a new LogRecord
+        logger = (
+            self._logger_class(func.value)
+            if isinstance(func, ast.Attribute) and func.attr in LOGGER_RECORD_METHODS
+            else None
+        )
+        if logger is not None:
+            # A new LogRecord holding what it was handed (``record.args`` is
+            # the mapping logged, ``record.msg`` the message), unless the
+            # project may define the method or make records (decided after
+            # pass 2, writes._LoggingModel; audit round 8, V1), and what an
+            # in-scope override returns.
+            held = _part_of(
+                _merged(*(self._state_roots(a, seen) for a in args if not self._names_function(a))),
+                copy=False,
+            )
+            return _merged(
+                {_held(f"{RECORD}{logger}", root): c for root, c in held.items()},
+                {f"{RESULT}{callee}": False for callee in self._callees(parts)},
+            )
         if isinstance(func, ast.Name) and not self._is_shadowed(func.id):
-            if func.id == "globals" and not args:
+            if self._namespace_builtin(func.id) and not args:
                 return {_NAMESPACE: False}
             if func.id == "type" and len(node.args) == 1 and not node.keywords:
                 if self._is_self(node.args[0]) and not self.scope.self_is_class:
@@ -2022,38 +2062,33 @@ class _ReferenceCollector(ast.NodeVisitor):
                 found = _merged(found, receiver)
         return _part_of(found, copy=copy)
 
-    def _library_logger(self, receiver: ast.expr, method: str) -> bool:
-        """Whether ``receiver`` is ``self`` in a method of a class whose only
-        bases are ``logging.Logger`` (``LOGGER_CLASSES``, named through the
-        module's own imports), and neither it nor an in-scope subclass
-        defines ``method``: the call runs the library's own. strata's
-        ``StructuredLogger`` makes a record to attach fields to, whose
-        ``setattr(record, ...)`` wrote every object a caller logged, and
-        hands it to ``self.handle``, which is no project ``handle`` of
-        another class (writes.LIBRARY_METHOD)."""
+    def _logger_class(self, receiver: ast.expr) -> str | None:
+        """The class when ``receiver`` is ``self`` in a method of a plain
+        class whose only bases are ``logging.Logger`` (``LOGGER_CLASSES``),
+        named through its own module's imports and bound by nothing else in
+        the module (``Logger = Base``): a method it calls on ``self`` may be
+        the library's. Whether it is, nothing in scope defining or giving
+        it (a subclass, a mixin of one, a class attribute bound anywhere, an
+        instance attribute, ``logging.Logger.<name> = f``), is decided after
+        pass 2 (writes._LoggingModel; audit round 8, V1)."""
         if self.scope.self_is_class:
-            return False
+            return None
         cls = self._self_class(receiver)
         cscope = self.indexer.class_scopes.get(cls) if cls is not None else None
         if cscope is None or cscope.enclosing is not None or cscope.bases or not cscope.plain:
-            return False
+            return None
         module = cscope.module
         if module.star_imports or not cscope.base_chains:
-            return False
+            return None
         for chain in cscope.base_chains:
-            if chain is None:
-                return False
+            if chain is None or chain[0] in module.bindings or chain[0] in module.members:
+                return None
             binding = module.imports.get(chain[0])
             if binding is None or module.alt_imports.get(chain[0]):
-                return False
+                return None
             if ".".join([binding.dotted, *chain[1:]]) not in LOGGER_CLASSES:
-                return False
-        return not any(
-            method in self.indexer.class_scopes[c].members
-            or method in self.indexer.class_scopes[c].bindings
-            for c in (cls, *self.indexer._descendants.get(cls, ()))
-            if c in self.indexer.class_scopes
-        )
+                return None
+        return cls
 
     def _copy_is_new(self, how: str, value: ast.expr | None) -> bool:
         """Whether a copy (``how``: ``copy.copy``, ``copy.deepcopy``, a
@@ -2606,6 +2641,7 @@ class _ReferenceCollector(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         observe_assign(self, node.targets)
+        observe_log_store(self, node.targets, node.value)
         if len(node.targets) == 1:
             self._stash_binding(node.targets[0], node.value)
         for target in node.targets:
@@ -2778,7 +2814,9 @@ class _ReferenceCollector(ast.NodeVisitor):
                     # ``inspect.getmembers(mod)`` hands out every member's
                     # value, as ``vars(mod)`` does: any attribute is read.
                     self._member_read(node.args[0], None)
-            if builtin and parts[0] in DYNAMIC_CALLS:
+            if builtin and (
+                parts[0] in DYNAMIC_CALLS or (self._namespace_builtin(parts[0]) and not node.args)
+            ):
                 code = node.args[0] if node.args else None
                 if parts[0] in ("exec", "eval") and code is not None:
                     self._text_code(node, code, f"{name}()")

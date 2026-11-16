@@ -46,7 +46,12 @@ Supported subset (see internal/design.md):
   ``globals()`` or a function's result bound to it (``references.py``: a
   memoised function's result, a lambda's, a deep copy's is the state
   itself), or through a parameter or receiver the callee writes, the
-  callee a writer as well as its caller (``writes.py``); a variable filled
+  callee a writer as well as its caller (``writes.py``: ``*args`` and
+  ``**kwargs`` included, a starred argument handed to every parameter it
+  may fill, what a fresh object holding a parameter holds; the code the
+  ``logging`` library calls back from a log call, handlers, filters,
+  formatters, record factories and logger-class overrides, with the record
+  holding what was logged: ``writes._LoggingModel``); a variable filled
   once by the one function writing it, with a value nothing can see
   differently (``global V; if V is None: V =
   os.path.dirname(pkg.__file__)``, not a container it may fill), is a lazy

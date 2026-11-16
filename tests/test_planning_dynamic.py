@@ -3325,3 +3325,48 @@ def test_u21_a_classmethods_lookup_on_cls_stays_dynamic_from_the_module_cache(re
     )
     assert selected(plan) == {"tests/test_reg.py::test_call", "bench_reg.time_call"}
     assert "dynamic_reference" in rules(plan, "tests/test_reg.py::test_call")
+
+
+HANDLERS_REG = (
+    "HANDLERS = []\n\n\ndef register_all(ns):\n"
+    "    HANDLERS.extend(v for k, v in list(ns.items()) if k.startswith('on_'))\n\n\n"
+    "def names():\n    return [h.__name__ for h in HANDLERS]\n"
+)
+HANDLERS_MOD = (
+    "from pkg.reg import register_all\n\n\ndef on_open(path):\n    return path\n\n\n"
+    "{extra}register_all({ns}())\n"
+)
+
+
+@pytest.mark.parametrize("ns", ["globals", "locals", "vars"])
+def test_v4_module_level_locals_is_the_module_s_namespace(repo, ns):
+    """At module level ``locals()`` (and ``vars()``) is the module's
+    namespace, as ``globals()`` is: handing it to ``register_all`` hands
+    every name the module binds, so a function added there changes what
+    the registry holds."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/reg.py": HANDLERS_REG,
+        "pkg/handlers.py": HANDLERS_MOD.format(extra="", ns=ns),
+        "tests/__init__.py": "",
+        "tests/test_names.py": (
+            "import pkg.handlers  # noqa\nfrom pkg.reg import names\n\n\n"
+            "def test_names():\n    assert names() == ['on_open']\n"
+        ),
+        "tests/test_other.py": "def test_other():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_names.py": (
+            "import pkg.handlers  # noqa\nfrom pkg.reg import names\n\n\n"
+            "def time_names():\n    names()\n"
+        ),
+    }
+    base = repo.commit(files)
+    extra = "def on_close(path, code):\n    return code\n\n\n"
+    head = repo.commit({"pkg/handlers.py": HANDLERS_MOD.format(extra=extra, ns=ns)})
+    plan = repo.plan(
+        base,
+        head,
+        [asv_target("bench_names.time_names", "benchmarks.bench_names.time_names")],
+        discover_runners=["pytest"],
+    )
+    assert selected(plan) == {"tests/test_names.py::test_names", "bench_names.time_names"}

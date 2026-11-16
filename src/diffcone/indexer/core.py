@@ -209,7 +209,7 @@ class Indexer(DynamicBounds):
                     new_resolved[key] = _output_to_dict(out)
             self._global.merge(out)
         try:
-            self._class_record = apply_writes(self)
+            self._class_record, log_links = apply_writes(self)
             self._result_writes()
             self._external_lookups()
             self._table_imports()
@@ -222,6 +222,7 @@ class Indexer(DynamicBounds):
             self._module_reach()
             self._install_edges()
             self._external_state_edges()
+            self._log_callback_writes(log_links)
         except RecursionError:
             self.out = self._global
             self._too_deep("", "")
@@ -1048,6 +1049,56 @@ class Indexer(DynamicBounds):
                     self._global.class_binds.add((root, "*"))
                     if symbol.kind == SymbolKind.VARIABLE:
                         self._global.typed_writes.add((root, writer))
+
+    def _log_callback_writes(self, links: dict[str, set[str]]) -> None:
+        """What a logging callback changes in place itself, or through the
+        code it calls (a project ``makeRecord`` appending to a module list,
+        a handler's ``emit`` storing into a table), is changed by every log
+        site that runs it (writes._LoggingModel, audit round 8, V1, V9): no
+        call edge leads from the site to the callback, so each variable with
+        a ``mutated_by`` edge to code the callback reaches gets one to the
+        site, and the planner's rule for writers' callers reaches who calls
+        the site."""
+        if not links:
+            return
+        symbols = self.index.symbols
+        calls: dict[str, set[str]] = defaultdict(set)
+        written: dict[str, set[str]] = defaultdict(set)
+        for edge in self.index.edges:
+            if edge.kind != EdgeKind.REFERENCES:
+                continue
+            if edge.detail == MUTATED_BY:
+                written[edge.target].add(edge.source)
+            elif not edge.detail or edge.detail == "constructor":
+                target = symbols.get(edge.target)
+                if target is not None and target.kind in (
+                    SymbolKind.FUNCTION,
+                    SymbolKind.METHOD,
+                ):
+                    calls[edge.source].add(edge.target)
+        reach: dict[str, set[str]] = {}
+
+        def reached(start: str) -> set[str]:
+            found = reach.get(start)
+            if found is None:
+                found = {start}
+                stack = [start]
+                while stack:
+                    for nxt in calls.get(stack.pop(), ()):
+                        if nxt not in found:
+                            found.add(nxt)
+                            stack.append(nxt)
+                reach[start] = found
+            return found
+
+        for site, callbacks in sorted(links.items()):
+            states: set[str] = set()
+            for callback in callbacks:
+                for code in reached(callback):
+                    states |= written.get(code, set())
+            for state in sorted(states):
+                if state != site:
+                    self.index.edges.add(Edge(state, site, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _external_state_edges(self) -> None:
         """A store onto a module outside the source roots (``json.mode = v``,

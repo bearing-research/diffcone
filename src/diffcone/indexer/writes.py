@@ -15,14 +15,30 @@ Pass 2 records, per function (cacheable per module):
   ``delattr``/``vars(p)``/``p.__dict__``, or a standard-library function
   that changes its first argument (``heapq.heappush(p, x)``). ``self`` is a
   parameter: a method that writes ``self.x`` writes its receiver. A local
-  bound once to a parameter (``d = p``) is that parameter;
+  bound once to a parameter (``d = p``) is that parameter; ``*args`` and
+  ``**kwargs`` are parameters written in part by an item's write (``objs[0]
+  .x = v``, ``for o in objs: o.x = v``; audit round 8, V8). An element of
+  a parameter itself handed on (``for o in objs: o.reset()``) is not a pass
+  of the parameter (``_param_roots``'s ``elements``). A fresh
+  instance holding a parameter (``r = Box(p)``, a library logger's record:
+  ``RECORD``) written in place (``r.args.update(...)``, through ``h =
+  r.args`` too) is recorded as ``held_param_writes``, decided after pass 2
+  by ``_HeldSafety`` (audit round 8, V1, V7);
 * every object it hands to a call (``passes``): one of its parameters, a
   module-level variable (``REG``, ``cfg.REG``, ``REG["sub"]``,
   ``import_module("pkg.cfg").REG``), or an in-scope module (``pkg.cfg``, a
   function-local import of it, ``sys.modules["pkg.cfg"]``,
   ``import_module("pkg.cfg")``, a local bound once to one of those), as an
   argument or as the receiver of a method call, with the callee when it
-  resolves and its name otherwise.
+  resolves and its name otherwise. A starred argument (``f(*ITEMS)``) may
+  land in any parameter from its position on (slot ``*<i>``), a
+  double-starred one (``f(**PARTS)``) in any keyword (``**``), each in part
+  (``_call_slots``, ``slot_params``; V8);
+* what the logging library may call back (``log_calls``, ``log_contents``,
+  ``log_registered``; ``_observe_logging``, ``observe_log_store``): log
+  calls with what they log, and the objects and functions handed to the
+  library, decided after pass 2 by ``_LoggingModel`` (audit round 8, V1,
+  V9).
 
 After pass 2 (``apply_writes``), a parameter handed to a callee's written
 parameter is written too, until nothing changes; then every variable handed
@@ -37,13 +53,18 @@ that does not resolve (``obj.fill(REG)``, ``registry.register(x)``) may be
 any in-scope function or method of that name, unless the receiver is a
 variable whose value is known: an instance of an in-scope class (only that
 class's method), a dict, list or set display (only the container
-mutators, which pass 2 already records as writes), or a third-party value
+mutators, which pass 2 already records as writes; so is a local of the
+function bound once to a display or to ``dict()``/``list()``/``set()``:
+``fields = {}; fields.update(kw)``, ``_display_local``), or a third-party value
 (a call into a module outside the roots, or a project factory whose every
 ``return`` is one, ``cast(T, ...)`` included: only the call is trusted), whose
 methods are those of in-scope classes deriving from a third-party class
 (``logging.setLoggerClass(StructuredLogger)``). So is a method a
-``logging.Logger`` subclass calls on ``self`` and defines nowhere in scope
-(``self.handle(record)``: the library's own, ``LIBRARY_METHOD``). A method called on an
+``logging.Logger`` subclass calls on ``self`` (``self.handle(record)``,
+``LIBRARY_METHOD`` + class): the library's own, which calls nothing of the
+project directly, unless the project may define or give it to the class's
+family (``_LoggingModel.library_method``); the library's callbacks are
+followed from each log site instead (``_LoggingModel.passes``). A method called on an
 instance attribute (``self._client.get(...)``) is one of what the attribute
 holds when every write of it says (a construction of a plainly built
 in-scope class, a third-party value: ``_attribute_values``), and any method
@@ -75,7 +96,9 @@ called on the class itself, writes it (``library_calls``,
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v`` on an instance not
 made by an explicit call of its class; a parameter
-returned to the caller; a module returned by a function other code calls),
+returned to the caller, which a write through the result changes; a module
+returned by a function other code calls; a function bound onto a class
+under another name and called on ``self``),
 and a third-party function that changes an argument in place, a module
 included (a library handed a module of the project that writes into it).
 
@@ -119,8 +142,10 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from diffcone.indexer.aliases import STORED, VALUE
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
 from diffcone.indexer.facts import _Output, apply_fact
 from diffcone.indexer.scopes import ClassScope, External, ModuleNode, Resolved, Scope
@@ -200,6 +225,10 @@ ARGUMENT_MUTATORS = frozenset(
 
 # Slot of the receiver in a pass record.
 RECEIVER = "self"
+# Slots of a starred argument: ``*<i>``, any positional slot from ``i`` on
+# or the ``*args``; ``**``, any keyword or the ``**kwargs`` (V8).
+ANY_POSITION = "*"
+ANY_KEYWORD = "**"
 # A pass record's ``held:<class id>|<what>``: ``<what>`` handed on as what a
 # fresh instance of the class holds of its constructor's arguments
 # (references.HELD; audit round 6, T23).
@@ -211,6 +240,105 @@ HELD_BY = "@"
 # in-scope class deriving from a library class (``self.handle(record)`` in a
 # ``logging.Logger`` subclass defining no ``handle``).
 LIBRARY_METHOD = "~"
+# The library's logger classes a project logger class may derive from.
+LOGGER_CLASSES = frozenset({"logging.Logger", "logging.RootLogger"})
+
+# The logging library (audit round 8, V1, V9): a log call makes a record and
+# hands it to the filters and handlers of the logger and its parents, which
+# format it; project objects handed to the library are called back
+# (_LoggingModel). Logger methods that make a record:
+LOG_METHODS = frozenset(
+    {"debug", "info", "warning", "warn", "error", "exception", "critical", "fatal", "log"}
+)
+# ... that hand on a record made already:
+RECORD_METHODS = frozenset({"handle", "callHandlers"})
+# ... and what a ``logging.Logger`` subclass may call on ``self`` to log.
+LOGGER_SELF_METHODS = LOG_METHODS | RECORD_METHODS | {"_log", "makeRecord"}
+# Calls handing the library an object it calls back, and a library object's
+# attributes holding such objects.
+REGISTER_METHODS = frozenset({"addHandler", "addFilter", "setFormatter"})
+REGISTER_ATTRIBUTES = frozenset({"handlers", "filters", "formatter"})
+# Library callables whose arguments it calls back: a handler class's stream,
+# queue, target or handlers (``StreamHandler(w)``, ``QueueListener(q, *hs)``).
+LOG_HANDLER_SUFFIXES = ("Handler", "Listener")
+# Configurations that may name any class or function to make and call.
+LOG_CONFIGS = frozenset(
+    {"logging.config.dictConfig", "logging.config.fileConfig", "logging.config.listen"}
+)
+# What the library calls on an object handed to it: a handler's, a filter's,
+# a formatter's, a stream's or queue's methods, a record's.
+OBJECT_CALLBACKS = frozenset(
+    {
+        "handle",
+        "emit",
+        "filter",
+        "format",
+        "formatTime",
+        "formatException",
+        "formatStack",
+        "formatMessage",
+        "usesTime",
+        "flush",
+        "handleError",
+        "acquire",
+        "release",
+        "write",
+        "put",
+        "put_nowait",
+        "getMessage",
+    }
+)
+# What a logger's library methods call on the logger itself (a project
+# subclass's override).
+LOGGER_CALLBACKS = frozenset(
+    {
+        "makeRecord",
+        "handle",
+        "callHandlers",
+        "_log",
+        "findCaller",
+        "isEnabledFor",
+        "getEffectiveLevel",
+        "filter",
+        "hasHandlers",
+        "process",
+    }
+)
+# The library classes a logger class derives from.
+LOGGER_FAMILY = frozenset({"logging.Logger", "logging.RootLogger", "logging.LoggerAdapter"})
+# Callbacks handed what a record is made of, not a record.
+DIRECT_CALLBACKS = frozenset({"makeRecord", "_log", "process"})
+# ``log_calls`` kinds, ``log_contents`` sites and ``log_registered`` roles.
+LIBRARY, VARIABLE_LOGGER, SELF_LOGGER, ANY_LOGGER = "lib", "var", "self", "any"
+# An instance of an in-scope class (``self`` in its methods, a local bound
+# once to a constructor call): a log site only when the class or a
+# subclass derives from a ``logging`` class (``console.log(...)`` is not).
+INSTANCE_LOGGER = "inst"
+ARGS_SITE, RECORD_SITE = "args", "record"
+HANDLER, FILTER, FORMATTER, STREAM = "handler", "filter", "formatter", "stream"
+FUNCTION, FACTORY, ANY_REGISTERED = "function", "factory", "*"
+# What the library calls on an object by the role it was handed in (a class
+# deriving from a ``logging`` class has every ``OBJECT_CALLBACKS`` method
+# called): a handler's ``handle``, a filter's ``filter``, a formatter's
+# ``format``, a handler's stream's, queue's or target's methods; after a
+# configuration naming anything, the first three by name.
+ROLE_CALLBACKS = {
+    HANDLER: frozenset({"handle"}),
+    FILTER: frozenset({"filter"}),
+    FORMATTER: frozenset({"format"}),
+    STREAM: frozenset({"write", "flush", "put", "put_nowait", "handle"}),
+    ANY_REGISTERED: frozenset({"handle", "filter", "format"}),
+}
+REGISTER_ROLES = {
+    "addHandler": HANDLER,
+    "addFilter": FILTER,
+    "setFormatter": FORMATTER,
+    "handlers": HANDLER,
+    "filters": FILTER,
+    "formatter": FORMATTER,
+}
+FUNCTION_WHAT = "func:"  # a function of the project handed to the library
+UNKNOWN_REGISTERED = "?"  # an object nothing says the class of
 # A pass record's ``anyclass:<attribute>``: the class of an object of unknown
 # type, or what it holds under that attribute (references.ANY_CLASS; audit
 # round 6, T25).
@@ -251,16 +379,32 @@ FRESH_RESULTS = frozenset(
 
 
 def _own_param(collector: _ReferenceCollector, name: str) -> str | None:
-    """``name`` when it is a parameter of the function being walked (a
-    nested scope that binds the name hides it)."""
+    """``name`` when it is a parameter of the function being walked, its
+    ``*args`` and ``**kwargs`` included (a nested scope that binds the name
+    hides it)."""
     scope = collector.scope
     while scope is not None:
-        if name in scope.params:
+        if name in scope.params or name in scope.var_params:
             return name
         if name in scope.literal_bound:
             return None
         scope = scope.literal_parent
     return None
+
+
+def _var_param(collector: _ReferenceCollector, name: str) -> bool:
+    """Whether ``name`` is the function's ``*args`` or ``**kwargs``: a new
+    tuple or dict each call, holding what the caller handed."""
+    scope = collector.scope
+    while scope is not None:
+        if name in scope.params:
+            return False
+        if name in scope.var_params:
+            return True
+        if name in scope.literal_bound:
+            return False
+        scope = scope.literal_parent
+    return False
 
 
 def _root_name(expr: ast.expr) -> ast.Name | None:
@@ -271,21 +415,169 @@ def _root_name(expr: ast.expr) -> ast.Name | None:
     return expr if isinstance(expr, ast.Name) else None
 
 
+# What a parameter root is (``_param_roots``): the parameter itself or part
+# of it, a new container of its items (``*args``, ``list(p)``), or held by a
+# new object (``held:<class>``: a fresh instance of an in-scope class whose
+# constructor was handed it, or ``RECORD`` + class for the record a library
+# logger's ``makeRecord`` makes; audit round 8, V1, V7).
+PARAM, PARAM_COPY = "", "copy"
+# The record ``makeRecord`` makes, called on ``self`` in a method of a
+# ``logging.Logger`` subclass (``%record:<class id>``; ``%record:`` for what
+# any logger's library methods make): a new object holding what it was
+# handed, unless the class's ``makeRecord`` may be the project's or a project
+# record factory makes records (decided after pass 2: ``_LoggingModel``).
+RECORD = "%record:"
+# Builtins whose result is a new container of the items of what they are
+# handed (``for i, x in enumerate(p)``: ``x`` is part of ``p``).
+_ITEM_CONTAINERS = frozenset(
+    {"list", "tuple", "set", "frozenset", "sorted", "reversed", "iter", "enumerate", "zip", "dict"}
+)
+# Methods whose result is part of the object they are called on.
+_PART_METHODS = frozenset({"items", "values", "get", "setdefault", "pop", "popitem"})
+
+ParamRoots = dict[str, tuple[str, bool]]
+
+
+def _merge_param_roots(*found: ParamRoots) -> ParamRoots:
+    """The union of ``_param_roots``: a parameter reached itself on one way
+    and held or copied on another is reached itself."""
+    out: ParamRoots = {}
+    for roots in found:
+        for param, (kind, whole) in roots.items():
+            if param not in out:
+                out[param] = (kind, whole)
+                continue
+            old_kind, old_whole = out[param]
+            if PARAM in (kind, old_kind):
+                merged = PARAM
+            elif old_kind.startswith(HELD_WHAT) or kind.startswith(HELD_WHAT):
+                merged = old_kind if old_kind.startswith(HELD_WHAT) else kind
+            else:
+                merged = PARAM_COPY
+            out[param] = (merged, whole and old_whole)
+    return out
+
+
+def _param_parts(roots: ParamRoots) -> ParamRoots:
+    """What is part of the objects of ``roots`` (an item, an attribute): part
+    of the parameter, whatever holds or copied it."""
+    return {param: (PARAM, False) for param in roots}
+
+
+def _param_roots(
+    collector: _ReferenceCollector,
+    expr: ast.expr,
+    seen: frozenset[str] = frozenset(),
+    *,
+    elements: bool = True,
+) -> ParamRoots:
+    """The function's parameters ``expr`` may be or hold part of: parameter
+    -> (PARAM, PARAM_COPY or ``held:<class>``, whether ``expr`` is that
+    object itself rather than part of it). ``p``, ``p.x``, ``p[k]``,
+    ``p.get(k)``; a local any binding of which is one of those (``d = p``,
+    ``for o in p``, ``with p as d``, ``x = p or {}``); ``*args`` and
+    ``**kwargs``, and a builtin's new container of a parameter's items
+    (``list(p)``, ``enumerate(p)``), whose items are the caller's objects;
+    and what a fresh instance of an in-scope class (``Box(p)``) or a
+    library logger's record (``self.makeRecord(..., msg, args)``) was
+    handed, changed when the instance is changed in place or binding one of
+    its attributes runs code (``_HeldSafety``). What any other call returns
+    is not followed (audit round 8, V7, V8). ``elements`` false (what a
+    call is handed, ``_handed_all``): an element of a parameter itself, or
+    what entering it gives, is not followed, as before these rules (an
+    element of ``*args``, or of a new container of a parameter's items, is):
+    following it for every call nearly doubles strata's ``mutated_by``
+    edges again, and is left open (docs/limitations.md)."""
+    if len(seen) > 8:
+        return {}
+    if isinstance(expr, (ast.Starred, ast.NamedExpr, ast.Await)):
+        return _param_roots(collector, expr.value, seen, elements=elements)
+    if isinstance(expr, ast.IfExp):
+        return _merge_param_roots(
+            _param_roots(collector, expr.body, seen, elements=elements),
+            _param_roots(collector, expr.orelse, seen, elements=elements),
+        )
+    if isinstance(expr, ast.BoolOp):
+        return _merge_param_roots(
+            *(_param_roots(collector, v, seen, elements=elements) for v in expr.values)
+        )
+    if isinstance(expr, (ast.Subscript, ast.Attribute)):
+        return _param_parts(_param_roots(collector, expr.value, seen, elements=elements))
+    if isinstance(expr, ast.Name):
+        param = _own_param(collector, expr.id)
+        if param is not None:
+            return {param: (PARAM_COPY if _var_param(collector, param) else PARAM, True)}
+        if not collector._is_local(expr.id) or expr.id in seen:
+            return {}
+        owner = collector._binding_scope(expr.id)
+        if owner is None:
+            return {}
+        inner = seen | {expr.id}
+        found: ParamRoots = {}
+        for value, how in collector._sources_in(owner).get(expr.id, ()):
+            roots = _param_roots(collector, value, inner, elements=elements)
+            if not elements and how not in (VALUE, STORED):
+                # An element of a parameter itself, or what entering it gives
+                # (``for o in objs``), handed on: not followed (an element of
+                # ``*args`` or of what a new object holds is).
+                roots = {p: r for p, r in roots.items() if r[0] != PARAM}
+            if how == STORED:
+                # Stored into a parameter or part of one, it is part of what
+                # the caller handed; into a new object or container itself
+                # (``setattr(record, "fields", fields)``, ``kwargs["k"] =
+                # d``), of nothing the caller handed (the store is a write of
+                # the holder, recorded as such).
+                roots = {p: r for p, r in roots.items() if r[0] == PARAM}
+            if how != VALUE:  # an element, what entering gives, a holder
+                roots = _param_parts(roots)
+            found = _merge_param_roots(found, roots)
+        return found
+    if isinstance(expr, ast.Call):
+        return _call_param_roots(collector, expr, seen, elements)
+    return {}
+
+
+def _call_param_roots(
+    collector: _ReferenceCollector, node: ast.Call, seen: frozenset[str], elements: bool = True
+) -> ParamRoots:
+    """``_param_roots`` of a call: what a fresh object it makes holds of the
+    parameters it is handed, part of its receiver, or the items of a
+    builtin's new container."""
+    func = node.func
+    args = [*node.args, *(k.value for k in node.keywords)]
+    if isinstance(func, ast.Attribute):
+        logger = collector._logger_class(func.value) if func.attr == "makeRecord" else None
+        if logger is not None:
+            found = _merge_param_roots(
+                *(_param_roots(collector, a, seen, elements=elements) for a in args)
+            )
+            return {param: (f"{HELD_WHAT}{RECORD}{logger}", True) for param in found}
+        if func.attr in _PART_METHODS:
+            return _param_parts(_param_roots(collector, func.value, seen, elements=elements))
+    if (
+        isinstance(func, ast.Name)
+        and func.id in _ITEM_CONTAINERS
+        and not collector._is_shadowed(func.id)
+    ):
+        found = _merge_param_roots(
+            *(_param_roots(collector, a, seen, elements=elements) for a in args)
+        )
+        return {param: (PARAM_COPY, True) for param in found}
+    made = collector._made_instance(node)
+    if made is not None and made[0] == "call":
+        found = _merge_param_roots(
+            *(_param_roots(collector, a, seen, elements=elements) for a in args)
+        )
+        return {param: (f"{HELD_WHAT}{made[1]}", True) for param in found}
+    return {}
+
+
 def _param_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
-    """The function's parameter ``expr`` is, or holds part of: ``p``,
-    ``p.x``, ``p[k]``, or a local bound once to one of those."""
-    root = _root_name(expr)
-    if root is None:
-        return None
-    param = _own_param(collector, root.id)
-    if param is not None:
-        return param
-    if root.id in collector.scope.locals:
-        source = collector._local_source(root.id)
-        if source is not None and source is not expr:
-            inner = _root_name(source)
-            if inner is not None and inner is not root:
-                return _own_param(collector, inner.id)
+    """A parameter of the function ``expr`` is or holds part of, held by no
+    new object (the first, when it may be several; ``_param_roots``)."""
+    for param, (kind, _) in sorted(_param_roots(collector, expr).items()):
+        if not kind.startswith(HELD_WHAT):
+            return param
     return None
 
 
@@ -368,13 +660,20 @@ def _variable_of(collector: _ReferenceCollector, expr: ast.expr, depth: int = 0)
 def _write(collector: _ReferenceCollector, expr: ast.expr, how: str = "*") -> None:
     """``expr`` (or what it holds) is changed in place. ``how`` (as
     ``param_flavors`` says) holds when ``expr`` is the parameter itself:
-    through an item or an attribute of it, it is ``*``."""
-    param = _param_of(collector, expr)
-    if param is not None:
-        out = collector.indexer.out
+    through an item or an attribute of it, it is ``*``. A new container of a
+    parameter's items changed itself (``kw["k"] = v`` on ``**kw``) changes
+    none of them; a new object holding a parameter (``Box(p)``, a library
+    logger's record) changes it as ``_HeldSafety`` decides after pass 2
+    (``held_param_writes``; audit round 8, V7, V8)."""
+    out = collector.indexer.out
+    for param, (kind, whole) in sorted(_param_roots(collector, expr).items()):
+        if whole and kind == PARAM_COPY:
+            continue
+        if whole and kind.startswith(HELD_WHAT):
+            out.held_param_writes.add((collector.source, param, kind[len(HELD_WHAT) :], how))
+            continue
         out.param_writes.add((collector.source, param))
-        flavor = how if _whole_param(collector, expr) else "*"
-        out.param_flavors.add((collector.source, param, flavor))
+        out.param_flavors.add((collector.source, param, how if whole else "*"))
 
 
 def _instance_what(what: str) -> bool:
@@ -683,11 +982,260 @@ def observe_augassign(collector: _ReferenceCollector, node: ast.AugAssign) -> No
         observe_receiver(collector, target.value, target.attr, "set")
 
 
+def _observe_logging(
+    collector: _ReferenceCollector, node: ast.Call, parts: list[str] | None
+) -> None:
+    """A call that may make the logging library call project code back: a
+    log call (``log_calls``, with what the record is made of or the record
+    itself: ``log_contents``), or a call handing it an object or function it
+    calls later (``log_registered``; audit round 8, V1, V9)."""
+    func = node.func
+    out = collector.indexer.out
+    source = collector.source
+    if parts is not None and not collector._is_local(parts[0]):
+        target = collector.indexer.resolve_chain(parts, collector.scope)
+        if isinstance(target, External):
+            names = collector._canonical_names(parts)
+            if names & LOG_CONFIGS:
+                # A configuration may name any class or function to make.
+                out.log_registered.add((source, ANY_REGISTERED, ANY_REGISTERED, ""))
+            if "logging.setLogRecordFactory" in names and node.args:
+                for what in _registered(collector, node.args[0]):
+                    out.log_registered.add((source, FACTORY, what, ""))
+            if "logging.basicConfig" in names:
+                for kw in node.keywords:
+                    if kw.arg in ("handlers", None):
+                        for what in _registered(collector, kw.value):
+                            out.log_registered.add((source, HANDLER, what, ""))
+            if any(n.startswith("logging.") and n.endswith(LOG_HANDLER_SUFFIXES) for n in names):
+                # A library handler's stream, queue, target or handlers.
+                for _, expr, _ in _call_slots(node):
+                    for what in _registered(collector, expr):
+                        out.log_registered.add((source, STREAM, what, ""))
+            if any(n.startswith("logging.") and n.rpartition(".")[2] in LOG_METHODS for n in names):
+                _log_site(collector, node, LIBRARY, "", parts[-1])
+    if not isinstance(func, ast.Attribute):
+        return
+    name = func.attr
+    if name in REGISTER_METHODS and node.args:
+        holder = _holder(collector, func.value)
+        for what in _registered(collector, node.args[0]):
+            out.log_registered.add((source, REGISTER_ROLES[name], what, holder))
+    if (
+        name in ("append", "extend", "insert")
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr in REGISTER_ATTRIBUTES
+        and _library_holder(collector, func.value.value)
+    ):
+        holder = _holder(collector, func.value.value)
+        for arg in node.args:
+            for what in _registered(collector, arg):
+                out.log_registered.add((source, REGISTER_ROLES[func.value.attr], what, holder))
+    if name in LOGGER_SELF_METHODS:
+        kind, ident = _log_receiver(collector, func.value, name)
+        if kind:
+            _log_site(collector, node, kind, ident, name)
+
+
+def observe_log_store(
+    collector: _ReferenceCollector, targets: list[ast.expr], value: ast.expr
+) -> None:
+    """An assignment the logging library calls back through: a library
+    object's ``handlers``, ``filters`` or ``formatter`` bound, or a function
+    stored on a library class (``logging.Logger.handle = f``), which every
+    logger then runs (``log_registered``; audit round 8, V1)."""
+    out = collector.indexer.out
+    for target in targets:
+        if not isinstance(target, ast.Attribute):
+            continue
+        if target.attr in REGISTER_ATTRIBUTES and _library_holder(collector, target.value):
+            holder = _holder(collector, target.value)
+            role = REGISTER_ROLES[target.attr]
+            for what in _registered(collector, value):
+                out.log_registered.add((collector.source, role, what, holder))
+        parts = _flatten_chain(target)
+        if parts is None or len(parts) < 3 or collector._is_local(parts[0]):
+            continue
+        if not isinstance(collector.indexer.resolve_chain(parts[:-1], collector.scope), External):
+            continue
+        if any(n.startswith("logging.") for n in collector._canonical_names(parts)):
+            for what in _registered(collector, value):
+                out.log_registered.add((collector.source, FUNCTION, what, ""))
+
+
+def _log_receiver(collector: _ReferenceCollector, receiver: ast.expr, name: str) -> tuple[str, str]:
+    """What a call of method ``name`` on ``receiver`` may log through
+    (``log_calls``' kinds): ``self`` in a ``logging.Logger`` subclass, a
+    library value, a module variable, a receiver of unknown type (only for
+    the methods that log, not ``handle``: every project ``handle`` would be
+    one); ("", "") for none (a class, function or module of the project)."""
+    logger = collector._logger_class(receiver)
+    if logger is not None:
+        return SELF_LOGGER, logger
+    if name not in LOG_METHODS and name not in RECORD_METHODS:
+        return "", ""
+    indexer = collector.indexer
+    if isinstance(receiver, ast.Call):
+        inner = _flatten_chain(receiver.func)
+        if (
+            inner is not None
+            and not collector._is_local(inner[0])
+            and isinstance(indexer.resolve_chain(inner, collector.scope), External)
+        ):
+            return LIBRARY, ""  # ``logging.getLogger(name).info(...)``
+    chain = _flatten_chain(receiver)
+    if (
+        chain is not None
+        and not collector._is_local(chain[0])
+        and chain[0] != collector.scope.self_name
+    ):
+        target = indexer.resolve_chain(chain, collector.scope)
+        if isinstance(target, External):
+            return LIBRARY, ""
+        if isinstance(target, ModuleNode):
+            return "", ""
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = indexer.index.symbols.get(target.symbol)
+            if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
+                return VARIABLE_LOGGER, symbol.id
+            if symbol is not None:
+                return "", ""
+    if name not in LOG_METHODS:
+        return "", ""
+    cls = _instance_class(collector, receiver)
+    return (INSTANCE_LOGGER, cls) if cls is not None else (ANY_LOGGER, "")
+
+
+def _instance_class(collector: _ReferenceCollector, receiver: ast.expr) -> str | None:
+    """The in-scope class ``receiver`` is an instance of, or of a subclass
+    of: ``self`` in one of its methods, a constructor call, or a local of
+    the function (no parameter) bound once to one."""
+    scope = collector.scope
+    if isinstance(receiver, ast.Name):
+        if receiver.id == scope.self_name:
+            return scope.self_class if not scope.self_is_class else None
+        if not collector._is_local(receiver.id) or _own_param(collector, receiver.id) is not None:
+            return None
+        value = collector._local_source(receiver.id)
+        if not isinstance(value, ast.Call):
+            return None
+        receiver = value
+    if isinstance(receiver, ast.Call):
+        made = collector._made_instance(receiver)
+        if made is not None and made[0] == "call":
+            return made[1]
+    return None
+
+
+def _log_site(
+    collector: _ReferenceCollector, node: ast.Call, kind: str, ident: str, name: str
+) -> None:
+    """A log call: recorded with what it hands the library (a record for
+    ``handle``/``callHandlers`` on a logger's own ``self``, what one is made
+    of otherwise)."""
+    out = collector.indexer.out
+    out.log_calls.add((collector.source, kind, ident, name))
+    site = RECORD_SITE if kind == SELF_LOGGER and name in RECORD_METHODS else ARGS_SITE
+    for _, expr, _ in _call_slots(node):
+        for what in _content(collector, expr):
+            out.log_contents.add((collector.source, site, what))
+
+
+def _content(collector: _ReferenceCollector, expr: ast.expr) -> list[str]:
+    """What a call hands on in ``expr`` as pass records name it: the
+    parameters it may be or hold (``_handed_all``) and the module state it
+    may be part of (``_handed_state``)."""
+    found = [what for what, _ in _handed_all(collector, expr)]
+    root = _root_name(expr)
+    if not (found and root is not None and _own_param(collector, root.id) is not None):
+        found += collector._handed_state(expr)
+    return list(dict.fromkeys(found))
+
+
+def _registered(collector: _ReferenceCollector, expr: ast.expr) -> list[str]:
+    """What an object or function handed to the logging library to call
+    back is, as pass records name it (``func:<id>`` for a function of the
+    project), none for a library value (``logging.StreamHandler()``, a
+    local bound only to one), and ``?`` when nothing says."""
+    if isinstance(expr, ast.Starred):
+        return _registered(collector, expr.value)
+    if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+        return list(dict.fromkeys(w for e in expr.elts for w in _registered(collector, e)))
+    indexer = collector.indexer
+    chain = _flatten_chain(expr)
+    if chain is not None and not collector._is_local(chain[0]):
+        target = indexer.resolve_chain(chain, collector.scope)
+        if isinstance(target, External):
+            return []
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = indexer.index.symbols.get(target.symbol)
+            if symbol is not None and symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+                return [f"{FUNCTION_WHAT}{symbol.id}"]
+    found = _content(collector, expr)
+    if found:
+        return found
+    if _library_value(collector, expr, 0):
+        return []
+    return [UNKNOWN_REGISTERED]
+
+
+def _library_value(collector: _ReferenceCollector, expr: ast.expr, depth: int) -> bool:
+    """``expr`` is what a call into a module outside the source roots made,
+    or a local (no parameter) every binding of which is one (storing it
+    into something else, ``log.handlers = [h]``, binds nothing)."""
+    if isinstance(expr, ast.Call):
+        func = _flatten_chain(expr.func)
+        return (
+            func is not None
+            and not collector._is_local(func[0])
+            and isinstance(collector.indexer.resolve_chain(func, collector.scope), External)
+        )
+    if (
+        not isinstance(expr, ast.Name)
+        or not collector._is_local(expr.id)
+        or _own_param(collector, expr.id) is not None
+        or depth > 3
+    ):
+        return False
+    owner = collector._binding_scope(expr.id)
+    sources = collector._sources_in(owner).get(expr.id, ()) if owner is not None else ()
+    values = [(value, how) for value, how in sources if how != STORED]
+    return bool(values) and all(
+        how == VALUE and _library_value(collector, value, depth + 1) for value, how in values
+    )
+
+
+def _library_holder(collector: _ReferenceCollector, expr: ast.expr) -> bool:
+    """Whether ``expr``, whose ``handlers``/``filters``/``formatter`` is
+    bound or added to, may be a library logger or handler: not ``self`` in a
+    class that is no ``logging.Logger`` subclass (a project event bus's
+    ``self.handlers``)."""
+    root = _root_name(expr)
+    if root is None or root.id != collector.scope.self_name:
+        return True
+    return expr is root and collector._logger_class(expr) is not None
+
+
+def _holder(collector: _ReferenceCollector, expr: ast.expr) -> str:
+    """``var:<id>`` when ``expr`` is a module variable (a logger handlers
+    are added to), else ""."""
+    chain = _flatten_chain(expr)
+    if chain is None or collector._is_local(chain[0]) or chain[0] == collector.scope.self_name:
+        return ""
+    target = collector.indexer.resolve_chain(chain, collector.scope)
+    if isinstance(target, Resolved) and not target.detail:
+        symbol = collector.indexer.index.symbols.get(target.symbol)
+        if symbol is not None and symbol.kind == SymbolKind.VARIABLE:
+            return f"var:{symbol.id}"
+    return ""
+
+
 def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str] | None) -> None:
     """A call that writes a parameter, or hands a parameter or a module
     variable on to a callee."""
     func = node.func
     indexer = collector.indexer
+    _observe_logging(collector, node, parts)
     if (
         parts is not None
         and node.args
@@ -743,31 +1291,34 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
         # (``map(is_integer, header)`` is not ``Styler.map``).
         _builtin_call(collector, node, func.id)
         return
-    passes: list[tuple[str, ast.expr]] = []  # (slot, argument)
-    for i, arg in enumerate(node.args):
-        if isinstance(arg, ast.Starred):
-            break
-        passes.append((str(i), arg))
-    for kw in node.keywords:
-        if kw.arg is not None:
-            passes.append((f"={kw.arg}", kw.value))
+    if (
+        isinstance(func, ast.Attribute)
+        and func.attr in _DISPLAY_METHODS
+        and _display_local(collector, func.value)
+    ):
+        # ``fields = {}; fields.update(kwargs)``: the builtin container's own
+        # method, no method of ours of that name (the store into it is
+        # recorded as a binding of what it holds: ``name_sources``).
+        return
+    passes = _call_slots(node)
     handed: list[tuple[str, str]] = []  # (slot, what)
     whole: set[tuple[str, str]] = set()  # a parameter itself handed on (T23)
-    for slot, expr in passes:
-        what = _handed(collector, expr)
-        if what is not None:
+    for slot, expr, part in passes:
+        found = _handed_all(collector, expr)
+        for what, itself in found:
             handed.append((slot, what))
-            if what.startswith("param:") and _whole_param(collector, expr):
+            if itself and not part:
                 whole.add((slot, what))
-        else:  # through a name bound to part of it, a class (audit round 6, T6, T7)
+        if not _plainly_handed(collector, expr):
+            # Through a name bound to part of it, a class (audit round 6, T6, T7).
             handed += [(slot, w) for w in collector._handed_state(expr)]
     if isinstance(func, ast.Attribute) and func.attr not in CONTAINER_MUTATORS:
-        what = _handed(collector, func.value, modules=False)
-        if what is not None:
+        found = _handed_all(collector, func.value, modules=False)
+        for what, itself in found:
             handed.append((RECEIVER, what))
-            if what.startswith("param:") and _whole_param(collector, func.value):
+            if itself:
                 whole.add((RECEIVER, what))
-        else:
+        if not _plainly_handed(collector, func.value, modules=False):
             # Not an instance of an in-scope class: the method's own writes
             # of ``self`` reach the state its class holds (T21, T22), and
             # those of an instance a constructor was handed (T23).
@@ -828,27 +1379,51 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             # attribute holds, typed after pass 2 when every binding of it
             # says (apply_writes, audit round 3, W21).
             callees.append(f"{HELD_BY}{collector.scope.self_class}.{parts[1]}")
-        if (
-            not callees
-            and isinstance(func, ast.Attribute)
-            and collector._library_logger(func.value, name)
-        ):
-            # ``self.handle(record)`` in a ``logging.Logger`` subclass that
-            # defines no ``handle``: the library's, which calls only what
-            # derives from a library class (a handler), never every method
-            # of that name.
-            callees.append(LIBRARY_METHOD)
+        logger = (
+            collector._logger_class(func.value)
+            if not callees and isinstance(func, ast.Attribute)
+            else None
+        )
+        if logger is not None:
+            # ``self.handle(record)`` in a ``logging.Logger`` subclass: the
+            # library's when nothing in scope may define or give the method
+            # (``_LoggingModel.library_method``), whose calls back into the
+            # project are its log sites' (``log_calls``); every method of
+            # that name otherwise.
+            callees.append(f"{LIBRARY_METHOD}{logger}")
     out = indexer.out.passes
     for slot, what in handed:
         for callee in callees or [""]:
             out.add((collector.source, what, callee, name, slot, bound))
             if (slot, what) in whole:
                 indexer.out.whole_passes.add((collector.source, what, callee, name, slot, bound))
-    for slot, expr in passes:
+    for slot, expr, _ in passes:
         held = _held_attr(collector, expr)
         if held:
             for callee in callees or [""]:
                 indexer.out.held_passes.add((collector.source, callee, name, slot, held, bound))
+
+
+def _call_slots(node: ast.Call) -> list[tuple[str, ast.expr, bool]]:
+    """Each argument of a call with the slot it lands in and whether only
+    its items are handed: a positional index, ``*<i>`` for any position
+    from ``i`` on or the ``*args`` (a starred argument, and every positional
+    one after it), ``=<keyword>``, or ``**`` for any keyword or the
+    ``**kwargs`` (``**D``; audit round 8, V8)."""
+    slots: list[tuple[str, ast.expr, bool]] = []
+    starred = False
+    for i, arg in enumerate(node.args):
+        if isinstance(arg, ast.Starred):
+            starred = True
+            slots.append((f"{ANY_POSITION}{i}", arg.value, True))
+        else:
+            slots.append((f"{ANY_POSITION}{i}" if starred else str(i), arg, False))
+    for kw in node.keywords:
+        if kw.arg is not None:
+            slots.append((f"={kw.arg}", kw.value, False))
+        else:
+            slots.append((ANY_KEYWORD, kw.value, True))
+    return slots
 
 
 def _held_attr(collector: _ReferenceCollector, expr: ast.expr) -> str:
@@ -946,6 +1521,53 @@ def _dict_receiver(collector: _ReferenceCollector, expr: ast.expr) -> None:
         _write(collector, expr.args[0])
 
 
+# Methods of a builtin list, dict or set that call nothing they are handed
+# (``sort``'s ``key`` is called).
+_DISPLAY_METHODS = frozenset(
+    {
+        "append",
+        "extend",
+        "insert",
+        "remove",
+        "pop",
+        "clear",
+        "reverse",
+        "popitem",
+        "update",
+        "setdefault",
+        "add",
+        "discard",
+        "get",
+        "keys",
+        "values",
+        "items",
+        "copy",
+        "index",
+        "count",
+    }
+)
+_DISPLAY_TYPES = ("dict", "list", "set")
+
+
+def _display_local(collector: _ReferenceCollector, expr: ast.expr) -> bool:
+    """Whether ``expr`` is a local of the function bound once, to a list,
+    dict or set display or comprehension or to a call of the builtin
+    ``dict``/``list``/``set`` (an object whose methods are the builtin's)."""
+    if not isinstance(expr, ast.Name) or not collector._is_local(expr.id):
+        return False
+    if _own_param(collector, expr.id) is not None:
+        return False
+    value = collector._local_source(expr.id)
+    if isinstance(value, (ast.Dict, ast.List, ast.Set, ast.ListComp, ast.SetComp, ast.DictComp)):
+        return True
+    return (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id in _DISPLAY_TYPES
+        and collector.indexer.resolve_chain([value.func.id], collector.scope) is None
+    )
+
+
 def _builtin_call(collector: _ReferenceCollector, node: ast.Call, name: str) -> None:
     """A builtin runs no function of ours on what it is handed, except the
     higher-order ones, which call a function they are handed on the items:
@@ -979,17 +1601,81 @@ def _builtin_call(collector: _ReferenceCollector, node: ast.Call, name: str) -> 
 def _handed(collector: _ReferenceCollector, expr: ast.expr, *, modules: bool = True) -> str | None:
     """What a call is handed in ``expr``: one of the function's parameters,
     a module-level variable (or part of one), or (``modules``: as an
-    argument) an in-scope module."""
+    argument) an in-scope module (the first of ``_handed_all``)."""
+    found = _handed_all(collector, expr, modules=modules)
+    return found[0][0] if found else None
+
+
+def _handed_all(
+    collector: _ReferenceCollector, expr: ast.expr, *, modules: bool = True
+) -> list[tuple[str, bool]]:
+    """What a call is handed in ``expr``, with whether it is a parameter
+    itself (not an item, an attribute, a copy of its items or what a new
+    object holds of it): each parameter it may be or hold (``param:<name>``,
+    ``held:<class>|param:<name>`` for one a fresh object holds;
+    ``_param_roots``), else a module-level variable (or part of one), else
+    (``modules``: as an argument) an in-scope module."""
     if isinstance(expr, ast.Call):
         # ``vars(p)``/``p.__dict__``-style views hand on the object itself.
         if isinstance(expr.func, ast.Name) and expr.func.id == "vars" and expr.args:
             expr = expr.args[0]
         else:
+            found = _param_whats(_param_roots(collector, expr, elements=False))
+            if found:
+                return found
             module = _module_of(collector, expr) if modules else None
-            return f"module:{module}" if module is not None else None
-    param = _param_of(collector, expr)
-    if param is not None:
-        return f"param:{param}"
+            return [(f"module:{module}", False)] if module is not None else []
+    found = _param_whats(_param_roots(collector, expr, elements=False))
+    if found:
+        return found
+    what = _handed_other(collector, expr, modules=modules)
+    return [(what, False)] if what is not None else []
+
+
+def _plainly_handed(
+    collector: _ReferenceCollector, expr: ast.expr, *, modules: bool = True
+) -> bool:
+    """Whether ``expr`` is plainly a parameter (``p``, ``p.x``, ``p[k]``, a
+    local bound once to one of those; not ``*args``, not what a new object
+    or container holds of one), a module variable or a module: what a call
+    is handed is then that alone, and otherwise also the state
+    ``_handed_state`` finds (the rule before ``_handed_all`` followed more
+    of what holds a parameter, kept so that following more adds only)."""
+    if isinstance(expr, ast.Call):
+        if isinstance(expr.func, ast.Name) and expr.func.id == "vars" and expr.args:
+            expr = expr.args[0]
+        else:
+            return modules and _module_of(collector, expr) is not None
+    root = _root_name(expr)
+    if root is not None:
+        param = _own_param(collector, root.id)
+        if param is not None and not _var_param(collector, param):
+            return True
+        if param is None and root.id in collector.scope.locals:
+            source = collector._local_source(root.id)
+            if source is not None and source is not expr:
+                inner = _root_name(source)
+                if inner is not None and inner is not root:
+                    param = _own_param(collector, inner.id)
+                    if param is not None and not _var_param(collector, param):
+                        return True
+    return _handed_other(collector, expr, modules=modules) is not None
+
+
+def _param_whats(roots: ParamRoots) -> list[tuple[str, bool]]:
+    """Pass records' ``what`` for ``_param_roots``, with whether each is
+    the parameter itself."""
+    found: list[tuple[str, bool]] = []
+    for param, (kind, whole) in sorted(roots.items()):
+        if kind.startswith(HELD_WHAT):
+            found.append((f"{kind}|param:{param}", False))
+        else:
+            found.append((f"param:{param}", whole and kind == PARAM))
+    return found
+
+
+def _handed_other(collector: _ReferenceCollector, expr: ast.expr, *, modules: bool) -> str | None:
+    """``_handed_all`` of what is no parameter: a module variable or module."""
     variable = _variable_of(collector, expr)
     if variable is not None:
         return f"var:{variable}"
@@ -1039,16 +1725,18 @@ def returns_third_party(indexer: Resolver, node: ast.AST, scope: Scope) -> bool:
 # --------------------------------------------------------------------------- after pass 2
 
 
-def apply_writes(indexer: Resolver) -> ClassRecord:
+def apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     """Close parameter writes over the calls that hand parameters on, then
     give each variable handed to a written parameter a ``mutated_by`` edge
     to the caller (see the module docstring); and keep each store through
     what a method of the receiver returns that may be the receiver's state
     (``_resolve_result_stores``). Gives back the record of what each class
-    is given (ClassRecord), which the decisions after it read."""
-    record = _apply_writes(indexer)
+    is given (ClassRecord), which the decisions after it read, and each log
+    site's callbacks (``_LoggingModel``: what they write themselves is the
+    log site's write too, Indexer._log_callback_writes)."""
+    record, links = _apply_writes(indexer)
     _resolve_result_stores(indexer)
-    return record
+    return record, links
 
 
 def _resolve_result_stores(indexer: Resolver) -> None:
@@ -1107,7 +1795,7 @@ def _resolve_result_stores(indexer: Resolver) -> None:
             out.stores.add((caller, where))
 
 
-def _apply_writes(indexer: Resolver) -> ClassRecord:
+def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     out = indexer.out
     params = out.func_params
     _apply_library_calls(indexer)
@@ -1117,10 +1805,10 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
     owners = class_record.owners
     _record_any_class_writes(out, owners)
     writes: set[tuple[str, str]] = set(out.param_writes)
-    if not writes:
-        _apply_held_binds(indexer, _HeldSafety(indexer))
+    if not writes and not out.held_param_writes and not out.log_calls:
+        _apply_held_binds(indexer, _HeldSafety(indexer, _LoggingModel(indexer, class_record)))
         _record_any_class_writes(out, owners)
-        return class_record
+        return class_record, {}
     symbols = indexer.index.symbols
     by_name: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
@@ -1137,16 +1825,34 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
         edges_from[state].append(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
     external_users = {x.symbol for x in indexer.index.external}
 
-    def slot_param(callee: str, slot: str, bound: bool) -> str | None:
+    def slot_params(callee: str, slot: str, bound: bool) -> list[str]:
+        """The parameters of ``callee`` an argument in ``slot`` may land in:
+        a positional one, the ``*args`` past them, a keyword, the
+        ``**kwargs`` for one no parameter is named; any from a position on
+        for a starred argument, any keyword for ``**D`` (audit round 8, V8)."""
         info = params.get(callee)
         if info is None:
-            return None
+            return []
         if slot == RECEIVER:
-            return info.positional[0] if info.bound and info.positional else None
+            return [info.positional[0]] if info.bound and info.positional else []
+        varargs = [info.varargs] if info.varargs else []
+        varkw = [info.varkw] if info.varkw else []
+        shift = 1 if info.bound and bound else 0
+        if slot == ANY_KEYWORD:
+            return [*info.positional[shift:], *info.keyword_only, *varkw]
         if slot.startswith("="):
-            return slot[1:]
-        index = int(slot) + (1 if info.bound and bound else 0)
-        return info.positional[index] if index < len(info.positional) else None
+            name = slot[1:]
+            if varkw and name not in info.positional and name not in info.keyword_only:
+                return varkw
+            return [name]
+        if slot.startswith(ANY_POSITION):
+            return [*info.positional[int(slot[1:]) + shift :], *varargs]
+        index = int(slot) + shift
+        return [info.positional[index]] if index < len(info.positional) else varargs
+
+    def writes_param(callee: str, slot: str, bound: bool) -> list[str]:
+        """``slot_params`` that ``callee`` writes."""
+        return [p for p in slot_params(callee, slot, bound) if (callee, p) in writes]
 
     def third_party(variable: str) -> bool:
         """``log = logging.getLogger(__name__)``, or a project factory whose
@@ -1180,6 +1886,9 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
                 classes.append(target.id)
         return sorted(classes) or None
 
+    model = _LoggingModel(indexer, class_record, value_classes, third_party, by_name)
+    safe = _HeldSafety(indexer, model)
+
     def callees(record: Pass) -> list[str]:
         _, what, callee, name, slot, _ = record
         if callee.startswith(HELD_BY):
@@ -1199,8 +1908,13 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
                     # Not found in scope: a third-party base's method.
                     found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
             return sorted(set(found))
-        if callee == LIBRARY_METHOD:
-            return [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+        if callee.startswith(LIBRARY_METHOD):
+            # The library's own method calls nothing of the project but its
+            # log sites' callbacks; any method of that name if the project
+            # may define or give one (V1).
+            if model.library_method(callee[len(LIBRARY_METHOD) :], name):
+                return []
+            return by_name.get(name, [])
         if callee:
             return [callee]
         if slot == RECEIVER and what.startswith("attr:"):
@@ -1366,8 +2080,7 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
         _, _, _, _, slot, bound = record
         found: list[str] = []
         for callee in callees(record):
-            param = slot_param(callee, slot, bound)
-            if param is not None and (callee, param) in writes:
+            if writes_param(callee, slot, bound):
                 found.append(callee)
         return found
 
@@ -1388,15 +2101,45 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
         _, _, _, _, slot, bound = record
         found: set[str] | None = None
         for callee in callees(record):
-            param = slot_param(callee, slot, bound)
-            if param is not None and (callee, param) in writes:
+            for param in writes_param(callee, slot, bound):
                 found = (found or set()) | (flavors.get((callee, param)) or {"*"})
         return found
 
+    # A fresh object holding a parameter, written in a way that may change
+    # what it holds (``Box(p).items.append(x)``, a library logger's record
+    # whose ``args`` is changed: V1, V7).
+    for function, param, cls, how in sorted(out.held_param_writes):
+        if safe.writes(cls, {how}):
+            writes.add((function, param))
+            flavors[(function, param)].add("*")
+    # What the logging library calls back with what a log call hands it.
+    passes += model.passes(passes, callees, slot_params)
+    links = model.links
     param_passes = [p for p in passes if p[1].startswith("param:")]
+    held_param_passes = [
+        p
+        for p in passes
+        if p[1].startswith(HELD_WHAT) and p[1].partition("|")[2].startswith("param:")
+    ]
     changed = True
     while changed:
         changed = False
+        for record in held_param_passes:
+            # A parameter a fresh object holds, handed on in it: written
+            # when the callee writes the object in a way that may change it.
+            cls, _, inner = record[1][len(HELD_WHAT) :].partition("|")
+            key = (record[0], inner[len("param:") :])
+            if key in writes and "*" in flavors[key]:
+                continue
+            how = written_flavors(record)
+            if how is None or not safe.writes(cls, how):
+                continue
+            if key not in writes:
+                writes.add(key)
+                changed = True
+            if "*" not in flavors[key]:
+                flavors[key].add("*")
+                changed = True
         for record in param_passes:
             key = (record[0], record[1][len("param:") :])
             if key in writes and "*" in flavors[key]:
@@ -1423,7 +2166,7 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
         if callee.startswith(HELD_BY):
             cls, _, attr = callee[len(HELD_BY) :].rpartition(".")
             return [] if attribute_values(cls, attr) is None else callees(record)
-        if callee == LIBRARY_METHOD:
+        if callee.startswith(LIBRARY_METHOD):
             return callees(record)
         return [callee] if callee else []
 
@@ -1433,8 +2176,7 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
     for caller, where, callee, name in sorted(out.computed_passes):
         record = (caller, "param:self", callee, name, RECEIVER, True)
         for c in resolved_callees(record):
-            param = slot_param(c, RECEIVER, True)
-            if param is not None and (c, param) in writes:
+            if writes_param(c, RECEIVER, True):
                 out.stores.add((caller, where))
                 break
     # A parameter's attribute handed to a callee that writes the parameter
@@ -1443,14 +2185,12 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
     for caller, callee, name, slot, held, bound in sorted(out.held_passes):
         record = (caller, "param:self", callee, name, slot, bound)
         for c in resolved_callees(record):
-            param = slot_param(c, slot, bound)
-            if param is not None and (c, param) in writes:
+            if writes_param(c, slot, bound):
                 out.handed.add((caller, c, held))
     module_variables: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
         if symbol.kind == SymbolKind.VARIABLE:
             module_variables[symbol.module].append(symbol.id)
-    safe = _HeldSafety(indexer)
 
     def handed_written(
         caller: str, what: str, receiver: bool, flavors: set[str] | None = None
@@ -1547,7 +2287,7 @@ def _apply_writes(indexer: Resolver) -> ClassRecord:
             handed_written(writer, what, record[4] == RECEIVER, how)
     _apply_held_binds(indexer, safe)
     _record_any_class_writes(out, owners)
-    return class_record
+    return class_record, links
 
 
 def _apply_library_calls(indexer: Resolver) -> None:
@@ -1829,6 +2569,429 @@ def _record_any_class_writes(out: _Output, owners: AnyClassOwners) -> None:
         owners.record(out, name, writer, module)
 
 
+class _LoggingModel:
+    """What the logging library calls back (audit round 8, V1, V9). A log
+    call (``log_calls``: ``log.info(...)`` on a library logger, a module
+    variable that may hold one or a receiver of unknown type, ``logging.
+    warning(...)``, a ``logging.Logger`` subclass's ``self.handle(record)``)
+    makes a record of what it is handed (``log_contents``) and hands it to
+    the filters and handlers of the logger and of its parents, which format
+    it. Each may be a project object, so each log site calls, with the
+    record (a record callback) or with what it is made of (``makeRecord``,
+    ``_log``, a record factory: ``DIRECT_CALLBACKS``):
+
+    * the ``OBJECT_CALLBACKS`` methods of each object handed to the library
+      (``log_registered``: ``addHandler``, ``addFilter``, ``setFormatter``,
+      ``basicConfig(handlers=...)``, a library handler's stream, queue or
+      target, a library object's ``handlers``/``filters``/``formatter``),
+      through the parameters it is handed to (``def attach(h):
+      root.addHandler(h)``), with the object as their receiver, and the
+      module variable it was added to (a logger whose ``handlers`` holds
+      it); every method of those names for one whose class is not known;
+    * a function handed to the library (a filter, a record factory, one
+      stored on a library class: ``logging.Logger.handle = f``);
+    * the ``OBJECT_CALLBACKS`` methods of each class deriving from a
+      ``logging`` class other than a logger (a handler, a formatter), on any
+      instance of the class, and the ``LOGGER_CALLBACKS`` overrides of a
+      logger class (``logging.setLoggerClass``) on the logger logged
+      through (any instance of the class when the site names none);
+    * for a configuration that may name any class (``dictConfig``), every
+      method named as a handler's, filter's or formatter's
+      (``ROLE_CALLBACKS``).
+
+    An object handed in a role has that role's methods called
+    (``ROLE_CALLBACKS``: a handler's ``handle``, a filter's ``filter``, a
+    formatter's ``format``, a stream's ``write``); a library value (a
+    ``logging.StreamHandler()``, a local bound only to one) none.
+
+    Each callback is a pass record (the record held as a fresh ``LogRecord``
+    holds what it is made of: ``RECORD``), and what a callback writes itself
+    (``MADE.append(...)`` in a ``makeRecord`` override) is a write of the log
+    site's too (``links``; Indexer._log_callback_writes). Not followed: a
+    library's own logging (``urllib3`` logging into a project handler), and
+    an object reached through the library (``logging.getLogger(n).handlers
+    [0].records`` in a test).
+
+    Whether a method a ``logging.Logger`` subclass calls on ``self``
+    (``self.handle``, ``self.makeRecord``) is the library's
+    (``library_method``), and whether a record is a fresh ``LogRecord``
+    holding what it was made of (``fresh_record``), are decided here, after
+    pass 2, over every class of the family's MRO (a mixin of a subclass
+    included) and the one record of what each class is given anywhere
+    (ClassRecord: a class attribute bound here or in another module, by a
+    decorator or metaclass, an instance attribute bound in a method), a
+    class written as a whole (``type()`` naming it as a base), a store of
+    that name onto a ``logging`` class, and a project record factory
+    (``logging.setLogRecordFactory``). As for any class, a store of the
+    name onto an object of unknown type (``active.handle = h``) is not taken
+    for an instance attribute shadowing the method."""
+
+    def __init__(
+        self,
+        indexer: Resolver,
+        record: ClassRecord,
+        value_classes: Callable[[str], list[str] | None] | None = None,
+        third_party: Callable[[str], bool] | None = None,
+        by_name: dict[str, list[str]] | None = None,
+    ) -> None:
+        self.indexer = indexer
+        self.record = record
+        self._value_classes = value_classes
+        self._third_party = third_party
+        self._by_name = by_name or {}
+        out = indexer.out
+        # Log site -> the callbacks it runs (Indexer._log_callback_writes).
+        self.links: dict[str, set[str]] = {}
+        self.factory = any(role == FACTORY for _, role, _, _ in out.log_registered)
+        # Names stored onto a ``logging`` class (``*``: any).
+        self.patched: set[str] = set()
+        for _, what in out.process_writes:
+            head, paren, rest = what.partition("(")
+            if paren:
+                if head in ("setattr", "delattr") and rest.startswith("logging"):
+                    self.patched.add("*")
+            elif what.startswith("logging.") and what.count(".") >= 2:
+                self.patched.add(what.rpartition(".")[2])
+        self._library: dict[tuple[str, str], bool] = {}
+        self._derived: dict[str, set[str] | None] = {}
+        self._written: set[str] | None = None
+
+    def library_method(self, cls: str, name: str) -> bool:
+        """Whether ``self.<name>()`` in a method of ``cls`` (a plain
+        ``logging.Logger`` subclass: references._logger_class) runs the
+        library's method: no class of the MRO of ``cls`` or of a subclass
+        is decorated, written as a whole, has a base other than an in-scope
+        class or ``logging.Logger``, defines or binds ``name`` in its body,
+        is given it anywhere (ClassRecord) or binds it on an instance, and
+        nothing stores ``name`` onto an object of unknown type or onto a
+        ``logging`` class."""
+        key = (cls, name)
+        found = self._library.get(key)
+        if found is None:
+            found = self._library[key] = self._is_library(cls, name)
+        return found
+
+    def _is_library(self, cls: str, name: str) -> bool:
+        if name in self.patched or "*" in self.patched:
+            return False
+        indexer = self.indexer
+        scopes = indexer.class_scopes
+        if cls not in scopes:
+            return False
+        family: set[str] = set()
+        for c in (cls, *indexer._descendants.get(cls, ())):
+            family.update(indexer._mro(c))
+        if self._written is None:
+            self._written = self.record.written()
+        for c in sorted(family):
+            cscope = scopes.get(c)
+            if cscope is None or not cscope.plain or c in self._written:
+                return False
+            if not _logger_bases(cscope):
+                return False
+            given = self.record.given(c)
+            if (
+                name in cscope.members
+                or name in cscope.bindings
+                or name in given
+                or "*" in given
+                or name in self.record.methods.get(c, ())
+            ):
+                return False
+        return True
+
+    def fresh_record(self, cls: str) -> bool:
+        """Whether the record ``makeRecord`` makes in a method of ``cls``
+        (any library logger's, for "") is a fresh ``LogRecord`` holding what
+        it was handed: no project record factory, and the library's
+        ``makeRecord`` (for any logger: no class deriving from a ``logging``
+        class may define or be given one)."""
+        if self.factory:
+            return False
+        if cls:
+            return self.library_method(cls, "makeRecord")
+        name = "makeRecord"
+        if name in self.patched or "*" in self.patched:
+            return False
+        for c, cscope in sorted(self.indexer.class_scopes.items()):
+            if not self.logging_derived(c):
+                continue
+            given = self.record.given(c)
+            if (
+                name in cscope.members
+                or name in cscope.bindings
+                or name in given
+                or "*" in given
+                or name in self.record.methods.get(c, ())
+            ):
+                return False
+        return True
+
+    def logging_derived(self, cls: str) -> bool:
+        """Whether a class of the in-scope MRO of ``cls`` names a base from
+        ``logging`` through its module's imports, or one the index cannot
+        tell (a dynamic base, a star import)."""
+        bases = self._logging_bases(cls)
+        return bases is None or bool(bases)
+
+    def _logging_bases(self, cls: str) -> set[str] | None:
+        """The ``logging`` bases the in-scope MRO of ``cls`` names through
+        its modules' imports (``logging.Handler``), None when a base cannot
+        be told (a dynamic base, a star import)."""
+        if cls in self._derived:
+            return self._derived[cls]
+        found: set[str] | None = set()
+        scopes = self.indexer.class_scopes
+        for c in self.indexer._mro(cls):
+            cscope = scopes.get(c)
+            if cscope is None or found is None:
+                continue
+            module = cscope.module
+            if not cscope.complete and module.star_imports:
+                found = None
+                continue
+            names = cscope.base_names or [None] * len(cscope.base_chains)
+            for given, named in zip(cscope.base_chains, names, strict=False):
+                chain = given if given is not None else named
+                if chain is None:
+                    # A base no name says (``make_base()``): unknown when the
+                    # module imports ``logging`` at all.
+                    if not cscope.complete and any(
+                        b.dotted == "logging" or b.dotted.startswith("logging.")
+                        for b in module.imports.values()
+                    ):
+                        found = None
+                        break
+                    continue
+                bindings = [module.imports.get(chain[0]), *module.alt_imports.get(chain[0], ())]
+                for binding in bindings:
+                    if binding is not None and (
+                        binding.dotted == "logging" or binding.dotted.startswith("logging.")
+                    ):
+                        found.add(".".join([binding.dotted, *chain[1:]]))
+        self._derived[cls] = found
+        return found
+
+    def _classes_of(self, what: str) -> list[str] | None:
+        """The in-scope classes a registered object may be an instance of
+        ([] for a library value), None when nothing says."""
+        if what.startswith("var:"):
+            variable = what[len("var:") :]
+            classes = set(self._value_classes(variable) or ()) if self._value_classes else set()
+            classes |= self.record.instances.get(variable, set())
+            if classes:
+                return sorted(classes)
+            if self._third_party is not None and self._third_party(variable):
+                return []
+            return None
+        if what.startswith(HELD_WHAT):
+            return [what[len(HELD_WHAT) :].partition("|")[0]]
+        if what.startswith("instance:"):
+            return [what.rpartition(":")[2]]
+        return None
+
+    def _is_site(self, kind: str, ident: str) -> bool:
+        """A log call through a module variable logs through the library
+        unless its initialiser makes an instance of project classes none
+        of which derives from a ``logging`` class; through an instance of an
+        in-scope class (``INSTANCE_LOGGER``), only when the class or a
+        subclass derives from one."""
+        if kind == INSTANCE_LOGGER:
+            family = [ident, *self.indexer._descendants.get(ident, ())]
+            return any(self.logging_derived(c) for c in family)
+        if kind != VARIABLE_LOGGER:
+            return True
+        classes = self._value_classes(ident) if self._value_classes is not None else None
+        return classes is None or any(self.logging_derived(c) for c in classes)
+
+    def passes(
+        self,
+        passes: list[Pass],
+        callees: Callable[[Pass], list[str]],
+        slot_params: Callable[[str, str, bool], list[str]],
+    ) -> list[Pass]:
+        """The pass records of every log site's callbacks (see the class
+        docstring), and ``links``."""
+        out = self.indexer.out
+        if not out.log_calls:
+            return []
+        indexer = self.indexer
+        symbols = indexer.index.symbols
+        params = out.func_params
+        scopes = indexer.class_scopes
+        registered: set[tuple[str, str, str]] = set()
+        through: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
+        for caller, role, what, holder in sorted(out.log_registered):
+            if what.startswith("param:"):
+                through[(caller, what[len("param:") :])].add((role, holder))
+            else:
+                registered.add((role, what, holder))
+        changed = bool(through)
+        while changed:  # what is handed to a parameter registered in turn
+            changed = False
+            for record in passes:
+                caller, what, _, _, slot, bound = record
+                for callee in callees(record):
+                    for param in slot_params(callee, slot, bound):
+                        for role, holder in sorted(through.get((callee, param), ())):
+                            if what.startswith("param:"):
+                                key = (caller, what[len("param:") :])
+                                if (role, holder) not in through[key]:
+                                    through[key].add((role, holder))
+                                    changed = True
+                            else:
+                                registered.add((role, what, holder))
+
+        def instance_of(method: str) -> set[str]:
+            container = symbols[method].container if method in symbols else None
+            return {f"instance::{container}"} if container in scopes else set()
+
+        targets: dict[str, set[str]] = defaultdict(set)  # callback -> receivers
+        functions: set[tuple[str, str]] = set()
+        by_name = self._by_name
+        for role, what, holder in sorted(registered):
+            if what.startswith(FUNCTION_WHAT):
+                function = what[len(FUNCTION_WHAT) :]
+                if function in symbols:
+                    functions.add((function, role))
+                continue
+            names = ROLE_CALLBACKS.get(role)
+            if names is None:
+                continue
+            if what in (UNKNOWN_REGISTERED, ANY_REGISTERED):
+                for name in sorted(names):
+                    for method in by_name.get(name, ()):
+                        targets[method] |= instance_of(method)
+                continue
+            receivers = {what, holder} - {""}
+            classes = self._classes_of(what)
+            if classes is None:
+                for name in sorted(names):
+                    for method in by_name.get(name, ()):
+                        targets[method] |= receivers
+                continue
+            for cls in classes:
+                if cls not in scopes:
+                    continue
+                for name in sorted(names):
+                    hit = indexer.lookup_in_class(cls, name)
+                    if isinstance(hit, Resolved) and not hit.detail and hit.symbol in params:
+                        targets[hit.symbol] |= receivers
+        # Callback -> the logger classes whose loggers it runs on.
+        loggers: dict[str, set[str]] = defaultdict(set)
+        for cls in sorted(scopes):
+            bases = self._logging_bases(cls)
+            if bases is not None and not bases:
+                continue
+            names: set[str] = set()
+            if bases is None or bases - LOGGER_FAMILY:
+                # A handler, filter or formatter: any instance of the class.
+                for name in sorted(OBJECT_CALLBACKS):
+                    hit = indexer.lookup_in_class(cls, name)
+                    if isinstance(hit, Resolved) and not hit.detail and hit.symbol in params:
+                        targets[hit.symbol].add(f"instance::{cls}")
+            if bases is None or bases & LOGGER_FAMILY:
+                names = set(LOGGER_CALLBACKS)
+            for name in sorted(names):
+                hit = indexer.lookup_in_class(cls, name)
+                if isinstance(hit, Resolved) and not hit.detail and hit.symbol in params:
+                    loggers[hit.symbol].add(cls)
+        if not targets and not functions and not loggers:
+            return []
+        contents: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        for caller, site, what in out.log_contents:
+            contents[caller].add((site, what))
+        sites: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        for caller, kind, ident, _ in out.log_calls:
+            if self._is_site(kind, ident):
+                sites[caller].add((kind, ident))
+        found: list[Pass] = []
+        any_position = f"{ANY_POSITION}0"
+        for caller in sorted(sites):
+            kinds = sites[caller]
+            markers = sorted(
+                {f"{RECORD}{ident}" if kind == SELF_LOGGER else RECORD for kind, ident in kinds}
+            )
+            records: set[str] = set()  # what the record holds, as record callbacks get it
+            direct: set[str] = set()  # what it is made of
+            for site, what in contents.get(caller, ()):
+                if site == RECORD_SITE or what.startswith(HELD_WHAT):
+                    records.add(what)
+                    if site == ARGS_SITE:
+                        direct.add(what)
+                else:
+                    records.update(f"{HELD_WHAT}{marker}|{what}" for marker in markers)
+                    direct.add(what)
+            own = {f"var:{ident}" for kind, ident in kinds if kind == VARIABLE_LOGGER}
+            info = params.get(caller)
+            if info is not None and info.bound and info.positional:
+                if any(kind == SELF_LOGGER for kind, _ in kinds):
+                    own.add(f"param:{info.positional[0]}")
+            linked: set[str] = set()
+            # A logger class's callbacks run on the logger logged through:
+            # the variable or ``self`` when the site names it, any instance
+            # of the class when it does not (``logging.getLogger(n).info``).
+            unnamed = not own or any(
+                kind in (LIBRARY, ANY_LOGGER, INSTANCE_LOGGER) for kind, _ in kinds
+            )
+            on: dict[str, set[str]] = defaultdict(set)
+            for method, receivers in targets.items():
+                on[method] |= receivers
+            for method, classes in loggers.items():
+                on[method] |= own
+                if unnamed:
+                    on[method] |= {f"instance::{cls}" for cls in classes}
+            for method, receivers in sorted(on.items()):
+                name = symbols[method].name
+                bound = params[method].bound
+                linked.add(method)
+                if name in DIRECT_CALLBACKS:
+                    for what in sorted(direct):
+                        found.append((caller, what, method, name, any_position, bound))
+                        found.append((caller, what, method, name, ANY_KEYWORD, bound))
+                else:
+                    for what in sorted(records):
+                        found.append((caller, what, method, name, any_position, bound))
+                for what in sorted(receivers):
+                    found.append((caller, what, method, name, RECEIVER, True))
+            for function, role in sorted(functions):
+                name = symbols[function].name
+                linked.add(function)
+                if role == FUNCTION:
+                    whats = records | direct
+                elif role == FACTORY:
+                    whats = direct
+                else:
+                    whats = records
+                for what in sorted(whats):
+                    found.append((caller, what, function, name, any_position, False))
+                    found.append((caller, what, function, name, ANY_KEYWORD, False))
+                if role == FUNCTION:  # a method of a library class: its ``self``
+                    for what in sorted(own):
+                        found.append((caller, what, function, name, "0", False))
+            self.links[caller] = linked
+        return found
+
+
+def _logger_bases(cscope: ClassScope) -> bool:
+    """Whether every base of a class is an in-scope class or names
+    ``logging.Logger`` (``LOGGER_CLASSES``) through its module's imports."""
+    module = cscope.module
+    external = 0
+    for chain in cscope.base_chains:
+        if chain is None:
+            return False
+        binding = module.imports.get(chain[0])
+        if (
+            binding is not None
+            and not module.alt_imports.get(chain[0])
+            and ".".join([binding.dotted, *chain[1:]]) in LOGGER_CLASSES
+        ):
+            continue
+        external += 1
+    return external <= len(cscope.bases)
+
+
 def _apply_held_binds(indexer: Resolver, safe: _HeldSafety) -> None:
     """An attribute bound on a fresh instance: what its constructor was
     handed changes only when binding runs code of the class (T23). Decided
@@ -1854,10 +3017,14 @@ class _HeldSafety:
     that cannot change in place (no store of the attribute, on any
     receiver of unknown type or an instance of the family, binds anything
     else, ``attr_values``). A change in place of the instance (``*``) may
-    run its methods, which may change anything it holds."""
+    run its methods, which may change anything it holds. A library logger's
+    record (``RECORD``) is a ``LogRecord``, which runs no code binding an
+    attribute, when ``_LoggingModel.fresh_record`` says it is one (audit
+    round 8, V1)."""
 
-    def __init__(self, indexer: Resolver) -> None:
+    def __init__(self, indexer: Resolver, logging: _LoggingModel) -> None:
         self.indexer = indexer
+        self.logging = logging
         self.values: dict[str, set[tuple[str, bool]]] = defaultdict(set)
         for owner, attr, ok in indexer.out.attr_values:
             self.values[attr].add((owner, ok))
@@ -1895,6 +3062,15 @@ class _HeldSafety:
         of ``cls`` may change what its constructor was handed."""
         if "*" in how:
             return True
+        if cls.startswith(RECORD):
+            if not self.logging.fresh_record(cls[len(RECORD) :]):
+                return True
+            return any(
+                flavor[:1] != "="
+                or flavor[1:] == "*"
+                or (flavor[1:].startswith("__") and flavor[1:].endswith("__"))
+                for flavor in how
+            )
         family = self.family(cls)
         if family is None:
             return True
