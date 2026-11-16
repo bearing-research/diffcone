@@ -1197,7 +1197,9 @@ installed it. Under a computed name, that holds for every library name
 your code imports. If what is installed is a module loaded from a
 computed path (<code>importlib.util.module_from_spec</code>), any change can
 affect that code (a module your code creates, <code>types.ModuleType(name)</code>,
-or finds under the name already, is not one). The same goes when your
+or finds under the name already, is not one, and neither is a module a
+fixture puts back from a copy of <code>sys.modules</code> it saved, under the name
+it was saved under). The same goes when your
 code installs a module it was handed (<code>def install(mod):
 sys.modules["extplug"] = mod</code>), because diffcone doesn't follow which
 module the caller passes. An install made by a fixture or a test counts
