@@ -137,6 +137,24 @@ everything.
     name may replace any of your modules. Without a recording, every test
     that imports one of them depends on that code.
 
+**Code importing a name you install a module under reads that module.**
+:   When your code puts one of your modules in `sys.modules`
+    (`sys.modules["compat"] = impl` in a package `__init__`, a fake for a
+    library in a fixture: `monkeypatch.setitem(sys.modules, "extlib",
+    fakes)`), code that imports the name gets that module. Code that
+    imports it, reads an attribute off it or looks a name up on it
+    (`compat.run()`, `getattr(compat, "run")`, `hasattr(compat, name)`)
+    depends on everything in the installed module, and on the code that
+    installed it. Under a computed name, that holds for every library name
+    your code imports. If what is installed is a module loaded from a
+    computed path (`importlib.util.module_from_spec`), any change can
+    affect that code (a module your code creates, `types.ModuleType(name)`,
+    or finds under the name already, is not one). An install made by a fixture or a test counts for
+    the tests that run it (see *Tests are assumed not to depend on what an
+    earlier test left behind* below). A plugin that `pytest_plugins` names
+    this way is the module installed under the name; if diffcone can't
+    tell which module that is, every test is always selected.
+
 ## Objects and modules handed to other code
 
 **Passing a module on depends on all of it.**
@@ -395,8 +413,9 @@ everything.
 
 **Tests are assumed not to depend on what an earlier test left behind.**
 :   When code that runs inside one test changes module state
-    (`server._state = make()`, or `os.environ["MODE"] = mode()`),
-    diffcone counts that change for that test only, not for other tests
+    (`server._state = make()`, `os.environ["MODE"] = mode()`, or a module
+    put in `sys.modules`), diffcone counts that change for that test only
+    (and for each test using the fixture that makes it), not for other tests
     that read the same state, with or without a recording; set an
     environment variable with `monkeypatch.setenv`, which undoes it when
     the test ends. Such code is:

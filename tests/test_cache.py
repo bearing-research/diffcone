@@ -127,7 +127,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 64
+    assert cache_mod.INDEX_FORMAT == 65
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -354,6 +354,9 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
                 "class Engine:\n    def __new__(cls):\n        return super().__new__(cls)\n\n"
                 "    def run(self):\n        return 1\n\n\n"
                 "ENGINE = Engine()\n\n\ndef use():\n    return ENGINE.run()\n"
+            ),
+            "pkg/compat.py": (
+                "import sys\n\nfrom pkg.ops import Handler\n\nsys.modules['extcompat'] = Handler\n"
             ),
             "data.txt": "x\n",
             "tests/test_ops.py": "from pkg.run import main\n\n\ndef test_x():\n    assert main()\n",

@@ -62,6 +62,9 @@ from diffcone.model import (
 # 64: typed_calls and shared_instances; receiver attribute stores keep
 #     their name (``@self.x``), re-initialisation is ``@init``; memoisers
 #     applied by a call (audit round 7, U4, U5, U14, U15, U16, U17, U18);
+# 65: what an install in sys.modules installs (``>`` sources, ``installs``
+#     edges, SourceIndex.installed_names), readers of a name outside the
+#     roots depend on the installing code (audit round 8, V10, V11);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -120,7 +123,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 64
+INDEX_FORMAT = 65
 
 
 def _indexer_fingerprint() -> str:
@@ -198,6 +201,7 @@ def index_to_dict(index: SourceIndex) -> dict:
         "attribute_modules": sorted(index.attribute_modules),
         "any_module_readers": sorted(index.any_module_readers),
         "module_writers": {m: list(w) for m, w in sorted(index.module_writers.items())},
+        "installed_names": {n: list(v) for n, v in sorted(index.installed_names.items())},
         "other_files": dict(sorted(index.other_files.items())),
         "file_modes": dict(sorted(index.file_modes.items())),
         "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
@@ -271,6 +275,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         attribute_modules=set(data["attribute_modules"]),
         any_module_readers=set(data["any_module_readers"]),
         module_writers={m: tuple(w) for m, w in data["module_writers"].items()},
+        installed_names={n: tuple(v) for n, v in data["installed_names"].items()},
         other_files=dict(data["other_files"]),
         file_modes=dict(data["file_modes"]),
         reflection={(s, d) for s, d in data["reflection"]},

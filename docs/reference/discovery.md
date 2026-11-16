@@ -165,7 +165,11 @@ roots don't hold (`pytest_plugins = ["support.plugin"]` with `support/`
 outside them): every test is always selected. And when diffcone can't read
 which plugins `pytest_plugins` names (it is built by a function call or a
 comprehension, or imported from outside your source roots), every test is
-always selected too; write the list out as strings to avoid that.
+always selected too; write the list out as strings to avoid that. A plugin named
+by a name your code installs a module under in `sys.modules`
+(`sys.modules["myplugin"] = impl`, then `pytest_plugins = ["myplugin"]`)
+is that module; when it isn't one of your modules (an object the code
+builds), every test is always selected.
 
 Some files can change what any test does, so a change to one selects every
 target. Outside your source roots, these are:

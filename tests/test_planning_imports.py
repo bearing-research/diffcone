@@ -968,6 +968,264 @@ def test_w25_an_install_under_a_name_nothing_bounds(repo, name, reached):
     assert selected(plan) == expected
 
 
+# A project module installed in ``sys.modules`` under a name no module of the
+# project has (audit round 8, V10): ``import pkgcompat`` gets ``pkg.impl``.
+V10_INSTALLS = {
+    "package-init": ("pkg/__init__.py", "import sys\n\nfrom pkg import impl\n\n{store}\n"),
+    "conftest": ("tests/conftest.py", "import sys\n\nimport pkg.impl as impl\n\n{store}\n"),
+    "in-a-function": (
+        "pkg/__init__.py",
+        "import sys\n\n\ndef _install():\n    from pkg import impl\n\n"
+        "    {store}\n\n\n_install()\n",
+    ),
+}
+V10_STORES = {
+    "item": "sys.modules['pkgcompat'] = impl",
+    "update": "sys.modules.update({'pkgcompat': impl})",
+    "setdefault": "sys.modules.setdefault('pkgcompat', impl)",
+}
+V10_READS = {
+    "attribute": "pkgcompat.a()",
+    "literal-getattr": "getattr(pkgcompat, 'a')()",
+    "prefix-getattr": "getattr(pkgcompat, 'a' + suffix)()",
+    "hasattr": "hasattr(pkgcompat, 'a') and pkgcompat.a()",
+}
+V10_IMPL = "def a():\n    return 1\n\n\ndef b():\n    return 1\n"
+V10_CALLER = "import pkg\nfrom pkg.reader import call\n\n\n"
+
+
+def _v10_files(install: str, store: str, read: str) -> dict[str, str]:
+    path, text = V10_INSTALLS[install]
+    reader = f"def call(suffix=''):\n    import pkgcompat\n\n    return {V10_READS[read]}\n"
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/impl.py": V10_IMPL,
+        "pkg/reader.py": reader,
+        "tests/__init__.py": "",
+        "tests/conftest.py": "",
+        "tests/test_r.py": V10_CALLER + "def test_r():\n    call()\n",
+        "tests/test_o.py": "import pkg  # noqa: F401\n\n\ndef test_o():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_r.py": V10_CALLER + "def time_r():\n    call()\n",
+    }
+    files[path] = text.format(store=V10_STORES[store])
+    return files
+
+
+V10_TARGETS = [
+    py_target("t::test_r", "tests.test_r.test_r", "tests.test_r", "tests.conftest"),
+    py_target("t::test_o", "tests.test_o.test_o", "tests.test_o", "tests.conftest"),
+    asv_target("bench.time_r", "benchmarks.bench_r.time_r"),
+]
+
+
+@pytest.mark.parametrize("read", sorted(V10_READS))
+@pytest.mark.parametrize("install", sorted(V10_INSTALLS))
+@pytest.mark.parametrize("change", ["body", "added"])
+def test_v10_a_name_outside_the_roots_gets_what_is_installed_under_it(repo, install, read, change):
+    """``sys.modules['pkgcompat'] = impl``: code importing ``pkgcompat``
+    reads ``pkg.impl``'s attributes, whichever way it reads them, so a change
+    to one (a body, a function added) reaches it; code reading nothing of
+    ``pkgcompat`` stays out."""
+    base = repo.commit(_v10_files(install, "item", read))
+    impl = V10_IMPL.replace("return 1\n\n\n", "return 2\n\n\n", 1) if change == "body" else ""
+    if change == "added":
+        # ``a`` is only now defined: hasattr/getattr find it.
+        base = repo.commit({"pkg/impl.py": "def b():\n    return 1\n"})
+        impl = V10_IMPL
+    head = repo.commit({"pkg/impl.py": impl})
+    plan = repo.plan(base, head, V10_TARGETS, source_roots=["."])
+    assert selected(plan) == {"t::test_r", "bench.time_r"}
+
+
+@pytest.mark.parametrize("store", sorted(V10_STORES))
+def test_v10_every_form_of_install_counts(repo, store):
+    base = repo.commit(_v10_files("conftest", store, "attribute"))
+    head = repo.commit({"pkg/impl.py": V10_IMPL.replace("return 1", "return 2", 1)})
+    plan = repo.plan(base, head, V10_TARGETS, source_roots=["."])
+    assert selected(plan) == {"t::test_r", "bench.time_r"}
+
+
+def test_v10_a_test_importing_the_installed_name_itself(repo):
+    files = _v10_files("conftest", "item", "attribute")
+    files["tests/test_r.py"] = "import pkgcompat\n\n\ndef test_r():\n    assert pkgcompat.a()\n"
+    base = repo.commit(files)
+    head = repo.commit({"pkg/impl.py": V10_IMPL.replace("return 1", "return 2", 1)})
+    plan = repo.plan(base, head, V10_TARGETS, source_roots=["."])
+    assert selected(plan) == {"t::test_r", "bench.time_r"}
+
+
+V10_LOADER = (
+    "import importlib.util\nimport sys\nfrom pathlib import Path\n\n\n"
+    "def load(filename, name):\n"
+    "    spec = importlib.util.spec_from_file_location(name, Path(__file__).parent / filename)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.modules[{key}] = module\n"
+    "    spec.loader.exec_module(module)\n"
+    "    return module\n\n\n"
+    "load('fakes.py', '_fakes')\n"
+)
+
+
+@pytest.mark.parametrize("key", ["name", "'_fakes'"], ids=["unbounded", "literal"])
+def test_v10_a_module_loaded_from_a_file_nothing_bounds(repo, key):
+    """The loader installs a copy of a file its caller names: the module
+    behind ``import _fakes`` may be any, so its readers see any change."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/factory.py": (
+            "def make(kind):\n    import _fakes\n\n    return getattr(_fakes, 'make_' + kind)()\n"
+        ),
+        "tests/__init__.py": "",
+        "tests/conftest.py": V10_LOADER.format(key=key),
+        "tests/fakes.py": "def make_a():\n    return 1\n",
+        "tests/test_f.py": "from pkg.factory import make\n\n\ndef test_f():\n    make('b')\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_f.py": "from pkg.factory import make\n\n\ndef time_f():\n    make('b')\n",
+    }
+    base = repo.commit(files)
+    added = files["tests/fakes.py"] + "\n\ndef make_b():\n    return 2\n"
+    head = repo.commit({"tests/fakes.py": added})
+    targets = [
+        py_target("t::test_f", "tests.test_f.test_f", "tests.test_f", "tests.conftest"),
+        asv_target("bench.time_f", "benchmarks.bench_f.time_f"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert selected(plan) == {"t::test_f", "bench.time_f"}
+
+
+V10_LAZY = (
+    "import importlib.util\nimport sys\n\n\n"
+    "def lazy_import(fullname):\n"
+    "    spec = importlib.util.find_spec(fullname)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.modules[fullname] = module\n"
+    "    spec.loader.exec_module(module)\n"
+    "    return module\n"
+)
+
+
+@pytest.mark.parametrize("loader", ["find_spec", "import_module", "another-name"])
+def test_v10_a_lazy_loader_installs_what_the_name_finds_anyway(repo, loader):
+    """``sys.modules[name] = module_from_spec(find_spec(name))``: an import
+    of the name gets the module it would find anyway, so a reader of a
+    library module does not see every change. Installed under another name
+    nothing bounds, the module may be any: every import may get it."""
+    lazy = V10_LAZY
+    if loader != "find_spec":
+        source = "fullname" if loader == "import_module" else "fullname + '_impl'"
+        lazy = (
+            "import importlib\nimport sys\n\n\n"
+            "def lazy_import(fullname):\n"
+            f"    sys.modules[fullname] = importlib.import_module({source})\n"
+        )
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/lazy.py": lazy,
+        "pkg/other.py": "def f():\n    return 1\n",
+        "pkg/reader.py": "import json\n\n\ndef read():\n    return json.dumps(1)\n",
+        "tests/__init__.py": "",
+        "tests/test_r.py": "from pkg.reader import read\n\n\ndef test_r():\n    read()\n",
+        "tests/test_l.py": (
+            "from pkg.lazy import lazy_import\n\n\ndef test_l():\n    lazy_import('json')\n"
+        ),
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import f\n\n\ndef time_o():\n    f()\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/other.py": "def f():\n    return 2\n"})
+    targets = [
+        py_target("t::test_r", "tests.test_r.test_r", "tests.test_r"),
+        py_target("t::test_l", "tests.test_l.test_l", "tests.test_l"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    if loader == "another-name":
+        assert selected(plan) == {"t::test_r", "t::test_l", "bench.time_o"}
+    else:
+        assert selected(plan) == {"bench.time_o"}
+
+
+V10_SPEC_LOADER = (
+    "import importlib.util\nimport sys\nfrom pathlib import Path\n\n\n"
+    "def load():\n"
+    "    path = Path(__file__).parent / 'fx.py'\n"
+    "    spec = importlib.util.spec_from_file_location('_fx', path)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.modules[spec.name] = module\n"
+    "    spec.loader.exec_module(module)\n\n\n"
+    "load()\n"
+)
+V10_CELL_MODULE = (
+    "import sys\nimport types\n\n\n"
+    "def ensure(name, source):\n"
+    "    module = sys.modules.get(name)\n"
+    "    if module is None:\n"
+    "        module = types.ModuleType(name)\n"
+    "        sys.modules[name] = module\n"
+    "        module.source = source\n"
+    "    return module\n"
+)
+
+
+@pytest.mark.parametrize("case", ["spec-name", "made-here"])
+def test_v10_what_a_loader_installs_under_a_name_it_reads_back(repo, case):
+    """``sys.modules[spec.name]`` is the name the spec was built under, so
+    only an import of ``_fx`` gets the file. A module the code makes, or
+    finds under the name already, is no module of the project: a reader of
+    a library module does not see every change (strata's cell modules)."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/cells.py": V10_CELL_MODULE,
+        "pkg/other.py": "def f():\n    return 1\n",
+        "pkg/reader.py": "import json\n\n\ndef read():\n    return json.dumps(1)\n",
+        "tests/__init__.py": "",
+        "pkg/loadfx.py": V10_SPEC_LOADER,
+        "pkg/fx.py": "def g():\n    return 1\n",
+        "tests/test_fx.py": (
+            "import pkg.loadfx  # noqa: F401\nimport _fx\n\n\ndef test_fx():\n    assert _fx.g()\n"
+        ),
+        "tests/test_r.py": "from pkg.reader import read\n\n\ndef test_r():\n    read()\n",
+        "tests/test_c.py": (
+            "from pkg.cells import ensure\n\n\ndef test_c():\n    ensure('_cell', 'X = 1')\n"
+        ),
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import f\n\n\ndef time_o():\n    f()\n",
+    }
+    base = repo.commit(files)
+    if case == "spec-name":
+        change = {"pkg/fx.py": "def g():\n    return 2\n"}
+        expected = {"t::test_fx"}
+    else:
+        change = {"pkg/other.py": "def f():\n    return 2\n"}
+        expected = {"bench.time_o"}
+    head = repo.commit(change)
+    targets = [
+        py_target("t::test_fx", "tests.test_fx.test_fx", "tests.test_fx"),
+        py_target("t::test_r", "tests.test_r.test_r", "tests.test_r"),
+        py_target("t::test_c", "tests.test_c.test_c", "tests.test_c"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert selected(plan) == expected
+
+
+def test_v10_a_name_installed_with_a_prefix(repo):
+    """Installed under ``'pkgcompat' + name``: ``import pkgcompat`` may get
+    it. Under a name only a prefix bounds, the module counts as handed on
+    as well, so the conftest referring to it depends on its members, and
+    ``test_o`` with it."""
+    files = _v10_files("conftest", "item", "attribute")
+    files["tests/conftest.py"] = (
+        "import sys\n\nimport pkg.impl as impl\n\n\n"
+        "def install(name):\n    sys.modules['pkgcompat' + name] = impl\n\n\ninstall('')\n"
+    )
+    base = repo.commit(files)
+    head = repo.commit({"pkg/impl.py": V10_IMPL.replace("return 1", "return 2", 1)})
+    plan = repo.plan(base, head, V10_TARGETS, source_roots=["."])
+    assert selected(plan) == {"t::test_r", "t::test_o", "bench.time_r"}
+
+
 # --------------------------------------------------------------------------- modules handed on
 
 READER = "def read(obj, names):\n    return getattr(obj, names[0])()\n"

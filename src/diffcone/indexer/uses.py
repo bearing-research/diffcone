@@ -45,8 +45,9 @@ counts as a possible change:
 * anything installed in ``sys.modules`` is what an import of that name
   gets (INSTALL, or SWAP when undone after the test, as
   ``indexer/patches.py`` decides: ``monkeypatch.setitem`` on the fixture,
-  ``with patch.dict(...)``); a handle installed under a literal name is
-  that module for whatever names it (AS).
+  ``with patch.dict(...)``), with what the object may be (``>`` sources:
+  ``_installed_values``); a handle installed under a literal name is that
+  module for whatever names it (AS).
 * a function's ``__globals__``, a frame's ``f_globals``/``f_locals`` are a
   module's namespace (that of the function's module, or any module's); an
   unpickler's result, ``pkgutil.resolve_name``/``pydoc.locate`` by a name
@@ -322,6 +323,10 @@ FRESH = "+"
 # object of any module, a module or a table among them (``ANY``); the list
 # itself is only read by ``len`` and by a loop whose variable is followed.
 OBJECTS = "[*]"
+# What an INSTALL or SWAP record installs (a ``>`` source) when it is the
+# module the import system finds under the name anyway (``Scanner.
+# _names_itself``): nothing foreign.
+SELF = "="
 
 
 @dataclass(frozen=True)
@@ -340,8 +345,8 @@ class UseRecord:
     from a star import). ``sources`` are this module's literal names a
     bounded target was computed from: if one of them is not the literal it
     was, the target is any module (``=NAME`` is a HELD record's holder,
-    ``>MODULE`` an AS record's module). ``writer`` is the def path the use
-    is in."""
+    ``>MODULE`` an AS record's module, and what an INSTALL or SWAP record
+    installs). ``writer`` is the def path the use is in."""
 
     kind: str
     target: str
@@ -1228,17 +1233,168 @@ class _Scanner:
     def _install(self, node: ast.AST) -> None:
         """Whatever is installed in ``sys.modules`` under a name is what a
         later import of that name gets (None, which blocks the import, is
-        nothing): an INSTALL or SWAP record for each module the name may be
-        (``Indexer._apply_uses`` says what that does)."""
+        nothing): an INSTALL or SWAP record for each module the name may be,
+        with what the installed object may be as ``>`` sources
+        (``_installed_values``; ``Indexer._apply_uses`` says what that
+        does)."""
         writer: tuple[str, ...] | None = None
         for key, value, kind in self._installs(node):
             if isinstance(value, ast.Constant) and value.value is None:
                 continue
-            found, sources = self._module_name(key) if key is not None else ({ANY}, ())
+            if key is not None:
+                found, sources = self._module_name(self._spec_name(key))
+            else:
+                found, sources = {ANY}, ()
+            values, more = self._installed_values(value, key)
+            if key is not None and self._names_itself(key, value):
+                values, more = (">" + SELF,), ()
             writer = writer if writer is not None else self._writer(node)
             for target in sorted(found):
                 if target != FRESH:
-                    self._record(kind, target, sources, writer)
+                    self._record(kind, target, (*sources, *more, *values), writer)
+
+    def _names_itself(self, key: ast.expr, value: ast.expr | None) -> bool:
+        """Whether ``value`` is the module the import system finds under the
+        name ``key`` holds (``module_from_spec(find_spec(name))``,
+        ``import_module(name)``, with the same name or literal): installed
+        under it, it is what an import of the name gets anyway (a lazy
+        loader installing what it was asked for)."""
+        if isinstance(value, ast.Name):
+            value = self._single_value(value)
+        if not isinstance(value, ast.Call) or len(value.args) != 1 or value.keywords:
+            return False
+        names = self._matching(self._canonical(value.func), _HANDLE_CALLS)
+        arg = value.args[0]
+        if names & _MODULE_COPIES:
+            spec = self._single_value(arg) if isinstance(arg, ast.Name) else arg
+            if not (
+                isinstance(spec, ast.Call)
+                and self._only(spec.func, _FIND_SPEC)
+                and len(spec.args) == 1
+                and not spec.keywords
+            ):
+                return False
+            arg = spec.args[0]
+        elif not names & _IMPORT_CALLS:
+            return False
+        return self._same_name(arg, key)
+
+    def _same_name(self, a: ast.expr, b: ast.expr) -> bool:
+        """Whether two expressions are one name: the same string literal, or
+        the same local name under one binding (a parameter included), or
+        ``spec.name`` of a spec built under that name."""
+        a, b = self._spec_name(a), self._spec_name(b)
+        if isinstance(a, ast.Constant) and isinstance(b, ast.Constant):
+            return isinstance(a.value, str) and a.value == b.value
+        return (
+            isinstance(a, ast.Name)
+            and isinstance(b, ast.Name)
+            and a.id == b.id
+            and self._binding(a.id, a) is self._binding(b.id, b)
+            and self._scope_of(a) is self._scope_of(b)
+        )
+
+    def _spec_name(self, expr: ast.expr) -> ast.expr:
+        """``spec.name`` of a local ``spec`` bound once to a spec built under
+        a name (``spec_from_file_location(name, path)``, ``find_spec(name)``):
+        that name; else ``expr`` itself."""
+        if not (
+            isinstance(expr, ast.Attribute)
+            and expr.attr == "name"
+            and isinstance(expr.value, ast.Name)
+        ):
+            return expr
+        spec = self._single_value(expr.value)
+        if (
+            isinstance(spec, ast.Call)
+            and spec.args
+            and self._only(spec.func, _FIND_SPEC | _SPEC_FROM_FILE)
+        ):
+            return spec.args[0]
+        return expr
+
+    def _reads_itself(self, key: ast.expr, value: ast.expr) -> bool:
+        """Whether ``value`` reads ``sys.modules`` under the name ``key``
+        holds (``sys.modules.get(name)``, ``sys.modules[name]``): installed
+        under it again, it is the module already there."""
+        if isinstance(value, ast.Subscript) and self._may_be(value.value, _MODULES_TABLE):
+            return self._same_name(value.slice, key)
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "get"
+            and len(value.args) == 1
+            and not value.keywords
+            and self._may_be(value.func.value, _MODULES_TABLE)
+            and self._same_name(value.args[0], key)
+        )
+
+    def _installed_values(
+        self, value: ast.expr | None, key: ast.expr | None = None
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """What an object installed in ``sys.modules`` may be, as ``>``
+        sources, with the literal names that was computed from: the modules
+        (or what they hold) an import, a handle or an alias names
+        (``_root_of``), also through a local name every binding of which is
+        one (``module = module_from_spec(spec)``: a copy of the module the
+        spec's file is, ``*`` when nothing tells which; ``types.ModuleType``
+        is ``+``, what the installing code puts on it; a binding reading
+        ``sys.modules`` under the same name, ``module =
+        sys.modules.get(name)``, is the module already there, ``=``). Nothing
+        (no ``>`` source) when the value is anything else: an object the
+        installing code builds (its references say what it is made of), a
+        parameter."""
+        if value is None:
+            return (), ()
+        root = self._root_of(value)
+        if isinstance(value, ast.Name) and (root is None or key is not None):
+            # Through its bindings: needed when the name is no alias, and
+            # tells a binding reading ``sys.modules`` under the key apart
+            # (an alias of the read is any module).
+            bound = self._bound_roots(value, key)
+            if root is None or (bound is not None and SELF in bound[0]):
+                root = bound
+        if root is None:
+            return (), ()
+        return tuple(sorted(">" + t for t in root[0])), root[1]
+
+    def _bound_roots(
+        self, value: ast.Name, key: ast.expr | None
+    ) -> tuple[set[str], tuple[str, ...]] | None:
+        """``_root_of`` over every binding of a local name (None when one is
+        not a plain assignment of something it knows, or it is a
+        parameter); ``=`` for a binding reading ``sys.modules`` under
+        ``key``."""
+        scope = self._scope_of(value)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if value.id in {a.arg for a in ast.walk(scope.args) if isinstance(a, ast.arg)}:
+                return None
+        binds = [
+            n
+            for n in _own_nodes(scope)
+            if (isinstance(n, ast.Name) and n.id == value.id and not isinstance(n.ctx, ast.Load))
+            or (isinstance(n, ast.alias) and (n.asname or n.name.split(".")[0]) == value.id)
+            or (isinstance(n, (ast.Global, ast.Nonlocal)) and value.id in n.names)
+        ]
+        targets: set[str] = set()
+        sources: tuple[str, ...] = ()
+        for bind in binds:
+            assign = self.parents.get(id(bind))
+            if not (
+                isinstance(bind, ast.Name)
+                and isinstance(assign, ast.Assign)
+                and any(t is bind for t in assign.targets)
+            ):
+                return None
+            if key is not None and self._reads_itself(key, assign.value):
+                targets.add(SELF)
+                continue
+            found = self._root_of(assign.value)
+            if found is None:
+                return None
+            targets |= found[0]
+            sources += found[1]
+        return (targets, sources) if targets else None
 
     def _install_keys(self, node: ast.AST) -> list[ast.expr] | None:
         """The names ``node``'s value is installed under in ``sys.modules``
@@ -2177,7 +2333,9 @@ class _Scanner:
     ) -> None:
         if kind in (STORE, SCOPED) and target == "sys.modules":
             kind, target = USE, ANY  # a table of modules of its own: any import
-        if target == ANY and kind != HELD:
+        if target == ANY and kind in (INSTALL, SWAP):
+            sources = tuple(s for s in sources if s.startswith(">"))  # what is installed
+        elif target == ANY and kind != HELD:
             sources = ()  # already any module
         self.out.records.add(UseRecord(kind, target, tuple(sorted(set(sources))), writer))
 
