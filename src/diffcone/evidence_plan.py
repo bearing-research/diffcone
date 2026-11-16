@@ -996,6 +996,14 @@ class _Observers:
         )
         self._forward_of: dict[frozenset[str], frozenset[str]] = {}
         self._symbols_named: dict[str, set[str]] | None = None
+        # ``_forward``'s steps reversed (``_reaching``): code -> the code
+        # that runs it directly; a group -> the code that runs every member
+        # of it; code -> the groups it is a member of. Built once.
+        self._run_by: dict[str, list[str]] | None = None
+        self._group_users: dict[tuple[str, str], list[str]] = {}
+        self._groups_of: dict[str, list[tuple[str, str]]] = {}
+        # Targets -> the code whose ``_forward`` meets them (``_reaching``).
+        self._reaching_of: dict[frozenset[str], frozenset[str]] = {}
         # Code that writes process-global state (indexer/process.py), and
         # for code run while pytest collected a test module (``_collected``):
         # per symbol and the modules it ran for, what the code running it
@@ -1206,21 +1214,6 @@ class _Observers:
                 stack.extend(self.imported_by.get(module, ()))
             key = key | frozenset(modules)
         if key not in self._forward_of:
-            if self._symbols_named is None:
-                self._symbols_named = defaultdict(set)
-                self._attribute_named = defaultdict(set)
-                runner = self._runner_modules()
-                for symbol in self.symbols.values():
-                    if symbol.kind in (
-                        SymbolKind.FUNCTION,
-                        SymbolKind.METHOD,
-                        SymbolKind.CLASS,
-                    ) and not _is_dunder(symbol.name):
-                        self._symbols_named[symbol.name].add(symbol.id)
-                        if symbol.module in runner or attribute_reachable(
-                            symbol, self.attribute_modules
-                        ):
-                            self._attribute_named[symbol.name].add(symbol.id)
             seen: set[str] = set()
             stack = sorted(key)
             while stack:
@@ -1231,25 +1224,122 @@ class _Observers:
                 symbol = self.symbols.get(current)
                 if symbol is None:
                     continue
-                if symbol.kind == SymbolKind.CLASS:
-                    stack.extend(self._constructors(current))
                 if symbol.kind == SymbolKind.MODULE and current not in key:
                     continue  # its import ran already: it runs nothing new
-                stack.extend(self.calls.get(current, ()))
-                for holder in self.holds.get(current, ()):
-                    held = self.symbols.get(holder)
-                    if held is not None and held.kind == SymbolKind.MODULE:
-                        # Top-level code put something in it: whatever it names.
-                        stack.extend(self.calls.get(holder, ()))
-                    else:
-                        stack.append(holder)
-                for name in self.names_used.get(current, ()):
-                    if name in self.global_used.get(current, ()):
-                        stack.extend(self._symbols_named.get(name, ()))
-                    else:
-                        stack.extend(self._attribute_named.get(name, ()))
+                direct, groups = self._steps(current, symbol)
+                stack.extend(direct)
+                for group in groups:
+                    stack.extend(self._group_members(group))
             self._forward_of[key] = frozenset(seen)
         return self._forward_of[key]
+
+    def _steps(self, current: str, symbol: Symbol) -> tuple[list[str], list[tuple[str, str]]]:
+        """What ``current`` can run, one step on (``_forward``, and reversed
+        in ``_reaching``): the code it runs directly, and the groups
+        (``_group_members``) all of whose members it may run. A module
+        takes this step only as the code that runs (its import)."""
+        direct: list[str] = []
+        groups: list[tuple[str, str]] = []
+        if symbol.kind == SymbolKind.CLASS:
+            direct.extend(self._constructors(current))
+        direct.extend(self.calls.get(current, ()))
+        for holder in self.holds.get(current, ()):
+            held = self.symbols.get(holder)
+            if held is not None and held.kind == SymbolKind.MODULE:
+                # Top-level code put something in it: whatever it names.
+                groups.append(("module", holder))
+            else:
+                direct.append(holder)
+        for name in self.names_used.get(current, ()):
+            if name in self.global_used.get(current, ()):
+                groups.append(("global", name))
+            else:
+                groups.append(("attribute", name))
+        return direct, groups
+
+    def _group_members(self, group: tuple[str, str]) -> Iterable[str]:
+        """The code a group of ``_steps`` stands for: what a module's
+        top-level code names (``module``), or the code an unresolved name may
+        be, read as a global (``global``) or off a value (``attribute``)."""
+        kind, name = group
+        if kind == "module":
+            return self.calls.get(name, ())
+        if self._symbols_named is None:
+            self._symbols_named = defaultdict(set)
+            self._attribute_named = defaultdict(set)
+            runner = self._runner_modules()
+            for symbol in self.symbols.values():
+                if symbol.kind in (
+                    SymbolKind.FUNCTION,
+                    SymbolKind.METHOD,
+                    SymbolKind.CLASS,
+                ) and not _is_dunder(symbol.name):
+                    self._symbols_named[symbol.name].add(symbol.id)
+                    if symbol.module in runner or attribute_reachable(
+                        symbol, self.attribute_modules
+                    ):
+                        self._attribute_named[symbol.name].add(symbol.id)
+        table = self._symbols_named if kind == "global" else self._attribute_named
+        return table.get(name, ())
+
+    def _forward_meets(self, sources: Iterable[str], targets: frozenset[str]) -> bool:
+        """Whether ``_forward(sources)`` meets ``targets``, without walking
+        forward from ``sources``. Only a module is taken on differently
+        from one walk to another (its step runs only from the sources), so
+        what a set of sources reaches is what each source reaches on its
+        own, and it meets ``targets`` exactly when a source is in
+        ``_reaching(targets)``."""
+        return not self._reaching(targets).isdisjoint(sources)
+
+    def _reaching(self, targets: frozenset[str]) -> frozenset[str]:
+        """The code whose ``_forward([code])`` meets ``targets``, computed
+        once per set of targets by walking ``_steps`` backwards: a target;
+        code other than a module (the step a walk takes from all but its
+        sources) that runs one in a step; and a module whose own step does."""
+        found = self._reaching_of.get(targets)
+        if found is not None:
+            return found
+        run_by = self._step_graph()
+        reached = set(targets)
+        modules: set[str] = set()
+        groups_done: set[tuple[str, str]] = set()
+        stack = sorted(targets)
+        while stack:
+            current = stack.pop()
+            runners = list(run_by.get(current, ()))
+            for group in self._groups_of.get(current, ()):
+                if group not in groups_done:
+                    groups_done.add(group)
+                    runners.extend(self._group_users[group])
+            for runner in runners:
+                if runner in reached:
+                    continue
+                if self.symbols[runner].kind == SymbolKind.MODULE:
+                    modules.add(runner)  # it runs the step as a source only
+                else:
+                    reached.add(runner)
+                    stack.append(runner)
+        found = self._reaching_of[targets] = frozenset(reached | modules)
+        return found
+
+    def _step_graph(self) -> dict[str, list[str]]:
+        """``_steps`` of every symbol, reversed (``_run_by``,
+        ``_group_users``, ``_groups_of``)."""
+        if self._run_by is None:
+            run_by: dict[str, list[str]] = defaultdict(list)
+            users: dict[tuple[str, str], list[str]] = defaultdict(list)
+            for sid, symbol in self.symbols.items():
+                direct, groups = self._steps(sid, symbol)
+                for target in direct:
+                    run_by[target].append(sid)
+                for group in groups:
+                    users[group].append(sid)
+            groups_of: dict[str, list[tuple[str, str]]] = defaultdict(list)
+            for group in users:
+                for member in self._group_members(group):
+                    groups_of[member].append(group)
+            self._run_by, self._group_users, self._groups_of = run_by, users, groups_of
+        return self._run_by
 
     def _observe(self, symbol: str, rule: Rule, detail: str, change: SymbolChange | None) -> None:
         if symbol not in self.E:
@@ -3381,11 +3471,12 @@ class _Observers:
             # Only where that code (``runs``: the import-time code that
             # changed, by default the symbol) can run one of the site's
             # writers, as ``_import_writes`` follows it, or reaches code that
-            # calls what no edge shows.
-            reach = self._forward(runs if runs is not None else [symbol.id])
-            opaque = bool(reach & self._opaque_callers)
+            # calls what no edge shows (``_forward_meets``: without walking
+            # forward from that code, once per call).
+            code = frozenset(runs if runs is not None else [symbol.id])
+            opaque = self._forward_meets(code, self._opaque_callers)
             for (site, _kind), writers in self.import_sites.items():
-                if not opaque and not reach & writers:
+                if not opaque and not self._forward_meets(code, writers):
                     continue
                 if site not in listed and site in self.symbols:
                     listed.add(site)

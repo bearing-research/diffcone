@@ -1258,6 +1258,76 @@ def test_a_test_writer_newly_run_at_import_reaches_the_lookups(repo, how):
     assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "library",
+        "library, run at import",
+        "library, a module naming it",
+        "a registry holds it",
+        "library code calls it by name",
+    ],
+)
+def test_the_import_site_check_answers_as_the_forward_walk(repo, monkeypatch, case):
+    # ``_seeing_sites`` asks whether what changed import-time code can run
+    # meets a lookup's writers (or code calling what no edge shows) through
+    # ``_forward_meets``, which walks backwards from the targets once: each
+    # answer must be the forward walk's.
+    from diffcone.evidence_plan import _Observers
+
+    meets = _Observers._forward_meets
+    answers: list[bool] = []
+
+    def checked(self, sources, targets):
+        sources = list(sources)
+        got = meets(self, sources, targets)
+        assert got == bool(self._forward(sources) & targets)
+        # And from every symbol on its own, which ``_reaching`` decides.
+        for code in self.symbols:
+            assert meets(self, [code], targets) == bool(self._forward([code]) & targets), code
+        answers.append(got)
+        return got
+
+    monkeypatch.setattr(_Observers, "_forward_meets", checked)
+    files = dict(TESTS_ONLY)
+    if case in ("library", "library, run at import"):
+        files["pkg/extra.py"] = EXTERNAL["pkg/extra.py"]
+        changed = {"pkg/ops.py": OPS_RUNS_INSTALL if case.endswith("import") else OPS_AT_IMPORT}
+    elif case == "library, a module naming it":
+        # pkg.extra's top-level code names the writer; code holding the
+        # module as a value runs none of that (its import ran already): a
+        # module reached on the way runs nothing.
+        files["pkg/extra.py"] = EXTERNAL["pkg/extra.py"] + "\n\nHOOK = install\n"
+        held = "\n\nimport pkg.extra  # noqa: E402\n\n\ndef held():\n    return pkg.extra\n"
+        files["pkg/ops.py"] = OPS + held
+        changed = {"pkg/ops.py": OPS_AT_IMPORT + held}
+    elif case == "a registry holds it":
+        files["pkg/registry.py"] = REGISTRY
+        files["pkg/plugin.py"] = ""
+        files["tests/test_plugin.py"] = USES_PLUGIN
+        files["tests/test_writer.py"] += (
+            "\n\nfrom pkg.registry import CALLBACKS  # noqa: E402\n\n"
+            "CALLBACKS.append(install_names)\n"
+        )
+        changed = {"pkg/plugin.py": "from pkg.registry import run_all\n\nrun_all()\n"}
+    else:
+        files["pkg/plugin.py"] = PLUGIN
+        files["tests/test_plugin.py"] = USES_PLUGIN
+        changed = {"pkg/plugin.py": PLUGIN + '\n\nrun(sys.modules.get("tests.test_writer"))\n'}
+    base, ev = _collected(repo, files)
+    head = repo.commit(changed)
+    plan = _plan(repo, base, head, ev)
+    assert answers, "the import-site check did not run"
+    if case in ("library", "library, run at import", "library, a module naming it"):
+        assert "pkg.ops" in plan.evidence["escalated_modules"]
+    if case == "library":
+        assert not {EXT_NAMES, EXT_LOOKUP} & selected(plan)
+        assert not any(answers)
+    elif case != "library, a module naming it":
+        assert {EXT_NAMES, EXT_LOOKUP} <= selected(plan)
+        assert any(answers)
+
+
 def test_a_library_variable_newly_running_a_writer_reaches_the_lookups(repo):
     base, ev = _collected(repo, EXTERNAL)
     head = repo.commit({"pkg/extra.py": EXTERNAL["pkg/extra.py"] + "\n\nINSTALLED = install()\n"})
