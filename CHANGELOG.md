@@ -32,9 +32,15 @@ selection rules.
   passing `*items` or `**options` passes what they hold. What a function
   changes through an element of an argument it hands on (`for o in objs:
   o.reset()`) is now changed for its callers too.
-- A function you store on a logging handler or logger class under a
-  callback's name (`MyLogger.handle = f`, or with `setattr`) now runs as
-  that callback when you log.
+- A function you store on a logging handler, filter or logger class
+  under a callback's name (`MyLogger.handle = f`, or with `setattr`) now
+  runs as that callback when you log, and is followed when your own code
+  calls it by that name (`self.emit(record)`).
+- A change in place to what one of your functions returns now reaches
+  what the caller handed it, when the function returns that object or
+  part of it (`r = wrap(p); r["items"].append(x)`, through further calls
+  and any of several returns, `b.tag().add(x)` where `tag` returns
+  `self`, or the result handed to a function that changes it).
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in
