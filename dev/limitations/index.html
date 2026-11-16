@@ -1434,7 +1434,8 @@ every reader of <code>RULES</code>. Setting an attribute on the instance
 adding a number or string to one that only ever holds such values
 (<code>tok.position += 1</code>), in that code or in a function it hands the
 instance to, is not, as long as no class involved defines <code>__new__</code>,
-<code>__setattr__</code>, <code>__delattr__</code>, <code>__getattr__</code> or <code>__getattribute__</code>,
+<code>__setattr__</code> or <code>__delattr__</code> (or, for the adding, which reads the
+attribute first, <code>__getattr__</code> or <code>__getattribute__</code>),
 binds that name in its body to anything but a constant (a property,
 another descriptor, a list), or has a decorator (other than
 <code>functools.total_ordering</code> or <code>typing.final</code>), a metaclass (other than

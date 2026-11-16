@@ -1851,6 +1851,24 @@ selection rules.</p>
   part of it (<code>r = wrap(p); r["items"].append(x)</code>, through further calls
   and any of several returns, <code>b.tag().add(x)</code> where <code>tag</code> returns
   <code>self</code>, or the result handed to a function that changes it).</li>
+<li>Setting an attribute on a new instance of your class (in <code>__init__</code> or
+  later) no longer changes what you passed its constructor just because
+  the class defines <code>__getattr__</code> or <code>__getattribute__</code>, which run when an
+  attribute is read, not when one is set; adding to an attribute of such
+  a class (<code>self.n += 1</code>, which reads it first) still counts.</li>
+<li>A <code>__new__</code> that calls <code>super().__new__(cls)</code> (a metaclass's included)
+  and sets attributes on what it gets back no longer counts as changing
+  its own class: that call runs the next <code>__new__</code> in the class hierarchy,
+  whose own result is still followed.</li>
+<li>With <code>--evidence</code>, what a function's decorators and default values do
+  (<code>@app.command()</code> registering it on <code>app</code>) no longer counts as something
+  a call of the function stores for later tests: that code runs when the
+  module defines the function. A change to the decorator, or to the code
+  it runs, still reaches the readers of what it writes.</li>
+<li>A test module whose import-time code changes process state (so every
+  test depends on it) no longer has its own tests taken for code that
+  leaves state behind for other tests: what such a test stores is again
+  seen by that test alone, as in any other test module.</li>
 <li><code>locals()</code> at module level is treated as the module's namespace, like
   <code>globals()</code>.</li>
 <li>Code that imports a name your project installs a module under in
