@@ -293,6 +293,9 @@ posted something started. A run still going when a report starts goes in
 the next one. A report that only writes the job summary (both
 `report-label` and `miss-label` empty), or fails to download an artifact,
 leaves its runs to the next report; a failed download also fails the job.
+Each request to GitHub is tried three times. A report that can't find
+where the previous one started reads the last `hours` hours, says it is
+incomplete and fails the job, so the next report covers those runs again.
 
 The report leaves out:
 
@@ -317,7 +320,8 @@ always has the report). The problems are:
   the plan's), or pytest was interrupted or could not start;
 - a pull-request run whose selected tests pytest did not collect, or whose
   command never loaded diffcone's selection plugin;
-- an incomplete report (an artifact it could not read).
+- an incomplete report (an artifact it could not read, or a list of runs
+  or artifacts it could not get from GitHub).
 
 The report reads what
 `run` and `record` upload from the same release on, so give all the

@@ -146,9 +146,13 @@ report:
     A project `sitecustomize.py` still runs in every child.
 
     `diffcone collect` ends by naming what made the most tests always
-    selected, with the line of your code that started it, for example
+    selected, for example
     `7600 test(s): still running: os.fork (src/pkg/metrics.py:42)`: a
-    process left running by one test is credited to every later one.
+    process left running by one test is credited to every later one. A
+    process start the recorder saw is named with the line of your code
+    that started it; a child found afterwards to have recorded nothing
+    (`started python -m tool, which recorded nothing`) is named by its
+    command only.
 - A process started outside every test (by a `conftest.py` as it is
   imported, or in a hook) counts as part of that import or hook: a change
   to what it ran is planned as a change to code that ran there. One that

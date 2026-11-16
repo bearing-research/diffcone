@@ -539,7 +539,7 @@ def test_an_artifact_is_cut_to_what_the_report_reads(tmp_path):
     assert sorted(p.name for p in (cut / "1" / "diffcone-unit").iterdir()) == written
     assert ci_report.load(cut) == ci_report.load(whole)
     ran = json.loads((cut / "1" / "diffcone-unit" / "ran.json").read_text())
-    assert ran == ci_report._plan_read(plan)
+    assert ran == {"cut": True, **(ci_report._plan_read(plan) or {})}
 
 
 @pytest.mark.parametrize("layout", ["indented", "compact", "last"])
@@ -561,6 +561,66 @@ def test_an_unreadable_ran_json_falls_back_to_plan_json(tmp_path):
     assert ci_report.extract(archive, tmp_path / "a") == ["plan.json"]
     archive = _zip(tmp_path / "b.zip", {"ran.json": b"\xff", "context.json": "[]"})
     assert ci_report.extract(archive, tmp_path / "b") == ["context.json"]
+
+
+_PLAN_A = _plan(1, 3, unselected=[("tests/t.py::b", "no dependency")])
+_PLAN_B = _plan(2, 4)
+_ONLY_EXPLAINED = '{\n  "dependency_explanations": [],\n  "status": "complete"\n}'
+_ARCHIVES = {
+    # ``load`` reads plan.json when ran.json reads as empty ...
+    "ran_empty_obj": [("context.json", _pr()), ("ran.json", {}), ("plan.json", _PLAN_A)],
+    "record_ran_empty": [
+        ("context.json", _push("c" * 40, misses=1)),
+        ("verdict.json", _verdict([("tests/t.py::b", "test", False)], ["tests/t.py::b"])),
+        ("ran.json", {}),
+        ("plan.json", _PLAN_A),
+    ],
+    "both_empty": [("ran.json", {}), ("plan.json", {})],
+    "ran_empty_plan_unreadable": [("ran.json", {}), ("plan.json", "{not json")],
+    # ... but a ran.json holding only keys the report does not read is
+    # read (as no counts), not plan.json.
+    "ran_no_kept_keys": [
+        ("context.json", _pr()),
+        ("ran.json", {"schema_version": 5, "selected_targets": []}),
+        ("plan.json", _PLAN_B),
+    ],
+    "ran_only_explanations": [("ran.json", _ONLY_EXPLAINED), ("plan.json", _PLAN_B)],
+    "ran_unreadable_plan_list": [("ran.json", b"\xff"), ("plan.json", "[]")],
+    # Members extracted as the files at the artifact's top.
+    "dotslash": [("./context.json", _pr()), ("ran.json", _PLAN_A)],
+    "absolute": [("/context.json", _pr()), ("./plan.json", _PLAN_A)],
+    "parent": [("../context.json", _pr()), ("a/../ran.json", _PLAN_A)],
+    "later_member_wins": [
+        ("context.json", _pr(run_exit=2)),
+        ("./context.json", _pr()),
+        ("ran.json", _PLAN_A),
+    ],
+    "a_directory_named_as_a_file": [("context.json/", ""), ("ran.json", _PLAN_A)],
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ARCHIVES))
+def test_v13_the_cut_reads_as_the_whole_artifact(tmp_path, case):
+    """What ``load`` reads of an artifact the report action cut is what it
+    reads of the whole artifact extracted, and so is the report."""
+    import warnings
+    import zipfile
+
+    archive = tmp_path / "a.zip"
+    with warnings.catch_warnings(), zipfile.ZipFile(archive, "w") as z:
+        warnings.simplefilter("ignore")  # a duplicate name
+        for name, data in _ARCHIVES[case]:
+            # A name ending in "/" is a directory.
+            z.writestr(name, data if isinstance(data, (str, bytes)) else json.dumps(data, indent=2))
+    event = "push" if case.startswith("record") else "pull_request"
+    whole, cut = tmp_path / "whole", tmp_path / "cut"
+    for root in (whole, cut):
+        _run(root, 1, event, "1" * 40, {"diffcone-unit": {}})
+    zipfile.ZipFile(archive).extractall(whole / "1" / "diffcone-unit")
+    ci_report.extract(archive, cut / "1" / "diffcone-unit")
+    assert ci_report.load(cut) == ci_report.load(whole)
+    report = ci_report.to_dict(ci_report.build(ci_report.load(whole)))
+    assert ci_report.to_dict(ci_report.build(ci_report.load(cut))) == report
 
 
 def test_the_cut_runs_as_a_module(tmp_path):
@@ -694,14 +754,22 @@ elif args[0] == "api" and args[1].endswith("/zip"):
 """
 
 
+def _download_loop() -> str:
+    """The report action's loop downloading each run's artifacts, with the
+    retry it uses and the error count it starts from."""
+    text = (ACTIONS / "report" / "action.yml").read_text()
+    retry = text[text.index("        retry() {") : text.index("        # The window starts")]
+    start = text.index("        count=0\n")
+    loop = text[start : text.index('        echo "$errors"', start)]
+    return "sleep() { :; }\nerrors=0\n" + textwrap.dedent(retry) + textwrap.dedent(loop)
+
+
 def test_the_report_downloads_a_re_run_jobs_latest_artifact(tmp_path):
     """A re-run job uploads its artifact again under the same name: the
     report downloads each name once, from the latest attempt."""
     if os.name == "nt":
         pytest.skip("the fake gh is a POSIX script")
-    text = (ACTIONS / "report" / "action.yml").read_text()
-    start = text.index("        count=0; errors=0")
-    loop = textwrap.dedent(text[start : text.index('        echo "$errors"', start)])
+    loop = _download_loop()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     gh = bin_dir / "gh"
@@ -1257,6 +1325,107 @@ def test_ci6_a_report_that_posted_nothing_does_not_move_the_window(tmp_path):
     assert done.returncode == 0, done.stdout + done.stderr
     assert sorted(p.name for p in (runs / "runs").iterdir()) == ["7"]
     assert (runs / "runs" / "7" / "diffcone-ubuntu" / "context.json").exists()
+
+
+# A gh whose requests named in FAIL (``key:times``, times "all" for every
+# attempt) fail with a server error: the run of this report is 1, workflow
+# 42; report run 11 posted nothing, report run 10 (02:00) posted; CI run 7
+# completed at 04:00.
+FAKE_FAILING_GH = """#!{python}
+import io, json, os, sys, zipfile
+args = " ".join(sys.argv[1:])
+keys = {{
+    "workflow_id": "--jq .workflow_id",
+    "reports": "status=success&per_page=30",
+    "markers": "runs/10/artifacts",
+    "runs": "run list",
+}}
+for spec in filter(None, os.environ.get("FAIL", "").split(",")):
+    key, times = spec.split(":")
+    if keys[key] in args:
+        count = os.path.join(os.environ["STATE"], key)
+        n = int(open(count).read()) + 1 if os.path.exists(count) else 1
+        open(count, "w").write(str(n))
+        if times == "all" or n <= int(times):
+            # Part of an answer, then the error.
+            print("10 2026-10-09T0")
+            sys.exit("HTTP 502: Bad Gateway")
+if "--jq .workflow_id" in args:
+    print(42)
+elif "status=success&per_page=30" in args:
+    print("11 2026-10-09T05:00:00Z")
+    print("10 2026-10-09T02:00:00Z")
+elif "runs/11/artifacts" in args:
+    pass
+elif "runs/10/artifacts" in args:
+    print("posted-diffcone-report")
+elif "runs/7/artifacts" in args:
+    print("5 diffcone-ubuntu")
+elif args.startswith("run list"):
+    print(json.dumps([{{"databaseId": 7, "url": "u", "event": "push",
+        "createdAt": "2026-10-09T03:30:00Z", "updatedAt": "2026-10-09T04:00:00Z",
+        "headSha": "c", "headBranch": "main", "workflowName": "ci", "conclusion": "failure"}}]))
+elif "actions/artifacts/5/zip" in args:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as z:
+        z.writestr("context.json", "{{}}")
+    sys.stdout.buffer.write(buffer.getvalue())
+"""
+
+
+def _window_step(tmp_path: Path, fail: str):
+    """Run the report action's download step against ``FAKE_FAILING_GH``;
+    return the step, its error count and the runs it downloaded."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(FAKE_FAILING_GH.format(python=sys.executable))
+    (bin_dir / "gh").chmod(0o755)
+    (tmp_path / "state").mkdir()
+    runs = tmp_path / "runs"
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GH_TOKEN": "x", "HOURS": "1", "WORKFLOW": "", "PREFIX": "diffcone-",
+        "RUNS": str(runs), "RUNS_REPO": "o/r", "GITHUB_REPOSITORY": "o/diffcone",
+        "GITHUB_RUN_ID": "1", "MARKER": "posted-diffcone-report",
+        "DIFFCONE_PYTHON": sys.executable, "FAIL": fail, "STATE": str(tmp_path / "state"),
+    }  # fmt: skip
+    done = subprocess.run(
+        [shutil.which("bash") or "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c",
+         "sleep() { :; }\n" + _step("report", "Download the runs' results")],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )  # fmt: skip
+    errors = (runs / "errors").read_text().strip() if (runs / "errors").exists() else None
+    downloaded = (
+        sorted(p.name for p in (runs / "runs").iterdir()) if (runs / "runs").exists() else []
+    )
+    return done, errors, downloaded
+
+
+@posix_only
+@pytest.mark.parametrize("fail", ["reports:all", "workflow_id:all", "markers:all"])
+def test_v12_a_window_that_cannot_be_found_is_an_error(tmp_path, fail):
+    """Where the last report that posted started cannot be listed: the
+    window falls back to the last hours, which leaves out run 7. That is an
+    error (the report fails, and the next one covers the window again),
+    never a report that passes and moves the window past run 7."""
+    done, errors, downloaded = _window_step(tmp_path, fail)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert errors == "1", done.stdout + done.stderr
+    assert "::error::could not list" in done.stdout
+    assert downloaded == []
+
+
+@posix_only
+@pytest.mark.parametrize("fail", ["", "reports:2", "workflow_id:1", "markers:2", "runs:2"])
+def test_v12_a_request_that_fails_once_is_tried_again(tmp_path, fail):
+    """Each listing is retried, and what a failed attempt printed is not
+    read: the window starts at report run 10, so run 7 is in it."""
+    done, errors, downloaded = _window_step(tmp_path, fail)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert errors == "0", done.stdout + done.stderr
+    assert downloaded == ["7"]
+    assert "completed since 2026-10-09T02:00:00Z" in done.stdout
 
 
 # --------------------------------------------------------------------------- run: the base

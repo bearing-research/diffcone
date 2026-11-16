@@ -717,7 +717,13 @@ def _window_causes(window: dict, cause_table: list[str], children: _Children) ->
     if not window["flags"] & FLAG_SUBPROCESS and not window.get("spawns"):
         return set()
     noted = {cause_table[i] for i in window.get("causes", ()) if i < len(cause_table)}
-    return noted | children.causes(window.get("spawns", ()))
+    return {_one_line(c) for c in noted | children.causes(window.get("spawns", ()))}
+
+
+def _one_line(text: str) -> str:
+    """A cause as one line of the summary: a newline or another control
+    character (in a command a test ran) shown escaped, ``\\n``."""
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in str(text))
 
 
 def _fold_window(
@@ -865,7 +871,8 @@ def fold(
             if any(r.collected is not None for r in raws)
             else None
         ),
-        flag_causes=dict(causes.most_common()),
+        # Most tests first, ties in the order of their text.
+        flag_causes=dict(sorted(causes.items(), key=lambda c: (-c[1], c[0]))),
     )
 
 

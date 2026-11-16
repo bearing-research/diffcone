@@ -1707,6 +1707,44 @@ def test_what_flagged_the_tests_is_named_with_where_it_started(repo):
     }
 
 
+@needs_monitoring
+@posix_only
+def test_v14_a_cause_that_cannot_be_described_costs_no_flag(repo):
+    """Naming the cause is a diagnostic: a process start whose arguments
+    cannot be shown (an argument whose ``str`` raises, in an audit event
+    raised here by hand) still flags the test, and the store is written."""
+    spawns = (
+        "import sys\n\n\nclass Weird:\n    def __str__(self):\n"
+        "        raise RuntimeError('no str')\n\n    def __fspath__(self):\n"
+        "        return 'tool'\n\n\n"
+        "def test_spawn():\n"
+        "    sys.audit('subprocess.Popen', None, [Weird()], None, None)\n\n\n"
+        "def test_plain():\n    pass\n"
+    )
+    repo.commit({**BASE, "tests/test_spawn.py": spawns})
+    ev = repo.collect()
+    assert ev.tests["tests/test_spawn.py::test_spawn"].flags & FLAG_SUBPROCESS
+    assert not ev.tests["tests/test_spawn.py::test_plain"].flags & FLAG_SUBPROCESS
+    assert ev.flag_causes == {"a cause that could not be described (tests/test_spawn.py:13)": 1}
+
+
+@needs_monitoring
+@posix_only
+def test_v14_causes_are_one_line_each_and_ties_in_order(repo):
+    """A newline in a command is shown escaped, and causes that flagged as
+    many tests are listed in the order of their text, not of a set."""
+    systems = "import os\n\n" + "".join(
+        f"\ndef test_{n}():\n    os.system({command!r})\n\n"
+        for n, command in enumerate(["true\ntrue", *(f"true {k}" for k in "fedcba")])
+    )
+    repo.commit({**BASE, "tests/test_system.py": systems})
+    causes = repo.collect().flag_causes
+    assert len(causes) == 7 and set(causes.values()) == {1}
+    assert list(causes) == sorted(causes)
+    assert "os.system true\\ntrue (tests/test_system.py:5)" in causes
+    assert all("\n" not in cause for cause in causes)
+
+
 # The project's own sitecustomize.
 
 

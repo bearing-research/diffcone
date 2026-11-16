@@ -13,7 +13,8 @@ inputs:
       The window when this workflow has no earlier report that posted (a
       successful run with report-label or miss-label set): runs that
       completed in this many hours before now. Otherwise the window starts
-      where that report started, so no run falls between two reports.
+      where that report started, so no run falls between two reports (one
+      that cannot be listed falls back to hours and fails the report).
     default: "24"
   workflow:
     description: Only the runs of this workflow (its file name, e.g. ci.yml); default all.
@@ -67,7 +68,7 @@ outputs:
       "true" when the report shows no problem (a miss, a failed check, a
       pull request whose plan failed, whose run was refused or failed after
       a good plan, or whose selected tests pytest did not collect, an
-      artifact it could not read). (A failing step
+      artifact or a list of runs it could not read). (A failing step
       after this action makes the next report cover this window again.)
     value: ${{ steps.report.outputs.ok }}
   report:
@@ -94,23 +95,56 @@ runs:
       run: |
         py=$(command -v python3 || command -v python)
         mkdir -p "$RUNS/runs"
+        errors=0
+        # GitHub answers a request now and then with a server error (502):
+        # each is tried three times before it counts as an error, which
+        # makes the next report read the whole window again. Only what the
+        # attempt that succeeded printed is kept.
+        retry() {
+          local n out
+          for n in 1 2 3; do
+            if out=$("$@"); then
+              if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+              return 0
+            fi
+            [ "$n" -lt 3 ] && sleep $((n * 15))
+          done
+          return 1
+        }
         # The window starts where this workflow's last successful report
         # that posted started (it uploaded the $MARKER artifact): a run that
         # was still going then, or that a delayed schedule skipped, is in
         # this report. A report that fails (a download that failed), or one
         # that only wrote its job summary, leaves its window to the next one.
-        workflow_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
-        since=""
+        # Not knowing where that report started is an error, not a window of
+        # the last hours: the runs between would never be reported.
+        since=""; unsure=""
+        if ! workflow_id=$(retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --jq .workflow_id < /dev/null) \
+          || ! reports=$(retry gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/${workflow_id%$'\r'}/runs?status=success&per_page=30" \
+            --jq '.workflow_runs[] | "\(.id) \(.run_started_at)"' < /dev/null); then
+          echo "::error::could not list this workflow's earlier reports; this one reads the last $HOURS hours"
+          errors=$((errors + 1))
+          reports=""
+        fi
         while read -r id started; do
           [ -n "$id" ] || continue
-          if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
-            --jq '.artifacts[] | select(.expired | not) | .name' < /dev/null \
-            | tr -d '\r' | grep -qx "$MARKER"; then
+          if ! names=$(retry gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/artifacts?per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | .name' < /dev/null); then
+            # An earlier report started earlier still: none found is the error.
+            unsure=$id
+            continue
+          fi
+          if echo "$names" | tr -d '\r' | grep -x "$MARKER" > /dev/null; then
             since=$started
             break
           fi
-        done < <(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs?status=success&per_page=30" \
-          --jq '.workflow_runs[] | "\(.id) \(.run_started_at)"' | tr -d '\r')
+        done <<< "$(echo "$reports" | tr -d '\r')"
+        if [ -z "$since" ] && [ -n "$unsure" ]; then
+          echo "::error::could not list the artifacts of run $unsure; this one reads the last $HOURS hours"
+          errors=$((errors + 1))
+        fi
         window=$("$py" - "$HOURS" "$since" <<'PY'
         import datetime as d, sys
         now = d.datetime.now(d.timezone.utc)
@@ -132,10 +166,10 @@ runs:
         only=(); [ -n "$WORKFLOW" ] && only=(--workflow "$WORKFLOW")
         # Completed runs only: one still running has not uploaded everything
         # (and the run of this report is one of them).
-        gh run list --repo "$RUNS_REPO" "${only[@]}" --created ">=$created" \
+        retry gh run list --repo "$RUNS_REPO" "${only[@]}" --created ">=$created" \
           --status completed --limit 1000 \
           --json databaseId,url,event,createdAt,updatedAt,headSha,headBranch,workflowName,conclusion \
-          > "$RUNS/runs.json"
+          < /dev/null > "$RUNS/runs.json"
         "$py" - "$RUNS/runs.json" "$cutoff" "$RUNS/runs" <<'PY' | tr -d '\r' > "$RUNS/ids"
         import json, os, sys
         runs = json.load(open(sys.argv[1]))
@@ -164,18 +198,7 @@ runs:
             )
             print(run["databaseId"])
         PY
-        count=0; errors=0
-        # GitHub answers a request now and then with a server error (502):
-        # each is tried three times before it counts as an error, which
-        # makes the next report read the whole window again.
-        retry() {
-          local n
-          for n in 1 2 3; do
-            "$@" && return 0
-            [ "$n" -lt 3 ] && sleep $((n * 15))
-          done
-          return 1
-        }
+        count=0
         download() { gh api "$1" > "$2" < /dev/null; }
         while read -r id; do
           if ! listed=$(retry gh api --paginate "repos/$RUNS_REPO/actions/runs/$id/artifacts?per_page=100" \
@@ -216,7 +239,7 @@ runs:
         done < "$RUNS/ids"
         [ -f "$RUNS/truncated" ] && errors=$((errors + 1))
         echo "$errors" > "$RUNS/errors"
-        echo "$count run(s) completed since $cutoff uploaded results; $errors download error(s)"
+        echo "$count run(s) completed since $cutoff uploaded results; $errors error(s)"
     - name: Report
       id: report
       shell: bash
@@ -234,7 +257,7 @@ runs:
         if [ "$errors" -gt 0 ]; then
           # The report is short of what was uploaded: say so on top, and
           # fail below so the next report covers this window again.
-          { printf '**%s artifact(s) could not be listed or downloaded**: this report is incomplete, and the next one covers these runs again.\n\n' "$errors"
+          { printf '**The runs or their artifacts could not all be listed or read (%s error(s))**: this report is incomplete, and the next one covers these runs again.\n\n' "$errors"
             cat "$OUT/report.md"; } > "$OUT/report.tmp" && mv "$OUT/report.tmp" "$OUT/report.md"
           status=1
         fi
@@ -382,5 +405,5 @@ runs:
       if: steps.report.outputs.errors != '0'
       shell: bash
       run: |
-        echo "::error::some artifacts could not be read; the next report covers this window again"
+        echo "::error::some runs or artifacts could not be listed or read; the next report covers this window again"
         exit 1

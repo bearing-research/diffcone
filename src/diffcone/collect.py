@@ -154,6 +154,7 @@ import sys
 import threading
 import types
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -498,19 +499,28 @@ def _code_index(code, rel: str) -> int:
     return i
 
 
-def _flag(flag: int = FLAG_SUBPROCESS, cause: str = "") -> None:
+def _flag(flag: int = FLAG_SUBPROCESS, cause: str | Callable[[], str] = "") -> None:
     """Something ran that no record shows: in the open windows, or outside
     every window in the phase it belongs to (the module being imported, or
-    none: a hook or collection). ``cause`` says what, for the summary."""
+    none: a hook or collection). ``cause`` says what, for the summary (a
+    callable is called for it). The flag is raised first: describing the
+    cause is a diagnostic, and nothing that goes wrong there costs the flag
+    or the store."""
     global flags_raised
     flags_raised += 1
-    cause_id = _cause(cause) if flag == FLAG_SUBPROCESS else None
-    for w in _windows():
+    windows = _windows()
+    for w in windows:
         w["flags"] |= flag
-        if cause_id is not None:
-            w["causes"].add(cause_id)
     if not active:
         import_flagged.add(importing[-1] if importing else "")
+    if flag != FLAG_SUBPROCESS:
+        return
+    try:
+        cause_id = _cause(cause if isinstance(cause, str) else cause())
+    except Exception:  # a diagnostic only
+        cause_id = _cause("a cause that could not be described")
+    for w in windows:
+        w["causes"].add(cause_id)
 
 
 def _summary(args) -> str:
@@ -910,7 +920,7 @@ def _audit(event, args):
                 _inert_pending = event == "subprocess.Popen"
             else:
                 _inert_pending = False
-                _flag(cause=f"{event} {_summary(args)}".rstrip())
+                _flag(cause=lambda: f"{event} {_summary(args)}".rstrip())
         elif event == "exec":
             caller = sys._getframe().f_back
             # An annotation evaluated from text: credited with what it reads

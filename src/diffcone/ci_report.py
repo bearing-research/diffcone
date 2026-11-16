@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import statistics
 import sys
 import zipfile
@@ -199,35 +200,73 @@ def _plan_text(text: str) -> Any:
     return json.loads(text)
 
 
+def _member(info: zipfile.ZipInfo) -> str | None:
+    """The file of ``ARTIFACT_FILES`` an archive member is when the whole
+    archive is extracted (``ZipFile.extractall``), or None: an absolute
+    name, a drive, empty, ``.`` and ``..`` parts are dropped, so
+    ``./context.json`` and ``/context.json`` are context.json and
+    ``sub/context.json`` is none of them."""
+    if info.is_dir():
+        return None
+    name = info.filename
+    if os.sep != "/":
+        name = name.replace("/", os.sep)
+    if os.altsep and os.altsep != "/":
+        name = name.replace(os.altsep, os.sep)
+    name = os.path.splitdrive(name)[1]
+    parts = [p for p in name.split(os.sep) if p not in ("", os.curdir, os.pardir)]
+    return parts[0] if len(parts) == 1 and parts[0] in ARTIFACT_FILES else None
+
+
+def _archived_plan(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[dict | None, bool]:
+    """A plan member as ``_read`` reads it (None when unreadable or not an
+    object), and whether it is truthy there: ``_plan_text`` leaves out the
+    explanations, so a plan of nothing else reads as empty here but not
+    there."""
+    try:
+        text = zf.read(info).decode("utf-8")
+        plan = _plan_text(text)
+    except ValueError:
+        return None, False
+    if not isinstance(plan, dict):
+        return None, False
+    return plan, bool(plan) or '\n  "dependency_explanations": ' in text
+
+
 def extract(archive: str | Path, directory: str | Path) -> list[str]:
     """Write into ``directory`` the files of a downloaded artifact that
-    ``load`` reads, each plan cut to what ``_plan_read`` keeps: what
-    ``load`` then reads is what it reads of the whole artifact extracted.
-    A plan that is unreadable is not written (``load`` reads a missing one
-    and an unreadable one alike), and plan.json not at all when ran.json
-    is readable. Returns the names written."""
+    ``load`` reads, the plan cut to what ``_plan_read`` keeps: what ``load``
+    then reads is what it reads of the whole artifact extracted. ``load``
+    reads ran.json, or plan.json when ran.json is missing, unreadable or
+    empty (``{}``): only the plan it would read is written, under its own
+    name, with a key ``_plan_read`` drops so that it never reads as empty
+    (a ran.json of no key the report reads is not plan.json's). Returns
+    the names written."""
     target = Path(directory)
-    target.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     with zipfile.ZipFile(archive) as zf:
-        # The files sit at the archive's top, as ``load`` reads them; only
-        # these fixed names are written, wherever the archive points.
-        members = {i.filename: i for i in zf.infolist() if i.filename in ARTIFACT_FILES}
+        target.mkdir(parents=True, exist_ok=True)
+        # Only these fixed names are written, wherever the archive points;
+        # of two members extracted as one file, the later is what is left.
+        members: dict[str, zipfile.ZipInfo] = {}
+        for info in zf.infolist():
+            name = _member(info)
+            if name is not None:
+                members[name] = info
         for name in sorted(members.keys() - set(PLAN_FILES)):
             (target / name).write_bytes(zf.read(members[name]))
             written.append(name)
-        for name in PLAN_FILES:
-            if name not in members:
-                continue
-            try:
-                plan = _plan_text(zf.read(members[name]).decode("utf-8"))
-            except ValueError:
-                continue
-            if not isinstance(plan, dict):
-                continue
-            (target / name).write_text(json.dumps(_plan_read(plan)), "utf-8")
+        ran, truthy = (None, False)
+        if "ran.json" in members:
+            ran, truthy = _archived_plan(zf, members["ran.json"])
+        name, plan = ("ran.json", ran) if truthy else ("plan.json", None)
+        if plan is None and "plan.json" in members:
+            plan = _archived_plan(zf, members["plan.json"])[0]
+        if plan is not None:
+            (target / name).write_text(
+                json.dumps({"cut": True, **(_plan_read(plan) or {})}), "utf-8"
+            )
             written.append(name)
-            break
     return written
 
 
