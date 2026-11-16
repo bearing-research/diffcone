@@ -393,7 +393,8 @@ everything.
     adding a number or string to one that only ever holds such values
     (`tok.position += 1`), in that code or in a function it hands the
     instance to, is not, as long as no class involved defines `__new__`,
-    `__setattr__`, `__delattr__`, `__getattr__` or `__getattribute__`,
+    `__setattr__` or `__delattr__` (or, for the adding, which reads the
+    attribute first, `__getattr__` or `__getattribute__`),
     binds that name in its body to anything but a constant (a property,
     another descriptor, a list), or has a decorator (other than
     `functools.total_ordering` or `typing.final`), a metaclass (other than

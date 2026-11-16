@@ -1366,6 +1366,36 @@ def test_t20_module_immutables(case):
     assert module_immutables(ast.parse(source)) == want
 
 
+SUPER_NEW = (
+    "class Meta({base}):\n    kinds = []\n\n    def __new__(mcs, name, bases, attrs):\n"
+    "        klass = super().__new__(mcs, name, bases, attrs)\n"
+    "        klass.tag = 1\n        return klass\n"
+)
+KEEPING_BASE = (
+    "class Base(type):\n    made = None\n\n    def __new__(mcs, name, bases, attrs):\n"
+    "        if Base.made is None:\n"
+    "            Base.made = super().__new__(mcs, name, bases, attrs)\n"
+    "        return Base.made\n\n\n"
+)
+
+
+def test_v27_super_new_runs_the_next_new_of_the_mro():
+    """``super().__new__(mcs, ...)`` in ``Meta.__new__`` runs ``type.__new__``,
+    not ``Meta.__new__`` itself: binding an attribute on the new class
+    writes nothing of ``Meta`` (marshmallow's ``SchemaMeta``; audit round 8,
+    V27). Under a base whose ``__new__`` gives back a class it keeps, the
+    binding writes that base's state and ``Meta``'s."""
+
+    def writers(source):
+        idx = index({"pkg/__init__.py": "", "pkg/m.py": source})
+        return {(e.source, e.target) for e in idx.edges if e.detail == "mutated_by"}
+
+    assert writers(SUPER_NEW.format(base="type")) == set()
+    assert {("pkg.m.Base", "pkg.m.Meta.__new__"), ("pkg.m.Meta", "pkg.m.Meta.__new__")} <= (
+        writers(KEEPING_BASE + SUPER_NEW.format(base="Base"))
+    )
+
+
 def test_t20_an_immutable_variable_keeps_its_rebinding_edges():
     """Rebinding a constant (``mod.X = v``) is an edge of its own; a write
     into it in place is none, and makes it no less immutable."""

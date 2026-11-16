@@ -805,7 +805,11 @@ Further rules (pre-release audit, round 2):
   class named as the call, its receiver or its first argument; what the
   other arguments give it and what an in-scope `__new__` of the family
   returns (`<result>:`, joined by `Indexer._result_writes`) stay roots, as
-  for any call. What such an instance holds (an attribute, an item, a
+  for any call; for `super().__new__(cls)` in a method of a class C of the
+  MRO, only a `__new__` after C runs (`Resolver.lookup_super`), never C's
+  own or a subclass's (a metaclass's `__new__` binding attributes on the
+  class `type.__new__` made wrote the metaclass: marshmallow's
+  `SchemaMeta`; audit round 8, V27). What such an instance holds (an attribute, an item, a
   method's result, a name bound to part of it) is an `INSTANCE` root. A
   write in place into either (`s._items.append(x)`, `s._cache[k] = v`,
   `s._items += [x]`, `s.append(x)`, through a local alias, a factory's
@@ -992,12 +996,17 @@ Further rules (pre-release audit, round 2):
   or augmenting one with a value of a fixed immutable type (`tok.position
   += len(s)`), directly or through any chain of callees (`param_flavors`:
   `=<attr>`, `+<attr>`, `*`), does not, when no class of the family defines
-  `__new__`, `__setattr__`, `__delattr__`, `__getattr__` or
-  `__getattribute__`, is not `kept` or has a base outside the roots, no
+  `__new__`, `__setattr__` or `__delattr__`, is not `kept` or has a base
+  outside the roots, no
   class binds or defines that attribute in its body (a descriptor, a
   property setter) other than as an immutable value (an annotation alone,
   `_cache: int | None`, binds nothing: `literals.class_declared`), and, for
-  an augment, no class of the family binds any class-level value that may
+  an augment, which reads the attribute first, no class of the family
+  defines `__getattr__` or `__getattribute__` (which may give back what
+  the instance holds; a binding reads nothing, so they leave it alone:
+  arrow's `cls(*values)`, `values` taken over `cls._ATTRS`, in a class
+  with a `__getattr__`; audit round 8, V26), no class of the family binds
+  any class-level value that may
   be a descriptor (whose `__get__` may store into the instance's
   `__dict__`) and no store of the attribute, or under a computed name
   (`setattr(r, name, v)`, `r.__dict__`, `vars(r)`), binds a value that may

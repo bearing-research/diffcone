@@ -41,6 +41,15 @@ selection rules.
   part of it (`r = wrap(p); r["items"].append(x)`, through further calls
   and any of several returns, `b.tag().add(x)` where `tag` returns
   `self`, or the result handed to a function that changes it).
+- Setting an attribute on a new instance of your class (in `__init__` or
+  later) no longer changes what you passed its constructor just because
+  the class defines `__getattr__` or `__getattribute__`, which run when an
+  attribute is read, not when one is set; adding to an attribute of such
+  a class (`self.n += 1`, which reads it first) still counts.
+- A `__new__` that calls `super().__new__(cls)` (a metaclass's included)
+  and sets attributes on what it gets back no longer counts as changing
+  its own class: that call runs the next `__new__` in the class hierarchy,
+  whose own result is still followed.
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in

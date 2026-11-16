@@ -2620,6 +2620,129 @@ def test_t23_a_mutable_class_attribute_handed_to_a_constructor(repo):
     assert _state_plan(repo, state, lib) == STATE_SELECTED
 
 
+# A ``__getattr__`` or ``__getattribute__`` of the class runs when an
+# attribute of the instance is read, never when one is bound: binding the
+# instance's own attributes still writes nothing its constructor was handed
+# (arrow's ``cls(*values)`` with ``values`` taken over ``cls._ATTRS``, whose
+# ``__init__`` binds ``self._datetime``; audit round 8, V26). An augmented
+# attribute is read first, and the hook may give back what the instance
+# holds.
+READ_HOOKS = {
+    "__getattr__": "    def __getattr__(self, name):\n        return self.rules\n\n",
+    "__getattribute__": (
+        "    def __getattribute__(self, name):\n        if name == 'acc':\n"
+        "            name = 'rules'\n        return object.__getattribute__(self, name)\n\n"
+    ),
+}
+BOUND_ONLY = {
+    "an attribute bound by the caller": "    tok.position = 1\n",
+    "an attribute bound by a callee": "    _mark(tok)\n",
+}
+
+
+@pytest.mark.parametrize("hook", list(READ_HOOKS))
+@pytest.mark.parametrize("case", list(BOUND_ONLY))
+def test_v26_a_read_hook_runs_no_code_on_a_binding(repo, hook, case):
+    """``Tokenizer('x', rules=RULES)``, a class with an attribute-read hook,
+    and only attributes of the instance bound (in ``__init__``, by the
+    caller, by a callee): the readers of ``RULES`` are not selected."""
+    state = TOKENIZER.format(extra=READ_HOOKS[hook], init=INIT)
+    lib = TOKENIZER_LIB.format(BOUND_ONLY[case])
+    assert _state_plan(repo, state, lib) == {"tests/test_a.py::test_a"}
+
+
+MOMENT = (
+    "class Moment:\n    _ATTRS = ['year', 'day']\n\n"
+    "    def __init__(self, year, day, tz=None):\n        self._dt = (year, day, tz)\n\n"
+    "    def __getattr__(self, name):\n        if name in Moment._ATTRS:\n"
+    "            return self._dt[Moment._ATTRS.index(name)]\n"
+    "        raise AttributeError(name)\n\n"
+    "    @classmethod\n    def zone(cls, tz):\n        return tz\n\n"
+    "    @classmethod\n    def range(cls, start, tz):\n        zone = cls.zone(tz or 'x')\n"
+    "        current = cls(*start, tz=zone)\n        while True:\n            yield current\n"
+    "            values = [getattr(current, f) for f in cls._ATTRS]\n"
+    "            current = cls(*values, tz=zone)\n\n\n"
+    "def fill(k):\n    return next(Moment.range((2000, 1), None))\n\n\n"
+    "def peek(k):\n    return list(Moment._ATTRS)\n"
+)
+
+
+def test_v26_a_class_attribute_iterated_into_a_construction(repo):
+    """arrow's ``Arrow.range``: the fields of the current instance read over
+    the class's ``_ATTRS`` and handed to a new instance whose ``__init__``
+    binds one attribute (the class has a ``__getattr__``): no write of
+    ``Moment``, so its readers are not selected."""
+    assert _state_plan(repo, MOMENT) == {"tests/test_a.py::test_a"}
+
+
+AUGMENTED_THROUGH_HOOK = {
+    "the tokenizer's own augmentation": ("", "    _parse(tok)\n"),
+    "an attribute only the hook gives": (
+        "    def take(self):\n        self.acc += 'x'\n\n",
+        "    tok.take()\n",
+    ),
+}
+
+
+@pytest.mark.parametrize("hook", list(READ_HOOKS))
+@pytest.mark.parametrize("case", list(AUGMENTED_THROUGH_HOOK))
+def test_v26_an_augmented_attribute_a_read_hook_may_give(repo, hook, case):
+    """The bound of the rule above: ``self.acc += 'x'`` reads ``self.acc``
+    first, and ``__getattr__`` gives back the rules list, which ``+=``
+    extends in place; the readers of ``RULES`` are selected."""
+    extra, call = AUGMENTED_THROUGH_HOOK[case]
+    state = TOKENIZER.format(extra=READ_HOOKS[hook] + extra, init=INIT)
+    state = state.replace("RULES = {'x': 1}", "RULES = ['x']").replace(
+        "return RULES.get(k)", "return k in RULES"
+    )
+    assert _state_plan(repo, state, TOKENIZER_LIB.format(call)) == STATE_SELECTED
+
+
+# ``super().__new__`` in a method of class C runs the ``__new__`` after C in
+# the MRO, never C's own (marshmallow's ``SchemaMeta.__new__`` binding
+# attributes on the class ``type.__new__`` made wrote ``SchemaMeta``; audit
+# round 8, V27). That narrowing shows in the index (test_indexer.py): a
+# reader of a class handed to a library is a dependent of its methods
+# already. What a ``__new__`` after C keeps is still written.
+META = (
+    "class Meta(type):\n    kinds = []\n\n    def __new__(mcs, name, bases, attrs):\n"
+    "        klass = super().__new__(mcs, name, bases, attrs)\n"
+    "        klass.tag = 'x'\n        return klass\n\n\n"
+    "def fill(k):\n    return Meta('C', (), {})\n\n\n"
+    "def peek(k):\n    return Meta.kinds\n"
+)
+
+
+KEPT_BY_A_BASE = {
+    "a metaclass": (
+        "class Base(type):\n    made = None\n\n"
+        "    def __new__(mcs, name, bases, attrs):\n        if Base.made is None:\n"
+        "            Base.made = super().__new__(mcs, name, bases, attrs)\n"
+        "        return Base.made\n\n\n"
+        + META.replace("class Meta(type):", "class Meta(Base):").replace(
+            "return Meta.kinds", "return getattr(Base.made, 'tag', None)"
+        )
+    ),
+    "a class": (
+        "class Pool:\n    made = None\n\n    def __new__(cls):\n"
+        "        if Pool.made is None:\n            Pool.made = object.__new__(cls)\n"
+        "        return Pool.made\n\n\n"
+        "class Conn(Pool):\n    def __new__(cls):\n        self = super().__new__(cls)\n"
+        "        self.tag = 'x'\n        return self\n\n\n"
+        "def fill(k):\n    return Conn()\n\n\n"
+        "def peek(k):\n    return getattr(Pool.made, 'tag', None)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(KEPT_BY_A_BASE))
+def test_v27_super_new_may_give_back_what_a_base_keeps(repo, case):
+    """The bound of the rule above: ``super().__new__`` runs the next
+    ``__new__`` of the MRO, which may give back an object it keeps; binding
+    an attribute on it writes that: the readers are selected."""
+    assert _state_plan(repo, KEPT_BY_A_BASE[case]) == STATE_SELECTED
+
+
 # A write onto the class of an object whose type the analysis does not know
 # (``type(o).X = v``, ``o.__class__.items.append(v)`` with ``o`` a parameter)
 # may be a write of any in-scope class that may have that attribute: a class

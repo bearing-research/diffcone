@@ -3328,7 +3328,10 @@ class _HeldSafety:
     or augments one (``+<attr>``) whose every value is of a builtin type
     that cannot change in place (no store of the attribute, on any
     receiver of unknown type or an instance of the family, binds anything
-    else, ``attr_values``). A change in place of the instance (``*``) may
+    else, ``attr_values``) and that no ``__getattr__``/``__getattribute__``
+    of the family may give back instead (the augmentation reads it first;
+    a binding reads nothing, so those hooks leave it alone: audit round 8,
+    V26). A change in place of the instance (``*``) may
     run its methods, which may change anything it holds. A library logger's
     record (``RECORD``) is a ``LogRecord``, which runs no code binding an
     attribute, when ``_LoggingModel.fresh_record`` says it is one (audit
@@ -3341,6 +3344,7 @@ class _HeldSafety:
         for owner, attr, ok in indexer.out.attr_values:
             self.values[attr].add((owner, ok))
         self._family: dict[str, set[str] | None] = {}
+        self._reads: set[str] = set()  # a family customising attribute reads
 
     def family(self, cls: str) -> set[str] | None:
         """The family of ``cls`` (its MRO and its in-scope subclasses'), or
@@ -3366,6 +3370,8 @@ class _HeldSafety:
                 ):
                     found = None
                     break
+                if names & _READ_HOOKS:
+                    self._reads.add(cls)
             self._family[cls] = found
         return self._family[cls]
 
@@ -3399,6 +3405,10 @@ class _HeldSafety:
                 if attr in cscope.members or attr in _class_values(cscope):
                     return True
             if flavor.startswith("+"):
+                if cls in self._reads:
+                    # ``self.n += 1`` reads ``self.n`` first: a hook may give
+                    # back anything the instance holds, changed in place.
+                    return True
                 # What the attribute may hold: a store of it, or under any
                 # name, binding a value that may change in place, or a
                 # class-level value (a descriptor's ``__get__`` may store into
@@ -3420,10 +3430,9 @@ def _class_values(cscope: ClassScope) -> set[str]:
 
 
 # Special methods that make an instance or run on an attribute bound on it,
-# or read one (``__getattribute__``, ``__getattr__``: an augmented attribute).
-_INSTANCE_HOOKS = frozenset(
-    {"__new__", "__setattr__", "__delattr__", "__getattribute__", "__getattr__"}
-)
+# and those that read one (an augmented attribute; a binding reads nothing).
+_INSTANCE_HOOKS = frozenset({"__new__", "__setattr__", "__delattr__"})
+_READ_HOOKS = frozenset({"__getattribute__", "__getattr__"})
 
 
 def _attribute_values(indexer: Resolver, cls: str, attr: str) -> list[str] | None:

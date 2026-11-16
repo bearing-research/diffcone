@@ -1922,10 +1922,19 @@ class _ReferenceCollector(ast.NodeVisitor):
         cls = self._class_named(func, variables=True)
         return ("call", cls) if cls is not None else None
 
-    def _new_results(self, cls: str) -> dict[str, bool]:
+    def _new_results(self, cls: str, how: str) -> dict[str, bool]:
         """What an in-scope ``__new__`` making ``cls`` (or a subclass of it)
-        returns, joined after pass 2: the object may be one it keeps."""
-        hit = self.indexer.lookup_in_class(cls, "__new__", dispatch=True)
+        returns, joined after pass 2: the object may be one it keeps. For
+        ``super().__new__(cls)`` in a method of a class of ``cls``'s MRO,
+        only a ``__new__`` after that class in the MRO (of ``cls`` or of a
+        subclass) runs, never its own or an override before it (a
+        metaclass's ``__new__`` calling ``super().__new__(mcs, ...)``; audit
+        round 8, V27)."""
+        enclosing = self.scope.self_class
+        if how == "super" and enclosing is not None and enclosing in self.indexer._mro(cls):
+            hit = self.indexer.lookup_super(enclosing, "__new__")
+        else:
+            hit = self.indexer.lookup_in_class(cls, "__new__", dispatch=True)
         if not isinstance(hit, Resolved):
             return {}
         found = {}
@@ -1958,7 +1967,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             # not the instance itself (T23).
             found = {_held(cls, root): copy for root, copy in found.items()}
         if how != "object" and cls in self.indexer.class_scopes:
-            found = _merged(found, self._new_results(cls))
+            found = _merged(found, self._new_results(cls, how))
         return _merged(found, {f"{FRESH}{how}:{cls}": False})
 
     def _call_roots(self, node: ast.Call, seen: frozenset) -> dict[str, bool]:
