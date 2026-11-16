@@ -6109,7 +6109,7 @@ def test_the_state_a_changed_writer_writes_into_a_class_reaches_its_readers(repo
     assert "which may write into pkg.lib.Holder" in why
 
 
-# --------------------------------------------------------------------------- hooks before the tests
+# --------------------------------------------------------------------------- what tests wrote, read outside them
 TIMED_STATE = """\
 SEEN = []
 
@@ -6135,9 +6135,10 @@ TIMED_LATE = (
     "def pytest_sessionfinish(session):\n"
     "    if summary() > 5:\n        session.exitstatus = 1\n"
 )
+NOTE_TWICE = TIMED_STATE + "\n\ndef note_twice(n):\n    SEEN.extend((n, n))\n"
 
 
-def _timed(repo, conftest):
+def _timed(repo, conftest, **files):
     base = repo.commit(
         {
             **BENCH_PKG,
@@ -6146,39 +6147,33 @@ def _timed(repo, conftest):
             "tests/conftest.py": conftest,
             "tests/test_a.py": TIMED_TEST,
             "tests/test_b.py": "def test_b():\n    assert True\n",
+            **files,
         }
     )
     evidence = repo.collect()
     head = repo.commit(
-        {
-            "pkg/state.py": TIMED_STATE + "\n\ndef note_twice(n):\n    SEEN.extend((n, n))\n",
-            "tests/test_a.py": TIMED_TEST.replace("note(", "note_twice("),
-        }
+        {"pkg/state.py": NOTE_TWICE, "tests/test_a.py": TIMED_TEST.replace("note(", "note_twice(")}
     )
     return _noop_plan(repo, base, head, evidence), evidence
 
 
-def test_a_hook_that_ran_before_the_first_test_reads_nothing_a_new_writer_writes(repo):
+def test_v2_a_hook_reading_what_a_new_writer_writes_selects_every_test(repo):
     """``note_twice``, new, writes ``SEEN``, and only ``test_a``, changed,
-    calls it; ``order_key`` reads ``SEEN``, in a hook that ran before any
-    test did (``pytest_collection_modifyitems``). Code nothing outside the
-    tests calls writes only while a test runs, so the hook read none of it,
-    and its reach (every test) is not selected: before, every change
-    adding such a writer of state some hook reads selected every test
-    (strata: each of its pull requests)."""
+    calls it; ``order_key`` reads ``SEEN`` in a hook that ran before any test
+    did (``pytest_collection_modifyitems``). Every test is selected: whether
+    hook code ran only before the first test depends on the recording's
+    order and split, and code run there may keep what it read for later
+    (round 8, V2: the rule that took it as reading nothing was unsound)."""
     plan, evidence = _timed(repo, TIMED_EARLY)
     assert "pkg.state.order_key" in evidence.hook_phase
-    assert "pkg.state.order_key" not in evidence.late_outside
-    assert not plan.fallbacks
-    assert selected(plan) == {"tests/test_a.py::test_a"}
+    assert "pytest_hook_changed" in rules(plan, "tests/test_b.py::test_b")
 
 
 def test_a_hook_that_ran_after_a_test_may_read_what_a_new_writer_wrote(repo):
     """The same, with ``SEEN`` read in ``pytest_sessionfinish``, after the
     tests: what ``note_twice`` wrote decides the session's exit status, so
     every test is selected."""
-    plan, evidence = _timed(repo, TIMED_LATE)
-    assert "pkg.state.summary" in evidence.late_outside
+    plan, _ = _timed(repo, TIMED_LATE)
     assert "pytest_hook_changed" in rules(plan, "tests/test_b.py::test_b")
 
 
@@ -6186,26 +6181,107 @@ def test_a_module_a_test_imports_may_read_what_a_new_writer_wrote(repo):
     """``test_b`` imports ``pkg.lazy`` inside the test, after ``test_a`` ran
     the new ``note_twice``: its import-time state (``K``) is built from
     ``SEEN`` as earlier tests left it, and later tests read it without
-    running the module's code, so the module is escalated as before."""
+    running the module's code, so the module is escalated."""
+    plan, _ = _timed(
+        repo,
+        TIMED_EARLY,
+        **{
+            "pkg/lazy.py": "from pkg.state import SEEN\n\nK = len(SEEN)\n",
+            "tests/test_b.py": "def test_b():\n    import pkg.lazy\n\n    assert pkg.lazy.K >= 0\n",
+        },
+    )
+    assert "pkg.lazy" in plan.evidence["escalated_modules"]
+    assert "tests/test_b.py::test_b" in selected(plan)
+
+
+def test_v2_an_instance_kept_at_import_is_read_after_a_new_writer_writes_its_class(repo):
+    """``pkg.registry`` keeps a ``Holder`` made at import (``ITEMS``);
+    ``tag``, new, writes ``Holder.label``, and ``test_a``, changed, calls it.
+    ``test_b`` reads ``ITEMS[0].label`` and never names ``tag`` or
+    ``Holder``: code run at import kept a reference to what a test writes,
+    so its readers are selected (ev-hooks r1b)."""
+    holder = "class Holder:\n    pass\n"
     base = repo.commit(
         {
             **BENCH_PKG,
             "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
-            "pkg/state.py": TIMED_STATE,
-            "pkg/lazy.py": "from pkg.state import SEEN\n\nK = len(SEEN)\n",
-            "tests/conftest.py": TIMED_EARLY,
-            "tests/test_a.py": TIMED_TEST,
-            "tests/test_b.py": "def test_b():\n    import pkg.lazy\n\n    assert pkg.lazy.K >= 0\n",
+            "pkg/holder.py": holder,
+            "pkg/registry.py": "from pkg.holder import Holder\n\nITEMS = []\n"
+            "ITEMS.append(Holder())\n",
+            "tests/test_a.py": "def test_a():\n    pass\n",
+            "tests/test_b.py": "from pkg.registry import ITEMS\n\n\n"
+            "def test_b():\n    assert getattr(ITEMS[0], 'label', None) is None\n",
         }
     )
     evidence = repo.collect()
-    assert "pkg.lazy" in evidence.late_outside
     head = repo.commit(
         {
-            "pkg/state.py": TIMED_STATE + "\n\ndef note_twice(n):\n    SEEN.extend((n, n))\n",
-            "tests/test_a.py": TIMED_TEST.replace("note(", "note_twice("),
+            "pkg/holder.py": holder + "\n\ndef tag(v):\n    Holder.label = v\n",
+            "tests/test_a.py": "from pkg.holder import tag\n\n\ndef test_a():\n    tag('a')\n",
         }
     )
     plan = _noop_plan(repo, base, head, evidence)
-    assert "pkg.lazy" in plan.evidence["escalated_modules"]
     assert "tests/test_b.py::test_b" in selected(plan)
+
+
+LOOP_CONFTEST = """\
+import pytest
+
+from pkg import state
+
+
+def pytest_runtestloop(session):
+    for i, item in enumerate(session.items):
+        nxt = session.items[i + 1] if i + 1 < len(session.items) else None
+        if len(state.SEEN) > 1:
+            item.add_marker(pytest.mark.xfail(strict=True, reason="seen"))
+        item.config.hook.pytest_runtest_protocol(item=item, nextitem=nxt)
+    return True
+"""
+
+
+def test_v2_a_test_loop_started_before_the_first_test_reads_what_tests_write(repo):
+    """A project ``pytest_runtestloop`` starts before the first test and
+    runs across all of them, reading ``SEEN`` between tests: what the new
+    ``note_twice`` writes in ``test_a`` makes ``test_b`` a strict xfail that
+    passes (quality q1)."""
+    plan, _ = _timed(repo, LOOP_CONFTEST)
+    assert "tests/test_b.py::test_b" in selected(plan)
+
+
+def test_v2_whether_a_hook_ran_after_a_test_depends_on_the_order(repo):
+    """An outer ``pytest_runtest_protocol`` wrapper reads ``SEEN`` only for a
+    test marked ``quiet``; at C no test wrote ``SEEN``. At the head a new
+    test, sorting first, writes it through a new ``note``, and ``test_q``
+    becomes a strict xfail that passes: whether hook code ran after a test
+    wrote is the recording's order, not the code's (ev-hooks t5)."""
+    state = "SEEN = []\n\n\ndef summary():\n    return len(SEEN)\n"
+    conftest = (
+        "import pytest\nfrom pkg.state import summary\n\n\n"
+        "@pytest.hookimpl(wrapper=True)\n"
+        "def pytest_runtest_protocol(item, nextitem):\n"
+        "    if item.get_closest_marker('quiet') and summary() > 0:\n"
+        "        item.add_marker(pytest.mark.xfail(strict=True, reason='written'))\n"
+        "    return (yield)\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/state.py": state,
+            "pytest.ini": "[pytest]\nmarkers =\n    quiet: needs untouched state\n",
+            "tests/conftest.py": conftest,
+            "tests/test_q.py": "import pytest\n\n\n@pytest.mark.quiet\ndef test_q():\n"
+            "    assert True\n",
+            "tests/test_z.py": "def test_z():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit(
+        {
+            "pkg/state.py": state + "\n\ndef note(n):\n    SEEN.append(n)\n",
+            "tests/test_a.py": "from pkg import state\n\n\ndef test_a():\n    state.note(1)\n",
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "tests/test_q.py::test_q" in selected(plan)
