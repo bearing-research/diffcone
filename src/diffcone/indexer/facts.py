@@ -26,6 +26,12 @@ class _FuncParams:
     positional: list[str]  # including self/cls for bound methods
     bound: bool
     defaults: dict[str, tuple[str, ...] | None]
+    # Keyword-only parameters, and the ``*args``/``**kwargs`` names ("" for
+    # none): where a starred argument or an unmatched keyword lands
+    # (writes.py; audit round 8, V8).
+    keyword_only: list[str] = field(default_factory=list)
+    varargs: str = ""
+    varkw: str = ""
 
 
 _NOTHING: Any = object()  # a call site passes nothing for the parameter
@@ -345,6 +351,29 @@ class _Output:
     # The ``passes`` handing a parameter itself on (not an item or an
     # attribute of it): the callee's writes are the caller's (T23).
     whole_passes: set[tuple[str, str, str, str, str, bool]] = field(default_factory=set)
+    # (function, parameter, class, how): a fresh object holding the
+    # parameter (``Box(p)``, ``self.makeRecord(..., msg, args)``: class
+    # ``writes.RECORD`` + logger class) written ``how`` (``param_flavors``'
+    # kinds); a write of the parameter when ``writes._HeldSafety`` says
+    # writing the object so may change what it holds (audit round 8, V1, V7).
+    held_param_writes: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # (caller, kind, receiver, method): a call that may log a record through
+    # the logging library: ``lib`` (a library logger: ``logging.info``,
+    # ``logging.getLogger(n).info``), ``var`` (a method of a module variable,
+    # its id), ``self`` (a ``logging.Logger`` subclass's own method, its
+    # class id) or ``any`` (a receiver of unknown type; writes._LoggingModel).
+    log_calls: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # (caller, ``args`` or ``record``, what): what such a call hands the
+    # library, the arguments a record is made of or a record (as pass
+    # records name it).
+    log_contents: set[tuple[str, str, str]] = field(default_factory=set)
+    # (caller, role, what, holder): an object or function handed to the
+    # logging library that it calls back (``addHandler(h)``, ``addFilter(f)``,
+    # ``setFormatter(f)``, ``setLogRecordFactory(f)``, ``basicConfig(handlers=
+    # ...)``, a handler's stream, a function stored on a library class),
+    # ``*`` for a configuration naming anything (``dictConfig``); holder: the
+    # module variable it is added to (``var:<id>``) or "".
+    log_registered: set[tuple[str, str, str, str]] = field(default_factory=set)
     # (symbol, what): writes of process-global state (indexer/process.py).
     process_writes: set[tuple[str, str]] = field(default_factory=set)
     # Module variables some code binds anew (``global X; X = ...`` in a
@@ -413,6 +442,10 @@ class _Output:
         self.attr_values |= other.attr_values
         self.param_flavors |= other.param_flavors
         self.whole_passes |= other.whole_passes
+        self.held_param_writes |= other.held_param_writes
+        self.log_calls |= other.log_calls
+        self.log_contents |= other.log_contents
+        self.log_registered |= other.log_registered
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
@@ -529,7 +562,10 @@ def _output_to_dict(out: _Output) -> dict:
         },
         "returns": {f: sorted(c) for f, c in sorted(out.returns.items())},
         "external_returns": sorted(out.external_returns),
-        "func_params": {f: [p.positional, p.bound, p.defaults] for f, p in out.func_params.items()},
+        "func_params": {
+            f: [p.positional, p.bound, p.defaults, p.keyword_only, p.varargs, p.varkw]
+            for f, p in out.func_params.items()
+        },
         "param_dynamics": [
             [
                 pd.function,
@@ -576,6 +612,10 @@ def _output_to_dict(out: _Output) -> dict:
         "attr_values": sorted(list(v) for v in out.attr_values),
         "param_flavors": sorted(list(f) for f in out.param_flavors),
         "whole_passes": sorted(list(p) for p in out.whole_passes),
+        "held_param_writes": sorted(list(w) for w in out.held_param_writes),
+        "log_calls": sorted(list(c) for c in out.log_calls),
+        "log_contents": sorted(list(c) for c in out.log_contents),
+        "log_registered": sorted(list(r) for r in out.log_registered),
     }
 
 
@@ -637,8 +677,13 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
             positional=list(positional),
             bound=bound,
             defaults={k: _tuples(v) for k, v in defaults.items()},
+            keyword_only=list(keyword_only),
+            varargs=varargs,
+            varkw=varkw,
         )
-        for f, (positional, bound, defaults) in data["func_params"].items()
+        for f, (positional, bound, defaults, keyword_only, varargs, varkw) in data[
+            "func_params"
+        ].items()
     }
     out.param_dynamics = [
         _ParamDynamic(
@@ -680,6 +725,10 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.attr_values = {(c, a, bool(ok)) for c, a, ok in data["attr_values"]}
     out.param_flavors = {(f, p, h) for f, p, h in data["param_flavors"]}
     out.whole_passes = {(c, w, e, n, s, bool(b)) for c, w, e, n, s, b in data["whole_passes"]}
+    out.held_param_writes = {(f, p, c, h) for f, p, c, h in data["held_param_writes"]}
+    out.log_calls = {(c, k, r, m) for c, k, r, m in data["log_calls"]}
+    out.log_contents = {(c, k, w) for c, k, w in data["log_contents"]}
+    out.log_registered = {(c, r, w, h) for c, r, w, h in data["log_registered"]}
     return out
 
 

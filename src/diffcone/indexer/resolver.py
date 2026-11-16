@@ -983,6 +983,9 @@ class Resolver(FirstPass):
         positional = [a.arg for a in node.args.posonlyargs + node.args.args]
         fscope.params = {name: i for i, name in enumerate(positional)}
         fscope.params.update({a.arg: None for a in node.args.kwonlyargs})
+        varargs = node.args.vararg.arg if node.args.vararg is not None else ""
+        varkw = node.args.kwarg.arg if node.args.kwarg is not None else ""
+        fscope.var_params = frozenset(n for n in (varargs, varkw) if n)
         # Defaults are evaluated where the ``def`` statement runs (``header``):
         # in ``def f(NAMES=NAMES)`` the default is the module's ``NAMES``.
         defaults: dict[str, tuple[str, ...] | None] = {}
@@ -998,6 +1001,9 @@ class Resolver(FirstPass):
             positional=positional,
             bound=bound_method,
             defaults=defaults,
+            keyword_only=[a.arg for a in node.args.kwonlyargs],
+            varargs=varargs,
+            varkw=varkw,
         )
         returned = self._returned_class(node, fscope)
         if returned is not None:

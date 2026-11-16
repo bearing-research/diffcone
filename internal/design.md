@@ -482,8 +482,28 @@ Further rules (pre-release audit, round 2):
   standard-library function that changes its first argument such as
   `heapq.heappush`; through a local bound once to the parameter too) writes
   what its caller hands it; `self` is a parameter, so a method assigning
-  `self.x` writes its receiver. A parameter handed on to a callee's written
-  parameter is written as well (to a fixed point). A module-level variable
+  `self.x` writes its receiver. A function's own `*args` and `**kwargs`
+  are new each call, holding what the caller handed: writing an item of one
+  (`objs[0].seen = True`, `for o in objs: o.seen = True`, `kw['o'].x = 1`)
+  writes those arguments, and a call handing `*ITEMS` or `**PARTS` hands
+  what they hold to each parameter it may fill, the `*args`/`**kwargs`
+  included (`writes._call_slots`, `slot_params`; audit round 8, V8). A
+  fresh object holding a parameter (`record = Box(payload)`, a library
+  logger's record) written in a way that may change what it holds
+  (`record.args.update(...)`, through a local bound to `record.args` too)
+  writes the parameter, when `_HeldSafety` says so (`held_param_writes`;
+  audit round 8, V7). An object stored into a fresh object itself
+  (`setattr(record, "fields", fields)`, then `fields.update(kw)`) is part
+  of that object, not of what it holds, so changing it writes nothing the
+  caller handed. A parameter handed on to a callee's written
+  parameter is written as well (to a fixed point). What a call is handed
+  follows the same rules except that an element of a parameter itself
+  (`for o in objs: o.reset()`) is not followed, as before them (an element
+  of `*args`, or of a fresh object's holding, is): following it nearly
+  doubled strata's `mutated_by` edges (13,086 to 24,693 at `fd36b04d`) and is
+  a known gap (docs/limitations.md). A method of a local bound once to a
+  list, dict or set display or to `dict()`/`list()`/`set()` (`fields = {};
+  fields.update(kw)`) is the builtin's, no project method of that name. A module-level variable
   handed to a written parameter (`set_mode(REG)`, `fill(cfg.REG)`), or the
   receiver of a method that writes its receiver (`registry.register(x)`),
   gets a `mutated_by` edge to the caller and to each callee that writes it
@@ -502,14 +522,50 @@ Further rules (pre-release audit, round 2):
   in-scope class deriving from one (`logging.setLoggerClass`), so only
   those are matched; a test fake of the same name is not. So is a method a
   plain subclass of `logging.Logger` (its bases named through its own
-  module's imports) calls on `self` and that neither it nor an in-scope
-  subclass defines (`self.handle(record)`): the library's, which calls a
-  handler's `handle`, never a project `handle` of another class. And the
-  record such a class's `self.makeRecord(...)` makes is new, none of what
-  was logged (strata's `StructuredLogger` attaching fields with
-  `setattr(record, ...)` wrote every object any caller logged, and its
-  `self.handle(record)` matched an unrelated `handle` that writes its own
-  instance, so every `logger.warning(...)` wrote the logger). A method called on
+  module's imports, a name nothing else in the module binds) calls on
+  `self` that the project does not define or give its family
+  (`self.handle(record)`): the library's, which calls no project `handle`
+  of another class directly. Decided after pass 2 (`writes._LoggingModel.
+  library_method`) over every class of the MRO of the class and of each
+  subclass (a mixin included) and over the one record of what each class is
+  given (`ClassRecord`: a class attribute bound in the module or another,
+  by a decorator or metaclass, an instance attribute bound in a method), a
+  class written as a whole (`type()` naming it as a base), and stores of the
+  name onto an object of unknown type or onto a `logging` class
+  (`logging.Logger.makeRecord = f`). The record such a class's
+  `self.makeRecord(...)` makes is a fresh `LogRecord` holding what it was
+  made of (`writes.RECORD`): `record.args` is the tuple or mapping logged,
+  `record.msg` the message, so changing them in place (`record.args[
+  'password'] = '***'`) writes the caller's objects; binding an attribute
+  of the record (`setattr(record, "fields", f)`) writes nothing logged.
+  With a project record factory (`logging.setLogRecordFactory`) or a
+  `makeRecord` the project may define or give the family, the record may
+  be anything, and every write of it is a write of what was logged
+  (audit round 8, V1; strata's `StructuredLogger` attaching fields with
+  `setattr(record, ...)` once wrote every object any caller logged, and its
+  `self.handle(record)` matched an unrelated `handle` writing its own
+  instance, 274 `mutated_by` edges onto strata's module loggers).
+  What the library calls back is followed instead (`_LoggingModel`, audit
+  round 8, V1, V9): a log call (a library logger's method, `logging.
+  warning(...)`, a module variable that may hold a logger, a receiver of
+  unknown type, an instance of a project class deriving from a `logging`
+  class or with a subclass that does (not `console.log(...)` on another),
+  a logger subclass's `self.handle(record)`) runs the
+  `emit`/`handle`/`filter`/`format`/`flush`/... of each object handed to
+  the library (`addHandler`, `addFilter`, `setFormatter`, `basicConfig(
+  handlers=...)`, a library handler's stream or target, a library object's
+  `handlers`/`filters`/`formatter` bound, through the parameters it is
+  handed on in), each function handed to it (a filter, a record factory, a
+  function stored on a `logging` class), the callbacks of every class
+  deriving from a `logging` class on any instance of it, a logger class's
+  overrides (`makeRecord`, `handle`, `callHandlers`, ...) on the logger
+  logged through, and, after a `dictConfig`/`fileConfig`, every method of
+  those names. Each is a pass record with the record (holding what the call
+  logged) or what it is made of, and what a callback changes itself is the
+  log site's change too (`Indexer._log_callback_writes`). Not followed: the
+  library's own logging into project handlers (a dependency's logger) and
+  objects reached back through the library (`logging.getLogger(n).
+  handlers[0]`, `logger.parent`). A method called on
   an instance attribute (`self._client.get(...)`) is likewise a method of
   what the attribute holds when every write of `self._client`, in any
   method of the class, of a subclass or of a class whose bases the index
@@ -1447,7 +1503,7 @@ else Bar`), so it leaves the attribute unbounded too. A parameter binding takes 
 edges (detail `self.handler`) to that symbol, alongside the name-bounded
 unresolved reference an unknown attribute always records. Only when the
 name is unbounded do `getattr`,
-`eval`, `exec`, `__import__`, `globals()`, `vars()` and `import_module`
+`eval`, `exec`, `__import__`, `globals()`, `vars()`, a module-level `locals()` (audit round 8, V4) and `import_module`
 mark the enclosing symbol as having a **dynamic** reference.
 
 Method identity and method-call resolution are separate: `Model.save` is a
@@ -1678,7 +1734,7 @@ Unknown is never treated as unaffected:
   unresolved reference with the matches that actually carry impact
   (`matched_affected_symbols`).
 * **Dynamic references.** A symbol containing a dynamic attribute access,
-  `eval`, `exec`, `globals()` or `vars()` is treated as affected whenever an
+  `eval`, `exec`, `globals()`, `vars()` or a module-level `locals()` is treated as affected whenever an
   impact-carrying change lies in a module its own module can reach through
   imports (the module itself and its transitive import closure, over both
   revisions), since that is what its globals can name (rule

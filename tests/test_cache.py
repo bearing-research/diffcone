@@ -127,7 +127,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 66
+    assert cache_mod.INDEX_FORMAT == 67
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -678,6 +678,7 @@ def test_u21_every_scope_field_read_after_resolution_is_cached():
         "_literal_cache",
         "_pristine_cache",
         "params",
+        "var_params",
         "rebound",
         "param_values",
         "method",

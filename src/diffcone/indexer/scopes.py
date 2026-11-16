@@ -197,6 +197,10 @@ class Scope:
     # Parameters whose default is a module-level variable alias that variable:
     # reads and in-place mutations through the parameter belong to it.
     param_aliases: dict[str, str] = field(default_factory=dict)
+    # The function's own ``*args`` and ``**kwargs`` parameters: a new tuple or
+    # dict each call, holding what the caller handed (writes.py, audit round
+    # 8, V8). Not in ``params``: no call site names them as one argument.
+    var_params: frozenset[str] = frozenset()
     # Names the function body rebinds: a rebound parameter no longer holds
     # what the call sites passed. Only in the function's own scope.
     rebound: frozenset[str] = frozenset()

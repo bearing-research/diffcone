@@ -397,13 +397,17 @@ CONFTEST_LOGS = (
     "from pkg.log import log\nfrom pkg.plain import THING\n\nlog.info('{}: %s', THING)\n"
 )
 LIBRARY_LOGGER_CASES = {
-    # The library's ``makeRecord`` and ``handle``: a new record, which holds
-    # none of what was logged, and a call of the logger's handlers, no
-    # other ``handle`` of the project's.
+    # The library's ``makeRecord`` and ``handle``: a new record, whose
+    # attributes bound write nothing logged, and a call of the logger's
+    # handlers, no other ``handle`` of the project's.
     "logging.Logger": ({}, "", set()),
     "an imported name": ({"imports": "\nfrom logging import Logger", "base": "Logger"}, "", set()),
-    # A handler (it derives from a library class) the logger may call.
-    "a handler's handle": ({}, "logging.Handler", {"b"}),
+    # A handler (it derives from a library class) the library may call on
+    # any instance: what it changes is its own, and the logger's once it is
+    # added to the logger (audit round 8, V1), here in the module that sets
+    # the logger class every test sees.
+    "a handler's handle": ({}, "logging.Handler", set()),
+    "an added handler's handle": ({}, "logging.Handler", None),
     # The project's own: whatever they do. A ``makeRecord`` that may give
     # back the logger, or a base not known to be ``logging.Logger``, writes
     # the logger class ``logging.setLoggerClass`` set for every test.
@@ -422,10 +426,12 @@ def test_a_library_logger_writes_neither_what_it_logs_nor_itself(repo, case):
     every ``logger.warning(...)`` wrote the logger: changing a call that logs
     selected every test reading a logger or a logged object (each strata
     pull request). The library's methods write neither; a project's own
-    ``handle`` or ``makeRecord``, a handler's ``handle`` and a base not known
-    to be ``logging.Logger`` still may."""
+    ``handle`` or ``makeRecord``, a handler added to the logger and a base
+    not known to be ``logging.Logger`` still may."""
     fields, runs_base, reach = LIBRARY_LOGGER_CASES[case]
     log = LIBRARY_LOGGER.format(**{"imports": "", "base": "logging.Logger", "extra": "", **fields})
+    if case == "an added handler's handle":
+        log += "\n\nfrom pkg.runs import Runs  # noqa: E402\n\nlog.addHandler(Runs())\n"
     imports = "import logging\n\n\n" if runs_base else ""
     files = {
         "pkg/log.py": log,
@@ -449,6 +455,509 @@ def test_a_library_logger_writes_neither_what_it_logs_nor_itself(repo, case):
         assert not unselected(plan)
         return
     want = {"tests/sub/test_a.py::test_a"} | {f"tests/test_{t}.py::test_{t}" for t in reach}
+    assert _static(repo, files, change) == want
+
+
+# A logger logging what it is handed (``log_event(msg, payload)``), whose
+# record ``self.makeRecord(...)`` makes is then changed in place: ``WRITE``.
+RECORD_LOGGER = """\
+import logging{imports}
+
+
+class SLog({base}):
+    def log_event(self, msg, payload):
+        record = self.makeRecord(self.name, logging.INFO, "f", 0, msg, (payload,), None)
+        WRITE
+        self.handle(record)
+{extra}
+
+LOG = SLog("app")
+"""
+# A mapping that takes attributes too, so either kind of write shows.
+CONF_STATE = "class Conf(dict):\n    pass\n\n\nCONFIG = Conf()\n"
+REEMIT = "\n\ndef _reemit(self, *args, **kwargs):\n    return args[5][0]\n"
+RECORD_CASES = {
+    # The record holds what it was made of: ``record.args`` is the tuple
+    # logged (or its one mapping), ``record.msg`` the message.
+    "args changed": ("record.args[0].update(seen=1)", {}, None, True),
+    "msg changed": ("record.msg.update(seen=1)", {}, None, True),
+    "args held": ("held = record.args\n        held[0].update(seen=1)", {}, None, True),
+    # A fresh ``LogRecord``: binding its attribute changes nothing logged.
+    "attribute bound": ("record.seen = 1", {}, None, False),
+    "setattr": ("setattr(record, 'seen', 1)", {}, None, False),
+    # Unless the record may be anything: a project record factory, or a
+    # ``makeRecord`` of the project's in the family however it is given.
+    "record factory": (
+        "record.seen = 1",
+        {
+            "extra": "\n\ndef _make(*args, **kwargs):\n    return args[5][0]\n\n\n"
+            "logging.setLogRecordFactory(_make)\n"
+        },
+        None,
+        True,
+    ),
+    "a mixin of a subclass": (
+        "record.seen = 1",
+        {},
+        "from pkg.log import SLog\n\n\nclass Reemit:\n"
+        "    def makeRecord(self, *args, **kwargs):\n        return args[5][0]\n\n\n"
+        "class Sub(Reemit, SLog):\n    pass\n",
+        True,
+    ),
+    "a class attribute here": (
+        "record.seen = 1",
+        {"extra": REEMIT + "\n\nSLog.makeRecord = _reemit\n"},
+        None,
+        True,
+    ),
+    "a class attribute elsewhere": (
+        "record.seen = 1",
+        {},
+        "from pkg.log import SLog\n" + REEMIT + "\n\nSLog.makeRecord = _reemit\n",
+        True,
+    ),
+    "an instance attribute": (
+        "record.seen = 1",
+        {"extra": "\n    def use(self, make):\n        self.makeRecord = make\n"},
+        None,
+        True,
+    ),
+    "a decorator": (
+        "record.seen = 1",
+        {},
+        "from pkg.log import SLog\n" + REEMIT + "\n\ndef reemitting(cls):\n"
+        "    cls.makeRecord = _reemit\n    return cls\n\n\n@reemitting\n"
+        "class Sub(SLog):\n    pass\n",
+        True,
+    ),
+    "type()": (
+        "record.seen = 1",
+        {},
+        "from pkg.log import SLog\n"
+        + REEMIT
+        + "\n\nSub = type('Sub', (SLog,), {'makeRecord': _reemit})\n",
+        True,
+    ),
+    "the library class patched": (
+        "record.seen = 1",
+        {"extra": REEMIT + "\n\nlogging.Logger.makeRecord = _reemit\n"},
+        None,
+        True,
+    ),
+    "a shadowed base": (
+        "record.seen = 1",
+        {
+            "imports": "\nfrom logging import Logger",
+            "base": "Logger",
+            "extra": "",
+        },
+        "SHADOW",
+        True,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RECORD_CASES))
+def test_v1_a_library_record_holds_what_it_was_made_of(repo, case):
+    """The record a plain ``logging.Logger`` subclass's ``self.makeRecord(
+    ...)`` makes holds the caller's message and arguments: changing them in
+    place (``record.args['password'] = '***'``) changes what was logged.
+    Binding an attribute of the fresh ``LogRecord`` does not, unless the
+    record may be another object: a project record factory, or a
+    ``makeRecord`` the project defines or gives the logger's family by any
+    means (a subclass's mixin, a class attribute bound here or elsewhere, an
+    instance attribute, a decorator, ``type()``, ``logging.Logger.
+    makeRecord = f``, a base name rebound in the module)."""
+    write, fields, sub, reaches = RECORD_CASES[case]
+    log = RECORD_LOGGER.format(**{"imports": "", "base": "logging.Logger", "extra": "", **fields})
+    if sub == "SHADOW":
+        log = log.replace(
+            "\n\nclass SLog(",
+            "\n\nclass _Reemit(Logger):\n    def makeRecord(self, *args, **kwargs):\n"
+            "        return self\n\n\nLogger = _Reemit  # noqa: F811\n\n\nclass SLog(",
+        )
+    files = {
+        "pkg/log.py": log.replace("WRITE", write),
+        "pkg/state.py": CONF_STATE,
+        "tests/test_a.py": (
+            "from pkg.log import LOG\nfrom pkg.state import CONFIG\n\n\n"
+            "def test_a():\n    LOG.log_event(CONFIG, CONFIG)\n"
+        ),
+        "tests/test_b.py": (
+            "from pkg.state import CONFIG\n\n\ndef test_b():\n"
+            "    assert CONFIG.get('seen') in (None, 1)\n"
+            "    assert getattr(CONFIG, 'seen', None) in (None, 1)\n"
+        ),
+    }
+    if sub == "SHADOW":
+        # Its ``makeRecord`` gives back the logger.
+        files["tests/test_b.py"] = (
+            "from pkg.log import LOG\n\n\ndef test_b():\n"
+            "    assert getattr(LOG, 'seen', None) in (None, 1)\n"
+        )
+    elif sub is not None:
+        files["pkg/sub.py"] = sub
+    change = {"pkg/log.py": files["pkg/log.py"].replace("seen=1", "seen=2").replace("= 1", "= 2")}
+    change["pkg/log.py"] = change["pkg/log.py"].replace("'seen', 1)", "'seen', 2)")
+    want = {"tests/test_a.py::test_a"} | ({"tests/test_b.py::test_b"} if reaches else set())
+    if case in ("record factory", "the library class patched"):
+        # Changing the library at import is seen by every test, whatever it
+        # imports (process state).
+        base = repo.commit({**UNRELATED_BASE, **files})
+        plan = repo.plan(base, repo.commit(change), [UNRELATED_BENCH], discover_runners=["pytest"])
+        assert selected(plan) == want | {UNRELATED_TEST}
+        return
+    assert _static(repo, files, change) == want
+
+
+# What the logging library calls back: a log call hands the record to the
+# filters and handlers of the logger (and its parents), which format it.
+# Each case defines one callback writing ``SEEN`` and wires it up.
+DUCK_HANDLE = (
+    "class Duck:\n    level = 0\n\n    def handle(self, record):\n        SEEN.append(record)\n"
+)
+CALLBACK_CASES = {
+    # A handler class of the project's, its ``emit`` run by ``handle``.
+    "a handler's emit": (
+        "class Capture(logging.Handler):\n    def emit(self, record):\n"
+        "        SEEN.append(record.getMessage())\n",
+        "log.addHandler(caps.Capture())",
+    ),
+    # A duck-typed handler: ``handle`` is all the library calls, and what
+    # it changes of its own changes too.
+    "a duck-typed handler": (DUCK_HANDLE, "log.addHandler(caps.Duck())"),
+    "a duck-typed handler's state": (
+        "class Duck:\n    level = 0\n\n    def __init__(self):\n        self.records = []\n\n"
+        "    def handle(self, record):\n        self.records.append(record)\n\n\n"
+        "DUCK = Duck()\n\n\ndef held():\n    return len(DUCK.records)\n",
+        "log.addHandler(caps.DUCK)",
+    ),
+    "a filter object": (
+        "class Counting:\n    def filter(self, record):\n        SEEN.append(record)\n"
+        "        return True\n",
+        "log.addFilter(caps.Counting())",
+    ),
+    "a filter function": (
+        "def count(record):\n    SEEN.append(record)\n    return True\n",
+        "log.addFilter(caps.count)",
+    ),
+    "a duck-typed formatter": (
+        "class Fmt:\n    def format(self, record):\n        SEEN.append(record)\n"
+        "        return 'x'\n",
+        "h = logging.StreamHandler()\nh.setFormatter(caps.Fmt())\nlog.addHandler(h)",
+    ),
+    "handlers bound": (DUCK_HANDLE + "\n\nDUCK = Duck()\n", "log.handlers = [caps.DUCK]"),
+    "basicConfig": (DUCK_HANDLE, "logging.basicConfig(handlers=[caps.Duck()])"),
+    # A configuration naming the class by a string.
+    "dictConfig": (
+        DUCK_HANDLE,
+        "import logging.config\n\nlogging.config.dictConfig({'version': 1, 'handlers': "
+        "{'d': {'()': 'pkg.caps.Duck'}}, 'loggers': {'x': {'handlers': ['d']}}})",
+    ),
+    "handed on by a helper": (
+        DUCK_HANDLE,
+        "def attach(h):\n    log.addHandler(h)\n\n\nattach(caps.Duck())",
+    ),
+    # A logger class set for every logger: the library's methods call its
+    # override.
+    "a logger class's override": (
+        "class CLog(logging.Logger):\n    def makeRecord(self, *args, **kwargs):\n"
+        "        SEEN.append(args[4])\n        return super().makeRecord(*args, **kwargs)\n",
+        "",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CALLBACK_CASES))
+def test_v1_v9_a_log_call_runs_what_the_library_calls_back(repo, case):
+    """``log.warning(...)`` on a library logger runs the project code
+    handed to the library: a handler's ``emit``, a duck-typed handler's
+    ``handle`` (and what it changes of its own), a filter object's
+    ``filter`` or a filter function, a formatter's ``format``, handlers
+    bound to ``log.handlers`` or by ``basicConfig``, a class a
+    ``dictConfig`` names by a string, an object a helper adds, and the
+    override of a logger class ``logging.setLoggerClass`` set. Logging once
+    more changes what the callback recorded."""
+    callback, wiring = CALLBACK_CASES[case]
+    caps = "import logging\n\nSEEN = []\n\n\n" + callback
+    caps += "\n\ndef seen():\n    return len(SEEN)\n"
+    setup = "import logging\n\nfrom pkg import caps\n\n"
+    if not wiring:
+        setup += "logging.setLoggerClass(caps.CLog)\n"
+    setup += f"log = logging.getLogger('x')\n{wiring}\n"
+    reads = "held" if "def held" in callback else "seen"
+    files = {
+        "pkg/caps.py": caps,
+        "pkg/setup.py": setup,
+        "tests/sub/__init__.py": "",
+        "tests/sub/conftest.py": "from pkg.setup import log\n\nlog.warning('one')\n",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/test_seen.py": (
+            f"from pkg.caps import {reads}\n\n\ndef test_seen():\n    assert {reads}() >= 0\n"
+        ),
+    }
+    change = {
+        "tests/sub/conftest.py": (
+            "from pkg.setup import log\n\nlog.warning('one')\nlog.warning('two')\n"
+        )
+    }
+    assert _static(repo, files, change) == {
+        "tests/sub/test_a.py::test_a",
+        "tests/test_seen.py::test_seen",
+    }
+
+
+def test_v1_a_log_call_runs_no_unrelated_handle(repo):
+    """A method named ``handle`` of a class nothing hands the logging
+    library (a ``socketserver`` request handler) is no callback of a log
+    call, which changes nothing it holds."""
+    files = {
+        "pkg/server.py": (
+            "import socketserver\n\n\nclass Echo(socketserver.BaseRequestHandler):\n"
+            "    def handle(self):\n        self.data = 1\n\n\nECHO = Echo.__new__(Echo)\n\n\n"
+            "def data():\n    return getattr(ECHO, 'data', None)\n"
+        ),
+        "pkg/setup.py": "import logging\n\nlog = logging.getLogger('x')\n",
+        "tests/sub/__init__.py": "",
+        "tests/sub/conftest.py": "from pkg.setup import log\n\nlog.warning('one')\n",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/test_echo.py": (
+            "from pkg.server import data\n\n\ndef test_echo():\n    assert data() is None\n"
+        ),
+    }
+    change = {"tests/sub/conftest.py": "from pkg.setup import log\n\nlog.warning('two')\n"}
+    assert _static(repo, files, change) == {"tests/sub/test_a.py::test_a"}
+
+
+@pytest.mark.parametrize(
+    ("base", "reaches"),
+    [
+        ("", False),  # ``Console.log``: no logger's
+        ("logging.Logger", True),
+        ("Plain", True),  # a subclass may be a logger
+    ],
+)
+def test_v1_a_log_method_of_an_instance_logs_only_through_a_logger(repo, base, reaches):
+    """``console.log(...)`` on an instance of a class of the project's runs
+    that class's method, not the library: no handler handed to ``logging``
+    runs, unless the class (or a subclass of it) derives from a ``logging``
+    class, whose ``log`` calls the handlers."""
+    capture = (
+        "import logging\n\nSEEN = []\n\n\nclass Capture(logging.Handler):\n"
+        "    def emit(self, record):\n        SEEN.append(record)\n\n\n"
+        "logging.getLogger().addHandler(Capture())\n\n\ndef seen():\n    return len(SEEN)\n"
+    )
+    console = (
+        f"import logging  # noqa\n\n\nclass Console({base}):\n"
+        "    def log(self, *args, **kwargs):\n        return super().log(*args, **kwargs)\n"
+    )
+    if base == "":
+        console = "class Console:\n    def log(self, *args):\n        return args\n"
+    if base == "Plain":
+        console = (
+            "import logging\n\n\nclass Plain:\n    pass\n\n\n"
+            "class Console(Plain):\n    def show(self, msg):\n        self.log(20, msg)\n\n\n"
+            "class Logged(Console, logging.Logger):\n    pass\n"
+        )
+    call = "Console().show('hi')" if base == "Plain" else "c = Console('x')\n    c.log(20, 'hi')"
+    if base == "":
+        call = "c = Console()\n    c.log(20, 'hi')"
+    files = {
+        "pkg/caps.py": capture,
+        "pkg/console.py": console,
+        "pkg/run.py": f"from pkg.console import Console\n\n\ndef run():\n    {call}\n",
+        "tests/test_run.py": "from pkg.run import run\n\n\ndef test_run():\n    run()\n",
+        "tests/test_seen.py": (
+            "import pkg.caps  # noqa\nfrom pkg.caps import seen\n\n\n"
+            "def test_seen():\n    assert seen() >= 0\n"
+        ),
+    }
+    change = {"pkg/run.py": files["pkg/run.py"].replace("'hi'", "'ho'")}
+    want = {"tests/test_run.py::test_run"} | (
+        {"tests/test_seen.py::test_seen"} if reaches else set()
+    )
+    assert _static(repo, files, change) == want
+
+
+BOX_STATE = (
+    "class Box:\n    pass\n\n\nBOX = Box()\nITEMS = [BOX]\nPARTS = {'obj': BOX}\n\n\n"
+    "def seen():\n    return getattr(BOX, 'seen', None)\n"
+)
+VAR_PARAM_CASES = {
+    "*args indexed": ("def mark(*objs):\n    objs[0].seen = True\n", "mark(BOX)"),
+    "*args looped": ("def mark(*objs):\n    for o in objs:\n        o.seen = True\n", "mark(BOX)"),
+    "**kwargs": ("def mark(**kw):\n    kw['o'].seen = True\n", "mark(o=BOX)"),
+    "a starred argument": ("def mark(obj):\n    obj.seen = True\n", "mark(*ITEMS)"),
+    "a double-starred argument": ("def mark(obj):\n    obj.seen = True\n", "mark(**PARTS)"),
+    "a method's *args": (
+        "class Marker:\n    def mark(self, *objs):\n        for o in objs:\n"
+        "            o.seen = True\n\n\nM = Marker()\n\n\ndef mark(*objs):\n    M.mark(*objs)\n",
+        "mark(BOX)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(VAR_PARAM_CASES))
+def test_v8_a_write_through_star_args_or_kwargs(repo, case):
+    """A function writing through its ``*args`` or ``**kwargs`` writes what
+    the caller handed in them, and a call handing ``*ITEMS`` or ``**PARTS``
+    hands what they hold to every parameter it may fill: the conftest that
+    starts calling it changes what ``seen()`` reads."""
+    mark, call = VAR_PARAM_CASES[case]
+    files = {
+        "pkg/box.py": BOX_STATE,
+        "pkg/mark.py": mark,
+        "tests/sub/__init__.py": "",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/sub/conftest.py": (
+            "from pkg.box import BOX, ITEMS, PARTS  # noqa\n"
+            "from pkg.mark import mark\n\nprint(BOX)\n"
+        ),
+        "tests/test_box.py": (
+            "from pkg.box import seen\n\n\ndef test_box():\n    assert seen() is None\n"
+        ),
+    }
+    change = {
+        "tests/sub/conftest.py": (
+            f"from pkg.box import BOX, ITEMS, PARTS  # noqa\nfrom pkg.mark import mark\n\n{call}\n"
+        )
+    }
+    assert _static(repo, files, change) == {
+        "tests/sub/test_a.py::test_a",
+        "tests/test_box.py::test_box",
+    }
+
+
+HOLDER = (
+    "class Box:\n    def __init__(self, args):\n        self.args = args\n\n\n"
+    "def log_event(payload):\n    record = Box(payload)\n    WRITE\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("write", "reaches"),
+    [
+        ("record.args.update(seen=1)", True),
+        ("held = record.args\n    held.update(seen=1)", True),
+        # Binding an attribute of the fresh object changes nothing it holds.
+        ("record.note = 1", False),
+    ],
+)
+def test_v7_a_write_through_what_a_fresh_object_holds(repo, write, reaches):
+    """``record = Box(payload)`` holds ``payload``: changing ``record.args``
+    in place, directly or through a local bound to it, changes what the
+    caller handed (T23's rule, followed for a parameter)."""
+    files = {
+        "pkg/lib.py": HOLDER.replace("WRITE", write),
+        "pkg/state.py": "CONFIG = {}\n",
+        "tests/test_a.py": (
+            "from pkg.lib import log_event\nfrom pkg.state import CONFIG\n\n\n"
+            "def test_a():\n    log_event(CONFIG)\n"
+        ),
+        "tests/test_b.py": (
+            "from pkg.state import CONFIG\n\n\ndef test_b():\n"
+            "    assert CONFIG.get('seen') in (None, 1)\n"
+        ),
+    }
+    change = {"pkg/lib.py": files["pkg/lib.py"].replace("= 1", "= 2").replace("seen=1", "seen=2")}
+    want = {"tests/test_a.py::test_a"} | ({"tests/test_b.py::test_b"} if reaches else set())
+    assert _static(repo, files, change) == want
+
+
+STORED_INTO = (
+    "class Box:\n    def __init__(self, args):\n        self.args = args\n\n\n"
+    "def log_event(payload):\n    record = Box(payload)\n    fields = {}\n"
+    "    STORE\n    fields.update(seen=1)\n    return record\n"
+)
+
+
+@pytest.mark.parametrize("holder", ["param", "module"])
+@pytest.mark.parametrize(
+    ("store", "reaches"),
+    [
+        # A new part of the fresh object, not of what it was handed.
+        ('setattr(record, "fields", fields)', False),
+        ("record.fields = fields", False),
+        # Stored into what it was handed: changing it changes that.
+        ('record.args["fields"] = fields', True),
+        ('payload["fields"] = fields', True),
+    ],
+)
+def test_v7_an_object_stored_into_a_fresh_object_is_none_of_what_it_holds(
+    repo, holder, store, reaches
+):
+    """``fields`` stored into ``record`` itself and then changed changes the
+    record, not the ``payload`` its constructor was handed (strata's
+    ``setattr(record, "structured_data", d)`` then ``d.update(kw)``); stored
+    into the payload, it is part of it. Through a parameter the caller
+    hands, and through a module variable named directly."""
+    lib = STORED_INTO.replace("STORE", store)
+    if holder == "module":
+        lib = "from pkg.state import CONFIG\n\n\n" + lib.replace(
+            "def log_event(payload):\n", "def log_event():\n    payload = CONFIG\n"
+        )
+    call = "log_event(CONFIG)" if holder == "param" else "log_event()"
+    files = {
+        "pkg/lib.py": lib,
+        "pkg/state.py": "CONFIG = {}\n",
+        "tests/test_a.py": (
+            "from pkg.lib import log_event\nfrom pkg.state import CONFIG\n\n\n"
+            f"def test_a():\n    {call}\n    assert CONFIG is not None\n"
+        ),
+        "tests/test_b.py": (
+            "from pkg.state import CONFIG\n\n\ndef test_b():\n"
+            "    assert CONFIG.get('fields') in (None, {'seen': 1})\n"
+        ),
+    }
+    change = {"pkg/lib.py": lib.replace("seen=1", "seen=2")}
+    want = {"tests/test_a.py::test_a"} | ({"tests/test_b.py::test_b"} if reaches else set())
+    assert _static(repo, files, change) == want
+
+
+DISPLAY_MERGE = (
+    "def merge(extra):\n    fields = FIELDS\n    fields.update(extra)\n    return fields\n"
+)
+CLEARS = (
+    "class Store:\n    def __init__(self):\n        self.rows = []\n\n"
+    "    def update(self, other):\n        other.clear()\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("fields", "reaches"),
+    [
+        ("{}", False),
+        ("dict()", False),
+        ("[]", False),
+        # Anything else may be a ``Store``, whose ``update`` clears what it
+        # is handed.
+        ("make()", True),
+        ("{}\n    fields = make() if extra else fields", True),
+    ],
+)
+def test_v1_a_display_s_method_is_the_builtin_s(repo, fields, reaches):
+    """``fields = {}; fields.update(extra)`` runs ``dict.update``, not the
+    project's ``Store.update`` (which clears its argument): ``merge`` writes
+    nothing of what it is handed. A local that may be something else (a
+    call's result, a second binding) still matches every ``update``."""
+    files = {
+        "pkg/store.py": CLEARS + "\n\ndef make():\n    return Store()\n",
+        "pkg/lib.py": "from pkg.store import make  # noqa\n\n\n"
+        + DISPLAY_MERGE.replace("FIELDS", fields),
+        "pkg/state.py": "CONFIG = {'k': 1}\n",
+        "tests/test_a.py": (
+            "from pkg.lib import merge\nfrom pkg.state import CONFIG\n\n\n"
+            "def test_a():\n    merge(CONFIG)\n"
+        ),
+        "tests/test_b.py": (
+            "from pkg.state import CONFIG\n\n\ndef test_b():\n"
+            "    assert CONFIG.get('k') in (None, 1)\n"
+        ),
+    }
+    change = {
+        "pkg/lib.py": files["pkg/lib.py"].replace("    return fields\n", "    return [fields]\n")
+    }
+    want = {"tests/test_a.py::test_a"} | ({"tests/test_b.py::test_b"} if reaches else set())
     assert _static(repo, files, change) == want
 
 
