@@ -1911,6 +1911,10 @@ selection rules.</p>
   describing what flagged it, so a cause it cannot describe no longer
   costs the flag. Causes print one line each, ties in the order of their
   text.</li>
+<li>Evidence plans with many changes to code run at import are faster and
+  use less memory: which lookups on external modules such a change reaches
+  is no longer decided by walking the whole graph once per change (a suite
+  of 7 700 tests: 91 s and 2.5 GB down to 16 s and 1.1 GB, the same plan).</li>
 </ul>
 <h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
 <ul>
