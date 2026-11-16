@@ -579,7 +579,24 @@ Further rules (pre-release audit, round 2):
   logged through, and, after a `dictConfig`/`fileConfig`, every method of
   those names. Each is a pass record with the record (holding what the call
   logged) or what it is made of, and what a callback changes itself is the
-  log site's change too (`Indexer._log_callback_writes`). A function stored
+  log site's change too (`Indexer._log_callback_writes`). Sites running
+  one set of callbacks share one pseudo-node of the index
+  (`<log-callbacks>#<digest>`, `model.LOG_CALLBACKS`, named by the
+  callbacks, variables and sites it joins): each variable the callbacks
+  write has a `mutated_by` edge to it and it one to each site, standing for
+  the edge from each variable to each site (pip: 282 sites and 1054
+  variables, 295k edges). A variable that is itself a site of the set keeps
+  its edges to the others, and a set with fewer than two sites or two such
+  variables keeps them all. The pair means what the edge did: the search
+  reaches the variables from a site through the node (CONTENT), caller
+  effects through `calls:` of each site, import-time code calling a site
+  the variables as effects; the rules that read an edge's ends (the
+  docstring readers, a site module handed on, a newly run site's module,
+  the runner-only classes), the change classifier (a variable's
+  dependencies) and evidence planning read the pairs as the edges they
+  stand for, and a module variable's edges stay direct in the planner (a
+  REGISTERED site carries nothing to a module). An explanation shows the
+  pair as one `log_callbacks` step. A function stored
   so is that method when project code calls it by the name too
   (`self.handle(record)` in a method of the class, `LOG.emit(r)`): every
   method of the name includes it, so does a method of a value of the class

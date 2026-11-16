@@ -69,6 +69,7 @@ from diffcone.model import (
     INSTALLS,
     INSTALLS_ANY,
     INSTALLS_FOR_TEST,
+    LOG_CALLBACKS,
     MUTATED_BY,
     REBINDS,
     REGISTERS,
@@ -1082,7 +1083,9 @@ class Indexer(DynamicBounds):
         call edge leads from the site to the callback, so each variable with
         a ``mutated_by`` edge to code the callback reaches gets one to the
         site, and the planner's rule for writers' callers reaches who calls
-        the site."""
+        the site. Sites sharing a set of callbacks share one pseudo-node
+        between those variables and the sites (model.LOG_CALLBACKS), which
+        stands for the edges from each variable to each site."""
         if not links:
             return
         symbols = self.index.symbols
@@ -1115,14 +1118,37 @@ class Indexer(DynamicBounds):
                 reach[start] = found
             return found
 
+        # Sites running one set of callbacks write the same variables: one
+        # pseudo-node (LOG_CALLBACKS) per set joins them, each variable
+        # depending on it and it on each site, rather than an edge from each
+        # variable to each site. A variable that is itself a site of the set
+        # keeps its edges to the others (no edge to itself, as before); a set
+        # with one site or one such variable keeps them all (nothing to save).
+        groups: dict[frozenset[str], list[str]] = defaultdict(list)
         for site, callbacks in sorted(links.items()):
+            groups[frozenset(callbacks)].append(site)
+        for callbacks, sites in sorted(groups.items(), key=lambda item: sorted(item[0])):
             states: set[str] = set()
             for callback in callbacks:
                 for code in reached(callback):
                     states |= written.get(code, set())
-            for state in sorted(states):
-                if state != site:
-                    self.index.edges.add(Edge(state, site, EdgeKind.REFERENCES, MUTATED_BY))
+            shared = sorted(states - set(sites))
+            if len(sites) < 2 or len(shared) < 2:
+                shared = []
+            if shared:
+                # Named by what it joins, so two revisions share one only
+                # when it joins the same variables to the same sites (their
+                # union in the planner adds no pair either lacks), and a
+                # cold and a warm build agree.
+                hub = LOG_CALLBACKS + _digest(json.dumps([sorted(callbacks), shared, sites]))
+                for state in shared:
+                    self.index.edges.add(Edge(state, hub, EdgeKind.REFERENCES, MUTATED_BY))
+                for site in sites:
+                    self.index.edges.add(Edge(hub, site, EdgeKind.REFERENCES, MUTATED_BY))
+            for state in sorted(states - set(shared)):
+                for site in sites:
+                    if state != site:
+                        self.index.edges.add(Edge(state, site, EdgeKind.REFERENCES, MUTATED_BY))
 
     def _external_state_edges(self) -> None:
         """A store onto a module outside the source roots (``json.mode = v``,

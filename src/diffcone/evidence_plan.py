@@ -288,6 +288,7 @@ from diffcone.model import (
     UnresolvedKind,
     attribute_reachable,
     edge_mark,
+    expand_log_callbacks,
     imports_anything,
 )
 from diffcone.planner import (
@@ -609,7 +610,7 @@ def _runner_only(c_index: SourceIndex, other: SourceIndex, targets: list[Target]
         return set()
     held = (c_index.escaped_classes | other.escaped_classes) & runner
     for index in (c_index, other):
-        for edge in index.edges:
+        for edge in expand_log_callbacks(index.edges):
             if (
                 edge.kind == EdgeKind.REFERENCES
                 and edge.target in runner
@@ -702,7 +703,10 @@ class _Observers:
         class_writes: dict[str, set[str]] = defaultdict(set)
         class_reads: dict[str, set[str]] = defaultdict(set)
         for index in (c_index, other):
-            for edge in index.edges:
+            # The edges through the pseudo-node of a set of logging callbacks
+            # as the edges from each variable to each log site they stand
+            # for (model.LOG_CALLBACKS), here and in the other walks.
+            for edge in expand_log_callbacks(index.edges):
                 mark = edge_mark(edge)
                 if mark in _INSTALL_MARKS:
                     # Static planning's (what an install in ``sys.modules``
@@ -1875,7 +1879,7 @@ class _Observers:
         closures = {"c": _import_closures(self.c), "other": _import_closures(self.other)}
         readers: dict[str, list[str]] = defaultdict(list)
         for index in (self.c, self.other):
-            for edge in index.edges:
+            for edge in expand_log_callbacks(index.edges):
                 if edge.kind != EdgeKind.REFERENCES:
                     continue
                 target = self.symbols.get(edge.target)

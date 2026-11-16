@@ -76,6 +76,8 @@ from diffcone.model import (
 #     handed (``result_calls``, ``param_returns``), elements of a parameter
 #     handed on, a function stored as a logging callback called by name
 #     (audit round 8, V7, V19, V20);
+# 70: the variables logging callbacks write depend on the log sites through
+#     one pseudo-node per set of callbacks (model.LOG_CALLBACKS);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -134,7 +136,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 69
+INDEX_FORMAT = 70
 
 
 def _indexer_fingerprint() -> str:

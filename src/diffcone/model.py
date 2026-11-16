@@ -6,6 +6,7 @@ Symbol identity is the dotted qualified name (``pkg.mod``, ``pkg.mod.func``,
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -320,6 +321,49 @@ class Edge:
     target: str
     kind: EdgeKind
     detail: str = ""
+
+
+# A pseudo-node of the index (no symbol): the callbacks the logging library
+# runs for a log call (indexer.core._log_callback_writes). Log sites sharing
+# one set of callbacks share one, keyed by what it joins: each variable the
+# callbacks write has a ``mutated_by`` edge to it, and it one to each site,
+# where a ``mutated_by`` edge from each variable to each site stood (pip:
+# 282 sites and 1054 variables, 295k edges). The two edges mean what the
+# one did; ``expand_log_callbacks`` gives back the edges they stand for.
+LOG_CALLBACKS = "<log-callbacks>#"
+
+
+def is_log_callbacks(node: str) -> bool:
+    """Whether ``node`` is a LOG_CALLBACKS pseudo-node."""
+    return node.startswith(LOG_CALLBACKS)
+
+
+def log_callback_sites(edges: Iterable[Edge]) -> dict[str, set[str]]:
+    """Each LOG_CALLBACKS pseudo-node -> the log sites it stands for."""
+    sites: dict[str, set[str]] = {}
+    for edge in edges:
+        if edge.source.startswith(LOG_CALLBACKS):
+            sites.setdefault(edge.source, set()).add(edge.target)
+    return sites
+
+
+def expand_log_callbacks(edges: Collection[Edge]) -> Iterator[Edge]:
+    """``edges`` with each pair through a LOG_CALLBACKS pseudo-node as the
+    edges it stands for: ``state -mutated_by-> site`` for each site of the
+    node (but the state itself), for code reading edges one at a time."""
+    sites = log_callback_sites(edges)
+    if not sites:
+        yield from edges
+        return
+    for edge in edges:
+        if edge.source.startswith(LOG_CALLBACKS):
+            continue
+        if not edge.target.startswith(LOG_CALLBACKS):
+            yield edge
+            continue
+        for site in sorted(sites.get(edge.target, ())):
+            if site != edge.source:
+                yield Edge(edge.source, site, edge.kind, edge.detail)
 
 
 def edge_mark(edge: Edge) -> str:

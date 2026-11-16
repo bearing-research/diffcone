@@ -157,6 +157,8 @@ from diffcone.model import (
     attribute_reachable,
     edge_mark,
     imports_anything,
+    is_log_callbacks,
+    log_callback_sites,
 )
 from diffcone.snapshot import (
     ASV_CONFIGS,
@@ -793,9 +795,20 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
     it decorates: ``doc_decorated`` covers that read. Static and evidence
     planning both reach such a reader from a docstring-only change."""
     read = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
+    hubs: set[str] = set()
     for edge in index.edges:
         if edge.source in read and edge.kind != EdgeKind.DEFINED_IN:
             read[edge.source].add(edge.target)
+            if is_log_callbacks(edge.target):
+                hubs.add(edge.target)
+    if hubs:
+        # The pseudo-node of a set of logging callbacks stands for its log
+        # sites (model.LOG_CALLBACKS).
+        sites = log_callback_sites(index.edges)
+        for found in read.values():
+            for hub in hubs & found:
+                found.discard(hub)
+                found |= sites.get(hub, set())
 
     def decorator(reader: str) -> bool:
         symbol = index.symbols.get(reader)
@@ -860,6 +873,10 @@ class StepKind(StrEnum):
     # From a reader of ``pkg.sub`` to the module ``pkg.sub`` that an import
     # somewhere binds on its package, or no longer does.
     BOUND_ON_PACKAGE = "bound_on_package"
+    # From a variable to a log site, through the pseudo-node of the callbacks
+    # the logging library runs for its log call (model.LOG_CALLBACKS): the
+    # two ``mutated_by`` edges as one step.
+    LOG_CALLBACKS = "log_callbacks"
 
 
 # What a call made at import can run: what the caller references (a
@@ -902,12 +919,28 @@ def _import_call_effects(
             parent[root] = None
             queue.append(root)
     effects: dict[str, tuple[tuple[Step, ...], Rule, int]] = {}
+    expanded: set[str] = set()
     while queue:
         node = queue.popleft()
         if not _is_name_node(node):
             for source, edge, revs in graph.reverse.get(node, ()):
                 mark = edge_mark(edge)
-                if mark in _WRITER_MARKS and source not in effects:
+                if mark not in _WRITER_MARKS:
+                    continue
+                if is_log_callbacks(source):
+                    # A log site: what its callbacks write, through their
+                    # pseudo-node (_log_callback_states), as by the site
+                    # (the first site found gives every variable its path).
+                    if source in expanded:
+                        continue
+                    expanded.add(source)
+                    first = Step(source, node, edge.kind, edge.detail, revs)
+                    steps, rule = _effect_path(first, parent)
+                    for state, into, state_revs in graph.reverse.get(source, ()):
+                        if edge_mark(into) == MUTATED_BY and state not in effects:
+                            step = Step(state, source, into.kind, into.detail, state_revs)
+                            effects[state] = ((step, *steps), rule, CONTENT)
+                elif source not in effects:
                     first = Step(source, node, edge.kind, edge.detail, revs)
                     steps, rule = _effect_path(first, parent)
                     effects[source] = (steps, rule, CONTENT if mark == MUTATED_BY else BEHAVIOR)
@@ -1042,9 +1075,13 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
     # The writes are read off the graph before any edge is added, and every
     # edge is added in the order it was made, so ``freeze`` sorts ties as
     # it would have.
+    # Nothing calls the callbacks' pseudo-node of log sites (model.
+    # LOG_CALLBACKS): what they write depends on ``calls:`` of each site
+    # through the node's own edges to them.
     mutated = [
         (Edge(source, calls(target), edge.kind, MUTATED_BY), revs)
         for target, adj in graph.reverse.items()
+        if not is_log_callbacks(target)
         for source, edge, revs in adj
         if edge_mark(edge) == MUTATED_BY
     ]
@@ -1090,6 +1127,31 @@ def _call_steps(steps: list[Step]) -> list[Step]:
             detail = "declared"
         out.append(Step(source, target, StepKind.CALLED_BY, detail, step.revisions))
         pending = None
+    return out
+
+
+def _log_callback_steps(steps: list[Step]) -> list[Step]:
+    """Explanation steps through the pseudo-node of the callbacks the
+    logging library runs for a log call (model.LOG_CALLBACKS): ``V
+    -[mutated_by]-> <log-callbacks> -[mutated_by]-> site`` as ``V
+    -[log_callbacks]-> site``, the two edges the one step stands for."""
+    if not any(is_log_callbacks(step.target) for step in steps):
+        return steps
+    out: list[Step] = []
+    for step in steps:
+        if out and is_log_callbacks(step.source) and out[-1].target == step.source:
+            into = out.pop()
+            out.append(
+                Step(
+                    into.source,
+                    step.target,
+                    StepKind.LOG_CALLBACKS,
+                    "mutated_by the callbacks the logging library runs for a log call",
+                    tuple(r for r in into.revisions if r in step.revisions),
+                )
+            )
+            continue
+        out.append(step)
     return out
 
 
@@ -1151,11 +1213,92 @@ def _members_by_container(symbols: set[str]) -> dict[str, list[str]]:
     return members
 
 
+def _log_callback_states(
+    union: dict[Edge, tuple[str, ...]], module_nodes: set[str]
+) -> tuple[dict[Edge, tuple[str, ...]], dict[str, list[tuple[str, tuple[str, ...]]]]]:
+    """The variables the callbacks of log calls write depend on the sites
+    through one pseudo-node per set of callbacks (model.LOG_CALLBACKS): a
+    ``mutated_by`` edge to it from each, and from it to each site. The
+    pair is the edge from the variable to the site it stands for: the
+    search reaches the variable from a site through it (both CONTENT), the
+    caller effects through ``calls:`` of each site (_add_caller_effects),
+    import-time code calling a site through it (_import_call_effects); the
+    rules reading an edge's own ends read the pairs (``log_states``,
+    _through_log_callbacks). A module variable's edge stays direct: from a
+    REGISTERED site it carries no impact to a module (_propagate), which
+    the pseudo-node, no module, would pass on. Gives back the edges, and
+    each pseudo-node's variables with the revisions of their edges."""
+    states: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
+    sites: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
+    for edge, revs in union.items():
+        if is_log_callbacks(edge.target):
+            states[edge.target].append((edge.source, revs))
+        elif is_log_callbacks(edge.source):
+            sites[edge.source].append((edge.target, revs))
+    if not states:
+        return union, {}
+    modules = {
+        (state, hub) for hub, found in states.items() for state, _ in found if state in module_nodes
+    }
+    if modules:
+        union = dict(union)
+        for state, hub in sorted(modules):
+            edge = Edge(state, hub, EdgeKind.REFERENCES, MUTATED_BY)
+            revs = union.pop(edge)
+            for site, site_revs in sites.get(hub, ()):
+                both = tuple(r for r in revs if r in site_revs)
+                if both and site != state:
+                    direct = Edge(state, site, EdgeKind.REFERENCES, MUTATED_BY)
+                    union[direct] = _merged(union.get(direct, ()), both)
+        states = {
+            hub: [(s, r) for s, r in found if (s, hub) not in modules]
+            for hub, found in states.items()
+        }
+    return union, {hub: sorted(found) for hub, found in states.items() if found}
+
+
+def _merged(a: tuple[str, ...], b: tuple[str, ...]) -> tuple[str, ...]:
+    """The revisions of either, in order (as _union gives them)."""
+    return tuple(r for r in ("base", "head") if r in a or r in b)
+
+
+def _log_sources(
+    source: str, log_states: dict[str, list[tuple[str, tuple[str, ...]]]] | None
+) -> list[str]:
+    """The sources an edge from ``source`` stands for: each variable the
+    callbacks write, for a LOG_CALLBACKS pseudo-node; ``source`` itself
+    otherwise."""
+    if log_states and is_log_callbacks(source):
+        return [state for state, _ in log_states.get(source, ())]
+    return [source]
+
+
+def _through_log_callbacks(
+    items: Iterable[tuple[Edge, tuple[str, ...]]],
+    log_states: dict[str, list[tuple[str, tuple[str, ...]]]],
+) -> dict[Edge, tuple[str, ...]]:
+    """``items`` with an edge from a LOG_CALLBACKS pseudo-node (to a log
+    site) as the edges from each variable the callbacks write to the site
+    it stands for, in the revisions both of its edges are."""
+    out: dict[Edge, tuple[str, ...]] = {}
+    for edge, revs in items:
+        if not is_log_callbacks(edge.source):
+            out[edge] = _merged(out.get(edge, ()), revs)
+            continue
+        for state, state_revs in log_states.get(edge.source, ()):
+            both = tuple(r for r in revs if r in state_revs)
+            if both and state != edge.target:
+                direct = Edge(state, edge.target, edge.kind, edge.detail)
+                out[direct] = _merged(out.get(direct, ()), both)
+    return out
+
+
 def _runner_only_classes(
     base: SourceIndex,
     head: SourceIndex,
     discovered: list[DiscoveryResult],
     edges: dict[Edge, tuple[str, ...]],
+    log_states: dict[str, list[tuple[str, tuple[str, ...]]]] | None = None,
 ) -> set[str]:
     """Test classes whose instances only the test runner ever holds.
 
@@ -1208,9 +1351,12 @@ def _runner_only_classes(
     refers: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
         if edge.kind == EdgeKind.REFERENCES and edge.target in runner:
-            refers[edge.source].add(edge.target)
-            if not within_runner(edge.source):
-                held.add(edge.target)
+            # A log site's edge from the callbacks' pseudo-node is each
+            # variable's they write (_log_callback_states).
+            for source in _log_sources(edge.source, log_states):
+                refers[source].add(edge.target)
+                if not within_runner(source):
+                    held.add(edge.target)
     # A held subclass holds its bases too: its instances carry their methods.
     stack = sorted(held)
     while stack:
@@ -1276,6 +1422,13 @@ def plan_from_indexes(
         # Evidence mode's escalation: the record shows what an object
         # installed under a name nothing bounds ran (W25).
         union = {e: r for e, r in union.items() if edge_mark(e) != INSTALLED_ANYWHERE}
+    module_nodes = {
+        s.id
+        for index in (base, head)
+        for s in index.symbols.values()
+        if s.kind == SymbolKind.MODULE
+    }
+    union, log_states = _log_callback_states(union, module_nodes)
     for edge, revs in union.items():
         graph.add(edge, revs)
 
@@ -1306,12 +1459,15 @@ def plan_from_indexes(
     reached: set[str] = set()
     # Only the edges onto an escaped module, sorted (sorting all of them
     # first gives the same order, at the cost of every edge).
-    onto_escaped = [
-        (e, r)
-        for e, r in union.items()
-        if e.kind == EdgeKind.REFERENCES and e.target in escaped_modules
-    ]
-    for edge, revs in sorted(onto_escaped):
+    onto_escaped = _through_log_callbacks(
+        (
+            (e, r)
+            for e, r in union.items()
+            if e.kind == EdgeKind.REFERENCES and e.target in escaped_modules
+        ),
+        log_states,
+    )
+    for edge, revs in sorted(onto_escaped.items()):
         for member in members.get(edge.target, ()):
             if member != edge.source:
                 graph.add(
@@ -1469,13 +1625,7 @@ def plan_from_indexes(
     # symbol of that name: ``name:<n>``.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
     attribute_by_name: dict[str, list[str]] = defaultdict(list)
-    module_nodes = {
-        s.id
-        for index in (base, head)
-        for s in index.symbols.values()
-        if s.kind == SymbolKind.MODULE
-    }
-    runner_only = _runner_only_classes(base, head, discovered, union)
+    runner_only = _runner_only_classes(base, head, discovered, union, log_states)
     reachable = _attribute_modules(base, head, targets, known_symbols)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
@@ -1730,8 +1880,10 @@ def plan_from_indexes(
             module = e.target if e.target in module_nodes else symbol_module.get(e.target)
             return e.kind == EdgeKind.REFERENCES and module in newly_run
 
-        candidates = [(e, r) for e, r in union.items() if onto_newly_run(e)]
-        for edge, revs in sorted(candidates):
+        candidates = _through_log_callbacks(
+            ((e, r) for e, r in union.items() if onto_newly_run(e)), log_states
+        )
+        for edge, revs in sorted(candidates.items()):
             if edge.source in mode:
                 continue
             module = edge.target if edge.target in module_nodes else symbol_module.get(edge.target)
@@ -2362,6 +2514,7 @@ def _explain(
         current = seed_steps[-1].target
         if rule != Rule.UNRESOLVED_NAME_MATCH and seed_rule != Rule.DEPENDENCY:
             rule = seed_rule
+    steps = _log_callback_steps(steps)
     change = change_by_id.get(current)
     if change is not None:
         detail = f"{current} {'/'.join(change.changes)}"

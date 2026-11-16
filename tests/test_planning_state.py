@@ -858,6 +858,138 @@ def test_v20_a_change_to_a_stored_callback_reaches_its_callers(repo):
     assert selected(plan) == {"tests/test_go.py::test_go", "bench_go.time_go"}
 
 
+# Log sites sharing one set of callbacks: ``a``, ``b``, ``c`` and the
+# module-level call of ``modsite`` all log through ``x``, whose handler writes
+# ``SEEN``, ``COUNT`` and an attribute of ``tally``.
+SHARED_CAPS = (
+    "import logging\n\nSEEN = []\nCOUNT = {}\n\n\n"
+    'def tally():\n    """How many were seen."""\n    return tally.__doc__\n\n\n'
+    "class Capture(logging.Handler):\n    def emit(self, record):\n"
+    "        SEEN.append(record.getMessage())\n        COUNT['n'] = len(SEEN)\n"
+    "        tally.last = record\n\n\n"
+    "def seen():\n    return len(SEEN)\n\n\ndef count():\n    return COUNT.get('n')\n\n\n"
+    "def reset():\n    SEEN.clear()\n"
+)
+SHARED_USE = (
+    "import logging\n\nlog = logging.getLogger('x')\n\n\n"
+    'def a():\n    """Log a."""\n    log.warning(\'a\')\n\n\n'
+    "def b():\n    log.warning('b')\n\n\n"
+    "def run():\n    a()\n"
+)
+SHARED_HAND = (
+    "import pkg.modsite\n\n\ndef read(mod, name):\n    return getattr(mod, name)\n\n\n"
+    "VALUE = read(pkg.modsite, 'helper')\n"
+)
+SHARED_MODSITE = (
+    "import logging\n\nlogging.getLogger('x').warning('m')\n\n\ndef helper():\n    return 1\n"
+)
+SHARED_FILES = {
+    "pkg/caps.py": SHARED_CAPS,
+    "pkg/setup.py": (
+        "import logging\n\nfrom pkg import caps\n\nlog = logging.getLogger('x')\n"
+        "log.addHandler(caps.Capture())\n"
+    ),
+    "pkg/use.py": SHARED_USE,
+    "pkg/late.py": (
+        "import logging\n\nlog = logging.getLogger('x')\n\n\ndef c():\n    log.warning('c')\n"
+    ),
+    "pkg/modsite.py": SHARED_MODSITE,
+    "pkg/hand.py": SHARED_HAND,
+    "pkg/boot.py": "from pkg.use import a\n\nA = a()\n",
+    "tests/test_seen.py": "from pkg.caps import seen\n\n\ndef test_seen():\n    seen()\n",
+    "tests/test_count.py": "from pkg.caps import count\n\n\ndef test_count():\n    count()\n",
+    "tests/test_tally.py": "from pkg.caps import tally\n\n\ndef test_tally():\n    tally()\n",
+    "tests/test_clear.py": "from pkg.caps import reset\n\n\ndef test_clear():\n    reset()\n",
+    "tests/test_run.py": "from pkg.use import run\n\n\ndef test_run():\n    run()\n",
+    "tests/test_b.py": "from pkg.use import b\n\n\ndef test_b():\n    b()\n",
+    "tests/test_boot.py": "import pkg.boot\n\n\ndef test_boot():\n    assert pkg.boot.A is None\n",
+}
+# What reads what the callbacks write; ``test_clear`` only empties ``SEEN``.
+SHARED_READERS = {
+    "tests/test_seen.py::test_seen",
+    "tests/test_count.py::test_count",
+    "tests/test_tally.py::test_tally",
+}
+SHARED_CASES = {
+    "a site": (
+        {"pkg/use.py": SHARED_USE.replace("log.warning('a')", "log.warning('a!')")},
+        {"tests/test_run.py::test_run", "tests/test_boot.py::test_boot"},
+    ),
+    # Calling a site differently (``calls:``), at import or not.
+    "a site's caller": (
+        {"pkg/use.py": SHARED_USE.replace("    a()\n", "    a()\n    a()\n")},
+        {"tests/test_run.py::test_run"},
+    ),
+    "import-time code calling a site": (
+        {"pkg/boot.py": "from pkg.use import a\n\nA = a() or None\n"},
+        {"tests/test_boot.py::test_boot"},
+    ),
+    # ``tally`` reads docstrings: a site's docstring may be what it reads.
+    "a site's docstring": (
+        {"pkg/use.py": SHARED_USE.replace('"""Log a."""', '"""Log a, once."""')},
+        set(),
+    ),
+    # A site in a module now imported, which the variables' modules never
+    # import (R24): the variables hold something else (BEHAVIOR).
+    "a newly imported site": (
+        {
+            "pkg/hand.py": SHARED_HAND.replace(
+                "def read(mod, name):\n", "def read(mod, name):\n    import pkg.late\n\n"
+            )
+        },
+        {"tests/test_clear.py::test_clear"},
+    ),
+    # A site that is a module handed on as a value: the variables depend on
+    # its members (W9).
+    "an escaped site module's member": (
+        {"pkg/modsite.py": SHARED_MODSITE.replace("return 1", "return 2")},
+        {"tests/test_clear.py::test_clear"},
+    ),
+    "a site added": (
+        {"pkg/use.py": SHARED_USE + "\n\ndef d():\n    log.warning('d')\n"},
+        {"tests/test_clear.py::test_clear"},
+    ),
+    "a site removed": (
+        {"pkg/use.py": SHARED_USE.replace("    log.warning('b')", "    pass")},
+        {"tests/test_clear.py::test_clear", "tests/test_b.py::test_b"},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SHARED_CASES))
+def test_v1_log_sites_sharing_callbacks_share_one_node(repo, case):
+    """Log sites sharing one set of callbacks reach what the callbacks write
+    through one pseudo-node of the index, not an edge from each variable to
+    each site, and select what an edge per pair does: a changed site, a
+    site's caller, import-time code calling one, a site's docstring read, a
+    newly imported site, a member of a site module handed on, a site added
+    or removed (the variables' dependencies added or changed, as the edges
+    they stand for). The explanation steps from a variable to the site."""
+    change, more = SHARED_CASES[case]
+    base = repo.commit({**UNRELATED_BASE, **SHARED_FILES})
+    index = build_index(read_snapshot(repo.path, "HEAD", source_roots=["."]))
+    hubs = {e.target for e in index.edges if e.target.startswith("<log-callbacks>#")}
+    assert len(hubs) == 1
+    sites = {e.target for e in index.edges if e.source in hubs}
+    assert sites == {"pkg.use.a", "pkg.use.b", "pkg.late.c", "pkg.modsite"}
+    assert {e.source for e in index.edges if e.target in hubs} == {
+        "pkg.caps.SEEN",
+        "pkg.caps.COUNT",
+        "pkg.caps.tally",
+    }
+    assert not any(e.source.startswith("pkg.caps.") and e.target in sites for e in index.edges)
+    head = repo.commit(change)
+    plan = repo.plan(base, head, [UNRELATED_BENCH], discover_runners=["pytest"])
+    assert selected(plan) == SHARED_READERS | more
+    if case == "a site":
+        why = reason(plan, "tests/test_seen.py::test_seen")
+        assert path_ids(why)[-2:] == ["pkg.caps.SEEN", "pkg.use.a"]
+        assert why.path[-1].kind == "log_callbacks"
+    if case == "a site added":
+        changes = {c.id: c.changes for c in plan.changes}
+        assert changes["pkg.caps.SEEN"] == ("dependencies_added",)
+
+
 @pytest.mark.parametrize(
     ("base", "reaches"),
     [
