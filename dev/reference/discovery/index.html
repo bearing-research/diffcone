@@ -1232,7 +1232,11 @@ roots don't hold (<code>pytest_plugins = ["support.plugin"]</code> with <code>su
 outside them): every test is always selected. And when diffcone can't read
 which plugins <code>pytest_plugins</code> names (it is built by a function call or a
 comprehension, or imported from outside your source roots), every test is
-always selected too; write the list out as strings to avoid that.</p>
+always selected too; write the list out as strings to avoid that. A plugin named
+by a name your code installs a module under in <code>sys.modules</code>
+(<code>sys.modules["myplugin"] = impl</code>, then <code>pytest_plugins = ["myplugin"]</code>)
+is that module; when it isn't one of your modules (an object the code
+builds), every test is always selected.</p>
 <p>Some files can change what any test does, so a change to one selects every
 target. Outside your source roots, these are:</p>
 <ul>

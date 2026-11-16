@@ -1123,8 +1123,9 @@ is matched against every method named <code>get</code>.</p>
 </dd>
 <dt><strong>Dynamic lookups are bounded by imports, if at all.</strong></dt>
 <dd>
-<p>A function that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code> or
-<code>getattr</code> with a computed name is treated as affected by any change in
+<p>Code that uses <code>eval</code>, <code>exec</code>, <code>globals()</code>, <code>vars()</code>, <code>getattr</code> with
+a computed name, or <code>locals()</code> at module level (where it is the
+module's namespace) is treated as affected by any change in
 the modules its module imports, and in the modules of code that stores
 objects on one of those modules. Some code changes that bound:</p>
 <ul>
@@ -1184,6 +1185,28 @@ counts as the module whose file it loads.</p>
 <dd>Code that puts an object in <code>sys.modules</code> for good under a computed
 name may replace any of your modules. Without a recording, every test
 that imports one of them depends on that code.</dd>
+<dt><strong>Code importing a name you install a module under reads that module.</strong></dt>
+<dd>When your code puts one of your modules in <code>sys.modules</code>
+(<code>sys.modules["compat"] = impl</code> in a package <code>__init__</code>, a fake for a
+library in a fixture: <code>monkeypatch.setitem(sys.modules, "extlib",
+fakes)</code>), code that imports the name gets that module. Code that
+imports it, reads an attribute off it or looks a name up on it
+(<code>compat.run()</code>, <code>getattr(compat, "run")</code>, <code>hasattr(compat, name)</code>)
+depends on everything in the installed module, and on the code that
+installed it. Under a computed name, that holds for every library name
+your code imports. If what is installed is a module loaded from a
+computed path (<code>importlib.util.module_from_spec</code>), any change can
+affect that code (a module your code creates, <code>types.ModuleType(name)</code>,
+or finds under the name already, is not one). The same goes when your
+code installs a module it was handed (<code>def install(mod):
+sys.modules["extplug"] = mod</code>), because diffcone doesn't follow which
+module the caller passes. An install made by a fixture or a test counts
+for the tests that run it (see <em>Tests are assumed not to depend on what an
+earlier test left behind</em> below). A plugin that <code>pytest_plugins</code> names
+this way is the module installed under the name; if diffcone can't
+tell which module that is, every test is always selected. A plugin file
+of that name still counts as well, since pytest imports it when the
+install hasn't run yet.</dd>
 </dl>
 <h2 id="objects-and-modules-handed-to-other-code">Objects and modules handed to other code<a class="headerlink" href="#objects-and-modules-handed-to-other-code" title="Permanent link">&para;</a></h2>
 <dl>
@@ -1257,7 +1280,25 @@ starts.</p>
 function that changes it (<code>register(REGISTRY)</code>, <code>registry.add(x)</code>), is
 a dependency of every reader of that object. A change to a function
 also reaches the readers of whatever the functions it calls change in
-place.</p>
+place. A function changing what it gets in <code>*args</code> or <code>**kwargs</code>
+(<code>for o in objs: o.seen = True</code>) changes what its callers pass, and a
+call passing <code>*ITEMS</code> or <code>**OPTIONS</code> passes what they hold.</p>
+<p>Logging counts as a call too. A log call (<code>log.warning(...)</code>,
+<code>logging.info(...)</code>, <code>logging.getLogger(name).error(...)</code>) runs what you
+handed the <code>logging</code> library: handlers, filters and formatters added
+with <code>addHandler</code>, <code>addFilter</code>, <code>setFormatter</code>, <code>basicConfig(handlers=
+...)</code> or by setting <code>handlers</code>, a filter function, a record factory, any
+class of yours deriving from a <code>logging</code> class, the methods of a logger
+class you set with <code>logging.setLoggerClass</code> (a function you store on
+one of those classes under such a method's name too), and, after
+<code>logging.config.dictConfig</code> or <code>fileConfig</code>, any method of yours with a
+handler's, filter's or formatter's method name. What they change (a
+capture handler's list, a counter) is changed by every log call. A
+record made by a <code>logging.Logger</code> subclass of yours holds what was
+logged: changing <code>record.args</code> or <code>record.msg</code> in place changes your
+objects, while setting an attribute on the record does not, unless you
+install a record factory or give the logger class your own
+<code>makeRecord</code>.</p>
 <p>The same holds for state kept on a class (<code>Config.mode = m</code>,
 <code>Config.items.append(x)</code>, <code>setattr(Config, "mode", m)</code>, <code>cls._instance
 = cls()</code>, <code>type(self)._cache[k] = v</code>): the code storing it is a
@@ -1397,6 +1438,14 @@ another descriptor, a list), or has a decorator (other than
   it (an instance kept in a module variable,
   <code>TOK = Tokenizer(RULES)</code>, is not followed back to <code>RULES</code>);</li>
 <li>an object a library function returns that your code then changes;</li>
+<li>an object one of your functions returns after it was handed it
+  (<code>r = wrap(p)</code>, then <code>r.items.append(x)</code>, where <code>wrap</code> returns <code>p</code>);</li>
+<li>logging a library does into your handlers from inside its own
+  calls (<code>requests.get(...)</code> logging through <code>urllib3</code>'s logger);</li>
+<li>a function stored on one of your classes under another name and
+  called as a method by your own code (<code>SLog.handle = _recording_handle</code>,
+  then <code>self.handle(record)</code> in a method of <code>SLog</code>); one the <code>logging</code>
+  library calls back (a log call through an <code>SLog</code> logger) is followed;</li>
 <li>a method called on an item of a module-level dict or list
   (<code>_CACHE["a"].put(4)</code>): only the dict's own methods count as writes;</li>
 <li>a library function that changes an argument you pass it, a module of
@@ -1439,8 +1488,9 @@ undone when the test ends.</p>
 <dt><strong>Tests are assumed not to depend on what an earlier test left behind.</strong></dt>
 <dd>
 <p>When code that runs inside one test changes module state
-(<code>server._state = make()</code>, or <code>os.environ["MODE"] = mode()</code>),
-diffcone counts that change for that test only, not for other tests
+(<code>server._state = make()</code>, <code>os.environ["MODE"] = mode()</code>, or a module
+put in <code>sys.modules</code>), diffcone counts that change for that test only
+(and for each test using the fixture that makes it), not for other tests
 that read the same state, with or without a recording; set an
 environment variable with <code>monkeypatch.setenv</code>, which undoes it when
 the test ends. Such code is:</p>
@@ -1476,8 +1526,12 @@ a closure or a function attribute, whatever it stores: a computed
 value, a constant, a registration, or a value it stores only on some
 branch, since what it stores may depend on the change in ways the code
 doesn't show. So does a result kept by a memoising decorator. An
-attribute set on an object (<code>self.value = v</code>) is read by the object's
-own methods and by any code reading <code>.value</code> off it (<code>CONF.value</code>). The one
+attribute set on an object (<code>self.value = v</code>) or on a class by name
+(<code>Settings.value = v</code>) is read by the object's or class's own methods
+and by any code reading <code>.value</code> off it (<code>CONF.value</code>,
+<code>self.settings.value</code>). Code reading the stored state outside the
+tests counts too: a module that kept a reference to it when imported,
+or a hook that runs between tests, which selects every test. The one
 exception is what <code>__init__</code> (or a dataclass's <code>__post_init__</code>) sets on
 the object it is building: no other test can hold that object yet,
 unless calling the class can give back an object made earlier (a

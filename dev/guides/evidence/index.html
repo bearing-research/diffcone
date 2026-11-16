@@ -1209,9 +1209,13 @@ report:</p>
 </ul>
 <p>A project <code>sitecustomize.py</code> still runs in every child.</p>
 <p><code>diffcone collect</code> ends by naming what made the most tests always
-selected, with the line of your code that started it, for example
+selected, for example
 <code>7600 test(s): still running: os.fork (src/pkg/metrics.py:42)</code>: a
-process left running by one test is credited to every later one.
+process left running by one test is credited to every later one. A
+process start the recorder saw is named with the line of your code
+that started it; a child found afterwards to have recorded nothing
+(<code>started python -m tool, which recorded nothing</code>) is named by its
+command only.
 - A process started outside every test (by a <code>conftest.py</code> as it is
   imported, or in a hook) counts as part of that import or hook: a change
   to what it ran is planned as a change to code that ran there. One that
@@ -1240,6 +1244,17 @@ process left running by one test is credited to every later one.
   annotations there (as pytest does on Python 3.14) is not running the
   function: only a change to the annotations, or to what they name,
   counts.
+- What a test stores can be read outside the tests: by code that kept a
+  reference to it when a module was imported (<code>VIEW = view()</code>,
+  <code>ITEMS.append(Holder())</code>), by a hook that runs between tests (a
+  <code>pytest_runtest_protocol</code> wrapper), or by a module a test imports. A
+  change to the code storing it is followed there as a change read in that
+  import or hook is, which in a hook selects every test.
+- A method added to, removed from or redefined in a class whose creation
+  reads the class body (an abstract base class, a metaclass, an <code>Enum</code>, a
+  dataclass, a base with <code>__init_subclass__</code>) counts as a change to the
+  class statement: it selects the tests that import the class's module,
+  whether or not they use the method.
 - Changes to compiled sources (except <a href="#cython">Cython</a> with a profiled
   recording), build files, dependencies and configuration select every
   test.

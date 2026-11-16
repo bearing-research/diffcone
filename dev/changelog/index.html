@@ -1826,23 +1826,53 @@ selection rules.</p>
 </ul>
 <h3 id="planning">Planning<a class="headerlink" href="#planning" title="Permanent link">&para;</a></h3>
 <ul>
-<li>A <code>logging.Logger</code> subclass (set with <code>logging.setLoggerClass</code>) that
-  attaches fields to the record <code>self.makeRecord(...)</code> makes and passes
-  it to <code>self.handle(record)</code> no longer writes what it logs or the
-  logger itself: the record was taken as possibly any object handed to
-  the call, and <code>self.handle</code> as any method of the project named
-  <code>handle</code>, so a logging call made every logged object and every logger
-  written state, and changing it selected every test reading one. A
-  <code>makeRecord</code> or <code>handle</code> the project defines, and a handler's
-  <code>handle</code>, are still followed.</li>
+<li>A log call now counts as running what you hand the <code>logging</code> library:
+  handlers, filters, formatters, filter functions, record factories and
+  the methods of your logger classes (also on a plain <code>getLogger</code> value),
+  so tests reading what a handler captured are selected. A <code>Logger</code>
+  subclass's <code>self.makeRecord(...)</code> record holds what it was made of:
+  changing <code>record.args</code> or <code>record.msg</code> in place changes the logged
+  objects, while setting an attribute on the fresh record does not,
+  unless you install a record factory or give the logger class its own
+  <code>makeRecord</code>. Before, a logging call through such a subclass made every
+  logged object and every logger written state.</li>
+<li>A function changing what it gets through <code>*args</code> or <code>**kwargs</code>, or
+  through a new object holding an argument (<code>box = Box(arg);
+  box.items.append(x)</code>), now changes what its callers passed, and a call
+  passing <code>*items</code> or <code>**options</code> passes what they hold. What a function
+  changes through an element of an argument it hands on (<code>for o in objs:
+  o.reset()</code>) is now changed for its callers too.</li>
+<li>A function you store on a logging handler or logger class under a
+  callback's name (<code>MyLogger.handle = f</code>, or with <code>setattr</code>) now runs as
+  that callback when you log.</li>
+<li><code>locals()</code> at module level is treated as the module's namespace, like
+  <code>globals()</code>.</li>
+<li>Code that imports a name your project installs a module under in
+  <code>sys.modules</code> (<code>sys.modules["compat"] = impl</code>,
+  <code>monkeypatch.setitem(sys.modules, "extlib", fakes)</code>, <code>mock.patch.dict</code>)
+  now depends on the installed module: imports of the name, attributes
+  read off it and names looked up on it. A plugin that <code>pytest_plugins</code> or
+  <code>-p</code> names this way is the installed module; one diffcone cannot follow
+  selects every test, with a <code>plugin_installed</code> note, and a plugin file
+  of that name outside your source roots is still reported. When what is
+  installed may be any module (loaded from a computed path, or a module
+  your code was handed as an argument), code that imports the name sees
+  every change. Names built as <code>"{0}.{1}".format(__name__, name)</code> count as
+  names under that module.</li>
+<li>An install into <code>sys.modules</code> made by a fixture, or undone after the
+  test, now counts for the tests using that fixture.</li>
 </ul>
 <h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
 <ul>
-<li>A function or method just added is no longer seen by code that only
-  reads signatures (<code>inspect.signature(handler)</code>): run as a module was
-  imported by a conftest, it made any new function or method select
-  every test. An added special method (<code>__init__</code>) and
-  <code>inspect.signature(..., eval_str=True)</code> are still followed.</li>
+<li>A plain function or method just added is no longer seen by code that
+  only reads signatures (<code>inspect.signature(handler)</code>): run as a module was
+  imported by a conftest, it made any new function or method select every
+  test. It is still followed when its <code>def</code> runs code at import (a
+  decorator), when it is a special method (<code>__init__</code>), when a class
+  holding it reads its namespace as it is created (a metaclass,
+  <code>__init_subclass__</code>, <code>__prepare__</code>) or its module's top-level code looks
+  names up (<code>register_all(globals())</code>), and for
+  <code>inspect.signature(..., eval_str=True)</code>.</li>
 <li>A store into <code>sys.modules</code> (<code>sys.modules[name] = module</code>, <code>del
   sys.modules[name]</code>) no longer counts as code that can look any name up:
   a module that registers a file it loads by path that way, imported by a
@@ -1858,14 +1888,23 @@ selection rules.</p>
   write that code could reach, read in a pytest hook, selected every
   test. The class is followed as written state instead: the code naming
   it, its family's methods and the sites that can see it.</li>
-<li>Code that ran outside every test only before the first test (a
-  <code>pytest_configure</code> or <code>pytest_collection_modifyitems</code> hook, collection)
-  is no longer taken to read what a test wrote: a change to a function
-  that only tests run, writing state such a hook reads, selected every
-  test. The recorder notes what ran outside the tests after the first
-  one opened (a hook after the tests, a thread between them); that still
-  selects every test. Modules a function writes onto are followed as
-  written state, as classes are. Evidence store format 8: record again.</li>
+<li>What a test stores (a module variable, a class attribute, an entry of a
+  shared list) is followed into code that runs outside the tests too: code
+  run at import that kept a reference to it, a hook that runs between
+  tests, a module a later test imports. Only the tests themselves were
+  taken to read it.</li>
+<li>A class attribute a test writes by name (<code>Settings.debug = True</code>) now
+  reaches code reading <code>.debug</code> off an instance of the class.</li>
+<li>Adding, deleting or redefining a member of a class whose creation reads
+  its namespace (a metaclass, <code>__init_subclass__</code>, an <code>abc.ABC</code>,
+  <code>Protocol</code>, <code>NamedTuple</code> or <code>TypedDict</code> base, a body that hands
+  <code>locals()</code> or <code>vars()</code> to code, as in <code>register_all(locals())</code>) now
+  reaches the code run when the class is created: its module is followed
+  as code run at import.</li>
+<li><code>diffcone collect</code> flags a test (subprocess, text run as code) before
+  describing what flagged it, so a cause it cannot describe no longer
+  costs the flag. Causes print one line each, ties in the order of their
+  text.</li>
 </ul>
 <h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
 <ul>
@@ -1886,6 +1925,15 @@ selection rules.</p>
 <li>The <code>report</code> action tries each listing and download three times before
   counting it as an error: one server error (HTTP 502) among 5 000
   downloads made the next report read the whole window again.</li>
+<li>The <code>report</code> action fails, instead of passing with a shorter window,
+  when it cannot list where the last report started: one failed request
+  made the report start at the last <code>hours</code> and the next one after it,
+  so runs between the two were never read. Every request is retried and
+  a failure counts as an error.</li>
+<li>The <code>report</code> action reads a downloaded artifact exactly as the whole
+  artifact would read: a <code>ran.json</code> that is empty falls back to
+  <code>plan.json</code>, and members named <code>./context.json</code> are the files at the
+  top.</li>
 </ul>
 <h2 id="050-2026-10-21"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.5.0">0.5.0</a> - 2026-10-21<a class="headerlink" href="#050-2026-10-21" title="Permanent link">&para;</a></h2>
 <h3 id="planning_1">Planning<a class="headerlink" href="#planning_1" title="Permanent link">&para;</a></h3>
