@@ -16,23 +16,53 @@ selection rules.
 
 ### Planning
 
-- A `logging.Logger` subclass (set with `logging.setLoggerClass`) that
-  attaches fields to the record `self.makeRecord(...)` makes and passes
-  it to `self.handle(record)` no longer writes what it logs or the
-  logger itself: the record was taken as possibly any object handed to
-  the call, and `self.handle` as any method of the project named
-  `handle`, so a logging call made every logged object and every logger
-  written state, and changing it selected every test reading one. A
-  `makeRecord` or `handle` the project defines, and a handler's
-  `handle`, are still followed.
+- A log call now counts as running what you hand the `logging` library:
+  handlers, filters, formatters, filter functions, record factories and
+  the methods of your logger classes (also on a plain `getLogger` value),
+  so tests reading what a handler captured are selected. A `Logger`
+  subclass's `self.makeRecord(...)` record holds what it was made of:
+  changing `record.args` or `record.msg` in place changes the logged
+  objects, while setting an attribute on the fresh record does not,
+  unless you install a record factory or give the logger class its own
+  `makeRecord`. Before, a logging call through such a subclass made every
+  logged object and every logger written state.
+- A function changing what it gets through `*args` or `**kwargs`, or
+  through a new object holding an argument (`box = Box(arg);
+  box.items.append(x)`), now changes what its callers passed, and a call
+  passing `*items` or `**options` passes what they hold. What a function
+  changes through an element of an argument it hands on (`for o in objs:
+  o.reset()`) is now changed for its callers too.
+- A function you store on a logging handler or logger class under a
+  callback's name (`MyLogger.handle = f`, or with `setattr`) now runs as
+  that callback when you log.
+- `locals()` at module level is treated as the module's namespace, like
+  `globals()`.
+- Code that imports a name your project installs a module under in
+  `sys.modules` (`sys.modules["compat"] = impl`,
+  `monkeypatch.setitem(sys.modules, "extlib", fakes)`, `mock.patch.dict`)
+  now depends on the installed module: imports of the name, attributes
+  read off it and names looked up on it. A plugin that `pytest_plugins` or
+  `-p` names this way is the installed module; one diffcone cannot follow
+  selects every test, with a `plugin_installed` note, and a plugin file
+  of that name outside your source roots is still reported. When what is
+  installed may be any module (loaded from a computed path, or a module
+  your code was handed as an argument), code that imports the name sees
+  every change. Names built as `"{0}.{1}".format(__name__, name)` count as
+  names under that module.
+- An install into `sys.modules` made by a fixture, or undone after the
+  test, now counts for the tests using that fixture.
 
 ### Execution evidence
 
-- A function or method just added is no longer seen by code that only
-  reads signatures (`inspect.signature(handler)`): run as a module was
-  imported by a conftest, it made any new function or method select
-  every test. An added special method (`__init__`) and
-  `inspect.signature(..., eval_str=True)` are still followed.
+- A plain function or method just added is no longer seen by code that
+  only reads signatures (`inspect.signature(handler)`): run as a module was
+  imported by a conftest, it made any new function or method select every
+  test. It is still followed when its `def` runs code at import (a
+  decorator), when it is a special method (`__init__`), when a class
+  holding it reads its namespace as it is created (a metaclass,
+  `__init_subclass__`, `__prepare__`) or its module's top-level code looks
+  names up (`register_all(globals())`), and for
+  `inspect.signature(..., eval_str=True)`.
 - A store into `sys.modules` (`sys.modules[name] = module`, `del
   sys.modules[name]`) no longer counts as code that can look any name up:
   a module that registers a file it loads by path that way, imported by a
@@ -48,14 +78,23 @@ selection rules.
   write that code could reach, read in a pytest hook, selected every
   test. The class is followed as written state instead: the code naming
   it, its family's methods and the sites that can see it.
-- Code that ran outside every test only before the first test (a
-  `pytest_configure` or `pytest_collection_modifyitems` hook, collection)
-  is no longer taken to read what a test wrote: a change to a function
-  that only tests run, writing state such a hook reads, selected every
-  test. The recorder notes what ran outside the tests after the first
-  one opened (a hook after the tests, a thread between them); that still
-  selects every test. Modules a function writes onto are followed as
-  written state, as classes are. Evidence store format 8: record again.
+- What a test stores (a module variable, a class attribute, an entry of a
+  shared list) is followed into code that runs outside the tests too: code
+  run at import that kept a reference to it, a hook that runs between
+  tests, a module a later test imports. Only the tests themselves were
+  taken to read it.
+- A class attribute a test writes by name (`Settings.debug = True`) now
+  reaches code reading `.debug` off an instance of the class.
+- Adding, deleting or redefining a member of a class whose creation reads
+  its namespace (a metaclass, `__init_subclass__`, an `abc.ABC`,
+  `Protocol`, `NamedTuple` or `TypedDict` base, a body that hands
+  `locals()` or `vars()` to code, as in `register_all(locals())`) now
+  reaches the code run when the class is created: its module is followed
+  as code run at import.
+- `diffcone collect` flags a test (subprocess, text run as code) before
+  describing what flagged it, so a cause it cannot describe no longer
+  costs the flag. Causes print one line each, ties in the order of their
+  text.
 
 ### Report
 
@@ -76,6 +115,15 @@ selection rules.
 - The `report` action tries each listing and download three times before
   counting it as an error: one server error (HTTP 502) among 5 000
   downloads made the next report read the whole window again.
+- The `report` action fails, instead of passing with a shorter window,
+  when it cannot list where the last report started: one failed request
+  made the report start at the last `hours` and the next one after it,
+  so runs between the two were never read. Every request is retried and
+  a failure counts as an error.
+- The `report` action reads a downloaded artifact exactly as the whole
+  artifact would read: a `ran.json` that is empty falls back to
+  `plan.json`, and members named `./context.json` are the files at the
+  top.
 
 ## [0.5.0] - 2026-10-21
 
