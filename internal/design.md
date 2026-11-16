@@ -501,7 +501,21 @@ Further rules (pre-release audit, round 2):
   objs: o.reset()`, `reset` writing `self`) is part of the parameter, so the
   callee's write is the caller's (before 0.6.0 only a direct write through
   an element was; following it took strata's `mutated_by` edges at `fd36b04d` from 13,610
-  to 24,693, rich's from 6,245 to 7,090). A method of a local bound once to a
+  to 24,693, rich's from 6,245 to 7,090). What a call of project code
+  returns is a pseudo-parameter of the caller (`writes.RESULT_PARAM`, named
+  by the call's span): written or handed on as a parameter is (`r =
+  wrap(p); r["items"].append(1)`, `fill(wrap(p))`, `b.tag().add(1)`), it
+  writes what the call handed each callee that may return it
+  (`result_calls`). What a function may return of its parameters
+  (`param_returns`: `return p`, `return p.items`, `return self`, one of
+  several returns) is closed after pass 2 over the calls it returns the
+  result of (`return wrap(q)`; `writes._returning_calls`); a parameter, a
+  module variable, an instance or a module handed to such a call is then
+  written by the caller, by the callees that may return it and by those
+  that write the result (audit round 8, V19; it took strata's `mutated_by`
+  edges at `fd36b04d` from 24,693 to 25,371, rich's from 7,090 to 7,274,
+  urllib3's, requests' and flask's up by 22, 14 and 4). `typing.cast(T,
+  p)` is `p`; another third-party call's result is not followed. A method of a local bound once to a
   list, dict or set display or to `dict()`/`list()`/`set()` (`fields = {};
   fields.update(kw)`) is the builtin's, no project method of that name. A module-level variable
   handed to a written parameter (`set_mode(REG)`, `fill(cfg.REG)`), or the
@@ -559,13 +573,22 @@ Further rules (pre-release audit, round 2):
   function stored on a `logging` class, and one stored on a
   logging-derived class of the project under a callback's name: `SLog.handle
   = _recording_handle`, `setattr(SLog, "emit", f)`, run bound as that
-  method), the callbacks of every class
+  method; `_LoggingModel.stored_methods`), the callbacks of every class
   deriving from a `logging` class on any instance of it, a logger class's
   overrides (`makeRecord`, `handle`, `callHandlers`, ...) on the logger
   logged through, and, after a `dictConfig`/`fileConfig`, every method of
   those names. Each is a pass record with the record (holding what the call
   logged) or what it is made of, and what a callback changes itself is the
-  log site's change too (`Indexer._log_callback_writes`). Not followed: the
+  log site's change too (`Indexer._log_callback_writes`). A function stored
+  so is that method when project code calls it by the name too
+  (`self.handle(record)` in a method of the class, `LOG.emit(r)`): every
+  method of the name includes it, so does a method of a value of the class
+  or of a third-party value, it runs bound (its first parameter the
+  receiver), and an attribute of the name nothing resolves gets an
+  `unresolved_name_match` edge to it, as the planner matches the name to
+  every symbol of it (`writes._stored_method_edges`; audit round 8, V20; a
+  function stored on another class under another name, `Cache.get =
+  _fast_get`, is not). Not followed: the
   library's own logging into project handlers (a dependency's logger) and
   objects reached back through the library (`logging.getLogger(n).
   handlers[0]`, `logger.parent`). A method called on
