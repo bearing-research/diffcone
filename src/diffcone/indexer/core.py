@@ -40,12 +40,14 @@ from diffcone.indexer.uses import (
     AS,
     CALL,
     DYN,
+    FRESH,
     HANDLE,
     HELD,
     INSTALL,
     LOADER,
     MUT,
     SCOPED,
+    SELF,
     STORE,
     SWAP,
     USE,
@@ -64,6 +66,9 @@ from diffcone.model import (
     GRAPH_MODULES,
     INSTALLED,
     INSTALLED_ANYWHERE,
+    INSTALLS,
+    INSTALLS_ANY,
+    INSTALLS_FOR_TEST,
     MUTATED_BY,
     REBINDS,
     REGISTERS,
@@ -747,6 +752,11 @@ class Indexer(DynamicBounds):
         self._reach_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
         installs_anywhere: set[tuple[str, str]] = set()
+        # Names outside the source roots something is installed under (a
+        # literal, or ``PREFIX*``), by the installing code; and what each
+        # installing code installs (the module its record is in, the value).
+        external_installs: set[tuple[str, str, str]] = set()  # (name, writer, kind)
+        installed_values: set[tuple[str, str, str, str]] = set()  # (writer, module, value, kind)
         records = self._redirect_installed(
             self._outside_stars([(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses])
         )
@@ -771,6 +781,12 @@ class Indexer(DynamicBounds):
                 writer = self._writer_symbol(module, record.writer)
                 if kind == HANDLE:
                     continue  # what a value may be, not a use (_attribute_modules)
+                if kind in (INSTALL, SWAP):
+                    # ``>`` sources: what the installed object may be.
+                    installed_values.update(
+                        (writer, module, n[1:], kind) for n in sources if n.startswith(">")
+                    )
+                    sources = tuple(n for n in sources if not n.startswith(">"))
                 if kind == HELD:
                     # Held where only its module's code reads it, unless other
                     # code can reach the holder: then handed on.
@@ -818,9 +834,12 @@ class Indexer(DynamicBounds):
                     # module of that name counts as handed on (as a module
                     # made with ``types.ModuleType`` and installed there
                     # does); installed for good, its importers get what the
-                    # installing code put there (``_install_edges``).
+                    # installing code put there (``_install_edges``), and so
+                    # do the readers of a name outside the roots (audit
+                    # round 8, V10).
                     if target.endswith(ANY):
                         external.add(("escape", target, writer))
+                        external_installs.add((target, writer, kind))
                         prefix = target[: -len(ANY)]
                         for m in sorted(self.scopes) if prefix else ():
                             if m.startswith(prefix):
@@ -835,7 +854,9 @@ class Indexer(DynamicBounds):
                         continue
                     concrete(module, USE, target, writer)
                     found = self._locate_target(module, target.split("."))
-                    if kind == INSTALL and found:
+                    if found is None:
+                        external_installs.add((target, writer, kind))
+                    elif kind == INSTALL:
                         installs.update((place, writer) for place, rest in found if not rest)
                     continue
                 if target == ANY:
@@ -894,6 +915,8 @@ class Indexer(DynamicBounds):
         self._written_modules = set(whole)
         self._installed = installs
         self._installed_anywhere = installs_anywhere - installs
+        self._external_installs = external_installs
+        self._installed_values = installed_values
         self._attribute_modules(records, changed)
         self._module_writers(records, anything)
         self._unbind_literals(changed, writers_of)
@@ -1824,13 +1847,95 @@ class Indexer(DynamicBounds):
         importers). Under a name nothing bounds, every in-scope module
         depends on it, or every one the name's literal prefix allows (audit
         round 3, W25; evidence mode does not follow these edges: the record
-        shows what an installed object ran)."""
+        shows what an installed object ran). Undone after the test (SWAP),
+        the same: the planner drops the edge when the installing code is
+        isolated test code. Code reading a name outside the roots that may
+        be installed gets the same edge, and the installing code an
+        ``installs`` edge to each in-scope object it installs; with
+        ``SourceIndex.installed_names`` for discovery (audit round 8,
+        V10)."""
         for module, writer in sorted(self._installed):
             if writer != module:
                 self.index.edges.add(Edge(module, writer, EdgeKind.REFERENCES, INSTALLED))
         for module, writer in sorted(self._installed_anywhere):
             if writer != module:
                 self.index.edges.add(Edge(module, writer, EdgeKind.REFERENCES, INSTALLED_ANYWHERE))
+        # What each installing code installs (audit round 8, V10): an
+        # in-scope module or symbol gets an ``installs`` edge from it, and
+        # whoever imports the name may read any attribute off it (the
+        # planner's ``<installs>`` node); a module found at run time
+        # (``module_from_spec`` of a file nothing bounds, ``sys.modules[n]``)
+        # may be any module. An object the code builds (``Fake()``, a
+        # ``types.ModuleType`` it fills) or receives is what its references
+        # say: only the edge to it.
+        installed: dict[str, set[str]] = defaultdict(set)
+        anything: set[str] = set()
+        unknown: set[str] = set()
+        values: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        scoped: set[str] = set()  # installing code whose installs are undone after the test
+        for writer, module, value, kind in self._installed_values:
+            values[writer].add((module, value))
+            if kind == SWAP:
+                scoped.add(writer)
+        for writer, found in sorted(values.items()):
+            for module, value in sorted(found):
+                if value == SELF:
+                    continue  # what an import of the name finds anyway
+                if value.startswith(FRESH):
+                    unknown.add(writer)
+                    continue
+                if value.startswith(ANY):
+                    anything.add(writer)
+                    continue
+                candidates = [value]
+                if ANY in value:
+                    prefix, _, after = value.partition(ANY)
+                    candidates = [m + after for m in sorted(self.scopes) if m.startswith(prefix)]
+                for name in candidates:
+                    for place, rest in self._locate_target(module, name.split(".")) or ():
+                        target = ".".join([place, *rest])
+                        if target in self.index.symbols and target != writer:
+                            installed[writer].add(target)
+            for target in sorted(installed[writer]):
+                detail = INSTALLS_FOR_TEST if writer in scoped else INSTALLS
+                self.index.edges.add(Edge(writer, target, EdgeKind.REFERENCES, detail))
+                if target in self.scopes and target not in self.index.module_reach:
+                    reach = self._attribute_reach(target)
+                    found = reach.modules | reach.stars | reach.symbols
+                    if found:
+                        self.index.module_reach[target] = tuple(sorted(found))
+        # Code reading a name outside the roots that something is installed
+        # under (an import of it, an attribute or a lookup off it) depends on
+        # the installing code, as an in-scope module of that name does (and,
+        # static planning says, sees any change when what is installed may
+        # be any module: ``installs in sys.modules a module found at run
+        # time``).
+        readers: dict[str, set[str]] = defaultdict(set)
+        for ref in self.index.external:
+            readers[ref.module].add(ref.symbol)
+        for symbol, module, _kind, _detail in self._global.external_lookups:
+            readers[module].add(symbol)
+        names: dict[str, set[str]] = defaultdict(set)
+        for pattern, writer, kind in sorted(self._external_installs):
+            names[pattern] |= installed.get(writer, set())
+            if writer in anything or writer in unknown or writer not in values:
+                names[pattern].add(ANY_MODULE)
+            if kind == SWAP:
+                # Undone after the test: only the tests running the code see
+                # it, through its own edges to what it installs.
+                continue
+            mark = INSTALLED_ANYWHERE if pattern.endswith(ANY) else INSTALLED
+            for module, symbols in sorted(readers.items()):
+                if not _may_name(pattern, module):
+                    continue
+                for symbol in sorted(symbols):
+                    if symbol == writer:
+                        continue
+                    self.index.edges.add(Edge(symbol, writer, EdgeKind.REFERENCES, mark))
+        for writer in sorted(anything):
+            # What it installs may be any module: a self-edge the planner reads.
+            self.index.edges.add(Edge(writer, writer, EdgeKind.REFERENCES, INSTALLS_ANY))
+        self.index.installed_names = {n: tuple(sorted(v)) for n, v in sorted(names.items())}
 
     def _module_reach(self) -> None:
         """For each module referenced as a value, what is reachable as an
@@ -1936,6 +2041,25 @@ class Indexer(DynamicBounds):
             other_file_directories(self.snapshot),
         ]
         return _digest(json.dumps(material))
+
+
+def _may_name(installed: str, read: str) -> bool:
+    """Whether code reading the module ``read`` (``PREFIX*``: any module
+    with that prefix) may get what is installed in ``sys.modules`` under
+    ``installed`` (``PREFIX*``, ``*``: any name): the same module, one below
+    it, or one above it, whose attribute it may be."""
+
+    def overlap(a: str, b: str) -> bool:
+        return a == b or a.startswith(b + ".") or b.startswith(a + ".")
+
+    if installed.endswith(ANY) or read.endswith(ANY):
+        ip, rp = installed.rstrip(ANY), read.rstrip(ANY)
+        if installed.endswith(ANY) and read.endswith(ANY):
+            return ip.startswith(rp) or rp.startswith(ip)
+        if installed.endswith(ANY):
+            return read.startswith(ip) or ip.startswith(read + ".")
+        return installed.startswith(rp) or rp.startswith(installed + ".")
+    return overlap(installed, read)
 
 
 def build_index(snapshot: Snapshot, module_cache=None) -> SourceIndex:

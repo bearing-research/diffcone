@@ -396,7 +396,9 @@ Further rules (pre-release audit, round 2):
   is dropped before the search (`planner.isolated_test_code`), and so is a
   writer of an external module a dynamic lookup reads (`external_sites`):
   a lookup only such writers write to is bounded. (The writer's own test
-  runs the writer, so it depends on what the writer stores already.) Not
+  runs the writer, so it depends on what the writer stores already; what
+  it installs in `sys.modules`, which an install hands nothing on for,
+  through its edge to the `<installs>` node: audit round 8, V11.) Not
   `module_writers`: they widen what a lookup on a module can find, which
   the writer's own test needs too (Q11: `holder.invoke(Other(), "pong")`
   in a test is reached only through its module's closure), and a per-test
@@ -1293,6 +1295,45 @@ W18):
   under names literals give (`sys.modules["_nb_ser"] = copy`) is that
   module for whatever names it: records about `_nb_ser` count for it, and
   the install hands nothing on itself.
+- *What is installed* (audit round 8, V10, V11): the install record carries
+  what the object may be (`>` sources: an import, a handle, an alias, a
+  local name every binding of which is one; `module_from_spec` of a file
+  nothing bounds is any module, `types.ModuleType` what the installing
+  code puts on it; an object the code builds or receives, nothing). An
+  in-scope module or symbol installed gets an edge `installs in
+  sys.modules` from the installing code; the planner makes one node per
+  installing code (`<code>.<installs>`) depending on each installed object,
+  its members and what a module's imports bind, and gives it to whatever
+  depends on the installing code through an `installed in sys.modules`
+  edge, so the importers of an in-scope name read what was installed, not
+  only what installed it. A name no module of the roots has (`sys.modules
+  ["pkgcompat"] = impl`, a test fake under a library's name) is read by
+  every symbol that imports it, reads an attribute off it or looks a name
+  up on it (an external reference, any of the forms: `pkgcompat.a`,
+  `getattr(m, "a")`, `hasattr`, a prefix): each gets an edge `installed in
+  sys.modules` to the installing code (`... under a name nothing bounds`
+  for a prefix or a name nothing bounds, which every external module may
+  then be). When the object may be any module, the installing code gets a
+  self-edge `installs in sys.modules a module found at run time`, and in
+  static planning whatever depends on it through an `installed` edge
+  (readers, and the in-scope modules of the name) is a pseudo-seed that
+  sees any change, as a dynamic import is (evidence mode records what
+  ran). Installing code the tests running it alone see
+  the install of depends on the `<installs>` node itself, so those tests,
+  and only those, follow what it installs: isolated test code (a
+  function-scoped fixture, the test), whose reader edges the isolation rule
+  drops (the isolation assumption keeps the install from the others, as it
+  does any write), and code whose install is undone after the test (SWAP:
+  its edge is `installs in sys.modules for the test`, and it gives no
+  reader edges). A module installed under the name the import system finds
+  it by anyway (`sys.modules[name] = module_from_spec(find_spec(name))`,
+  `import_module(name)`: a lazy loader) installs nothing foreign, nor does
+  one a binding of which reads `sys.modules` under the same name (`module
+  = sys.modules.get(name)`, then `types.ModuleType(name)` when missing:
+  `=` and `+`). The name `sys.modules[spec.name]` installs under is the
+  one `spec_from_file_location` or `find_spec` was given. Discovery reads `SourceIndex.installed_names` (name, `PREFIX*` or `*` ->
+  the in-scope objects, `*` for anything else) for `pytest_plugins` and
+  `-p` entries no module of the roots has.
 - *A namespace*: `f.__globals__` is that of the module `f` is defined in
   (re-exports followed; this module's for a function it defines by `def`),
   and a frame's `f_globals` or `f_locals` (its globals at module level), or
@@ -2492,6 +2533,11 @@ Further rules (pre-release audit, round 3):
   (`plugin_outside_roots`) and is the unknown dependency `plugin:<module>`
   of every test and doctest, as a conftest outside the roots is of the
   tests under it.
+* A plugin whose name no module of the roots has but project code installs
+  in `sys.modules` (`sys.modules["myplugin"] = impl`; audit round 8, V10)
+  is each in-scope module installed under it; an object that is none is
+  the unknown dependency `plugin:<name>` of every test, reported
+  (`plugin_installed`).
 
 Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),

@@ -1035,6 +1035,68 @@ def test_addopts_p_plugins_are_resolved_including_pytest_internal_names(repo):
     assert [(n.kind, "xdist" in n.detail) for n in result.notes] == [("plugin_out_of_scope", True)]
 
 
+V10_PLUGIN_FILES = {
+    "tests/__init__.py": "",
+    "tests/impl.py": "X = 1\n",
+    "tests/test_other.py": "def test_other():\n    pass\n",
+    "tests/test_two.py": "def test_two():\n    pass\n",
+}
+V10_HOOK = (
+    "X = 1\n\n\ndef pytest_runtest_setup(item):\n"
+    "    if 'other' in item.nodeid:\n        raise RuntimeError('no')\n"
+)
+
+
+@pytest.mark.parametrize(
+    "installed, value",
+    [
+        ("from tests import impl", "impl"),
+        ("import tests.impl as impl", "impl"),
+        ("import types\n\nfrom tests import impl", "types.SimpleNamespace(**vars(impl))"),
+    ],
+    ids=["from-import", "import-as", "built"],
+)
+def test_v10_a_plugin_by_a_name_the_project_installs(repo, installed, value):
+    """``sys.modules['myplugin'] = impl`` and ``pytest_plugins =
+    ['myplugin']``: pytest registers ``tests.impl``, whose new hook runs
+    for every test. An object discovery cannot follow is an unknown
+    dependency of every test, reported (audit round 8, V10)."""
+    conftest = (
+        f"import sys\n{installed}\n\nsys.modules['myplugin'] = {value}\n"
+        "pytest_plugins = ['myplugin']\n"
+    )
+    base = repo.commit({**V10_PLUGIN_FILES, "conftest.py": conftest})
+    result = run_discovery(repo, base, "pytest")
+    deps = set(by_id(result)["tests/test_two.py::test_two"].lifecycle_dependencies)
+    kinds = [n.kind for n in result.notes]
+    if value != "impl":
+        assert "plugin:myplugin" in deps
+        assert kinds == ["plugin_installed"]
+    else:
+        assert "tests.impl" in deps
+        assert kinds == []
+    head = repo.commit({"tests/impl.py": V10_HOOK})
+    plan = repo.plan(base, head, [], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_other.py::test_other", "tests/test_two.py::test_two"}
+
+
+def test_v10_a_module_made_under_any_name_is_no_plugin_outside_the_roots(repo):
+    """Code making a module under a name nothing bounds
+    (``sys.modules[name] = types.ModuleType(name)``) does not turn every
+    plugin outside the roots (``pytest_plugins = ['pytester']``) into an
+    unknown dependency of every test."""
+    conftest = "pytest_plugins = ['pytester']\n"
+    maker = (
+        "import sys\nimport types\n\n\n"
+        "def make(name):\n    sys.modules[name] = types.ModuleType(name)\n"
+    )
+    base = repo.commit({**V10_PLUGIN_FILES, "conftest.py": conftest, "tests/maker.py": maker})
+    result = run_discovery(repo, base, "pytest")
+    deps = set(by_id(result)["tests/test_two.py::test_two"].lifecycle_dependencies)
+    assert not any(d.startswith("plugin:") for d in deps)
+    assert "plugin_installed" not in [n.kind for n in result.notes]
+
+
 def test_python_files_patterns_with_directories_match_the_path(repo):
     rev = repo.commit(
         {

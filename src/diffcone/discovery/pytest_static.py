@@ -147,7 +147,13 @@ Lifecycle dependencies attached to each test:
   imported from another module; one that cannot be read, such as a call,
   a comprehension or a name from outside the roots, is reported
   (``unreadable_plugins``) and is an unknown dependency
-  (``plugin:<path>:pytest_plugins``) of every test); a
+  (``plugin:<path>:pytest_plugins``) of every test; a name no module of the
+  roots has that project code installs in ``sys.modules``
+  (``sys.modules["myplugin"] = impl``, ``SourceIndex.installed_names``) is
+  each in-scope module installed under it, and an object that is none (one
+  the code builds, a module made or found at run time) is the unknown
+  dependency ``plugin:<name>`` of every test, reported as
+  ``plugin_installed``); a
   fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
@@ -334,6 +340,7 @@ from diffcone.discovery.session_state import (
 from diffcone.indexer import DEF_NODES, FUNC_NODES, iter_scope_statements
 from diffcone.manifest import Target
 from diffcone.model import (
+    ANY_MODULE,
     DYNAMIC_DEPENDENCY,
     EdgeKind,
     SourceIndex,
@@ -3879,6 +3886,11 @@ class _PluginLoader:
             if name.split(".")[0] in BUILTIN_PLUGINS and name not in self.index.modules:
                 continue
             facts = self.module_facts(name)
+            if facts is None and name not in self.index.modules:
+                installed = self._installed(name)
+                if installed:
+                    found.extend(self._load_installed(name, installed, where, kind, seen))
+                    continue
             if facts is None:
                 path = self._file(name)
                 if path is not None:
@@ -3919,6 +3931,54 @@ class _PluginLoader:
             found.append(self.link(facts))
             found.extend(self.link(sub) for sub in _reexported_facts(facts, self.module_facts))
             found.extend(self.declared_by(facts, seen))
+        return found
+
+    def _installed(self, name: str) -> set[str]:
+        """What project code installs in ``sys.modules`` under a name pytest
+        imports a plugin by (``SourceIndex.installed_names``: a literal, a
+        prefix, any name): the in-scope modules and symbols, ANY_MODULE for
+        an object nothing names. Under a name nothing bounds (``*``), only
+        the in-scope objects: that code may install anything under any name
+        (``sys.modules[name] = types.ModuleType(name)``), and taking every
+        plugin outside the roots for it would select every test always."""
+        found: set[str] = set()
+        for key, objects in self.index.installed_names.items():
+            if key == "*":
+                found.update(o for o in objects if o != ANY_MODULE)
+            elif key == name or (key.endswith("*") and name.startswith(key[:-1])):
+                found.update(objects)
+        return found
+
+    def _load_installed(
+        self, name: str, installed: set[str], where: str, kind: str, seen: set[str]
+    ) -> list[ModuleFacts]:
+        """A plugin entry naming what project code installs in ``sys.modules``
+        (``sys.modules["myplugin"] = impl`` and ``pytest_plugins =
+        ["myplugin"]``): pytest imports the installed object, so each
+        in-scope module installed there loads as the plugin; an object that
+        is no module of the analysis (a class, an instance, a module made or
+        found at run time) is an unknown dependency of every test, reported
+        (audit round 8, V10)."""
+        modules = sorted(o for o in installed if o in self.index.modules)
+        found = self.load(modules, where, kind, seen) if modules else []
+        others = sorted(o for o in installed if o not in self.index.modules)
+        if others:
+            if f"plugin:{name}" not in self.unknown:
+                self.unknown.append(f"plugin:{name}")
+            what = (
+                "an object discovery cannot read"
+                if others == [ANY_MODULE]
+                else ", ".join(o for o in others if o != ANY_MODULE)
+            )
+            self.result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "plugin_installed",
+                    f"{where}: {kind} entry {name!r} is what project code installs in "
+                    f"sys.modules under that name ({what}), so what it defines is unknown and "
+                    "every test is always selected",
+                )
+            )
         return found
 
     def declared_by(self, facts: ModuleFacts, seen: set[str]) -> list[ModuleFacts]:

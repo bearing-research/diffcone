@@ -79,6 +79,13 @@ Seeds besides the changed symbols themselves:
   dependency: model.IMPORTS_EXCLUDED, T2), runs a script that does, or
   looks a name up on, or lists (``dir``, ``hasattr``, ``vars``: a
   reflection site, R11), an external module in-scope code writes to.
+* What code installs in ``sys.modules`` (an ``installs`` edge) is a node
+  ``<code>.<installs>`` depending on the installed objects and their
+  members, which what depends on the code through an ``installed`` edge
+  depends on too, and so does the code itself when only the tests running
+  it see the install (isolated test code, an install undone after the
+  test); code installing a module found at run time makes those see any
+  change instead (audit round 8, V10, V11).
 * ``dir(mod)`` of an in-scope module depends on its ``__dir__`` (an edge
   from the listing symbol, detail ``dir()``; R21).
 * After the search, a target whose manifest does not list its entry's
@@ -130,6 +137,9 @@ from diffcone.model import (
     IMPORTS_EXCLUDED,
     INSTALLED,
     INSTALLED_ANYWHERE,
+    INSTALLS,
+    INSTALLS_ANY,
+    INSTALLS_FOR_TEST,
     MUTATED_BY,
     REBINDS,
     REGISTERS,
@@ -1319,6 +1329,53 @@ def plan_from_indexes(
                     revs,
                 )
                 reached.add(edge.target)
+    # What code installs in ``sys.modules`` (an ``installs`` edge to an
+    # in-scope module or symbol) is what an import of the name gets, which
+    # may read any attribute off it (audit round 8, V10): one node per
+    # installing code (``<code>.<installs>``) depends on each installed
+    # object, its members and what a module's imports bind. The readers of
+    # the name depend on it through their edges to the installing code
+    # (``installed``: an in-scope module of the name, code importing a name
+    # outside the roots), and so does installing code the tests running it
+    # alone see the install of: isolated test code, whose edges are dropped
+    # for the other tests (the isolation assumption), and code whose install
+    # is undone after the test (``installs in sys.modules for the test``;
+    # V11).
+    installs: dict[str, set[str]] = defaultdict(set)
+    for_test: set[str] = set()
+    for edge in sorted(union):
+        if edge_mark(edge) in (INSTALLS, INSTALLS_FOR_TEST):
+            installs[edge.source].add(edge.target)
+        if edge_mark(edge) == INSTALLS_FOR_TEST:
+            for_test.add(edge.source)
+    for writer, objects in sorted(installs.items()):
+        node = f"{writer}.<installs>"
+        for obj in sorted(objects):
+            detail = f"installed in sys.modules by {writer}"
+            for symbol in (obj, *members.get(obj, ())):
+                graph.add(Edge(node, symbol, EdgeKind.REFERENCES, detail), ("base", "head"))
+            if module_reach.get(obj):
+                graph.add(
+                    Edge(node, f"{obj}.<imports>", EdgeKind.REFERENCES, detail),
+                    ("base", "head"),
+                )
+                reached.add(obj)
+        if writer in isolated or writer in for_test:
+            graph.add(
+                Edge(writer, node, EdgeKind.REFERENCES, "what it installs in sys.modules"),
+                ("base", "head"),
+            )
+    for edge, revs in sorted(union.items()):
+        if edge_mark(edge) in (INSTALLED, INSTALLED_ANYWHERE) and edge.target in installs:
+            graph.add(
+                Edge(
+                    edge.source,
+                    f"{edge.target}.<installs>",
+                    EdgeKind.REFERENCES,
+                    "attribute of what sys.modules holds under the name",
+                ),
+                revs,
+            )
     for module in sorted(reached):
         node = f"{module}.<imports>"
         # One edge per symbol: a reached module is also a member of a reached
@@ -1469,6 +1526,18 @@ def plan_from_indexes(
         pending_unresolved.append((ref, revs))
     for symbol, paths in sorted(excluded_imports.items()):
         unbounded_dynamic.setdefault(symbol, "excluded:" + ", ".join(sorted(paths)))
+    # Code installing in ``sys.modules`` a module found at run time (any
+    # module): what depends on it through an ``installed`` edge, and the
+    # code itself when only the tests running it see the install, read any
+    # module there, and see any change (audit round 8, V10).
+    any_installs = {e.source for e in union if edge_mark(e) == INSTALLS_ANY}
+    for edge, revs in sorted(union.items()):
+        if edge_mark(edge) in (INSTALLED, INSTALLED_ANYWHERE) and edge.target in any_installs:
+            dynamic_symbols.setdefault(edge.source, revs)
+            unbounded_dynamic.setdefault(edge.source, "installed:" + edge.target)
+    for writer in sorted(any_installs & (isolated | for_test)):
+        dynamic_symbols.setdefault(writer, ("base", "head"))
+        unbounded_dynamic.setdefault(writer, "installed:" + writer)
 
     # A listing of an external module in-scope code writes to (``name in
     # dir(builtins)``, ``hasattr(builtins, name)``, ``vars(builtins)``) finds
@@ -2298,6 +2367,14 @@ def _explain(
             f"{current} imports or runs {kind[len('excluded:') :]} ({', '.join(revs)}), which "
             "diffcone.toml's [index] exclude keeps out of the analysis: what it runs is "
             "unknown, so any change can affect it",
+            tuple(steps),
+        )
+    if kind.startswith("installed:"):
+        return Reason(
+            Rule.DYNAMIC_REFERENCE,
+            f"{current} imports a name {kind[len('installed:') :]} may install a module "
+            "found at run time under in sys.modules; any module in scope may be behind it, "
+            "so any change can affect it",
             tuple(steps),
         )
     if kind.startswith("script:"):

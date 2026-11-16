@@ -139,8 +139,24 @@ SIGNATURE_READ = "<signature read>()"
 # but the module does not run it (indexer.core._install_edges).
 INSTALLED = "installed in sys.modules"
 # The same, by code installing an object under a name nothing bounds (or
-# only by a prefix): static planning only (audit round 3, W25).
+# only by a prefix): static planning only (audit round 3, W25). Both also go
+# from code reading a name outside the source roots to the code installing
+# something under it (audit round 8, V10).
 INSTALLED_ANYWHERE = "installed in sys.modules under a name nothing bounds"
+# Edge detail from code installing an object in sys.modules to the in-scope
+# module or symbol it installs: whoever imports the name may read any
+# attribute off it (the planner's ``<installs>`` node; audit round 8, V10).
+INSTALLS = "installs in sys.modules"
+# The same, by code whose install is undone after the test (``monkeypatch.
+# setitem``, ``with mock.patch.dict(...)``): the tests running the code read
+# what it installs, and no other test does.
+INSTALLS_FOR_TEST = "installs in sys.modules for the test"
+# Edge detail from installing code to itself when what it installs may be any
+# module (``module_from_spec`` of a file nothing bounds, ``sys.modules[name]``):
+# static planning has whatever depends on it through an ``installed`` edge,
+# and the code itself when only the tests running it see the install, see
+# any change. Evidence mode records what an installed module ran.
+INSTALLS_ANY = "installs in sys.modules a module found at run time"
 CLASS_STATEMENT = "(statement)"  # SourceIndex.class_attributes: bases, keywords, decorators
 
 
@@ -410,6 +426,12 @@ class SourceIndex:
     # the module may find what those can name (planner._ImportReach;
     # audit round 3, W24).
     module_writers: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # A name outside the source roots project code installs something under
+    # in sys.modules (a literal, ``PREFIX*``, or ``*`` for a name nothing
+    # bounds) -> the in-scope modules and symbols installed there, with
+    # ANY_MODULE when the object may be something else: the plugin modules
+    # ``pytest_plugins`` loads by such a name (discovery; audit round 8, V10).
+    installed_names: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)

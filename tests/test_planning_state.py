@@ -4405,6 +4405,96 @@ def test_r27_pytests_monkeypatch_in_a_test_is_undone(repo):
     assert selected(plan) == {"tests/test_a.py::test_a"}
 
 
+# A function-scoped fixture installing a module in ``sys.modules`` (audit
+# round 8, V11): the tests using it import what it installed; the others do
+# not see it, whether or not it is undone.
+V11_FIXTURES = {
+    "no-undo": "def fake_lib():\n    sys.modules['extlib'] = fakes\n",
+    "del-after-yield": (
+        "def fake_lib():\n    sys.modules['extlib'] = fakes\n"
+        "    yield\n    del sys.modules['extlib']\n"
+    ),
+    "monkeypatch": (
+        "def fake_lib(monkeypatch):\n    monkeypatch.setitem(sys.modules, 'extlib', fakes)\n"
+    ),
+    "patch-dict": (
+        "def fake_lib():\n"
+        "    with mock.patch.dict(sys.modules, {'extlib': fakes}):\n        yield\n"
+    ),
+    "in-scope-name": (
+        "def fake_lib(monkeypatch):\n    monkeypatch.setitem(sys.modules, 'pkg.lib', fakes)\n"
+    ),
+}
+V11_READS = {
+    "attribute": "def fetch(url):\n    import extlib\n\n    return extlib.get(url)\n",
+    "lookup": (
+        "def fetch(url, name='get'):\n    import extlib\n\n    return getattr(extlib, name)(url)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("read", sorted(V11_READS))
+@pytest.mark.parametrize("fixture", sorted(V11_FIXTURES))
+def test_v11_what_a_fixture_installs_counts_for_the_tests_using_it(repo, fixture, read):
+    """``fake_lib`` puts ``tests.fakes`` in ``sys.modules`` for the test that
+    requests it: ``test_fetch`` reads it through ``pkg.client.fetch`` and
+    follows a change to ``tests.fakes.get``; ``test_plain`` calls ``fetch``
+    without the fixture and gets the library."""
+    client = V11_READS[read]
+    if fixture == "in-scope-name":
+        client = "def fetch(url):\n    from pkg import lib\n\n    return lib.get(url)\n"
+    base = repo.commit(
+        {
+            **BASE,
+            "pkg/lib.py": "def get(url):\n    return 'real'\n",
+            "pkg/client.py": client,
+            "tests/fakes.py": "def get(url):\n    return 'fake'\n",
+            "tests/conftest.py": (
+                "import sys\nfrom unittest import mock\n\nimport pytest\n\n"
+                "from tests import fakes\n\n\n"
+                f"@pytest.fixture\n{V11_FIXTURES[fixture]}"
+            ),
+            "tests/test_c.py": (
+                "from pkg.client import fetch\n\n\n"
+                "def test_fetch(fake_lib):\n    assert fetch('x') == 'fake'\n\n\n"
+                "def test_plain():\n    fetch('x')\n"
+            ),
+            "tests/test_o.py": "def test_o():\n    pass\n",
+        }
+    )
+    head = repo.commit({"tests/fakes.py": "def get(url):\n    return 'other'\n"})
+    plan = _plan(repo, base, head)
+    assert selected(plan) == {"tests/test_c.py::test_fetch"}
+
+
+def test_v11_an_autouse_fixture_installs_for_every_test_it_runs_for(repo):
+    """An autouse fixture runs for every test under its conftest: each may
+    read the module it installs."""
+    base = repo.commit(
+        {
+            **BASE,
+            "pkg/runner.py": (
+                "def call(name):\n    import myplugins\n\n    return getattr(myplugins, name)()\n"
+            ),
+            "tests/plugins_impl.py": "def a():\n    return 1\n",
+            "tests/conftest.py": (
+                "import sys\n\nimport pytest\n\nimport tests.plugins_impl as impl\n\n\n"
+                "@pytest.fixture(autouse=True)\n"
+                "def _install(monkeypatch):\n"
+                "    monkeypatch.setitem(sys.modules, 'myplugins', impl)\n"
+            ),
+            "tests/test_call.py": (
+                "from pkg.runner import call\n\n\ndef test_a():\n    assert call('a') == 1\n"
+            ),
+            "other/__init__.py": "",
+            "other/test_far.py": "from pkg.runner import call\n\n\ndef test_far():\n    pass\n",
+        }
+    )
+    head = repo.commit({"tests/plugins_impl.py": "def a():\n    return 2\n"})
+    plan = _plan(repo, base, head)
+    assert selected(plan) == {"tests/test_call.py::test_a"}
+
+
 # ------------------------------------------------------------------------ builtins called
 # A builtin called by its own name is no function of ours: ``map(f, xs)``
 # is not a project method named ``map``. The higher-order ones call ``f``
