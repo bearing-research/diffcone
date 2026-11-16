@@ -1415,7 +1415,18 @@ W18):
   `import_module(name)`: a lazy loader) installs nothing foreign, nor does
   one a binding of which reads `sys.modules` under the same name (`module
   = sys.modules.get(name)`, then `types.ModuleType(name)` when missing:
-  `=` and `+`). The name `sys.modules[spec.name]` installs under is the
+  `=` and `+`), nor a function putting back what a copy of `sys.modules`
+  saved under the name it was found under (`saved = {k: v for k, v in
+  sys.modules.items() if ...}` or `sys.modules.copy()`, then `for name, mod
+  in saved.items(): sys.modules[name] = mod`: a fixture restoring the
+  modules it unloaded) when the copy is a function local bound once and
+  only read (iterated, `in`, `.items()`/`.keys()`/`.values()`/`.get()`),
+  none of the names is global or nonlocal, no `with` around the copy ends
+  before the loop, and nothing else in the function installs in
+  `sys.modules` or undoes patches (`undo()`, `stop()`, `close()`): what it
+  puts back was in `sys.modules` under that name earlier in the process,
+  not something only a patch the function undid put there
+  (`uses._restores_saved`). The name `sys.modules[spec.name]` installs under is the
   one `spec_from_file_location` or `find_spec` was given. Discovery reads
   `SourceIndex.installed_names` (name, `PREFIX*` or `*` -> the in-scope
   objects, `*` for anything else, decided per install: what code installs

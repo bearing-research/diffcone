@@ -1250,7 +1250,9 @@ class _Scanner:
             else:
                 found, sources = {ANY}, ()
             values, more = self._installed_values(value, key)
-            if key is not None and self._names_itself(key, value):
+            if key is not None and (
+                self._names_itself(key, value) or self._restores_saved(key, value)
+            ):
                 values, more = (">" + SELF,), ()
             writer = writer if writer is not None else self._writer(node)
             for target in sorted(found):
@@ -1335,6 +1337,170 @@ class _Scanner:
             and not value.keywords
             and self._may_be(value.func.value, _MODULES_TABLE)
             and self._same_name(value.args[0], key)
+        )
+
+    _SAVED_READS = frozenset({"items", "keys", "values", "get"})
+
+    def _restores_saved(self, key: ast.expr, value: ast.expr | None) -> bool:
+        """Whether the install puts back what a copy of ``sys.modules`` saved
+        under the same name: ``for name, module in saved.items():
+        sys.modules[name] = module`` in the loop's own body, with ``saved`` a
+        function-local name bound once to ``{k: v for k, v in
+        sys.modules.items() if ...}`` or ``sys.modules.copy()`` and only read
+        (iterated, ``in``, ``.items()``/``.keys()``/``.values()``/``.get()``),
+        never written or handed on. Each module goes back under the name it
+        was found under: the module already there, as ``sys.modules[name] =
+        sys.modules.get(name)`` (a test fixture restoring the modules it
+        unloaded)."""
+        if not (isinstance(key, ast.Name) and isinstance(value, ast.Name)):
+            return False
+        if key.id == value.id:
+            return False
+        scope = self._scope_of(value)
+        if (
+            not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or self._scope_of(key) is not scope
+        ):
+            return False
+        # The nearest loop around the install, in the same scope, binds both.
+        loop = self.parents.get(id(value))
+        while loop is not None and loop is not scope and not isinstance(loop, ast.For):
+            loop = self.parents.get(id(loop))
+        if not isinstance(loop, ast.For) or loop.orelse and self._inside(value, loop.orelse):
+            return False
+        target = loop.target
+        if not (
+            isinstance(target, ast.Tuple)
+            and len(target.elts) == 2
+            and all(isinstance(e, ast.Name) for e in target.elts)
+            and [_name_id(e) for e in target.elts] == [key.id, value.id]
+        ):
+            return False
+        # Nothing in the loop body rebinds either name.
+        for stmt in loop.body:
+            for n in [stmt, *_own_nodes(stmt)]:
+                if (
+                    isinstance(n, ast.Name)
+                    and n.id in (key.id, value.id)
+                    and not isinstance(n.ctx, ast.Load)
+                ):
+                    return False
+        it = loop.iter
+        if not (
+            isinstance(it, ast.Call)
+            and not it.args
+            and not it.keywords
+            and isinstance(it.func, ast.Attribute)
+            and it.func.attr == "items"
+            and isinstance(it.func.value, ast.Name)
+        ):
+            return False
+        saved = it.func.value
+        if self._scope_of(saved) is not scope or not self._modules_copy(self._single_value(saved)):
+            return False
+        # None of the three is global or nonlocal (code elsewhere could
+        # rebind or fill it).
+        names = {key.id, value.id, saved.id}
+        for n in ast.walk(scope):
+            if isinstance(n, (ast.Global, ast.Nonlocal)) and names & set(n.names):
+                return False
+        # Only read: every other occurrence of the name (nested scopes too).
+        binding: ast.Assign | None = None
+        for n in ast.walk(scope):
+            if not (isinstance(n, ast.Name) and n.id == saved.id):
+                continue
+            parent = self.parents.get(id(n))
+            if not isinstance(n.ctx, ast.Load):
+                if (
+                    isinstance(parent, ast.Assign)
+                    and len(parent.targets) == 1
+                    and parent.targets[0] is n
+                    and self._modules_copy(parent.value)
+                ):
+                    binding = parent  # the one binding (_single_value checked)
+                    continue
+                return False
+            if isinstance(parent, ast.Attribute) and parent.value is n:
+                call = self.parents.get(id(parent))
+                if (
+                    parent.attr in self._SAVED_READS
+                    and isinstance(call, ast.Call)
+                    and (call.func is parent)
+                ):
+                    continue
+                return False
+            if (
+                isinstance(parent, ast.Compare)
+                and n in parent.comparators
+                and all(isinstance(op, (ast.In, ast.NotIn)) for op in parent.ops)
+            ):
+                continue
+            if isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is n:
+                continue
+            return False
+        return binding is not None and self._saved_for_good(scope, binding, loop, value)
+
+    _UNDOING = frozenset({"undo", "stop", "stopall", "close", "pop_all", "__exit__"})
+
+    def _saved_for_good(
+        self, scope: ast.AST, binding: ast.Assign, loop: ast.For, value: ast.expr
+    ) -> bool:
+        """Whether what the copy saved was in ``sys.modules`` for good, not
+        put there for a while by this function and taken out again before the
+        loop puts it back: no ``with`` around the copy ends before the loop,
+        nothing else in the function installs in ``sys.modules`` (a swap,
+        a save-and-restore), and nothing in it undoes patches
+        (``monkeypatch.undo()``, ``patcher.stop()``, ``stack.close()``)."""
+        p = self.parents.get(id(binding))
+        while p is not None and p is not scope:
+            if isinstance(p, (ast.With, ast.AsyncWith)) and not self._inside(loop, p.body):
+                return False
+            p = self.parents.get(id(p))
+        install = self.parents.get(id(value))
+        for n in ast.walk(scope):
+            if n is not install and self._installs(n):
+                return False
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in self._UNDOING
+            ):
+                return False
+        return True
+
+    def _inside(self, node: ast.AST, stmts: list[ast.stmt]) -> bool:
+        return any(node is n for stmt in stmts for n in ast.walk(stmt))
+
+    def _modules_copy(self, value: ast.expr | None) -> bool:
+        """``{k: v for k, v in sys.modules.items() if ...}`` (filters only)
+        or ``sys.modules.copy()``: each name with the module it held."""
+        if isinstance(value, ast.Call):
+            return (
+                not value.args
+                and not value.keywords
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr == "copy"
+                and self._only(value.func.value, _MODULES_TABLE)
+            )
+        if not isinstance(value, ast.DictComp) or len(value.generators) != 1:
+            return False
+        gen = value.generators[0]
+        it = gen.iter
+        return (
+            not gen.is_async
+            and isinstance(gen.target, ast.Tuple)
+            and len(gen.target.elts) == 2
+            and all(isinstance(e, ast.Name) for e in gen.target.elts)
+            and isinstance(value.key, ast.Name)
+            and isinstance(value.value, ast.Name)
+            and [value.key.id, value.value.id] == [_name_id(e) for e in gen.target.elts]
+            and value.key.id != value.value.id
+            and isinstance(it, ast.Call)
+            and not it.args
+            and not it.keywords
+            and isinstance(it.func, ast.Attribute)
+            and it.func.attr == "items"
+            and self._only(it.func.value, _MODULES_TABLE)
         )
 
     def _installed_values(
@@ -2384,6 +2550,10 @@ class _Scanner:
         elif target == ANY and kind != HELD:
             sources = ()  # already any module
         self.out.records.add(UseRecord(kind, target, tuple(sorted(set(sources))), writer))
+
+
+def _name_id(node: ast.expr) -> str | None:
+    return node.id if isinstance(node, ast.Name) else None
 
 
 def _own_nodes(scope: ast.AST) -> list[ast.AST]:

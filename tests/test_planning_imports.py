@@ -1269,6 +1269,110 @@ def test_v10_dunder_import_of_a_dotted_name_installs_the_top_package(repo, key):
     assert "t::test_y" not in selected(plan)
 
 
+V10_RESTORE = (
+    "import sys\nfrom unittest import mock\n\nimport pytest\n\nimport pkg.lazy\n\n\n"
+    "@pytest.fixture\n"
+    "def clean_import({param}):\n"
+    "{before}"
+    "    saved = {saved}\n"
+    "{between}"
+    "    for name in saved:\n"
+    "        del sys.modules[name]\n"
+    "    yield\n"
+    "    for name, mod in {source}.items():\n"
+    "        sys.modules[name] = mod\n\n\n"
+    "def test_lazy(clean_import):\n"
+    "    assert pkg.lazy.f()\n"
+)
+V10_COPY = "sys.modules.copy()"
+V10_RESTORES = {
+    # Put back under the name each was found under: the module already there.
+    "comprehension": (
+        "",
+        "",
+        "{k: v for k, v in sys.modules.items() if k.startswith('pkg')}",
+        "",
+        "saved",
+    ),
+    "copy": ("", "", V10_COPY, "", "saved"),
+    # Anything else may be any module.
+    "written": ("", "", V10_COPY, "    saved['pkg.lazy'] = object()\n", "saved"),
+    "handed-on": ("", "", V10_COPY, "    print(saved)\n", "saved"),
+    "parameter": ("mods", "", V10_COPY, "", "mods"),
+    "other-dict": ("", "", V10_COPY, "    other = dict(saved)\n", "other"),
+    # A global code elsewhere may fill.
+    "global": ("", "    global saved\n", V10_COPY, "", "saved"),
+    # Saved while a swap held another module there, put back for good
+    # after the swap ended.
+    "with-ended": (
+        "",
+        "    import pkg.third\n"
+        "    with mock.patch.dict(sys.modules, {'pkg.lazy': pkg.third}):\n    ",
+        V10_COPY,
+        "",
+        "saved",
+    ),
+    "undone": ("monkeypatch", "", V10_COPY, "    monkeypatch.undo()\n", "saved"),
+    "save-and-restore": (
+        "",
+        "    old = sys.modules['pkg.lazy']\n    sys.modules['pkg.lazy'] = pkg.lazy\n",
+        V10_COPY,
+        "    sys.modules['pkg.lazy'] = old\n",
+        "saved",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(V10_RESTORES))
+@pytest.mark.parametrize("change", ["other", "lazy"])
+def test_v10_a_fixture_restoring_the_modules_it_saved(repo, case, change):
+    """A fixture unloading modules and putting back what a copy of
+    ``sys.modules`` saved, each under the name it was found under, installs
+    the module already there: an unrelated change does not reach its tests
+    (census, dateutil's ``clean_import``). A copy written to, handed on,
+    global or not the one iterated may hold any module, and so may one
+    saved while something the function undoes before the loop (a ``with``
+    ended, ``monkeypatch.undo()``, a save-and-restore) held a module there:
+    its tests see any change; a change to what the test imports reaches it
+    either way."""
+    param, before, saved, between, source = V10_RESTORES[case]
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/lazy.py": "def f():\n    return 1\n",
+        "pkg/other.py": "def g():\n    return 1\n",
+        "pkg/third.py": "def h():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_lazy.py": V10_RESTORE.format(
+            param=param, before=before, saved=saved, between=between, source=source
+        ),
+        "tests/test_o.py": "from pkg.other import g\n\n\ndef test_o():\n    assert g()\n",
+        "tests/test_y.py": "def test_y():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import g\n\n\ndef time_o():\n    g()\n",
+    }
+    base = repo.commit(files)
+    path = f"pkg/{change}.py"
+    head = repo.commit({path: files[path].replace("return 1", "return 2")})
+    targets = [
+        py_target(
+            "t::test_lazy",
+            "tests.test_lazy.test_lazy",
+            "tests.test_lazy",
+            "tests.test_lazy.clean_import",
+        ),
+        py_target("t::test_o", "tests.test_o.test_o", "tests.test_o"),
+        py_target("t::test_y", "tests.test_y.test_y", "tests.test_y"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    if change == "lazy":
+        assert selected(plan) == {"t::test_lazy"}
+    elif case in ("comprehension", "copy"):
+        assert selected(plan) == {"t::test_o", "bench.time_o"}
+    else:
+        assert selected(plan) == {"t::test_o", "bench.time_o", "t::test_lazy"}
+
+
 def test_v10_a_name_formatted_after_the_module_name_is_a_prefix(repo):
     """``"{0}.{1}".format(__name__, name)``, also through a local name, is
     a name under this module: installing a module from ``sys.modules``

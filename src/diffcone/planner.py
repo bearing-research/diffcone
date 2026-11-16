@@ -2378,12 +2378,20 @@ def _explain(
             "unknown, so any change can affect it",
             tuple(steps),
         )
+    if kind == "installed:" + current:
+        return Reason(
+            Rule.DYNAMIC_REFERENCE,
+            f"{current} installs in sys.modules a module found at run time ({', '.join(revs)}), "
+            "and only the tests running it see the install; any module in scope may be what "
+            "they import under that name, so any change can affect it",
+            tuple(steps),
+        )
     if kind.startswith("installed:"):
         return Reason(
             Rule.DYNAMIC_REFERENCE,
-            f"{current} imports a name {kind[len('installed:') :]} may install a module "
-            "found at run time under in sys.modules; any module in scope may be behind it, "
-            "so any change can affect it",
+            f"{current} imports a name {kind[len('installed:') :]} may install in sys.modules "
+            "a module found at run time; any module in scope may be behind it, so any change "
+            "can affect it",
             tuple(steps),
         )
     if kind.startswith("script:"):

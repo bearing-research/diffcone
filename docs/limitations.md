@@ -150,7 +150,9 @@ everything.
     your code imports. If what is installed is a module loaded from a
     computed path (`importlib.util.module_from_spec`), any change can
     affect that code (a module your code creates, `types.ModuleType(name)`,
-    or finds under the name already, is not one). The same goes when your
+    or finds under the name already, is not one, and neither is a module a
+    fixture puts back from a copy of `sys.modules` it saved, under the name
+    it was saved under). The same goes when your
     code installs a module it was handed (`def install(mod):
     sys.modules["extplug"] = mod`), because diffcone doesn't follow which
     module the caller passes. An install made by a fixture or a test counts
