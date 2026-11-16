@@ -389,6 +389,15 @@ everything.
     `functools.total_ordering` or `typing.final`), a metaclass (other than
     `abc.ABCMeta`) or a library base.
 
+    What one of your functions returns of what it was handed is that
+    object: changing the result in place changes what the caller handed
+    (`r = wrap(p)`, then `r["items"].append(x)`, where `wrap` returns `p`,
+    part of it, `p` on one of several returns, or what another function
+    returns of it; `b.tag().add(x)` where `tag` returns `self`), and so does
+    handing the result to a function that changes it. A new object it
+    builds and returns (`return {"items": list(p["items"])}`) is not what
+    the caller handed: adding to it changes nothing handed.
+
     Not followed:
 
     - an object stored away and changed later under another name
@@ -397,15 +406,16 @@ everything.
       that changes it or hands it on or in a function of yours that returns
       it (an instance kept in a module variable,
       `TOK = Tokenizer(RULES)`, is not followed back to `RULES`);
-    - an object a library function returns that your code then changes;
-    - an object one of your functions returns after it was handed it
-      (`r = wrap(p)`, then `r.items.append(x)`, where `wrap` returns `p`);
+    - an object a library function returns that your code then changes
+      (`typing.cast(T, p)` is `p`);
     - logging a library does into your handlers from inside its own
       calls (`requests.get(...)` logging through `urllib3`'s logger);
     - a function stored on one of your classes under another name and
-      called as a method by your own code (`SLog.handle = _recording_handle`,
-      then `self.handle(record)` in a method of `SLog`); one the `logging`
-      library calls back (a log call through an `SLog` logger) is followed;
+      called as a method by your own code (`Cache.get = _fast_get`, then
+      `self.get(k)`); one stored on a `logging` logger, handler, filter or
+      formatter class under a name the library calls back
+      (`SLog.handle = _recording_handle`) is followed, whether the library
+      or your code calls it (`self.handle(record)`, `LOG.handle(record)`);
     - a method called on an item of a module-level dict or list
       (`_CACHE["a"].put(4)`): only the dict's own methods count as writes;
     - a library function that changes an argument you pass it, a module of

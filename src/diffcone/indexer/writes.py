@@ -37,7 +37,16 @@ Pass 2 records, per function (cacheable per module):
   calls with what they log, and the objects and functions handed to the
   library or stored on a class under a callback's name (``SLog.handle =
   f``: ``STORED_ROLE``), decided after pass 2 by ``_LoggingModel`` (audit
-  round 8, V1, V9).
+  round 8, V1, V9); such a stored function is that method when project
+  code calls it by the name too (``self.handle(record)``, ``LOG.emit(r)``:
+  ``_LoggingModel.stored_methods``, ``_stored_method_edges``; V20);
+* what a call of project code returns, as a pseudo-parameter of the caller
+  (``RESULT_PARAM``) written or handed on like any parameter, with what
+  the call hands each callee (``result_calls``), and what each function's
+  ``return`` hands back of its parameters (``param_returns``): closed after
+  pass 2 (``_returning_calls``), a write of the result writes what the
+  callee may return of what it was handed (``r = wrap(p); r.x.append(1)``,
+  ``b.tag().add(1)``; V19).
 
 After pass 2 (``apply_writes``), a parameter handed to a callee's written
 parameter is written too, until nothing changes; then every variable handed
@@ -94,10 +103,10 @@ called on the class itself, writes it (``library_calls``,
 
 Not modelled: an object kept and written through later under another name
 (``self.d = d`` in ``__init__``, then ``self.d[k] = v`` on an instance not
-made by an explicit call of its class; a parameter
-returned to the caller, which a write through the result changes; a module
-returned by a function other code calls; a function bound onto a class
-under another name and called on ``self``),
+made by an explicit call of its class; a module returned by a function
+other code calls; a function bound onto a class under another name and
+called on ``self``, but one stored on a logging-derived class under a
+callback's name), what a third-party call returns (but ``typing.cast``),
 and a third-party function that changes an argument in place, a module
 included (a library handed a module of the project that writes into it).
 
@@ -161,6 +170,7 @@ from diffcone.model import (
     Edge,
     EdgeKind,
     SymbolKind,
+    UnresolvedKind,
 )
 
 if TYPE_CHECKING:
@@ -429,6 +439,12 @@ PARAM, PARAM_COPY = "", "copy"
 # handed, unless the class's ``makeRecord`` may be the project's or a project
 # record factory makes records (decided after pass 2: ``_LoggingModel``).
 RECORD = "%record:"
+# What a call of project code returns, as a pseudo-parameter of the caller
+# (``%result:<line>.<column>`` of the call): written as a parameter is, it
+# writes what the callee may return of what the call hands it
+# (``result_calls``, ``param_returns``; decided after pass 2: audit round 8,
+# V19).
+RESULT_PARAM = "%result:"
 # Builtins whose result is a new container of the items of what they are
 # handed (``for i, x in enumerate(p)``: ``x`` is part of ``p``).
 _ITEM_CONTAINERS = frozenset(
@@ -481,10 +497,13 @@ def _param_roots(
     and what a fresh instance of an in-scope class (``Box(p)``) or a
     library logger's record (``self.makeRecord(..., msg, args)``) was
     handed, changed when the instance is changed in place or binding one of
-    its attributes runs code (``_HeldSafety``). What any other call returns
-    is not followed (audit round 8, V7, V8). The same holds for what a call
-    is handed (``_handed_all``): an element handed on (``for o in objs:
-    o.reset()``) is part of the parameter."""
+    its attributes runs code (``_HeldSafety``; audit round 8, V7, V8). What
+    a call that may run project code returns is the call's pseudo-parameter
+    (``RESULT_PARAM``): ``r = wrap(p)``, ``b.tag()``, written or handed on
+    as a parameter is, writes what the callee may return of what it was
+    handed (``param_returns``, after pass 2; V19). The same holds for what
+    a call is handed (``_handed_all``): an element handed on (``for o in
+    objs: o.reset()``) is part of the parameter."""
     if len(seen) > 8:
         return {}
     if isinstance(expr, (ast.Starred, ast.NamedExpr, ast.Await)):
@@ -531,8 +550,10 @@ def _call_param_roots(
     collector: _ReferenceCollector, node: ast.Call, seen: frozenset[str]
 ) -> ParamRoots:
     """``_param_roots`` of a call: what a fresh object it makes holds of the
-    parameters it is handed, part of its receiver, or the items of a
-    builtin's new container."""
+    parameters it is handed, part of its receiver, the items of a builtin's
+    new container, what ``typing.cast`` is handed, or the call's own
+    pseudo-parameter for what project code it may run returns
+    (``_result_root``)."""
     func = node.func
     args = [*node.args, *(k.value for k in node.keywords)]
     if isinstance(func, ast.Attribute):
@@ -541,7 +562,10 @@ def _call_param_roots(
             found = _merge_param_roots(*(_param_roots(collector, a, seen) for a in args))
             return {param: (f"{HELD_WHAT}{RECORD}{logger}", True) for param in found}
         if func.attr in _PART_METHODS:
-            return _param_parts(_param_roots(collector, func.value, seen))
+            return _merge_param_roots(
+                _param_parts(_param_roots(collector, func.value, seen)),
+                _result_root(collector, node),
+            )
     if (
         isinstance(func, ast.Name)
         and func.id in _ITEM_CONTAINERS
@@ -553,14 +577,46 @@ def _call_param_roots(
     if made is not None and made[0] == "call":
         found = _merge_param_roots(*(_param_roots(collector, a, seen) for a in args))
         return {param: (f"{HELD_WHAT}{made[1]}", True) for param in found}
-    return {}
+    parts = _flatten_chain(func)
+    if parts is not None and not collector._is_local(parts[0]):
+        target = collector.indexer.resolve_chain(parts, collector.scope)
+        if isinstance(target, External):
+            if "typing.cast" in collector._canonical_names(parts) and len(node.args) == 2:
+                return _param_roots(collector, node.args[1], seen)  # the value itself
+            return {}  # a third-party function's result (not followed)
+        if isinstance(target, Resolved) and not target.detail:
+            symbol = collector.indexer.index.symbols.get(target.symbol)
+            if symbol is not None and symbol.kind == SymbolKind.CLASS:
+                return {}  # a new instance (``made`` above when it holds anything)
+    if (
+        isinstance(func, ast.Name)
+        and func.id in BUILTIN_NAMES
+        and collector.indexer.resolve_chain([func.id], collector.scope) is None
+    ):
+        return {}
+    return _result_root(collector, node)
+
+
+def _result_root(collector: _ReferenceCollector, node: ast.Call) -> ParamRoots:
+    """The pseudo-parameter of what ``node`` returns (``RESULT_PARAM``):
+    ``observe_call`` records what the call hands which callee
+    (``result_calls``), and a callee's ``return`` of its parameters
+    (``param_returns``) says after pass 2 what a write of it changes."""
+    return {_result_key(node): (PARAM, True)}
+
+
+def _result_key(node: ast.Call) -> str:
+    """The pseudo-parameter of ``node``'s result: the call's span, which a
+    call it is made of does not share (``b.tag().add(1)``)."""
+    return f"{RESULT_PARAM}{node.lineno}.{node.col_offset}.{node.end_lineno}.{node.end_col_offset}"
 
 
 def _param_of(collector: _ReferenceCollector, expr: ast.expr) -> str | None:
     """A parameter of the function ``expr`` is or holds part of, held by no
-    new object (the first, when it may be several; ``_param_roots``)."""
+    new object (the first, when it may be several; ``_param_roots``; no
+    call's result)."""
     for param, (kind, _) in sorted(_param_roots(collector, expr).items()):
-        if not kind.startswith(HELD_WHAT):
+        if not kind.startswith(HELD_WHAT) and not param.startswith(RESULT_PARAM):
             return param
     return None
 
@@ -932,8 +988,16 @@ def observe_return(collector: _ReferenceCollector, value: ast.expr) -> None:
     self``, ``return self._get().items``): what a caller stores into the
     result may be the receiver's state (``receiver_returns``, with the
     methods of the receiver the chain calls, which must each return such
-    state too; ``result_stores``)."""
+    state too; ``result_stores``). And each parameter (or call result:
+    ``RESULT_PARAM``) the value may be or hold part of (``param_returns``:
+    ``return p``, ``return p.items``, ``return self``, ``return wrap(p)``;
+    audit round 8, V19)."""
     scope = collector.scope
+    if scope.literal_parent is None:
+        for param, (kind, whole) in _param_roots(collector, value).items():
+            collector.indexer.out.param_returns.add(
+                (collector.source, param, whole and kind == PARAM)
+            )
     if scope.self_name is None or scope.literal_parent is not None:
         return
     calls: list[str] = []
@@ -1409,6 +1473,17 @@ def observe_call(collector: _ReferenceCollector, node: ast.Call, parts: list[str
             out.add((collector.source, what, callee, name, slot, bound))
             if (slot, what) in whole:
                 indexer.out.whole_passes.add((collector.source, what, callee, name, slot, bound))
+    if not isinstance(collector._parent(node), ast.Expr) and not (
+        callees and callees[0].endswith(".__init__")
+    ):
+        # The result is used: a write of it (``RESULT_PARAM``) writes what
+        # the callee may return of what it is handed (V19).
+        key = _result_key(node)
+        results = indexer.out.result_calls
+        for slot, what in handed:
+            for callee in callees or [""]:
+                itself = (slot, what) in whole
+                results.add((collector.source, what, callee, name, slot, bound, key, itself))
     for slot, expr, _ in passes:
         held = _held_attr(collector, expr)
         if held:
@@ -1626,22 +1701,28 @@ def _handed_all(
     object holds of it): each parameter it may be or hold (``param:<name>``,
     ``held:<class>|param:<name>`` for one a fresh object holds;
     ``_param_roots``), else a module-level variable (or part of one), else
-    (``modules``: as an argument) an in-scope module."""
+    (``modules``: as an argument) an in-scope module. A call's result
+    (``param:`` + ``RESULT_PARAM``) comes with what else it may be."""
     if isinstance(expr, ast.Call):
         # ``vars(p)``/``p.__dict__``-style views hand on the object itself.
         if isinstance(expr.func, ast.Name) and expr.func.id == "vars" and expr.args:
             expr = expr.args[0]
         else:
             found = _param_whats(_param_roots(collector, expr))
-            if found:
+            if _real_params(found):
                 return found
             module = _module_of(collector, expr) if modules else None
-            return [(f"module:{module}", False)] if module is not None else []
+            return found + ([(f"module:{module}", False)] if module is not None else [])
     found = _param_whats(_param_roots(collector, expr))
-    if found:
+    if _real_params(found):
         return found
     what = _handed_other(collector, expr, modules=modules)
-    return [(what, False)] if what is not None else []
+    return found + ([(what, False)] if what is not None else [])
+
+
+def _real_params(found: list[tuple[str, bool]]) -> bool:
+    """Whether ``_param_whats`` names a parameter, not only a call's result."""
+    return any(RESULT_PARAM not in what for what, _ in found)
 
 
 def _plainly_handed(
@@ -1818,7 +1899,9 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     _record_any_class_writes(out, owners)
     writes: set[tuple[str, str]] = set(out.param_writes)
     if not writes and not out.held_param_writes and not out.log_calls:
-        _apply_held_binds(indexer, _HeldSafety(indexer, _LoggingModel(indexer, class_record)))
+        model = _LoggingModel(indexer, class_record)
+        _stored_method_edges(out, model.stored_methods())
+        _apply_held_binds(indexer, _HeldSafety(indexer, model))
         _record_any_class_writes(out, owners)
         return class_record, {}
     symbols = indexer.index.symbols
@@ -1836,20 +1919,27 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     for state, writer in sorted(out.value_writes):  # edges once every module is known
         edges_from[state].append(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
     external_users = {x.symbol for x in indexer.index.external}
+    # (function, name) -> the classes a function stored on a logging-derived
+    # class under a callback's name is a method of (``SLog.handle = f``):
+    # called by that name on one of them, it runs bound (V1, V20).
+    as_method: dict[tuple[str, str], set[str]] = {}
 
-    def slot_params(callee: str, slot: str, bound: bool) -> list[str]:
+    def slot_params(callee: str, slot: str, bound: bool, name: str = "") -> list[str]:
         """The parameters of ``callee`` an argument in ``slot`` may land in:
         a positional one, the ``*args`` past them, a keyword, the
         ``**kwargs`` for one no parameter is named; any from a position on
-        for a starred argument, any keyword for ``**D`` (audit round 8, V8)."""
+        for a starred argument, any keyword for ``**D`` (audit round 8, V8).
+        A function stored as a method (``as_method``) called by that
+        ``name`` is bound."""
         info = params.get(callee)
         if info is None:
             return []
+        method = info.bound or (callee, name) in as_method
         if slot == RECEIVER:
-            return [info.positional[0]] if info.bound and info.positional else []
+            return [info.positional[0]] if method and info.positional else []
         varargs = [info.varargs] if info.varargs else []
         varkw = [info.varkw] if info.varkw else []
-        shift = 1 if info.bound and bound else 0
+        shift = 1 if method and bound else 0
         if slot == ANY_KEYWORD:
             return [*info.positional[shift:], *info.keyword_only, *varkw]
         if slot.startswith("="):
@@ -1862,9 +1952,13 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
         index = int(slot) + shift
         return [info.positional[index]] if index < len(info.positional) else varargs
 
-    def writes_param(callee: str, slot: str, bound: bool) -> list[str]:
+    def writes_param(callee: str, slot: str, bound: bool, name: str = "") -> list[str]:
         """``slot_params`` that ``callee`` writes."""
-        return [p for p in slot_params(callee, slot, bound) if (callee, p) in writes]
+        return [p for p in slot_params(callee, slot, bound, name) if (callee, p) in writes]
+
+    def stored_methods(cls: str, name: str) -> list[str]:
+        """The functions stored as method ``name`` of class ``cls``."""
+        return sorted(f for (f, n), classes in as_method.items() if n == name and cls in classes)
 
     def third_party(variable: str) -> bool:
         """``log = logging.getLogger(__name__)``, or a project factory whose
@@ -1900,6 +1994,17 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
 
     model = _LoggingModel(indexer, class_record, value_classes, third_party, by_name)
     safe = _HeldSafety(indexer, model)
+    # A function stored on a logging-derived class under a callback's name
+    # is that method when project code calls it too (``self.handle(record)``
+    # in a method of the class, ``LOG.handle(r)``): any method of that name
+    # (``by_name``) includes it, and an attribute of that name nothing
+    # resolves (``self.handle``, ``LOG.handle``) may be it, as the planner
+    # matches it to every symbol of the name (V20).
+    as_method.update(model.stored_methods())
+    for function, name in sorted(as_method):
+        if function not in by_name[name]:
+            by_name[name] = sorted([*by_name[name], function])
+    _stored_method_edges(out, as_method)
 
     def callees(record: Pass) -> list[str]:
         _, what, callee, name, slot, _ = record
@@ -1911,14 +2016,15 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
             found: list[str] = []
             for kind in kinds:
                 if kind == "external":
-                    found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+                    found += third_party_methods(name)
                     continue
                 hit = indexer.lookup_in_class(kind, name)
+                found += stored_methods(kind, name)
                 if isinstance(hit, Resolved) and not hit.detail:
                     found.append(hit.symbol)
                 elif indexer.class_scopes[kind].opaque:
                     # Not found in scope: a third-party base's method.
-                    found += [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+                    found += third_party_methods(name)
             return sorted(set(found))
         if callee.startswith(LIBRARY_METHOD):
             # The library's own method calls nothing of the project but its
@@ -1945,7 +2051,7 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
                 # Its methods are a third-party class's, or those of an
                 # in-scope class deriving from one (a logger class set with
                 # ``logging.setLoggerClass``).
-                return [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+                return third_party_methods(name)
             classes = value_classes(what[4:])
             if classes is not None:
                 found: list[str] = []
@@ -1953,8 +2059,16 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
                     hit = indexer.lookup_in_class(cls, name)
                     if isinstance(hit, Resolved) and not hit.detail:
                         found.append(hit.symbol)
-                return found
+                    found += stored_methods(cls, name)
+                return sorted(set(found))
         return by_name.get(name, [])
+
+    def third_party_methods(name: str) -> list[str]:
+        """The methods ``name`` of in-scope classes deriving from a
+        third-party class, a function stored as one included (V20)."""
+        found = [m for m in by_name.get(name, []) if derives_from_third_party(m)]
+        found += [f for f, n in as_method if n == name and f not in found]
+        return found
 
     # What may change a class attribute in place: a write of it pass 2
     # records, its module's top-level code, and (whatever the callee does)
@@ -2089,10 +2203,10 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
 
     def writing_callees(record: Pass) -> list[str]:
         """The callees of ``record`` that write what it hands them."""
-        _, _, _, _, slot, bound = record
+        _, _, _, name, slot, bound = record
         found: list[str] = []
         for callee in callees(record):
-            if writes_param(callee, slot, bound):
+            if writes_param(callee, slot, bound, name):
                 found.append(callee)
         return found
 
@@ -2110,10 +2224,10 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     def written_flavors(record: Pass) -> set[str] | None:
         """How the callees of ``record`` write what it hands them; None when
         none writes it."""
-        _, _, _, _, slot, bound = record
+        _, _, _, name, slot, bound = record
         found: set[str] | None = None
         for callee in callees(record):
-            for param in writes_param(callee, slot, bound):
+            for param in writes_param(callee, slot, bound, name):
                 found = (found or set()) | (flavors.get((callee, param)) or {"*"})
         return found
 
@@ -2133,9 +2247,33 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
         for p in passes
         if p[1].startswith(HELD_WHAT) and p[1].partition("|")[2].startswith("param:")
     ]
+    returning = _returning_calls(out, callees, slot_params)
     changed = True
     while changed:
         changed = False
+        for caller, key, record, itself, hits in returning:
+            # A parameter handed to a call whose result is written, which
+            # the callee may return (``r = wrap(p); r.x.append(1)``; V19).
+            if (caller, key) not in writes:
+                continue
+            what = record[1]
+            how = flavors[(caller, key)] or {"*"}
+            if not itself or not all(w for _, w in hits):
+                how = {"*"}
+            if what.startswith(HELD_WHAT):
+                cls, _, what = what[len(HELD_WHAT) :].partition("|")
+                if not safe.writes(cls, how):
+                    continue
+                how = {"*"}
+            if not what.startswith("param:"):
+                continue
+            target = (caller, what[len("param:") :])
+            if target not in writes:
+                writes.add(target)
+                changed = True
+            if not how <= flavors[target]:
+                flavors[target] |= how
+                changed = True
         for record in held_param_passes:
             # A parameter a fresh object holds, handed on in it: written
             # when the callee writes the object in a way that may change it.
@@ -2188,7 +2326,7 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     for caller, where, callee, name in sorted(out.computed_passes):
         record = (caller, "param:self", callee, name, RECEIVER, True)
         for c in resolved_callees(record):
-            if writes_param(c, RECEIVER, True):
+            if writes_param(c, RECEIVER, True, name):
                 out.stores.add((caller, where))
                 break
     # A parameter's attribute handed to a callee that writes the parameter
@@ -2197,7 +2335,7 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
     for caller, callee, name, slot, held, bound in sorted(out.held_passes):
         record = (caller, "param:self", callee, name, slot, bound)
         for c in resolved_callees(record):
-            if writes_param(c, slot, bound):
+            if writes_param(c, slot, bound, name):
                 out.handed.add((caller, c, held))
     module_variables: dict[str, list[str]] = defaultdict(list)
     for symbol in symbols.values():
@@ -2297,9 +2435,124 @@ def _apply_writes(indexer: Resolver) -> tuple[ClassRecord, dict[str, set[str]]]:
         how = written_flavors(record)
         for writer in _writers(caller, writing_callees(record)):
             handed_written(writer, what, record[4] == RECEIVER, how)
+    # What a call is handed that is no parameter (a module variable, an
+    # instance, a module), when the call's result is written and the callee
+    # may return it: written by the caller, by each callee that may return
+    # it and by each that writes the result for the caller (V19).
+    result_writers: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for record in param_passes:
+        if record[1].startswith(f"param:{RESULT_PARAM}"):
+            key = (record[0], record[1][len("param:") :])
+            result_writers[key] += writing_callees(record)
+    for caller, key, record, itself, hits in returning:
+        what = record[1]
+        if (caller, key) not in writes or what.startswith("param:"):
+            continue
+        how = flavors[(caller, key)] or {"*"}
+        if not itself or not all(w for _, w in hits):
+            how = {"*"}
+        if what.startswith(HELD_WHAT):
+            cls, _, what = what[len(HELD_WHAT) :].partition("|")
+            if what.startswith("param:") or not safe.writes(cls, how):
+                continue
+            how = {"*"}
+        doers = [c for c, _ in hits] + result_writers.get((caller, key), [])
+        for writer in _writers(caller, doers):
+            if what.startswith("module:"):
+                module = what[len("module:") :]
+                for m in sorted(module_variables):
+                    if m == module or m.startswith(module + "."):
+                        for variable in module_variables[m]:
+                            if writer not in (variable, m):
+                                out.edges.add(
+                                    Edge(variable, writer, EdgeKind.REFERENCES, MUTATED_BY)
+                                )
+            else:
+                handed_written(writer, what, False, how)
     _apply_held_binds(indexer, safe)
     _record_any_class_writes(out, owners)
     return class_record, links
+
+
+def _stored_method_edges(out: _Output, as_method: dict[tuple[str, str], set[str]]) -> None:
+    """An attribute nothing resolves (``self.handle``, ``LOG.handle``) may be
+    a function stored as a method of that name (``as_method``): an edge to
+    it, as the planner matches the name to every symbol of it (V20)."""
+    stored: dict[str, list[str]] = defaultdict(list)
+    for function, name in sorted(as_method):
+        stored[name].append(function)
+    if not stored:
+        return
+    for ref in sorted(out.unresolved):
+        if ref.kind == UnresolvedKind.ATTRIBUTE:
+            for function in stored.get(ref.name, ()):
+                if ref.symbol != function:
+                    out.edges.add(
+                        Edge(ref.symbol, function, EdgeKind.UNRESOLVED_NAME_MATCH, ref.detail)
+                    )
+
+
+def _returning_calls(
+    out: _Output,
+    callees: Callable[[Pass], list[str]],
+    slot_params: Callable[[str, str, bool, str], list[str]],
+) -> list[tuple[str, str, Pass, bool, list[tuple[str, bool]]]]:
+    """Each call whose result the caller uses and what it hands a callee
+    that may return it (``result_calls``): (caller, the result's
+    pseudo-parameter, the pass record, whether it is handed itself, and
+    (callee, whether it returns the object itself) for each callee that
+    may). What a function returns of its parameters (``param_returns``) is
+    closed first over the calls it returns the result of (``return
+    wrap(q)``: ``q`` when ``wrap`` returns its parameter; audit round 8,
+    V19)."""
+    returned: dict[str, dict[str, bool]] = defaultdict(dict)
+    for function, param, itself in sorted(out.param_returns):
+        old = returned[function].get(param)
+        returned[function][param] = itself if old is None else (old and itself)
+    if not returned:
+        return []
+    records: list[tuple[str, str, Pass, bool]] = []
+    for caller, what, callee, name, slot, bound, key, itself in sorted(out.result_calls):
+        records.append((caller, key, (caller, what, callee, name, slot, bound), itself))
+
+    def hits_of(record: Pass) -> list[tuple[str, bool]]:
+        _, _, _, name, slot, bound = record
+        found: list[tuple[str, bool]] = []
+        for callee in callees(record):
+            got = returned.get(callee)
+            if got:
+                for param in slot_params(callee, slot, bound, name):
+                    if param in got:
+                        found.append((callee, got[param]))
+        return found
+
+    hits = {record: hits_of(record) for _, _, record, _ in records}
+    changed = True
+    while changed:  # what a function returns of what a call it returns is handed
+        changed = False
+        for function, key, record, itself in records:
+            mine = returned.get(function)
+            if mine is None or key not in mine or not hits[record]:
+                continue
+            what = record[1]
+            part = what.startswith(HELD_WHAT)
+            if part:
+                what = what.partition("|")[2]
+            if not what.startswith("param:"):
+                continue
+            param = what[len("param:") :]
+            new = mine[key] and itself and not part and all(w for _, w in hits[record])
+            old = mine.get(param)
+            if old is None or (old and not new):
+                mine[param] = new
+                changed = True
+        if changed:
+            hits = {record: hits_of(record) for _, _, record, _ in records}
+    return [
+        (caller, key, record, itself, hits[record])
+        for caller, key, record, itself in records
+        if hits[record]
+    ]
 
 
 def _apply_library_calls(indexer: Resolver) -> None:
@@ -2667,6 +2920,38 @@ class _LoggingModel:
         self._library: dict[tuple[str, str], bool] = {}
         self._derived: dict[str, set[str] | None] = {}
         self._written: set[str] | None = None
+        self._stored: dict[tuple[str, str], set[str]] | None = None
+
+    def stored_methods(self) -> dict[tuple[str, str], set[str]]:
+        """(function, name) -> the classes a function stored on an in-scope
+        class under a callback's name (``SLog.handle = f``,
+        ``setattr(SLog, "emit", f)``: ``STORED_ROLE``) is that method of:
+        the class and its subclasses deriving from ``logging``, a handler's,
+        filter's or formatter's callback on one that is no logger, a
+        logger's on a logger class. The library calls it back (``passes``),
+        and so may the project's own code (``self.handle(record)``; audit
+        round 8, V1, V20)."""
+        if self._stored is not None:
+            return self._stored
+        indexer = self.indexer
+        out = indexer.out
+        found: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for _, role, what, holder in sorted(out.log_registered):
+            if not role.startswith(STORED_ROLE) or not what.startswith(FUNCTION_WHAT):
+                continue
+            function, name = what[len(FUNCTION_WHAT) :], role[len(STORED_ROLE) :]
+            if function not in indexer.index.symbols or function not in out.func_params:
+                continue
+            for c in sorted({holder, *indexer._descendants.get(holder, ())}):
+                bases = self._logging_bases(c)
+                if bases is not None and not bases:
+                    continue
+                if (bases is None or bases - LOGGER_FAMILY) and name in OBJECT_CALLBACKS:
+                    found[(function, name)].add(c)
+                if (bases is None or bases & LOGGER_FAMILY) and name in LOGGER_CALLBACKS:
+                    found[(function, name)].add(c)
+        self._stored = dict(found)
+        return self._stored
 
     def library_method(self, cls: str, name: str) -> bool:
         """Whether ``self.<name>()`` in a method of ``cls`` (a plain
@@ -2820,7 +3105,7 @@ class _LoggingModel:
         self,
         passes: list[Pass],
         callees: Callable[[Pass], list[str]],
-        slot_params: Callable[[str, str, bool], list[str]],
+        slot_params: Callable[[str, str, bool, str], list[str]],
     ) -> list[Pass]:
         """The pass records of every log site's callbacks (see the class
         docstring), and ``links``."""
@@ -2842,9 +3127,9 @@ class _LoggingModel:
         while changed:  # what is handed to a parameter registered in turn
             changed = False
             for record in passes:
-                caller, what, _, _, slot, bound = record
+                caller, what, _, name, slot, bound = record
                 for callee in callees(record):
-                    for param in slot_params(callee, slot, bound):
+                    for param in slot_params(callee, slot, bound, name):
                         for role, holder in sorted(through.get((callee, param), ())):
                             if what.startswith("param:"):
                                 key = (caller, what[len("param:") :])
@@ -2864,13 +3149,9 @@ class _LoggingModel:
         # Callback -> the method name it is stored under on a class (it runs
         # bound, its first parameter the instance).
         stored: dict[str, str] = {}
-        stored_on: list[tuple[str, str, str]] = []
         for role, what, holder in sorted(registered):
             if role.startswith(STORED_ROLE):
-                function = what[len(FUNCTION_WHAT) :]
-                if function in symbols and function in params:
-                    stored_on.append((function, role[len(STORED_ROLE) :], holder))
-                continue
+                continue  # ``stored_methods``
             if what.startswith(FUNCTION_WHAT):
                 function = what[len(FUNCTION_WHAT) :]
                 if function in symbols:
@@ -2917,17 +3198,14 @@ class _LoggingModel:
                 hit = indexer.lookup_in_class(cls, name)
                 if isinstance(hit, Resolved) and not hit.detail and hit.symbol in params:
                     loggers[hit.symbol].add(cls)
-        for function, name, cls in stored_on:
-            for c in sorted({cls, *indexer._descendants.get(cls, ())}):
+        for (function, name), classes in sorted(self.stored_methods().items()):
+            stored[function] = name
+            for c in sorted(classes):
                 bases = self._logging_bases(c)
-                if bases is not None and not bases:
-                    continue
                 if (bases is None or bases - LOGGER_FAMILY) and name in OBJECT_CALLBACKS:
                     targets[function].add(f"instance::{c}")
-                    stored[function] = name
                 if (bases is None or bases & LOGGER_FAMILY) and name in LOGGER_CALLBACKS:
                     loggers[function].add(c)
-                    stored[function] = name
         if not targets and not functions and not loggers:
             return []
         contents: dict[str, set[tuple[str, str]]] = defaultdict(set)

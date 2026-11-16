@@ -357,6 +357,14 @@ class _Output:
     # kinds); a write of the parameter when ``writes._HeldSafety`` says
     # writing the object so may change what it holds (audit round 8, V1, V7).
     held_param_writes: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # What a call whose result the caller uses is handed: (caller, what,
+    # callee, name, slot, bound, the result's pseudo-parameter
+    # (``writes.RESULT_PARAM``), whether it is handed itself); and (function,
+    # parameter or pseudo-parameter, whether the object itself) for each
+    # parameter a ``return`` may hand back. A write of the result writes what
+    # the callee may return of what it was handed (audit round 8, V19).
+    result_calls: set[tuple[str, str, str, str, str, bool, str, bool]] = field(default_factory=set)
+    param_returns: set[tuple[str, str, bool]] = field(default_factory=set)
     # (caller, kind, receiver, method): a call that may log a record through
     # the logging library: ``lib`` (a library logger: ``logging.info``,
     # ``logging.getLogger(n).info``), ``var`` (a method of a module variable,
@@ -443,6 +451,8 @@ class _Output:
         self.param_flavors |= other.param_flavors
         self.whole_passes |= other.whole_passes
         self.held_param_writes |= other.held_param_writes
+        self.result_calls |= other.result_calls
+        self.param_returns |= other.param_returns
         self.log_calls |= other.log_calls
         self.log_contents |= other.log_contents
         self.log_registered |= other.log_registered
@@ -613,6 +623,8 @@ def _output_to_dict(out: _Output) -> dict:
         "param_flavors": sorted(list(f) for f in out.param_flavors),
         "whole_passes": sorted(list(p) for p in out.whole_passes),
         "held_param_writes": sorted(list(w) for w in out.held_param_writes),
+        "result_calls": sorted(list(c) for c in out.result_calls),
+        "param_returns": sorted(list(r) for r in out.param_returns),
         "log_calls": sorted(list(c) for c in out.log_calls),
         "log_contents": sorted(list(c) for c in out.log_contents),
         "log_registered": sorted(list(r) for r in out.log_registered),
@@ -726,6 +738,10 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.param_flavors = {(f, p, h) for f, p, h in data["param_flavors"]}
     out.whole_passes = {(c, w, e, n, s, bool(b)) for c, w, e, n, s, b in data["whole_passes"]}
     out.held_param_writes = {(f, p, c, h) for f, p, c, h in data["held_param_writes"]}
+    out.result_calls = {
+        (c, w, e, n, s, bool(b), k, bool(i)) for c, w, e, n, s, b, k, i in data["result_calls"]
+    }
+    out.param_returns = {(f, p, bool(w)) for f, p, w in data["param_returns"]}
     out.log_calls = {(c, k, r, m) for c, k, r, m in data["log_calls"]}
     out.log_contents = {(c, k, w) for c, k, w in data["log_contents"]}
     out.log_registered = {(c, r, w, h) for c, r, w, h in data["log_registered"]}

@@ -791,6 +791,73 @@ def test_v1_a_function_stored_on_a_logging_class_runs_as_its_callback(repo, case
     assert _static(repo, files, change) == want
 
 
+STORED_CALLED_CASES = {
+    # (the class's base, the name stored, the call the conftest starts making,
+    # what the stored function changes)
+    "a logger's handle on self": ("logging.Logger", "handle", "LOG.emit_it(1)", "SEEN"),
+    "a handler's emit on self": ("logging.Handler", "emit", "LOG.emit_it(1)", "SEEN"),
+    "a handler's emit on an instance": ("logging.Handler", "emit", "go(1)", "SEEN"),
+    "a handler's emit writing the instance": ("logging.Handler", "emit", "go(1)", "self.seen"),
+    "a filter on self": ("logging.Filter", "filter", "LOG.emit_it(1)", "SEEN"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STORED_CALLED_CASES))
+def test_v20_a_function_stored_as_a_logging_callback_called_by_project_code(repo, case):
+    """``SLog.emit = _record`` makes ``_record`` the ``emit`` of every
+    ``SLog``: project code calling it by that name (``self.emit(record)`` in
+    a method of the class, ``LOG.emit(record)``) runs it, and what it
+    changes, a module list or the instance itself, changes; the conftest
+    that starts calling such code changes what ``seen()`` reads (audit round
+    8, V20: a miss before 0.6.0)."""
+    base, name, call, written = STORED_CALLED_CASES[case]
+    make = "SLog('x')" if base == "logging.Logger" else "SLog()"
+    log = (
+        "import logging\n\nSEEN = []\n\n\n"
+        f"class SLog({base}):\n    seen = []\n\n    def emit_it(self, record):\n"
+        f"        self.{name}(record)\n\n\n"
+        f"def _record(self, record):\n    {written}.append(record)\n\n\n"
+        f"SLog.{name} = _record\nLOG = {make}\n\n\n"
+        f"def go(record):\n    LOG.{name}(record)\n\n\n"
+        "def seen():\n    return len(SEEN) + len(LOG.seen)\n"
+    )
+    files = {
+        "pkg/log.py": log,
+        "tests/sub/__init__.py": "",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/sub/conftest.py": "from pkg.log import LOG, go  # noqa\n\nprint(1)\n",
+        "tests/test_seen.py": (
+            "from pkg.log import seen\n\n\ndef test_seen():\n    assert seen() >= 0\n"
+        ),
+    }
+    change = {"tests/sub/conftest.py": f"from pkg.log import LOG, go  # noqa\n\n{call}\n"}
+    assert _static(repo, files, change) == {
+        "tests/sub/test_a.py::test_a",
+        "tests/test_seen.py::test_seen",
+    }
+
+
+def test_v20_a_change_to_a_stored_callback_reaches_its_callers(repo):
+    """A change to the function stored as ``SLog.emit`` reaches a test and a
+    benchmark that call ``emit`` on an ``SLog`` (V20)."""
+    log = (
+        "import logging\n\nSEEN = []\n\n\nclass SLog(logging.Handler):\n    pass\n\n\n"
+        "def _record(self, record):\n    SEEN.append(BODY)\n\n\nSLog.emit = _record\n\n\n"
+        "def make():\n    return SLog()\n"
+    )
+    files = {
+        "pkg/log.py": log.replace("BODY", "record"),
+        "pkg/use.py": "from pkg.log import make\n\n\ndef go(r):\n    h = make()\n    h.emit(r)\n",
+        "tests/test_go.py": "from pkg.use import go\n\n\ndef test_go():\n    go(1)\n",
+        "benchmarks/bench_go.py": "from pkg.use import go\n\n\ndef time_go():\n    go(1)\n",
+    }
+    bench = asv_target("bench_go.time_go", "benchmarks.bench_go.time_go")
+    base = repo.commit({**UNRELATED_BASE, **files})
+    head = repo.commit({"pkg/log.py": log.replace("BODY", "2")})
+    plan = repo.plan(base, head, [UNRELATED_BENCH, bench], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_go.py::test_go", "bench_go.time_go"}
+
+
 @pytest.mark.parametrize(
     ("base", "reaches"),
     [
@@ -944,6 +1011,121 @@ def test_an_element_of_a_parameter_handed_on_is_written_by_the_callee(repo, case
         "tests/sub/test_a.py::test_a",
         "tests/test_total.py::test_total",
     }
+
+
+RETURNED_STATE = (
+    "CONFIG = {'items': []}\n\n\nclass Builder:\n    def __init__(self):\n"
+    "        self.items = []\n\n    def tag(self):\n        return self\n\n"
+    "    def add(self, y):\n        self.items.append(y)\n\n\nBUILDER = Builder()\n\n\n"
+    "def count():\n    return len(CONFIG['items']) + len(BUILDER.items)\n"
+)
+RETURNED_CASES = {
+    # (the module of helpers, the call the conftest starts making, reaches)
+    "its parameter": (
+        "def wrap(p):\n    return p\n\n\ndef touch(p):\n    r = wrap(p)\n"
+        "    r['items'].append(1)\n",
+        "touch(CONFIG)",
+        True,
+    ),
+    "through a further call": (
+        "def wrap(p):\n    return p\n\n\ndef rewrap(q):\n    return wrap(q)\n\n\n"
+        "def touch(p):\n    rewrap(p)['items'].append(1)\n",
+        "touch(CONFIG)",
+        True,
+    ),
+    "part of its parameter": (
+        "def items_of(p):\n    return p['items']\n\n\ndef touch(p):\n    items_of(p).append(1)\n",
+        "touch(CONFIG)",
+        True,
+    ),
+    "a conditional return": (
+        "def pick(p, q=None):\n    if q is not None:\n        return q\n    return p\n\n\n"
+        "def touch(p):\n    pick(p)['items'].append(1)\n",
+        "touch(CONFIG)",
+        True,
+    ),
+    "handed to a writer": (
+        "def wrap(p):\n    return p\n\n\ndef fill(d):\n    d['items'].append(1)\n\n\n"
+        "def touch(p):\n    fill(wrap(p))\n",
+        "touch(CONFIG)",
+        True,
+    ),
+    "a module variable": (
+        "from pkg.state import CONFIG\n\n\ndef wrap(p):\n    return p\n\n\n"
+        "def touch():\n    wrap(CONFIG)['items'].append(1)\n",
+        "touch()",
+        True,
+    ),
+    "a method returning self": (
+        "def touch(b):\n    b.tag().add(1)\n",
+        "touch(BUILDER)",
+        True,
+    ),
+    # A fresh value returned: writing it changes nothing the caller handed.
+    "a fresh value": (
+        "def wrap(p):\n    return {'items': list(p['items'])}\n\n\ndef touch(p):\n"
+        "    wrap(p)['items'].append(1)\n",
+        "touch(CONFIG)",
+        False,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RETURNED_CASES))
+def test_v19_a_parameter_returned_and_written_by_the_caller(repo, case):
+    """``r = wrap(p); r['items'].append(1)`` with ``wrap`` returning ``p``
+    changes what the caller handed in ``p``: so does a result returned
+    through another call, part of the parameter returned, one of several
+    returns, a result handed to a writer and a method returning ``self``
+    (``b.tag().add(1)``); writing a fresh value changes nothing handed. The
+    conftest that starts calling ``touch`` changes what ``count()`` reads
+    (audit round 8, V19: a miss before 0.6.0)."""
+    helpers, call, reaches = RETURNED_CASES[case]
+    files = {
+        "pkg/state.py": RETURNED_STATE,
+        "pkg/helpers.py": helpers,
+        "tests/sub/__init__.py": "",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/sub/conftest.py": (
+            "from pkg.helpers import touch  # noqa\n"
+            "from pkg.state import BUILDER, CONFIG  # noqa\n\nprint(CONFIG)\n"
+        ),
+        "tests/test_count.py": (
+            "from pkg.state import count\n\n\ndef test_count():\n    assert count() >= 0\n"
+        ),
+    }
+    change = {
+        "tests/sub/conftest.py": (
+            "from pkg.helpers import touch  # noqa\n"
+            f"from pkg.state import BUILDER, CONFIG  # noqa\n\n{call}\n"
+        )
+    }
+    reader = {"tests/test_count.py::test_count"} if reaches else set()
+    assert _static(repo, files, change) == {"tests/sub/test_a.py::test_a"} | reader
+
+
+def test_v19_a_returned_parameter_written_by_a_changed_function(repo):
+    """The change is the writer's own: ``touch`` starts writing what
+    ``wrap`` hands back, so the test calling ``touch(CONFIG)`` and a
+    benchmark that only reads ``CONFIG`` are selected (V19, the audit's
+    repro)."""
+    helpers = "def wrap(p):\n    return p\n\n\ndef touch(p):\n    r = wrap(p)\n    WRITE\n"
+    files = {
+        "pkg/state.py": RETURNED_STATE,
+        "pkg/helpers.py": helpers.replace("WRITE", "return r"),
+        "tests/test_a.py": (
+            "from pkg.helpers import touch\nfrom pkg.state import CONFIG\n\n\n"
+            "def test_a():\n    touch(CONFIG)\n"
+        ),
+        "benchmarks/bench_count.py": (
+            "from pkg.state import CONFIG\n\n\ndef time_count():\n    len(CONFIG['items'])\n"
+        ),
+    }
+    bench = asv_target("bench_count.time_count", "benchmarks.bench_count.time_count")
+    base = repo.commit({**UNRELATED_BASE, **files})
+    head = repo.commit({"pkg/helpers.py": helpers.replace("WRITE", "r['items'].append(1)")})
+    plan = repo.plan(base, head, [UNRELATED_BENCH, bench], discover_runners=["pytest"])
+    assert selected(plan) == {"tests/test_a.py::test_a", "bench_count.time_count"}
 
 
 HOLDER = (
