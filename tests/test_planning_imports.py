@@ -1210,6 +1210,134 @@ def test_v10_what_a_loader_installs_under_a_name_it_reads_back(repo, case):
     assert selected(plan) == expected
 
 
+def test_v10_a_module_passed_in_may_be_any_module(repo):
+    """``def install(mod): sys.modules['extplug'] = mod``, called with
+    ``pkg.impl``: what is installed is whatever the caller passes, so code
+    importing ``extplug`` sees any change (review of audit round 8, V10)."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/impl.py": "def g():\n    return 1\n",
+        "pkg/other.py": "def f():\n    return 1\n",
+        "pkg/inst.py": "import sys\n\n\ndef install(mod):\n    sys.modules['extplug'] = mod\n",
+        "tests/__init__.py": "",
+        "tests/conftest.py": "import pkg.impl\nfrom pkg.inst import install\n\ninstall(pkg.impl)\n",
+        "tests/test_x.py": "import extplug\n\n\ndef test_x():\n    assert extplug.g()\n",
+        "tests/test_y.py": "def test_y():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import f\n\n\ndef time_o():\n    f()\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/impl.py": "def g():\n    return 2\n"})
+    targets = [
+        py_target("t::test_x", "tests.test_x.test_x", "tests.test_x"),
+        py_target("t::test_y", "tests.test_y.test_y", "tests.test_y"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert selected(plan) == {"t::test_x"}
+
+
+@pytest.mark.parametrize("key", ["'pkg.sub'", "name"])
+def test_v10_dunder_import_of_a_dotted_name_installs_the_top_package(repo, key):
+    """``sys.modules['pkg.sub'] = importlib.__import__('pkg.sub')`` puts
+    ``pkg`` itself under ``pkg.sub``: ``from pkg import sub`` gets ``pkg``,
+    and depends on its members (review of audit round 8, V10)."""
+    value = key if key == "name" else "'pkg.sub'"
+    files = {
+        "pkg/__init__.py": "def helper():\n    return 1\n",
+        "pkg/sub.py": "def helper():\n    return 9\n",
+        "tests/__init__.py": "",
+        "tests/conftest.py": (
+            "import importlib\nimport sys\n\n\n"
+            f"def _alias(name):\n    sys.modules[{key}] = importlib.__import__({value})\n\n\n"
+            "_alias('pkg.sub')\n"
+        ),
+        "tests/test_s.py": "from pkg import sub\n\n\ndef test_s():\n    assert sub.helper()\n",
+        "tests/test_y.py": "def test_y():\n    pass\n",
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_s.py": "from pkg import sub\n\n\ndef time_s():\n    sub.helper()\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/__init__.py": "def helper():\n    return 2\n"})
+    targets = [
+        py_target("t::test_s", "tests.test_s.test_s", "tests.test_s"),
+        py_target("t::test_y", "tests.test_y.test_y", "tests.test_y"),
+        asv_target("bench.time_s", "benchmarks.bench_s.time_s"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert {"t::test_s", "bench.time_s"} <= selected(plan)
+    assert "t::test_y" not in selected(plan)
+
+
+def test_v10_a_name_formatted_after_the_module_name_is_a_prefix(repo):
+    """``"{0}.{1}".format(__name__, name)``, also through a local name, is
+    a name under this module: installing a module from ``sys.modules``
+    under it (pip's ``vendored``) is no install under every name, so a
+    reader of ``json`` does not see every change."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/vendor.py": (
+            "import sys\n\n\n"
+            "def vendored(name):\n"
+            "    full = '{0}.{1}'.format(__name__, name)\n"
+            "    sys.modules[full] = sys.modules[name]\n"
+        ),
+        "pkg/other.py": "def f():\n    return 1\n",
+        "pkg/reader.py": "import json\n\n\ndef read():\n    return json.dumps(1)\n",
+        "tests/__init__.py": "",
+        "tests/test_r.py": "from pkg.reader import read\n\n\ndef test_r():\n    read()\n",
+        "tests/test_v.py": (
+            "from pkg.vendor import vendored\n\n\ndef test_v():\n    vendored('os')\n"
+        ),
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import f\n\n\ndef time_o():\n    f()\n",
+    }
+    base = repo.commit(files)
+    head = repo.commit({"pkg/other.py": "def f():\n    return 2\n"})
+    targets = [
+        py_target("t::test_r", "tests.test_r.test_r", "tests.test_r"),
+        py_target("t::test_v", "tests.test_v.test_v", "tests.test_v"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert selected(plan) == {"bench.time_o"}
+
+
+@pytest.mark.parametrize("changed", ["plugin", "other"])
+def test_import_module_of_a_name_formatted_after_the_module_name(repo, changed):
+    """``import_module("{0}.{1}".format(__name__, name))`` may import any
+    module under this package's name, and only those."""
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/plugins/__init__.py": (
+            "import importlib\n\n\n"
+            "def load(name):\n"
+            "    return importlib.import_module('{0}.{1}'.format(__name__, name))\n"
+        ),
+        "pkg/plugins/a.py": "def run():\n    return 1\n",
+        "pkg/other.py": "def f():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_p.py": (
+            "from pkg.plugins import load\n\n\ndef test_p():\n    assert load('a').run()\n"
+        ),
+        "benchmarks/__init__.py": "",
+        "benchmarks/bench_o.py": "from pkg.other import f\n\n\ndef time_o():\n    f()\n",
+    }
+    base = repo.commit(files)
+    if changed == "plugin":
+        head = repo.commit({"pkg/plugins/a.py": "def run():\n    return 2\n"})
+        expected = {"t::test_p"}
+    else:
+        head = repo.commit({"pkg/other.py": "def f():\n    return 2\n"})
+        expected = {"bench.time_o"}
+    targets = [
+        py_target("t::test_p", "tests.test_p.test_p", "tests.test_p"),
+        asv_target("bench.time_o", "benchmarks.bench_o.time_o"),
+    ]
+    plan = repo.plan(base, head, targets, source_roots=["."])
+    assert selected(plan) == expected
+
+
 def test_v10_a_name_installed_with_a_prefix(repo):
     """Installed under ``'pkgcompat' + name``: ``import pkgcompat`` may get
     it. Under a name only a prefix bounds, the module counts as handed on

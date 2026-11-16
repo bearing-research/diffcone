@@ -218,6 +218,7 @@ _FRESH_MODULES = frozenset({"types.ModuleType"})
 # Calls whose result is a copy of the module a spec names: its code is that
 # module's, so what is written to it is what that module's code then reads.
 _MODULE_COPIES = frozenset({"importlib.util.module_from_spec"})
+_DUNDER_IMPORTS = frozenset({"__import__", "importlib.__import__"})
 _FIND_SPEC = frozenset({"importlib.util.find_spec"})
 _SPEC_FROM_FILE = frozenset({"importlib.util.spec_from_file_location"})
 
@@ -858,7 +859,8 @@ class _Scanner:
         if names is None:
             from diffcone.indexer.scopes import _resolve_relative_name, _string_prefix
 
-            prefix = _string_prefix(expr, self._own_name())
+            built = self._single_value(expr) if isinstance(expr, ast.Name) else None
+            prefix = _string_prefix(built if built is not None else expr, self._own_name())
             if prefix is not None and prefix.startswith("."):
                 own = self._package_name(package)
                 prefix = _resolve_relative_name(prefix, own, prefix=True) if own else None
@@ -937,6 +939,18 @@ class _Scanner:
             return self._module_name(first)
         canonical = self._canonical(func)
         names = self._matching(canonical, _HANDLE_CALLS)
+        if names & _DUNDER_IMPORTS:
+            # ``__import__("a.b")`` (``importlib.__import__`` too) is the top
+            # package ``a``, unless given a fromlist.
+            found, sources = self._module_name(first)
+            fromlist = node.args[3] if len(node.args) > 3 else None
+            for k in node.keywords:
+                if k.arg == "fromlist":
+                    fromlist = k.value
+            empty = isinstance(fromlist, (ast.List, ast.Tuple)) and not fromlist.elts
+            if fromlist is None or empty:
+                found = {n if n == ANY else n.split(".")[0] for n in found}
+            return found, sources
         if names & _IMPORT_CALLS:
             package = node.args[1] if len(node.args) > 1 else None
             for k in node.keywords:
@@ -954,16 +968,6 @@ class _Scanner:
                     return ({resolved}, ()) if resolved else ({ANY}, ())
                 return {ANY}, ()
             return self._module_name(first, package)
-        if "__import__" in names:
-            found, sources = self._module_name(first)
-            fromlist = node.args[3] if len(node.args) > 3 else None
-            for k in node.keywords:
-                if k.arg == "fromlist":
-                    fromlist = k.value
-            empty = isinstance(fromlist, (ast.List, ast.Tuple)) and not fromlist.elts
-            if fromlist is None or empty:
-                found = {n if n == ANY else n.split(".")[0] for n in found}
-            return found, sources
         if names & {"inspect.getmodule", "runpy.run_path", "runpy.run_module"}:
             return {ANY}, ()
         if canonical and canonical <= _FRESH_MODULES:
@@ -1277,6 +1281,10 @@ class _Scanner:
             arg = spec.args[0]
         elif not names & _IMPORT_CALLS:
             return False
+        elif names & _DUNDER_IMPORTS and "." in (_constant(arg) or "."):
+            # ``__import__("a.b")`` is the top package ``a``: the module the
+            # name finds only for a literal with no dot.
+            return False
         return self._same_name(arg, key)
 
     def _same_name(self, a: ast.expr, b: ast.expr) -> bool:
@@ -1341,9 +1349,10 @@ class _Scanner:
         is ``+``, what the installing code puts on it; a binding reading
         ``sys.modules`` under the same name, ``module =
         sys.modules.get(name)``, is the module already there, ``=``). Nothing
-        (no ``>`` source) when the value is anything else: an object the
-        installing code builds (its references say what it is made of), a
-        parameter."""
+        (no ``>`` source) when the value is an object the installing code
+        builds (a call or a literal: its references say what it is made of);
+        ``*`` when it is anything else, a parameter included (any module may
+        be passed in)."""
         if value is None:
             return (), ()
         root = self._root_of(value)
@@ -1355,8 +1364,45 @@ class _Scanner:
             if root is None or (bound is not None and SELF in bound[0]):
                 root = bound
         if root is None:
-            return (), ()
+            if self._built(value):
+                return (), ()  # built here: what its references say
+            # A parameter (``def install(mod): sys.modules[name] = mod``), a
+            # name bound otherwise, an item or attribute nothing bounds: any
+            # module may be installed (audit round 8, V10 review).
+            return (">" + ANY,), ()
         return tuple(sorted(">" + t for t in root[0])), root[1]
+
+    _BUILT = (ast.Call, ast.Constant, ast.Dict, ast.List, ast.Tuple, ast.Set)
+
+    def _built(self, value: ast.expr) -> bool:
+        """Whether ``value`` is an object the code builds: a call or a
+        literal, or a local name (no parameter) every binding of which
+        assigns one (``fake = SimpleNamespace(...)``)."""
+        if isinstance(value, self._BUILT):
+            return True
+        if not isinstance(value, ast.Name):
+            return False
+        scope = self._scope_of(value)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if value.id in {a.arg for a in ast.walk(scope.args) if isinstance(a, ast.arg)}:
+                return False
+        binds = [
+            n
+            for n in _own_nodes(scope)
+            if (isinstance(n, ast.Name) and n.id == value.id and not isinstance(n.ctx, ast.Load))
+            or (isinstance(n, ast.alias) and (n.asname or n.name.split(".")[0]) == value.id)
+            or (isinstance(n, (ast.Global, ast.Nonlocal)) and value.id in n.names)
+        ]
+        for bind in binds:
+            assign = self.parents.get(id(bind))
+            if not (
+                isinstance(bind, ast.Name)
+                and isinstance(assign, ast.Assign)
+                and any(t is bind for t in assign.targets)
+                and isinstance(assign.value, self._BUILT)
+            ):
+                return False
+        return bool(binds)
 
     def _bound_roots(
         self, value: ast.Name, key: ast.expr | None

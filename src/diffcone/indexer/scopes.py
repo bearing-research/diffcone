@@ -350,7 +350,8 @@ def _string_prefix(expr: ast.expr, own: str | None = None) -> str | None:
     with text, ``"pkg." + name``, ``"pkg.%s" % name`` or ``"pkg.{}".format(name)``.
     With ``own`` (the module's name, when ``__name__`` is the builtin one),
     a leading ``__name__`` is that text (``f"{__name__}.{name}"``,
-    ``__name__ + "." + name``). None when the string does not start with a
+    ``__name__ + "." + name``, ``"{0}.{1}".format(__name__, name)``). None
+    when the string does not start with a
     literal."""
     if isinstance(expr, ast.JoinedStr):
         if expr.values and isinstance(expr.values[0], ast.Constant):
@@ -381,7 +382,17 @@ def _string_prefix(expr: ast.expr, own: str | None = None) -> str | None:
         and isinstance(expr.func.value, ast.Constant)
         and isinstance(expr.func.value.value, str)
     ):
-        return expr.func.value.value.split("{", 1)[0] or None
+        template = expr.func.value.value
+        for lead in ("{}", "{0}"):
+            # ``"{0}.{1}".format(__name__, name)``: this module's name first.
+            if (
+                own is not None
+                and template.startswith(lead)
+                and expr.args
+                and _is_own_name(expr.args[0])
+            ):
+                return own + template[len(lead) :].split("{", 1)[0]
+        return template.split("{", 1)[0] or None
     return None
 
 

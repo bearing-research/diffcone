@@ -1299,7 +1299,10 @@ W18):
   what the object may be (`>` sources: an import, a handle, an alias, a
   local name every binding of which is one; `module_from_spec` of a file
   nothing bounds is any module, `types.ModuleType` what the installing
-  code puts on it; an object the code builds or receives, nothing). An
+  code puts on it; an object the code builds, a call or a literal, nothing;
+  anything else, a parameter included (`def install(mod): sys.modules[n]
+  = mod`), any module; `__import__("a.b")`, `importlib.__import__` too, is
+  the top package `a` without a fromlist). An
   in-scope module or symbol installed gets an edge `installs in
   sys.modules` from the installing code; the planner makes one node per
   installing code (`<code>.<installs>`) depending on each installed object,
@@ -1331,9 +1334,13 @@ W18):
   one a binding of which reads `sys.modules` under the same name (`module
   = sys.modules.get(name)`, then `types.ModuleType(name)` when missing:
   `=` and `+`). The name `sys.modules[spec.name]` installs under is the
-  one `spec_from_file_location` or `find_spec` was given. Discovery reads `SourceIndex.installed_names` (name, `PREFIX*` or `*` ->
-  the in-scope objects, `*` for anything else) for `pytest_plugins` and
-  `-p` entries no module of the roots has.
+  one `spec_from_file_location` or `find_spec` was given. Discovery reads
+  `SourceIndex.installed_names` (name, `PREFIX*` or `*` -> the in-scope
+  objects, `*` for anything else, decided per install: what code installs
+  under one name says nothing of another) for `pytest_plugins` and `-p`
+  entries no module of the roots has. Evidence planning follows none of
+  these edges: the record holds what ran, an installed module's code and
+  the lookups on it included.
 - *A namespace*: `f.__globals__` is that of the module `f` is defined in
   (re-exports followed; this module's for a function it defines by `def`),
   and a frame's `f_globals` or `f_locals` (its globals at module level), or
@@ -1383,8 +1390,9 @@ a match capture, and a `global` or `nonlocal` declaration in the scope or in
 a function nested in it. Each candidate is
 resolved like `x.<candidate>` or an import. A string built at runtime with a
 literal prefix (`f"attr.{name}"`, `"attr." + name`, `"attr.%s" % name`,
-`"attr.{}".format(name)`) bounds the candidates to what carries that
-prefix: `import_module` expands to `imports` edges to every in-scope module
+`"attr.{}".format(name)`, and this module's name first: `f"{__name__}.{x}"`,
+`"{0}.{1}".format(__name__, x)`) bounds the candidates to what carries that
+prefix (an install in `sys.modules` also through a local name bound once): `import_module` expands to `imports` edges to every in-scope module
 under it (a prefix matching no in-scope module is an external reference),
 and `getattr` to every in-scope symbol name starting with it. When the name
 is one of the enclosing function's parameters, the literal strings that every resolved
@@ -2537,7 +2545,11 @@ Further rules (pre-release audit, round 3):
   in `sys.modules` (`sys.modules["myplugin"] = impl`; audit round 8, V10)
   is each in-scope module installed under it; an object that is none is
   the unknown dependency `plugin:<name>` of every test, reported
-  (`plugin_installed`).
+  (`plugin_installed`). An install adds to the name, never replaces it: a
+  file of that name outside the roots is still `plugin_outside_roots`
+  (pytest imports it when the install has not run). Under a name nothing
+  bounds (`sys.modules[name] = ...`) only the in-scope objects count, for
+  every plugin entry.
 
 Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),

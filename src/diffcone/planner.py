@@ -1341,13 +1341,23 @@ def plan_from_indexes(
     # for the other tests (the isolation assumption), and code whose install
     # is undone after the test (``installs in sys.modules for the test``;
     # V11).
+    # One unsorted pass collects the install edges; what follows walks them
+    # in sorted order, and nothing when there are none.
     installs: dict[str, set[str]] = defaultdict(set)
     for_test: set[str] = set()
-    for edge in sorted(union):
-        if edge_mark(edge) in (INSTALLS, INSTALLS_FOR_TEST):
+    any_installs: set[str] = set()
+    installed_readers: list[tuple[Edge, tuple[str, ...]]] = []
+    for edge, revs in union.items():
+        mark = edge_mark(edge)
+        if mark in (INSTALLS, INSTALLS_FOR_TEST):
             installs[edge.source].add(edge.target)
-        if edge_mark(edge) == INSTALLS_FOR_TEST:
-            for_test.add(edge.source)
+            if mark == INSTALLS_FOR_TEST:
+                for_test.add(edge.source)
+        elif mark == INSTALLS_ANY:
+            any_installs.add(edge.source)
+        elif mark in (INSTALLED, INSTALLED_ANYWHERE):
+            installed_readers.append((edge, revs))
+    installed_readers.sort()
     for writer, objects in sorted(installs.items()):
         node = f"{writer}.<installs>"
         for obj in sorted(objects):
@@ -1365,8 +1375,8 @@ def plan_from_indexes(
                 Edge(writer, node, EdgeKind.REFERENCES, "what it installs in sys.modules"),
                 ("base", "head"),
             )
-    for edge, revs in sorted(union.items()):
-        if edge_mark(edge) in (INSTALLED, INSTALLED_ANYWHERE) and edge.target in installs:
+    for edge, revs in installed_readers if installs else ():
+        if edge.target in installs:
             graph.add(
                 Edge(
                     edge.source,
@@ -1530,9 +1540,8 @@ def plan_from_indexes(
     # module): what depends on it through an ``installed`` edge, and the
     # code itself when only the tests running it see the install, read any
     # module there, and see any change (audit round 8, V10).
-    any_installs = {e.source for e in union if edge_mark(e) == INSTALLS_ANY}
-    for edge, revs in sorted(union.items()):
-        if edge_mark(edge) in (INSTALLED, INSTALLED_ANYWHERE) and edge.target in any_installs:
+    for edge, revs in installed_readers if any_installs else ():
+        if edge.target in any_installs:
             dynamic_symbols.setdefault(edge.source, revs)
             unbounded_dynamic.setdefault(edge.source, "installed:" + edge.target)
     for writer in sorted(any_installs & (isolated | for_test)):
