@@ -263,6 +263,9 @@ from diffcone.model import (
     GRAPH_HANDLE,
     INSTALLED,
     INSTALLED_ANYWHERE,
+    INSTALLS,
+    INSTALLS_ANY,
+    INSTALLS_FOR_TEST,
     MUTATED_BY,
     OPAQUE_ATTRIBUTE,
     REBINDS,
@@ -393,6 +396,12 @@ class SiteKind(StrEnum):
     ELSEWHERE = "elsewhere"  # on an object from anywhere
     IMPORT = "import"  # a module named at run time
     ANY = "any"  # eval/exec/run_path
+
+
+# Edge marks of installs in ``sys.modules`` evidence planning does not follow.
+_INSTALL_MARKS = frozenset(
+    {INSTALLED, INSTALLED_ANYWHERE, INSTALLS, INSTALLS_ANY, INSTALLS_FOR_TEST}
+)
 
 
 def _site_kind(detail: str) -> SiteKind:
@@ -695,8 +704,12 @@ class _Observers:
         for index in (c_index, other):
             for edge in index.edges:
                 mark = edge_mark(edge)
-                if mark in (INSTALLED, INSTALLED_ANYWHERE):
-                    continue  # static planning's: the record holds what ran
+                if mark in _INSTALL_MARKS:
+                    # Static planning's (what an install in ``sys.modules``
+                    # puts there, who reads it): the record holds what ran,
+                    # an installed module's code and the lookups on it
+                    # included, as for W25.
+                    continue
                 if edge.kind in (EdgeKind.REFERENCES, EdgeKind.DECLARED):
                     self.readers_of[edge.target].add(edge.source)
                     source_symbol = index.symbols.get(edge.source)

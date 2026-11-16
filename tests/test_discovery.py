@@ -1097,6 +1097,90 @@ def test_v10_a_module_made_under_any_name_is_no_plugin_outside_the_roots(repo):
     assert "plugin_installed" not in [n.kind for n in result.notes]
 
 
+V10_OPS = {
+    "src/pkg/__init__.py": "",
+    "src/pkg/ops.py": "import os\n\n\ndef add(a, b):\n    return a + b + int(os.environ['X'])\n",
+    "tests/test_ops.py": (
+        "from pkg.ops import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    ),
+}
+V10_PLUGIN_ROOTS = ["src", "tests", "benchmarks=benchmarks"]
+
+
+@pytest.mark.parametrize(
+    "install",
+    [
+        "",
+        "def register(name):\n    sys.modules[name] = pkg.ops\n",
+        "sys.modules['support.plugin'] = pkg.ops\n",
+    ],
+    ids=["no-install", "any-name", "the-name"],
+)
+def test_v10_an_install_adds_to_the_plugin_file_of_its_name(repo, install):
+    """``pytest_plugins = ['support.plugin']`` names a file outside the
+    roots: pytest imports it unless the install ran first. Code installing
+    a module under that name, or under any name, adds what it installs and
+    keeps the file's unknown (review of audit round 8, V10)."""
+    files = {
+        **BENCH,
+        **V10_OPS,
+        "support/__init__.py": "",
+        "support/plugin.py": OUTSIDE_PLUGIN.format(0),
+        "tests/conftest.py": "pytest_plugins = ['support.plugin']\n",
+    }
+    if install:
+        files["src/pkg/reg.py"] = "import sys\n\nimport pkg.ops\n\n\n" + install
+    base = repo.commit(files)
+    head = repo.commit({"support/plugin.py": OUTSIDE_PLUGIN.format(1)})
+    plan = repo.plan(
+        base,
+        head,
+        [BENCH_TARGET],
+        source_roots=V10_PLUGIN_ROOTS,
+        discover_runners=["pytest"],
+    )
+    assert selected(plan) == {"tests/test_ops.py::test_add"}
+    kinds = {n.kind for d in plan.discovery for n in d.notes}
+    assert "plugin_outside_roots" in kinds
+
+
+@pytest.mark.parametrize("other", [False, True], ids=["one-install", "beside-another"])
+def test_v10_a_plugin_installed_from_a_parameter_is_unknown(repo, other):
+    """``def setup(mod): sys.modules['extplug'] = mod`` may install any
+    module under ``extplug``, which ``pytest_plugins`` names. Another
+    install by the same code (``sys.modules['compat_a'] = pkg.a``) does not
+    make ``extplug`` that module (review of audit round 8, V10)."""
+    setup = "import sys\nimport pkg.a\n\n\ndef setup(mod):\n"
+    if other:
+        setup += "    sys.modules['compat_a'] = pkg.a\n"
+    setup += "    sys.modules['extplug'] = mod\n"
+    conftest = (
+        "from pkg.setup import setup\n\n\n"
+        "setup(__import__('importlib').import_module('pkg.' + 'b'))\n"
+        "pytest_plugins = ['extplug']\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH,
+            **V10_OPS,
+            "src/pkg/a.py": "X = 1\n",
+            "src/pkg/b.py": OUTSIDE_PLUGIN.format(0),
+            "src/pkg/setup.py": setup,
+            "tests/conftest.py": conftest,
+        }
+    )
+    head = repo.commit({"src/pkg/b.py": OUTSIDE_PLUGIN.format(1)})
+    plan = repo.plan(
+        base,
+        head,
+        [BENCH_TARGET],
+        source_roots=V10_PLUGIN_ROOTS,
+        discover_runners=["pytest"],
+    )
+    assert selected(plan) == {"tests/test_ops.py::test_add"}
+    assert "plugin_installed" in {n.kind for d in plan.discovery for n in d.notes}
+
+
 def test_python_files_patterns_with_directories_match_the_path(repo):
     rev = repo.commit(
         {

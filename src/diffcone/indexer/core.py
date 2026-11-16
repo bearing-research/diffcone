@@ -757,7 +757,8 @@ class Indexer(DynamicBounds):
         # literal, or ``PREFIX*``), by the installing code; and what each
         # installing code installs (the module its record is in, the value).
         external_installs: set[tuple[str, str, str]] = set()  # (name, writer, kind)
-        installed_values: set[tuple[str, str, str, str]] = set()  # (writer, module, value, kind)
+        # (writer, module, name installed under, value, kind)
+        installed_values: set[tuple[str, str, str, str, str]] = set()
         records = self._redirect_installed(
             self._outside_stars([(m, r) for m in sorted(self.scopes) for r in self.scopes[m].uses])
         )
@@ -785,7 +786,7 @@ class Indexer(DynamicBounds):
                 if kind in (INSTALL, SWAP):
                     # ``>`` sources: what the installed object may be.
                     installed_values.update(
-                        (writer, module, n[1:], kind) for n in sources if n.startswith(">")
+                        (writer, module, target, n[1:], kind) for n in sources if n.startswith(">")
                     )
                     sources = tuple(n for n in sources if not n.startswith(">"))
                 if kind == HELD:
@@ -1922,21 +1923,27 @@ class Indexer(DynamicBounds):
         installed: dict[str, set[str]] = defaultdict(set)
         anything: set[str] = set()
         unknown: set[str] = set()
-        values: dict[str, set[tuple[str, str]]] = defaultdict(set)
+        values: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
         scoped: set[str] = set()  # installing code whose installs are undone after the test
-        for writer, module, value, kind in self._installed_values:
-            values[writer].add((module, value))
+        # Per install (writer, name): what it installs, and whether that may
+        # be an object nothing names.
+        by_name: dict[tuple[str, str], set[str]] = defaultdict(set)
+        open_names: set[tuple[str, str]] = set()
+        for writer, module, name, value, kind in self._installed_values:
+            values[writer].add((module, name, value))
             if kind == SWAP:
                 scoped.add(writer)
         for writer, found in sorted(values.items()):
-            for module, value in sorted(found):
+            for module, key, value in sorted(found):
                 if value == SELF:
                     continue  # what an import of the name finds anyway
                 if value.startswith(FRESH):
                     unknown.add(writer)
+                    open_names.add((writer, key))
                     continue
                 if value.startswith(ANY):
                     anything.add(writer)
+                    open_names.add((writer, key))
                     continue
                 candidates = [value]
                 if ANY in value:
@@ -1947,6 +1954,7 @@ class Indexer(DynamicBounds):
                         target = ".".join([place, *rest])
                         if target in self.index.symbols and target != writer:
                             installed[writer].add(target)
+                            by_name[(writer, key)].add(target)
             for target in sorted(installed[writer]):
                 detail = INSTALLS_FOR_TEST if writer in scoped else INSTALLS
                 self.index.edges.add(Edge(writer, target, EdgeKind.REFERENCES, detail))
@@ -1967,9 +1975,12 @@ class Indexer(DynamicBounds):
         for symbol, module, _kind, _detail in self._global.external_lookups:
             readers[module].add(symbol)
         names: dict[str, set[str]] = defaultdict(set)
+        valued = {(writer, name) for writer, _m, name, _v, _k in self._installed_values}
         for pattern, writer, kind in sorted(self._external_installs):
-            names[pattern] |= installed.get(writer, set())
-            if writer in anything or writer in unknown or writer not in values:
+            # Decided per install: what this name gets, not every name the
+            # same code installs under.
+            names[pattern] |= by_name.get((writer, pattern), set())
+            if (writer, pattern) in open_names or (writer, pattern) not in valued:
                 names[pattern].add(ANY_MODULE)
             if kind == SWAP:
                 # Undone after the test: only the tests running the code see

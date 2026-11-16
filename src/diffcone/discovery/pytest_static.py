@@ -153,8 +153,8 @@ Lifecycle dependencies attached to each test:
   each in-scope module installed under it, and an object that is none (one
   the code builds, a module made or found at run time) is the unknown
   dependency ``plugin:<name>`` of every test, reported as
-  ``plugin_installed``); a
-  fixture requesting
+  ``plugin_installed``; a file of that name outside the roots still is what
+  it is besides, an install adds to it); a fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
   pkg.conftest import engine as motor``, ``engine = pkg.conftest.engine``,
@@ -3886,11 +3886,14 @@ class _PluginLoader:
             if name.split(".")[0] in BUILTIN_PLUGINS and name not in self.index.modules:
                 continue
             facts = self.module_facts(name)
+            installed: set[str] = set()
             if facts is None and name not in self.index.modules:
+                # What project code installs under the name is what pytest
+                # imports when the install ran first; a file of that name is
+                # what it imports otherwise (an install adds, never replaces).
                 installed = self._installed(name)
                 if installed:
                     found.extend(self._load_installed(name, installed, where, kind, seen))
-                    continue
             if facts is None:
                 path = self._file(name)
                 if path is not None:
@@ -3915,6 +3918,8 @@ class _PluginLoader:
                             path,
                         )
                     )
+                    continue
+                if installed:
                     continue
                 self.result.notes.append(
                     DiscoveryNote(
