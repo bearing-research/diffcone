@@ -37,6 +37,12 @@ Propagation rules (a dependency edge ``X -> Y`` carries impact from Y to X):
   -> what it holds) carries any impact as REGISTERED: code that later
   calls the registry is affected, a module (whose import-time code
   registers, unchanged) is not.
+* What the ``logging`` callbacks of a log call write reaches the call
+  through one pseudo-node per set of callbacks (model.LOG_CALLBACKS,
+  ``Indexer._log_callback_writes``): ``V -[mutated_by]-> <log-callbacks>
+  -[mutated_by]-> site``, the sites sharing a set of callbacks sharing the
+  node; an explanation shows the two edges as one ``log_callbacks`` step
+  (_log_callback_steps).
 * A detail is such a mark only on a ``references`` edge (model.edge_mark):
   a name match's detail is the unresolved name, and a call of a function
   named ``rebinds`` is a call.

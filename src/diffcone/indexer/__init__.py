@@ -43,15 +43,21 @@ Supported subset (see internal/design.md):
   attribute unbounded;
 * in-place writes of a module variable or of state held on a class,
   directly, through ``cls``/``type(self)``, through a local name, an item,
-  ``globals()`` or a function's result bound to it (``references.py``: a
+  ``globals()`` (module-level ``locals()`` too) or a function's result
+  bound to it (``references.py``: a
   memoised function's result, a lambda's, a deep copy's is the state
   itself), or through a parameter or receiver the callee writes, the
   callee a writer as well as its caller (``writes.py``: ``*args`` and
   ``**kwargs`` included, a starred argument handed to every parameter it
-  may fill, what a fresh object holding a parameter holds; the code the
+  may fill, what a fresh object holding a parameter holds, an element of a
+  parameter handed on, ``for o in objs: o.reset()``; a call's result
+  written in place, as what the callee returns of its arguments, ``r =
+  wrap(p); r["items"].append(x)``: ``writes.RESULT_PARAM``; the code the
   ``logging`` library calls back from a log call, handlers, filters,
-  formatters, record factories and logger-class overrides, with the record
-  holding what was logged: ``writes._LoggingModel``); a variable filled
+  formatters, record factories and logger-class overrides, and functions
+  stored on a logging class under a callback's name, ``MyLogger.handle =
+  f``, with the record holding what was logged: ``writes._LoggingModel``);
+  a variable filled
   once by the one function writing it, with a value nothing can see
   differently (``global V; if V is None: V =
   os.path.dirname(pkg.__file__)``, not a container it may fill), is a lazy
@@ -111,6 +117,11 @@ Supported subset (see internal/design.md):
   every class statement and ``type(name, bases, ns)`` runs;
 * the order of a module's or class's top-level statements (a reorder is a
   definition change; two adjacent plain ``def``s trading places is none);
+* an object installed in ``sys.modules`` (``sys.modules["compat"] = impl``,
+  ``setdefault``, ``update``, ``monkeypatch.setitem``, ``mock.patch.dict``)
+  is what an import of the name gets, for an in-scope name and a name
+  outside the roots alike, with what the object may be (``uses.py``,
+  ``Indexer._install_edges``);
 * writes of process-global state outside the source roots (``process.py``),
   and the stores a test makes that are undone when it ends (``patches.py``);
   project code reading an attribute of a library module, or the

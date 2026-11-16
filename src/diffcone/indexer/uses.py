@@ -47,7 +47,12 @@ counts as a possible change:
   ``indexer/patches.py`` decides: ``monkeypatch.setitem`` on the fixture,
   ``with patch.dict(...)``), with what the object may be (``>`` sources:
   ``_installed_values``); a handle installed under a literal name is that
-  module for whatever names it (AS).
+  module for whatever names it (AS). An install of the module the import
+  system finds under the name anyway (``sys.modules[name] =
+  import_module(name)``, ``module_from_spec(find_spec(name))``:
+  ``_names_itself``), or of what a read-only copy of ``sys.modules`` saved,
+  put back under the name it was saved under (``_restores_saved``), is the
+  module already there (``SELF``): nothing foreign.
 * a function's ``__globals__``, a frame's ``f_globals``/``f_locals`` are a
   module's namespace (that of the function's module, or any module's); an
   unpickler's result, ``pkgutil.resolve_name``/``pydoc.locate`` by a name

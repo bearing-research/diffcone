@@ -165,11 +165,22 @@ roots don't hold (`pytest_plugins = ["support.plugin"]` with `support/`
 outside them): every test is always selected. And when diffcone can't read
 which plugins `pytest_plugins` names (it is built by a function call or a
 comprehension, or imported from outside your source roots), every test is
-always selected too; write the list out as strings to avoid that. A plugin named
-by a name your code installs a module under in `sys.modules`
-(`sys.modules["myplugin"] = impl`, then `pytest_plugins = ["myplugin"]`)
-is that module; when it isn't one of your modules (an object the code
-builds), every test is always selected.
+always selected too; write the list out as strings to avoid that. A plugin
+(`pytest_plugins`, `-p` or `PYTEST_PLUGINS`) named by a name your code
+installs a module under in `sys.modules` (`sys.modules["myplugin"] = impl`,
+then `pytest_plugins = ["myplugin"]`) is that module; when it isn't one of
+your modules (an object the code builds, a module it creates, finds at run
+time or was handed), every test is always selected, with a
+`plugin_installed` note.
+
+When your code installs modules under a name it computes
+(`sys.modules[name] = module`), a plugin that no file in your repository
+provides may be one of them. If that code may install any module (one
+loaded from a computed path, or one it was handed), every test is always
+selected; if it installs a module it creates (`types.ModuleType(name)`),
+every test depends on that code. Both get the `plugin_installed` note.
+Installs made only by a test or a function-scoped fixture don't count:
+they run after pytest has loaded its plugins.
 
 Some files can change what any test does, so a change to one selects every
 target. Outside your source roots, these are:

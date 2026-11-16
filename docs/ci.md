@@ -293,9 +293,10 @@ posted something started. A run still going when a report starts goes in
 the next one. A report that only writes the job summary (both
 `report-label` and `miss-label` empty), or fails to download an artifact,
 leaves its runs to the next report; a failed download also fails the job.
-Each request to GitHub is tried three times. A report that can't find
-where the previous one started reads the last `hours` hours, says it is
-incomplete and fails the job, so the next report covers those runs again.
+Each request that lists runs or downloads artifacts is tried three times.
+A report that can't find where the previous one started reads the last
+`hours` hours, says it is incomplete and fails the job, so the next report
+covers those runs again.
 
 The report leaves out:
 

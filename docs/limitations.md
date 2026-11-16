@@ -157,11 +157,19 @@ everything.
     sys.modules["extplug"] = mod`), because diffcone doesn't follow which
     module the caller passes. An install made by a fixture or a test counts
     for the tests that run it (see *Tests are assumed not to depend on what an
-    earlier test left behind* below). A plugin that `pytest_plugins` names
-    this way is the module installed under the name; if diffcone can't
-    tell which module that is, every test is always selected. A plugin file
-    of that name still counts as well, since pytest imports it when the
-    install hasn't run yet.
+    earlier test left behind* below). A plugin that `pytest_plugins`, `-p`
+    or `PYTEST_PLUGINS` names this way is the module installed under the
+    name; if diffcone can't tell which module that is (an object your code
+    builds, a module it creates, finds at run time or was handed), every
+    test is always selected. When your code installs under a name it
+    computes, a plugin that no file in your repository provides may be what
+    it installs: every test is always selected when that may be any module
+    (loaded from a computed path, or handed in), and every test depends on
+    the installing code when it is a module the code creates. Both are
+    reported with a `plugin_installed` note. Installs made only by a test or
+    a function-scoped fixture don't count here, since they run after pytest
+    has loaded its plugins. A plugin file of that name still counts as
+    well, since pytest imports it when the install hasn't run yet.
 
 ## Objects and modules handed to other code
 
@@ -249,9 +257,9 @@ everything.
     one of those classes under such a method's name too), and, after
     `logging.config.dictConfig` or `fileConfig`, any method of yours with a
     handler's, filter's or formatter's method name. What they change (a
-    capture handler's list, a counter) is changed by every log call. A
-    record made by a `logging.Logger` subclass of yours holds what was
-    logged: changing `record.args` or `record.msg` in place changes your
+    capture handler's list, a counter) is changed by every log call. The
+    record a log call makes holds what was logged, whatever the logger:
+    changing `record.args` or `record.msg` in place changes your
     objects, while setting an attribute on the record does not, unless you
     install a record factory or give the logger class your own
     `makeRecord`.
@@ -412,6 +420,10 @@ everything.
       (`typing.cast(T, p)` is `p`);
     - logging a library does into your handlers from inside its own
       calls (`requests.get(...)` logging through `urllib3`'s logger);
+    - your handlers read back through the `logging` library
+      (`logging.getLogger("x").handlers[0].records`, `logger.parent`):
+      such code is not a reader of what the handler changes; name the
+      handler (`CAPTURE.records`) instead;
     - a function stored on one of your classes under another name and
       called as a method by your own code (`Cache.get = _fast_get`, then
       `self.get(k)`); one stored on a `logging` logger, handler, filter or

@@ -200,7 +200,8 @@ test's own code (project code a test runs) leaves what it stored for later
 tests, so a change the chain carries to it reaches the lookup too
 (``_writer_sites``; audit round 7, U13). Any such lookup joins
 E for an import-time change only when the changed code can run one of its
-writers (``_forward``).
+writers (``_forward_meets``, from ``_reaching``: one backward walk
+per set of writers).
 
 A test module's names are seen by code that can obtain the module without
 importing it: an import of a module named at run time whose module is

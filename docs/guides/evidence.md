@@ -187,11 +187,16 @@ report:
   `pytest_runtest_protocol` wrapper), or by a module a test imports. A
   change to the code storing it is followed there as a change read in that
   import or hook is, which in a hook selects every test.
-- A method added to, removed from or redefined in a class whose creation
-  reads the class body (an abstract base class, a metaclass, an `Enum`, a
-  dataclass, a base with `__init_subclass__`) counts as a change to the
-  class statement: it selects the tests that import the class's module,
-  whether or not they use the method.
+- A member added to or removed from a class, or whose definition or
+  annotations changed, counts as a change to the class statement when
+  creating the class may read its body: a decorator (`@dataclass`, any
+  other) or a keyword (a metaclass) on the class or one of its bases, a
+  base from outside your code (`Enum`, `unittest.TestCase`, `abc.ABC`,
+  `Protocol`, `NamedTuple`, `TypedDict`), a base with `__init_subclass__`,
+  or a body that hands `locals()` or `vars()` to code or looks names up
+  itself. It selects the tests that import the class's module, whether or
+  not they use the member: adding a test method to a `unittest.TestCase`
+  class selects the tests of its module.
 - Changes to compiled sources (except [Cython](#cython) with a profiled
   recording), build files, dependencies and configuration select every
   test.

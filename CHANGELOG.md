@@ -32,8 +32,8 @@ selection rules.
   passing `*items` or `**options` passes what they hold. What a function
   changes through an element of an argument it hands on (`for o in objs:
   o.reset()`) is now changed for its callers too.
-- A function you store on a logging handler, filter or logger class
-  under a callback's name (`MyLogger.handle = f`, or with `setattr`) now
+- A function you store on a logging handler, filter, formatter or logger
+  class under a callback's name (`MyLogger.handle = f`, or with `setattr`) now
   runs as that callback when you log, and is followed when your own code
   calls it by that name (`self.emit(record)`).
 - A change in place to what one of your functions returns now reaches
@@ -44,11 +44,10 @@ selection rules.
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in
-  `sys.modules` (`sys.modules["compat"] = impl`,
-  `monkeypatch.setitem(sys.modules, "extlib", fakes)`, `mock.patch.dict`)
-  now depends on the installed module: imports of the name, attributes
-  read off it and names looked up on it. A plugin that `pytest_plugins` or
-  `-p` names this way is the installed module; one diffcone cannot follow
+  `sys.modules` (`sys.modules["compat"] = impl`) now depends on the
+  installed module: imports of the name, attributes
+  read off it and names looked up on it. A plugin that `pytest_plugins`,
+  `-p` or `PYTEST_PLUGINS` names this way is the installed module; one diffcone cannot follow
   selects every test, with a `plugin_installed` note, and a plugin file
   of that name outside your source roots is still reported. A plugin name
   no file provides may also be what your code installs under a name it
@@ -59,16 +58,29 @@ selection rules.
   its plugins. When what is
   installed may be any module (loaded from a computed path, or a module
   your code was handed as an argument), code that imports the name sees
-  every change. Names built as `"{0}.{1}".format(__name__, name)` count as
-  names under that module.
-- An install into `sys.modules` made by a fixture, or undone after the
-  test, now counts for the tests using that fixture.
-  A fixture that unloads modules and puts back the ones it saved from a
-  copy of `sys.modules` installs nothing new.
-- Plans for projects whose log calls share handlers or filters are faster
-  and use less memory: the sites sharing a set of callbacks share one node
-  in the index (on one project, a quarter of the edges and a quarter less
-  memory, the same selection).
+  every change.
+- An install into `sys.modules` made by a function-scoped fixture or a
+  test, or undone after the test (`monkeypatch.setitem(sys.modules,
+  "extlib", fakes)`, `mock.patch.dict`), now counts for the tests that run
+  it, and only for them: code importing the name elsewhere does not depend
+  on it. A fixture that unloads modules and puts back the ones it saved
+  from a copy of `sys.modules` installs nothing new.
+- A module name built as `"{0}.{1}".format(__name__, name)` now counts as
+  a name under that module wherever a module is looked up by name
+  (`importlib.import_module`, `sys.modules[...]`, an install), as
+  `f"{__name__}.{name}"` already did.
+- A method called on a local name bound to `{}`, `[]`, `set()` or `dict()`
+  is the builtin's own method: it no longer writes through every method of
+  that name in your code.
+- `typing.cast(T, p)` hands on `p`: changing the result changes `p`.
+- Plans can be slower and use more memory than with 0.5.0, since the
+  index now follows more writes (what logging calls back, `*args`,
+  returned arguments, installs in `sys.modules`). On one project whose
+  log calls share handlers through `dictConfig`, a plan with a warm cache
+  took 17 s and 1.5 GB against 6 s and 0.4 GB with 0.5.0, and a cold one
+  67 s and 1.9 GB against 53 s and 1.1 GB, for the same selection. Log
+  calls sharing a set of callbacks share one node in the index, which
+  keeps the logging part of that down.
 
 ### Execution evidence
 
@@ -88,7 +100,7 @@ selection rules.
 - `diffcone collect` names what flagged the most tests as starting a
   subprocess (always selected), with the line of the checkout that
   started it and whether the process was still running when later tests
-  ran.
+  ran, one line each, ties in the order of their text.
 - A class that a changed function may write into, and that has no other
   edge to it, is no longer read as its class body reading the change at
   import, which escalated its module: a test class whose new test called
@@ -103,20 +115,21 @@ selection rules.
   taken to read it.
 - A class attribute a test writes by name (`Settings.debug = True`) now
   reaches code reading `.debug` off an instance of the class.
-- Adding, deleting or redefining a member of a class whose creation reads
-  its namespace (a metaclass, `__init_subclass__`, an `abc.ABC`,
-  `Protocol`, `NamedTuple` or `TypedDict` base, a body that hands
-  `locals()` or `vars()` to code, as in `register_all(locals())`) now
-  reaches the code run when the class is created: its module is followed
-  as code run at import.
-- `diffcone collect` flags a test (subprocess, text run as code) before
-  describing what flagged it, so a cause it cannot describe no longer
-  costs the flag. Causes print one line each, ties in the order of their
-  text.
-- Evidence plans with many changes to code run at import are faster and
-  use less memory: which lookups on external modules such a change reaches
-  is no longer decided by walking the whole graph once per change (a suite
-  of 7 700 tests: 91 s and 2.5 GB down to 16 s and 1.1 GB, the same plan).
+- Adding or deleting a member of a class, or changing its definition or
+  annotations, now reaches the code run when the class is created, when
+  that may read the class's namespace: a decorator (`@dataclass`, any
+  other) or a keyword (a metaclass) on the class or one of its bases, a
+  base outside your code (`Enum`, `unittest.TestCase`, `abc.ABC`,
+  `Protocol`, `NamedTuple`, `TypedDict`), a base's `__init_subclass__`, or
+  a body that hands `locals()` or `vars()` to code
+  (`register_all(locals())`) or looks names up itself. Its module is
+  followed as code run at import, so adding a test method to a
+  `unittest.TestCase` class, with a recording, selects the tests of its
+  module.
+- Evidence plans with many changes to code run at import are faster than
+  with 0.5.0 (a suite of 7 700 tests: 22 s down to 16 s, using 1.1 GB of
+  memory against 1.0 GB).
+- Recordings made with 0.5.0 still work.
 
 ### Report
 
@@ -131,21 +144,17 @@ selection rules.
 
 - The `report` action keeps only what the report reads of each artifact
   as it downloads it (the context, the verdicts, and of a plan its counts,
-  recording and unselected targets), instead of extracting the whole
-  artifact: a window of a large suite's runs, kept whole, ran the runner
-  out of disk.
+  recording and unselected targets) and reads that as it would the whole
+  artifact, instead of extracting the whole artifact: a window of a large
+  suite's runs, kept whole, ran the runner out of disk.
 - The `report` action tries each listing and download three times before
   counting it as an error: one server error (HTTP 502) among 5 000
   downloads made the next report read the whole window again.
 - The `report` action fails, instead of passing with a shorter window,
   when it cannot list where the last report started: one failed request
   made the report start at the last `hours` and the next one after it,
-  so runs between the two were never read. Every request is retried and
-  a failure counts as an error.
-- The `report` action reads a downloaded artifact exactly as the whole
-  artifact would read: a `ran.json` that is empty falls back to
-  `plan.json`, and members named `./context.json` are the files at the
-  top.
+  so runs between the two were never read. Those listings are retried,
+  and a failure counts as an error.
 
 ## [0.5.0] - 2026-10-21
 

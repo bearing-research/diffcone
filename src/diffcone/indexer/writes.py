@@ -17,7 +17,9 @@ Pass 2 records, per function (cacheable per module):
   parameter: a method that writes ``self.x`` writes its receiver. A local
   bound once to a parameter (``d = p``) is that parameter; ``*args`` and
   ``**kwargs`` are parameters written in part by an item's write (``objs[0]
-  .x = v``, ``for o in objs: o.x = v``; audit round 8, V8). A fresh
+  .x = v``, ``for o in objs: o.x = v``; audit round 8, V8), and so is any
+  parameter by an element of it handed to a call that writes it (``for o
+  in objs: o.reset()``; V7). A fresh
   instance holding a parameter (``r = Box(p)``, a library logger's record:
   ``RECORD``) written in place (``r.args.update(...)``, through ``h =
   r.args`` too) is recorded as ``held_param_writes``, decided after pass 2
