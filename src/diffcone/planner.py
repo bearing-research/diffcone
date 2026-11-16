@@ -2202,8 +2202,9 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     benchmark module), except one a target lists that holds none of its
     entries and is neither a conftest nor a module defining a fixture a
     target lists: a module whose import-time code writes process state that
-    every test inherits (discovery/session_state.py), project code or a test
-    module (audit round 7). Isolated: each lifecycle dependency that is a
+    every test inherits (discovery/session_state.py), project code (audit
+    round 7). A module some target lists that holds that target's entry
+    stays a test module (audit round 8, V29). Isolated: each lifecycle dependency that is a
     function-scoped fixture (``Symbol.fixture_scope``); and, in the test
     modules, each target's entry symbol when it is a function or a method
     defined there (a test, a benchmark: each benchmark runs in a fresh
@@ -2239,7 +2240,14 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     # round 7: such a module's functions were taken for isolated test code).
     # A conftest, or a module defining a fixture some target lists (a plugin
     # module), stays test code.
+    # A module a target lists that holds that target's entry is a test
+    # module, whatever other targets list it for: a test module whose
+    # import-time code writes process state is listed by every target, and
+    # its tests still run inside one test each (audit round 8, V29). A
+    # doctest's or a manifest's entry on project code does not list its
+    # module, so its module is none.
     listed_elsewhere: set[str] = set()
+    own_modules: set[str] = set()
     fixture_modules: set[str] = set()
     for target in targets:
         entry_modules = {s.module for s in defined.get(target.entry_symbol, ())}
@@ -2250,8 +2258,11 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
             if all(s.kind == SymbolKind.MODULE for s in found):
                 if dep not in entry_modules:
                     listed_elsewhere.add(dep)
+                else:
+                    own_modules.add(dep)
             elif all(s.fixture_scope for s in found):
                 fixture_modules |= {s.module for s in found}
+    listed_elsewhere -= own_modules
     test_modules: set[str] = set()
     # Code the runner itself calls per test: isolated without a caller.
     called_by_runner: set[str] = set()

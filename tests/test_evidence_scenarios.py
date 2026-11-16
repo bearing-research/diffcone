@@ -2868,6 +2868,36 @@ def test_t1_a_decorators_registration_is_a_write_of_the_chain(repo, edit, decora
     assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_c.py::test_c"} | reader
 
 
+@pytest.mark.parametrize(
+    "store", ["self.routes[path] = f(2)", "self.routes[path] = f\n            f(2)"]
+)
+def test_v28_a_decorator_running_the_function_at_definition(repo, store):
+    """A decorator that calls the function when the ``def`` runs (and may
+    store what it returns) runs the changed code at import: the readers of
+    what it stored are still selected, through the import-time code (audit
+    round 8, V28)."""
+    routing = ROUTING.replace("self.routes[path] = f", store)
+    lib = "def compute(k):\n    return k * 2\n"
+    files = {
+        **NOOP_BASE,
+        **ROUTER_TESTS,
+        "tests/test_v.py": (
+            "import pkg.endpoint\nfrom pkg.routing import router\n\n\n"
+            "def test_v():\n    assert router.seen == [4]\n"
+        ),
+        "pkg/lib.py": lib,
+        "pkg/routing.py": routing.replace(
+            "self.routes = {}", "self.routes = {}\n        self.seen = []"
+        ).replace("f(2)", "self.seen.append(f(2))"),
+        "pkg/endpoint.py": ENDPOINT.format("'/x'", ""),
+    }
+    base = repo.commit(files)
+    evidence = repo.collect()
+    head = repo.commit({"pkg/lib.py": lib.replace("k * 2", "k + k")})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "tests/test_v.py::test_v" in selected(plan)
+
+
 HANDLER_TABLES = (
     "def a():\n    return 1\n\n\ndef b():\n    return {0}\n\n\nTABLE = {{'a': a}}\n"
     "LIST = [a]\nNEST = {{'k': [a]}}\n\n\nclass O:\n    x = a\n\n\nOBJ = O()\n"
@@ -2955,6 +2985,21 @@ def test_l7_evidence_a_store_by_a_test_helper_reaches_only_its_test(repo):
         ISO_HEAD
         + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
         + ("def test_a():\n    _put()\n    pkg.server._state = None\n")
+    )
+    plan = _iso_plan(repo, test_a, evidence=True)
+    assert "tests/test_a.py::test_a" in selected(plan)
+    assert "tests/test_other.py::test_other" not in selected(plan)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs sys.monitoring")
+def test_v29_evidence_a_test_module_every_test_lists_keeps_its_isolated_code(repo):
+    """The test module writes process state at import, so every test lists
+    it; its own test is still isolated code (audit round 8, V29)."""
+    test_a = (
+        "import os\n\n"
+        + ISO_HEAD
+        + "os.environ.setdefault('PKG_FLAG', '1')\n\n\n"
+        + "def test_a():\n    pkg.server._state = pkg.impl.make()\n    pkg.server._state = None\n"
     )
     plan = _iso_plan(repo, test_a, evidence=True)
     assert "tests/test_a.py::test_a" in selected(plan)

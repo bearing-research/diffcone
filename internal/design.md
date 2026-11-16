@@ -410,10 +410,17 @@ Further rules (pre-release audit, round 2):
   target's entries and is neither a conftest nor a module defining a
   fixture a target lists: discovery lists a module whose import-time code
   writes process state as a dependency of every test
-  (`discovery/session_state.py`), and such a module, project code or a test
-  module, holds no isolated code (audit round 7: a project module calling
+  (`discovery/session_state.py`), and such a module, when it is project
+  code, holds no isolated code (audit round 7: a project module calling
   `os.environ.setdefault(...)` at import had every function taken for
-  isolated test code). Each lifecycle dependency that is a function-scoped fixture
+  isolated test code). A module that some target lists and that holds that
+  target's entry stays a test module, whatever other targets list it for:
+  its tests run inside one test each, while its module-level code, what
+  that code calls and its wider-scoped fixtures are no isolated code as in
+  any test module (audit round 8, V29: typer's `tests/test_ambiguous_params.py`,
+  whose `runner = CliRunner()` at import made every target list it, had
+  its tests taken for writers for every reader). A doctest or manifest
+  entry on project code does not list its module. Each lifecycle dependency that is a function-scoped fixture
   (`Symbol.fixture_scope`: a `fixture` decorator with no `scope` or the
   literal `"function"`) is isolated; and, in the test modules, each
   target's entry symbol that is a function or a method defined there (a

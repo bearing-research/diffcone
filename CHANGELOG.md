@@ -55,6 +55,10 @@ selection rules.
   a call of the function stores for later tests: that code runs when the
   module defines the function. A change to the decorator, or to the code
   it runs, still reaches the readers of what it writes.
+- A test module whose import-time code changes process state (so every
+  test depends on it) no longer has its own tests taken for code that
+  leaves state behind for other tests: what such a test stores is again
+  seen by that test alone, as in any other test module.
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in

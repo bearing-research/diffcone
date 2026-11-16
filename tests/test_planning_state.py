@@ -5232,6 +5232,49 @@ def test_l7_a_store_by_code_that_outlives_the_test_reaches_every_reader(repo, te
     assert OTHERS <= selected(plan)
 
 
+# The same test module writing process state at import: discovery lists it
+# as a lifecycle dependency of every test (code run while collecting that
+# every test inherits). It still holds its own tests, which run inside one
+# test each (audit round 8, V29: typer's ``tests/test_ambiguous_params.py``,
+# whose ``runner = CliRunner()`` made every one of its tests a writer for
+# every reader). Its module-level code, a helper that code calls and a
+# wider-scoped fixture still write for every reader.
+PROCESS_HEAD = "import os\n\n" + ISO_HEAD + "os.environ.setdefault('PKG_FLAG', '1')\n\n\n"
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        PROCESS_HEAD + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
+        "def test_a():\n    _put()\n",
+        PROCESS_HEAD + "def test_a():\n    pkg.server._state = pkg.impl.make()\n",
+        PROCESS_HEAD + "@pytest.fixture\ndef put():\n    pkg.server._state = pkg.impl.make()\n\n\n"
+        "def test_a(put):\n    pass\n",
+    ],
+    ids=["helper", "test", "function_fixture"],
+)
+def test_v29_a_test_module_every_test_lists_keeps_its_isolated_code(repo, test_a):
+    plan = _iso_plan(repo, test_a)
+    selected_ids = selected(plan)
+    assert {t for t in selected_ids if "test_a" in t} and not selected_ids & OTHERS
+
+
+@pytest.mark.parametrize(
+    "test_a",
+    [
+        PROCESS_HEAD + "pkg.server._state = pkg.impl.make()\n\n\ndef test_a():\n    pass\n",
+        PROCESS_HEAD + "@pytest.fixture(scope='session')\ndef put():\n"
+        "    pkg.server._state = pkg.impl.make()\n\n\ndef test_a(put):\n    pass\n",
+        PROCESS_HEAD + "def _put():\n    pkg.server._state = pkg.impl.make()\n\n\n_put()\n\n\n"
+        "def test_a():\n    _put()\n",
+    ],
+    ids=["module_level", "session_fixture", "helper_also_at_module_level"],
+)
+def test_v29_what_outlives_a_test_in_such_a_module_reaches_every_reader(repo, test_a):
+    plan = _iso_plan(repo, test_a)
+    assert OTHERS <= selected(plan)
+
+
 def test_l7_a_project_cache_filled_from_a_test_still_reaches_its_readers(repo):
     plan = _iso_plan(repo, ISO_HEAD + "def test_a():\n    pkg.cache.fill()\n")
     assert "tests/test_reads_cache.py::test_reads_cache" in selected(plan)
