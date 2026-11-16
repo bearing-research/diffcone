@@ -1347,7 +1347,7 @@ instead of repeating its detail:</p>
 <tr>
 <td><code>dynamic_reference</code></td>
 <td>yes</td>
-<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file <code>[index] exclude</code> keeps out of the analysis; or it runs with a module's globals (a doctest) and a change lies in what that module imports.</td>
+<td>It reaches code that looks names up dynamically (<code>getattr</code>, <code>importlib</code>), runs text built at run time as code, or runs a program it can't bound, and a change could be among what that reaches; or it imports or runs a file <code>[index] exclude</code> keeps out of the analysis; or it imports a name your code installs a module found at run time under in <code>sys.modules</code>; or it runs with a module's globals (a doctest) and a change lies in what that module imports.</td>
 </tr>
 <tr>
 <td><code>unresolved_name_match</code></td>
