@@ -1691,7 +1691,7 @@ in hooks reads, so everything is selected.
 
 *Mechanism.* A class whose only edges to a function, in either revision,
 are `mutated_by` (`EvidencePlanner.written_classes`) is written by it, not
-a reader: `_readers` hands it to `_written_class`, which follows it as a
+a reader: `_readers` hands it to `_written` (was `_written_class`), which follows it as a
 written variable is followed (observed; the code naming it, for its
 content; the methods of its family, ancestors and subclasses, which read
 it through `self`/`cls`; the sites that can see it), and does not
@@ -1796,7 +1796,17 @@ and dropped: the same for lookups on an external module the project
 writes to (`dir(builtins)`, `getattr(logging, level)`, the next sites on
 strata). strata's writers there are 52 modules found at run time handed
 on, any of which may be installed under the module's name, and the
-lookup then searches project code (W17, which caught it).
+lookup then searches project code (W17, which caught it). Audit round 8
+(V3) found the premise incomplete: class and module creation hand the
+whole namespace to code that never names a member (a metaclass's
+`__new__` or `__prepare__` mapping registering callables whose
+signatures are read later, `register_all(locals())` in a class body), and
+so does a decorator. The skip now holds only for a `def` that runs no code
+at import, in a class whose creation reads no namespace and a module whose
+top-level code is no lookup site (`_blind_signatures`), and an added or
+deleted member of a class whose creation does is planned as a change to
+the class's creation (V4, `_class_creation`); strata's plain handler
+methods keep the narrowing.
 
 *Next on strata's PR pair.* A class whose only change is a gained
 dependency (`StrataConfig dependencies_added`) has its file counted as

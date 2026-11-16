@@ -453,8 +453,10 @@ class SourceIndex:
     class_bases: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Classes whose creation may run code that reads their attributes:
     # decorators, keywords (a metaclass), or a base the index cannot see
-    # (``Enum``, a dataclass-like framework base). Evidence mode escalates an
-    # attribute change of one rather than trusting readers of the name.
+    # (``Enum``, a dataclass-like framework base, ``abc.ABC``, ``Protocol``,
+    # ``NamedTuple``, ``TypedDict``). Evidence mode escalates an attribute
+    # change of one, and a member added to or deleted from one, rather than
+    # trusting readers of the name.
     open_classes: set[str] = field(default_factory=set)
     # Functions and classes whose decorators (or metaclass) may read their
     # docstring: one the analysis cannot see, or in-scope code that reads

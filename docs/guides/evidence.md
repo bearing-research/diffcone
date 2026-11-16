@@ -177,6 +177,17 @@ report:
   annotations there (as pytest does on Python 3.14) is not running the
   function: only a change to the annotations, or to what they name,
   counts.
+- What a test stores can be read outside the tests: by code that kept a
+  reference to it when a module was imported (`VIEW = view()`,
+  `ITEMS.append(Holder())`), by a hook that runs between tests (a
+  `pytest_runtest_protocol` wrapper), or by a module a test imports. A
+  change to the code storing it is followed there as a change read in that
+  import or hook is, which in a hook selects every test.
+- A method added to, removed from or redefined in a class whose creation
+  reads the class body (an abstract base class, a metaclass, an `Enum`, a
+  dataclass, a base with `__init_subclass__`) counts as a change to the
+  class statement: it selects the tests that import the class's module,
+  whether or not they use the method.
 - Changes to compiled sources (except [Cython](#cython) with a profiled
   recording), build files, dependencies and configuration select every
   test.

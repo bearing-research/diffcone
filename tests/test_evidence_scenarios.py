@@ -3083,7 +3083,12 @@ def test_r22_a_cache_outside_a_module_variable_reaches_every_reader(repo, files)
         {BENCH_OTHER.runner_id} if files is FUNCTION_ATTRIBUTE else set()
     )
     assert selected(plan) == {READER_A, READER_B, READER_C} | benches
-    assert rules(plan, READER_B) == {"executed_reader"}
+    # A module keeping the written object at import (``OBJ = Thing()``,
+    # ``get.cache = {}``) may read what a test stored there through it, so
+    # its import is planned as reading it too (audit round 8, V5).
+    kept = files is INSTANCE_CACHE or files is FUNCTION_ATTRIBUTE
+    assert rules(plan, READER_B) <= {"executed_reader", "escalated"}
+    assert ("escalated" in rules(plan, READER_B)) == kept
     # Precision: a change to code the cache cannot hold is still read only
     # by the test that ran it.
     head = repo.commit({"pkg/thing.py": files["pkg/thing.py"].replace("return 10", "return 11")})
@@ -5587,7 +5592,10 @@ def test_u5_a_method_on_a_receiver_of_a_known_class_is_followed(repo, case):
     lib = before + f"def fill(k):\n    {body}\n\n\ndef peek(k):\n    return _D.get(k)\n"
     plan = _fill_plan(repo, lib, read)
     assert selected(plan) == {FILLED_A, FILLED_Z, BENCH_FILL.runner_id}
-    assert rules(plan, FILLED_Z) == {"executed_reader"}
+    # ``STORE = Store()`` and ``APP = App()`` keep an instance of the written
+    # class at import, read through it after a test writes it (V5).
+    kept = case in ("class state through a method", "an attribute holding one")
+    assert rules(plan, FILLED_Z) == {"executed_reader"} | ({"escalated"} if kept else set())
 
 
 def test_u5_a_method_name_on_an_unknown_receiver_is_not_followed(repo):
@@ -6109,7 +6117,7 @@ def test_the_state_a_changed_writer_writes_into_a_class_reaches_its_readers(repo
     assert "which may write into pkg.lib.Holder" in why
 
 
-# --------------------------------------------------------------------------- what tests wrote, read outside them
+# --------------------------------------------------------------------------- written, read outside
 TIMED_STATE = """\
 SEEN = []
 
@@ -6285,3 +6293,274 @@ def test_v2_whether_a_hook_ran_after_a_test_depends_on_the_order(repo):
     )
     plan = _noop_plan(repo, base, head, evidence)
     assert "tests/test_q.py::test_q" in selected(plan)
+
+
+# A writer only tests run changes its body (``note`` stores twice); what it
+# wrote is read outside every test, by code that kept a reference at import
+# or that runs between tests (round 8, V5).
+SEEN_STATE = "SEEN = []\n\n\ndef note(n):\n    SEEN.append(n)\n\n\ndef view():\n    return SEEN\n"
+SEEN_TEST = "from pkg import state\n\n\ndef test_a():\n    state.note(1)\n"
+WRAPPER_CONFTEST = """\
+import pytest
+
+from pkg import state
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    if item.name == "test_b" and len(state.SEEN) > 1:
+        item.add_marker(pytest.mark.xfail(strict=True, reason="seen"))
+    return (yield)
+"""
+KEPT_READERS = {
+    # ev-hooks r3body: the module keeps what ``view()`` returned at import.
+    "view_at_import": {
+        "pkg/agg.py": "from pkg.state import view\n\nVIEW = view()\n",
+        "tests/test_b.py": "from pkg.agg import VIEW\n\n\n"
+        "def test_b():\n    assert len(VIEW) == 1\n",
+    },
+    # ev-hooks r2-body: module top-level code keeps the list itself.
+    "list_in_a_list": {
+        "pkg/agg.py": "from pkg.state import SEEN\n\nSOURCES = []\nSOURCES.append(SEEN)\n",
+        "tests/test_b.py": "from pkg.agg import SOURCES\n\n\n"
+        "def test_b():\n    assert len(SOURCES[0]) == 1\n",
+    },
+    # quality q4: an outer runtest wrapper reads it between tests.
+    "runtest_wrapper": {
+        "tests/conftest.py": WRAPPER_CONFTEST,
+        "tests/test_b.py": "def test_b():\n    assert True\n",
+    },
+    # ev-hooks t3: a module first imported inside a test builds its state
+    # from it; a later test reads that state without running the module.
+    "lazy_import": {
+        "pkg/lazy.py": "from pkg.state import SEEN\n\nCONFIG = {}\nCONFIG['k'] = len(SEEN)\n",
+        "tests/test_b.py": "def test_b():\n    import pkg.lazy  # noqa: F401\n",
+        "tests/test_c.py": "def test_c():\n    from pkg.lazy import CONFIG\n\n"
+        "    assert CONFIG['k'] == 1\n",
+    },
+}
+
+
+@pytest.mark.parametrize("case", list(KEPT_READERS))
+def test_v5_what_a_test_wrote_is_read_outside_the_tests(repo, case):
+    """``note``, which only ``test_a`` runs, stores twice at the head. The
+    test whose outcome that changes reads ``SEEN`` through code that ran
+    outside every test (a reference kept at import, a hook between tests,
+    an import inside an earlier test) and never runs ``note``: the readers
+    of what a test stored are followed into the imports and hooks they ran
+    in, as a changed value's are."""
+    files = KEPT_READERS[case]
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/state.py": SEEN_STATE,
+            "tests/test_a.py": SEEN_TEST,
+            **files,
+        }
+    )
+    evidence = repo.collect()
+    twice = SEEN_STATE.replace("SEEN.append(n)", "SEEN.extend((n, n))")
+    head = repo.commit({"pkg/state.py": twice})
+    plan = _noop_plan(repo, base, head, evidence)
+    last = "tests/test_c.py::test_c" if case == "lazy_import" else "tests/test_b.py::test_b"
+    assert last in selected(plan)
+
+
+def test_v5_an_instance_kept_at_import_is_read_after_its_class_is_written(repo):
+    """``tag`` writes ``Holder.label`` and only ``test_a`` runs it; its body
+    changes. ``pkg.registry`` keeps a ``Holder`` made at import, read by
+    ``test_b`` and ``test_c`` without naming ``tag`` (ev-hooks w1)."""
+    holder = "class Holder:\n    pass\n\n\ndef tag(v):\n    Holder.label = v\n"
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/holder.py": holder,
+            "pkg/registry.py": "from pkg.holder import Holder\n\nITEMS = []\n"
+            "ITEMS.append(Holder())\n",
+            "pkg/show.py": "def show(h):\n    return getattr(h, 'label', None)\n",
+            "tests/test_a.py": "from pkg.holder import tag\n\n\ndef test_a():\n    tag('a')\n",
+            "tests/test_b.py": "from pkg.registry import ITEMS\n\n\n"
+            "def test_b():\n    assert getattr(ITEMS[0], 'label', None) == 'a'\n",
+            "tests/test_c.py": "from pkg import registry\nfrom pkg.show import show\n\n\n"
+            "def test_c():\n    assert show(registry.ITEMS[0]) == 'a'\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/holder.py": holder.replace("= v\n", "= v.upper()\n")})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert {"tests/test_b.py::test_b", "tests/test_c.py::test_c"} <= selected(plan)
+
+
+def test_v6_a_class_attribute_written_by_name_reaches_its_readers_off_an_instance(repo):
+    """``configure`` sets ``Settings.debug`` by name, and its body changes;
+    ``test_a`` registers a ``Settings()`` and configures. ``show`` reads
+    ``.debug`` off the registered instance and names neither ``Settings``
+    nor ``configure``: the readers of an attribute a writer binds on a
+    class by name are its readers, as for one bound through ``cls``
+    (ev-hooks w4b)."""
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/conf.py": "class Settings:\n    debug = False\n\n\n"
+            "def configure(debug):\n    Settings.debug = debug\n",
+            "pkg/reg.py": "REGISTRY = []\n\n\ndef register(o):\n    REGISTRY.append(o)\n\n\n"
+            "def show():\n    return REGISTRY[0].debug\n",
+            "tests/test_a.py": "from pkg.conf import Settings, configure\n"
+            "from pkg.reg import register\n\n\n"
+            "def test_a():\n    register(Settings())\n    configure(True)\n",
+            "tests/test_b.py": "from pkg.reg import show\n\n\n"
+            "def test_b():\n    assert show() is True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit(
+        {
+            "pkg/conf.py": "class Settings:\n    debug = False\n\n\n"
+            "def configure(debug):\n    Settings.debug = not debug\n"
+        }
+    )
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "tests/test_b.py::test_b" in selected(plan)
+    assert "(attribute debug)" in reason(plan, "tests/test_b.py::test_b", "executed_reader").detail
+
+
+# A class whose creation hands its namespace to code that never names a
+# member (round 8, V3, V4): a metaclass collecting its callables, then read
+# by signature or by name.
+META_BASE = """\
+import inspect
+
+HANDLERS = []
+
+
+class Meta(type):
+    def __new__(mcs, name, bases, ns):
+        HANDLERS.extend(v for k, v in ns.items() if callable(v) and not k.startswith('_'))
+        return super().__new__(mcs, name, bases, ns)
+
+
+class Base(metaclass=Meta):
+    pass
+
+
+def arities():
+    return [len(inspect.signature(f).parameters) for f in HANDLERS]
+
+
+def names():
+    return [f.__name__ for f in HANDLERS]
+"""
+PREPARE_BASE = """\
+import inspect
+
+HANDLERS = []
+
+
+class RegDict(dict):
+    def __setitem__(self, k, v):
+        if callable(v) and not k.startswith('_'):
+            HANDLERS.append(v)
+        super().__setitem__(k, v)
+
+
+class Meta(type):
+    @classmethod
+    def __prepare__(mcs, name, bases, **kw):
+        return RegDict()
+
+    def __new__(mcs, name, bases, ns):
+        return super().__new__(mcs, name, bases, dict(ns))
+
+
+class Base(metaclass=Meta):
+    pass
+
+
+def arities():
+    return [len(inspect.signature(f).parameters) for f in HANDLERS]
+
+
+def names():
+    return [f.__name__ for f in HANDLERS]
+"""
+META_IMPL = (
+    "from pkg.base import Base\n\n\nclass Impl(Base):\n    def get(self, x):\n        return x\n"
+)
+META_CHECKS = {
+    "signature": "from pkg.base import arities\n\n\n"
+    "def test_check():\n    assert arities() == [2]\n",
+    "name": "from pkg.base import names\n\n\ndef test_check():\n    assert names() == ['get']\n",
+}
+
+
+@pytest.mark.parametrize("read", list(META_CHECKS))
+@pytest.mark.parametrize("base", ["new", "prepare"])
+def test_v3_v4_a_metaclass_hands_a_new_method_on(repo, base, read):
+    """``Impl`` gains a plain method; its metaclass's ``__new__`` (or the
+    mapping its ``__prepare__`` returns) registers every callable of the
+    class body, and ``arities`` reads their signatures (or ``names`` their
+    names). A conftest imports ``pkg.impl``. The site whose only lookup is
+    a signature read is no longer blind to the new method there, and the
+    class's creation, which hands its namespace to the metaclass, is
+    planned as changed (sites sig2 S5, S6, S5c)."""
+    base_files = {
+        **BENCH_PKG,
+        "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+        "pkg/base.py": META_BASE if base == "new" else PREPARE_BASE,
+        "pkg/impl.py": META_IMPL,
+        "tests/conftest.py": "import pkg.impl  # noqa: F401\n",
+        "tests/test_check.py": META_CHECKS[read],
+        "tests/test_other.py": "def test_other():\n    assert True\n",
+    }
+    base_commit = repo.commit(base_files)
+    evidence = repo.collect()
+    head = repo.commit(
+        {"pkg/impl.py": META_IMPL + "\n    def put(self, x, y):\n        return y\n"}
+    )
+    plan = _noop_plan(repo, base_commit, head, evidence)
+    assert "tests/test_check.py::test_check" in selected(plan)
+
+
+ABC_BASE = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "class Base(ABC):\n    @abstractmethod\n    def run(self):\n        ...\n"
+)
+ABC_IMPL = (
+    "from pkg.base import Base\n\n\nclass Impl(Base):\n    def other(self):\n        return 0\n"
+)
+ABC_RUN = "\n    def run(self):\n        return 1\n"
+
+
+@pytest.mark.parametrize("edit", ["added", "deleted"])
+def test_v4_an_implementation_of_an_abstract_method_added_or_deleted(repo, edit):
+    """``Impl`` derives from an ``abc.ABC`` with an abstract ``run``.
+    Adding ``Impl.run`` makes ``Impl()`` succeed; deleting it makes it
+    raise ``TypeError``: ``ABCMeta`` reads the class's namespace when it is
+    created and names no member, so the class's creation is planned as
+    changed (sites abc1 S19, sig9 S19d)."""
+    with_run, without = ABC_IMPL + ABC_RUN, ABC_IMPL
+    before, after = (without, with_run) if edit == "added" else (with_run, without)
+    check = (
+        "import pytest\n\nfrom pkg.impl import Impl\n\n\ndef test_use():\n"
+        "    with pytest.raises(TypeError):\n        Impl()\n"
+        if edit == "added"
+        else "from pkg.impl import Impl\n\n\ndef test_use():\n    assert Impl().other() == 0\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH_PKG,
+            "benchmarks/bench_noop.py": "def time_noop():\n    pass\n",
+            "pkg/base.py": ABC_BASE,
+            "pkg/impl.py": before,
+            "tests/test_use.py": check,
+            "tests/test_other.py": "def test_other():\n    assert True\n",
+        }
+    )
+    evidence = repo.collect()
+    head = repo.commit({"pkg/impl.py": after})
+    plan = _noop_plan(repo, base, head, evidence)
+    assert "tests/test_use.py::test_use" in selected(plan)
+    assert "tests/test_other.py::test_other" not in selected(plan)

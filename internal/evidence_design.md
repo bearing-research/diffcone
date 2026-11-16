@@ -189,17 +189,46 @@ A plain function or method just added (no special name) is not seen by a
 site whose every lookup is a signature read (`inspect.signature(f)`,
 `getfullargspec`, `getcallargs`, without `eval_str`, `globals` or
 `locals`: `SIGNATURE_READ`), and the site is not followed for it
-(`_Observers.signature_sites`). A signature reflects the parameters of the
-object it is handed and, for a class, its special members; a new
-definition reaches it only once code hands it over, code that names it (a
-change of its own, planned as one) or looks it up by a name nothing bounds
-(a site of its own, which sees it). A changed definition and an added
-special method still reach such a site. strata checks its websocket
-handlers' signatures as a module is imported from a conftest. The same
-does not hold for a lookup on an external module the project writes to
-(`dir(builtins)`): a module handed on may be installed under that name
-(W17), and the lookup then searches project code; strata hands modules
-found at run time on in 52 places.
+(`_Observers.signature_sites`, `_blind_signatures`), when nothing hands
+the definition over without naming it. A signature reflects the
+parameters of the object it is handed and, for a class, its special
+members; a new definition reaches it through code that names it (a
+change of its own, planned as one), code that looks it up by a name
+nothing bounds (a site with another lookup, which is no signature site,
+whether or not the lookup is listed as a site: one on an external module
+the project writes to, `dir(builtins)`, finds whatever a module handed on
+and installed under that name holds, W17), or code it is handed to
+without being named. The last is what 365dd44's premise missed (audit
+round 8, V3): a decorator (so a `def` that runs code at import is never
+blind), and class or module creation, which hands the whole namespace to
+code that never names its members: a project metaclass's `__new__`,
+`__init__` or `__prepare__` mapping, `__init_subclass__` reading
+`vars(cls)`, a class body or module passing `vars()` or `globals()` (and
+`locals()`, once the index records it) to a function, a library metaclass
+(`ABCMeta`, `EnumMeta`). So the site stays blind only when no class
+holding the definition reads its namespace when created
+(`_reads_namespace`, below) and its module's top-level code is no lookup
+site. A changed definition and an added special method still reach such a
+site. strata checks its websocket handlers' signatures as a module is
+imported from a conftest; its handlers are plain methods of plain classes.
+
+**Class creation** (audit round 8, V4). A member added to or deleted from
+a class, or whose definition or annotations changed, changes what
+creating the class hands on. Code notices it by name, by a lookup, or
+reflectively, all followed; but when creating the class hands its
+namespace to code that names no member, that code is a reader too:
+`ABCMeta` collects the abstract methods (deleting `Impl.run` makes
+`Impl()` raise; adding it changes `inspect.isabstract`), a metaclass
+registers the class's callables, an `Enum` or a dataclass builds from the
+body. Such a class (`_reads_namespace`: it or an ancestor is open, which
+now includes an `abc.ABC`, `Protocol`, `NamedTuple` or `TypedDict` base,
+`SourceIndex.open_classes`, `INDEX_FORMAT` 65; an ancestor defines
+`__init_subclass__`; or its body is a lookup site) has its module's import
+planned as changed (`_class_creation`), and the `__prepare__`, `__new__`
+and `__init__` of the classes its ancestors' statements name (a
+metaclass) and the ancestors' `__init_subclass__` are followed for what
+they write (`_creation_code`). A plain class gains or loses members
+without that.
 
 **Compiled code.** A `.pyx` change is invisible to a Python tracer unless
 the extension is built with Cython's `profile=True` directive, whose
@@ -583,9 +612,23 @@ selection or states something the tables left implicit; none narrows it.
   objects of unknown type. A name match further back, or a lookup by a name
   nothing bounds, is not followed: on strata either makes every module
   writer one of every change (6 175 of 6 231 tests on `1241020210` against
-  1 275 without). What a test stores is read only while tests run, so these
-  readers are observed, not followed into imports and hooks. A module
-  imported inside a test that reads it is in that test's record.
+  1 275 without). These readers are followed as a changed value's are,
+  into the imports and hooks they ran in (`_written`, `_reader`): until
+  audit round 8 (V5) they were only observed, on the premise that what a
+  test stores is read only while tests run, which fails three ways. Code
+  run at import keeps references to what a test later writes (`VIEW =
+  view()`, `ITEMS.append(Holder())`, `SOURCES.append(SEEN)`) and is read
+  through them by tests that run neither it nor the writer; a hook runs
+  between tests (an outer `pytest_runtest_protocol` wrapper, a
+  `pytest_runtestloop`); and a module first imported inside a test builds
+  its state from what earlier tests wrote, which later tests read without
+  running the module. So a function reader that ran in a hook selects
+  every test, one that ran in an import escalates the module, and a
+  module's or class's top-level reader escalates its module. A class
+  written in place is one path for every rule here (`_written`): its
+  readers, the methods of its family, its sites, and the readers by name
+  of each attribute the writer names on it (`Settings.debug = v` read as
+  `self.settings.debug`: V6), each followed once per way (V15).
 * **Code run while pytest collects a test module** (roadmap item 19, rule
   3). Code that ran at C while pytest made the collect report of a test
   module or class, with no import running and in no hook (`collect_by`:

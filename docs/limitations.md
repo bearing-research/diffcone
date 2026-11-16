@@ -433,8 +433,12 @@ everything.
     value, a constant, a registration, or a value it stores only on some
     branch, since what it stores may depend on the change in ways the code
     doesn't show. So does a result kept by a memoising decorator. An
-    attribute set on an object (`self.value = v`) is read by the object's
-    own methods and by any code reading `.value` off it (`CONF.value`). The one
+    attribute set on an object (`self.value = v`) or on a class by name
+    (`Settings.value = v`) is read by the object's or class's own methods
+    and by any code reading `.value` off it (`CONF.value`,
+    `self.settings.value`). Code reading the stored state outside the
+    tests counts too: a module that kept a reference to it when imported,
+    or a hook that runs between tests, which selects every test. The one
     exception is what `__init__` (or a dataclass's `__post_init__`) sets on
     the object it is building: no other test can hold that object yet,
     unless calling the class can give back an object made earlier (a
