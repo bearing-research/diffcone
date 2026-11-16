@@ -238,7 +238,8 @@ everything.
     with `addHandler`, `addFilter`, `setFormatter`, `basicConfig(handlers=
     ...)` or by setting `handlers`, a filter function, a record factory, any
     class of yours deriving from a `logging` class, the methods of a logger
-    class you set with `logging.setLoggerClass`, and, after
+    class you set with `logging.setLoggerClass` (a function you store on
+    one of those classes under such a method's name too), and, after
     `logging.config.dictConfig` or `fileConfig`, any method of yours with a
     handler's, filter's or formatter's method name. What they change (a
     capture handler's list, a counter) is changed by every log call. A
@@ -394,16 +395,12 @@ everything.
     - an object a library function returns that your code then changes;
     - an object one of your functions returns after it was handed it
       (`r = wrap(p)`, then `r.items.append(x)`, where `wrap` returns `p`);
-    - an element of a parameter handed on to a function or method that
-      changes it (`for o in objs: o.reset()`, where `reset` changes
-      `self`); changing it directly (`for o in objs: o.n = 0`) is
-      followed, and so is handing on an element of `*args`;
-    - logging a library does into your handlers (a dependency's own
-      `logger.info(...)`), and your handlers reached back through the
-      library (`logging.getLogger("x").handlers[0].records`);
+    - logging a library does into your handlers from inside its own
+      calls (`requests.get(...)` logging through `urllib3`'s logger);
     - a function stored on one of your classes under another name and
-      called as a method (`Logger.handle = _recording_handle`, then
-      `self.handle(record)`);
+      called as a method by your own code (`SLog.handle = _recording_handle`,
+      then `self.handle(record)` in a method of `SLog`); one the `logging`
+      library calls back (a log call through an `SLog` logger) is followed;
     - a method called on an item of a module-level dict or list
       (`_CACHE["a"].put(4)`): only the dict's own methods count as writes;
     - a library function that changes an argument you pass it, a module of

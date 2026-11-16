@@ -497,11 +497,11 @@ Further rules (pre-release audit, round 2):
   of that object, not of what it holds, so changing it writes nothing the
   caller handed. A parameter handed on to a callee's written
   parameter is written as well (to a fixed point). What a call is handed
-  follows the same rules except that an element of a parameter itself
-  (`for o in objs: o.reset()`) is not followed, as before them (an element
-  of `*args`, or of a fresh object's holding, is): following it nearly
-  doubled strata's `mutated_by` edges (13,086 to 24,693 at `fd36b04d`) and is
-  a known gap (docs/limitations.md). A method of a local bound once to a
+  follows the same rules: an element of a parameter handed on (`for o in
+  objs: o.reset()`, `reset` writing `self`) is part of the parameter, so the
+  callee's write is the caller's (before 0.6.0 only a direct write through
+  an element was; following it took strata's `mutated_by` edges at `fd36b04d` from 13,610
+  to 24,693, rich's from 6,245 to 7,090). A method of a local bound once to a
   list, dict or set display or to `dict()`/`list()`/`set()` (`fields = {};
   fields.update(kw)`) is the builtin's, no project method of that name. A module-level variable
   handed to a written parameter (`set_mode(REG)`, `fill(cfg.REG)`), or the
@@ -556,7 +556,10 @@ Further rules (pre-release audit, round 2):
   handlers=...)`, a library handler's stream or target, a library object's
   `handlers`/`filters`/`formatter` bound, through the parameters it is
   handed on in), each function handed to it (a filter, a record factory, a
-  function stored on a `logging` class), the callbacks of every class
+  function stored on a `logging` class, and one stored on a
+  logging-derived class of the project under a callback's name: `SLog.handle
+  = _recording_handle`, `setattr(SLog, "emit", f)`, run bound as that
+  method), the callbacks of every class
   deriving from a `logging` class on any instance of it, a logger class's
   overrides (`makeRecord`, `handle`, `callHandlers`, ...) on the logger
   logged through, and, after a `dictConfig`/`fileConfig`, every method of

@@ -729,6 +729,68 @@ def test_v1_a_log_call_runs_no_unrelated_handle(repo):
     assert _static(repo, files, change) == {"tests/sub/test_a.py::test_a"}
 
 
+STORED_CALLBACK_CASES = {
+    # A logger class given ``handle``, here, elsewhere or by ``setattr``.
+    "a logger's handle": ("logging.Logger", "SLog.handle = _record", "", True),
+    "a logger's handle by setattr": (
+        "logging.Logger",
+        "setattr(SLog, 'handle', _record)",
+        "",
+        True,
+    ),
+    "a logger's handle elsewhere": ("logging.Logger", "", "SLog.handle = _record", True),
+    # A handler class given ``emit``, added to the logger.
+    "a handler's emit": ("logging.Handler", "SLog.emit = _record", "log.addHandler(SLog())", True),
+    # A class that derives from nothing of ``logging``: never called back.
+    "no logging class": ("object", "SLog.handle = _record", "", False),
+}
+
+
+@pytest.mark.parametrize("case", sorted(STORED_CALLBACK_CASES))
+def test_v1_a_function_stored_on_a_logging_class_runs_as_its_callback(repo, case):
+    """``SLog.handle = _record`` makes ``_record`` the ``handle`` of every
+    ``SLog`` logger: a log call through one runs it, and what it changes
+    changes (the same for a handler class's ``emit``); on a class deriving
+    from nothing of ``logging`` it is never called back."""
+    base, store, wiring, reaches = STORED_CALLBACK_CASES[case]
+    log = (
+        "import logging\n\nSEEN = []\n\n\n"
+        f"class SLog({base}):\n    pass\n\n\n"
+        "def _record(self, record):\n    SEEN.append(record)\n\n\n"
+        f"{store}\n\n\ndef seen():\n    return len(SEEN)\n"
+    )
+    files = {
+        "pkg/log.py": log,
+        "pkg/other.py": "from pkg.log import SLog, _record  # noqa\n\n"
+        + wiring.replace("log.addHandler(SLog())", "")
+        + "\n",
+        "pkg/setup.py": (
+            "import logging\n\nimport pkg.other  # noqa\nfrom pkg.log import SLog\n\n"
+            + (
+                "log = logging.getLogger('x')\nlog.addHandler(SLog())\n"
+                if "addHandler" in wiring
+                else "log = SLog('x')\n"
+            )
+        ),
+        "tests/sub/__init__.py": "",
+        "tests/sub/conftest.py": "from pkg.setup import log\n\nlog.warning('one')\n",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/test_seen.py": (
+            "from pkg.log import seen\n\n\ndef test_seen():\n    assert seen() >= 0\n"
+        ),
+    }
+    if base == "object":
+        files["pkg/setup.py"] = (
+            "import logging\n\nimport pkg.other  # noqa\nfrom pkg.log import SLog  # noqa\n\n"
+            "log = logging.getLogger('x')\n"
+        )
+    change = {"tests/sub/conftest.py": "from pkg.setup import log\n\nlog.warning('two')\n"}
+    want = {"tests/sub/test_a.py::test_a"} | (
+        {"tests/test_seen.py::test_seen"} if reaches else set()
+    )
+    assert _static(repo, files, change) == want
+
+
 @pytest.mark.parametrize(
     ("base", "reaches"),
     [
@@ -825,6 +887,62 @@ def test_v8_a_write_through_star_args_or_kwargs(repo, case):
     assert _static(repo, files, change) == {
         "tests/sub/test_a.py::test_a",
         "tests/test_box.py::test_box",
+    }
+
+
+ITEM_STATE = (
+    "class Item:\n    def reset(self):\n        self.n = 0\n\n\nITEM = Item()\n"
+    "ITEMS = [ITEM]\nBY_NAME = {'a': ITEM}\n\n\n"
+    "def total():\n    return getattr(ITEM, 'n', 1)\n"
+)
+ELEMENT_CASES = {
+    "a loop": ("def reset_all(objs):\n    for o in objs:\n        o.reset()\n", "ITEMS"),
+    "enumerate": (
+        "def reset_all(objs):\n    for _, o in enumerate(objs):\n        o.reset()\n",
+        "ITEMS",
+    ),
+    "a comprehension": ("def reset_all(objs):\n    [o.reset() for o in objs]\n", "ITEMS"),
+    "a dict's values": (
+        "def reset_all(objs):\n    for o in objs.values():\n        o.reset()\n",
+        "BY_NAME",
+    ),
+    "a function handed it": (
+        "def clear(o):\n    o.n = 0\n\n\ndef reset_all(objs):\n    for o in objs:\n"
+        "        clear(o)\n",
+        "ITEMS",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(ELEMENT_CASES))
+def test_an_element_of_a_parameter_handed_on_is_written_by_the_callee(repo, case):
+    """``for o in objs: o.reset()``, where ``reset`` changes ``self``,
+    changes what the caller handed in ``objs``, as ``o.n = 0`` does: the
+    conftest that starts calling it changes what ``total()`` reads (a miss
+    before 0.6.0; the coordinator's follow-up to audit round 8)."""
+    reset, arg = ELEMENT_CASES[case]
+    files = {
+        "pkg/items.py": ITEM_STATE,
+        "pkg/reset.py": reset,
+        "tests/sub/__init__.py": "",
+        "tests/sub/test_a.py": "def test_a():\n    pass\n",
+        "tests/sub/conftest.py": (
+            "from pkg.items import ITEMS, BY_NAME  # noqa\n"
+            "from pkg.reset import reset_all  # noqa\n\nprint(ITEMS)\n"
+        ),
+        "tests/test_total.py": (
+            "from pkg.items import total\n\n\ndef test_total():\n    assert total() in (0, 1)\n"
+        ),
+    }
+    change = {
+        "tests/sub/conftest.py": (
+            "from pkg.items import ITEMS, BY_NAME  # noqa\n"
+            f"from pkg.reset import reset_all  # noqa\n\nreset_all({arg})\n"
+        )
+    }
+    assert _static(repo, files, change) == {
+        "tests/sub/test_a.py::test_a",
+        "tests/test_total.py::test_total",
     }
 
 
