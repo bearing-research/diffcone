@@ -59,6 +59,11 @@ selection rules.
   test depends on it) no longer has its own tests taken for code that
   leaves state behind for other tests: what such a test stores is again
   seen by that test alone, as in any other test module.
+- Reading an attribute of a library module through a project module that
+  imports it (`store.json.dumps`), or patching one by name
+  (`monkeypatch.setattr(store.sys, "getfilesystemencoding", f)`), no
+  longer counts as reading the whole module, so it no longer depends on
+  every store project code makes onto that module.
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in

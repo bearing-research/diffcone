@@ -707,8 +707,8 @@ Further rules (pre-release audit, round 2):
   `os.environ`. After pass 2, each symbol reading what was stored gets a
   `mutated_by` edge to the writer: a read of that attribute or below it
   (`json.x`, `from json import x`, `getattr(json, "x")`), of the module as
-  a value or by a name nothing bounds (`getattr(json, name)`, `vars(json)`,
-  a module reached through a project module, `store.json.x`), any attribute
+  a value or by a name nothing bounds (`getattr(json, name)`, `vars(json)`),
+  any attribute
   of it for a store of the whole module (`vars(json).update(...)`,
   `setattr(json, name, v)`), and the environment (`os.environ`,
   `os.getenv`) for a write of it. A store onto a module found at run time
@@ -719,8 +719,17 @@ Further rules (pre-release audit, round 2):
   matching those made two serializer helpers writers of 7,300 readers; a
   dynamic lookup on such a module stays bounded by `external_sites` as
   before). Reads are recorded per symbol (`_Output.external_reads`, by
-  every dotted name a chain may stand for, `=json` for the module itself);
-  a store reads nothing. As for module variables, a
+  every dotted name a chain may stand for, `=json` for the module itself).
+  A module reached through a project module's plain import of it is read
+  for what follows the binding (`store.json.x` with `import json` in
+  `store`: `json.x`; another binding, or the module itself, is a read of
+  the whole module); the receiver of a call naming its attributes
+  literally (`setattr(json, "x", v)`, `monkeypatch.setattr`,
+  `patch.object`, `patch.multiple` without `**`) is read for those
+  attributes only, which the patcher reads to restore them (audit round 8,
+  V30: typer's `monkeypatch.setattr(_click.types.sys,
+  "getfilesystemencoding", f)` read the whole of `sys`). A store reads
+  nothing. As for module variables, a
   writer only isolated test code is dropped. Not followed: what a library,
   a child process or a C extension reads of it.
 * A module variable whose value cannot change in place has no writers

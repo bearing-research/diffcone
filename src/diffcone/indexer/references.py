@@ -191,6 +191,10 @@ WRITE_ONLY_METHODS = frozenset(
 SETITEM = "writes[]"
 # A store target that reads the old value too (augmented assignment).
 _READ = "read"
+# The receiver of ``setattr``/``monkeypatch.setattr``/``patch.object`` naming
+# its attributes literally: what of a library module it reads is those
+# attributes (``_string_targets``), not the whole module (audit round 8, V30).
+_NAMED = "named"
 
 
 # Calls that hand out every member of their argument, values included.
@@ -619,20 +623,25 @@ class _ReferenceCollector(ast.NodeVisitor):
         """Record what ``parts`` resolved to (``node``, and the names read
         off a value of unknown type after it)."""
         chain = ".".join(parts)
+        named = mark == _NAMED
+        if named:
+            mark = ""
         if not (mark and self._write_reference(node, rest, mark)):
             self.indexer._record(self.source, node, kind=kind, chain=chain)
-        if isinstance(node, External) and not mark:
+        if isinstance(node, External) and not mark and not named:
             # What of the library module the code reads (a store onto it,
             # ``json.x = v``, reads nothing of it), for a write onto it
             # elsewhere (Indexer._external_state_edges; U13).
-            names = [
-                n
-                for n in self._canonical_names(parts)
-                if n == node.module or n.startswith(node.module + ".")
-            ]
+            canonical = self._canonical_names(parts)
+            names = [n for n in canonical if n == node.module or n.startswith(node.module + ".")]
+            if not names:
+                # Reached through a project module's binding: what follows
+                # the binding is read off the library module
+                # (``store.json.x`` binding ``json``: ``json.x``; audit round
+                # 8, V30).
+                names = [n for c in canonical if (n := self._through_binding(c, node.module))]
             # The module itself read as a value (``=json``: what reads it may
-            # read any attribute), or reached through a project module's
-            # binding (``store.json.x``).
+            # read any attribute), or reached in a way not followed.
             for name in names or [node.module]:
                 if name == node.module:
                     name = "=" + name
@@ -2865,6 +2874,7 @@ class _ReferenceCollector(ast.NodeVisitor):
                 MULTIPLE,
             ):
                 self._setattr_call(node, parts)
+                self._named_receiver(node, parts)
             self._string_targets(node, parts)
             if builtin and parts[0] in ("isinstance", "issubclass") and len(node.args) == 2:
                 self._mark_type_node(node.args[1])
@@ -2882,6 +2892,7 @@ class _ReferenceCollector(ast.NodeVisitor):
             # A patcher on a value: ``pytest.MonkeyPatch().setattr(...)``.
             if form in (SETATTR, OBJECT, MULTIPLE):
                 self._setattr_call(node, tail)
+                self._named_receiver(node, tail)
             self._string_targets(node, tail)
         self._call_func = node.func
         self.generic_visit(node)
@@ -3426,6 +3437,50 @@ class _ReferenceCollector(ast.NodeVisitor):
         undone = len(parts) > 1 and self._undone(node)
         for name in names:
             self._reflective_write(receiver, name, undone=undone)
+
+    def _through_binding(self, canonical: str, module: str) -> str:
+        """What ``canonical`` reads of library module ``module`` after the
+        project module import binding it (``pkg.store.json.x`` with ``import
+        json`` in ``pkg.store``: ``json.x``), or "" when no plain import of
+        a project module binds it."""
+        pieces = canonical.split(".")
+        for i in range(len(pieces) - 1, 0, -1):
+            scope = self.indexer.scopes.get(".".join(pieces[:i]))
+            if scope is None:
+                continue
+            name = pieces[i]
+            binding = scope.imports.get(name)
+            if binding is None or scope.alt_imports.get(name):
+                return ""
+            dotted = binding.dotted
+            if dotted != module and not dotted.startswith(module + "."):
+                return ""
+            return ".".join([dotted, *pieces[i + 1 :]])
+        return ""
+
+    def _named_receiver(self, node: ast.Call, parts: list[str]) -> None:
+        """A receiver whose attributes the call names literally (the
+        second argument; ``patch.multiple``'s keywords) is read for those
+        attributes only: a library module there (``monkeypatch.setattr(
+        types.sys, "getfilesystemencoding", f)``) is no read of the whole
+        module, which would read whatever any code stores onto it (audit
+        round 8, V30). A name computed at run time, or ``**names``, still
+        reads it whole."""
+        args = list(node.args)
+        if not args or isinstance(args[0], ast.Constant):
+            return
+        if patch_target_form(parts) == MULTIPLE:
+            literal = not node.args[1:] and all(k.arg is not None for k in node.keywords)
+        else:
+            keywords = {k.arg: k.value for k in node.keywords if k.arg}
+            name = args[1] if len(args) > 1 else keywords.get("name", keywords.get("attribute"))
+            literal = (
+                isinstance(name, ast.Constant)
+                and isinstance(name.value, str)
+                and name.value.isidentifier()
+            )
+        if literal:
+            self._mark_write_only(args[0], _NAMED)
 
     def _undone(self, node: ast.Call) -> bool:
         """Whether what ``node`` stores is undone after the test that made

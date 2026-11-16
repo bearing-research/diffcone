@@ -6053,6 +6053,42 @@ def test_u13_a_store_onto_another_attribute_reaches_no_reader(repo):
     assert _left_by(repo, store, "m.install()", "m.mode() == 2") == LEFT_UNREAD
 
 
+# What a reader reads of a library module: the attribute that follows a
+# project module's import binding of it (``m.json.dumps``: ``json.dumps``),
+# and, for a receiver a call names an attribute of literally
+# (``setattr(json, "dumps", f)``, ``monkeypatch.setattr``, ``patch.object``),
+# that attribute only (audit round 8, V30: typer's
+# ``monkeypatch.setattr(_click.types.sys, "getfilesystemencoding", f)`` read
+# the whole of ``sys``, so a test depended on whatever project code stores
+# onto ``sys``). The writer stores ``json.pkg_value``.
+V30_NARROWED = {
+    "through_a_binding": "m.json.dumps(1) == '1'",
+    "a_literal_setattr": "setattr(json, 'dumps', json.dumps) is None",
+    "a_literal_setattr_through_a_binding": "setattr(m.json, 'dumps', m.json.dumps) is None",
+}
+V30_GUARDS = {
+    "the_attribute_through_a_binding": "m.json.pkg_value == 2",
+    "a_computed_getattr_through_a_binding": "getattr(m.json, 'pkg' + '_value') == 2",
+    "a_computed_setattr": "setattr(json, 'pkg_' + 'value', 2) is None",
+    "the_namespace_through_a_binding": "vars(m.json)['pkg_value'] == 2",
+    "the_module_handed_on": "m.mode_of(m.json) == 2",
+}
+V30_STORE = (
+    "import json\n\n\ndef install():\n    json.pkg_value = compute(1)\n\n\n"
+    "def mode_of(module):\n    return module.pkg_value\n"
+)
+
+
+@pytest.mark.parametrize("case", sorted(V30_NARROWED))
+def test_v30_a_named_attribute_of_a_library_module_reads_no_other(repo, case):
+    assert _left_by(repo, V30_STORE, "m.install()", V30_NARROWED[case]) == LEFT_UNREAD
+
+
+@pytest.mark.parametrize("case", sorted(V30_GUARDS))
+def test_v30_what_may_read_the_written_attribute_still_depends_on_it(repo, case):
+    assert _left_by(repo, V30_STORE, "m.install()", V30_GUARDS[case]) == LEFT_ALL
+
+
 def test_u13_a_module_writing_process_state_at_import_is_no_test_code(repo):
     """``pkg.store`` writes ``os.environ`` at import, so discovery lists it
     as a lifecycle dependency of every test (code collection runs that

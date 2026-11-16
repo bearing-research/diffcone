@@ -83,6 +83,10 @@ from diffcone.model import (
 # 72: SourceIndex.definition_writes and definition_calls (what only a
 #     function's decorators, defaults and annotations write or call; audit
 #     round 8, V28);
+# 73: a library module reached through a project module's import binding is
+#     read for what follows it, and the receiver of a call naming its
+#     attributes literally (``monkeypatch.setattr(m.sys, "x", v)``) for those
+#     attributes only (audit round 8, V30);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -141,7 +145,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 72
+INDEX_FORMAT = 73
 
 
 def _indexer_fingerprint() -> str:
