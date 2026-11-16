@@ -629,3 +629,11 @@ with `FixtureRepo` scenarios) and the fixers' own checks against v0.5.0.
 | V21 | Precision (evidence): `_class_creation` escalates a test module when a method is added to a `unittest.TestCase` subclass (an external base is open). Replaying the evidence corpus with the rule on and off selects the same 18 710 of 27 210; not narrowed, since unittest calls `setUp`/`tearDown` by name. | kept |
 | V22 | Report: `_member` reproduces `extractall`'s path cleaning but not its Windows name sanitising (`ran.json.`). The actions write fixed names. | accepted |
 
+### Found by the evaluation
+
+| Id | Finding | Status |
+|---|---|---|
+| V23 | Cost (evidence), new in b95b64c: `_seeing_sites` walked the whole graph forward once per changed symbol run at import (`_forward`, 4 693 walks); strata's plan of 56e79602..fd36b04d went from 22 s and 1.0 GB to 91-200 s and 2.5-3.2 GB. | fixed (c419767): `_forward_meets` answers from one backward walk per target set; plan byte-identical, 16 s and 1.1 GB; `test_the_import_site_check_answers_as_the_forward_walk` |
+| V24 | Precision (static), new in 781973f: a fixture putting back the modules it saved (`for n, m in saved.items(): sys.modules[n] = m`, dateutil's `clean_import`) installed "any module", so its test saw every change (census: dateutil 8c367ffa58, 0 -> 1). | fixed (cd3ceb9): a restore from a read-only copy of `sys.modules` is the module already there; `test_v10_a_fixture_restoring_the_modules_it_saved` (narrowed cases and eight guards) |
+| V25 | Cost (static), new in 6deb550: every log site got a `mutated_by` edge from every state its callbacks reach; on pip (`dictConfig`, 282 sites sharing 25 callbacks) +294 693 edges, warm plans 5x slower at 2 GB. | fixed (dea2e9b, 3d90708): edges filtered before sorting (byte-identical), and sites sharing a callback set share one `<log-callbacks>` node (pip: 395 242 -> 101 918 edges, warm 20.9 -> 15.7 s, same selection); `test_v1_log_sites_sharing_callbacks_share_one_node` |
+

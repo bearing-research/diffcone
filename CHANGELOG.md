@@ -57,6 +57,12 @@ selection rules.
   names under that module.
 - An install into `sys.modules` made by a fixture, or undone after the
   test, now counts for the tests using that fixture.
+  A fixture that unloads modules and puts back the ones it saved from a
+  copy of `sys.modules` installs nothing new.
+- Plans for projects whose log calls share handlers or filters are faster
+  and use less memory: the sites sharing a set of callbacks share one node
+  in the index (on one project, a quarter of the edges and a quarter less
+  memory, the same selection).
 
 ### Execution evidence
 
