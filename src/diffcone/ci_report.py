@@ -220,9 +220,9 @@ def _member(info: zipfile.ZipInfo) -> str | None:
 
 def _archived_plan(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[dict | None, bool]:
     """A plan member as ``_read`` reads it (None when unreadable or not an
-    object), and whether it is truthy there: ``_plan_text`` leaves out the
-    explanations, so a plan of nothing else reads as empty here but not
-    there."""
+    object), and whether it is truthy there. ``_plan_text`` cuts the
+    explanations only when another key follows them, so what it returns is
+    empty exactly when the plan is."""
     try:
         text = zf.read(info).decode("utf-8")
         plan = _plan_text(text)
@@ -230,7 +230,7 @@ def _archived_plan(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> tuple[dict | N
         return None, False
     if not isinstance(plan, dict):
         return None, False
-    return plan, bool(plan) or '\n  "dependency_explanations": ' in text
+    return plan, bool(plan)
 
 
 def extract(archive: str | Path, directory: str | Path) -> list[str]:
