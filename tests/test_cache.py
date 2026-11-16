@@ -127,7 +127,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 70
+    assert cache_mod.INDEX_FORMAT == 71
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 
@@ -357,6 +357,7 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
             ),
             "pkg/compat.py": (
                 "import sys\n\nfrom pkg.ops import Handler\n\nsys.modules['extcompat'] = Handler\n"
+                "\n\ndef install(name, module):\n    sys.modules[name] = module\n"
             ),
             "data.txt": "x\n",
             "tests/test_ops.py": "from pkg.run import main\n\n\ndef test_x():\n    assert main()\n",
@@ -374,7 +375,6 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
     empty = {f.name for f in dataclasses.fields(SourceIndex) if not getattr(index, f.name)}
     assert empty == {
         "any_module_readers",
-        "attribute_modules",
         "cython",
         "errors",
         "escaped_modules",
@@ -385,7 +385,6 @@ def test_the_whole_index_survives_a_round_trip_field_by_field(repo):
         "lazy_constants",
         "memoized",
         "module_reach",
-        "module_writers",
         "open_classes",
         "reflection",
         "script_refs",

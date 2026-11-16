@@ -2658,8 +2658,22 @@ Further rules (pre-release audit, round 3):
   (`plugin_installed`). An install adds to the name, never replaces it: a
   file of that name outside the roots is still `plugin_outside_roots`
   (pytest imports it when the install has not run). Under a name nothing
-  bounds (`sys.modules[name] = ...`) only the in-scope objects count, for
-  every plugin entry.
+  bounds (`sys.modules[name] = ...`) the in-scope objects count for every
+  plugin entry; and a plugin name no file in the repository provides may
+  be what such code installs for good (`SourceIndex.open_installs`), as
+  readers of the name get it: a module found at run time or passed in
+  (`module_from_spec` of a computed path, a parameter, what nothing tells)
+  is the unknown `plugin:<name>` of every test, a module the code makes
+  (`types.ModuleType(name)` it fills) makes every test depend on that
+  code; both reported (`plugin_installed`), for `pytest_plugins`, `-p`,
+  `PYTEST_PLUGINS` and `pytest11` entry points alike. Code that only runs
+  inside one test is left out: a function-scoped fixture, or a test
+  nothing else refers to, runs after pytest imported its plugins (a
+  conftest's top level, a hook, a wider-scoped fixture, a helper do not
+  count as that; an install undone after the test is never a plugin).
+  Decided once the tests are known. Static plans selected those tests
+  before too (every in-scope module depends on an any-module install,
+  W25); the dependency says why.
 
 Not modelled: fixture visibility rules of
 `pytest_plugins` declared outside the root conftest (accepted anyway),

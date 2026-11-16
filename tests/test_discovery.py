@@ -1181,6 +1181,195 @@ def test_v10_a_plugin_installed_from_a_parameter_is_unknown(repo, other):
     assert "plugin_installed" in {n.kind for d in plan.discovery for n in d.notes}
 
 
+V10_LOADER = (
+    "import importlib.util\nimport sys\n\n\n"
+    "def load(name, path):\n"
+    "    spec = importlib.util.spec_from_file_location(name, path)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    sys.modules[name] = module\n"
+    "    spec.loader.exec_module(module)\n"
+    "    return module\n"
+)
+V10_LOAD_HOOKS = (
+    "import os\n\nfrom pkg.loader import load\n\n"
+    "load('extplug', os.path.join(os.path.dirname(__file__), 'hooks.py'))\n"
+)
+
+
+@pytest.mark.parametrize(
+    "files, options",
+    [
+        ({"tests/conftest.py": V10_LOAD_HOOKS + "pytest_plugins = ['extplug']\n"}, {}),
+        (
+            {
+                "tests/conftest.py": V10_LOAD_HOOKS,
+                "pyproject.toml": "[tool.pytest.ini_options]\naddopts = '-p extplug'\n",
+            },
+            {},
+        ),
+        ({"tests/conftest.py": V10_LOAD_HOOKS}, {"env_plugins": ("extplug",)}),
+    ],
+    ids=["pytest_plugins", "addopts_p", "PYTEST_PLUGINS"],
+)
+def test_v10_a_plugin_a_module_found_at_run_time_may_be_installed_as(repo, files, options):
+    """``load(name, path)`` installs in ``sys.modules`` under a name it is
+    handed a module loaded from a path it is handed: under the plugin name
+    ``extplug``, which no file provides, it may be any module, one of the
+    project's included (``tests/hooks.py``, whose autouse fixture changes).
+    Every test depends on what it defines, unknown, as code importing the
+    name sees every change. (The plan selected the test before too: every
+    in-scope module depends on such an install, W25. Discovery now says
+    why, for every runner option naming the plugin.)"""
+    base = repo.commit(
+        {
+            **BENCH,
+            **V10_OPS,
+            "src/pkg/loader.py": V10_LOADER,
+            "tests/hooks.py": OUTSIDE_PLUGIN.format(0),
+            **files,
+        }
+    )
+    head = repo.commit({"tests/hooks.py": OUTSIDE_PLUGIN.format(1)})
+    plan = repo.plan(
+        base,
+        head,
+        [BENCH_TARGET],
+        source_roots=V10_PLUGIN_ROOTS,
+        discover_runners=["pytest"],
+        discovery_options=DiscoveryOptions(**options),
+    )
+    assert "tests/test_ops.py::test_add" in selected(plan)
+    assert "lifecycle_dependency_unresolved" in rules(plan, "tests/test_ops.py::test_add")
+    notes = [n for d in plan.discovery for n in d.notes]
+    assert [n.kind for n in notes if n.kind.startswith("plugin_")] == ["plugin_installed"]
+    assert "pkg.loader.load" in notes[[n.kind for n in notes].index("plugin_installed")].detail
+    result = run_discovery(repo, base, "pytest", roots=V10_PLUGIN_ROOTS, **options)
+    deps = by_id(result)["tests/test_ops.py::test_add"].lifecycle_dependencies
+    assert "plugin:extplug" in deps
+
+
+def test_v10_a_plugin_a_module_made_may_be_installed_as_depends_on_its_maker(repo):
+    """``register(name)`` installs a module it makes and fills
+    (``types.ModuleType(name)``) under a name it is handed: the plugin
+    ``extplug`` may be that module, which is what ``register`` puts there,
+    so every test depends on ``register`` (and not on any change)."""
+    reg = (
+        "import sys\nimport types\n\nfrom pkg import hooks\n\n\n"
+        "def register(name):\n"
+        "    sys.modules[name] = module = types.ModuleType(name)\n"
+        "    module.pytest_runtest_setup = hooks.setup\n"
+    )
+    base = repo.commit(
+        {
+            **BENCH,
+            **V10_OPS,
+            "src/pkg/reg.py": reg,
+            "src/pkg/hooks.py": "def setup(item):\n    pass\n",
+            "src/pkg/other.py": "Y = 1\n",
+            "tests/conftest.py": "pytest_plugins = ['extplug']\n",
+        }
+    )
+    result = run_discovery(repo, base, "pytest", roots=V10_PLUGIN_ROOTS)
+    deps = by_id(result)["tests/test_ops.py::test_add"].lifecycle_dependencies
+    assert "pkg.reg.register" in deps
+    assert not any(d.startswith("plugin:") for d in deps)
+    assert [n.kind for n in result.notes] == ["plugin_installed"]
+    head = repo.commit({"src/pkg/hooks.py": "def setup(item):\n    raise RuntimeError\n"})
+    plan = repo.plan(
+        base, head, [BENCH_TARGET], source_roots=V10_PLUGIN_ROOTS, discover_runners=["pytest"]
+    )
+    assert "tests/test_ops.py::test_add" in selected(plan)
+    assert "lifecycle_dependency_unresolved" not in rules(plan, "tests/test_ops.py::test_add")
+    other = repo.commit({"src/pkg/other.py": "Y = 2\n"})
+    plan = repo.plan(
+        head, other, [BENCH_TARGET], source_roots=V10_PLUGIN_ROOTS, discover_runners=["pytest"]
+    )
+    assert selected(plan) == set()
+
+
+@pytest.mark.parametrize(
+    "install, outside",
+    [
+        ("import pkg.ops\n\n\ndef register(name):\n    sys.modules[name] = pkg.ops\n", False),
+        (
+            "import importlib.util\n\n\ndef register(path):\n"
+            "    spec = importlib.util.spec_from_file_location('compat', path)\n"
+            "    sys.modules['compat'] = importlib.util.module_from_spec(spec)\n",
+            True,
+        ),
+    ],
+    ids=["in-scope-under-any-name", "any-module-under-a-literal"],
+)
+def test_v10_a_plugin_no_open_install_may_provide_is_as_before(repo, install, outside):
+    """What an install under a name nothing bounds installs, when that is
+    the project's own (``pkg.ops``), loads as the plugin; a module found at
+    run time installed under a literal name (``compat``) is no other
+    plugin."""
+    base = repo.commit(
+        {
+            **BENCH,
+            **V10_OPS,
+            "src/pkg/reg.py": "import sys\n" + install,
+            "tests/conftest.py": "pytest_plugins = ['extplug']\n",
+        }
+    )
+    result = run_discovery(repo, base, "pytest", roots=V10_PLUGIN_ROOTS)
+    deps = by_id(result)["tests/test_ops.py::test_add"].lifecycle_dependencies
+    assert not any(d.startswith("plugin:") for d in deps)
+    assert ("pkg.ops" in deps) is not outside
+    kinds = [n.kind for n in result.notes]
+    assert kinds == (["plugin_out_of_scope"] if outside else [])
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {
+            "tests/conftest.py": (
+                "import importlib.util\nimport sys\n\nimport pytest\n\n"
+                "pytest_plugins = ['extplug']\n\n\n@pytest.fixture{scope}\n"
+                "def loaded(request, tmp_path):\n"
+                "    spec = importlib.util.spec_from_file_location(request.node.name, "
+                "tmp_path / 'm.py')\n"
+                "    sys.modules[request.node.name] = importlib.util.module_from_spec(spec)\n"
+            ),
+            "tests/test_load.py": "def test_load(loaded):\n    pass\n",
+        },
+        {
+            "tests/conftest.py": "pytest_plugins = ['extplug']\n",
+            "tests/test_load.py": (
+                "import importlib.util\nimport sys\n\n\ndef test_load(tmp_path):\n"
+                "    spec = importlib.util.spec_from_file_location(tmp_path.name, "
+                "tmp_path / 'm.py')\n"
+                "    sys.modules[tmp_path.name] = importlib.util.module_from_spec(spec)\n"
+                "{call}"
+            ),
+        },
+    ],
+    ids=["fixture", "test"],
+)
+@pytest.mark.parametrize("narrow", [True, False], ids=["isolated", "not-isolated"])
+def test_v10_an_open_install_only_isolated_test_code_makes_is_no_plugin(repo, files, narrow):
+    """A function-scoped fixture or a test runs after pytest imported its
+    plugins: what it installs under a name it computes is none of them.
+    A session-scoped fixture, or a test that module-level code calls (it
+    runs while pytest collects, before a later conftest's
+    ``pytest_plugins``), may be."""
+    scope = "" if narrow else "(scope='session')"
+    call = "" if narrow else "\n\ntest_load(__import__('pathlib').Path('.'))\n"
+    files = {p: t.replace("{scope}", scope).replace("{call}", call) for p, t in files.items()}
+    base = repo.commit({**BENCH, **V10_OPS, **files})
+    result = run_discovery(repo, base, "pytest", roots=V10_PLUGIN_ROOTS)
+    deps = by_id(result)["tests/test_ops.py::test_add"].lifecycle_dependencies
+    kinds = [n.kind for n in result.notes if n.kind.startswith("plugin_")]
+    if narrow:
+        assert not any(d.startswith("plugin:") for d in deps)
+        assert kinds == ["plugin_out_of_scope"]
+    else:
+        assert "plugin:extplug" in deps
+        assert kinds == ["plugin_installed"]
+
+
 def test_python_files_patterns_with_directories_match_the_path(repo):
     rev = repo.commit(
         {

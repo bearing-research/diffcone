@@ -50,7 +50,13 @@ selection rules.
   read off it and names looked up on it. A plugin that `pytest_plugins` or
   `-p` names this way is the installed module; one diffcone cannot follow
   selects every test, with a `plugin_installed` note, and a plugin file
-  of that name outside your source roots is still reported. When what is
+  of that name outside your source roots is still reported. A plugin name
+  no file provides may also be what your code installs under a name it
+  computes: when that may be any module, the plugin selects every test;
+  when it is a module your code makes, every test depends on that code
+  (both with a `plugin_installed` note). Installs made only by a test or a
+  function-scoped fixture don't count, since they run after pytest loads
+  its plugins. When what is
   installed may be any module (loaded from a computed path, or a module
   your code was handed as an argument), code that imports the name sees
   every change. Names built as `"{0}.{1}".format(__name__, name)` count as

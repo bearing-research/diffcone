@@ -1930,8 +1930,8 @@ class Indexer(DynamicBounds):
         isolated test code. Code reading a name outside the roots that may
         be installed gets the same edge, and the installing code an
         ``installs`` edge to each in-scope object it installs; with
-        ``SourceIndex.installed_names`` for discovery (audit round 8,
-        V10)."""
+        ``SourceIndex.installed_names`` and ``SourceIndex.open_installs`` for
+        discovery (audit round 8, V10)."""
         for module, writer in sorted(self._installed):
             if writer != module:
                 self.index.edges.add(Edge(module, writer, EdgeKind.REFERENCES, INSTALLED))
@@ -1955,6 +1955,7 @@ class Indexer(DynamicBounds):
         # be an object nothing names.
         by_name: dict[tuple[str, str], set[str]] = defaultdict(set)
         open_names: set[tuple[str, str]] = set()
+        any_names: set[tuple[str, str]] = set()  # of those, may be any module
         for writer, module, name, value, kind in self._installed_values:
             values[writer].add((module, name, value))
             if kind == SWAP:
@@ -1970,6 +1971,7 @@ class Indexer(DynamicBounds):
                 if value.startswith(ANY):
                     anything.add(writer)
                     open_names.add((writer, key))
+                    any_names.add((writer, key))
                     continue
                 candidates = [value]
                 if ANY in value:
@@ -2001,6 +2003,7 @@ class Indexer(DynamicBounds):
         for symbol, module, _kind, _detail in self._global.external_lookups:
             readers[module].add(symbol)
         names: dict[str, set[str]] = defaultdict(set)
+        open_installs: dict[str, set[tuple[str, bool]]] = defaultdict(set)
         valued = {(writer, name) for writer, _m, name, _v, _k in self._installed_values}
         for pattern, writer, kind in sorted(self._external_installs):
             # Decided per install: what this name gets, not every name the
@@ -2008,6 +2011,14 @@ class Indexer(DynamicBounds):
             names[pattern] |= by_name.get((writer, pattern), set())
             if (writer, pattern) in open_names or (writer, pattern) not in valued:
                 names[pattern].add(ANY_MODULE)
+                if kind != SWAP:
+                    # Installed for good (what readers of the name depend
+                    # on): any module when found at run time, passed in, or
+                    # what nothing tells (``sys.modules.update(saved)``); a
+                    # module the code makes (``types.ModuleType``) is what it
+                    # puts there.
+                    made = (writer, pattern) in valued and (writer, pattern) not in any_names
+                    open_installs[pattern].add((writer, not made))
             if kind == SWAP:
                 # Undone after the test: only the tests running the code see
                 # it, through its own edges to what it installs.
@@ -2024,6 +2035,7 @@ class Indexer(DynamicBounds):
             # What it installs may be any module: a self-edge the planner reads.
             self.index.edges.add(Edge(writer, writer, EdgeKind.REFERENCES, INSTALLS_ANY))
         self.index.installed_names = {n: tuple(sorted(v)) for n, v in sorted(names.items())}
+        self.index.open_installs = {n: tuple(sorted(v)) for n, v in sorted(open_installs.items())}
 
     def _module_reach(self) -> None:
         """For each module referenced as a value, what is reachable as an

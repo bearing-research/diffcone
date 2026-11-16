@@ -476,6 +476,14 @@ class SourceIndex:
     # ANY_MODULE when the object may be something else: the plugin modules
     # ``pytest_plugins`` loads by such a name (discovery; audit round 8, V10).
     installed_names: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # The same names -> the code installing there for good (not undone after
+    # the test) an object no module of the analysis names (ANY_MODULE
+    # above), each with whether that may be any
+    # module (found at run time, passed in: what readers of the name see
+    # every change for) rather than one the code builds (a
+    # ``types.ModuleType`` it fills, an instance: what its references say).
+    # Discovery decides by it what a plugin named only by ``*`` loads.
+    open_installs: dict[str, tuple[tuple[str, bool], ...]] = field(default_factory=dict)
     # The non-Python files under the source roots: path -> git blob id. The
     # index reads none of them, so the planner compares them whole.
     other_files: dict[str, str] = field(default_factory=dict)

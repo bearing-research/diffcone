@@ -154,7 +154,15 @@ Lifecycle dependencies attached to each test:
   the code builds, a module made or found at run time) is the unknown
   dependency ``plugin:<name>`` of every test, reported as
   ``plugin_installed``; a file of that name outside the roots still is what
-  it is besides, an install adds to it); a fixture requesting
+  it is besides, an install adds to it; code installing under a name it
+  computes may install under any plugin name no file in the repository
+  provides, so such a name is also what that code installs, as readers of
+  the name get it: a module found at run time or passed in is
+  ``plugin:<name>``, a module the code makes makes every test depend on
+  that code, both reported as ``plugin_installed``, except when only
+  function-scoped fixtures and tests nothing else calls install (they run
+  after pytest imported its plugins); the same for ``-p``, ``PYTEST_PLUGINS``
+  and ``pytest11`` entry points); a fixture requesting
   its own name resolves to the next definition outward; a module offers a
   fixture under every name it binds the fixture to (``box2 = box``, ``from
   pkg.conftest import engine as motor``, ``engine = pkg.conftest.engine``,
@@ -342,9 +350,13 @@ from diffcone.manifest import Target
 from diffcone.model import (
     ANY_MODULE,
     DYNAMIC_DEPENDENCY,
+    INSTALLED,
+    INSTALLED_ANYWHERE,
+    MUTATED_BY,
     EdgeKind,
     SourceIndex,
     SymbolKind,
+    edge_mark,
 )
 from diffcone.snapshot import PYTEST_CONFIGS, Snapshot, excluded_files, excluded_modules
 
@@ -3825,6 +3837,43 @@ def _runner_arguments(
     return tokens, arg_paths, ambiguous
 
 
+# Edge details pointing at code that writes, which are no use of it.
+_WRITER_DETAILS = frozenset({MUTATED_BY, INSTALLED, INSTALLED_ANYWHERE})
+
+
+def _isolated_installers(
+    writers: set[str], index: SourceIndex, entries: set[str], test_modules: set[str]
+) -> set[str]:
+    """Of the code installing in ``sys.modules``, what runs only inside one
+    test, after pytest imported its plugins: a function-scoped fixture, or a
+    test (a target's entry, a function or method of a test module) nothing
+    else refers to. Not a conftest's or a test module's top level, a hook,
+    a wider-scoped fixture, or a test that other code calls (that may run
+    while pytest collects, before a later conftest's ``pytest_plugins``
+    loads)."""
+    found: set[str] = set()
+    tests: set[str] = set()
+    for writer in writers:
+        symbol = index.symbols.get(writer)
+        if symbol is None or symbol.kind not in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            continue
+        if symbol.fixture_scope == "function":
+            found.add(writer)
+        elif not symbol.fixture_scope and writer in entries and symbol.module in test_modules:
+            tests.add(writer)
+    if tests:
+        referred = {
+            edge.target
+            for edge in index.edges
+            if edge.target in tests
+            and edge.source != edge.target
+            and edge.kind != EdgeKind.DEFINED_IN
+            and edge_mark(edge) not in _WRITER_DETAILS
+        }
+        found |= tests - referred
+    return found
+
+
 class _PluginLoader:
     """The plugin modules a session loads, and those they declare in turn,
     each linked as it is found: pytest registers a module plugin, then its
@@ -3854,6 +3903,12 @@ class _PluginLoader:
         # they re-export from, whose import-time code reaches them through
         # imports).
         self.declared: list[str] = []
+        # A plugin name no file in scope provides, which code installing
+        # under a name nothing bounds may provide (``SourceIndex.
+        # open_installs["*"]``): name -> (where, kind, the installing code
+        # with whether it may install any module), decided once the tests
+        # are known (``settle``).
+        self.pending: dict[str, tuple[str, str, tuple[tuple[str, bool], ...]]] = {}
 
     @property
     def modules(self) -> list[str]:
@@ -3919,15 +3974,12 @@ class _PluginLoader:
                         )
                     )
                     continue
-                if installed:
+                opened = () if ANY_MODULE in installed else self.index.open_installs.get("*", ())
+                if opened:
+                    self.pending.setdefault(name, (where, kind, opened))
+                if installed or opened:
                     continue
-                self.result.notes.append(
-                    DiscoveryNote(
-                        RUNNER,
-                        "plugin_out_of_scope",
-                        f"{where}: {kind} entry {name!r} is not within the source roots",
-                    )
-                )
+                self._out_of_scope(name, where, kind)
                 continue
             if facts.parsed.module in seen:
                 continue
@@ -3938,14 +3990,64 @@ class _PluginLoader:
             found.extend(self.declared_by(facts, seen))
         return found
 
+    def _out_of_scope(self, name: str, where: str, kind: str) -> None:
+        self.result.notes.append(
+            DiscoveryNote(
+                RUNNER,
+                "plugin_out_of_scope",
+                f"{where}: {kind} entry {name!r} is not within the source roots",
+            )
+        )
+
+    def settle(self, isolated: Callable[[set[str]], set[str]]) -> list[str]:
+        """What a plugin name no file in scope provides is, when code
+        installs under a name nothing bounds what no module of the analysis
+        names (``self.pending``), as readers of the name get it: a module
+        that may be any module (found at run time, passed in, or what
+        nothing tells) is the unknown ``plugin:<name>`` of every test; one
+        the code makes (a ``types.ModuleType`` it fills) is what that code
+        puts there, so every test depends on the code. Both reported
+        (``plugin_installed``). Isolated test code (``isolated``: a
+        function-scoped fixture, a test) runs after pytest imported its
+        plugins, so what it installs is none of them: left out. The
+        dependencies of every test this adds."""
+        added: list[str] = []
+        for name, (where, kind, opened) in sorted(self.pending.items()):
+            alone = isolated({w for w, _any in opened})
+            anywhere = sorted({w for w, any_module in opened if any_module} - alone)
+            made = sorted({w for w, any_module in opened if not any_module} - alone)
+            if not anywhere and not made:
+                if not self._installed(name):
+                    self._out_of_scope(name, where, kind)
+                continue
+            if anywhere:
+                if f"plugin:{name}" not in self.unknown:
+                    self.unknown.append(f"plugin:{name}")
+                added.append(f"plugin:{name}")
+                what = (
+                    f"a module found at run time or passed in, by {', '.join(anywhere)}; what "
+                    "it defines is unknown and every test is always selected"
+                )
+            else:
+                added += [w for w in made if w not in added]
+                what = f"a module {', '.join(made)} makes; every test depends on that code"
+            self.result.notes.append(
+                DiscoveryNote(
+                    RUNNER,
+                    "plugin_installed",
+                    f"{where}: {kind} entry {name!r} is not within the source roots and may be "
+                    f"what project code installs in sys.modules under a name it computes ({what})",
+                )
+            )
+        return added
+
     def _installed(self, name: str) -> set[str]:
         """What project code installs in ``sys.modules`` under a name pytest
         imports a plugin by (``SourceIndex.installed_names``: a literal, a
         prefix, any name): the in-scope modules and symbols, ANY_MODULE for
         an object nothing names. Under a name nothing bounds (``*``), only
-        the in-scope objects: that code may install anything under any name
-        (``sys.modules[name] = types.ModuleType(name)``), and taking every
-        plugin outside the roots for it would select every test always."""
+        the in-scope objects here: what else that code installs is decided
+        once the tests are known (``settle``)."""
         found: set[str] = set()
         for key, objects in self.index.installed_names.items():
             if key == "*":
@@ -4321,6 +4423,21 @@ def discover_pytest(
             flow,
             kept_out,
         )
+
+    # A plugin name only code installing under a name nothing bounds may
+    # provide: decided now the tests are known (what isolated test code
+    # installs is no plugin), and a dependency of every test.
+    if loader.pending:
+        entries = {t.entry_symbol for t in result.targets}
+        extra = loader.settle(lambda w: _isolated_installers(w, index, entries, test_modules))
+        if extra:
+            result.targets[:] = [
+                replace(
+                    t, lifecycle_dependencies=tuple(sorted({*t.lifecycle_dependencies, *extra}))
+                )
+                for t in result.targets
+            ]
+            plugin_modules = plugin_modules + extra
 
     # A class pytest's own rules skip is only worth reporting if nothing
     # collected it through inheritance either, which is known once every
