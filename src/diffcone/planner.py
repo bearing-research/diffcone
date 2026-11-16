@@ -1304,31 +1304,37 @@ def plan_from_indexes(
         for module, found in index.module_reach.items():
             module_reach[module].update(found)
     reached: set[str] = set()
-    for edge, revs in sorted(union.items()):
-        if edge.kind == EdgeKind.REFERENCES and edge.target in escaped_modules:
-            for member in members.get(edge.target, ()):
-                if member != edge.source:
-                    graph.add(
-                        Edge(
-                            edge.source,
-                            member,
-                            EdgeKind.REFERENCES,
-                            "attribute of a module passed to other code",
-                        ),
-                        revs,
-                    )
-            if module_reach.get(edge.target):
-                node = f"{edge.target}.<imports>"
+    # Only the edges onto an escaped module, sorted (sorting all of them
+    # first gives the same order, at the cost of every edge).
+    onto_escaped = [
+        (e, r)
+        for e, r in union.items()
+        if e.kind == EdgeKind.REFERENCES and e.target in escaped_modules
+    ]
+    for edge, revs in sorted(onto_escaped):
+        for member in members.get(edge.target, ()):
+            if member != edge.source:
                 graph.add(
                     Edge(
                         edge.source,
-                        node,
+                        member,
                         EdgeKind.REFERENCES,
                         "attribute of a module passed to other code",
                     ),
                     revs,
                 )
-                reached.add(edge.target)
+        if module_reach.get(edge.target):
+            node = f"{edge.target}.<imports>"
+            graph.add(
+                Edge(
+                    edge.source,
+                    node,
+                    EdgeKind.REFERENCES,
+                    "attribute of a module passed to other code",
+                ),
+                revs,
+            )
+            reached.add(edge.target)
     # What code installs in ``sys.modules`` (an ``installs`` edge to an
     # in-scope module or symbol) is what an import of the name gets, which
     # may read any attribute off it (audit round 8, V10): one node per
@@ -1565,11 +1571,15 @@ def plan_from_indexes(
     listing = {
         symbol for (symbol, detail) in base.reflection | head.reflection if detail == "dir()"
     }
-    for edge, revs in sorted(union.items()):
-        if edge.source in listing and edge.kind == EdgeKind.REFERENCES and edge.detail == "module":
-            hook = f"{edge.target}.__dir__"
-            if edge.target in module_nodes and hook in known_symbols:
-                graph.add(Edge(edge.source, hook, EdgeKind.REFERENCES, "dir()"), revs)
+    listed = [
+        (e, r)
+        for e, r in union.items()
+        if e.source in listing and e.kind == EdgeKind.REFERENCES and e.detail == "module"
+    ]
+    for edge, revs in sorted(listed):
+        hook = f"{edge.target}.__dir__"
+        if edge.target in module_nodes and hook in known_symbols:
+            graph.add(Edge(edge.source, hook, EdgeKind.REFERENCES, "dir()"), revs)
 
     # Targets join the graph as nodes with explicit dependency edges, but for
     # the dependencies every target of a runner carries, which the search
@@ -1715,8 +1725,14 @@ def plan_from_indexes(
         # members, whose own module's imports never reach it depends on
         # that import.
         symbol_module = {s.id: s.module for index in (base, head) for s in index.symbols.values()}
-        for edge, revs in sorted(union.items()):
-            if edge.kind != EdgeKind.REFERENCES or edge.source in mode:
+
+        def onto_newly_run(e: Edge) -> bool:
+            module = e.target if e.target in module_nodes else symbol_module.get(e.target)
+            return e.kind == EdgeKind.REFERENCES and module in newly_run
+
+        candidates = [(e, r) for e, r in union.items() if onto_newly_run(e)]
+        for edge, revs in sorted(candidates):
+            if edge.source in mode:
                 continue
             module = edge.target if edge.target in module_nodes else symbol_module.get(edge.target)
             if module is None or module not in newly_run or module in reach.closure_of(edge.source):
