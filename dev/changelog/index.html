@@ -1842,9 +1842,15 @@ selection rules.</p>
   passing <code>*items</code> or <code>**options</code> passes what they hold. What a function
   changes through an element of an argument it hands on (<code>for o in objs:
   o.reset()</code>) is now changed for its callers too.</li>
-<li>A function you store on a logging handler or logger class under a
-  callback's name (<code>MyLogger.handle = f</code>, or with <code>setattr</code>) now runs as
-  that callback when you log.</li>
+<li>A function you store on a logging handler, filter or logger class
+  under a callback's name (<code>MyLogger.handle = f</code>, or with <code>setattr</code>) now
+  runs as that callback when you log, and is followed when your own code
+  calls it by that name (<code>self.emit(record)</code>).</li>
+<li>A change in place to what one of your functions returns now reaches
+  what the caller handed it, when the function returns that object or
+  part of it (<code>r = wrap(p); r["items"].append(x)</code>, through further calls
+  and any of several returns, <code>b.tag().add(x)</code> where <code>tag</code> returns
+  <code>self</code>, or the result handed to a function that changes it).</li>
 <li><code>locals()</code> at module level is treated as the module's namespace, like
   <code>globals()</code>.</li>
 <li>Code that imports a name your project installs a module under in

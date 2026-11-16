@@ -1429,6 +1429,14 @@ binds that name in its body to anything but a constant (a property,
 another descriptor, a list), or has a decorator (other than
 <code>functools.total_ordering</code> or <code>typing.final</code>), a metaclass (other than
 <code>abc.ABCMeta</code>) or a library base.</p>
+<p>What one of your functions returns of what it was handed is that
+object: changing the result in place changes what the caller handed
+(<code>r = wrap(p)</code>, then <code>r["items"].append(x)</code>, where <code>wrap</code> returns <code>p</code>,
+part of it, <code>p</code> on one of several returns, or what another function
+returns of it; <code>b.tag().add(x)</code> where <code>tag</code> returns <code>self</code>), and so does
+handing the result to a function that changes it. A new object it
+builds and returns (<code>return {"items": list(p["items"])}</code>) is not what
+the caller handed: adding to it changes nothing handed.</p>
 <p>Not followed:</p>
 <ul>
 <li>an object stored away and changed later under another name
@@ -1437,15 +1445,16 @@ another descriptor, a list), or has a decorator (other than
   that changes it or hands it on or in a function of yours that returns
   it (an instance kept in a module variable,
   <code>TOK = Tokenizer(RULES)</code>, is not followed back to <code>RULES</code>);</li>
-<li>an object a library function returns that your code then changes;</li>
-<li>an object one of your functions returns after it was handed it
-  (<code>r = wrap(p)</code>, then <code>r.items.append(x)</code>, where <code>wrap</code> returns <code>p</code>);</li>
+<li>an object a library function returns that your code then changes
+  (<code>typing.cast(T, p)</code> is <code>p</code>);</li>
 <li>logging a library does into your handlers from inside its own
   calls (<code>requests.get(...)</code> logging through <code>urllib3</code>'s logger);</li>
 <li>a function stored on one of your classes under another name and
-  called as a method by your own code (<code>SLog.handle = _recording_handle</code>,
-  then <code>self.handle(record)</code> in a method of <code>SLog</code>); one the <code>logging</code>
-  library calls back (a log call through an <code>SLog</code> logger) is followed;</li>
+  called as a method by your own code (<code>Cache.get = _fast_get</code>, then
+  <code>self.get(k)</code>); one stored on a <code>logging</code> logger, handler, filter or
+  formatter class under a name the library calls back
+  (<code>SLog.handle = _recording_handle</code>) is followed, whether the library
+  or your code calls it (<code>self.handle(record)</code>, <code>LOG.handle(record)</code>);</li>
 <li>a method called on an item of a module-level dict or list
   (<code>_CACHE["a"].put(4)</code>): only the dict's own methods count as writes;</li>
 <li>a library function that changes an argument you pass it, a module of
