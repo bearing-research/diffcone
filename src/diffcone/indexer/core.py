@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 
 from diffcone.indexer.dynamics import DynamicBounds
 from diffcone.indexer.facts import (
+    DEFINITION,
     _facts_to_dict,
     _Output,
     _output_from_dict,
@@ -237,8 +238,10 @@ class Indexer(DynamicBounds):
             undecided |= {(c, w) for c, _, w in self._global.attr_value_writes}
             for state, writer in sorted(undecided):  # every one, undecided
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        self._definition_writes()
         self._lazy_constants()
         self._typed_calls()
+        self._definition_typed_calls()
         self._shared_instances()
         # Classes whose instances (or the class itself) are handed to someone
         # else: whoever holds one may read any attribute off it by a name
@@ -268,6 +271,70 @@ class Indexer(DynamicBounds):
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
         return self.index
+
+    def _definition_writes(self) -> None:
+        """Give what a function's definition-time code writes (its
+        ``DEFINITION`` writer: facts.definition_facts) back to the function,
+        so static planning reads it as before (a decorator or default is
+        part of the function's definition), and keep in
+        ``SourceIndex.definition_writes`` the (state, function) pairs only
+        that code writes: evidence planning does not take them for what a
+        call of the function stores (audit round 8, V28)."""
+        index = self.index
+
+        def own(name: str) -> str:
+            return name[: -len(DEFINITION)] if name.endswith(DEFINITION) else name
+
+        for name in ("stores", "handed", "process_writes"):
+            records = getattr(index, name)
+            if any(x.endswith(DEFINITION) for r in records for x in r):
+                renamed = {tuple(own(x) for x in r) for r in records}
+                records.clear()
+                records |= renamed
+        marked = [
+            e for e in index.edges if e.source.endswith(DEFINITION) or e.target.endswith(DEFINITION)
+        ]
+        if not marked:
+            return
+        index.edges.difference_update(marked)
+        defined: set[tuple[str, str]] = set()
+        called: set[tuple[str, str]] = set()
+        for e in marked:
+            source, target = own(e.source), own(e.target)
+            if e.detail == MUTATED_BY and e.target.endswith(DEFINITION):
+                defined.add((source, target))
+            elif e.source.endswith(DEFINITION):
+                called.add((source, target))
+        callers = {f for f, _ in called}
+        made = {(e.source, e.target) for e in index.edges if e.source in callers}
+        index.definition_calls |= {p for p in called - made if p[0] != p[1]}
+        index.definition_writes = {
+            (state, function)
+            for state, function in defined
+            if state != function
+            and Edge(state, function, EdgeKind.REFERENCES, MUTATED_BY) not in index.edges
+        }
+        index.edges.update(
+            Edge(own(e.source), own(e.target), e.kind, e.detail)
+            for e in marked
+            if own(e.source) != own(e.target)
+        )
+
+    def _definition_typed_calls(self) -> None:
+        """A method a function's definition-time code calls on a receiver of
+        a known class (``@app.command()``: ``Typer.command``) is a typed call
+        of the function, and one of ``SourceIndex.definition_calls`` unless
+        its body makes it too (audit round 8, V28)."""
+        index = self.index
+        header = {
+            (a[: -len(DEFINITION)], b) for a, b in index.typed_calls if a.endswith(DEFINITION)
+        }
+        body = {(a, b) for a, b in index.typed_calls if not a.endswith(DEFINITION)}
+        callers = {f for f, _ in header}
+        referenced = {(e.source, e.target) for e in index.edges if e.source in callers} & header
+        index.definition_calls -= body
+        index.definition_calls |= {p for p in header - body - referenced if p[0] != p[1]}
+        index.typed_calls = {p for p in header | body if p[0] != p[1]}
 
     def _lazy_constants(self) -> None:
         """Decide which pass-1 lazy-constant candidates are lazy constants

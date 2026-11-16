@@ -1396,6 +1396,65 @@ def test_v27_super_new_runs_the_next_new_of_the_mro():
     )
 
 
+DEFINED = """\
+REG = []
+SEEN = []
+
+
+class Registry:
+    def __init__(self):
+        self.commands = []
+
+    def command(self):
+        def decorator(f):
+            self.commands.append(f)
+            return f
+
+        return decorator
+
+
+app = Registry()
+
+
+@app.command()
+def main():
+    return 1
+
+
+@app.command()
+def both():
+    app.commands.append(0)
+
+
+def kept(seen=SEEN):
+    seen.append(1)
+
+
+def later(cb=lambda: REG.append(2)):
+    cb()
+"""
+
+
+def test_v28_what_only_a_definition_writes_or_calls_is_kept_apart():
+    """A function's decorators and defaults run when its ``def`` does: the
+    ``mutated_by`` edges and calls only they make stay edges of the
+    function (static planning reads them as before) and are listed in
+    ``definition_writes`` and ``definition_calls`` for evidence planning
+    (audit round 8, V28). What the body writes or calls too, a default the
+    body writes through its parameter, and a lambda default, are not."""
+    idx = index({"pkg/__init__.py": "", "pkg/m.py": DEFINED})
+    writes = {(e.source, e.target) for e in idx.edges if e.detail == "mutated_by"}
+    m = "pkg.m."
+    assert {(m + "app", m + "main"), (m + "app", m + "both")} <= writes
+    assert {(m + "SEEN", m + "kept"), (m + "REG", m + "later")} <= writes
+    assert idx.definition_writes == {(m + "app", m + "main")}
+    assert (m + "main", m + "Registry.command") in idx.typed_calls
+    assert (m + "main", m + "Registry.command") in idx.definition_calls
+    assert (m + "both", m + "Registry.command") in idx.definition_calls
+    assert not any(f in (m + "kept", m + "later") for f, _ in idx.definition_calls)
+    assert (m + "both", m + "app") not in idx.definition_calls
+
+
 def test_t20_an_immutable_variable_keeps_its_rebinding_edges():
     """Rebinding a constant (``mod.X = v``) is an edge of its own; a write
     into it in place is none, and makes it no less immutable."""

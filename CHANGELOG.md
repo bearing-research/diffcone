@@ -50,6 +50,11 @@ selection rules.
   and sets attributes on what it gets back no longer counts as changing
   its own class: that call runs the next `__new__` in the class hierarchy,
   whose own result is still followed.
+- With `--evidence`, what a function's decorators and default values do
+  (`@app.command()` registering it on `app`) no longer counts as something
+  a call of the function stores for later tests: that code runs when the
+  module defines the function. A change to the decorator, or to the code
+  it runs, still reaches the readers of what it writes.
 - `locals()` at module level is treated as the module's namespace, like
   `globals()`.
 - Code that imports a name your project installs a module under in

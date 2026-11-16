@@ -62,6 +62,7 @@ class IndexerState:
             stores=self.index.stores,
             handed=self.index.handed,
             memoized=self.index.memoized,
+            definition_calls=self.index.definition_calls,
         )
         self.out = self._global
         # Symbols and class scopes added by the module being indexed, and

@@ -11,6 +11,7 @@ from typing import Any
 from diffcone.indexer.scopes import ClassScope, ImportBinding, ModuleScope, Scope
 from diffcone.indexer.syntax import _digest
 from diffcone.model import (
+    MUTATED_BY,
     Edge,
     EdgeKind,
     ExternalReference,
@@ -227,6 +228,10 @@ class _Output:
     # ``instance_bindings``), resolved into SourceIndex.typed_calls after
     # pass 2 (Indexer._typed_calls; audit round 7, U5, U18).
     receiver_calls: set[tuple[str, str, str, str]] = field(default_factory=set)
+    # (function, target): what a function's definition-time code (its
+    # decorators, defaults, annotations) refers to and its body does not
+    # (Resolver._resolve_function; SourceIndex.definition_calls).
+    definition_calls: set[tuple[str, str]] = field(default_factory=set)
     # (function, where, methods): a store through what methods of the
     # receiver return (``self._table()[k] = v``: ``_table``), kept as a
     # store when one of each may return the receiver's state; (method,
@@ -426,6 +431,7 @@ class _Output:
         self.memoized |= other.memoized
         self.kept_results |= other.kept_results
         self.receiver_calls |= other.receiver_calls
+        self.definition_calls |= other.definition_calls
         self.result_stores |= other.result_stores
         self.receiver_returns |= other.receiver_returns
         self.script_paths |= other.script_paths
@@ -459,6 +465,61 @@ class _Output:
         self.process_writes |= other.process_writes
         self.rebound |= other.rebound
         self.main_guarded |= other.main_guarded
+
+
+# The writer a function's definition-time code (its decorators, default
+# values and eagerly evaluated annotations, run when the ``def`` statement
+# runs) writes as: ``<function>`` + DEFINITION, until the index gives its
+# edges back to the function once every write is decided, keeping which were
+# the definition's alone (``SourceIndex.definition_writes``; audit round 8,
+# V28).
+DEFINITION = "@def"
+# The facts naming a writer, with its position in each record.
+_WRITER_FIELDS = {
+    "passes": 0,
+    "whole_passes": 0,
+    "result_calls": 0,
+    "held_passes": 0,
+    "computed_passes": 0,
+    "param_writes": 0,
+    "param_flavors": 0,
+    "held_param_writes": 0,
+    "receiver_calls": 0,
+    "result_writes": 0,
+    "direct_result_writes": 0,
+    "process_writes": 0,
+    "value_writes": 1,
+    "receiver_writes": 1,
+    "instance_writes": 1,
+    "typed_writes": 1,
+    "library_calls": 1,
+    "any_class_writes": 1,
+    "attr_value_writes": 2,
+    "held_binds": 2,
+}
+
+
+def definition_facts(out: _Output, function: str) -> None:
+    """What ``out`` recorded of ``function``'s definition-time code, made
+    the writes of its own writer (``DEFINITION``): what a decorator such as
+    ``@app.command()`` writes is written when the module runs the ``def``,
+    not when the function is called."""
+    writer = function + DEFINITION
+    for name, at in _WRITER_FIELDS.items():
+        records = getattr(out, name)
+        if any(r[at] == function for r in records):
+            setattr(
+                out,
+                name,
+                {(*r[:at], writer, *r[at + 1 :]) if r[at] == function else r for r in records},
+            )
+    if any(e.target == function and e.detail == MUTATED_BY for e in out.edges):
+        out.edges = {
+            Edge(e.source, writer, e.kind, e.detail)
+            if e.target == function and e.detail == MUTATED_BY
+            else e
+            for e in out.edges
+        }
 
 
 def _tuples(value: list | None) -> tuple[str, ...] | None:
@@ -599,6 +660,7 @@ def _output_to_dict(out: _Output) -> dict:
         "memoized": sorted(out.memoized),
         "kept_results": sorted(out.kept_results),
         "receiver_calls": sorted(list(c) for c in out.receiver_calls),
+        "definition_calls": sorted(list(c) for c in out.definition_calls),
         "result_stores": sorted(list(c) for c in out.result_stores),
         "receiver_returns": sorted(list(c) for c in out.receiver_returns),
         "script_paths": sorted(list(p) for p in out.script_paths),
@@ -714,6 +776,7 @@ def _output_from_dict(data: dict, scopes: dict[str, ModuleScope]) -> _Output:
     out.memoized = set(data["memoized"])
     out.kept_results = set(data["kept_results"])
     out.receiver_calls = {(a, b, c, d) for a, b, c, d in data["receiver_calls"]}
+    out.definition_calls = {(a, b) for a, b in data["definition_calls"]}
     out.result_stores = {(a, b, c) for a, b, c in data["result_stores"]}
     out.receiver_returns = {(a, b) for a, b in data["receiver_returns"]}
     out.script_paths = {(a, b) for a, b in data["script_paths"]}

@@ -2841,11 +2841,12 @@ ROUTER_TESTS = {
 )
 def test_t1_a_decorators_registration_is_a_write_of_the_chain(repo, edit, decorator, body):
     """``@router.put('/x')`` writes ``router`` when the ``def`` runs and
-    stores the function. ``endpoint`` can run ``compute`` and writes the
-    router (its decorator does), so ``test_r``, which only reads the
-    router, is selected with the tests that run ``endpoint`` (``test_a``,
-    ``test_c`` through the router): telling a write a decorator makes at
-    import from one the body makes is not attempted (audit T1)."""
+    stores the function. A change ``endpoint`` can run (``compute``)
+    selects the tests that run ``endpoint`` (``test_a``, ``test_c`` through
+    the router); ``test_r``, which only reads the router, joins when the
+    decorator's own call changes or the body registers too (audit T1). The
+    decorator's write is made at import, not by a run of ``endpoint``, so a
+    body change alone does not reach ``test_r`` (audit round 8, V28)."""
     lib = "def compute(k):\n    return k * 2\n"
     files = {
         **NOOP_BASE,
@@ -2863,11 +2864,8 @@ def test_t1_a_decorators_registration_is_a_write_of_the_chain(repo, edit, decora
     )
     head = repo.commit(changed)
     plan = _noop_plan(repo, base, head, evidence)
-    assert selected(plan) == {
-        "tests/test_a.py::test_a",
-        "tests/test_c.py::test_c",
-        "tests/test_r.py::test_r",
-    }
+    reader = set() if (edit, body) == ("compute", "") else {"tests/test_r.py::test_r"}
+    assert selected(plan) == {"tests/test_a.py::test_a", "tests/test_c.py::test_c"} | reader
 
 
 HANDLER_TABLES = (
@@ -6686,3 +6684,148 @@ def test_v4_a_class_body_handing_its_namespace_on(repo, edit, ns, read):
     plan = _noop_plan(repo, base, head, evidence)
     assert "tests/test_check.py::test_check" in selected(plan)
     assert "tests/test_other.py::test_other" not in selected(plan)
+
+
+# What a function's decorators, defaults and annotations write is written
+# when the ``def`` runs, at import, not when a test calls the function:
+# ``@app.command()`` puts ``main`` into ``app``, and a test running ``main``
+# stores nothing there (typer's ``tests/assets/print_modules.py``; audit
+# round 8, V28). The static edge stays: a change to the definition reaches
+# the readers of ``app``.
+DEF_REGISTRY = """\
+import functools
+
+CALLS = []
+
+
+class Registry:
+    def __init__(self):
+        self.commands = []
+
+    def command(self, name=None):
+        def decorator(f):
+            self.commands.append(f)
+            return f
+
+        return decorator
+
+
+def counted(f):
+    @functools.wraps(f)
+    def inner(*args):
+        CALLS.append(1)
+        return f(*args)
+
+    return inner
+"""
+DEF_CLI = """\
+from pkg.registry import Registry, counted
+
+LEVEL = 1
+SEEN = []
+app = Registry()
+
+
+@app.command()
+def main():
+    return LEVEL + 1
+
+
+def setup():
+    return counted
+"""
+DEFINED = {
+    **BASE,
+    "pkg/registry.py": DEF_REGISTRY,
+    "pkg/cli.py": DEF_CLI,
+    "tests/test_main.py": (
+        "from pkg.cli import main, setup\n\n\ndef test_main():\n    setup()\n    assert main()\n"
+    ),
+    "tests/test_count.py": (
+        "from pkg.cli import SEEN, app\nfrom pkg.registry import CALLS\n\n\n"
+        "def test_count():\n    assert len(app.commands) + len(SEEN) + len(CALLS) >= 0\n"
+    ),
+}
+MAIN, COUNT = "tests/test_main.py::test_main", "tests/test_count.py::test_count"
+
+
+def _defined_plan(repo, base_changes, head_changes):
+    files = {**DEFINED}
+    for path, (old, new) in base_changes.items():
+        assert old in files[path]
+        files[path] = files[path].replace(old, new)
+    base, evidence = _collected(repo, files)
+    for path, (old, _) in head_changes.items():
+        assert old in files[path]
+    head = repo.commit(
+        {path: files[path].replace(old, new) for path, (old, new) in head_changes.items()}
+    )
+    return _plan(repo, base, head, evidence)
+
+
+def test_v28_a_decorator_write_is_no_store_of_a_call(repo):
+    """``main``'s body changes; ``test_main`` runs it. ``@app.command()``
+    filled ``app`` at import, so ``test_count``, reading ``app``, never
+    reads what a run of ``main`` stored: it is not selected."""
+    plan = _defined_plan(repo, {}, {"pkg/cli.py": ("LEVEL + 1", "LEVEL + 2")})
+    assert MAIN in selected(plan)
+    assert COUNT not in selected(plan)
+
+
+DEFINITION_GUARDS = {
+    # The decorator expression changes: what ``app`` holds may differ.
+    "the decorator changed": ({}, {"pkg/cli.py": ("@app.command()", "@app.command('m')")}),
+    # The decorator's own code changes (typer's ``Typer.command``).
+    "the decorator's body changed": (
+        {},
+        {"pkg/registry.py": ("self.commands.append(f)\n", "self.commands.append(f or None)\n")},
+    ),
+    # The body itself writes the registry.
+    "the body writing it": (
+        {"pkg/cli.py": ("    return LEVEL + 1", "    app.commands.append(LEVEL)\n    return 1")},
+        {"pkg/cli.py": ("append(LEVEL)", "append(LEVEL + 1)")},
+    ),
+    # A wrapper the decorator returns writes on every call.
+    "a wrapper writing when called": (
+        {"pkg/cli.py": ("@app.command()", "@counted")},
+        {"pkg/cli.py": ("LEVEL + 1", "LEVEL + 2")},
+    ),
+    # A mutable default the body writes.
+    "a default the body writes": (
+        {
+            "pkg/cli.py": (
+                "def main():\n    return",
+                "def main(seen=SEEN):\n    seen.append(1)\n    return",
+            )
+        },
+        {"pkg/cli.py": ("LEVEL + 1", "LEVEL + 2")},
+    ),
+    # A class decorator that changes.
+    "a class decorator changed": (
+        {
+            "pkg/cli.py": (
+                "\n\n@app.command()\ndef main():",
+                "\n\n@app.command()\nclass Cmd:\n    pass\n\n\ndef main():",
+            )
+        },
+        {"pkg/cli.py": ("@app.command()\nclass", "@app.command('c')\nclass")},
+    ),
+    # The decorator applied by a call in a function a test runs.
+    "applied by a call when run": (
+        {
+            "pkg/cli.py": ("@app.command()\ndef main():", "def main():"),
+        },
+        {"pkg/cli.py": ("    return counted\n", "    app.command()(main)\n")},
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(DEFINITION_GUARDS))
+def test_v28_what_a_definition_or_a_call_writes_reaches_its_readers(repo, case):
+    """The bounds of the rule above: a change to the decorator expression
+    or to the decorator's code, a body writing the registry itself, a
+    wrapper writing on every call, a default the body writes, a class
+    decorator, a decorator applied by a call a test runs: ``test_count``
+    is selected."""
+    plan = _defined_plan(repo, *DEFINITION_GUARDS[case])
+    assert COUNT in selected(plan)

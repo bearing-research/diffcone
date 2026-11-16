@@ -80,6 +80,9 @@ from diffcone.model import (
 #     one pseudo-node per set of callbacks (model.LOG_CALLBACKS);
 # 71: SourceIndex.open_installs (the code installing, under a name outside
 #     the roots, what no module of the analysis names; discovery's plugins);
+# 72: SourceIndex.definition_writes and definition_calls (what only a
+#     function's decorators, defaults and annotations write or call; audit
+#     round 8, V28);
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -138,7 +141,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 71
+INDEX_FORMAT = 72
 
 
 def _indexer_fingerprint() -> str:
@@ -248,6 +251,8 @@ def index_to_dict(index: SourceIndex) -> dict:
         "typed_calls": sorted(list(t) for t in index.typed_calls),
         "shared_instances": sorted(index.shared_instances),
         "lazy_constants": dict(sorted(index.lazy_constants.items())),
+        "definition_writes": sorted(list(w) for w in index.definition_writes),
+        "definition_calls": sorted(list(c) for c in index.definition_calls),
         "cython": {
             path: {
                 "functions": [{**asdict(f), "names": sorted(f.names)} for f in module.functions],
@@ -314,6 +319,8 @@ def index_from_dict(data: dict) -> SourceIndex:
         typed_calls={(a, b) for a, b in data["typed_calls"]},
         shared_instances=set(data["shared_instances"]),
         lazy_constants=dict(data["lazy_constants"]),
+        definition_writes={(a, b) for a, b in data["definition_writes"]},
+        definition_calls={(a, b) for a, b in data["definition_calls"]},
         cython={
             path: CythonModule(
                 path,

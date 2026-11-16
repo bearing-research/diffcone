@@ -703,6 +703,17 @@ class _Observers:
         # ``written_classes``.
         class_writes: dict[str, set[str]] = defaultdict(set)
         class_reads: dict[str, set[str]] = defaultdict(set)
+        # What a call of each function writes: its ``mutated_by`` edges but
+        # those only its decorators, defaults or annotations make in both
+        # revisions (``SourceIndex.definition_writes``), which ran when the
+        # ``def`` did (audit round 8, V28): ``_stored_results``.
+        called: dict[str, set[str]] = defaultdict(set)
+        self.call_writes = called
+        # What a call of each function can run: ``calls`` but what only its
+        # definition-time code refers to in both revisions
+        # (``SourceIndex.definition_calls``; V28): ``_handed_to``.
+        runs: dict[str, set[str]] = defaultdict(set)
+        self.call_runs = runs
         for index in (c_index, other):
             # The edges through the pseudo-node of a set of logging callbacks
             # as the edges from each variable to each log site they stand
@@ -730,8 +741,12 @@ class _Observers:
                         self.named_on[(edge.source, edge.target)].add(mark[len("attribute:") :])
                     if mark == MUTATED_BY:
                         self.writes[edge.target].add(edge.source)
+                        if (edge.source, edge.target) not in index.definition_writes:
+                            called[edge.target].add(edge.source)
                     elif mark != REGISTERS:
                         self.calls[edge.source].add(edge.target)
+                        if (edge.source, edge.target) not in index.definition_calls:
+                            runs[edge.source].add(edge.target)
                     if mark in (MUTATED_BY, REGISTERS):
                         # A registry and what is put in it (``_forward``).
                         self.holds[edge.source].add(edge.target)
@@ -805,6 +820,8 @@ class _Observers:
         for index in (c_index, other):
             for caller, method in index.typed_calls:
                 self.calls[caller].add(method)
+                if (caller, method) not in index.definition_calls:
+                    runs[caller].add(method)
         # Classes calling which may give back an object already in use.
         self.shared_instances = c_index.shared_instances | other.shared_instances
         # A table getter whose writers all run only inside test windows
@@ -1556,7 +1573,7 @@ class _Observers:
             symbol = self.symbols[node]
             if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
                 joined.append(node)
-                for variable in sorted(self.writes.get(node, ())):
+                for variable in sorted(self.call_writes.get(node, ())):
                     if self._written_new(variable, node, at_import=False):
                         found.append((variable, node, self._runs_e[node], None))
             by_name = node in changed and self._runs_e[node] == node
@@ -1566,7 +1583,7 @@ class _Observers:
                     queue.append(caller)
         self._handed_to_found = self._handed_to(joined)
         for callee, caller, ran in self._handed_to_found:
-            for variable in sorted(self.writes.get(callee, ())):
+            for variable in sorted(self.call_writes.get(callee, ())):
                 if self._written_new(variable, callee, at_import=False):
                     found.append((variable, callee, ran, caller))
         # What a test touching a changed file ran (``_file_readers``): it may
@@ -1574,7 +1591,7 @@ class _Observers:
         seeds = [s for s in sorted(self._file_seeds) if s not in self._seeded]
         self._seeded.update(seeds)
         for seed in seeds:
-            for variable in sorted(self.writes.get(seed, ())):
+            for variable in sorted(self.call_writes.get(seed, ())):
                 if self._written_new(variable, seed, at_import=False):
                     found.append((variable, seed, seed, None))
         # A lookup on an external module the chain, or what it calls, writes
@@ -1719,7 +1736,7 @@ class _Observers:
         while queue:
             node, caller, ran = queue.popleft()
             callees: set[str] = set()
-            for target in self.calls.get(node, ()):
+            for target in self.call_runs.get(node, ()):
                 symbol = self.symbols.get(target)
                 if symbol is None:
                     continue

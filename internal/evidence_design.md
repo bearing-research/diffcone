@@ -530,7 +530,17 @@ selection or states something the tables left implicit; none narrows it.
   and a test's own code hands nothing on (the isolation assumption: what
   it hands project code that stores it is not followed; see
   docs/limitations.md). The R22 assumption below holds for module
-  variables too: an attribute of the writer's receiver is state.
+  variables too: an attribute of the writer's receiver is state. What a
+  function's decorators, defaults and annotations write or call runs when
+  its `def` does, at import, not when it is called: the index keeps the
+  `mutated_by` edges and the calls only that code makes
+  (`SourceIndex.definition_writes`, `definition_calls`), and neither
+  counts here as what a run of the function stores or calls (audit round
+  8, V28: typer's `@app.command()` made `main` "store into" `app`). Static
+  planning keeps both edges, and code run at import is followed by the
+  import rules above; a wrapper a decorator returns is the decorated
+  function's caller (`decorations`), and a lambda in a default stays the
+  function's code.
   A cache outside a module variable (audit round 5,
   R22: `self._cache[k] = compute(k)` on a singleton or a session fixture's
   object, `cls._cache`, a `@memo` decorator's closure, `get.cache`, a

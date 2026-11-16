@@ -32,7 +32,7 @@ from diffcone.indexer.definitions import (
     _rebound_names,
     parametrized_values,
 )
-from diffcone.indexer.facts import _FuncParams, _Output
+from diffcone.indexer.facts import _FuncParams, _Output, definition_facts
 from diffcone.indexer.literals import NESTED_SCOPES, _LocalBindings
 from diffcone.indexer.references import (
     FRESH_RESULT_DECORATORS,
@@ -589,6 +589,28 @@ class Resolver(FirstPass):
         self._main_guarded(scope.name, main_out)
         self._resolve_definitions(scope, scope.tree.body, scope.members, None)
 
+    def _definition_visit(self, collector: _ReferenceCollector, expr: ast.expr) -> None:
+        """Visit part of a function's definition-time code (a decorator, a
+        default, an annotation) for the function: its references are the
+        function's, but what it writes is written when the ``def`` runs, as
+        the function's ``DEFINITION`` writer (facts.definition_facts; audit
+        round 8, V28). A lambda in it runs when it is called, which may be
+        when the function runs (``def f(cb=lambda: REG.append(1))``): what
+        such an expression writes stays the function's."""
+        if any(isinstance(n, ast.Lambda) for n in ast.walk(expr)):
+            collector.visit(expr)
+            return
+        saved, self.out = self.out, _Output()
+        try:
+            collector.visit(expr)
+        finally:
+            scratch, self.out = self.out, saved
+        definition_facts(scratch, collector.source)
+        self._definition_targets.update(
+            e.target for e in scratch.edges if e.source == collector.source
+        )
+        self.out.merge(scratch)
+
     def _main_guarded(self, module: str, main_out: _Output) -> None:
         """Merge what a module's ``__main__`` block recorded, noting what the
         module's own code does only there: references, names and dynamic
@@ -991,6 +1013,7 @@ class Resolver(FirstPass):
         accessors: frozenset[int],
     ) -> None:
         fscope = Scope(module=scope, locals=_LocalBindings().collect(node), literal_node=node)
+        self._definition_targets: set[str] = set()
         bound_method = class_scope is not None and not _is_staticmethod(node)
         if bound_method:
             params = node.args.posonlyargs + node.args.args
@@ -1039,13 +1062,18 @@ class Resolver(FirstPass):
         elif returns_third_party(self, node, fscope):
             self.out.external_returns.add(symbol_id)
         # Function-local imports are visible to the whole body.
-        for inner in ast.walk(node):
-            if isinstance(inner, (ast.Import, ast.ImportFrom)):
-                stars: list[str] = []
-                self._register_imports(
-                    scope, inner, fscope.local_imports, stars, fscope.local_alt_imports
-                )
-                self._import_edges(symbol_id, scope, inner, local=True)
+        saved, self.out = self.out, _Output()
+        try:
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.Import, ast.ImportFrom)):
+                    stars: list[str] = []
+                    self._register_imports(
+                        scope, inner, fscope.local_imports, stars, fscope.local_alt_imports
+                    )
+                    self._import_edges(symbol_id, scope, inner, local=True)
+        finally:
+            imported, self.out = self.out, saved
+        self.out.merge(imported)
         # Decorators, defaults and annotations evaluate where the ``def``
         # statement runs, so the function's own parameters must not shadow
         # them (``def f(info=info)`` refers to the module-level ``info``).
@@ -1073,7 +1101,7 @@ class Resolver(FirstPass):
             if node.returns is not None:
                 at_import.visit(node.returns)
         for dec in node.decorator_list:
-            outer.visit(dec)
+            self._definition_visit(outer, dec)
         if self._decorators_may_read_docs(node.decorator_list, scope, outer_scope):
             self.out.doc_decorated.add(symbol_id)
         self._record_decorations(symbol_id, node.decorator_list, scope, outer_scope)
@@ -1087,9 +1115,9 @@ class Resolver(FirstPass):
         all_args = node.args.posonlyargs + node.args.args + node.args.kwonlyargs
         for arg in all_args + [a for a in (node.args.vararg, node.args.kwarg) if a]:
             if arg.annotation is not None:
-                outer.visit(arg.annotation)
+                self._definition_visit(outer, arg.annotation)
         if node.returns is not None:
-            outer.visit(node.returns)
+            self._definition_visit(outer, node.returns)
         for name, default in zip(
             positional[len(positional) - n_defaults :] + [a.arg for a in node.args.kwonlyargs],
             list(node.args.defaults) + list(node.args.kw_defaults),
@@ -1097,7 +1125,7 @@ class Resolver(FirstPass):
         ):
             if default is None:
                 continue
-            outer.visit(default)
+            self._definition_visit(outer, default)
             target = (
                 self.resolve_chain(parts, outer_scope)
                 if (parts := _flatten_chain(default))
@@ -1107,9 +1135,22 @@ class Resolver(FirstPass):
                 aliased = self.index.symbols.get(target.symbol)
                 if aliased is not None and aliased.kind == SymbolKind.VARIABLE:
                     fscope.param_aliases[name] = aliased.id
+        # The body apart, to tell what only the definition-time code refers
+        # to (SourceIndex.definition_calls; V28).
+        header_targets, self._definition_targets = self._definition_targets, set()
         collector = _ReferenceCollector(self, symbol_id, fscope)
-        for stmt in node.body:
-            collector.visit(stmt)
+        saved, self.out = self.out, _Output()
+        try:
+            for stmt in node.body:
+                collector.visit(stmt)
+        finally:
+            body, self.out = self.out, saved
+        if header_targets:
+            own = {e.target for e in (*body.edges, *imported.edges) if e.source == symbol_id}
+            self.out.definition_calls.update(
+                (symbol_id, t) for t in header_targets - own if t != symbol_id
+            )
+        self.out.merge(body)
 
     def _import_edges(
         self, source: str, scope: ModuleScope, node: ast.stmt, local: bool = False

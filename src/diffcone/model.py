@@ -614,6 +614,20 @@ class SourceIndex:
     # earlier run filled it: the planners do not count running it as a write
     # its own reads see (other code naming the variable still does).
     lazy_constants: dict[str, str] = field(default_factory=dict)
+    # (state, function): a ``mutated_by`` edge only the function's
+    # definition-time code makes (a decorator, a default value, an eagerly
+    # evaluated annotation: ``@app.command()`` writes ``app``), which runs
+    # when the ``def`` statement does, not when the function is called.
+    # Static planning reads the edge as any other (a change to the
+    # definition reaches the readers of ``app``); evidence mode does not
+    # take it for a store a call of the function makes (audit round 8, V28).
+    definition_writes: set[tuple[str, str]] = field(default_factory=set)
+    # (function, callee): code only the function's definition-time code
+    # refers to or calls (``app.command`` in ``@app.command()``), its body
+    # not; a reference edge or a typed call says so as for any other code.
+    # Evidence mode does not follow it as a call the function makes when
+    # it runs (audit round 8, V28).
+    definition_calls: set[tuple[str, str]] = field(default_factory=set)
 
     @property
     def revision(self) -> str:
