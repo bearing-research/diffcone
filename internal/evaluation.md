@@ -1528,6 +1528,81 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## Before 0.6.0: audit round 8 (2026-11-16)
+
+Measured on v0.5.0 (3256a04), round 7's end (bdcc8a0, which plans as
+v0.5.0 does), the round's main after its fixes (a7c958d), after the docs
+fact-check and the plugin dependency (138d35b), and after the evaluation's
+own fixes V26-V30 (51aa3e4). Workspace: the acb19380 `.spike`
+(`census-r8.json` on the round's main before V24, `census-r8b.json` on
+a7c958d, `checks-r8.log`, `checks-table-r8.txt`, `corpus-r8/`,
+`evcorpus/r8`, trees `r8` = a7c958d and `r8b` = 138d35b).
+
+**strata** (56e79602 -> fd36b04d, recorded at store format 7, 7 685 tests
+recorded): v0.5.0 and the round's main both select every target (7 693 of
+7 693), because the pair changes a pytest hook; `executed_reader` reasons
+rose from 2 335 to 3 007 (the round's reader rules), which this pair cannot
+show as a count. The evidence plan took 22 s and 1.0 GB on v0.5.0, 91-200 s
+and 2.5-3.2 GB after b95b64c (V23), and 16 s and 1.1 GB after c419767.
+
+**Census** (42 repositories, 333 640 targets over 334 plans): a7c958d
+selects exactly what v0.5.0 does, 316 108 (94.0 %). On the way, dateutil
+8c367ffa58 went 0 -> 1 (V24, a fixture restoring the modules it saved,
+fixed in cd3ceb9). pip's warm plan of f16c019110 takes 17.0 s and 1.55 GB
+against 0.5.0's 5.7 s and 0.36 GB (cold 67 s / 1.9 GB against 53 s /
+1.1 GB), same selection (1 948): the index follows more writes (edges
+78 953 -> 101 923, `mutated_by` 29.8k -> 48.2k), after V25 took the
+logging fan-out from 395 242 edges down. V26-V30 change no static count on
+16 repositories x 8 commits (typer, flask, werkzeug, jinja, rich,
+marshmallow, requests, pygments, coveragepy, uvicorn, boltons, anyio,
+black, python-dotenv, build, alembic), planned with and without them.
+
+**Fixture and collection checks** (the round's main before V24, 43
+repositories, pandas included): 0 missed fixtures; the collection gaps are
+round 7's known, flagged ones.
+
+**Corpus** (`diffcone corpus --coverage`, a7c958d, 42 repositories, the
+last 6 Python-changing commits): the same 150 pairs as round 7, the same
+162 066 of 174 141 selected, 0 outcome misses, coverage recall 100 %
+wherever it is defined.
+
+**Evidence corpus** (8 suites, recorded and replayed with 138d35b, then
+replanned from the same recordings with 51aa3e4): 0 misses everywhere.
+
+| repo | round 7 (bdcc8a0) | 138d35b | 51aa3e4 |
+|---|---|---|---|
+| arrow | 2 846 | 4 170 | 2 852 |
+| marshmallow | 1 248 | 1 297 | 1 297 |
+| typer | 5 695 | 5 801 | 5 801 |
+| boltons, flask, jinja, more-itertools, pluggy | unchanged | | |
+
+* arrow: e1c0023 (V19's call-result pseudo-parameter) let
+  `cls(*values, tzinfo=tzinfo)` in `Arrow.range` hand `_ATTRS` to
+  `__init__`, and `__getattr__` on `Arrow` was taken to run on a binding,
+  so `self._datetime = ...` wrote the class: b423717da8 and 2224255c4a
+  went 49 -> 708 of 708 (V26, fixed). c61de92997 (a version bump) stays
+  663 -> 669 of 669: `Arrow.span_range` can run the lookup site
+  `Arrow.range` and writes `Arrow` (`mutated_by`), a link not reproduced
+  in a small example (V31, open).
+* marshmallow +49 (902f99c415, 598 -> 647): b95b64c (V5) follows readers
+  of what import-time code writes into the imports they ran in. The
+  changed `URL.RegexMemoizer._regex_generator` stores between tests and
+  escalates `marshmallow.fields`; import-time writers there reach readers
+  that ran while `tests.base` was imported. One link was false
+  (`SchemaMeta.__new__`'s `super().__new__` taken for itself, V27, fixed);
+  the others (`Schema._declared_fields` through a `copy.deepcopy` that may
+  call the project's `Field.__deepcopy__`) are conservative reads.
+* typer +106 (99eb220df7 912 -> 964 and b15210b71a 917 -> 971, every
+  test): also b95b64c. Three false paths were removed (a decorator's write
+  at definition taken for a store of the function, V28; test modules every
+  test lists taken for no test code, V29; a literal-name
+  `monkeypatch.setattr` on a library module taken for a read of all of it,
+  V30), and the count stays: `typer.core._main` rebinds `sys.stdout` on
+  `EPIPE`, which `CliRunner.invoke` reads. `invoke` reads it inside
+  `isolation()`, which rebinds and restores it, but seeing that the
+  context manager's store comes first needs flow-sensitive analysis, which
+  the design rules out; in the model this is a real dependency.
+
 ## Before 0.5.0: audit round 7 (2026-10-21)
 
 Measured on v0.4.0 (5a19079), round 6's end (88407f9), the round's main
