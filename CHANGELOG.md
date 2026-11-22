@@ -8,6 +8,34 @@ selection rules.
 
 ## [Unreleased]
 
+### Declarations
+
+- `[build] reads` in `diffcone.toml` names the paths outside your source
+  roots that your tests' build and CI read (`cpp/**`, `testing`,
+  `.github/workflows/python.yml`). A changed build file or submodule
+  outside the roots that no pattern covers is then set aside instead of
+  selecting every test, and the report lists it (`build_reads` in JSON).
+  This is the one setting that makes plans select fewer tests, so a stale
+  list can hide a failing test: a table that differs between the two
+  snapshots selects every test, and a pattern that covers no path is an
+  analysis error. On Apache Arrow's last 299 commits, a list written from
+  pyarrow's build and CI turns 34 of the 192 plans that selected every
+  pyarrow test into plans that select none (another binding's native code,
+  another component's workflow or packaging); no plan selects more.
+
+### Performance
+
+- A cold plan of pandas takes about half the time (a commit that selects
+  every test: about 3 200 s down to about 1 500 s on one core, and 2 GB
+  less at its peak, the same plan to the byte). Most of it is in tracing what a name in a
+  module stands for, deciding which writes reach a class's state, and
+  storing the whole index in the cache, which also takes less memory to
+  write. The cache's index format changed, so the first plan after
+  upgrading builds the index anew.
+- `diffcone plan` and `diffcone discover` exit as soon as their output is
+  written, rather than spending minutes freeing a large repository's
+  analysis.
+
 ## [0.6.1] - 2026-11-22
 
 ### Planning
@@ -39,34 +67,6 @@ selection rules.
   roots is at another commit, or has edits, than the plan analysed
   (`--allow-mismatched-worktree` to run anyway). Before, only submodules
   under the roots counted.
-
-### Declarations
-
-- `[build] reads` in `diffcone.toml` names the paths outside your source
-  roots that your tests' build and CI read (`cpp/**`, `testing`,
-  `.github/workflows/python.yml`). A changed build file or submodule
-  outside the roots that no pattern covers is then set aside instead of
-  selecting every test, and the report lists it (`build_reads` in JSON).
-  This is the one setting that makes plans select fewer tests, so a stale
-  list can hide a failing test: a table that differs between the two
-  snapshots selects every test, and a pattern that covers no path is an
-  analysis error. On Apache Arrow's last 299 commits, a list written from
-  pyarrow's build and CI turns 34 of the 192 plans that selected every
-  pyarrow test into plans that select none (another binding's native code,
-  another component's workflow or packaging); no plan selects more.
-
-### Performance
-
-- A cold plan of pandas takes about half the time (a commit that selects
-  every test: about 3 200 s down to about 1 500 s on one core, and 2 GB
-  less at its peak, the same plan to the byte). Most of it is in tracing what a name in a
-  module stands for, deciding which writes reach a class's state, and
-  storing the whole index in the cache, which also takes less memory to
-  write. The cache's index format changed, so the first plan after
-  upgrading builds the index anew.
-- `diffcone plan` and `diffcone discover` exit as soon as their output is
-  written, rather than spending minutes freeing a large repository's
-  analysis.
 
 ## [0.6.0] - 2026-11-16
 
