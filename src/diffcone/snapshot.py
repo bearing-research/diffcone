@@ -174,6 +174,19 @@ def has_entry(repo: Path, revision: str, path: str) -> bool:
     return path.encode("utf-8", "surrogateescape") in out.split(b"\0")
 
 
+def all_paths(repo: Path, revision: str) -> list[str]:
+    """Every path of a snapshot, submodules included: a commit's tree, the
+    index (``INDEX``), or the index and the untracked files not ignored
+    (``WORKTREE``). A failure of git raises GitError."""
+    if revision == INDEX:
+        out = _git(repo, ["ls-files", "-z", "--cached"])
+    elif revision == WORKTREE:
+        out = _git(repo, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+    else:
+        out = _git(repo, ["ls-tree", "-r", "-z", "--name-only", "--full-tree", revision])
+    return [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
+
+
 def _diff_args(commit: str, revision: str, kind: str) -> list[str]:
     """``git diff --raw`` between ``commit`` and a snapshot, as changed_paths
     compares them. ``--ignore-submodules=none``: a ``.gitmodules`` entry's

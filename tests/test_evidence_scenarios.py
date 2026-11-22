@@ -5339,6 +5339,53 @@ def test_e19_build_inputs_select_everything_in_evidence_mode(repo, path):
     assert "tests/test_m.py::test_f" in chosen
 
 
+@pytest.mark.parametrize("table", ['[build]\nreads = ["cpp/**"]\n', ""])
+def test_build_reads_in_evidence_mode(repo, table):
+    """Roadmap item 24: a changed build input outside the roots that
+    ``[build] reads`` names nothing of is read as any other file, so the
+    tests that opened it are selected; without the table, and for one a
+    pattern names, every test is."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "diffcone.toml": table,
+        "cpp/a.cc": "int a;\n",
+        "r/src/b.cpp": "int b;\n",
+        "lib/__init__.py": "",
+        "lib/m.py": "def f():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    f()\n",
+        "tests/test_reads.py": (
+            "def test_reads():\n    with open('r/src/b.cpp') as f:\n        assert f.read()\n"
+        ),
+    }
+    roots = ["lib", "tests=tests"]
+    base = repo.commit(files)
+    evidence = repo.collect(base, source_roots=roots)
+    everything = {"tests/test_m.py::test_f", "tests/test_reads.py::test_reads"}
+    head = repo.commit({"r/src/b.cpp": "int c;\n"})
+    plan = repo.plan(
+        base, head, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    if table:
+        assert selected(plan) == {"tests/test_reads.py::test_reads"}
+        assert plan.build_set_aside == ["r/src/b.cpp"]
+    else:
+        assert selected(plan) == everything
+        assert plan.build_set_aside == []
+    named = repo.commit({"cpp/a.cc": "int d;\n"})
+    plan = repo.plan(
+        base, named, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    assert selected(plan) == everything
+    if table:
+        # A table changed since the recording selects everything.
+        changed = repo.commit({"diffcone.toml": '[build]\nreads = ["r/**", "cpp/**"]\n'})
+        plan = repo.plan(
+            named, changed, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+        )
+        assert selected(plan) == everything
+
+
 @pytest.mark.parametrize("roots", [["lib", "tests=tests"], None])
 def test_a_moved_submodule_selects_everything_in_evidence_mode(repo, roots):
     """A submodule (Apache Arrow's ``testing`` data) outside the roots, or

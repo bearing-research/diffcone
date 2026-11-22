@@ -102,10 +102,58 @@ pytest plugin makes every test always selected; excluding a module tests
 inherit their base class from, or a benchmark file, makes the plan report
 discovery incomplete (exit 3).
 
+## Build files your tests don't use
+
+A change to a build file outside your source roots makes every plan select
+every test: a compiled source, a CMake or Meson file, a CI workflow, a
+submodule. diffcone can't see what your tests' build reads, so it assumes
+it reads all of them. In a repository that holds several components
+(a C++ library with Python, R and Java bindings, say), most of those
+changes belong to another component. Name the paths outside the source
+roots that your tests' build and CI do read under `[build]`:
+
+```toml
+[build]
+reads = ["cpp/**", "format/**", "testing", ".github/workflows/python.yml", "ci/scripts/python_*"]
+```
+
+| Key | Description |
+|---|---|
+| `reads` | A list of patterns on paths from the repository root. `*` matches any characters, `/` included; `?` and `[...]` work as in shell patterns. A pattern also covers everything under a directory it names: `testing` covers the submodule `testing` and every file in it. |
+
+A changed build file or submodule outside the source roots that no pattern
+covers is then set aside: it doesn't select anything by itself. The text
+report lists every path set aside, and the JSON report gives them under
+`build_reads.set_aside`. A plan that uses a recording treats a set-aside
+file like any other file: it selects the tests that read it.
+
+Some files are never set aside: a `conftest.py`, your runner's
+configuration at the repository root (`pytest.ini`, `pyproject.toml`), and
+ASV's configuration still select every test.
+
+!!! warning "This setting can hide a test that would fail"
+    Unlike everything else in `diffcone.toml`, `[build] reads` makes plans
+    select fewer tests. If your build starts reading a path the list
+    doesn't cover (a new workflow, a directory a CMake file adds), a change
+    there is set aside and the tests it breaks aren't selected. Keep the
+    list next to the build files it describes, review the set-aside paths
+    in the report, and compare plans with full runs
+    ([`diffcone check`](cli.md)) now and then.
+
+To limit the damage of a stale list, diffcone:
+
+- selects every test when the `[build]` table differs between the two
+  snapshots it compares (or, with a recording, the recording's commit);
+- reports a pattern that covers no path of its snapshot as an analysis
+  error, which also selects every test;
+- ignores the table when a source root is the repository itself, since
+  nothing is outside the roots then.
+
 ## What can go wrong
 
 Declarations can only add dependencies or selected tests, so they can only
-make diffcone select more tests, never fewer.
+make diffcone select more tests, never fewer. The exception is
+[`[build] reads`](#build-files-your-tests-dont-use).
 
 diffcone reads the file from both snapshots, so it changes along with your
 code. These are reported as an analysis error:
@@ -114,6 +162,8 @@ code. These are reported as an analysis error:
 - an `always_run` entry without `targets`, or with an unknown `runner`;
 - an `[index]` table that isn't a table, or an `exclude` that isn't a list
   of non-empty patterns;
+- a `[build]` table that isn't a table, a `reads` that isn't a list of
+  non-empty patterns, or a `reads` pattern that covers no path;
 - an unknown key;
 - a file that doesn't parse;
 - a file that is there but can't be read (left unmerged by a conflicted

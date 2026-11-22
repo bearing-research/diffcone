@@ -2763,6 +2763,24 @@ is more than roadmap item 23 could narrow (21 of 137), and it needs no C++
 map, only a statement of which directories pyarrow's build and CI read
 (roadmap item 24).
 
+*`[build] reads` (roadmap item 24, 2026-11-22).* The same 299 commits
+replanned with a `diffcone.toml` grafted onto both sides of each pair
+(`commit-tree`, so nothing else changes), reading `.dockerignore`,
+`.env`, `.github/workflows/python.yml`, `ci/**`, `compose.yaml`,
+`cpp/**`, `dev/archery/**`, `docs/source/python/**`, `format/**`,
+`python/**` and `testing`: 34 of the 192 select-everything plans outside
+`python/` select nothing, setting aside other workflows
+(`dev_pr.yml`, `matlab.yml`, `r.yml`, `package_linux.yml`,
+`verify_rc.yml`, ...), `r/src/*.cpp`, `c_glib/`, `ruby/red-arrow/ext/`
+and the Linux packaging templates. The other 158 change a path the list
+names (`cpp/` in 132, `ci/` or `.env` in 19, `python.yml` in 7), so they
+still select everything. The 25 of the 59 above that stay change a CI
+path the list names: it takes `ci/**` whole rather than pyarrow's own
+scripts and images, a wider list than needed but one that needs no
+upkeep when a script is added. No plan selects more than before, and
+no plan reports an analysis error (every pattern names a path on every
+commit). The 107 other plans are unchanged.
+
 The pure-`.py` commits: in 6 of 7, the first path the report gives for
 1 548 to 1 609 of the ~2 600 targets is `lifecycle` -> the module
 `pyarrow.tests.test_convert_builtin` (a session-state writer root) ->

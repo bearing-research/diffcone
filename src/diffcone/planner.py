@@ -110,6 +110,7 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
@@ -122,7 +123,7 @@ from diffcone.classify import (
     classify,
 )
 from diffcone.declarations import FILENAME as DECLARATION_FILE
-from diffcone.declarations import AlwaysRun, Declaration
+from diffcone.declarations import AlwaysRun, Declaration, reads_match
 from diffcone.declarations import load as load_declarations
 from diffcone.discovery import (
     INCOMPLETE_NOTE_KINDS,
@@ -175,6 +176,7 @@ from diffcone.snapshot import (
     WORKTREE,
     GitError,
     Snapshot,
+    all_paths,
     commit_description,
     diff_snapshots,
     file_id,
@@ -518,8 +520,12 @@ def _changed_unanalysed_files(base: SourceIndex, head: SourceIndex) -> list[str]
 
 
 def _runner_files_outside_roots(
-    repo: Path, base: SourceIndex, head: SourceIndex, roots: list[str]
-) -> list[str]:
+    repo: Path,
+    base: SourceIndex,
+    head: SourceIndex,
+    roots: list[str],
+    reads: tuple[str, ...] | None = None,
+) -> tuple[list[str], list[str]]:
     """Changed files outside the source roots that decide what is installed
     and how the tests run: the runners' configuration at the repository root
     (``pyproject.toml``'s pytest table, ``asv.conf.json`` or ``.jsonc``
@@ -528,31 +534,73 @@ def _runner_files_outside_roots(
     declarations and lock files, compiled sources), and submodules (a moved
     gitlink: what changed inside it, vendored sources or test data, is not
     in the diff). Inside a root such a file is an unanalysed file; out of
-    every root nothing else would see it change."""
+    every root nothing else would see it change. With ``diffcone.toml``'s
+    ``[build] reads`` (``reads``), a build input or submodule no pattern
+    names is set aside: the second list. Runner configuration and
+    conftests are never set aside."""
     if "" in (split_root(r)[0] for r in roots):
-        return []
+        return [], []
     if base.snapshot.committed:
         fixed, other = base.snapshot.commit, head.snapshot
     elif head.snapshot.committed:
         fixed, other = head.snapshot.commit, base.snapshot
     elif base.snapshot.kind == head.snapshot.kind:
-        return []  # the same uncommitted state on both sides
+        return [], []  # the same uncommitted state on both sides
     else:  # the index and the working tree
         fixed = INDEX
         other = head.snapshot if head.snapshot.is_worktree else base.snapshot
     changed, gitlinks = diff_snapshots(repo, fixed, other.commit, other.kind)
     dirs = [split_root(r)[0] for r in roots]
-    return sorted(
-        path
-        for path in changed
-        if not any(path.startswith(d + "/") for d in dirs)
-        and (
-            path in CONFIG_FILES
-            or path in gitlinks
-            or build_input(path)
-            or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS)
-        )
-    )
+    counted: list[str] = []
+    set_aside: list[str] = []
+    for path in sorted(changed):
+        if any(path.startswith(d + "/") for d in dirs):
+            continue
+        if path in CONFIG_FILES or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS):
+            counted.append(path)
+        elif path in gitlinks or build_input(path):
+            if reads is None or reads_match(path, reads):
+                counted.append(path)
+            else:
+                set_aside.append(path)
+    return counted, set_aside
+
+
+def _build_reads(
+    repo: Path, sides: list[tuple[str, SourceIndex, tuple[str, ...] | None]], roots: list[str]
+) -> tuple[tuple[str, ...] | None, bool]:
+    """The ``[build] reads`` patterns a plan narrows by: those of both
+    snapshots when they are the same (None for none), and whether the
+    table differs between them, which selects every target (a narrowing
+    that changed with the code cannot be trusted for either side). A
+    pattern naming no path of its snapshot is stale: an analysis error.
+    With a source root at the repository's top nothing is outside the
+    roots, so the table changes nothing."""
+    if "" in (split_root(r)[0] for r in roots):
+        return None, False
+    for revision, index, reads in sides:
+        if not reads:
+            continue
+        try:
+            paths = all_paths(repo, revision)
+        except GitError as exc:
+            index.errors.append(AnalysisError(revision, DECLARATION_FILE, f"[build] reads: {exc}"))
+            continue
+        names = {"/".join(p.split("/")[:i]) for p in paths for i in range(1, p.count("/") + 2)}
+        for pattern in reads:
+            if not any(fnmatchcase(name, pattern) for name in names):
+                index.errors.append(
+                    AnalysisError(
+                        revision,
+                        DECLARATION_FILE,
+                        f"[build] reads {pattern!r} names no path of this snapshot: a "
+                        "stale pattern would set aside what the build now reads",
+                    )
+                )
+    (_, _, base_reads), (_, _, head_reads) = sides
+    if base_reads != head_reads:
+        return None, True
+    return base_reads, False
 
 
 @dataclass(frozen=True)
@@ -638,6 +686,10 @@ class Plan:
     declarations: list[Declaration] = field(default_factory=list)
     always_run: list[AlwaysRun] = field(default_factory=list)
     always_run_matched: dict[AlwaysRun, int] = field(default_factory=dict)
+    # ``[build] reads`` (None without one), and the changed build inputs and
+    # submodules outside the roots it set aside.
+    build_reads: tuple[str, ...] | None = None
+    build_set_aside: list[str] = field(default_factory=list)
     # Evidence mode: which store planned the pytest targets, and from where
     # (evidence_plan._summary); None for a static plan.
     evidence: dict | None = None
@@ -3038,8 +3090,10 @@ def plan(
     declared: list[Declaration] = []
     always: dict[AlwaysRun, None] = {}
     always_from: dict[AlwaysRun, tuple[str, SourceIndex]] = {}
+    reads_sides: list[tuple[str, SourceIndex, tuple[str, ...] | None]] = []
     for revision, index in ((base, base_index), (head, head_index)):
         found = load_declarations(repo_path, revision)
+        reads_sides.append((revision, index, found.build_reads))
         declared += found.edges
         always.update(dict.fromkeys(found.always_run))
         for entry in found.always_run:
@@ -3049,6 +3103,7 @@ def plan(
                 AnalysisError(revision=revision, path=DECLARATION_FILE, message=problem)
             )
     declared = sorted(set(declared))
+    build_reads, reads_changed = _build_reads(repo_path, reads_sides, roots)
     discovered: list[DiscoveryResult] = []
     if cached_head is not None:
         discovered = cached_head
@@ -3087,6 +3142,13 @@ def plan(
                 repo_path, evidence.commit, evidence_index, roots, "pytest", options, cache
             )
         discovered = _settle_discovery(repo_path, head, evidence, at_c, discovered)
+        if (
+            not reads_changed
+            and build_reads != load_declarations(repo_path, evidence.commit).build_reads
+            and "" not in (split_root(r)[0] for r in roots)
+        ):
+            # The recording's table too: what changed since it is planned.
+            build_reads, reads_changed = None, True
         since_c: LifecycleChanges = {}
         if at_c is not None:
             since_c = _since_recording(evidence, at_c, base_index, base_lifecycle, head_lifecycle)
@@ -3103,8 +3165,15 @@ def plan(
             base_target_ids=base_target_ids,
             lifecycle_changes=lifecycle_changes,
             lifecycle_since_recording=since_c,
+            build_reads=build_reads,
+            build_reads_changed=reads_changed,
         )
     else:
+        runner_files, set_aside = _runner_files_outside_roots(
+            repo_path, base_index, head_index, roots, build_reads
+        )
+        if reads_changed:
+            runner_files.append(DECLARATION_FILE)
         planned = plan_from_indexes(
             base_index,
             head_index,
@@ -3114,9 +3183,10 @@ def plan(
             discovered=discovered,
             declarations=declared,
             base_target_ids=base_target_ids,
-            runner_files=_runner_files_outside_roots(repo_path, base_index, head_index, roots),
+            runner_files=runner_files,
             lifecycle_changes=lifecycle_changes,
         )
+        planned.build_reads, planned.build_set_aside = build_reads, set_aside
     return _with_always_run(planned, sorted(always))
 
 

@@ -2934,8 +2934,9 @@ rule with the project's `why` on the step, never as an ordinary dependency
 (a name match anywhere on the path outranks it: that one is diffcone's
 guess, this one is the project's statement).
 
-Declarations only *add* edges, so they can only widen selection: a wrong one
-costs a test that runs anyway, and no declaration can make the plan miss.
+Edges and `[[always_run]]` entries only *add*, so they can only widen
+selection: a wrong one costs a test that runs anyway, and none can make the
+plan miss (`[build] reads`, below, is the exception).
 These are analysis errors, so the plan degrades and selects everything,
 because a declaration that silently does nothing is the outcome worth
 failing on: a file that does not parse, an unknown key at any level (a
@@ -2957,6 +2958,30 @@ report lists the entries (`always_run`) and counts the matched targets
 (`analysis.counts.always_run`), and `diffcone report` takes them out of a
 job's selected share. `collect` still runs them: in the CI setups its run
 is also the full test run of a push.
+
+`[build] reads` (roadmap item 24, shipped) names the paths outside the
+source roots that the tests' build and CI read, as `fnmatch` patterns on
+repository paths (`*` crosses `/`) that also cover everything under a
+directory they name (`declarations.reads_match`). The analysis cannot see
+which directories a build reads (Apache Arrow's `python/CMakeLists.txt`
+finds the C++ library through `ARROW_HOME` or CMake packages, not paths)
+or which workflow runs the tests, so the project states it. With the
+table, a changed build input (`build_input`) or submodule outside the
+roots that no pattern covers is set aside by `_runner_files_outside_roots`
+(the second list it returns): it adds no `unanalysed_file_changed`
+fallback, and the plan carries it in `Plan.build_set_aside`, reported as
+`build_reads.set_aside` and in the text report. Runner configuration at the
+root (`CONFIG_FILES`), conftests and ASV configuration are never set aside.
+In evidence mode a set-aside path is an ordinary changed file
+(`_Observers._set_aside`): the tests whose records opened or listed it are
+selected. It is the one declaration that narrows, so it is guarded
+(`planner._build_reads`): a table that differs between base and head (and,
+in evidence mode, the recording's commit) selects every target, the static
+planner by counting `diffcone.toml` as a changed runner file; a pattern
+that covers no path of its snapshot (`snapshot.all_paths`: the commit's
+tree, the index, or the index plus untracked files) is an analysis error;
+and with a root at the repository's top the table changes nothing, since
+nothing is outside the roots.
 
 `[index] exclude` (audit E29) is a list of `fnmatch` patterns on repository
 paths whose `.py` files the snapshot reader keeps out of the analysis:

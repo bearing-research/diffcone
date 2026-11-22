@@ -21,6 +21,7 @@ summary of the same information). The report's format is versioned by
 | `analysis_errors` | Errors such as a file that doesn't parse. Any error selects every target. |
 | `declarations` | The dependencies declared in [`diffcone.toml`](declarations.md). |
 | `always_run` | The `[[always_run]]` entries of [`diffcone.toml`](declarations.md); each says how many targets it `matched`, and `analysis.counts.always_run` counts the targets they selected. |
+| `build_reads` | The `[build] reads` patterns of [`diffcone.toml`](declarations.md#build-files-your-tests-dont-use) (`patterns`, `null` without the table), and the changed build files and submodules outside the source roots they set aside (`set_aside`). |
 | `discovery` | For each runner: how many targets were found, the configuration read, and any notes. For pytest, the configuration includes `rootdir`, `configfile` and `junit_prefix` (which [`diffcone check`](../guides/running.md#check-a-plan-against-a-full-run) uses to match JUnit names), and `run_arguments`, what was read besides the configuration file: `PYTEST_ADDOPTS`, `PYTEST_PLUGINS`, the pytest arguments in `--command` and those after `--`. |
 
 ## Recording
