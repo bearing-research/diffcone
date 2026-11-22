@@ -2778,6 +2778,8 @@ class AnyClassOwners:
         self._opaque = {cid for cid, cscope in scopes.items() if cscope.opaque}
         self._found: dict[str, list[str]] = {}
         self._sizes: tuple[int, int] | None = None
+        self._every: list[str] | None = None
+        self._recorded: dict[tuple[int, str, str, str], tuple[_Output, list[str]]] = {}
 
     def owners(self, name: str) -> list[str]:
         out = self._indexer.out
@@ -2785,6 +2787,11 @@ class AnyClassOwners:
         if sizes != self._sizes:
             # What is given to classes grows as writes are decided.
             self._sizes, self._found = sizes, {}
+        if name == "*" or (name.startswith("__") and name.endswith("__")):
+            # Any class's, whatever is given to whom: no need to look.
+            if self._every is None:
+                self._every = sorted(self._indexer.class_scopes)
+            return self._every
         found = self._found.get(name)
         if found is None:
             indexer = self._indexer
@@ -2793,7 +2800,7 @@ class AnyClassOwners:
                 given = self._record.given(cid)
                 if name in given or "*" in given:
                     named.add(cid)
-            if name == "*" or (name.startswith("__") and name.endswith("__")) or not named:
+            if not named:
                 found = sorted(indexer.class_scopes)
             else:
                 family: set[str] = set()
@@ -2812,7 +2819,16 @@ class AnyClassOwners:
         module (``module``), which its hash covers, a binding of the
         attribute by that module (``own_class_writes``)."""
         symbols = self._indexer.index.symbols
-        for cid in self.owners(name):
+        owners = self.owners(name)
+        # The same write recorded again against the same owners adds
+        # nothing (pandas records each of its writes dozens of times). The
+        # output is kept with the entry, so its id cannot be reused.
+        key = (id(out), name, writer, module)
+        kept = self._recorded.get(key)
+        if kept is not None and kept[0] is out and kept[1] is owners:
+            return
+        self._recorded[key] = (out, owners)
+        for cid in owners:
             if cid == writer:
                 continue
             if module and symbols[cid].module == module:

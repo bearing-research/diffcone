@@ -427,6 +427,9 @@ _NAMESPACE_GETTERS = frozenset({"get", "setdefault", "pop", "__getitem__"})
 # (writes.RECORD), unless the project may define the method or make records.
 LOGGER_RECORD_METHODS = frozenset({"makeRecord"})
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+# Nodes whose names ``_binding_scope`` looks for on the stack, and around
+# which the scope changes: what ``_alias_roots`` finds depends on these only.
+_BINDERS = (*_COMPREHENSIONS, *FUNC_NODES, ast.Lambda, ast.ClassDef)
 
 
 class _ReferenceCollector(ast.NodeVisitor):
@@ -472,13 +475,25 @@ class _ReferenceCollector(ast.NodeVisitor):
         self._source_maps: dict[int, tuple[ast.AST, dict[str, list[tuple[ast.expr, str]]]]] = {}
         self._bound_maps: dict[int, tuple[ast.AST, set[str]]] = {}
         self._class_nodes: dict[str, tuple[ast.Module, ast.ClassDef | None]] = {}
+        # What ``_alias_roots`` found for a name in a context (the scope and
+        # the _BINDERS being visited), with the alias keys it looked at: the
+        # ones the caller's ``seen`` did not cut, and the ones it did. A name
+        # used again (every call handing it on) is then not traced again.
+        self._binders: list[ast.AST] = []
+        self._alias_memo: dict[tuple, tuple[Scope, frozenset, frozenset, dict[str, bool]]] = {}
+        self._alias_trace: set[tuple[int, str]] = set()
 
     def visit(self, node: ast.AST) -> None:
         self._stack.append(node)
+        binder = isinstance(node, _BINDERS)
+        if binder:
+            self._binders.append(node)
         try:
             super().visit(node)
         finally:
             self._stack.pop()
+            if binder:
+                self._binders.pop()
 
     def _parent(self, node: ast.AST, up: int = 1) -> ast.AST | None:
         """The node ``up`` levels above ``node`` while it is being visited."""
@@ -1638,9 +1653,35 @@ class _ReferenceCollector(ast.NodeVisitor):
         anywhere in the function, since a loop may run a write after a
         later binding."""
         owner = self._binding_scope(name)
-        if owner is None or (id(owner), name) in seen:
+        if owner is None:
             return {}
-        seen = seen | {(id(owner), name)}
+        key = (id(owner), name)
+        if key in seen:
+            self._alias_trace.add(key)
+            return {}
+        # Traced before in this context: the same roots, as long as ``seen``
+        # cuts the same keys of those that tracing looked at.
+        context = (name, id(owner), id(self.scope), *map(id, self._binders))
+        kept = self._alias_memo.get(context)
+        if (
+            kept is not None
+            and kept[0] is self.scope
+            and seen.isdisjoint(kept[1])
+            and kept[2] <= seen
+        ):
+            self._alias_trace |= kept[1] | kept[2]
+            return dict(kept[3])
+        outer, self._alias_trace = self._alias_trace, set()
+        try:
+            found = self._traced_alias_roots(owner, name, seen | {key})
+        finally:
+            visited, self._alias_trace = self._alias_trace | {key}, outer
+            outer |= visited
+        cut = frozenset(visited & seen)
+        self._alias_memo[context] = (self.scope, frozenset(visited - cut), cut, dict(found))
+        return found
+
+    def _traced_alias_roots(self, owner: ast.AST, name: str, seen: frozenset) -> dict[str, bool]:
         found: dict[str, bool] = {}
         for value, how in self._sources_in(owner).get(name, ()):
             roots = self._state_roots(value, seen)
@@ -1825,10 +1866,20 @@ class _ReferenceCollector(ast.NodeVisitor):
         each instance gets (``field(...)``, an annotation alone). A class of
         another module is not read here: its attribute counts as held."""
         for cls in dict.fromkeys((cid, self.scope.self_class)):
-            node = self._class_node(cls) if cls is not None else None
-            if node is not None and _instance_owned(node, attr):
+            if cls is not None and attr in self._owned_attributes(cls):
                 return False
         return True
+
+    def _owned_attributes(self, cid: str) -> frozenset[str]:
+        """``_instance_owned`` of class ``cid`` of this module, one walk of
+        its body per build (a class of another module: none)."""
+        kept = self.indexer._owned_attributes.get(cid)
+        if kept is None:
+            node = self._class_node(cid)
+            if node is None:
+                return frozenset()
+            kept = self.indexer._owned_attributes[cid] = _instance_owned(node)
+        return kept
 
     def _class_node(self, cid: str) -> ast.ClassDef | None:
         """The ``class`` statement of an in-scope class of this module."""
@@ -4566,21 +4617,18 @@ def instance_root(root: str) -> tuple[str, str] | None:
 _FIELD_CALLS = frozenset({"field", "ib", "attrib", "Field", "PrivateAttr"})
 
 
-def _instance_owned(node: ast.ClassDef, attr: str) -> bool:
-    """Whether instances of the class get their own ``attr``: a method
+def _instance_owned(node: ast.ClassDef) -> frozenset[str]:
+    """The attributes instances of the class get of their own: a method
     stores ``self.<attr>``, or the class body declares it only (``attr:
     T``) or as a per-instance field."""
+    owned: set[str] = set()
     for stmt in node.body:
         if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
             targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-            if not any(isinstance(t, ast.Name) and t.id == attr for t in targets):
-                continue
             value = stmt.value
-            if value is None:
-                return True
             callee = _flatten_chain(value.func) if isinstance(value, ast.Call) else None
-            if callee is not None and callee[-1] in _FIELD_CALLS:
-                return True
+            if value is None or (callee is not None and callee[-1] in _FIELD_CALLS):
+                owned.update(t.id for t in targets if isinstance(t, ast.Name))
         elif isinstance(stmt, FUNC_NODES):
             params = stmt.args.posonlyargs + stmt.args.args
             if not params:
@@ -4597,13 +4645,12 @@ def _instance_owned(node: ast.ClassDef, attr: str) -> bool:
                     for t in ast.walk(target):
                         if (
                             isinstance(t, ast.Attribute)
-                            and t.attr == attr
                             and isinstance(t.value, ast.Name)
                             and t.value.id == me
                             and isinstance(t.ctx, ast.Store)
                         ):
-                            return True
-    return False
+                            owned.add(t.attr)
+    return frozenset(owned)
 
 
 def _find_class(body: list[ast.stmt], path: list[str]) -> ast.ClassDef | None:

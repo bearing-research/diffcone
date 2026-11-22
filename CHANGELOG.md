@@ -38,6 +38,19 @@ selection rules.
   (`--allow-mismatched-worktree` to run anyway). Before, only submodules
   under the roots counted.
 
+### Performance
+
+- A cold plan of pandas takes about half the time (a commit that selects
+  every test: about 3 200 s down to about 1 500 s on one core, and 2 GB
+  less at its peak, the same plan to the byte). Most of it is in tracing what a name in a
+  module stands for, deciding which writes reach a class's state, and
+  storing the whole index in the cache, which also takes less memory to
+  write. The cache's index format changed, so the first plan after
+  upgrading builds the index anew.
+- `diffcone plan` and `diffcone discover` exit as soon as their output is
+  written, rather than spending minutes freeing a large repository's
+  analysis.
+
 ## [0.6.0] - 2026-11-16
 
 ### Running and checking

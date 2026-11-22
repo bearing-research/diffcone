@@ -33,7 +33,7 @@ Issues = "https://github.com/bearing-research/diffcone/issues"
 Changelog = "https://github.com/bearing-research/diffcone/blob/main/CHANGELOG.md"
 
 [project.scripts]
-diffcone = "diffcone.cli:main"
+diffcone = "diffcone.cli:entry"
 
 [build-system]
 requires = ["uv_build>=0.8,<1"]

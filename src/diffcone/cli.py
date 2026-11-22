@@ -877,6 +877,28 @@ def _discovery_options(args: argparse.Namespace) -> DiscoveryOptions:
     )
 
 
+# Commands that only analyse: they run nothing, and every file they write is
+# closed by the time they return.
+_FAST_EXIT = frozenset({"plan", "discover"})
+
+
+def entry() -> None:
+    """The console script. After ``plan`` or ``discover`` it leaves without
+    tearing the interpreter down: a pandas plan leaves tens of millions of
+    objects, most of them in reference cycles (planning runs with the cyclic
+    collector off), and freeing them at shutdown took over three minutes
+    after the report was written. Output is flushed first."""
+    code = main()
+    if sys.argv[1:2] and sys.argv[1] in _FAST_EXIT:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            code = code or 2  # the output could not be written out
+        os._exit(code)
+    sys.exit(code)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)

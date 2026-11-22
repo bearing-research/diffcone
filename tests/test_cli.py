@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 from diffcone.cli import main
 from diffcone.report import to_dict, to_text
@@ -24,6 +26,30 @@ TARGETS = [
         "lifecycle_dependencies": [],
     },
 ]
+
+
+def test_the_console_script_writes_the_whole_plan_and_its_exit_code(repo):
+    """``entry`` leaves ``plan`` with ``os._exit``, skipping the interpreter's
+    teardown: what was written to a pipe must all arrive, with the code."""
+    base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    manifest = repo.write_manifest(TARGETS)
+    args = ["plan", "--repo", str(repo.path), "--base", base, "--head", head]
+    args += ["--targets", str(manifest), "--format", "json"]
+    script = (
+        f"import sys; sys.argv = ['diffcone', *{args!r}]; from diffcone.cli import entry; entry()"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    report = json.loads(done.stdout)
+    assert [t["runner_id"] for t in report["selected_targets"]] == ["tests/test_ops.py::test_add"]
+    # A usage error leaves through argparse, with its code.
+    bad = [*args[:2], "--bogus"]
+    script = (
+        f"import sys; sys.argv = ['diffcone', *{bad!r}]; from diffcone.cli import entry; entry()"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert done.returncode == 2
 
 
 def test_plan_json_output(repo, capsys):

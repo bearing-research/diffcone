@@ -27,6 +27,16 @@ def _plans_equal(a, b) -> bool:
     return json.dumps(da, sort_keys=True) == json.dumps(db, sort_keys=True)
 
 
+def test_cache_files_are_written_as_json_dump_writes_them(tmp_path):
+    # The chunked writer must give json.dump's text, a long list included.
+    data = {"a": [{"x": i, "y": (i, "é")} for i in range(25_001)], "b": {"k": [1.5, None]}}
+    path = tmp_path / "x.json"
+    cache_mod._write_json_atomic(path, data)
+    assert path.read_text("utf-8") == json.dumps(data)
+    cache_mod._write_json_atomic(path, [1, 2])
+    assert path.read_text("utf-8") == "[1, 2]"
+
+
 def test_index_round_trips_through_json(repo):
     base = repo.commit(
         {
@@ -127,7 +137,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 74
+    assert cache_mod.INDEX_FORMAT == 75
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 

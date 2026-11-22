@@ -106,6 +106,9 @@ class IndexerState:
         self._reach_cache: dict[str, Any] = {}
         # What one module's imports bind, for _attribute_reach (Indexer._reach_step).
         self._step_cache: dict[str, Any] = {}
+        # Class -> the attributes its instances get of their own
+        # (references._instance_owned), read off its ``class`` statement once.
+        self._owned_attributes: dict[str, frozenset[str]] = {}
         self._installed: set[tuple[str, str]] = set()
         self._installed_anywhere: set[tuple[str, str]] = set()
         # In-scope modules per module name, the name included (Indexer._under);

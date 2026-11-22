@@ -31,7 +31,9 @@ import re
 import sqlite3
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
+from functools import cache
+from operator import attrgetter
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +89,8 @@ from diffcone.model import (
 #     read for what follows it, and the receiver of a call naming its
 #     attributes literally (``monkeypatch.setattr(m.sys, "x", v)``) for those
 #     attributes only (audit round 8, V30);
+# 74: conanfile.py under a root is a build script;
+# 75: a whole index stores each edge as a [source, target, kind, detail] list;
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -145,7 +149,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 74
+INDEX_FORMAT = 75
 
 
 def _indexer_fingerprint() -> str:
@@ -192,7 +196,7 @@ def _write_json_atomic(path: Path, data: Any) -> None:
         make_own_dir(path.parent)
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+            _dump(data, f)
         os.replace(tmp, path)
     except (OSError, TypeError, ValueError):
         if tmp is not None:
@@ -200,6 +204,46 @@ def _write_json_atomic(path: Path, data: Any) -> None:
                 os.unlink(tmp)
             except OSError:
                 pass
+
+
+_CHUNK = 10_000
+
+
+def _dump(data: Any, f: Any) -> None:
+    """``json.dump(data, f)``, byte for byte, through the C encoder:
+    ``json.dump`` encodes in Python (a pandas index took minutes), and
+    ``json.dumps`` of the whole would hold the text a second time. A
+    top-level list is encoded a chunk of items at a time."""
+    if not isinstance(data, dict):
+        f.write(json.dumps(data))
+        return
+    f.write("{")
+    for i, (key, value) in enumerate(data.items()):
+        f.write((", " if i else "") + json.dumps(key) + ": ")
+        if isinstance(value, list) and len(value) > _CHUNK:
+            f.write("[")
+            for j in range(0, len(value), _CHUNK):
+                f.write((", " if j else "") + json.dumps(value[j : j + _CHUNK])[1:-1])
+            f.write("]")
+        else:
+            f.write(json.dumps(value))
+    f.write("}")
+
+
+@cache
+def _field_names(cls: Any) -> tuple[str, ...]:  # a dataclass type
+    return tuple(f.name for f in fields(cls))
+
+
+def _record(obj: Any) -> dict[str, Any]:
+    """A flat dataclass record as a dict of its fields: what ``asdict`` gives
+    in JSON, without its deep copy of every value (tuples stay tuples)."""
+    return {name: getattr(obj, name) for name in _field_names(type(obj))}
+
+
+# Edge's own order (dataclass order compares the fields as a tuple), with the
+# tuples compared in C rather than through a generated ``__lt__`` per pair.
+_EDGE_ORDER = attrgetter("source", "target", "kind", "detail")
 
 
 def default_cache_dir(repo: Path) -> Path:
@@ -214,7 +258,7 @@ def index_key(commit: str, source_roots: list[str]) -> str:
 def index_to_dict(index: SourceIndex) -> dict:
     return {
         "format": INDEX_FORMAT,
-        "snapshot": asdict(index.snapshot),
+        "snapshot": _record(index.snapshot),
         "modules": sorted(index.modules),
         "failed_modules": sorted(index.failed_modules),
         "escaped_classes": sorted(index.escaped_classes),
@@ -227,11 +271,11 @@ def index_to_dict(index: SourceIndex) -> dict:
         "open_installs": {n: [list(w) for w in v] for n, v in sorted(index.open_installs.items())},
         "other_files": dict(sorted(index.other_files.items())),
         "file_modes": dict(sorted(index.file_modes.items())),
-        "symbols": [asdict(s) for _, s in sorted(index.symbols.items())],
-        "edges": [asdict(e) for e in sorted(index.edges)],
-        "unresolved": [asdict(u) for u in sorted(index.unresolved)],
-        "external": [asdict(x) for x in sorted(index.external)],
-        "errors": [asdict(e) for e in sorted(index.errors)],
+        "symbols": [_record(index.symbols[s]) for s in sorted(index.symbols)],
+        "edges": [list(_EDGE_ORDER(e)) for e in sorted(index.edges, key=_EDGE_ORDER)],
+        "unresolved": [_record(u) for u in sorted(index.unresolved)],
+        "external": [_record(x) for x in sorted(index.external)],
+        "errors": [_record(e) for e in sorted(index.errors)],
         "reflection": sorted(list(r) for r in index.reflection),
         "external_sites": [[s, d, list(w)] for (s, d), w in sorted(index.external_sites.items())],
         "table_imports": [
@@ -284,9 +328,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         ),
         modules=set(data["modules"]),
         symbols=symbols,
-        edges={
-            Edge(e["source"], e["target"], EdgeKind(e["kind"]), e["detail"]) for e in data["edges"]
-        },
+        edges={Edge(s, t, EdgeKind(k), d) for s, t, k, d in data["edges"]},
         unresolved={
             UnresolvedReference(u["symbol"], UnresolvedKind(u["kind"]), u["name"], u["detail"])
             for u in data["unresolved"]

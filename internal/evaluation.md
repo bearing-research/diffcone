@@ -2835,6 +2835,54 @@ import lookups memoised in `_reach_step`) gives a byte-identical report
 on `a22c4b5f3b` (the repository path aside) in 2 616 s instead of
 2 884 s. The rest is roadmap item 22.
 
+*Bisect and the next fixes (2026-11-22, a 256 GB pod; probes that ran
+alongside others are slower, so only steps between sequential ones
+count).* The same plan at commits between v0.4.0 and `ece1df1`:
+
+| diffcone | Commits after v0.4.0 | Time | Peak RSS |
+| --- | --- | --- | --- |
+| v0.4.0 | 0 | 1 048 s | 22.6 GB |
+| `c8f14e4` | 10 | 1 057 s | 22.0 GB |
+| `5f14e44` (round 6 fixes) | 24 | 1 092 s | 10.8 GB |
+| `467ccec` | 45 | 1 214 s | 12.4 GB |
+| `50fe2bd` (round 7 cli batch) | 46 | 1 250 s | 11.2 GB |
+| `446fb62` (round 7 class batch) | 50 | 2 819 s | 25.7 GB |
+| `20d8edb` | 58 | 3 393 s | 28.7 GB |
+| `ece1df1` | 99 | 3 219 s | 25.3 GB |
+
+The step is round 7's class batch (`ClassRecord`, `_class_held`, the
+`_state_roots` extensions and `AnyClassOwners`): it took the whole-index
+`mutated_by` edges to 25.1 million (24.9 million from a class, 15 258
+writers, `DirNamesMixin` and `PandasObject` 13 712 writers each), most of
+them every class's edge for a write of a dunder or `*` name on an object
+of unknown class (T25). That is the rule as intended and stays. What
+changed instead, each checked by a byte-identical report (repository
+path aside):
+
+* Pass 2: `_class_held` reads a class's instance-owned attributes from one
+  scan of its body per index rather than one per question, and
+  `_alias_roots` memoises a name's roots per (scope, enclosing binders),
+  reusing them only when the cycle cut they saw matches (pass 2 from
+  about 900 s to about 430 s).
+* The write phases: `_shared_writes` reads only the writes the previous
+  round added, `_value_writes` adds its edges without sorting millions of
+  pairs, and `AnyClassOwners` returns every class at once for `*` and
+  dunders and skips a write it already recorded against the same owners
+  (the 242 465 `record` calls took 207 s of a 614 s profile).
+* The whole-index cache: the JSON is written as `json.dump` would, from
+  the C encoder in chunks, the records built field by field rather than
+  by `asdict`, and an edge stored as a list (`INDEX_FORMAT` 75).
+* `plan` and `discover` leave with `os._exit` after flushing their
+  output: freeing the analysis took 175 to 210 s after the report was
+  written.
+
+Result: 1 678 s and 23.2 GB at the sampler (which calls `main`, so it
+still pays the teardown; about 1 500 s through the console script),
+against 3 219 s and 25.3 GB at `ece1df1`. Still to cut, from the sampled
+run: planning and the report (about 500 s, the 23 GB peak, the 1 GB
+`selected_targets`), the write phases' 25 million edges (about 250 s),
+and the cache store (about 100 s).
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

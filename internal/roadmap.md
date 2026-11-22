@@ -1959,33 +1959,24 @@ next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 
 ## 22. Plans that fit in memory: further (not planned)
 
-**Update (2026-11-22): pandas no longer plans in reasonable time.** A cold
-static plan of one pandas commit takes 2 884 s and 22 GB at `efb115e`
-(1 007 s at v0.4.0; 112 s in the first pandas evaluation), and a warm one
-is still running at 38 minutes (evaluation.md, "pandas at `ef7d968`").
-This blocks the fork trial (item 9): a 16 GB runner does not fit it. The
-sampled profile of one side's index, largest first, with what each could
-become (every change must leave the plan byte-identical, checked on a
-pandas commit as `_attribute_modules`' was):
+**Update (2026-11-22): a cold pandas plan is about 1 500 s and 23 GB**
+(3 219 s at `ece1df1`, 1 048 s at v0.4.0; evaluation.md, "Bisect and the
+next fixes"). Round 7's class batch doubled it by taking the `mutated_by`
+edges to 25 million, which is the rule as intended. This still blocks the
+fork trial (item 9): a 16 GB runner does not fit it. What is left,
+largest first, each change to leave the plan byte-identical on a pandas
+commit:
 
-* Pass 2, `references.py` `_state_roots` and the root tracing under it
-  (about 470 s): memoise roots per (scope, name) within a module.
-* `cache.store` (about 270 s and the step from 8 to 12.5 GB): build the
-  JSON without `dataclasses.asdict` (a field-by-field dict gives the same
-  JSON 4.5 times faster in a micro-benchmark), stream it to the file
-  rather than holding the dict, and reconsider whether a 2.5 GB
-  whole-index entry per commit is worth storing at all next to the
-  module cache.
-* The write phases (about 290 s, RSS 2 to 9 GB).
-* `_attribute_modules` (150 s): done, one walk instead of one a module.
-* The report: `selected_targets` of a select-all pandas plan is about
-  1 GB of JSON; one shared list for reasons every target has (the
-  fallback) would make it small.
-
-Before any of it: bisect v0.4.0..`efb115e` on the same commit to find which
-changes made it 2.9 times slower (each probe is about 20 to 50 minutes and
-20 GB, so two at a time on a 64 GB machine).
-
+* Planning and the report (about 500 s, the 23 GB peak): `selected_targets`
+  of a select-all pandas plan is about 1 GB of JSON; one shared list for
+  reasons every target has (the fallback) would make it small.
+* The 25 million `mutated_by` edges (about 250 s to make, most of the
+  2.5 GB cache entry): every class's edge for a write of `*` or a dunder
+  on an object of unknown class could be one edge from a pseudo-node
+  every class reaches, as `<log-callbacks>` is, if the explanations it
+  gives stay the same.
+* `cache.store` (about 100 s): reconsider whether a 2.5 GB whole-index
+  entry per commit is worth storing next to the module cache.
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit
 E37). Of what graph building holds, the largest parts left are the

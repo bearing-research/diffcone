@@ -1307,7 +1307,9 @@ class Indexer(DynamicBounds):
         self._shared_writes()
         self._class_attribute_writes(immutable)
         holding = self._classes_holding_state(immutable)
-        for state, writer in sorted(self._global.receiver_writes - self._global.value_writes):
+        # Edges go into a set: these loops need no order (sorting the
+        # millions of value_writes on pandas cost half a minute).
+        for state, writer in self._global.receiver_writes - self._global.value_writes:
             if state not in immutable:
                 self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
         for var, writer in sorted(self._global.typed_writes):
@@ -1315,7 +1317,7 @@ class Indexer(DynamicBounds):
                 for c in sorted(self._reached(self._mro(cls))):
                     if c != writer:
                         self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
-        for state, writer in sorted(self._global.value_writes):
+        for state, writer in self._global.value_writes:
             if state in immutable:
                 continue
             self.index.edges.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY))
@@ -1361,11 +1363,28 @@ class Indexer(DynamicBounds):
             return
         out = self._global
         done: set[tuple[str, tuple[str, str, str]]] = set()
+        # What a write gives is a function of the write alone (the record's
+        # classes, instances and shares are fixed by now), so each round
+        # reads only the writes the previous one added: the same pending
+        # set as reading them all, without rescanning millions of
+        # value_writes on pandas each round.
+        families: dict[str, set[str]] = {}
+
+        def family(cls: str) -> set[str]:
+            found = families.get(cls)
+            if found is None:
+                found = families[cls] = self._family(cls)
+            return found
+
+        read_instance: set[tuple[str, str, str]] = set()
+        read_value: set[tuple[str, str]] = set()
         while True:
             pending: set[tuple[str, tuple[str, str, str]]] = set()
-            for ident, writer, how in out.instance_writes:
+            new_instance = out.instance_writes - read_instance
+            read_instance |= new_instance
+            for ident, writer, how in new_instance:
                 for cls in record.classes(ident):
-                    for c in self._family(cls):
+                    for c in family(cls):
                         table = record.shares.get(c, {})
                         if how[:1] in (".", SHARED_ONLY):
                             names = [how[1:]]
@@ -1374,9 +1393,12 @@ class Indexer(DynamicBounds):
                         else:
                             names = list(table)
                         pending.update((writer, f) for n in names for f in table.get(n, ()))
-            for state, writer in out.value_writes:
-                for cls in record.instances.get(state, ()):
-                    for c in self._family(cls):
+            new_value = out.value_writes - read_value
+            read_value |= new_value
+            instances = record.instances
+            for state, writer in new_value:
+                for cls in instances.get(state, ()):
+                    for c in family(cls):
                         for facts in record.shares.get(c, {}).values():
                             pending.update((writer, f) for f in facts)
             pending -= done

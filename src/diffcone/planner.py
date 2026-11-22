@@ -795,13 +795,16 @@ def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[st
     Insertion order is not significant: adjacency lists are sorted in
     ``_Graph.freeze`` and records are sorted before reporting, so the items
     are not sorted here (comparing tens of thousands of dataclasses was a
-    third of planning time)."""
-    revs: dict[T, list[str]] = defaultdict(list)
-    for item in base_items:
-        revs[item].append("base")
+    third of planning time). Each side is a set, so an item is in one or
+    both: the three tuples are shared rather than made per item (millions
+    of edges on pandas)."""
+    revs: dict[T, tuple[str, ...]] = dict.fromkeys(base_items, _BASE_ONLY)
     for item in head_items:
-        revs[item].append("head")
-    return {item: tuple(r) for item, r in revs.items()}
+        revs[item] = _BOTH if item in revs else _HEAD_ONLY
+    return revs
+
+
+_BASE_ONLY, _HEAD_ONLY, _BOTH = ("base",), ("head",), ("base", "head")
 
 
 def _propagate(
