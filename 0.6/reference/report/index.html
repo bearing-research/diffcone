@@ -1377,7 +1377,7 @@ instead of repeating its detail:</p>
 <tr>
 <td><code>unanalysed_file_changed</code></td>
 <td>yes</td>
-<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a <code>.py</code> file <code>[index] exclude</code> keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
+<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a <code>.py</code> file <code>[index] exclude</code> keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file, a compiled source or native build file, or a submodule changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
 </tr>
 </tbody>
 </table>

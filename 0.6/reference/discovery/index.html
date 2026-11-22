@@ -1261,7 +1261,22 @@ target. Outside your source roots, these are:</p>
 <li>a <code>.env</code> or <code>.pth</code> file, or <code>sitecustomize.py</code>;</li>
 <li>a type checker or linter configuration that a pytest plugin may run
   (<code>mypy.ini</code>, <code>ruff.toml</code>);</li>
-<li>compiled sources.</li>
+<li>compiled sources (C, C++, Cython, Fortran, Rust, CUDA, assembly, and the
+  headers and template files they include), and schemas a build compiles
+  into sources (<code>.thrift</code>, <code>.fbs</code>, <code>.proto</code>);</li>
+<li>what builds a native library your extensions link: <code>CMakeLists.txt</code>,
+  <code>.cmake</code> modules, <code>CMakePresets.json</code>, <code>meson.build</code> and <code>.wrap</code> files,
+  Bazel files (<code>BUILD</code>, <code>BUILD.bazel</code>, <code>MODULE.bazel</code>, <code>WORKSPACE</code>,
+  <code>.bzl</code>), autotools files (<code>configure</code>, <code>configure.ac</code>, <code>Makefile.am</code>,
+  <code>.m4</code>), make fragments (<code>.mk</code>), patches (<code>.patch</code>), <code>vcpkg.json</code>,
+  <code>conanfile.txt</code> or <code>conanfile.py</code>, a <code>Brewfile</code>, linker scripts
+  (<code>symbols.map</code>, <code>.lds</code>, <code>.ver</code>), and any file in a <code>thirdparty</code>,
+  <code>third_party</code>, <code>3rdparty</code>, <code>vendor</code>, <code>vendored</code>, <code>subprojects</code>,
+  <code>extern</code>, <code>external</code> or <code>deps</code> directory (such as pinned dependency
+  versions);</li>
+<li>a submodule: the change shows only its new commit, not which of its
+  files changed (vendored sources, test data). This holds even when
+  <code>.gitmodules</code> sets <code>ignore = all</code> for it.</li>
 </ul>
 <p>Inside your source roots, a change to any file that isn't a <code>.py</code> file
 selects every target: a data file, a <code>README.md</code>, a configuration file. So
