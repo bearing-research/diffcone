@@ -1148,6 +1148,10 @@ summary of the same information). The report's format is versioned by
 <td>The <code>[[always_run]]</code> entries of <a href="../declarations/"><code>diffcone.toml</code></a>; each says how many targets it <code>matched</code>, and <code>analysis.counts.always_run</code> counts the targets they selected.</td>
 </tr>
 <tr>
+<td><code>build_reads</code></td>
+<td>The <code>[build] reads</code> patterns of <a href="../declarations/#build-files-your-tests-dont-use"><code>diffcone.toml</code></a> (<code>patterns</code>, <code>null</code> without the table), and the changed build files and submodules outside the source roots they set aside (<code>set_aside</code>).</td>
+</tr>
+<tr>
 <td><code>discovery</code></td>
 <td>For each runner: how many targets were found, the configuration read, and any notes. For pytest, the configuration includes <code>rootdir</code>, <code>configfile</code> and <code>junit_prefix</code> (which <a href="../../guides/running/#check-a-plan-against-a-full-run"><code>diffcone check</code></a> uses to match JUnit names), and <code>run_arguments</code>, what was read besides the configuration file: <code>PYTEST_ADDOPTS</code>, <code>PYTEST_PLUGINS</code>, the pytest arguments in <code>--command</code> and those after <code>--</code>.</td>
 </tr>
@@ -1377,7 +1381,7 @@ instead of repeating its detail:</p>
 <tr>
 <td><code>unanalysed_file_changed</code></td>
 <td>yes</td>
-<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a <code>.py</code> file <code>[index] exclude</code> keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
+<td>A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a <code>.py</code> file <code>[index] exclude</code> keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a <code>conftest.py</code>, a build script, dependencies or a lock file, a compiled source or native build file, or a submodule changed. For one target: a Python file it runs by path, which no module name maps to, changed.</td>
 </tr>
 </tbody>
 </table>
