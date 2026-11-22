@@ -8,6 +8,8 @@ selection rules.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-22
+
 ### Planning
 
 - More files outside your source roots now count as changing what is
@@ -1336,6 +1338,7 @@ The first release.
   `actions/check`) to record nightly on the default branch and plan, run
   and check each pull request against it; see `docs/ci.md`.
 
+[0.6.1]: https://github.com/bearing-research/diffcone/releases/tag/v0.6.1
 [0.6.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.6.0
 [0.5.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.5.0
 [0.4.0]: https://github.com/bearing-research/diffcone/releases/tag/v0.4.0
