@@ -242,7 +242,8 @@ from diffcone.cython import (
     pxd_stem,
     symbol_id,
 )
-from diffcone.declarations import Declaration
+from diffcone.declarations import FILENAME as DECLARATION_FILE
+from diffcone.declarations import Declaration, reads_match
 from diffcone.discovery import DiscoveryResult
 from diffcone.evidence import (
     COLLECTED,
@@ -940,6 +941,11 @@ class _Observers:
         # the index reads none of them, but the recorder saw what tests ran
         # and opened there.
         self.outside: dict[str, str] = {}
+        # ``[build] reads`` (plan_with_evidence): a build input or submodule
+        # outside the roots that no pattern names is an ordinary file here,
+        # observed by whoever read it; such paths are kept in ``set_aside``.
+        self.build_reads: tuple[str, ...] | None = None
+        self.set_aside: set[str] = set()
         # Every submodule of either index (``_file`` asks only about changed
         # paths), and the changed ones outside the roots (plan_with_evidence).
         self.gitlinks: set[str] = {
@@ -3530,6 +3536,21 @@ class _Observers:
             current = symbol.container if symbol is not None else None
         return None
 
+    def _set_aside(self, path: str) -> bool:
+        """Whether ``path``, changed outside the source roots, is a build
+        input or submodule ``[build] reads`` names nothing of: then it is
+        not the tests' build's, and is read as any other file (and kept in
+        ``set_aside`` for the report)."""
+        if (
+            self.build_reads is None
+            or path not in self.outside
+            or reads_match(path, self.build_reads)
+            or not (build_input(path) or path in self.gitlinks)
+        ):
+            return False
+        self.set_aside.add(path)
+        return True
+
     def _file(self, path: str, what: str, *, names: bool, source: bool = False) -> None:
         """A changed file the index does not read, or the file of a changed
         module (``source``). Its content is observed by whoever opened or
@@ -3538,14 +3559,15 @@ class _Observers:
         build input, which for a module's file is a build script as static
         planning judges it (planner.is_build_script): an ordinary
         ``pkg/build.py`` is imported like any module."""
-        if is_build_script(path, self.project_dirs) if source else build_input(path):
-            self._select_all(
-                Rule.UNOBSERVED_FILE,
-                f"{path} {what}: compiled source, build, dependency or pytest configuration, "
-                "read where no test's record sees it",
-            )
-            return
-        if path in self.gitlinks:
+        if source or not self._set_aside(path):
+            if is_build_script(path, self.project_dirs) if source else build_input(path):
+                self._select_all(
+                    Rule.UNOBSERVED_FILE,
+                    f"{path} {what}: compiled source, build, dependency or pytest configuration, "
+                    "read where no test's record sees it",
+                )
+                return
+        if path in self.gitlinks and not self._set_aside(path):
             # Its new commit is all the diff shows: which of its files changed
             # (sources a build compiles in, data tests read) is not known.
             self._select_all(
@@ -3681,8 +3703,13 @@ def plan_with_evidence(
     base_target_ids: set[str] | None = None,
     lifecycle_changes: LifecycleChanges | None = None,
     lifecycle_since_recording: LifecycleChanges | None = None,
+    build_reads: tuple[str, ...] | None = None,
+    build_reads_changed: bool = False,
 ) -> Plan:
-    """``lifecycle_changes``: the discovered targets' lifecycle dependencies
+    """``build_reads``: ``diffcone.toml``'s ``[build] reads``, the same at
+    the recording, the base and the head; ``build_reads_changed``: it is
+    not, which selects every target (planner._build_reads).
+    ``lifecycle_changes``: the discovered targets' lifecycle dependencies
     that moved between base and head, for targets of other runners, which
     keep their static decision; ``lifecycle_since_recording``: those of the
     pytest targets that moved between the recording and the base or the
@@ -3704,6 +3731,16 @@ def plan_with_evidence(
     test_code.isolated = isolated_test_code(targets, (evidence_index, base, head))
 
     fallbacks: list[Fallback] = []
+    if build_reads_changed:
+        fallbacks.append(
+            Fallback(
+                Rule.UNANALYSED_FILE,
+                "all_targets",
+                f"{DECLARATION_FILE}'s [build] reads differs between the recording, the base "
+                "and the head; the paths it sets aside are not known, so every supplied "
+                "target is selected",
+            )
+        )
     if errors:
         fallbacks.append(
             Fallback(
@@ -3726,6 +3763,7 @@ def plan_with_evidence(
                 Path(repo), evidence.commit, other, source_roots
             )
             obs.gitlinks |= gitlinks
+            obs.build_reads = build_reads
         obs.run()
         observed.append(obs)
         fallbacks += obs.fallbacks
@@ -3819,6 +3857,8 @@ def plan_with_evidence(
         targets=targets,
     )
     plan.evidence = _summary(evidence, pairs, observed, changes)
+    plan.build_reads = build_reads
+    plan.build_set_aside = sorted(set().union(*(obs.set_aside for obs in observed)))
     return plan
 
 

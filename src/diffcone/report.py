@@ -126,6 +126,12 @@ def to_dict(plan: Plan) -> dict[str, Any]:
             }
             for a in plan.always_run
         ],
+        # ``[build] reads``: the paths outside the source roots the tests'
+        # build reads, and the changed build inputs it set aside.
+        "build_reads": {
+            "patterns": None if plan.build_reads is None else list(plan.build_reads),
+            "set_aside": list(plan.build_set_aside),
+        },
         "analysis": {
             "repo": plan.repo,
             "base": snapshot_to_dict(plan.base),
@@ -271,6 +277,13 @@ def to_text(plan: Plan) -> str:
                 )
                 + (f"  ({a.why})" if a.why else "")
             )
+    if plan.build_set_aside:
+        lines.append(
+            f"set aside by [build] reads ({len(plan.build_set_aside)}): changed build "
+            "input(s) outside the source roots that no pattern names; if the tests' build "
+            "reads one, the table is wrong and this plan may miss tests:"
+        )
+        lines.extend(f"  {path}" for path in plan.build_set_aside)
     if plan.incomplete_discovery:
         lines.append(
             f"discovery INCOMPLETE: {len(plan.incomplete_discovery)} place(s) where a runner "

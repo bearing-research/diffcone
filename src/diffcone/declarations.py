@@ -21,11 +21,25 @@ end-to-end suite), are named by a pattern on their runner ids:
     runner = "pytest"                # optional
     why = "end to end, run on every pull request"
 
-Declarations only *add* edges or selected targets, so they can only widen
-selection: a wrong one costs a test that runs anyway, and none of them can
-make the plan miss. A declaration whose endpoints resolve to nothing, a
-malformed entry, or a file that does not parse, is an analysis error -- a
-typo that silently declares nothing is the outcome worth failing on; so is
+The paths outside the source roots that the tests' build and continuous
+integration read are named by patterns; a build input or submodule outside
+the roots that no pattern names (another component's CI workflow, another
+language binding's native code) then no longer selects every target:
+
+    [build]
+    reads = ["cpp/**", "testing", ".github/workflows/python.yml"]
+
+Edges and ``always_run`` entries only *add* edges or selected targets, so
+they can only widen selection: a wrong one costs a test that runs anyway,
+and none of them can make the plan miss. ``[build] reads`` is the one
+declaration that narrows, and a stale one can hide a miss (a new workflow,
+a directory the build starts reading): the planner reports each path it set
+aside, a pattern matching no path is an analysis error, and a table that
+differs between the two snapshots selects every target.
+
+A declaration whose endpoints resolve to nothing, a malformed entry, or a
+file that does not parse, is an analysis error -- a typo that silently
+declares nothing is the outcome worth failing on; so is
 an ``always_run`` ``runner`` that is neither a runner diffcone discovers nor
 one of the plan's targets' (the planner checks it, as only it knows the
 targets). An ``always_run`` pattern matching no target is only reported
@@ -81,6 +95,8 @@ class Declared:
 
     edges: list[Declaration] = field(default_factory=list)
     always_run: list[AlwaysRun] = field(default_factory=list)
+    # ``[build] reads``: None when the file has no ``[build]`` table.
+    build_reads: tuple[str, ...] | None = None
     problems: list[str] = field(default_factory=list)
 
 
@@ -108,7 +124,7 @@ def parse(raw: bytes) -> Declared:
         return Declared(problems=[f"{FILENAME}: {exc}"])
     out = Declared()
     # ``[index]`` is the snapshot reader's (which files it analyses).
-    unknown_tables = sorted(set(data) - {"edges", "always_run", "index"})
+    unknown_tables = sorted(set(data) - {"edges", "always_run", "index", "build"})
     if unknown_tables:
         # A singular ``[[edge]]`` or a capitalisation slip would otherwise
         # declare nothing at all, quietly.
@@ -120,7 +136,34 @@ def parse(raw: bytes) -> Declared:
             continue
         for i, entry in enumerate(entries, start=1):
             read(out, i, entry)
+    if "build" in data:
+        _build(out, data["build"])
     return out
+
+
+def _build(out: Declared, table: object) -> None:
+    where = f"{FILENAME}: [build]"
+    if not isinstance(table, dict):
+        out.problems.append(f"{where} must be a table")
+        return
+    unknown = sorted(set(table) - {"reads"})
+    if unknown:
+        out.problems.append(f"{where} has unknown key(s) {', '.join(unknown)}")
+        return
+    patterns = table.get("reads")
+    if not isinstance(patterns, list) or not all(isinstance(p, str) and p for p in patterns):
+        out.problems.append(f"{where} reads must be a list of non-empty patterns")
+        return
+    out.build_reads = tuple(patterns)
+
+
+def reads_match(path: str, patterns: tuple[str, ...]) -> bool:
+    """Whether a ``[build] reads`` pattern names ``path`` or a directory
+    above it (``testing`` names the submodule and everything under it).
+    Patterns are fnmatch patterns on repository paths: ``*`` crosses ``/``."""
+    parts = path.split("/")
+    prefixes = ["/".join(parts[:i]) for i in range(1, len(parts) + 1)]
+    return any(fnmatchcase(p, pattern) for pattern in patterns for p in prefixes)
 
 
 def _edge(out: Declared, i: int, entry: object) -> None:

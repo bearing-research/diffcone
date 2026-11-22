@@ -38,6 +38,21 @@ selection rules.
   (`--allow-mismatched-worktree` to run anyway). Before, only submodules
   under the roots counted.
 
+### Declarations
+
+- `[build] reads` in `diffcone.toml` names the paths outside your source
+  roots that your tests' build and CI read (`cpp/**`, `testing`,
+  `.github/workflows/python.yml`). A changed build file or submodule
+  outside the roots that no pattern covers is then set aside instead of
+  selecting every test, and the report lists it (`build_reads` in JSON).
+  This is the one setting that makes plans select fewer tests, so a stale
+  list can hide a failing test: a table that differs between the two
+  snapshots selects every test, and a pattern that covers no path is an
+  analysis error. On Apache Arrow's last 299 commits, a list written from
+  pyarrow's build and CI turns 34 of the 192 plans that selected every
+  pyarrow test into plans that select none (another binding's native code,
+  another component's workflow or packaging); no plan selects more.
+
 ### Performance
 
 - A cold plan of pandas takes about half the time (a commit that selects

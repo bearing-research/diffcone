@@ -1875,48 +1875,6 @@ the extension modules each test loads from `/proc/self/maps`) before any
 rule ships, with scenarios on a fixture extension (a C library linked by
 one module and by a shared one).
 
-## 24. Build inputs and CI files of components the tests never build
-
-**Status.** Sketch (2026-11-22), not started; it narrows, so it waits on
-the user's decision. Measured on Apache Arrow's last 299 commits at
-`efb115e` (evaluation.md, the pyarrow re-run): of the 192 commits outside
-`python/` that select every target, 59 (31 %) change no file pyarrow's
-build or CI reads: 45 only CI files of other components
-(`.github/workflows/cpp.yml`, `ci/docker/*-cpp.dockerfile`, `.env`) and
-14 another binding's native code or packaging (`r/src/*.cpp`, `c_glib/`,
-`ruby/red-arrow/ext/`, `*.spec.in`). Each selects all 2 607 targets
-because `build_input` holds for a compiled source or CI file anywhere.
-
-**Mechanism.** The analysis cannot tell which directories a build reads
-(`python/CMakeLists.txt` finds the C++ library through `ARROW_HOME` or
-CMake packages, not paths) or which workflow runs the tests, so it is
-stated: a `diffcone.toml` table naming the paths outside the roots that
-the tests' build and CI read, e.g.
-
-```toml
-[build]
-reads = ["cpp/**", "format/**", "testing", ".github/workflows/python.yml", "ci/scripts/python_*"]
-```
-
-With the table, a build input or submodule outside the roots and outside
-every `reads` pattern no longer selects everything; the plan reports
-each such path (`build_input_outside_reads`) so a reviewer sees what was
-set aside. Without the table nothing changes.
-
-**Why it may be unsound, and the guards.** It is the first declaration
-that removes selection (declarations.md says declarations only add
-edges), so the statement is the project's and can go stale (a new
-workflow, a directory the build starts reading). Guards: the table is
-read from both revisions and a change to it selects everything; a path
-`reads` names that no longer exists is an analysis error; `diffcone check`
-(item 9) against full runs is how a wrong statement shows up.
-
-**Done when.** The user decides that a narrowing declaration is
-acceptable. Then: scenarios (a matched and an unmatched build input, a
-changed table, a stale pattern), docs that say plainly it can hide a
-miss, and the Arrow sweep re-run with a table written from Arrow's
-`python.yml` and `ci/scripts/python_*`.
-
 ## 25. Decorators that never call what they decorate
 
 **Status.** Set aside (2026-11-22): a spike that drops every

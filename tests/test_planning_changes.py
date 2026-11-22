@@ -21,6 +21,7 @@ import pytest
 from diffcone.indexer import build_index
 from diffcone.manifest import ManifestError, Target, parse_manifest
 from diffcone.model import SnapshotInfo
+from diffcone.report import to_dict, to_text
 from diffcone.snapshot import Snapshot
 from diffcone.testing import (
     FixtureRepo,
@@ -1030,6 +1031,150 @@ def test_a_submodule_outside_the_roots_selects_everything(repo, path, ignored):
     plan = repo.plan(head, edited, TARGETS, source_roots=SPLIT_ROOTS)
     assert selected(plan) == {"bench_other.time_helper"}
     assert plan.fallbacks == []
+
+
+BUILD_READS = '[build]\nreads = ["cpp/**", "testing", ".github/workflows/python.yml"]\n'
+OUTSIDE = {
+    "cpp/src/a.cc": "int a;\n",
+    ".github/workflows/python.yml": "on: push\n",
+    ".github/workflows/r.yml": "on: push\n",
+    "r/src/b.cpp": "int b;\n",
+}
+EVERYTHING = {t.runner_id for t in TARGETS}
+
+
+def _commit_files(repo, files):
+    """Commit ``files`` alone, leaving the gitlinks (which have no checkout)
+    as they are."""
+    for rel, content in files.items():
+        (repo.path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo.path / rel).write_text(content)
+        repo.git("add", rel)
+    repo.git("commit", "-q", "-m", "files")
+    return repo.git("rev-parse", "HEAD")
+
+
+def _reads_repo(repo, table=BUILD_READS):
+    """TREE with build inputs outside the roots, a submodule ``[build]
+    reads`` names (``testing``) and one it does not (``other/sub``)."""
+    first = repo.commit({**TREE, **OUTSIDE, "diffcone.toml": table})
+    base = _commit_gitlink(repo, "testing", first)
+    return first, _commit_gitlink(repo, "other/sub", base)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {".github/workflows/r.yml": "on: pull_request\n"},
+        {"r/src/b.cpp": "int c;\n"},
+        {".github/workflows/r.yml": "on: [push]\n", "r/src/b.cpp": "int d;\n"},
+        {"other/sub": None},
+    ],
+)
+def test_build_reads_sets_aside_a_build_input_it_does_not_name(repo, change):
+    """Roadmap item 24: with ``[build] reads``, a changed build input or
+    submodule outside the roots that no pattern names (another component's
+    workflow, another binding's native code) selects nothing; the plan lists
+    it, in JSON and text. This narrows: without the table it selects
+    everything."""
+    first, base = _reads_repo(repo)
+    if change == {"other/sub": None}:
+        head = _commit_gitlink(repo, "other/sub", first)
+    else:
+        head = _commit_files(repo, change)
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == set()
+    assert plan.build_set_aside == sorted(change)
+    assert plan.build_reads == ("cpp/**", "testing", ".github/workflows/python.yml")
+    assert to_dict(plan)["build_reads"]["set_aside"] == sorted(change)
+    assert "set aside by [build] reads" in to_text(plan)
+    # A change to the code is still planned as ever.
+    code = _commit_files(repo, {"src/pkg/other.py": "def helper():\n    return 2\n"})
+    plan = repo.plan(base, code, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == {"bench_other.time_helper"}
+
+
+def test_without_build_reads_the_same_change_selects_everything(repo):
+    _, base = _reads_repo(repo, table="")
+    head = _commit_files(repo, {".github/workflows/r.yml": "on: pull_request\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == EVERYTHING
+    assert plan.build_reads is None and plan.build_set_aside == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"cpp/src/a.cc": "int z;\n"},
+        {".github/workflows/python.yml": "on: pull_request\n"},
+        {"testing": None},
+        # Runner configuration and conftests are never set aside.
+        {"conftest.py": "import os\n"},
+        {"pytest.ini": "[pytest]\n"},
+    ],
+)
+def test_a_build_input_build_reads_names_selects_everything(repo, change):
+    first, base = _reads_repo(repo)
+    if change == {"testing": None}:
+        head = _commit_gitlink(repo, "testing", base)
+    else:
+        head = _commit_files(repo, change)
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == EVERYTHING
+    assert plan.build_set_aside == []
+
+
+def test_a_changed_build_reads_table_selects_everything(repo):
+    """The table is the project's statement of what the build reads: one
+    that changes with the code cannot be trusted for either side."""
+    _, base = _reads_repo(repo)
+    head = _commit_files(repo, {"diffcone.toml": '[build]\nreads = ["cpp/**", "r/**"]\n'})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == EVERYTHING
+    assert (
+        "diffcone.toml" in reason(plan, "bench_other.time_helper", "unanalysed_file_changed").detail
+    )
+    # Dropping it too.
+    gone = _commit_files(repo, {"diffcone.toml": "", "r/src/b.cpp": "int e;\n"})
+    assert selected(repo.plan(head, gone, TARGETS, source_roots=SPLIT_ROOTS)) == EVERYTHING
+
+
+def test_a_stale_build_reads_pattern_is_an_analysis_error(repo):
+    """A pattern naming no path (a directory renamed away) would set aside
+    what the build reads now."""
+    table = '[build]\nreads = ["cpp/**", "java/**"]\n'
+    _, base = _reads_repo(repo, table=table)
+    head = _commit_files(repo, {".github/workflows/r.yml": "on: pull_request\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert plan.degraded and selected(plan) == EVERYTHING
+    assert any("'java/**' names no path" in e.message for e in plan.errors)
+
+
+@pytest.mark.parametrize(
+    "table, message",
+    [
+        ('[build]\nreads = "cpp/**"\n', "reads must be a list of non-empty patterns"),
+        ('[build]\nreads = [""]\n', "reads must be a list of non-empty patterns"),
+        ("[build]\nread = []\n", "unknown key(s) read"),
+        ('build = "cpp"\n', "[build] must be a table"),
+    ],
+)
+def test_a_malformed_build_table_is_an_analysis_error(repo, table, message):
+    _, base = _reads_repo(repo, table=table)
+    head = _commit_files(repo, {"r/src/b.cpp": "int f;\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert plan.degraded and selected(plan) == EVERYTHING
+    assert any(message in e.message for e in plan.errors)
+
+
+def test_build_reads_changes_nothing_with_the_repository_as_a_root(repo):
+    """Under the ``.`` root nothing is outside the roots: a changed build
+    input is an unanalysed file, whatever the table says."""
+    _, base = _reads_repo(repo)
+    head = _commit_files(repo, {"r/src/b.cpp": "int g;\n"})
+    plan = repo.plan(base, head, TARGETS, source_roots=["src", "."])
+    assert selected(plan) == EVERYTHING
+    assert plan.build_set_aside == []
 
 
 def test_s9_a_changed_build_script_selects_everything(repo):
