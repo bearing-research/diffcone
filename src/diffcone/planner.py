@@ -175,8 +175,8 @@ from diffcone.snapshot import (
     WORKTREE,
     GitError,
     Snapshot,
-    changed_paths,
     commit_description,
+    diff_snapshots,
     file_id,
     read_snapshot,
     resolve_commit,
@@ -290,8 +290,21 @@ COMPILED_SUFFIXES = (
     ".cc",
     ".cpp",
     ".cxx",
+    ".c++",
     ".hh",
     ".hpp",
+    ".hxx",
+    ".h++",
+    # Headers and template bodies that sources include (``.tcc``: Thrift's
+    # generated templates; ``.inl``, ``.ipp``, ``.inc``: inline parts).
+    ".tcc",
+    ".inl",
+    ".ipp",
+    ".inc",
+    # Assembly, and the exports a Windows build reads (``.def``).
+    ".s",
+    ".asm",
+    ".def",
     ".f",
     ".f77",
     ".for",
@@ -300,6 +313,7 @@ COMPILED_SUFFIXES = (
     ".pyf",
     ".rs",
     ".cu",
+    ".cuh",
     ".i",
     ".swg",
     ".m",
@@ -307,6 +321,23 @@ COMPILED_SUFFIXES = (
     ".src",
     ".in",
     ".tpl",
+    # Schemas a build compiles into sources (Thrift, FlatBuffers, protobuf).
+    ".thrift",
+    ".fbs",
+    ".proto",
+    # CMake modules and scripts, patches a build applies to the libraries it
+    # fetches, and Meson's wrap files (which version of a subproject).
+    ".cmake",
+    ".patch",
+    ".wrap",
+    # Bazel's rule files, autoconf's macros, make fragments, and linker
+    # scripts and version scripts (what a shared library exports).
+    ".bzl",
+    ".bazel",
+    ".m4",
+    ".mk",
+    ".lds",
+    ".ver",
     ".so",
     ".pyd",
     ".dylib",
@@ -332,6 +363,23 @@ BUILD_FILES = frozenset(
         "meson.options",
         "meson_options.txt",
         "CMakeLists.txt",
+        "CMakePresets.json",
+        "CMakeUserPresets.json",
+        # C and C++ package managers: which libraries, at which versions.
+        "vcpkg.json",
+        "vcpkg-configuration.json",
+        "conanfile.txt",  # conanfile.py: BUILD_SCRIPTS
+        "Brewfile",
+        # A linker version script: which symbols a shared library exports.
+        "symbols.map",
+        # Bazel (``BUILD.bazel`` and ``MODULE.bazel`` by their suffix) and
+        # autotools.
+        "BUILD",
+        "WORKSPACE",
+        "configure",
+        "configure.ac",
+        "configure.in",
+        "Makefile.am",
         "Makefile",
         "GNUmakefile",
         "Pipfile",
@@ -365,6 +413,22 @@ BUILD_FILES = frozenset(
 )
 # Directories whose files configure continuous integration.
 CI_DIRS = (".github/workflows/", ".github/actions/", ".circleci/", "ci/", ".ci/")
+# Directories of third-party code a build compiles in or fetches, at any
+# depth: what is there (sources, pinned versions such as Apache Arrow's
+# ``cpp/thirdparty/versions.txt``, patches) is part of the build.
+THIRD_PARTY_DIRS = frozenset(
+    (
+        "thirdparty",
+        "third_party",
+        "3rdparty",
+        "vendor",
+        "vendored",
+        "subprojects",
+        "extern",
+        "external",
+        "deps",
+    )
+)
 # Dependency declarations, by a word in their name or in the name of a
 # directory holding them, in any case: ``requirements-dev.txt``,
 # ``dev-requirements.txt``, ``Requirements.txt``, ``requirements.pip``,
@@ -382,7 +446,8 @@ def build_input(path: str) -> bool:
     """Whether a file decides what is compiled, installed or collected, or
     how the tests run: a compiled source; build, pytest or task-runner
     configuration; a dependency declaration or lock file (``uv.lock``,
-    ``pylock.toml``); a continuous-integration file; a ``.env`` file; a
+    ``pylock.toml``, ``vcpkg.json``); a file under a third-party directory
+    (THIRD_PARTY_DIRS); a continuous-integration file; a ``.env`` file; a
     ``.pth`` file (once installed, the interpreter runs its import lines at
     start); or a distribution's metadata (under ``*.dist-info``,
     ``*.egg-info``, ``*.egg`` or ``*.egg-link``, which ``importlib.metadata``
@@ -401,6 +466,7 @@ def build_input(path: str) -> bool:
         or name.endswith((".lock", ".pth"))
         or (name.startswith("pylock.") and name.endswith(".toml"))
         or lowered.startswith(CI_DIRS)
+        or any(part in THIRD_PARTY_DIRS or part.startswith("vendored-") for part in parts[:-1])
         or (
             name.endswith(DEPENDENCY_SUFFIXES)
             and any(DEPENDENCY_NAME.search(part) for part in parts)
@@ -458,10 +524,11 @@ def _runner_files_outside_roots(
     and how the tests run: the runners' configuration at the repository root
     (``pyproject.toml``'s pytest table, ``asv.conf.json`` or ``.jsonc``
     anywhere),
-    conftests, and anything ``build_input`` names (build scripts, dependency
-    declarations and lock files, compiled sources). Inside a root such a
-    file is an unanalysed file; out of every root nothing else would see it
-    change."""
+    conftests, anything ``build_input`` names (build scripts, dependency
+    declarations and lock files, compiled sources), and submodules (a moved
+    gitlink: what changed inside it, vendored sources or test data, is not
+    in the diff). Inside a root such a file is an unanalysed file; out of
+    every root nothing else would see it change."""
     if "" in (split_root(r)[0] for r in roots):
         return []
     if base.snapshot.committed:
@@ -473,7 +540,7 @@ def _runner_files_outside_roots(
     else:  # the index and the working tree
         fixed = INDEX
         other = head.snapshot if head.snapshot.is_worktree else base.snapshot
-    changed = changed_paths(repo, fixed, other.commit, other.kind)
+    changed, gitlinks = diff_snapshots(repo, fixed, other.commit, other.kind)
     dirs = [split_root(r)[0] for r in roots]
     return sorted(
         path
@@ -481,6 +548,7 @@ def _runner_files_outside_roots(
         if not any(path.startswith(d + "/") for d in dirs)
         and (
             path in CONFIG_FILES
+            or path in gitlinks
             or build_input(path)
             or PurePosixPath(path).name in ("conftest.py", *ASV_CONFIGS)
         )
@@ -1811,8 +1879,9 @@ def plan_from_indexes(
             Fallback(
                 Rule.UNANALYSED_FILE,
                 "all_targets",
-                f"{len(outside)} build, dependency or runner configuration file(s) outside the "
-                f"source roots changed ({shown}{f', and {more} more' if more > 0 else ''}); they "
+                f"{len(outside)} build, dependency or runner configuration file(s) or "
+                f"submodule(s) outside the source roots changed ({shown}"
+                f"{f', and {more} more' if more > 0 else ''}); they "
                 "decide what is installed and how the tests run, so every supplied target is "
                 "selected",
             )

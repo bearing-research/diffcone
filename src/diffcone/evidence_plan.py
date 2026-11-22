@@ -322,7 +322,7 @@ from diffcone.planner import (
     merge_targets,
     plan_from_indexes,
 )
-from diffcone.snapshot import changed_paths, split_root
+from diffcone.snapshot import GITLINK_MODE, diff_snapshots, split_root
 
 # Dynamic references that stand for a child process (diffcone.indexer.scripts).
 CHILD_PROGRAMS = (RUNS_PROGRAM, RUNS_SCRIPT)
@@ -940,6 +940,14 @@ class _Observers:
         # the index reads none of them, but the recorder saw what tests ran
         # and opened there.
         self.outside: dict[str, str] = {}
+        # Every submodule of either index (``_file`` asks only about changed
+        # paths), and the changed ones outside the roots (plan_with_evidence).
+        self.gitlinks: set[str] = {
+            path
+            for index in (c_index, other)
+            for path, mode in index.file_modes.items()
+            if mode == GITLINK_MODE
+        }
         self.seed_changes: set[str] = set()
         self.seed_nodes: dict[str, str] = {}
         self.escalated_modules: set[str] = set()
@@ -3537,6 +3545,14 @@ class _Observers:
                 "read where no test's record sees it",
             )
             return
+        if path in self.gitlinks:
+            # Its new commit is all the diff shows: which of its files changed
+            # (sources a build compiles in, data tests read) is not known.
+            self._select_all(
+                Rule.UNOBSERVED_FILE,
+                f"{path} {what}: a submodule, whose changed files the diff does not show",
+            )
+            return
         # The content: opened or stat'ed, or an entry of a directory scanned
         # with ``os.scandir`` (the entries' metadata is read without an event).
         observed = [(path, self.evidence.import_paths), (_scanned(path), self.evidence.import_dirs)]
@@ -3632,21 +3648,23 @@ class _Observers:
 
 def _changed_outside_roots(
     repo: Path, commit: str, other: SourceIndex, source_roots: list[str] | None
-) -> dict[str, str]:
+) -> tuple[dict[str, str], set[str]]:
     """Paths changed between the recorded commit and ``other`` that lie
-    outside every source root (none when a root is the repository itself)."""
+    outside every source root (none when a root is the repository itself),
+    and the changed submodules anywhere."""
+    revision = other.snapshot.commit
+    changed, gitlinks = diff_snapshots(repo, commit, revision, other.snapshot.kind)
     dirs = [split_root(r)[0] for r in (source_roots or ["."])]
     if "" in dirs:
-        return {}
-    revision = other.snapshot.commit
-    changed = changed_paths(repo, commit, revision, other.snapshot.kind)
-    return {
+        return {}, gitlinks
+    outside = {
         path: what
         for path, what in changed.items()
         if not any(path.startswith(d + "/") for d in dirs)
         and path not in OWN_FILES
         and not path.startswith(OWN_DIRS)
     }
+    return outside, gitlinks
 
 
 def plan_with_evidence(
@@ -3704,7 +3722,10 @@ def plan_with_evidence(
         runner_only = _runner_only(evidence_index, other, pytest_targets)
         obs = _Observers(evidence_index, other, evidence, test_code, declared, runner_only)
         if repo:
-            obs.outside = _changed_outside_roots(Path(repo), evidence.commit, other, source_roots)
+            obs.outside, gitlinks = _changed_outside_roots(
+                Path(repo), evidence.commit, other, source_roots
+            )
+            obs.gitlinks |= gitlinks
         obs.run()
         observed.append(obs)
         fallbacks += obs.fallbacks

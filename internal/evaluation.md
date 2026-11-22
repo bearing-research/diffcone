@@ -2665,6 +2665,88 @@ delete a name Python can see, 3 change a class docstring, 1 adds a bare
 call at import. Five of the 37 also change C sources or build files,
 which still select everything.
 
+## Apache Arrow (pyarrow): what a static plan sees (2026-11-21)
+
+First look at pyarrow, the Python package of the Apache Arrow monorepo
+(`apache/arrow` at `cba325e`, the last 299 commits, planned with v0.6.0
+and then with the fix below). The package is `python/pyarrow`, with its
+tests inside it; the C++ library it links is built from `cpp/`, beside
+`python/`. Planned with `--source-root python --discover pytest --
+python/pyarrow` (without the path, pytest's rootdir is the repository and
+`dev/archery`'s tests are reported as outside the roots).
+
+* *Discovery.* 2 608 pytest targets, no ASV configuration. Every plan
+  exits 3: pytest's configuration is `python/setup.cfg`, below the
+  repository root, which discovery does not read (`unmodelled_runner_option`);
+  what it sets there (`addopts = --ignore=scripts`, warning filters) does
+  not change what is collected from `python/pyarrow`, but `run` refuses
+  without `--allow-incomplete-discovery`.
+* *What the commits touch.* 162 of 299 change `cpp/`; 137 change `cpp/` and
+  nothing under `python/`. A C++ source or header outside the roots is a
+  compiled source, so each of those selects every target (6 planned, each
+  selecting all of its 2 607 or 2 608).
+* *A miss, now fixed.* 18 commits changed nothing under `python/` and
+  nothing the build-input rule named, and v0.6.0 selected no test for any
+  of them. 12 of those changed how the C++ library is built: bundled
+  library versions (`cpp/thirdparty/versions.txt`, `cpp/subprojects/*.wrap`:
+  simdjson, xsimd, Thrift, gRPC), the toolchain and compiler flags
+  (`cpp/cmake_modules/*.cmake`) and patches applied to fetched libraries
+  (`*.patch`). pyarrow's tests run against that build, so these are misses
+  of the governing rule. With `.cmake`, `.patch`, `.wrap`, the third-party
+  directories and the other additions in `planner.build_input` (design.md,
+  the runner-files rule), all 12 select every target; so do 2 maintainer
+  scripts in those directories (over-selection), and 4 stay at none
+  (example build scripts and an example's Dockerfile, the Doxygen
+  configuration). The same work found that a moved submodule outside the
+  roots also selected nothing (Arrow's `testing` and
+  `cpp/submodules/parquet-testing` hold the data pyarrow's tests read),
+  and under evidence one under the roots selected only tests that opened
+  the submodule's own path; both now select everything. Scenarios:
+  `test_d24_*` (13 new paths), `test_a_submodule_outside_the_roots_selects_everything`,
+  `test_a_moved_submodule_selects_everything_in_evidence_mode`; each fails
+  on the old code. On strata and pandas no tracked file outside their CI
+  roots changes classification, except pandas' `subprojects/*.wrap`, which
+  its `.` root already covered.
+* *Python changes select everything.* 45 of the 56 commits touching
+  `python/` were planned (the rest were stopped for time), and all 45
+  select every target. 37 also change Cython, C++ or another non-Python
+  file (select-all by rule). Of the 7 that change only `.py` files, one
+  (`parquet/core.py`) reaches every test through dependency edges; in the
+  other 6 nearly every selection is `dynamic_reference`, through three
+  test modules that discovery makes a lifecycle dependency of every test
+  (`session_state.state_writing_roots`: import-time code that can run a
+  process-global writer):
+  - `test_convert_builtin`: a parametrized test's `getattr(np,
+    np_str_scalar)`, a lookup on numpy, which in-scope code "writes" because
+    tests call `numpy.random.seed` (a write below `numpy` counts for
+    `numpy`). The decorator edge counts the test body as run at import.
+  - `test_memory`: `backend_factory`'s `getattr(pa, ...)` on pyarrow, a
+    project module whose import closure holds a writer.
+  - `test_ipc`: `SocketStreamFixture.get_sink` reached through `IpcFixture`'s
+    constructor, which starts a Python program built at run time.
+  Each is the external-writer generalisation of roadmap item 21 or a
+  decorator taken as running what it decorates; none is pyarrow-specific
+  in kind, and any narrowing needs its own soundness argument.
+* *Cost.* About 30 s a plan on a 2-vCPU container with the module cache
+  warm from the previous commit.
+
+What would help pyarrow next, in order: reading a pytest configuration
+below the repository root (the exit 3), the false session-state chains
+above (nearly every pure-Python change), and roadmap item 23 (C++ components; at most
+about 15 % of the C++-only commits by the measurement there).
+
+## pandas at `ef7d968` on an 8 GB machine (2026-11-21)
+
+A cold static plan of pandas' newest commit (`ef7d968` against its parent,
+`--discover pytest --discover asv`, root `.`, this branch's code, nothing
+else running) was killed by the kernel twice on a 2-vCPU, 8 GB container,
+after 704 s and 775 s; the last RSS sampled (every 10 s) was 5.9 GB. The
+evaluation above measured 112 s cold on an older pandas and an older
+diffcone. Not yet known: whether round 8's extra `mutated_by` edges (pip's
+warm plan went from 0.36 to 1.55 GB) or pandas' growth is the cause, and
+whether a 16 GB GitHub runner fits it. Measure before the fork trial
+(item 9).
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

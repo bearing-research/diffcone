@@ -196,7 +196,22 @@ target. Outside your source roots, these are:
 - a `.env` or `.pth` file, or `sitecustomize.py`;
 - a type checker or linter configuration that a pytest plugin may run
   (`mypy.ini`, `ruff.toml`);
-- compiled sources.
+- compiled sources (C, C++, Cython, Fortran, Rust, CUDA, assembly, and the
+  headers and template files they include), and schemas a build compiles
+  into sources (`.thrift`, `.fbs`, `.proto`);
+- what builds a native library your extensions link: `CMakeLists.txt`,
+  `.cmake` modules, `CMakePresets.json`, `meson.build` and `.wrap` files,
+  Bazel files (`BUILD`, `BUILD.bazel`, `MODULE.bazel`, `WORKSPACE`,
+  `.bzl`), autotools files (`configure`, `configure.ac`, `Makefile.am`,
+  `.m4`), make fragments (`.mk`), patches (`.patch`), `vcpkg.json`,
+  `conanfile.txt` or `conanfile.py`, a `Brewfile`, linker scripts
+  (`symbols.map`, `.lds`, `.ver`), and any file in a `thirdparty`,
+  `third_party`, `3rdparty`, `vendor`, `vendored`, `subprojects`,
+  `extern`, `external` or `deps` directory (such as pinned dependency
+  versions);
+- a submodule: the change shows only its new commit, not which of its
+  files changed (vendored sources, test data). This holds even when
+  `.gitmodules` sets `ignore = all` for it.
 
 Inside your source roots, a change to any file that isn't a `.py` file
 selects every target: a data file, a `README.md`, a configuration file. So

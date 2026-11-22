@@ -5339,6 +5339,33 @@ def test_e19_build_inputs_select_everything_in_evidence_mode(repo, path):
     assert "tests/test_m.py::test_f" in chosen
 
 
+@pytest.mark.parametrize("roots", [["lib", "tests=tests"], None])
+def test_a_moved_submodule_selects_everything_in_evidence_mode(repo, roots):
+    """A submodule (Apache Arrow's ``testing`` data) outside the roots, or
+    under the ``.`` root: no record names the gitlink itself, and the files
+    that changed inside it are not in the diff."""
+    files = {
+        ".gitignore": "__pycache__/\n.diffcone/\n",
+        "lib/__init__.py": "",
+        "lib/m.py": "def f():\n    return 1\n",
+        "tests/__init__.py": "",
+        "tests/test_m.py": "from lib.m import f\n\n\ndef test_f():\n    f()\n",
+        "tests/test_other.py": "def test_other():\n    pass\n",
+    }
+    first = repo.commit(files)
+    repo.git("update-index", "--add", "--cacheinfo", f"160000,{first},testing")
+    repo.git("commit", "-q", "-m", "testing")
+    base = repo.git("rev-parse", "HEAD")
+    evidence = repo.collect(base, source_roots=roots)  # no submodule checked out
+    repo.git("update-index", "--cacheinfo", f"160000,{base},testing")
+    repo.git("commit", "-q", "-m", "testing moved")
+    head = repo.git("rev-parse", "HEAD")
+    plan = repo.plan(
+        base, head, [], source_roots=roots, discover_runners=["pytest"], evidence=evidence
+    )
+    assert selected(plan) == {"tests/test_m.py::test_f", "tests/test_other.py::test_other"}
+
+
 BUILD_FILES = {
     **PKG,
     "pkg/build.py": "def make():\n    return 1\n",

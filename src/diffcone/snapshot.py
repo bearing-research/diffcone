@@ -174,50 +174,83 @@ def has_entry(repo: Path, revision: str, path: str) -> bool:
     return path.encode("utf-8", "surrogateescape") in out.split(b"\0")
 
 
+def _diff_args(commit: str, revision: str, kind: str) -> list[str]:
+    """``git diff --raw`` between ``commit`` and a snapshot, as changed_paths
+    compares them. ``--ignore-submodules=none``: a ``.gitmodules`` entry's
+    ``ignore = all`` (or ``diff.ignoreSubmodules``) would otherwise hide a
+    moved gitlink, even between two commits."""
+    base = ["diff", "--raw", "-z", "--no-renames", "--ignore-submodules=none"]
+    if commit == INDEX and kind == SnapshotKind.WORKTREE:
+        return base
+    if kind == SnapshotKind.WORKTREE:
+        return [*base, commit]
+    if kind == SnapshotKind.INDEX:
+        return [*base, "--cached", commit]
+    return [*base, commit, revision]
+
+
+def diff_snapshots(
+    repo: Path, commit: str, revision: str, kind: str
+) -> tuple[dict[str, str], set[str]]:
+    """changed_paths, and the changed paths that are a submodule on either
+    side: a gitlink whose commit moved, or one added, deleted, or put in
+    place of a file. What a submodule holds (vendored sources, test data) is
+    not in the superproject's diff, only its new commit, so a planner cannot
+    see which of its files changed. One ``git diff`` gives both."""
+    fields = _git(repo, _diff_args(commit, revision, kind)).split(b"\0")
+    out: dict[str, str] = {}
+    gitlinks: set[str] = set()
+    # ``--raw -z``: ":<old mode> <new mode> <old id> <new id> <status>" NUL
+    # "<path>" NUL, per path (no renames, so one path each).
+    for header, raw_path in zip(fields[0::2], fields[1::2], strict=False):
+        if not raw_path:
+            continue
+        meta = header.decode("ascii", "replace").lstrip(":").split()
+        path = raw_path.decode("utf-8", "surrogateescape")
+        out[path] = {"A": "added", "D": "deleted"}.get(meta[-1][:1] if meta else "", "edited")
+        if GITLINK_MODE in meta[:2]:
+            gitlinks.add(path)
+    if kind == SnapshotKind.WORKTREE:
+        _add_worktree_changes(repo, commit, out)
+    return out, gitlinks
+
+
 def changed_paths(repo: Path, commit: str, revision: str, kind: str) -> dict[str, str]:
     """Every path whose content differs between ``commit`` and a snapshot
     (``kind``: a commit, the index or the working tree, untracked files
     included), as path -> "added", "deleted" or "edited". ``commit`` may be
     ``INDEX`` when the snapshot is the working tree: the staged content is
     then what it is compared with."""
-    if commit == INDEX and kind == SnapshotKind.WORKTREE:
-        args = ["diff", "--name-status", "-z", "--no-renames"]
-    elif kind == SnapshotKind.WORKTREE:
-        args = ["diff", "--name-status", "-z", "--no-renames", commit]
-    elif kind == SnapshotKind.INDEX:
-        args = ["diff", "--cached", "--name-status", "-z", "--no-renames", commit]
-    else:
-        args = ["diff", "--name-status", "-z", "--no-renames", commit, revision]
-    fields = _git(repo, args).decode("utf-8", "surrogateescape").split("\0")
-    out: dict[str, str] = {}
-    for status, path in zip(fields[0::2], fields[1::2], strict=False):
-        if path:
-            out[path] = {"A": "added", "D": "deleted"}.get(status[:1], "edited")
-    if kind == SnapshotKind.WORKTREE:
-        untracked = _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
-        for raw in untracked.split(b"\0"):
-            path = raw.decode("utf-8", "surrogateescape")
-            if path and not is_bytecode(path):
-                out.setdefault(path, "added")
-        # The ignored Python files the working tree snapshot reads.
-        for path in ignored_python_files(repo, []):
+    return diff_snapshots(repo, commit, revision, kind)[0]
+
+
+def _add_worktree_changes(repo: Path, commit: str, out: dict[str, str]) -> None:
+    """What ``git diff`` against the working tree leaves out: untracked
+    files, the ignored Python files the snapshot reads, and files flagged
+    assume-unchanged or skip-worktree."""
+    untracked = _git(repo, ["ls-files", "-z", "--others", "--exclude-standard"])
+    for raw in untracked.split(b"\0"):
+        path = raw.decode("utf-8", "surrogateescape")
+        if path and not is_bytecode(path):
             out.setdefault(path, "added")
-        # ``git diff`` does not look at a file flagged assume-unchanged or
-        # skip-worktree: compare what is on disk with the commit.
-        for path, skip_worktree in sorted(_flagged_paths(repo, []).items()):
-            full = repo / path
-            present = full.is_file() or full.is_symlink()
-            if path in out or (skip_worktree and not present):
-                continue  # a skip-worktree entry is not checked out by design
-            then = file_id(repo, commit, path)
-            if not present:
-                if then is not None:  # assume-unchanged, deleted on disk
-                    out[path] = "deleted"
-            elif then is None:
-                out[path] = "added"
-            elif file_id(repo, WORKTREE, path) != then:
-                out[path] = "edited"
-    return out
+    # The ignored Python files the working tree snapshot reads.
+    for path in ignored_python_files(repo, []):
+        out.setdefault(path, "added")
+    # ``git diff`` does not look at a file flagged assume-unchanged or
+    # skip-worktree: compare what is on disk with the commit.
+    for path, skip_worktree in sorted(_flagged_paths(repo, []).items()):
+        full = repo / path
+        present = full.is_file() or full.is_symlink()
+        if path in out or (skip_worktree and not present):
+            continue  # a skip-worktree entry is not checked out by design
+        then = file_id(repo, commit, path)
+        if not present:
+            if then is not None:  # assume-unchanged, deleted on disk
+                out[path] = "deleted"
+        elif then is None:
+            out[path] = "added"
+        elif file_id(repo, WORKTREE, path) != then:
+            out[path] = "edited"
 
 
 def resolve_commit(repo: Path, revision: str) -> str:
@@ -351,6 +384,8 @@ BUILD_SCRIPTS = frozenset(
         "toxfile.py",
         "sitecustomize.py",
         "usercustomize.py",
+        # Conan's recipe: which C and C++ libraries, at which versions.
+        "conanfile.py",
     }
 )
 # ``build.py`` is also an ordinary module name. It is a build script

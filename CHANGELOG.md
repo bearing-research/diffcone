@@ -8,6 +8,36 @@ selection rules.
 
 ## [Unreleased]
 
+### Planning
+
+- More files outside your source roots now count as changing what is
+  built, so a change to one selects every test: CMake modules and presets,
+  Meson `.wrap` files, Bazel (`BUILD`, `BUILD.bazel`, `MODULE.bazel`,
+  `WORKSPACE`, `.bzl`), autotools (`configure`, `configure.ac`,
+  `Makefile.am`, `.m4`), make fragments (`.mk`), patches, `vcpkg.json`,
+  `conanfile.txt` and `conanfile.py`, a `Brewfile`, linker scripts
+  (`symbols.map`, `.lds`, `.ver`), C and C++ headers and template bodies
+  with other suffixes (`.hxx`, `.inl`, `.ipp`, `.tcc`, `.inc`), assembly,
+  `.def` files, schemas compiled into sources (`.thrift`, `.fbs`,
+  `.proto`), and any file in a `thirdparty`, `third_party`, `3rdparty`,
+  `vendor`, `vendored` (or `vendored-*`), `subprojects`, `extern`,
+  `external` or `deps` directory. Before, in a repository like Apache
+  Arrow, where the Python package's C++ library is built from `cpp/`
+  beside it, bumping a bundled library's version selected no test. A
+  `conanfile.py` under your source roots counts too, as `setup.py` does.
+- A submodule whose commit moved now selects every test, outside the
+  source roots too, and with `--evidence` also under them: the diff
+  shows only its new commit, not which of its files (vendored sources,
+  test data) changed. This holds when `.gitmodules` says `ignore = all`
+  or git is configured with `diff.ignoreSubmodules`. Before, a moved
+  submodule outside the roots selected nothing, and under evidence one
+  under the roots selected only tests that opened the submodule's own
+  path.
+- `diffcone run` refuses a checkout whose submodule outside the source
+  roots is at another commit, or has edits, than the plan analysed
+  (`--allow-mismatched-worktree` to run anyway). Before, only submodules
+  under the roots counted.
+
 ## [0.6.0] - 2026-11-16
 
 ### Running and checking

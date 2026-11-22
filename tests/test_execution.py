@@ -1832,6 +1832,53 @@ def test_r2_mismatch_check_covers_every_file_the_plan_selects_on(repo, tmp_path)
     assert _cli(repo, *args).returncode == 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="a file: URL submodule")
+def test_mismatch_check_covers_a_submodule_outside_the_roots(repo, tmp_path):
+    """A submodule outside every root (test data beside the package) checked
+    out at another commit, or with edits, is a checkout the plan does not
+    describe: the planner selects everything when a gitlink moves."""
+    sub = FixtureRepo(tmp_path / "sub")
+    first = sub.commit({"data.txt": "one\n"})
+    second = sub.commit({"data.txt": "two\n"})
+    repo.commit(
+        {
+            "src/pkg/__init__.py": "",
+            "src/pkg/ops.py": ADD_OPS,
+            "tests/__init__.py": "",
+            "tests/test_ops.py": TEST_ADD_OPS,
+            "pytest.ini": "[pytest]\npythonpath = src\n",
+        }
+    )
+    repo.git("-c", "protocol.file.allow=always", "submodule", "add", str(sub.path), "testing")
+    subprocess.run(["git", "checkout", "-q", first], cwd=repo.path / "testing", check=True)
+    base = repo.commit({}, "add submodule")
+    head = repo.commit({"src/pkg/ops.py": ADD_OPS_BROKEN})
+    args = [
+        "run",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--discover",
+        "pytest",
+        "--source-root",
+        "src",
+        "--source-root",
+        "tests",
+        "--command",
+        PYTEST,
+        "--dry-run",
+    ]
+    assert _cli(repo, *args).returncode == 0
+    subprocess.run(["git", "checkout", "-q", second], cwd=repo.path / "testing", check=True)
+    proc = _cli(repo, *args)
+    assert proc.returncode == 2, proc.stderr
+    assert "testing" in proc.stderr
+    subprocess.run(["git", "checkout", "-q", first], cwd=repo.path / "testing", check=True)
+    _write(repo, "testing/data.txt", "three\n")
+    assert _cli(repo, *args).returncode == 2
+
+
 # A small project: one test and one benchmark on separate code, so a plan
 # that selects both selected everything.
 SPLIT_TREE = {

@@ -936,6 +936,43 @@ def test_p3_rebinding_a_function_name_selects_its_users(repo):
         ("requirements/dev.txt", "x==1\n", "x==2\n"),
         ("environment.yml", "name: a\n", "name: b\n"),
         ("csrc/ext.c", "int f;\n", "int g;\n"),
+        # What builds a C++ library the extensions link (Apache Arrow's cpp/
+        # beside python/): CMake modules, pinned third-party versions, Meson
+        # wraps, patches applied to fetched libraries, generated template
+        # bodies, schemas compiled into sources, package manifests, presets
+        # and linker version scripts.
+        ("cpp/cmake_modules/ThirdpartyToolchain.cmake", "set(A 1)\n", "set(A 2)\n"),
+        ("cpp/thirdparty/versions.txt", "ARROW_SIMDJSON_BUILD_VERSION=v4\n", "=v5\n"),
+        ("cpp/subprojects/simdjson.wrap", "[wrap-file]\n", "[wrap-file]\nx = 1\n"),
+        ("cpp/cmake_modules/thrift-3187.patch", "--- a\n", "--- b\n"),
+        ("cpp/src/generated/parquet_types.tcc", "int f;\n", "int g;\n"),
+        ("cpp/src/parquet/parquet.thrift", "struct A {}\n", "struct B {}\n"),
+        ("format/Schema.fbs", "table A {}\n", "table B {}\n"),
+        ("format/Flight.proto", "message A {}\n", "message B {}\n"),
+        ("cpp/vcpkg.json", "{}\n", '{"a": 1}\n'),
+        ("cpp/CMakePresets.json", "{}\n", '{"a": 1}\n'),
+        ("cpp/src/arrow/symbols.map", "{ global: *; };\n", "{ local: *; };\n"),
+        ("cpp/src/arrow/util/bpacking_simd.inc", "int f;\n", "int g;\n"),
+        ("cpp/src/arrow/vendored/xxhash/README", "1\n", "2\n"),
+        # Bazel, autotools, make fragments, linker scripts, and other
+        # names for third-party directories.
+        ("cpp/BUILD.bazel", "cc_library()\n", "cc_binary()\n"),
+        ("MODULE.bazel", "module()\n", "module(name = 'a')\n"),
+        ("cpp/BUILD", "cc_library()\n", "cc_binary()\n"),
+        ("WORKSPACE", "\n", "x()\n"),
+        ("bazel/rules.bzl", "def r(): pass\n", "def s(): pass\n"),
+        ("configure.ac", "AC_INIT\n", "AC_INIT([a])\n"),
+        ("Makefile.am", "SUBDIRS =\n", "SUBDIRS = a\n"),
+        ("m4/ax_cxx.m4", "AC_DEFUN\n", "AC_DEFUN([a])\n"),
+        ("cpp/flags.mk", "CFLAGS = -O1\n", "CFLAGS = -O2\n"),
+        ("cpp/src/libarrow.lds", "{ global: *; };\n", "{ local: *; };\n"),
+        ("cpp/src/libarrow.ver", "{ global: *; };\n", "{ local: *; };\n"),
+        ("cpp/conanfile.py", "x = 1\n", "x = 2\n"),
+        ("vendor/lib/a.h", "int f;\n", "int g;\n"),
+        ("extern/pybind11/README", "1\n", "2\n"),
+        ("third/external/x.txt", "1\n", "2\n"),
+        ("deps/zlib/VERSION", "1\n", "2\n"),
+        ("vendored-meson/meson/run.py", "x = 1\n", "x = 2\n"),
     ],
 )
 def test_d24_runner_configuration_outside_the_roots_selects_everything(repo, path, before, after):
@@ -951,6 +988,48 @@ def test_d24_runner_configuration_outside_the_roots_selects_everything(repo, pat
     head = repo.commit({path: after})
     plan = repo.plan(base, head, [], ["src", "tests=tests"], discover_runners=["pytest"])
     assert selected(plan) == {"tests/test_m.py::test_m"}
+
+
+def _commit_gitlink(repo, path, commit, files=None):
+    """Commit ``files`` with a submodule entry at ``path`` pointing at
+    ``commit`` (its repository need not be there: only the gitlink is)."""
+    for rel, content in (files or {}).items():
+        (repo.path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo.path / rel).write_text(content)
+        repo.git("add", rel)
+    repo.git("update-index", "--add", "--cacheinfo", f"160000,{commit},{path}")
+    repo.git("commit", "-q", "-m", f"{path} at {commit[:7]}")
+    return repo.git("rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("path", ["testing", "cpp/submodules/parquet-testing"])
+@pytest.mark.parametrize("ignored", [None, "gitmodules", "config"])
+def test_a_submodule_outside_the_roots_selects_everything(repo, path, ignored):
+    """A moved gitlink outside the roots (Apache Arrow's ``testing`` data,
+    vendored sources): the diff shows its new commit only, not which of its
+    files changed, so every target is selected. ``ignore = all`` in
+    ``.gitmodules``, or ``diff.ignoreSubmodules``, hides it from a plain
+    ``git diff`` even between commits; it still counts."""
+    files = dict(TREE)
+    if ignored == "gitmodules":
+        files[".gitmodules"] = f'[submodule "s"]\n\tpath = {path}\n\turl = ../s\n\tignore = all\n'
+    elif ignored == "config":
+        repo.git("config", "diff.ignoreSubmodules", "all")
+    first = repo.commit(files)
+    base = _commit_gitlink(repo, path, first)
+    head = _commit_gitlink(repo, path, base)
+    plan = repo.plan(base, head, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == {t.runner_id for t in TARGETS}
+    assert path in reason(plan, "bench_other.time_helper", "unanalysed_file_changed").detail
+    # Added and removed count too; an untouched gitlink is no change.
+    added = repo.plan(first, base, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(added) == {t.runner_id for t in TARGETS}
+    edited = _commit_gitlink(
+        repo, path, base, {"src/pkg/other.py": "def helper():\n    return 2\n"}
+    )
+    plan = repo.plan(head, edited, TARGETS, source_roots=SPLIT_ROOTS)
+    assert selected(plan) == {"bench_other.time_helper"}
+    assert plan.fallbacks == []
 
 
 def test_s9_a_changed_build_script_selects_everything(repo):
@@ -1014,6 +1093,8 @@ def test_pln4_dependency_and_runner_files_outside_the_roots(repo, path):
         "sitecustomize.py",
         "src/usercustomize.py",
         "packages/api/pdm_build.py",
+        "conanfile.py",
+        "src/pkg/conanfile.py",
     ],
 )
 def test_pln4_python_build_and_startup_scripts_under_a_root(repo, path):

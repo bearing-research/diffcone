@@ -133,7 +133,7 @@ instead of repeating its detail:
 | `lifecycle_dependency_unresolved` | yes | Something it depends on wasn't found: a fixture diffcone couldn't find, a `conftest.py` or pytest plugin outside the source roots or kept out by `[index] exclude`, a benchmark's code it couldn't read, a doctest whose docstring is computed when the module is imported or whose examples can't be read. |
 | `analysis_error` | yes | A file, or `diffcone.toml`, couldn't be analysed, so every target is selected. |
 | `runner_dependency` | yes | Code the test runner itself imports changed. |
-| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a `.py` file `[index] exclude` keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a `conftest.py`, a build script, dependencies or a lock file changed. For one target: a Python file it runs by path, which no module name maps to, changed. |
+| `unanalysed_file_changed` | yes | A file diffcone doesn't read changed under the source roots (data, compiled sources, configuration, a `.py` file `[index] exclude` keeps out), or a file's mode changed there (made executable, turned into a symlink). Or, outside the roots, your runner configuration, a `conftest.py`, a build script, dependencies or a lock file, a compiled source or native build file, or a submodule changed. For one target: a Python file it runs by path, which no module name maps to, changed. |
 
 With execution evidence, the rules name what the recorded run observed:
 

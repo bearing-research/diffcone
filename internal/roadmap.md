@@ -1814,6 +1814,67 @@ edited source (`run`: the paths of every change), so tests that read
 `src/strata/config.py` as a file at import escalate it. A purely
 relational change edits no file.
 
+## 23. pyarrow: C++ library changes planned at the extensions that link them
+
+**Status.** Sketch (2026-11-21), not started; needs the user's decision
+before any of it is built, since every part narrows. Measured on Apache
+Arrow's last 299 first-parent commits before `cba325e` (evaluation.md,
+"Apache Arrow (pyarrow): what a static plan sees"): 137 change `cpp/` and
+nothing under `python/`, and each one that changes a C++ source or header
+selects all of pyarrow's 2 608 targets (a compiled source outside the
+roots; the ones changing only build files selected none before the fix
+recorded there, and select all now). By the
+library code they touch (C++ tests, examples and docs left aside): 26 only
+`cpp/src/parquet`, 7 only `cpp/src/arrow/flight`, 5 only `cpp/src/gandiva`,
+9 only C++ tests, benchmarks or examples; the rest touch core `arrow/`
+(compute, util, ipc, ...) or several components, which every pyarrow test
+loads.
+
+**Mechanism.** Two maps, both read from the build files, never guessed:
+
+* *Sources to libraries.* `cpp/src/<component>/CMakeLists.txt` names the
+  library each source is built into (`add_arrow_lib(parquet SOURCES ...)`
+  and its `*_SRCS` lists); a source no library lists (a `*_test.cc` in
+  `add_arrow_test`/`add_parquet_test`, an example) is built into no
+  library pyarrow loads. A header reaches every library whose sources
+  include it, transitively (`#include "..."`, followed by name), or every
+  library when that cannot be told.
+* *Libraries to extension modules.* `python/CMakeLists.txt` names what each
+  Cython module links (`target_link_libraries(_flight PRIVATE
+  ${FLIGHT_LINK_LIBS})`, `gandiva` -> `Gandiva::gandiva_shared`), and
+  `arrow_python`, which every module links, carries
+  `PYARROW_CPP_LINK_LIBS` (compute, acero, dataset, substrait). A library
+  linked through `arrow_python` is loaded by every test, so its change
+  stays select-all; one only a leaf module links (`libgandiva` by
+  `pyarrow.gandiva`, `libarrow_flight` by `pyarrow._flight` through
+  `arrow_python_flight`) reaches the tests that import that module's
+  Python surface.
+
+A C++ change then becomes a change to the extension modules it reaches,
+and planning goes on as for a changed compiled module: statically, every
+target whose import closure contains the module (needs `.pyx` imports and
+`cimport`s as import edges, which the Cython reader already parses but
+static planning does not use); under evidence, the tests that loaded it.
+
+**Why it may be unsound, and the guards.** Static initialisers run when a
+library loads (compute's function registry, dataset's format
+registration), so "linked but not called" is not "not run": only leaf
+libraries loaded by one module qualify, and a library `arrow_python`
+links never does. Parquet is the large group (26 commits) and is linked
+through `arrow_dataset`, which `arrow_python` links when datasets are
+built, so it stays select-all under this rule; flight (7) and gandiva (5)
+are what it would narrow, plus the 9 C++-test-only commits (no library
+lists those sources). That is 21 of 137, roughly 15 %. A test that spawns
+a process importing the module, or loads it by path, is the recorder's
+business in evidence mode and a dynamic import statically.
+
+**Done when.** Decided first: whether 15 % of C++ commits narrowed is
+worth reading CMake. If yes: the two maps as a spike over the same 137
+commits, compared against a C++-instrumented oracle (gcov per test, or
+the extension modules each test loads from `/proc/self/maps`) before any
+rule ships, with scenarios on a fixture extension (a C library linked by
+one module and by a shared one).
+
 ## 22. Plans that fit in memory: further (not planned)
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit

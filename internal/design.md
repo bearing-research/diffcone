@@ -2585,8 +2585,31 @@ Further rules (pre-release audit, round 2):
   `.github/actions/`, `.circleci/`, top-level `ci/` and `.ci/`,
   `.gitlab-ci.yml`, `azure-pipelines.yml`, ...), the configuration of
   checkers pytest plugins run as tests (`mypy.ini`, `pyrightconfig.json`,
-  `ruff.toml`, `.flake8`, `pylintrc`), compiled sources) selects every
-  target, as a changed unanalysed file under the roots does. Between
+  `ruff.toml`, `.flake8`, `pylintrc`), compiled sources and what builds a
+  native library the extensions link (CMake modules and presets, Meson
+  `.wrap` files, Bazel and autotools files, `.mk` fragments, patches,
+  `vcpkg.json`, `conanfile.txt`/`conanfile.py`, a `Brewfile`, linker
+  scripts (`symbols.map`, `.lds`, `.ver`), schemas compiled into sources:
+  `.thrift`, `.fbs`, `.proto`; any file under a THIRD_PARTY_DIRS directory
+  or a `vendored-*` one), and a submodule whose gitlink changed
+  (`snapshot.diff_snapshots`, with `--ignore-submodules=none` so that
+  `.gitmodules`' `ignore = all` and `diff.ignoreSubmodules` hide nothing:
+  what changed inside it is not in the diff)) selects every target, as a
+  changed unanalysed file under the roots
+  does. Apache Arrow is the case that found the build files: its
+  Python package links a C++ library built from `cpp/`, outside the
+  `python` root, and 12 of its last 299 commits changed only that build
+  (bundled library versions, toolchain, compiler flags), each planned as
+  selecting nothing. The directory rule costs two maintainer scripts there
+  (`cpp/thirdparty/download_dependencies.sh`, `vendored/*/update.sh`),
+  which now select everything too. Under evidence a changed submodule,
+  under the roots or outside them, selects everything too
+  (`_Observers._file`): no record names the gitlink, and tests reading
+  files inside it are not matched to it. `run`'s mismatch check counts
+  every submodule checked out at another commit or with edits, wherever
+  it is (`execution.worktree_mismatch`). `conanfile.py` is among
+  BUILD_SCRIPTS, so under a root it counts as `setup.py` does
+  (INDEX_FORMAT 74: it can be an other file). Between
   `INDEX` and `WORKTREE` the comparison is the working tree against the
   index. Under the roots a build script (`setup.py`, `hatch_build.py`,
   `pdm_build.py`, `noxfile.py`, `toxfile.py`, `sitecustomize.py`,

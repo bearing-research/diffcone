@@ -198,7 +198,9 @@ def _mismatch_matters(path: str, roots: list[str]) -> bool:
     root, a ``conftest.py`` or ASV configuration anywhere, and anything
     ``build_input`` names (dependency declarations, lock files, compiled
     sources, CI files). Bytecode and diffcone's own directory never
-    matter."""
+    matter. A submodule checked out at another commit, or with edits, is
+    a mismatch wherever it is (worktree_mismatch): a moved gitlink selects
+    every target."""
     if is_bytecode(path) or path.startswith(OWN_DIRS):
         return False
     if any(root in ("", ".") or path.startswith(root + "/") for root in roots):
@@ -454,7 +456,7 @@ def worktree_mismatch(repo: Path, plan: Plan, outputs: Sequence[str] = ()) -> st
         path
         for path in {*differing, *untracked, *ignored, *flagged, *submodules}
         if path
-        and _mismatch_matters(path, roots)
+        and (path in submodules or _mismatch_matters(path, roots))
         and not any(path.startswith(d + "/") for d in outputs)
     )
     if not in_scope:
@@ -1785,7 +1787,7 @@ def _commits_in_range(repo: Path, revision_range: str) -> list[tuple[str, str, s
 
 
 def _touches_python(repo: Path, parent: str, commit: str) -> bool:
-    out = _git(repo, ["diff", "--name-only", "-z", parent, commit])
+    out = _git(repo, ["diff", "--name-only", "-z", "--ignore-submodules=none", parent, commit])
     return any(name.endswith(b".py") for name in out.split(b"\0"))
 
 
