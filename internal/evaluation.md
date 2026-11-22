@@ -2735,6 +2735,55 @@ below the repository root (the exit 3), the false session-state chains
 above (nearly every pure-Python change), and roadmap item 23 (C++ components; at most
 about 15 % of the C++-only commits by the measurement there).
 
+*Re-run at `efb115e` (2026-11-22, all 299 commits).* Planned on a 32-vCPU
+container, 8 plans at a time, each worker's module cache cold at its
+first commit. All 299 plans exit 3 (the configuration below the root).
+Median 91 s and 620 MB a plan, at most 209 s and 765 MB.
+
+| Commits | Planned | All selected | None selected |
+| --- | --- | --- | --- |
+| only `.py` files, all under `python/` | 8 | 8 | 0 |
+| `.py` files under `python/` and other files outside it | 11 | 11 | 0 |
+| a non-Python file under `python/` (`.pyx`, `.pxi`, `CMakeLists.txt`, ...) | 37 | 37 | 0 |
+| nothing under `python/` | 243 | 192 | 51 |
+
+No plan selects part of the suite. The 51 that select nothing change
+only the R package, the Ruby gems, the docs, `cpp/examples`,
+`cpp/apidoc`, `dev/tasks`, `dev/release`, `dev/archery`, `.asf.yaml`,
+`.pre-commit-config.yaml` and `CODEOWNERS`: none is built into, or read
+by, what pyarrow's tests run. Of the 192 outside `python/` that select
+everything, 133 change the C++ library, `format/` or a submodule (the
+rule's purpose), 45 change only CI files (`.github/workflows/cpp.yml`,
+`ci/docker/*.dockerfile`, `ci/scripts/*`, `.env`), and 14 change only
+another binding's native code or packaging (`r/src/*.cpp`, `c_glib/`,
+`ruby/red-arrow/ext/`, `dev/tasks/**/*.spec.in` through the `.in`
+suffix). Those 59 (31 %) select everything because a compiled source or
+CI file anywhere outside the roots does; none builds or runs pyarrow, which
+is more than roadmap item 23 could narrow (21 of 137), and it needs no C++
+map, only a statement of which directories pyarrow's build and CI read
+(roadmap item 24).
+
+The pure-`.py` commits: in 6 of 7, the first path the report gives for
+1 548 to 1 609 of the ~2 600 targets is `lifecycle` -> the module
+`pyarrow.tests.test_convert_builtin` (a session-state writer root) ->
+`references` marked `decorated` -> `test_sequence_integer`, whose
+`getattr(np, ...)` looks a name up on numpy, which in-scope code writes
+(`np.random.seed`). The decorator is `pytest.mark.parametrize`, which
+stores a mark and never calls the function it decorates, so the
+function's body is not run while the module is collected. The other
+paths start at `pyarrow.compute` and `pyarrow.tests.test_compute`
+(`getattr` bounded by an import closure that holds almost all of
+pyarrow). A spike that drops every `decorated` edge from
+`state_writing_roots` (an upper bound of any decorator catalogue) and
+replans the 8 commits changing only `.py` files under `python/` still
+selects every target of each: the next first paths are
+`pyarrow.tests.conftest` and `pyarrow.conftest` (about 1 160 targets),
+`test_pandas` (a module passed to other code, about 280) and the
+`getattr`s of `test_array`, `test_compute` and `test_dataset`. No single
+chain decides pyarrow's pure-Python plans; narrowing them needs the
+external-writer bound of roadmap item 21 and the conftest chains together,
+not a decorator rule (roadmap item 25, set aside).
+
 ## pandas at `ef7d968` on an 8 GB machine (2026-11-21)
 
 A cold static plan of pandas' newest commit (`ef7d968` against its parent,
@@ -2746,6 +2795,45 @@ diffcone. Not yet known: whether round 8's extra `mutated_by` edges (pip's
 warm plan went from 0.36 to 1.55 GB) or pandas' growth is the cause, and
 whether a 16 GB GitHub runner fits it. Measure before the fork trial
 (item 9).
+
+*Measured on a 32-vCPU, 64 GB container (2026-11-22).* Static plans of
+pandas commits against their parents, root `.`, `--discover pytest
+--discover asv`, one plan per fresh worktree (cold module cache):
+
+| diffcone | Commit | Time | Peak RSS |
+| --- | --- | --- | --- |
+| `efb115e` | `a22c4b5f3b` | 2 884 s | 22.2 GB |
+| `efb115e` | `ef7d968` | killed by the 3 600 s timeout | 23.7 GB at the kill |
+| v0.4.0 | `a22c4b5f3b` | 1 007 s | 19.9 GB |
+| `efb115e` + the `_attribute_modules` change below | `a22c4b5f3b` | 2 616 s | 27.6 GB |
+
+`a22c4b5f3b` changes a `.pyx`, so its plan selects all 27 954 targets by
+rule (1 554 modules, 39 236 symbols a side). The 112 s cold measured above
+was on 1 530 modules and 37 307 symbols, so the growth is diffcone's, not
+pandas': about 2.9 times slower than v0.4.0, and a 16 GB runner does not
+fit a cold plan. A plan whose module cache was warm from the previous
+commit was still running after 38 minutes at 12 GB: the cost is in the
+whole-index phases, which the module cache does not skip. Sampled every
+30 s (`sys._current_frames` from a thread; faulthandler's watchdog dump
+crashed the interpreter with SIGSEGV three times, which looked like a
+diffcone crash and is not), the base side's index alone took about
+1 550 s: module scans to 120 s, `_attribute_modules` 150 to 300 s, pass 2
+(`references.py`, `_state_roots`, `_class_held`, `_alias_roots`) 330 to
+800 s, literals and the resolver to 880 s, the write phases
+(`_value_writes`, `_shared_writes`, `_result_writes`,
+`_definition_writes`; RSS 2 to 9 GB) 930 to 1 220 s, and storing the whole
+index in the cache (`cache.store`, `index_to_dict`, then `json.dump`; RSS
+to 12.5 GB) 1 280 to 1 550 s. The whole-index cache is about 2.5 GB of
+JSON per pandas commit, so a GitHub Actions cache (10 GB a repository)
+holds two or three commits. The plan report is 0.99 GB, of which
+`selected_targets` is nearly all (each target's `affected_dependencies`
+on a select-all plan; v0.4.0's was 1.46 GB of a 1.87 GB report).
+
+The `_attribute_modules` change (one walk from every escaped or held
+module together, since only the union is kept, with each module's
+import lookups memoised in `_reach_step`) gives a byte-identical report
+on `a22c4b5f3b` (the repository path aside) in 2 616 s instead of
+2 884 s. The rest is roadmap item 22.
 
 ## Not yet exercised
 

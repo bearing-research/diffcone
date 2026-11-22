@@ -819,6 +819,7 @@ class Indexer(DynamicBounds):
                     changed_in_place[var].add(writer)
 
         self._reach_cache = {}
+        self._step_cache = {}
         installs: set[tuple[str, str]] = set()  # (module, writer): ``_install_edges``
         installs_anywhere: set[tuple[str, str]] = set()
         # Names outside the source roots something is installed under (a
@@ -1877,10 +1878,15 @@ class Indexer(DynamicBounds):
         found: set[str] = set()
         if any(mode == "escape" and target == ANY for mode, target, _ in self._use_external):
             found.add(ANY_MODULE)
-        for place in sorted(places):
-            found.update(self._under(place))
-            reach = self._attribute_reach(place)
-            found |= reach.modules | reach.stars | reach.symbols
+        # One walk from every place together: only the union is kept, and
+        # what is reachable from a union of starts is the union of what each
+        # start reaches (the places' own modules are added just above it).
+        own: set[str] = set()
+        for place in places:
+            own.update(self._under(place))
+        found |= own
+        reach = self._reach_from(own)
+        found |= reach.modules | reach.stars | reach.symbols
         self.index.attribute_modules = found
         self.index.any_module_readers = readers
 
@@ -1937,10 +1943,17 @@ class Indexer(DynamicBounds):
         ``pkg``, every imported submodule with it), a star import's names,
         transitively."""
         cached = self._reach_cache.get(place)
-        if cached is not None:
-            return cached
+        if cached is None:
+            cached = self._reach_from(set(self._under(place)))
+            self._reach_cache[place] = cached
+        return cached
+
+    def _reach_from(self, own: set[str]) -> _Reach:
+        """_attribute_reach from the modules ``own`` (a module and its
+        submodules, or several such sets together: what is reachable from a
+        union is the union of what each part reaches, but for members of
+        ``own``, which the result leaves out of ``modules`` and ``stars``)."""
         reach = _Reach()
-        own = set(self._under(place))
         seen: set[str] = set()
         stack = sorted(own)
         while stack:
@@ -1948,41 +1961,60 @@ class Indexer(DynamicBounds):
             if module in seen:
                 continue
             seen.add(module)
-            scope = self.scopes[module]
-            origins: list[str] = []
-            # ``alt_imports`` holds the other bindings of names ``imports`` has.
-            for name in sorted(scope.imports):
-                for binding in [scope.imports[name], *scope.alt_imports.get(name, ())]:
-                    origins.append(binding.dotted)
-            for origin in origins:
-                found = self._locate_target(module, origin.split("."))
-                if found is None:
-                    # A namespace package holds its imported submodules.
-                    found = [(m, ()) for m in self._under(origin) if m != origin]
-                    if not found:
-                        reach.outside.add(origin)
-                        continue
-                for target, rest in found:
-                    if not rest:
-                        for m in self._under(target):
-                            if m not in own:
-                                reach.modules.add(m)
-                                stack.append(m)
-                        continue
-                    symbol = ".".join([target, *rest])
-                    if symbol in self.index.symbols:
-                        reach.symbols.add(symbol)
-                    if len(rest) == 1 and rest[0] in self.scopes[target].containers:
-                        reach.tables.add((target, rest[0]))
-            for star in scope.star_imports:
-                if star in self.scopes:
-                    if star not in own:
-                        reach.stars.add(star)
-                    stack.append(star)
-                else:
-                    reach.outside.add(star)
-        self._reach_cache[place] = reach
+            step = self._reach_step(module)
+            for m in step.modules:
+                if m not in own:
+                    reach.modules.add(m)
+                    stack.append(m)
+            reach.symbols |= step.symbols
+            reach.tables |= step.tables
+            reach.outside |= step.outside
+            for star in step.stars:
+                if star not in own:
+                    reach.stars.add(star)
+                stack.append(star)
         return reach
+
+    def _reach_step(self, module: str) -> _Reach:
+        """What one module's own imports and star imports bind, for
+        _reach_from (memoised: every walk through the module needs the same
+        lookups, and pandas has hundreds of walks over its whole import
+        graph). ``modules``: the in-scope modules, submodules included, the
+        walk goes on into; ``stars``: in-scope modules a star import names."""
+        cached = self._step_cache.get(module)
+        if cached is not None:
+            return cached
+        step = _Reach()
+        scope = self.scopes[module]
+        origins: list[str] = []
+        # ``alt_imports`` holds the other bindings of names ``imports`` has.
+        for name in sorted(scope.imports):
+            for binding in [scope.imports[name], *scope.alt_imports.get(name, ())]:
+                origins.append(binding.dotted)
+        for origin in origins:
+            found = self._locate_target(module, origin.split("."))
+            if found is None:
+                # A namespace package holds its imported submodules.
+                found = [(m, ()) for m in self._under(origin) if m != origin]
+                if not found:
+                    step.outside.add(origin)
+                    continue
+            for target, rest in found:
+                if not rest:
+                    step.modules.update(self._under(target))
+                    continue
+                symbol = ".".join([target, *rest])
+                if symbol in self.index.symbols:
+                    step.symbols.add(symbol)
+                if len(rest) == 1 and rest[0] in self.scopes[target].containers:
+                    step.tables.add((target, rest[0]))
+        for star in scope.star_imports:
+            if star in self.scopes:
+                step.stars.add(star)
+            else:
+                step.outside.add(star)
+        self._step_cache[module] = step
+        return step
 
     def _install_edges(self) -> None:
         """An object installed in ``sys.modules`` for good under an in-scope

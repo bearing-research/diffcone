@@ -104,6 +104,8 @@ class IndexerState:
         # ``sys.modules`` for good under a module's name, as (module, writer):
         # by a name the records give, and by one nothing bounds.
         self._reach_cache: dict[str, Any] = {}
+        # What one module's imports bind, for _attribute_reach (Indexer._reach_step).
+        self._step_cache: dict[str, Any] = {}
         self._installed: set[tuple[str, str]] = set()
         self._installed_anywhere: set[tuple[str, str]] = set()
         # In-scope modules per module name, the name included (Indexer._under);

@@ -1875,7 +1875,117 @@ the extension modules each test loads from `/proc/self/maps`) before any
 rule ships, with scenarios on a fixture extension (a C library linked by
 one module and by a shared one).
 
+## 24. Build inputs and CI files of components the tests never build
+
+**Status.** Sketch (2026-11-22), not started; it narrows, so it waits on
+the user's decision. Measured on Apache Arrow's last 299 commits at
+`efb115e` (evaluation.md, the pyarrow re-run): of the 192 commits outside
+`python/` that select every target, 59 (31 %) change no file pyarrow's
+build or CI reads: 45 only CI files of other components
+(`.github/workflows/cpp.yml`, `ci/docker/*-cpp.dockerfile`, `.env`) and
+14 another binding's native code or packaging (`r/src/*.cpp`, `c_glib/`,
+`ruby/red-arrow/ext/`, `*.spec.in`). Each selects all 2 607 targets
+because `build_input` holds for a compiled source or CI file anywhere.
+
+**Mechanism.** The analysis cannot tell which directories a build reads
+(`python/CMakeLists.txt` finds the C++ library through `ARROW_HOME` or
+CMake packages, not paths) or which workflow runs the tests, so it is
+stated: a `diffcone.toml` table naming the paths outside the roots that
+the tests' build and CI read, e.g.
+
+```toml
+[build]
+reads = ["cpp/**", "format/**", "testing", ".github/workflows/python.yml", "ci/scripts/python_*"]
+```
+
+With the table, a build input or submodule outside the roots and outside
+every `reads` pattern no longer selects everything; the plan reports
+each such path (`build_input_outside_reads`) so a reviewer sees what was
+set aside. Without the table nothing changes.
+
+**Why it may be unsound, and the guards.** It is the first declaration
+that removes selection (declarations.md says declarations only add
+edges), so the statement is the project's and can go stale (a new
+workflow, a directory the build starts reading). Guards: the table is
+read from both revisions and a change to it selects everything; a path
+`reads` names that no longer exists is an analysis error; `diffcone check`
+(item 9) against full runs is how a wrong statement shows up.
+
+**Done when.** The user decides that a narrowing declaration is
+acceptable. Then: scenarios (a matched and an unmatched build input, a
+changed table, a stale pattern), docs that say plainly it can hide a
+miss, and the Arrow sweep re-run with a table written from Arrow's
+`python.yml` and `ci/scripts/python_*`.
+
+## 25. Decorators that never call what they decorate
+
+**Status.** Set aside (2026-11-22): a spike that drops every
+`decorated` edge from `state_writing_roots`, the upper bound of this
+item, narrows none of pyarrow's 8 pure-`.py` plans (each still selects
+all ~2 600: the conftest chains, `test_pandas`, the `getattr`s of
+`test_array`, `test_compute`, `test_dataset` hold them). Kept as a
+sketch for a project where the decorated chain is the only one. Found on
+pyarrow (evaluation.md, the pyarrow re-run): in 6 of the 7 pure-`.py`
+commits the first path the report gives for about 1 600 of 2 600 targets
+runs `lifecycle` -> `pyarrow.tests.test_convert_builtin` (a session-state
+writer root, discovery/session_state.py) -> `references` marked
+`decorated` -> `test_sequence_integer`, whose `getattr(np, ...)` reaches
+an external module in-scope code writes (`np.random.seed`). The
+decorator is `pytest.mark.parametrize`.
+
+**Mechanism.** A catalogue of library decorators that, when applied,
+only store or wrap the function and never call it:
+`pytest.mark.<anything>`, `pytest.fixture`, `functools.wraps`,
+`functools.cache`/`lru_cache`/`cached_property`, `staticmethod`,
+`classmethod`, `property`, `typing.overload`, `abc.abstractmethod`. A
+`decorated` reference whose every decorator is in the catalogue gets a
+mark in `_NOT_RUN` for `state_writing_roots` (the decorated body does not
+run at import), and the same for the planner's import-time propagation
+if it reads the edge that way. A decorator the analysis cannot resolve
+to the catalogue keeps today's edge.
+
+**Why it may be unsound, and the guards.** The catalogue states library
+behaviour; a project that replaces `pytest.mark` or wraps the decorator
+is not covered (a project-defined decorator never matches the
+catalogue, since it resolves to project code). A body that runs at
+import some other way (the module calls it) keeps that call's own edge.
+Guards: scenarios where an unknown decorator, a project decorator that
+calls, and a direct call at import still select.
+
+**Done when.** A replan of pyarrow's 7 pure-`.py` commits with the change
+says how many targets drop (the report keeps one path a target, so the
+next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
+`pyarrow.compute`'s bounded `getattr`), and that number justifies it.
+
 ## 22. Plans that fit in memory: further (not planned)
+
+**Update (2026-11-22): pandas no longer plans in reasonable time.** A cold
+static plan of one pandas commit takes 2 884 s and 22 GB at `efb115e`
+(1 007 s at v0.4.0; 112 s in the first pandas evaluation), and a warm one
+is still running at 38 minutes (evaluation.md, "pandas at `ef7d968`").
+This blocks the fork trial (item 9): a 16 GB runner does not fit it. The
+sampled profile of one side's index, largest first, with what each could
+become (every change must leave the plan byte-identical, checked on a
+pandas commit as `_attribute_modules`' was):
+
+* Pass 2, `references.py` `_state_roots` and the root tracing under it
+  (about 470 s): memoise roots per (scope, name) within a module.
+* `cache.store` (about 270 s and the step from 8 to 12.5 GB): build the
+  JSON without `dataclasses.asdict` (a field-by-field dict gives the same
+  JSON 4.5 times faster in a micro-benchmark), stream it to the file
+  rather than holding the dict, and reconsider whether a 2.5 GB
+  whole-index entry per commit is worth storing at all next to the
+  module cache.
+* The write phases (about 290 s, RSS 2 to 9 GB).
+* `_attribute_modules` (150 s): done, one walk instead of one a module.
+* The report: `selected_targets` of a select-all pandas plan is about
+  1 GB of JSON; one shared list for reasons every target has (the
+  fallback) would make it small.
+
+Before any of it: bisect v0.4.0..`efb115e` on the same commit to find which
+changes made it 2.9 times slower (each probe is about 20 to 50 minutes and
+20 GB, so two at a time on a 64 GB machine).
+
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit
 E37). Of what graph building holds, the largest parts left are the
