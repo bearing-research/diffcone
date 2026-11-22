@@ -305,6 +305,7 @@ from diffcone.planner import (
     Rule,
     Seeds,
     StepKind,
+    _body_imports,
     _changed_unanalysed_files,
     _decision,
     _ImportReach,
@@ -1904,7 +1905,9 @@ class _Observers:
         the module or its members whose own imports never reach it
         (``pkg.sub.f()`` under ``import pkg``) now finds, or no longer finds,
         it."""
-        newly_run = _newly_run_modules(self.c, self.other, self.changes)
+        newly_run = _newly_run_modules(
+            self.c, self.other, self.changes, _body_imports(self.c, self.other)
+        )
         if not newly_run:
             return
         change_by_id = {c.id: c for c in self.changes}

@@ -244,6 +244,9 @@ def _record(obj: Any) -> dict[str, Any]:
 # Edge's own order (dataclass order compares the fields as a tuple), with the
 # tuples compared in C rather than through a generated ``__lt__`` per pair.
 _EDGE_ORDER = attrgetter("source", "target", "kind", "detail")
+# The members by value: what ``EdgeKind(k)`` gives, without an enum call per
+# edge (50 million on a pandas plan's two indexes).
+_EDGE_KINDS = {kind.value: kind for kind in EdgeKind}
 
 
 def default_cache_dir(repo: Path) -> Path:
@@ -328,7 +331,7 @@ def index_from_dict(data: dict) -> SourceIndex:
         ),
         modules=set(data["modules"]),
         symbols=symbols,
-        edges={Edge(s, t, EdgeKind(k), d) for s, t, k, d in data["edges"]},
+        edges={Edge(s, t, _EDGE_KINDS[k], d) for s, t, k, d in data["edges"]},
         unresolved={
             UnresolvedReference(u["symbol"], UnresolvedKind(u["kind"]), u["name"], u["detail"])
             for u in data["unresolved"]

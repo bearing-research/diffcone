@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from diffcone.indexer.definitions import INERT_DEF
 from diffcone.model import (
+    Edge,
     EdgeKind,
     SourceIndex,
     Symbol,
@@ -102,21 +103,43 @@ UNRESOLVED_SIG = "unresolved"
 EXTERNAL_SIG = "external"
 
 
-def _dependency_signatures(index: SourceIndex) -> dict[str, frozenset[tuple[str, str, str]]]:
-    """Each symbol's outgoing edges, and its unresolved and external
-    references: a name that starts resolving to a third-party module (the
-    ``from json import dumps`` that fixes a NameError) changes what the
-    symbol does as much as a new edge does."""
+def _signed(e: Edge) -> bool:
+    # The edges of a pseudo-node of logging callbacks are its variables'
+    # (_with_log_sites).
+    return e.kind != EdgeKind.DEFINED_IN and not is_log_callbacks(e.source)
+
+
+def _differing_sources(base: SourceIndex, head: SourceIndex) -> set[str]:
+    """The symbols whose dependency signature may differ between the two
+    revisions: those with an edge, unresolved or external reference one side
+    has and the other lacks. Every other symbol's signature is the same on
+    both sides, so only these need building (pandas' 25 million edges a
+    side made the signatures of all of them the plan's peak memory)."""
+    found = {e.source for e in base.edges ^ head.edges if _signed(e)}
+    found.update(u.symbol for u in base.unresolved ^ head.unresolved)
+    found.update(x.symbol for x in base.external ^ head.external)
+    return found
+
+
+def _dependency_signatures(
+    index: SourceIndex, sources: set[str]
+) -> dict[str, frozenset[tuple[str, str, str]]]:
+    """The outgoing edges of each symbol of ``sources``, and its unresolved
+    and external references: a name that starts resolving to a third-party
+    module (the ``from json import dumps`` that fixes a NameError) changes
+    what the symbol does as much as a new edge does."""
     grouped: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    if not sources:
+        return {}
     for e in index.edges:
-        # The edges of a pseudo-node of logging callbacks are its variables'
-        # (_with_log_sites).
-        if e.kind != EdgeKind.DEFINED_IN and not is_log_callbacks(e.source):
+        if e.source in sources and _signed(e):
             grouped[e.source].add((e.kind, e.target, e.detail))
     for u in index.unresolved:
-        grouped[u.symbol].add((UNRESOLVED_SIG, f"{u.kind}:{u.name}", ""))
+        if u.symbol in sources:
+            grouped[u.symbol].add((UNRESOLVED_SIG, f"{u.kind}:{u.name}", ""))
     for x in index.external:
-        grouped[x.symbol].add((EXTERNAL_SIG, x.module, ""))
+        if x.symbol in sources:
+            grouped[x.symbol].add((EXTERNAL_SIG, x.module, ""))
     return {source: frozenset(sig) for source, sig in grouped.items()}
 
 
@@ -279,10 +302,18 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
     error fallback instead of inventing additions or deletions.
     """
     changes: list[SymbolChange] = []
-    base_deps = _dependency_signatures(base)
-    head_deps = _dependency_signatures(head)
-    base_sites = log_callback_sites(base.edges)
-    head_sites = log_callback_sites(head.edges)
+    differing = _differing_sources(base, head)
+    base_deps = _dependency_signatures(base, differing)
+    head_deps = _dependency_signatures(head, differing)
+    # The log sites are read only for a symbol whose signature differs: no
+    # scan of every edge when none does.
+    sites: list[dict[str, set[str]]] = []
+
+    def log_sites() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+        if not sites:
+            sites.extend((log_callback_sites(base.edges), log_callback_sites(head.edges)))
+        return sites[0], sites[1]
+
     base_closures = _import_closures(base)
     base_modules = {s.id for s in base.symbols.values() if s.kind == SymbolKind.MODULE}
     empty: frozenset[tuple[str, str, str]] = frozenset()
@@ -332,9 +363,11 @@ def classify(base: SourceIndex, head: SourceIndex) -> list[SymbolChange]:
             )
         before = base_deps.get(symbol_id, empty)
         after = head_deps.get(symbol_id, empty)
-        if before != after and (base_sites or head_sites):
-            before = _with_log_sites(symbol_id, before, base_sites)
-            after = _with_log_sites(symbol_id, after, head_sites)
+        if before != after:
+            base_sites, head_sites = log_sites()
+            if base_sites or head_sites:
+                before = _with_log_sites(symbol_id, before, base_sites)
+                after = _with_log_sites(symbol_id, after, head_sites)
         if ChangeKind.BODY_CHANGED in kinds or ChangeKind.DEFINITION_CHANGED in kinds:
             # The edit itself explains new unresolved and external references;
             # they matter on their own only when a binding moved under them.

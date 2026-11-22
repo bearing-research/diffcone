@@ -1082,8 +1082,22 @@ def _import_call_effects(
     return effects
 
 
+def _body_imports(base: SourceIndex, head: SourceIndex) -> dict[str, dict[str, set[str]]]:
+    """Revision -> symbol -> the modules its ``imports`` edges name, for
+    _newly_run_modules (planning reads them in its pass over the edges)."""
+    imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
+    for label, index in (("base", base), ("head", head)):
+        for edge in index.edges:
+            if edge.kind is EdgeKind.IMPORTS:
+                imports[label][edge.source].add(edge.target)
+    return imports
+
+
 def _newly_run_modules(
-    base: SourceIndex, head: SourceIndex, changes: list[SymbolChange]
+    base: SourceIndex,
+    head: SourceIndex,
+    changes: list[SymbolChange],
+    imports: dict[str, dict[str, set[str]]],
 ) -> dict[str, Step]:
     """The in-scope modules whose import-time code a changed symbol newly
     runs, or no longer runs, by importing them (R24): for a module, the
@@ -1091,7 +1105,8 @@ def _newly_run_modules(
     but not at base (``_runtime_imports``: not in function bodies or under
     ``if TYPE_CHECKING:``), less what its base import closure already ran;
     for a function or method, the same for each module it imports in its
-    body (an ``imports`` edge) at head only; and the reverse for imports at
+    body (an ``imports`` edge, ``imports``: revision -> symbol -> modules)
+    at head only; and the reverse for imports at
     base only. A symbol in one revision only is its own change and reaches
     what it imports through it (as ``classify._module_additions_matter``
     has it). Module -> the step from it to the changed importer. Whatever
@@ -1109,10 +1124,8 @@ def _newly_run_modules(
             runs["head"] = _runtime_imports(change.head, head.modules)
             own = {label: {symbol.id} for label in runs}
         else:
-            for label, index in (("base", base), ("head", head)):
-                for edge in index.edges:
-                    if edge.source == change.id and edge.kind == EdgeKind.IMPORTS:
-                        runs[label].add(edge.target)
+            for label in runs:
+                runs[label] |= imports[label].get(change.id, set())
             own = {label: {symbol.module} for label in runs}
         for label, other, kind in (
             ("head", "base", StepKind.NEWLY_IMPORTED),
@@ -1545,7 +1558,7 @@ def plan_from_indexes(
     union = {
         e: r
         for e, r in union.items()
-        if not (edge_mark(e) in _WRITER_MARKS and e.target in isolated)
+        if not (e.target in isolated and edge_mark(e) in _WRITER_MARKS)
     }
     if seeds is not None:
         # Evidence mode's escalation: the record shows what an object
@@ -1558,8 +1571,14 @@ def plan_from_indexes(
         if s.kind == SymbolKind.MODULE
     }
     union, log_states = _log_callback_states(union, module_nodes)
+    # What each symbol imports in its body, per revision, read in the same
+    # pass (_newly_run_modules).
+    imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
     for edge, revs in union.items():
         graph.add(edge, revs)
+        if edge.kind is EdgeKind.IMPORTS:
+            for rev in revs:
+                imports[rev][edge.source].add(edge.target)
 
     # An instance handed to someone else can have any attribute read off it by
     # a name nothing resolves (``invoke(obj, name)``), and no static rule can
@@ -1989,7 +2008,7 @@ def plan_from_indexes(
     # its import-time code anew (or not at all) for whoever reads what it
     # leaves behind, importing it or not (R24): what it or its callees
     # mutate or install, and the name it binds on its package.
-    newly_run = _newly_run_modules(base, head, seeded) if seeds is None else {}
+    newly_run = _newly_run_modules(base, head, seeded, imports) if seeds is None else {}
     for node, (steps, rule, effect) in sorted(
         _import_call_effects(graph, sorted(newly_run), module_nodes).items()
     ):
@@ -2370,61 +2389,54 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     # its tests still run inside one test each (audit round 8, V29). A
     # doctest's or a manifest's entry on project code does not list its
     # module, so its module is none.
+    # What each dependency is, decided once: pandas' 28 000 targets list
+    # about 700 each, mostly the same ones.
+    module_deps: set[str] = set()
+    fixture_deps: dict[str, set[str]] = {}
+    function_fixtures: set[str] = set()
+    for dep in {d for target in targets for d in target.lifecycle_dependencies}:
+        found = defined.get(dep, ())
+        if not found:
+            continue
+        if all(s.kind == SymbolKind.MODULE for s in found):
+            module_deps.add(dep)
+        elif all(s.fixture_scope for s in found):
+            fixture_deps[dep] = {s.module for s in found}
+            if all(
+                s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and s.fixture_scope == "function"
+                for s in found
+            ):
+                function_fixtures.add(dep)
     listed_elsewhere: set[str] = set()
     own_modules: set[str] = set()
     fixture_modules: set[str] = set()
     for target in targets:
         entry_modules = {s.module for s in defined.get(target.entry_symbol, ())}
         for dep in target.lifecycle_dependencies:
-            found = defined.get(dep, ())
-            if not found:
-                continue
-            if all(s.kind == SymbolKind.MODULE for s in found):
+            if dep in module_deps:
                 if dep not in entry_modules:
                     listed_elsewhere.add(dep)
                 else:
                     own_modules.add(dep)
-            elif all(s.fixture_scope for s in found):
-                fixture_modules |= {s.module for s in found}
+            elif dep in fixture_deps:
+                fixture_modules |= fixture_deps[dep]
     listed_elsewhere -= own_modules
     test_modules: set[str] = set()
     # Code the runner itself calls per test: isolated without a caller.
     called_by_runner: set[str] = set()
+    test_module_deps = {
+        dep
+        for dep in module_deps
+        if dep not in listed_elsewhere or _is_conftest(dep) or dep in fixture_modules
+    }
     for target in targets:
-        modules = {
-            dep
-            for dep in target.lifecycle_dependencies
-            if dep in defined
-            and all(s.kind == SymbolKind.MODULE for s in defined[dep])
-            and (dep not in listed_elsewhere or _is_conftest(dep) or dep in fixture_modules)
-        }
+        modules = test_module_deps.intersection(target.lifecycle_dependencies)
         test_modules |= modules
         if callable_code(target.entry_symbol) and all(
             s.module in modules for s in defined[target.entry_symbol]
         ):
             called_by_runner.add(target.entry_symbol)
-        for dep in target.lifecycle_dependencies:
-            found = defined.get(dep, [])
-            if found and all(
-                s.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD) and s.fixture_scope == "function"
-                for s in found
-            ):
-                isolated.add(dep)
-    referrers: dict[str, set[str]] = defaultdict(set)
-    for index in indexes:
-        for edge in index.edges:
-            # A writer edge points at the code writing, which is no use of it.
-            if edge.kind == EdgeKind.DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
-                continue
-            # A class's edge to its own method saying the runtime may call it
-            # (an external base such as ``unittest.TestCase``, a special
-            # method) is the runner's per-test call, not a use by other code.
-            if edge_mark(edge) in _RUNTIME_CALLS and any(
-                s.container == edge.source for s in defined.get(edge.target, ())
-            ):
-                continue
-            if edge.source != edge.target:
-                referrers[edge.target].add(edge.source)
+        isolated |= function_fixtures.intersection(target.lifecycle_dependencies)
     candidates: list[str] = []
     for sid, found in sorted(defined.items()):
         if sid in isolated or not callable_code(sid):
@@ -2437,6 +2449,26 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
             if all(s.name in _PER_TEST_HOOKS and s.kind == SymbolKind.METHOD for s in found):
                 called_by_runner.add(sid)
             candidates.append(sid)
+    # Only the candidates' referrers are read: the edges into them, not
+    # every edge of both revisions (pandas has 25 million a side).
+    wanted = set(candidates)
+    referrers: dict[str, set[str]] = defaultdict(set)
+    for index in indexes:
+        for edge in index.edges:
+            if edge.target not in wanted:
+                continue
+            # A writer edge points at the code writing, which is no use of it.
+            if edge.kind == EdgeKind.DEFINED_IN or edge_mark(edge) in _WRITER_MARKS:
+                continue
+            # A class's edge to its own method saying the runtime may call it
+            # (an external base such as ``unittest.TestCase``, a special
+            # method) is the runner's per-test call, not a use by other code.
+            if edge_mark(edge) in _RUNTIME_CALLS and any(
+                s.container == edge.source for s in defined.get(edge.target, ())
+            ):
+                continue
+            if edge.source != edge.target:
+                referrers[edge.target].add(edge.source)
     changed = True
     while changed:
         changed = False
@@ -3014,7 +3046,8 @@ def _with_base_lifecycle(
         targets = []
         for target in result.targets:
             before = base_lifecycle.get((target.runner, target.runner_id), ())
-            extra = [d for d in before if d not in target.lifecycle_dependencies]
+            has = set(target.lifecycle_dependencies)  # pandas: 700 a target
+            extra = [d for d in before if d not in has]
             if extra:
                 deps = tuple(sorted({*target.lifecycle_dependencies, *extra}))
                 target = replace(target, lifecycle_dependencies=deps)
