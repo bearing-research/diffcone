@@ -2924,9 +2924,18 @@ report byte-identical to the cold reference:
   310 s, 14.6 GB. Cold: 1 097 s, 22.1 GB (the store no longer writes 25
   million edges).
 
-The cold plan's peak is now the indexer (the write phases' 25 million
-pairs and edges in memory) and the planning graph (each edge again as a
-`calls:` copy); roadmap item 22, stage 2.
+* The planning graph keeps the same sets once (`_Graph.hubs`): a hub
+  writer's edges from its states, and their `calls:` copies, are in no
+  adjacency list, and `_Graph.into` merges them into the writer's
+  dependents in the order `freeze` sorts by. Back to back on an idle pod,
+  warm: 296 s and 13.6 GB, against 317 s and 14.6 GB without (the
+  graph's peak 10.6 GB, was 11.7 GB); cold: 1 127 s and 20.5 GB (was
+  1 097 s and 22.1 GB). Every scenario is also planned with every writer
+  in a hub (`_HUB_MIN` 1) and must give the same report.
+
+What is left of the peak is the two indexes' 25 million `Edge` objects a
+side (about 5 GB together, with their sets), the union of both
+revisions' edges, and the report.
 
 ## Not yet exercised
 

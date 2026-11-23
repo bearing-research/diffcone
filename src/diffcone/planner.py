@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import functools
 import gc
+import heapq
 import re
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
@@ -746,7 +747,17 @@ class Plan:
 
 @dataclass
 class _Graph:
-    """Union of both revisions' edges, indexed for backward traversal."""
+    """Union of both revisions' edges, indexed for backward traversal.
+
+    Writers that write the same set of states share it (``hubs``): one list
+    of the states, each with the revisions of its edge, stands for the
+    ``state -mutated_by-> writer`` edge of each state to each writer, which
+    ``into`` gives back where it reads a writer's dependents, in the order
+    ``freeze`` would have sorted them (pandas: 9 370 writers of the same
+    2 225 classes, 25 million edges and their ``calls:`` copies as one list).
+    The edges are in no adjacency list; nothing reads a state's forward
+    edges for a write (a write is no call: _NO_CALL), and ``unhub`` writes a
+    writer's out where one is dropped (_drop_lazy_writes)."""
 
     reverse: dict[str, list[tuple[str, Edge, tuple[str, ...]]]] = field(
         default_factory=lambda: defaultdict(list)
@@ -754,18 +765,82 @@ class _Graph:
     forward: dict[str, list[tuple[str, Edge, tuple[str, ...]]]] = field(
         default_factory=lambda: defaultdict(list)
     )
+    # Writer node -> the states it writes, sorted, with their edges' revisions.
+    hubs: dict[str, list[tuple[str, tuple[str, ...]]]] = field(default_factory=dict)
 
     def add(self, edge: Edge, revisions: tuple[str, ...]) -> None:
         self.reverse[edge.target].append((edge.source, edge, revisions))
         self.forward[edge.source].append((edge.target, edge, revisions))
 
+    def into(self, node: str) -> Iterable[tuple[str, Edge, tuple[str, ...]]]:
+        """What depends on ``node`` directly: its reverse adjacency, with the
+        edges of the states it writes as a member of a hub merged in."""
+        stored = self.reverse.get(node, ())
+        states = self.hubs.get(node)
+        if states is None:
+            return stored
+        written = (
+            (state, Edge(state, node, EdgeKind.REFERENCES, MUTATED_BY), revs)
+            for state, revs in states
+        )
+        # Ties cannot occur: an edge is in the union once, so a state's edge
+        # to a hub's writer is in no list; ``heapq.merge`` would put it first.
+        return heapq.merge(written, stored, key=_adjacency_key)
+
+    def unhub(self, writer: str) -> None:
+        """``writer``'s edges from the states of its hub, in its lists."""
+        for state, revs in self.hubs.pop(writer, ()):
+            self.add(Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY), revs)
+
     def freeze(self) -> None:
-        # A plain tuple key: dataclass ordering on Edge is far slower.
         for adj in (self.reverse, self.forward):
             for key in adj:
-                adj[key].sort(
-                    key=lambda item: (item[0], item[1].kind, item[1].detail, item[1].target)
-                )
+                adj[key].sort(key=_adjacency_key)
+
+
+def _adjacency_key(item: tuple[str, Edge, tuple[str, ...]]) -> tuple:
+    # A plain tuple key: dataclass ordering on Edge is far slower.
+    return (item[0], item[1].kind, item[1].detail, item[1].target)
+
+
+# The fewest states and writers a hub shares: below two it saves nothing.
+# testing.FixtureRepo plans every scenario again with 1, every writer in a
+# hub, and asserts the same plan.
+_HUB_MIN = 2
+
+
+def _hub_write(edge: Edge) -> bool:
+    """Whether ``edge`` is a write a hub can stand for (_shared_writes)."""
+    return (
+        edge.kind is EdgeKind.REFERENCES
+        and edge.detail == MUTATED_BY
+        and not is_log_callbacks(edge.source)
+        and not is_log_callbacks(edge.target)
+    )
+
+
+def _shared_writes(
+    union: dict[Edge, tuple[str, ...]],
+) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """The writers whose ``mutated_by`` edges (the pseudo-node of log
+    callbacks aside: _hub_write) go from the same states, with the same
+    revisions, as another writer's: writer -> the shared list
+    (_Graph.hubs). Each of a hub writer's writes is in the list."""
+    by_writer: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
+    for edge, revs in union.items():
+        if _hub_write(edge):
+            by_writer[edge.target].append((edge.source, revs))
+    groups: dict[frozenset[tuple[str, tuple[str, ...]]], list[str]] = defaultdict(list)
+    for writer, states in by_writer.items():
+        groups[frozenset(states)].append(writer)
+    del by_writer
+    hubs: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    for states, writers in groups.items():
+        if len(states) >= _HUB_MIN and len(writers) >= _HUB_MIN:
+            shared = sorted(states)
+            for writer in writers:
+                hubs[writer] = shared
+    return hubs
 
 
 class _SharedLifecycle:
@@ -1052,7 +1127,7 @@ def _import_call_effects(
     while queue:
         node = queue.popleft()
         if not _is_name_node(node):
-            for source, edge, revs in graph.reverse.get(node, ()):
+            for source, edge, revs in graph.into(node):
                 mark = edge_mark(edge)
                 if mark not in _WRITER_MARKS:
                     continue
@@ -1065,7 +1140,7 @@ def _import_call_effects(
                     expanded.add(source)
                     first = Step(source, node, edge.kind, edge.detail, revs)
                     steps, rule = _effect_path(first, parent)
-                    for state, into, state_revs in graph.reverse.get(source, ()):
+                    for state, into, state_revs in graph.into(source):
                         if edge_mark(into) == MUTATED_BY and state not in effects:
                             step = Step(state, source, into.kind, into.detail, state_revs)
                             effects[state] = ((step, *steps), rule, CONTENT)
@@ -1167,11 +1242,13 @@ def _drop_lazy_writes(
         ) and all(
             source == writer
             # The pseudo-node of the name, when nothing reads by that name.
-            or (_is_name_node(source) and not graph.reverse.get(source))
-            for source, _, _ in graph.reverse.get(var, ())
+            or (_is_name_node(source) and not any(True for _ in graph.into(source)))
+            for source, _, _ in graph.into(var)
         ):
             found[var] = writer
     for var, writer in found.items():
+        if any(state == var for state, _ in graph.hubs.get(writer, ())):
+            graph.unhub(writer)  # one of its writes goes
         graph.forward[var] = [
             item
             for item in graph.forward.get(var, [])
@@ -1240,6 +1317,11 @@ def _add_caller_effects(graph: _Graph, module_nodes: set[str]) -> None:
                 graph.add(Edge(calls(target), calls(source), edge.kind, detail), revs)
     for edge, revs in mutated:
         graph.add(edge, revs)
+    # A hub's writers' copies: ``calls:`` of each writer shares the hub's
+    # states as the writer does (_Graph.hubs), the edge from each state to
+    # it standing for the ``mutated_by`` copy above.
+    for writer, states in list(graph.hubs.items()):
+        graph.hubs[calls(writer)] = states
 
 
 def _call_steps(steps: list[Step]) -> list[Step]:
@@ -1574,7 +1656,10 @@ def plan_from_indexes(
     # What each symbol imports in its body, per revision, read in the same
     # pass (_newly_run_modules).
     imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
+    graph.hubs = hubs = _shared_writes(union)
     for edge, revs in union.items():
+        if edge.target in hubs and _hub_write(edge):
+            continue  # in the writer's hub
         graph.add(edge, revs)
         if edge.kind is EdgeKind.IMPORTS:
             for rev in revs:
@@ -2119,7 +2204,7 @@ def plan_from_indexes(
     while queue:
         node = queue.popleft()
         node_mode = mode[node]
-        for source, edge, revs in graph.reverse.get(node, ()):
+        for source, edge, revs in graph.into(node):
             new_mode = _propagate(edge, node_mode, change_by_id.get(node), source in module_nodes)
             if new_mode is None or new_mode <= mode.get(source, 0):
                 continue
