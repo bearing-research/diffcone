@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+from diffcone import model as model_module
 from diffcone import planner as planner_module
 from diffcone.cache import IndexCache
 from diffcone.evidence import Evidence
@@ -111,11 +112,15 @@ class FixtureRepo:
         return result
 
     def _check_hubs_invisible(self, result, base, head, manifest, source_roots, kwargs) -> None:
-        """Writers sharing their states share one list in the planning graph
-        (planner._Graph.hubs), an optimisation only: with every writer in a
-        hub, the plan must be the same, explanations included."""
+        """Writers sharing their states share one list in an index
+        (model.EdgeSet) and in the planning graph (planner._Graph.hubs), an
+        optimisation only: with every writer in a hub, the plan must be the
+        same, explanations included."""
         expected = json.dumps(to_dict(result), sort_keys=True)
-        with mock.patch.object(planner_module, "_HUB_MIN", 1):
+        with (
+            mock.patch.object(planner_module, "_HUB_MIN", 1),
+            mock.patch.object(model_module, "EDGE_HUB_MIN", 1),
+        ):
             again = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
         got = json.dumps(to_dict(again), sort_keys=True)
         assert got == expected, "the plan with every writer in a hub differs"

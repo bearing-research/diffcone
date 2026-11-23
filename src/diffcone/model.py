@@ -6,7 +6,7 @@ Symbol identity is the dotted qualified name (``pkg.mod``, ``pkg.mod.func``,
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Iterator
+from collections.abc import Collection, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -323,6 +323,200 @@ class Edge:
     detail: str = ""
 
 
+class _SameSets:
+    """Whether two frozensets are equal, each pair of objects compared once:
+    the writers of a hub share one (pandas: 9 370 writers, 2 225 states)."""
+
+    __slots__ = ("_seen",)
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[int, int], bool] = {}
+
+    def __call__(self, a: frozenset[str], b: frozenset[str] | None) -> bool:
+        if b is None:
+            return False
+        if a is b:
+            return True
+        key = (id(a), id(b))
+        found = self._seen.get(key)
+        if found is None:
+            found = self._seen[key] = a == b
+        return found
+
+
+def shared_writes(base: EdgeSet, head: EdgeSet) -> dict[str, frozenset[str]]:
+    """The writers in a hub of both revisions with the same states: their
+    ``mutated_by`` edges are each in both."""
+    same = _SameSets()
+    theirs = head.hubs
+    return {w: states for w, states in base.hubs.items() if same(states, theirs.get(w))}
+
+
+# The fewest writers, and states, an EdgeSet hub shares: below two it saves
+# nothing. testing.FixtureRepo plans every scenario again with 1.
+EDGE_HUB_MIN = 2
+
+
+class EdgeSet(MutableSet[Edge]):
+    """An index's edges: a set, with the ``mutated_by`` edges of writers that
+    write the same states as another writer kept once per shared set
+    (``hubs``: writer -> its states, one frozenset shared by the writers
+    of a set). Iteration, ``in``, ``len`` and every set operation see each
+    such edge as if stored: what it stands for is exactly the set of edges
+    ``compact`` was given. pandas: 9 370 writers write the same 2 225
+    classes, 25 million edges a revision as one frozenset.
+
+    Not a ``set`` subclass on purpose: CPython's set operations (``set(x)``,
+    ``x | y``, ``update``) read a subclass's own table and would not see
+    the hubs. Ordinary sets are returned by the operators."""
+
+    __slots__ = ("_hubs", "_plain")
+
+    def __init__(
+        self, edges: Iterable[Edge] = (), hubs: dict[str, frozenset[str]] | None = None
+    ) -> None:
+        self._plain: set[Edge] = set(edges)
+        self._hubs: dict[str, frozenset[str]] = dict(hubs) if hubs else {}
+
+    @classmethod
+    def _from_iterable(cls, it: Iterable[Edge]) -> set[Edge]:  # type: ignore[override]
+        return set(it)
+
+    def _hub_edge(self, edge: object) -> bool:
+        if not isinstance(edge, Edge) or edge.kind is not EdgeKind.REFERENCES:
+            return False
+        states = self._hubs.get(edge.target)
+        return states is not None and edge.detail == MUTATED_BY and edge.source in states
+
+    def __contains__(self, edge: object) -> bool:
+        return edge in self._plain or (bool(self._hubs) and self._hub_edge(edge))
+
+    def __iter__(self) -> Iterator[Edge]:
+        if not self._hubs:
+            return iter(self._plain)  # the indexer's case: a set's own iterator
+        return self._all()
+
+    def _all(self) -> Iterator[Edge]:
+        yield from self._plain
+        references = EdgeKind.REFERENCES
+        for writer, states in self._hubs.items():
+            for state in states:
+                yield Edge(state, writer, references, MUTATED_BY)
+
+    def __len__(self) -> int:
+        return len(self._plain) + sum(map(len, self._hubs.values()))
+
+    def __repr__(self) -> str:
+        return f"EdgeSet({len(self._plain)} edges, {len(self._hubs)} hub writers)"
+
+    def add(self, edge: Edge) -> None:
+        if not self._hubs or not self._hub_edge(edge):
+            self._plain.add(edge)
+
+    def discard(self, edge: Edge) -> None:
+        if edge in self._plain:
+            self._plain.discard(edge)
+        elif self._hubs and self._hub_edge(edge):
+            self._unhub(edge.target)
+            self._plain.discard(edge)
+
+    def _unhub(self, writer: str) -> None:
+        references = EdgeKind.REFERENCES
+        for state in self._hubs.pop(writer):
+            self._plain.add(Edge(state, writer, references, MUTATED_BY))
+
+    def clear(self) -> None:
+        self._plain.clear()
+        self._hubs.clear()
+
+    def update(self, *others: Iterable[Edge]) -> None:
+        for other in others:
+            if self._hubs:
+                for edge in other:
+                    self.add(edge)
+            else:
+                self._plain.update(other)
+
+    def difference_update(self, *others: Iterable[Edge]) -> None:
+        for other in others:
+            for edge in list(other):
+                self.discard(edge)
+
+    def __ior__(self, other: Iterable[Edge]) -> EdgeSet:  # type: ignore[override]
+        self.update(other)
+        return self
+
+    def __isub__(self, other: Iterable[Edge]) -> EdgeSet:  # type: ignore[override]
+        self.difference_update(other)
+        return self
+
+    @property
+    def plain(self) -> set[Edge]:
+        """The edges stored one by one (read only: ``add`` keeps the hubs)."""
+        return self._plain
+
+    @property
+    def hubs(self) -> dict[str, frozenset[str]]:
+        """Writer -> the states of its shared set (read only)."""
+        return self._hubs
+
+    def compact(self) -> None:
+        """Keep the ``mutated_by`` edges of each set of states that at least
+        EDGE_HUB_MIN writers share, with at least as many states, once.
+        Edges at a pseudo-node of log callbacks stay as they are (readers of
+        those read them one by one: model.log_callback_sites)."""
+        for writer in list(self._hubs):
+            self._unhub(writer)  # grouped again with whatever was added
+        by_writer: dict[str, set[str]] = {}
+        for edge in self._plain:
+            if (
+                edge.kind is EdgeKind.REFERENCES
+                and edge.detail == MUTATED_BY
+                and not is_log_callbacks(edge.source)
+                and not is_log_callbacks(edge.target)
+            ):
+                by_writer.setdefault(edge.target, set()).add(edge.source)
+        groups: dict[frozenset[str], list[str]] = {}
+        for writer, states in by_writer.items():
+            groups.setdefault(frozenset(states), []).append(writer)
+        del by_writer
+        hubbed: dict[str, frozenset[str]] = {}
+        for states, writers in groups.items():
+            if len(states) >= EDGE_HUB_MIN and len(writers) >= EDGE_HUB_MIN:
+                for writer in writers:
+                    hubbed[writer] = states
+        if not hubbed:
+            return
+        self._plain = {
+            e
+            for e in self._plain
+            if not (
+                e.target in hubbed
+                and e.kind is EdgeKind.REFERENCES
+                and e.detail == MUTATED_BY
+                and not is_log_callbacks(e.source)
+            )
+        }
+        self._hubs.update(hubbed)
+
+    def missing_from(self, other: Collection[Edge]) -> Iterator[Edge]:
+        """The edges of this set that ``other`` lacks, without making the
+        edges of a hub ``other`` shares (the same states for the writer)."""
+        other_hubs = other.hubs if isinstance(other, EdgeSet) else {}
+        for edge in self._plain:
+            if edge not in other:
+                yield edge
+        references = EdgeKind.REFERENCES
+        same = _SameSets()
+        for writer, states in self._hubs.items():
+            if same(states, other_hubs.get(writer)):
+                continue
+            for state in states:
+                edge = Edge(state, writer, references, MUTATED_BY)
+                if edge not in other:
+                    yield edge
+
+
 # A pseudo-node of the index (no symbol): the callbacks the logging library
 # runs for a log call (indexer.core._log_callback_writes). Log sites sharing
 # one set of callbacks share one, keyed by what it joins: each variable the
@@ -341,7 +535,8 @@ def is_log_callbacks(node: str) -> bool:
 def log_callback_sites(edges: Iterable[Edge]) -> dict[str, set[str]]:
     """Each LOG_CALLBACKS pseudo-node -> the log sites it stands for."""
     sites: dict[str, set[str]] = {}
-    for edge in edges:
+    # No hub of an EdgeSet has an edge at a pseudo-node (EdgeSet.compact).
+    for edge in edges.plain if isinstance(edges, EdgeSet) else edges:
         if edge.source.startswith(LOG_CALLBACKS):
             sites.setdefault(edge.source, set()).add(edge.target)
     return sites
@@ -431,7 +626,7 @@ class SourceIndex:
     snapshot: SnapshotInfo
     modules: set[str] = field(default_factory=set)
     symbols: dict[str, Symbol] = field(default_factory=dict)
-    edges: set[Edge] = field(default_factory=set)
+    edges: EdgeSet = field(default_factory=EdgeSet)
     unresolved: set[UnresolvedReference] = field(default_factory=set)
     external: set[ExternalReference] = field(default_factory=set)
     errors: list[AnalysisError] = field(default_factory=list)

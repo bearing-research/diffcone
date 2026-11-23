@@ -108,10 +108,11 @@ import gc
 import heapq
 import re
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from fnmatch import fnmatchcase
+from itertools import chain
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
@@ -156,6 +157,7 @@ from diffcone.model import (
     AnalysisError,
     Edge,
     EdgeKind,
+    EdgeSet,
     SnapshotInfo,
     SourceIndex,
     Symbol,
@@ -167,6 +169,7 @@ from diffcone.model import (
     imports_anything,
     is_log_callbacks,
     log_callback_sites,
+    shared_writes,
 )
 from diffcone.snapshot import (
     ASV_CONFIGS,
@@ -843,6 +846,21 @@ def _shared_writes(
     return hubs
 
 
+def _hub_lists(
+    shared: dict[str, frozenset[str]],
+) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """``shared`` (_union_edges) as _Graph.hubs: one sorted list per set."""
+    lists: dict[int, list[tuple[str, tuple[str, ...]]]] = {}
+    hubs: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+    for writer, states in shared.items():
+        found: list[tuple[str, tuple[str, ...]]] | None = lists.get(id(states))
+        if found is None:
+            found = [(state, _BOTH) for state in sorted(states)]
+            lists[id(states)] = found
+        hubs[writer] = found
+    return hubs
+
+
 class _SharedLifecycle:
     """The lifecycle dependencies every target of a runner carries, kept once
     (audit E37): pandas' 25 620 tests each carry the same 654 (the code run
@@ -934,6 +952,35 @@ def _union(base_items: Iterable[T], head_items: Iterable[T]) -> dict[T, tuple[st
 _BASE_ONLY, _HEAD_ONLY, _BOTH = ("base",), ("head",), ("base", "head")
 
 
+def _union_edges(
+    base: EdgeSet, head: EdgeSet
+) -> tuple[dict[Edge, tuple[str, ...]], dict[str, frozenset[str]]]:
+    """Both revisions' edges as _union gives them, but for the writers whose
+    hub (model.EdgeSet) is the same in both: writer -> its states, each
+    edge from one of them to it in both revisions. A writer whose states
+    differ has its edges in the union one by one."""
+    shared = shared_writes(base, head)
+
+    def rest(edges: EdgeSet) -> Iterator[Edge]:
+        yield from edges.plain
+        for writer, states in edges.hubs.items():
+            if writer not in shared:
+                for state in states:
+                    yield Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY)
+
+    return _union(rest(base), rest(head)), shared
+
+
+def _shared_pairs(
+    shared: dict[str, frozenset[str]], writers: Iterable[str]
+) -> Iterator[tuple[Edge, tuple[str, ...]]]:
+    """The edges of ``shared`` (_union_edges) into ``writers``, as the union
+    items they stand for."""
+    for writer in writers:
+        for state in shared.get(writer, ()):
+            yield Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY), _BOTH
+
+
 def _propagate(
     edge: Edge, target_mode: int, target_change: SymbolChange | None, source_is_module: bool
 ) -> int | None:
@@ -1000,11 +1047,15 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
     planning both reach such a reader from a docstring-only change."""
     read = {s.id: {s.module} for s in index.symbols.values() if s.reads_docstrings}
     hubs: set[str] = set()
-    for edge in index.edges:
+    for edge in index.edges.plain:
         if edge.source in read and edge.kind != EdgeKind.DEFINED_IN:
             read[edge.source].add(edge.target)
             if is_log_callbacks(edge.target):
                 hubs.add(edge.target)
+    # A hub's edges (model.EdgeSet) go from the states it writes.
+    for writer, states in index.edges.hubs.items():
+        for state in states & read.keys():
+            read[state].add(writer)
     if hubs:
         # The pseudo-node of a set of logging callbacks stands for its log
         # sites (model.LOG_CALLBACKS).
@@ -1026,7 +1077,7 @@ def docstring_readers(index: SourceIndex) -> dict[str, set[str]]:
         )
 
     imported: dict[str, set[str]] = defaultdict(set)
-    for edge in index.edges:
+    for edge in index.edges.plain:  # a hub's edges are no imports
         if edge.kind == EdgeKind.IMPORTS:
             imported[edge.source].add(edge.target)
     for ref in index.unresolved:
@@ -1162,7 +1213,7 @@ def _body_imports(base: SourceIndex, head: SourceIndex) -> dict[str, dict[str, s
     _newly_run_modules (planning reads them in its pass over the edges)."""
     imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
     for label, index in (("base", base), ("head", head)):
-        for edge in index.edges:
+        for edge in index.edges.plain:  # a hub's edges are no imports
             if edge.kind is EdgeKind.IMPORTS:
                 imports[label][edge.source].add(edge.target)
     return imports
@@ -1521,8 +1572,9 @@ def _runner_only_classes(
     base: SourceIndex,
     head: SourceIndex,
     discovered: list[DiscoveryResult],
-    edges: dict[Edge, tuple[str, ...]],
+    edges: Iterable[Edge],
     log_states: dict[str, list[tuple[str, tuple[str, ...]]]] | None = None,
+    shared: dict[str, frozenset[str]] | None = None,
 ) -> set[str]:
     """Test classes whose instances only the test runner ever holds.
 
@@ -1573,7 +1625,8 @@ def _runner_only_classes(
     held = (base.escaped_classes | head.escaped_classes) & runner
     # Symbol -> the runner classes it refers to.
     refers: dict[str, set[str]] = defaultdict(set)
-    for edge in edges:
+    written = (e for e, _ in _shared_pairs(shared or {}, sorted(runner & (shared or {}).keys())))
+    for edge in chain(edges, written):
         if edge.kind == EdgeKind.REFERENCES and edge.target in runner:
             # A log site's edge from the callbacks' pseudo-node is each
             # variable's they write (_log_callback_states).
@@ -1632,7 +1685,12 @@ def plan_from_indexes(
     errors = sorted(base.errors + head.errors)
 
     graph = _Graph()
-    union = _union(base.edges, head.edges)
+    # A writer whose hub is the same in both revisions keeps it: its edges
+    # are in ``written``, not the union (pandas: 25 million a revision).
+    # Every rule below reading the union reads them too where they could
+    # match: none of a hub's edges is at a pseudo-node of log callbacks, an
+    # install or an import (EdgeSet.compact).
+    union, written = _union_edges(base.edges, head.edges)
     # The isolation assumption: what isolated test code stores in module
     # state is seen only by the test running it, which depends on that code
     # already; it is no writer for the readers in other tests.
@@ -1642,6 +1700,7 @@ def plan_from_indexes(
         for e, r in union.items()
         if not (e.target in isolated and edge_mark(e) in _WRITER_MARKS)
     }
+    written = {w: states for w, states in written.items() if w not in isolated}
     if seeds is not None:
         # Evidence mode's escalation: the record shows what an object
         # installed under a name nothing bounds ran (W25).
@@ -1657,6 +1716,7 @@ def plan_from_indexes(
     # pass (_newly_run_modules).
     imports: dict[str, dict[str, set[str]]] = {"base": defaultdict(set), "head": defaultdict(set)}
     graph.hubs = hubs = _shared_writes(union)
+    hubs.update(_hub_lists(written))
     for edge, revs in union.items():
         if edge.target in hubs and _hub_write(edge):
             continue  # in the writer's hub
@@ -1693,10 +1753,13 @@ def plan_from_indexes(
     # Only the edges onto an escaped module, sorted (sorting all of them
     # first gives the same order, at the cost of every edge).
     onto_escaped = _through_log_callbacks(
-        (
-            (e, r)
-            for e, r in union.items()
-            if e.kind == EdgeKind.REFERENCES and e.target in escaped_modules
+        chain(
+            (
+                (e, r)
+                for e, r in union.items()
+                if e.kind == EdgeKind.REFERENCES and e.target in escaped_modules
+            ),
+            _shared_pairs(written, sorted(escaped_modules & written.keys())),
         ),
         log_states,
     )
@@ -1858,7 +1921,7 @@ def plan_from_indexes(
     # symbol of that name: ``name:<n>``.
     symbols_by_name: dict[str, list[str]] = defaultdict(list)
     attribute_by_name: dict[str, list[str]] = defaultdict(list)
-    runner_only = _runner_only_classes(base, head, discovered, union, log_states)
+    runner_only = _runner_only_classes(base, head, discovered, union, log_states, written)
     reachable = _attribute_modules(base, head, targets, known_symbols)
     for symbol_id in sorted(known_symbols):
         symbol = head.symbols.get(symbol_id) or base.symbols[symbol_id]
@@ -2115,7 +2178,18 @@ def plan_from_indexes(
             return e.kind == EdgeKind.REFERENCES and module in newly_run
 
         candidates = _through_log_callbacks(
-            ((e, r) for e, r in union.items() if onto_newly_run(e)), log_states
+            chain(
+                ((e, r) for e, r in union.items() if onto_newly_run(e)),
+                _shared_pairs(
+                    written,
+                    (
+                        w
+                        for w in written
+                        if (w if w in module_nodes else symbol_module.get(w)) in newly_run
+                    ),
+                ),
+            ),
+            log_states,
         )
         for edge, revs in sorted(candidates.items()):
             if edge.source in mode:
@@ -2539,7 +2613,8 @@ def isolated_test_code(targets: Iterable[Target], indexes: Iterable[SourceIndex]
     wanted = set(candidates)
     referrers: dict[str, set[str]] = defaultdict(set)
     for index in indexes:
-        for edge in index.edges:
+        # A hub's edges (model.EdgeSet) are writer edges, skipped below.
+        for edge in index.edges.plain:
             if edge.target not in wanted:
                 continue
             # A writer edge points at the code writing, which is no use of it.
@@ -2591,7 +2666,7 @@ class _ImportReach:
             for symbol in index.symbols.values():
                 self.module_of[symbol.id] = symbol.module
         for index in (base, head):
-            for edge in index.edges:
+            for edge in index.edges.plain:  # a hub's edges are no imports
                 if edge.kind == EdgeKind.IMPORTS and edge.target in self.module_of:
                     source_module = self.module_of.get(edge.source)
                     if source_module is not None:

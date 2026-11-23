@@ -51,12 +51,49 @@ def test_writers_sharing_their_states_are_stored_once_and_read_back_exactly(repo
     lone = {written("pkg.A", "pkg.k"), written("pkg.Z", "pkg.m")}  # one state each
     other = {written("pkg.A", "pkg.f", "writes"), Edge("pkg.A", "pkg.f", EdgeKind.IMPORTS)}
     index.edges |= shared | own | lone | other
+    index.edges.compact()  # as the indexer leaves what it built
+    assert set(index.edges.hubs) == {"pkg.f", "pkg.g"}
     stored = json.loads(json.dumps(index_to_dict(index)))
     assert stored["writes_hubs"] == [[["pkg.A", "pkg.B", "pkg.C"], ["pkg.f", "pkg.g"]]]
     kept = {tuple(e) for e in stored["edges"]}
     assert not any(tuple(e) in kept for e in (_as_list(x) for x in shared))
     assert all(tuple(_as_list(e)) in kept for e in own | lone | other)
     assert index_from_dict(stored).edges == index.edges
+
+
+def test_an_edge_set_with_hubs_is_the_set_of_its_edges():
+    from diffcone.model import LOG_CALLBACKS, MUTATED_BY, Edge, EdgeKind, EdgeSet
+
+    def written(state: str, writer: str) -> Edge:
+        return Edge(state, writer, EdgeKind.REFERENCES, MUTATED_BY)
+
+    shared = {written(s, w) for s in ("A", "B") for w in ("f", "g")}
+    log = {written(s, f"{LOG_CALLBACKS}1") for s in ("A", "B")}
+    log |= {written(s, f"{LOG_CALLBACKS}2") for s in ("A", "B")}
+    rest = {written("A", "h"), Edge("A", "f", EdgeKind.IMPORTS)}
+    plain = shared | log | rest
+    edges = EdgeSet(plain)
+    edges.compact()
+    assert set(edges.hubs) == {"f", "g"} and edges.hubs["f"] is edges.hubs["g"]
+    assert not shared & edges.plain and log <= edges.plain  # log nodes stay apart
+    assert set(edges) == plain and len(edges) == len(plain) and edges == plain
+    assert all(e in edges for e in plain) and written("C", "f") not in edges
+    edges.add(written("A", "f"))  # already there, through the hub
+    assert edges == plain and "f" in edges.hubs
+    edges.add(written("C", "f"))
+    assert edges == plain | {written("C", "f")}
+    edges.discard(written("C", "f"))
+    edges.discard(written("A", "f"))  # out of the hub: f's other write stays
+    assert "f" not in edges.hubs and edges == plain - {written("A", "f")}
+    edges.compact()
+    assert edges == plain - {written("A", "f")}
+    other = EdgeSet(plain)
+    other.compact()
+    assert set(other.missing_from(edges)) == {written("A", "f")}
+    assert set(edges.missing_from(other)) == set()
+    assert (edges ^ other) == {written("A", "f")} and isinstance(edges | other, set)
+    edges -= shared
+    assert edges == plain - shared and not edges.hubs
 
 
 def _as_list(edge) -> list:
@@ -163,7 +200,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 76
+    assert cache_mod.INDEX_FORMAT == 77
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 

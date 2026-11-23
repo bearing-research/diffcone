@@ -8,6 +8,7 @@ from enum import StrEnum
 
 from diffcone.indexer.definitions import INERT_DEF
 from diffcone.model import (
+    MUTATED_BY,
     Edge,
     EdgeKind,
     SourceIndex,
@@ -115,7 +116,8 @@ def _differing_sources(base: SourceIndex, head: SourceIndex) -> set[str]:
     has and the other lacks. Every other symbol's signature is the same on
     both sides, so only these need building (pandas' 25 million edges a
     side made the signatures of all of them the plan's peak memory)."""
-    found = {e.source for e in base.edges ^ head.edges if _signed(e)}
+    found = {e.source for e in base.edges.missing_from(head.edges) if _signed(e)}
+    found.update(e.source for e in head.edges.missing_from(base.edges) if _signed(e))
     found.update(u.symbol for u in base.unresolved ^ head.unresolved)
     found.update(x.symbol for x in base.external ^ head.external)
     return found
@@ -131,9 +133,14 @@ def _dependency_signatures(
     grouped: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
     if not sources:
         return {}
-    for e in index.edges:
+    for e in index.edges.plain:
         if e.source in sources and _signed(e):
             grouped[e.source].add((e.kind, e.target, e.detail))
+    # A hub's edges go from its states (model.EdgeSet), none at a pseudo-node
+    # of log callbacks: only those from the wanted sources.
+    for writer, states in index.edges.hubs.items():
+        for state in states & sources:
+            grouped[state].add((EdgeKind.REFERENCES, writer, MUTATED_BY))
     for u in index.unresolved:
         if u.symbol in sources:
             grouped[u.symbol].add((UNRESOLVED_SIG, f"{u.kind}:{u.name}", ""))

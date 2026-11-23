@@ -270,6 +270,8 @@ class Indexer(DynamicBounds):
                 self.index.escaped_classes.update(returns.get(held, ()))
         if cache is not None and (new_facts or new_resolved):
             cache.store(new_facts, new_resolved, fingerprint, list(keys.values()))
+        # The same edges, the writes writers share kept once (model.EdgeSet).
+        self.index.edges.compact()
         return self.index
 
     def _definition_writes(self) -> None:

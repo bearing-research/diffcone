@@ -44,10 +44,10 @@ from diffcone.indexer.facts import symbol_from_dict
 from diffcone.indexer.syntax import TOO_DEEP
 from diffcone.manifest import Target
 from diffcone.model import (
-    MUTATED_BY,
     AnalysisError,
     Edge,
     EdgeKind,
+    EdgeSet,
     ExternalReference,
     SnapshotInfo,
     SnapshotKind,
@@ -95,6 +95,7 @@ from diffcone.model import (
 # 75: a whole index stores each edge as a [source, target, kind, detail] list;
 # 76: ... and the mutated_by edges of writers sharing one set of states as one
 #     [states, writers] record (writes_hubs);
+# 77: ... read into an EdgeSet as hubs, edges at a log-callbacks node kept apart;
 # 59: a class attribute bound once to a value that cannot change in place
 #     is no root of its class (audit round 6, T24); an instance holds the
 #     arguments its constructor was handed, and only a write that may reach
@@ -153,7 +154,7 @@ from diffcone.model import (
 # and modules (indexer.uses); 28: __subclasses__ reads; 27: type
 # parameters, unnameable build scripts as other files; 26: escaped values;
 # 25: external sites; 24: docstring decorators; 23: open classes
-INDEX_FORMAT = 76
+INDEX_FORMAT = 77
 
 
 def _indexer_fingerprint() -> str:
@@ -262,44 +263,28 @@ def index_key(commit: str, source_roots: list[str]) -> str:
     return hashlib.sha256(material.encode()).hexdigest()
 
 
-def _edges_to_dict(edges: set[Edge]) -> dict[str, list]:
-    """The edges as lists, except the ``mutated_by`` edges of writers that
-    share their whole set of states with another writer: one ``[states,
-    writers]`` record per such set (``writes_hubs``), which stands for an
-    edge from each state to each writer. On pandas 9 370 writers write the
-    same 2 225 classes (a write of ``*`` or a dunder on an object of unknown
-    class): 25 million edges, most of a 4 GB file, as 0.7 million."""
-    by_writer: dict[str, set[str]] = defaultdict(set)
-    for e in edges:
-        if e.kind is EdgeKind.REFERENCES and e.detail == MUTATED_BY:
-            by_writer[e.target].add(e.source)
+def _edges_to_dict(edges: EdgeSet) -> dict[str, list]:
+    """The edges as lists, but those a hub of the set stands for
+    (model.EdgeSet: writers sharing their states): one ``[states, writers]``
+    record per shared set (``writes_hubs``). On pandas 9 370 writers write
+    the same 2 225 classes: 25 million edges, most of a 4 GB file, as 0.7
+    million."""
     groups: dict[frozenset[str], list[str]] = defaultdict(list)
-    for writer, states in by_writer.items():
-        groups[frozenset(states)].append(writer)
-    hubs = sorted(
-        (sorted(states), sorted(writers))
-        for states, writers in groups.items()
-        if len(states) > 1 and len(writers) > 1
-    )
-    hubbed = {w for _, writers in hubs for w in writers}
-    kept = (
-        e
-        for e in edges
-        if not (e.target in hubbed and e.kind is EdgeKind.REFERENCES and e.detail == MUTATED_BY)
-    )
+    for writer, states in edges.hubs.items():
+        groups[states].append(writer)
     return {
-        "edges": [list(_EDGE_ORDER(e)) for e in sorted(kept, key=_EDGE_ORDER)],
-        "writes_hubs": [[states, writers] for states, writers in hubs],
+        "edges": [list(_EDGE_ORDER(e)) for e in sorted(edges.plain, key=_EDGE_ORDER)],
+        "writes_hubs": sorted([sorted(st), sorted(ws)] for st, ws in groups.items()),
     }
 
 
-def _edges_from_dict(data: dict) -> set[Edge]:
-    edges = {Edge(s, t, _EDGE_KINDS[k], d) for s, t, k, d in data["edges"]}
-    references = EdgeKind.REFERENCES
+def _edges_from_dict(data: dict) -> EdgeSet:
+    hubs: dict[str, frozenset[str]] = {}
     for states, writers in data["writes_hubs"]:
+        shared = frozenset(states)
         for writer in writers:
-            edges.update(Edge(state, writer, references, MUTATED_BY) for state in states)
-    return edges
+            hubs[writer] = shared
+    return EdgeSet((Edge(s, t, _EDGE_KINDS[k], d) for s, t, k, d in data["edges"]), hubs)
 
 
 def index_to_dict(index: SourceIndex) -> dict:

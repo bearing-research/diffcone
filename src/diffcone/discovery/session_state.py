@@ -116,7 +116,8 @@ def state_writing_roots(
     imported: dict[str, set[str]] = defaultdict(set)
     importers: dict[str, set[str]] = defaultdict(set)
     main_only = index.main_guarded
-    for edge in index.edges:
+    # A hub's edges (model.EdgeSet) are mutated_by edges: _NOT_RUN, no imports.
+    for edge in index.edges.plain:
         if (edge.source, "edge", edge.target) in main_only:
             continue  # only under ``if __name__ == "__main__":``
         if (

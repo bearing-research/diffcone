@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Collection, MutableSet
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -147,7 +148,7 @@ class _Output:
     fresh instance so a module's contribution can be cached and merged; the
     rest of the indexer writes to the global one backed by the index."""
 
-    edges: set[Edge] = field(default_factory=set)
+    edges: MutableSet[Edge] = field(default_factory=set)
     unresolved: set[UnresolvedReference] = field(default_factory=set)
     external: set[ExternalReference] = field(default_factory=set)
     call_sites: dict[str, list[_CallSite]] = field(default_factory=lambda: defaultdict(list))
@@ -825,7 +826,7 @@ def symbol_from_dict(data: dict) -> Symbol:
 
 
 def _facts_to_dict(
-    scope: ModuleScope, symbols: list[Symbol], classes: list[ClassScope], edges: set[Edge]
+    scope: ModuleScope, symbols: list[Symbol], classes: list[ClassScope], edges: Collection[Edge]
 ) -> dict:
     """A module's first-pass output: a pure function of its file (given its
     module name), so it is cached by content. ``env`` digests the part other

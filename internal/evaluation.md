@@ -2933,9 +2933,22 @@ report byte-identical to the cold reference:
   1 097 s and 22.1 GB). Every scenario is also planned with every writer
   in a hub (`_HUB_MIN` 1) and must give the same report.
 
-What is left of the peak is the two indexes' 25 million `Edge` objects a
-side (about 5 GB together, with their sets), the union of both
-revisions' edges, and the report.
+* The indexes keep them once too (`model.EdgeSet`, `INDEX_FORMAT` 77):
+  the indexer compacts its edges when it is done, the cache reads its
+  records straight into hubs, and the planner's union of both revisions
+  keeps a writer's hub when it is the same in both (`_union_edges`); the
+  rules reading the union read those writers' edges where they could
+  match (`_shared_pairs`), and readers of `index.edges` looking only at
+  imports or skipping writer edges read `EdgeSet.plain`. On a pod (the
+  two cold runs in parallel with each other and the gate, the warm ones
+  back to back; reports identical but for the repo path), against
+  `93dd48f`: cold 1 234 s and 22.9 GB to 1 111 s and 16.6 GB, warm 296 s
+  and 13.7 GB to 134 s and 8.5 GB. Every scenario is also planned with
+  every writer in a hub at both levels (`EDGE_HUB_MIN` and `_HUB_MIN` 1).
+
+A cold plan's peak is now the indexer's write phases (the 25 million
+pairs before `compact`) and planning; a warm plan fits a 16 GB runner
+with room to spare.
 
 ## Not yet exercised
 

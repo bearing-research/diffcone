@@ -3253,7 +3253,7 @@ def _fixture_reach(snapshot: Snapshot, index: SourceIndex) -> set[str]:
         return symbol.module if symbol is not None else symbol_id
 
     importers: dict[str, set[str]] = {}
-    for edge in index.edges:
+    for edge in index.edges.plain:  # a hub's edges (model.EdgeSet) are no imports
         if edge.kind in (EdgeKind.IMPORTS, EdgeKind.IMPORTS_NAME):
             importers.setdefault(module_of(edge.target), set()).add(module_of(edge.source))
     reach = set(marked)
@@ -3864,7 +3864,7 @@ def _isolated_installers(
     if tests:
         referred = {
             edge.target
-            for edge in index.edges
+            for edge in index.edges.plain  # a hub's edges are _WRITER_DETAILS
             if edge.target in tests
             and edge.source != edge.target
             and edge.kind != EdgeKind.DEFINED_IN
