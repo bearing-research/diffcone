@@ -25,13 +25,14 @@ selection rules.
 
 ### Performance
 
-- A cold plan of pandas takes about half the time (a commit that selects
-  every test: about 3 200 s down to about 1 500 s on one core, and 2 GB
-  less at its peak, the same plan to the byte). Most of it is in tracing what a name in a
-  module stands for, deciding which writes reach a class's state, and
-  storing the whole index in the cache, which also takes less memory to
-  write. The cache's index format changed, so the first plan after
-  upgrading builds the index anew.
+- A plan of pandas takes about a third of the time (a commit that selects
+  every test, on one core, the same plan to the byte): about 3 200 s down
+  to about 1 100 s without a cache, and about 300 s with the index cached,
+  at a peak of 14.6 GB instead of 30 GB. The cached index of a pandas
+  commit is 175 MB instead of 4.2 GB: code that writes the same set of
+  classes as other code (pandas has 9 370 such writers) is stored once
+  for all of them. The cache's index format changed, so the first plan
+  after upgrading builds the index anew.
 - `diffcone plan` and `diffcone discover` exit as soon as their output is
   written, rather than spending minutes freeing a large repository's
   analysis.

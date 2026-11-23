@@ -2901,6 +2901,33 @@ run: planning and the report (about 500 s, the 23 GB peak, the 1 GB
 `selected_targets`), the write phases' 25 million edges (about 250 s),
 and the cache store (about 100 s).
 
+*Planning and the cache (2026-11-22, a second pod; one plan at a time
+with a run alongside, sampled every 30 s).* With the whole-index cache
+warm (its two files written by a cold plan at `66c3ebc`), a plan of the
+same commit wrote its report at 751 s and peaked at 30.8 GB: loading the
+two 4.2 GB index files took 160 s and 26 GB, and planning made one pass
+after another over the 25 million edges a side. Two changes, each with a
+report byte-identical to the cold reference:
+
+* `ea7d8ff`: `classify` builds signatures only for symbols with an edge
+  one side lacks (`base.edges ^ head.edges`) and reads the log sites only
+  when a signature differs; `_newly_run_modules` takes the imports edges
+  from the graph pass; `isolated_test_code` decides each lifecycle
+  dependency's kind once instead of once a target and keeps only the
+  edges into its candidates; `_with_base_lifecycle` tests a set, not a
+  tuple of 700. Warm: 493 s, 29.2 GB.
+* Writers sharing one set of states are stored once in the index file
+  (`writes_hubs`, `INDEX_FORMAT` 76): of 15 258 writers, 9 370 write
+  exactly the same 2 225 classes, and 1 029 distinct sets cover them all;
+  the 450 sets two or more writers share stand for 25.07 million edges
+  with 0.70 million. The file is 175 MB instead of 4.2 GB a side. Warm:
+  310 s, 14.6 GB. Cold: 1 097 s, 22.1 GB (the store no longer writes 25
+  million edges).
+
+The cold plan's peak is now the indexer (the write phases' 25 million
+pairs and edges in memory) and the planning graph (each edge again as a
+`calls:` copy); roadmap item 22, stage 2.
+
 ## Not yet exercised
 
 * A corpus over a monorepo whose per-package test trees share module

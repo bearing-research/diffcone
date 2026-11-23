@@ -37,6 +37,32 @@ def test_cache_files_are_written_as_json_dump_writes_them(tmp_path):
     assert path.read_text("utf-8") == "[1, 2]"
 
 
+def test_writers_sharing_their_states_are_stored_once_and_read_back_exactly(repo):
+    from diffcone.model import MUTATED_BY, Edge, EdgeKind
+
+    base = repo.commit({"pkg/__init__.py": "", "pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    index = repo.plan(base, base, []).head_index
+
+    def written(state: str, writer: str, detail: str = MUTATED_BY) -> Edge:
+        return Edge(state, writer, EdgeKind.REFERENCES, detail)
+
+    shared = {written(s, w) for s in ("pkg.A", "pkg.B", "pkg.C") for w in ("pkg.f", "pkg.g")}
+    own = {written("pkg.A", "pkg.h"), written("pkg.B", "pkg.h")}  # a set of its own
+    lone = {written("pkg.A", "pkg.k"), written("pkg.Z", "pkg.m")}  # one state each
+    other = {written("pkg.A", "pkg.f", "writes"), Edge("pkg.A", "pkg.f", EdgeKind.IMPORTS)}
+    index.edges |= shared | own | lone | other
+    stored = json.loads(json.dumps(index_to_dict(index)))
+    assert stored["writes_hubs"] == [[["pkg.A", "pkg.B", "pkg.C"], ["pkg.f", "pkg.g"]]]
+    kept = {tuple(e) for e in stored["edges"]}
+    assert not any(tuple(e) in kept for e in (_as_list(x) for x in shared))
+    assert all(tuple(_as_list(e)) in kept for e in own | lone | other)
+    assert index_from_dict(stored).edges == index.edges
+
+
+def _as_list(edge) -> list:
+    return [edge.source, edge.target, edge.kind, edge.detail]
+
+
 def test_index_round_trips_through_json(repo):
     base = repo.commit(
         {
@@ -137,7 +163,7 @@ def test_cli_cache_flags(repo, capsys, tmp_path):
     assert not (repo.path / ".diffcone").exists()  # default dir untouched by --no-cache
     assert main(args) == 0
     assert (repo.path / ".diffcone" / "cache" / "index").exists()
-    assert cache_mod.INDEX_FORMAT == 75
+    assert cache_mod.INDEX_FORMAT == 76
     assert len(cache_mod.INDEXER_FINGERPRINT) == 16
 
 

@@ -1917,25 +1917,40 @@ next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 
 ## 22. Plans that fit in memory: further (not planned)
 
-**Update (2026-11-22): a cold pandas plan is about 1 500 s and 23 GB**
-(3 219 s at `ece1df1`, 1 048 s at v0.4.0; evaluation.md, "Bisect and the
-next fixes"). Round 7's class batch doubled it by taking the `mutated_by`
-edges to 25 million, which is the rule as intended. This still blocks the
-fork trial (item 9): a 16 GB runner does not fit it. What is left,
-largest first, each change to leave the plan byte-identical on a pandas
-commit:
+**Update (2026-11-22): a cold pandas plan is about 1 100 s and 22 GB, a
+warm one (index cached) about 300 s and 14.6 GB** (3 219 s at `ece1df1`,
+1 048 s at v0.4.0; evaluation.md, "Bisect and the next fixes" and
+"Planning and the cache"). Round 7's class batch doubled it by taking the
+`mutated_by` edges to 25 million, which is the rule as intended. A cold
+plan still does not fit a 16 GB runner, so the fork trial (item 9) needs
+a cached index or stage 2 below. What is left, largest first, each change
+to leave the plan byte-identical on a pandas commit:
 
-* Planning and the report (about 500 s, the 23 GB peak): `selected_targets`
-  of a select-all pandas plan is about 1 GB of JSON; one shared list for
-  reasons every target has (the fallback) would make it small.
+* The report (about 70 s of a warm plan: 40 s encoding, 30 s writing):
+  `selected_targets` of a select-all pandas plan is about 1 GB of JSON;
+  one shared list for reasons every target has (the fallback) would make
+  it small, at the cost of a report schema change.
 * The 25 million `mutated_by` edges (about 250 s to make, most of the
-  2.5 GB cache entry): every class's edge for a write of `*` or a dunder
-  on an object of unknown class could be one edge from a pseudo-node
-  every class reaches, as `<log-callbacks>` is, if the explanations it
-  gives stay the same.
-* `cache.store` (about 100 s): reconsider whether a 2.5 GB whole-index
-  entry per commit is worth storing next to the module cache.
-
+  4.2 GB cache file a side). Measured on pandas `a22c4b5f3b`: 15 258
+  writers have 1 029 distinct sets of states, and 9 370 of them write
+  exactly the same 2 225 classes (a write of `*` or a dunder on an object
+  of unknown class, T25). One record per set shared by two or more
+  writers, the set's states and its writers, stands for 25.07M edges
+  with 0.70M. Two stages:
+  1. *Storage*: done (`INDEX_FORMAT` 76; the pandas file 4.2 GB to
+     175 MB, a warm plan 493 s to 310 s and 29.2 to 14.6 GB).
+  2. *Planning* (mechanism): the planner's graph keeps one pseudo-node per
+     shared set, as `<log-callbacks>` does, and every pass that reads a
+     `mutated_by` edge expands it inline (the search relaxes a hub's
+     states when it pops a writer, merged in `freeze`'s order and with the
+     revisions of a direct edge for the same pair, so explanations stay
+     the same; the caller effects add one `calls:` edge per hub instead of
+     one per pair). Trade-off: every rule reading an edge's ends must know
+     the hub (the search, `_add_caller_effects`, `_import_call_effects`,
+     `_runner_only_classes`, evidence planning, discovery's
+     `state_writing_roots`); a missed one under-selects. Done when a
+     pandas plan's report is byte-identical, the full suite passes, and
+     the graph and peak memory drop.
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit
 E37). Of what graph building holds, the largest parts left are the
 adjacency tuples (two per edge, 1.2 GB) and the 4.7M caller-effect edges
