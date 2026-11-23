@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any
+from typing import Any, TextIO
 
 from diffcone.model import (
     SnapshotInfo,
@@ -214,6 +214,25 @@ def to_dict(plan: Plan) -> dict[str, Any]:
 @without_cyclic_gc
 def to_json(plan: Plan, indent: int | None = 2) -> str:
     return json.dumps(to_dict(plan), indent=indent, sort_keys=False) + "\n"
+
+
+# How many encoded pieces write_json joins per write.
+_PIECES = 65536
+
+
+@without_cyclic_gc
+def write_json(plan: Plan, out: TextIO, indent: int | None = 2) -> None:
+    """``to_json(plan)`` written to ``out`` as it is encoded: ``json.dumps``
+    keeps every piece in a list before joining them (pandas: millions of
+    small strings, 1.7 GB at the end of a plan)."""
+    pieces: list[str] = []
+    for piece in json.JSONEncoder(indent=indent, sort_keys=False).iterencode(to_dict(plan)):
+        pieces.append(piece)
+        if len(pieces) >= _PIECES:
+            out.write("".join(pieces))
+            pieces.clear()
+    pieces.append("\n")
+    out.write("".join(pieces))
 
 
 def _format_path(reason: Reason) -> str:

@@ -52,6 +52,27 @@ def test_the_console_script_writes_the_whole_plan_and_its_exit_code(repo):
     assert done.returncode == 2
 
 
+def test_plan_json_is_written_as_it_is_encoded(repo, tmp_path, monkeypatch):
+    import diffcone.cli as cli_module
+    import diffcone.report as report_module
+
+    base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
+    head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})
+    manifest = repo.write_manifest(TARGETS)
+    plans = []
+
+    def write_json(plan, out):
+        plans.append(plan)
+        report_module.write_json(plan, out)
+
+    monkeypatch.setattr(cli_module, "write_json", write_json)
+    monkeypatch.setattr(report_module, "_PIECES", 3)  # many writes
+    out = tmp_path / "plan.json"
+    args = ["plan", "--repo", str(repo.path), "--base", base, "--head", head]
+    assert main([*args, "--targets", str(manifest), "--format", "json", "-o", str(out)]) == 0
+    assert out.read_text("utf-8") == report_module.to_json(plans[0])
+
+
 def test_plan_json_output(repo, capsys):
     base = repo.commit({"pkg/ops.py": OPS, "tests/test_ops.py": TEST_OPS})
     head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a")})

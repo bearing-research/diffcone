@@ -43,7 +43,9 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
+from typing import TextIO
 
 from diffcone import check as checking
 from diffcone import ci_report
@@ -86,7 +88,7 @@ from diffcone.execution import (
 )
 from diffcone.manifest import ManifestError, load_manifest, manifest_to_dict
 from diffcone.planner import _index_snapshot, plan
-from diffcone.report import snapshot_to_dict, to_json, to_text
+from diffcone.report import snapshot_to_dict, to_json, to_text, write_json
 from diffcone.snapshot import GitError, read_snapshot, resolve_commit
 
 
@@ -555,14 +557,21 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _write(text: str, output: str | None) -> int:
+    return _write_with(lambda out: out.write(text), output)
+
+
+def _write_with(write: Callable[[TextIO], object], output: str | None) -> int:
+    """``write`` into ``output`` (stdout without one), as Path.write_text
+    would write it."""
     if output:
         try:
-            Path(output).write_text(text, "utf-8")
+            with open(output, "w", encoding="utf-8") as out:
+                write(out)
         except OSError as exc:
             print(f"diffcone: error: cannot write {output}: {exc}", file=sys.stderr)
             return 2
     else:
-        sys.stdout.write(text)
+        write(sys.stdout)
     return 0
 
 
@@ -979,8 +988,10 @@ def _main(argv: list[str] | None) -> int:
     try:
         if args.command == "plan":
             result = build_plan(load_evidence())
-            text = to_json(result) if args.format == "json" else to_text(result)
-            code = _write(text, args.output)
+            if args.format == "json":
+                code = _write_with(lambda out: write_json(result, out), args.output)
+            else:
+                code = _write(to_text(result), args.output)
             if code:
                 return code
             if result.incomplete_discovery:

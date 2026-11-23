@@ -6,6 +6,7 @@ layer a subclass of the one below: state, symbols (pass 1), resolver
 from __future__ import annotations
 
 import ast
+import gc
 import json
 from collections import defaultdict
 from collections.abc import Callable
@@ -2285,5 +2286,19 @@ def _may_name(installed: str, read: str) -> bool:
     return overlap(installed, read)
 
 
+# The container objects allocated, net, since the last collection above which
+# build_index collects (gc.get_count()[0] grows unchecked while the collector
+# is suspended): a large repository's indexer, not a test fixture's.
+_COLLECT_AFTER = 1_000_000
+
+
 def build_index(snapshot: Snapshot, module_cache=None) -> SourceIndex:
-    return Indexer(snapshot, module_cache=module_cache).build()
+    index = Indexer(snapshot, module_cache=module_cache).build()
+    # The indexer's working state is held in reference cycles (scopes, the
+    # records holding the indexer), and planning suspends the cyclic
+    # collector (planner.without_cyclic_gc): without a collection here all
+    # of it stays alive through the other revision's build and planning
+    # (pandas: 6 GB of a 16.6 GB peak, the any-class write pairs among it).
+    if not gc.isenabled() and gc.get_count()[0] > _COLLECT_AFTER:
+        gc.collect()
+    return index

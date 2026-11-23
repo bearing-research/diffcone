@@ -2946,9 +2946,20 @@ report byte-identical to the cold reference:
   and 13.7 GB to 134 s and 8.5 GB. Every scenario is also planned with
   every writer in a hub at both levels (`EDGE_HUB_MIN` and `_HUB_MIN` 1).
 
-A cold plan's peak is now the indexer's write phases (the 25 million
-pairs before `compact`) and planning; a warm plan fits a 16 GB runner
-with room to spare.
+* Planning suspends the cyclic collector (`without_cyclic_gc`), index
+  builds included, and the indexer's working state is held in reference
+  cycles: after the base build it all stayed alive (7.5 GB on pandas,
+  the 25 million any-class write pairs among it) through the head build
+  and planning. `build_index` collects once after a build that allocated
+  more than a million objects (`_COLLECT_AFTER`, from `gc.get_count`), and
+  `diffcone plan --format json` writes the report as it is encoded
+  (`report.write_json`; `json.dumps` held the pieces of the 989 MB report
+  in a list). Back to back on a pod against `fbd6f52`, reports identical:
+  cold 1 145 s and 17.9 GB to 1 200 s and 12.2 GB (the two collections
+  about 55 s), warm 149 s and 8.5 GB to 146 s and 5.5 GB.
+
+A cold plan's peak is now the head build on what the allocator kept of
+the base build's memory; both fit a 16 GB runner.
 
 ## Not yet exercised
 

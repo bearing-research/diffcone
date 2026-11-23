@@ -1917,8 +1917,8 @@ next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 
 ## 22. Plans that fit in memory: further (not planned)
 
-**Update (2026-11-23): a cold pandas plan is about 1 100 s and 16.6 GB, a
-warm one (index cached) about 130 s and 8.5 GB** (3 219 s at `ece1df1`,
+**Update (2026-11-23): a cold pandas plan is about 1 200 s and 12.2 GB, a
+warm one (index cached) about 150 s and 5.5 GB** (3 219 s at `ece1df1`,
 1 048 s at v0.4.0; evaluation.md, "Bisect and the next fixes" and
 "Planning and the cache"). Round 7's class batch doubled it by taking the
 `mutated_by` edges to 25 million, which is the rule as intended. A cold
@@ -1942,7 +1942,9 @@ to leave the plan byte-identical on a pandas commit:
   2. *Planning*: done (`_Graph.hubs`; warm 317 s to 296 s and 14.6 to
      13.6 GB, cold 22.1 to 20.5 GB).
   3. *Indexes*: done (`model.EdgeSet`, `INDEX_FORMAT` 77; warm 296 s to
-     134 s and 13.7 to 8.5 GB, cold 22.9 to 16.6 GB). Next for a cold
+     134 s and 13.7 to 8.5 GB, cold 22.9 to 16.6 GB). Then a collection
+     after each large build and a streamed report: cold 17.9 to 12.2 GB,
+     warm 8.5 to 5.5 GB. Next for a cold
      plan would be the indexer never making the pairs: its write phases
      (`_instance_writes`, the any-class writes) adding one hub per set
      of states instead of an edge per pair, before `compact`.
