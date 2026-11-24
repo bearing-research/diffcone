@@ -1528,6 +1528,42 @@ excluding `tests/data/**` and one body edit (`nodes.is_empty_tuple`):
 
 black can now join the evidence corpus.
 
+## strata's recorder: late thread work and fixture instances (2026-11-24)
+
+Every strata pull request plan had selected every test. Recorded at
+62dc0cd on a 32-core pod (`-n logical --dist loadscope`, the unit job's
+arguments) and replanned for the 21 unit-ubuntu-py3.13 pull request plans
+of that morning:
+
+* the hook phase was nondeterministic: one recording held the cache fetch
+  path (`CachedFetcher.fetch`, `DiskCache.put`, `PyArrowFetcher.fetch`),
+  run by executor threads after their test's window closed, the other only
+  the conftest hooks (E34). Since 41d9c5a (late thread work is its test's)
+  three recordings hold the same five conftest hooks;
+* a warm pool worker one test left running was credited to the next
+  module's instance of strata's autouse module fixture as it opened, and
+  the instances shared one record, which the fold gives every user in every
+  worker: all 8 285 tests were always selected (four recordings of four
+  that afternoon, the old recorder included; none of the morning's two).
+  Since 378b2bf (a record per instance) two recordings flag 754 and 597.
+* with both, one plan of the 21 selects 847 of 8 291 (45224147974, a
+  change no record's chain reaches); the other 20 still select everything,
+  through the evidence cascade into code run outside every test
+  (`pytest_hook_changed`: chains of import-time escalations, "top-level
+  code of X reads top-level code of Y", ending in a hook or collection) or
+  an edit of `.github/workflows/*.yml` (`unobserved_file_changed`).
+
+**Evidence corpus** (8 suites, recorded and replayed with 62edad0, the
+recorder before both, and with 378b2bf, at the clones' HEADs: flask
+49943b5a94, jinja 5ef70112a1, marshmallow fa913ca606, pluggy a0e47471d7,
+typer 2517edde5a, boltons d31d821d56, arrow 2224255c4a, more-itertools
+aa9977698a): 0 misses, and every repository selects the same as the
+baseline (arrow 2 852 of 4 170, boltons 2 659 of 2 659, flask 1 885 of
+2 232, jinja 2 708 of 4 062, marshmallow 1 942 of 3 879, more-itertools
+1 398 of 4 628, pluggy 1 095 of 1 095, typer 6 006 of 6 006). None of the
+eight hands work to a thread that finishes late or sets up a conftest's
+module fixture beside a process left running.
+
 ## Before 0.6.0: audit round 8 (2026-11-16)
 
 Measured on v0.5.0 (3256a04), round 7's end (bdcc8a0, which plans as
