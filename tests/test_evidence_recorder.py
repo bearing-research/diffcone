@@ -478,6 +478,101 @@ def test_a_thread_left_running_does_not_make_its_test_always_selected(repo):
     assert chosen == {"tests/test_u.py::test_u"}
 
 
+# Work a test hands to another thread that runs after its window closed, as a
+# slow executor thread finishes after its test on a loaded machine: the work
+# waits a little, and the conftest's outermost wrapper waits for it between
+# tests (the pool's next item, the named threads), reading nothing a test
+# writes. ``compute`` runs there, writing what a later test reads.
+LATE = (
+    "import time\nfrom concurrent.futures import ThreadPoolExecutor\n\n"
+    "POOL = ThreadPoolExecutor(1)\n"
+    "POOL.submit(int).result()  # its thread starts at import, outside every test\n"
+    "STORE = {{}}\n\n\n"
+    "def work(key):\n    time.sleep(0.2)\n    STORE[key] = compute()\n\n\n"
+    "def compute():\n    return {}\n"
+)
+LATE_WAIT = (
+    "import threading\n\nimport pytest\n\nfrom lib import late\n\n\n"
+    "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+    "def pytest_runtest_protocol(item, nextitem):\n"
+    "    try:\n        return (yield)\n    finally:\n"
+    "        {}\n"
+    "        for t in threading.enumerate():\n"
+    "            if t.name.startswith('late'):\n                t.join()\n"
+)
+LATE_FILES = {
+    "lib/__init__.py": "",
+    "lib/late.py": LATE.format(1),
+    "lib/other.py": OTHER,
+    "tests/__init__.py": "",
+    "tests/conftest.py": LATE_WAIT.format("late.POOL.submit(int).result()"),
+    # The pool's thread started at import: the work item, not the thread,
+    # belongs to the test.
+    "tests/test_pool.py": (
+        "from lib import late\n\n\ndef test_submit():\n    late.POOL.submit(late.work, 'pool')\n"
+    ),
+    "tests/test_thread.py": (
+        "import threading\n\nfrom lib import late\n\n\n"
+        "def test_thread():\n"
+        "    threading.Thread(target=late.work, args=('thread',), name='late-t').start()\n"
+    ),
+    "tests/test_x.py": (
+        "import threading\n\nimport pytest\n\nfrom lib import late\n\n\n"
+        "@pytest.fixture(scope='module')\ndef warm():\n"
+        "    threading.Thread(target=late.work, args=('fixture',), name='late-f').start()\n\n\n"
+        "def test_warm(warm):\n    pass\n"
+    ),
+    "tests/test_y.py": "from lib.other import g\n\n\ndef test_other():\n    g()\n",
+    "tests/test_z.py": (
+        "from lib import late\n\n\n"
+        "def test_reader():\n"
+        "    assert late.STORE == {'pool': 1, 'thread': 1, 'fixture': 1}\n"
+    ),
+}
+
+
+@needs_monitoring
+def test_e34_work_a_test_hands_to_a_thread_is_its_own_after_it_ends(repo):
+    """What a test's thread, its executor work item or its shared fixture's
+    thread runs after the test's window closed is credited to that test (or
+    fixture), as it is when the thread is quick enough to finish inside the
+    window, not to the hook phase, which would select every test. A change
+    to it still selects the test reading what it wrote."""
+    base = repo.commit({**IGNORE, **LATE_FILES})
+    evidence = repo.collect()
+    assert "lib.late.compute" not in evidence.hook_phase
+    for test in (
+        "tests/test_pool.py::test_submit",
+        "tests/test_thread.py::test_thread",
+        "tests/test_x.py::test_warm",
+    ):
+        assert "lib.late.compute" in executed(evidence, test)
+    assert "lib.late.compute" not in executed(evidence, "tests/test_y.py::test_other")
+    head = repo.commit({"lib/late.py": LATE.format(2)})
+    chosen = selected(_plan(repo, base, head, evidence))
+    assert chosen == {
+        "tests/test_pool.py::test_submit",
+        "tests/test_thread.py::test_thread",
+        "tests/test_x.py::test_warm",
+        "tests/test_z.py::test_reader",
+    }
+
+
+@needs_monitoring
+def test_e34_work_handed_off_outside_every_test_stays_in_the_hook_phase(repo):
+    """Work a hook hands to an executor (whose thread started at import) is
+    the hook phase's, whichever thread runs it: no test's window was open."""
+    repo.commit(
+        {
+            **IGNORE,
+            **LATE_FILES,
+            "tests/conftest.py": LATE_WAIT.format("late.POOL.submit(late.compute).result()"),
+        }
+    )
+    evidence = repo.collect()
+    assert "lib.late.compute" in evidence.hook_phase
+
+
 # --------------------------------------------------------------------------- files a test reads
 
 

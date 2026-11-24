@@ -23,6 +23,30 @@ selection rules.
   pyarrow test into plans that select none (another binding's native code,
   another component's workflow or packaging); no plan selects more.
 
+### Execution evidence
+
+- A recording is used only for a run of the pytest command and arguments
+  it was made with. Before, changing a job's pytest arguments made every
+  pull request compare tests discovered with the new arguments against a
+  recording collected with the old ones: run refused, because the
+  recording had collected tests that were not targets. Now `run`,
+  `validate`, `corpus`, and `plan` given `--command`, skip a recording
+  made with other arguments (`--evidence auto`) or refuse it (a path), and
+  exit `2` saying why. The run and record actions then plan without it,
+  as for a recording made with other source roots. Options that only
+  change what pytest reports or when it stops may differ (`-q`, `-v`,
+  `-x`, `--maxfail`, `--tb`, `-r`, `--color`, `--durations`,
+  `--junitxml`).
+- Code that a test's thread runs after the test ended is now recorded as
+  that test's, as it is when the thread finishes in time. This covers a
+  thread the test started, work it handed to a `ThreadPoolExecutor`, and
+  `asyncio`'s `run_in_executor` or `to_thread`. Before, a recording put
+  such code among the code run outside every test, as for a session hook,
+  so a change to it selected every test. On a loaded machine that
+  depended on timing: one of two recordings of strata at one commit put
+  its cache fetch path there. Work handed off outside every test, such as
+  at import or by a hook, still counts as run outside every test.
+
 ### Performance
 
 - A plan of pandas takes about a third of the time (a commit that selects
@@ -72,21 +96,6 @@ selection rules.
   roots is at another commit, or has edits, than the plan analysed
   (`--allow-mismatched-worktree` to run anyway). Before, only submodules
   under the roots counted.
-
-### Execution evidence
-
-- A recording is used only for a run of the pytest command and arguments
-  it was made with. Before, changing a job's pytest arguments made every
-  pull request compare tests discovered with the new arguments against a
-  recording collected with the old ones: run refused, because the
-  recording had collected tests that were not targets. Now `run`,
-  `validate`, `corpus`, and `plan` given `--command`, skip a recording
-  made with other arguments (`--evidence auto`) or refuse it (a path), and
-  exit `2` saying why. The run and record actions then plan without it,
-  as for a recording made with other source roots. Options that only
-  change what pytest reports or when it stops may differ (`-q`, `-v`,
-  `-x`, `--maxfail`, `--tb`, `-r`, `--color`, `--durations`,
-  `--junitxml`).
 
 ## [0.6.0] - 2026-11-16
 

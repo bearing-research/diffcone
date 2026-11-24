@@ -1664,14 +1664,24 @@ getattr on a library module sees everything. Fix while there (skip `>`
 sources); it changes no plan here, since `register_default_adapters`
 keeps those sites live through a real table.
 
-*Work of other threads outside every test window (E34).* The recorder
-puts code any thread runs while no window is open in the hook phase:
-strata's in-process servers finishing a response, or evicting, after a
-test's window closed. Which code lands there depends on timing (in CI
-`DiskCache.put`, locally not). Counting it as hook code is sound, since a
-thread a test left running can leave state for later tests, but coarse:
-any change to such code selects everything. Not planned until the
-nightly data shows how often it decides a plan.
+*Work of other threads outside every test window (E34, shipped
+2026-11-24).* The recorder put code any thread ran while no window was
+open in the hook phase: strata's executor threads finishing a fetch after
+their test's window closed. Two recordings of one commit on one machine
+(2026-11-24) differed by it: one had the cache fetch path
+(`CachedFetcher.fetch`, `DiskCache.put`, `PyArrowFetcher.fetch`) in the
+hook phase, which selects everything for any change to it, the other the
+conftest hooks only. Now work a window hands to another thread (a thread
+started, a `ThreadPoolExecutor` work item) is that window's when it runs
+late, as it is when the thread finishes in time (evidence design,
+"threads"). This narrows selection, and it is sound to the same degree
+as a quick thread's run: code run between windows can reach a later test
+only through what it leaves behind, which planning follows from any
+record as it does for code run inside one (the stored-results rule and
+the process-state catalogue), and the scenario
+`test_e34_work_a_test_hands_to_a_thread_is_its_own_after_it_ends` checks
+that a later test reading what the late work wrote is still selected.
+Work handed off where no window was open stays in the hook phase.
 
 *A class a writer writes into, read as its top-level code (2026-11-14).*
 Every strata pull request since 2026-11-03 selected every test in every

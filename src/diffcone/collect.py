@@ -63,7 +63,12 @@ What it records, per test (parameter cases folded into their function, as
 * whether it ran code compiled from text no file of the checkout holds (a
   doctest's examples, a ``timeit`` statement; ``child.text_code``). The
   project code other threads are in the middle of when a window opens is
-  credited to it, as those threads run beside its test;
+  credited to it, as those threads run beside its test. Work it handed to
+  another thread (a thread started, a ``ThreadPoolExecutor`` work item
+  submitted, ``asyncio``'s ``run_in_executor``) that runs after the window
+  closed is credited to it too, as when the thread finishes in time
+  (``_owner``, ``late``); work handed off outside every window stays in
+  that phase;
 * how many of its cases the process collected (``pytest_itemcollected``,
   before any plugin deselects) and how many it ran, each with a sum of the
   cases' node id hashes (``cases``): the fold keeps no record of a test
@@ -400,8 +405,93 @@ def _window() -> dict:
 import_window = _window()
 
 
-def _windows():
-    return active if active else (import_window,)
+# Work handed to another thread while windows were open (a thread started,
+# an executor's work item submitted) that runs after they closed: the windows
+# it belongs to, per work item running on this thread (``_item.owner``) and
+# per thread (``_THREAD_OWNER``, set as it starts). Outside every window what
+# it runs is credited to them (``_open``): a shared fixture's window itself,
+# and a test's through ``late``, its record of what ran after its window
+# closed, written as another record of the test.
+_item = threading.local()
+_THREAD_OWNER = "_diffcone_owner"
+late: dict[str, dict] = {}
+
+
+def _owner() -> tuple | None:
+    """The windows work handed to another thread now belongs to: the open
+    ones, or outside every window, those of the work this thread runs for
+    (None: no test's, such as work started at import or by a hook)."""
+    if active:
+        return tuple(active)
+    return _thread_owner()
+
+
+def _thread_owner() -> tuple | None:
+    owner = getattr(_item, "owner", None)
+    if owner is None:
+        # Not ``current_thread()``: for a thread ``threading`` did not start
+        # it makes and registers a dummy object.
+        thread = getattr(threading, "_active", {}).get(threading.get_ident())
+        owner = getattr(thread, _THREAD_OWNER, None)
+    return owner
+
+
+def _open() -> list:
+    """The windows what runs now is credited to: the open ones; outside every
+    window, those of the work this thread runs for, a test's by its late
+    window (empty: none, the import or hook phase)."""
+    if active:
+        return active
+    owner = _thread_owner()
+    if owner is None:
+        return []
+    return [late.setdefault(w["test"], _window()) if "test" in w else w for w in owner]
+
+
+def _run_for(owner: tuple, fn, /, *args, **kwargs):
+    """Run an executor's work item as work of ``owner``'s windows."""
+    saved = getattr(_item, "owner", None)
+    _item.owner = owner
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _item.owner = saved
+
+
+def _install_thread_owners() -> None:
+    """Note the windows each thread and each ``ThreadPoolExecutor`` work item
+    is started for (``asyncio``'s ``run_in_executor`` and ``to_thread``
+    submit to one): a thread finishing after its test is still the test's.
+    An ``InterpreterPoolExecutor``'s work runs in another interpreter, which
+    nothing records (``unfollowed``), and is left alone."""
+    start = threading.Thread.start
+
+    def started(self, *args, **kwargs):
+        try:
+            owner = _owner()
+            if owner is not None:
+                setattr(self, _THREAD_OWNER, owner)
+        except Exception as exc:
+            _error("thread", exc)
+        return start(self, *args, **kwargs)
+
+    threading.Thread.start = started
+    from concurrent.futures import thread as futures_thread
+
+    submit = futures_thread.ThreadPoolExecutor.submit
+
+    def submitted(self, fn, /, *args, **kwargs):
+        try:
+            owner = _owner()
+            interpreters = sys.modules.get("concurrent.futures.interpreter")
+            pool = getattr(interpreters, "InterpreterPoolExecutor", None)
+            if owner is not None and not (pool is not None and isinstance(self, pool)):
+                return submit(self, _run_for, owner, fn, *args, **kwargs)
+        except Exception as exc:
+            _error("thread", exc)
+        return submit(self, fn, *args, **kwargs)
+
+    futures_thread.ThreadPoolExecutor.submit = submitted
 
 
 def _merge(into: dict, window: dict) -> None:
@@ -430,9 +520,10 @@ def _credit_rows(rows: list, paths: list) -> None:
         if i is None:
             i = codes[row] = len(table)
             table.append(list(row))
-        for w in _windows():
+        opened = _open()
+        for w in opened or (import_window,):
             w["codes"].add(i)
-        if not active:
+        if not opened:
             if importing:
                 import_by.setdefault(i, set()).add(importing[-1])
             else:
@@ -480,10 +571,11 @@ def _flag(flag: int = FLAG_SUBPROCESS, cause: str | Callable[[], str] = "") -> N
     or the store."""
     global flags_raised
     flags_raised += 1
-    windows = _windows()
+    opened = _open()
+    windows = opened or (import_window,)
     for w in windows:
         w["flags"] |= flag
-    if not active:
+    if not opened:
         import_flagged.add(importing[-1] if importing else "")
     if flag != FLAG_SUBPROCESS:
         return
@@ -635,9 +727,10 @@ def _on_start(code, offset):
         if rel is None:
             return mon.DISABLE
         i = _code_index(code, rel)
-        for w in _windows():
+        opened = _open()
+        for w in opened or (import_window,):
             w["codes"].add(i)
-        if not active and not importing and code.co_name != "<module>":
+        if not opened and not importing and code.co_name != "<module>":
             _outside(i)
         if code.co_name == "<module>":
             # Credit what this import runs to this module: watch for its end,
@@ -660,9 +753,10 @@ def _on_resume(code, offset):
         if rel is None:
             return mon.DISABLE
         i = _code_index(code, rel)
-        for w in _windows():
+        opened = _open()
+        for w in opened or (import_window,):
             w["codes"].add(i)
-        if not active and not importing and collecting and collecting[-1]:
+        if not opened and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as exc:
         _error("PY_RESUME", exc)
@@ -679,9 +773,10 @@ def _on_throw(code, offset, exc):
             if rel is None:
                 return
             i = _code_index(code, rel)
-        for w in _windows():
+        opened = _open()
+        for w in opened or (import_window,):
             w["codes"].add(i)
-        if not active and not importing and collecting and collecting[-1]:
+        if not opened and not importing and collecting and collecting[-1]:
             collect_by.setdefault(i, set()).add(collecting[-1])
     except Exception as err:
         _error("PY_THROW", err)
@@ -804,7 +899,8 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
     actor = _actor()
     if actor in ("import", "tracer"):
         return
-    if own_source and not active and importing and importing[-1] == rel:
+    opened = _open()
+    if own_source and not opened and importing and importing[-1] == rel:
         listing = True
     spellings = {rel}
     real = _relative(_real(absolute))
@@ -812,13 +908,13 @@ def _touch(path, listing: bool = False, own_source: bool = False, scanned: bool 
         spellings.add(real)
     if scanned:
         spellings |= {s + child.SCANNED for s in spellings}
-    if active:
+    if opened:
         # Inside a test anything counts: a library or plugin reading a file
         # for the test (a data-directory fixture copying files) included.
         # Lines linecache reads are recorded as shown (child.SHOWN).
         if not listing and _through_linecache():
             spellings = {s + child.SHOWN for s in spellings}
-        for w in active:
+        for w in opened:
             w["dirs" if listing else "paths"].update(spellings)
     elif actor in ("project", "library"):
         # Outside every test: project code at import (a parametrize list
@@ -1043,8 +1139,9 @@ def _spawned(pid: int, start: int, argv: list[str] | None, inert: bool = False) 
     (``python -I``) is taken at its word."""
     try:
         spawn = (os.getpid(), pid, start, tuple(argv) if argv is not None else None, inert)
-        if active:
-            for w in active:
+        opened = _open()
+        if opened:
+            for w in opened:
                 w["spawns"].add(spawn)
         else:
             import_spawns.append((spawn, importing[-1] if importing else ""))
@@ -1443,6 +1540,7 @@ def _start() -> None:
     # functools.cache goes through it too; a deliberate patch of the stdlib.
     functools.lru_cache = _tracking_lru_cache  # ty: ignore[invalid-assignment]
     _flag_multiprocessing_spawns()
+    _install_thread_owners()
     recording = True
 
 
@@ -1651,6 +1749,7 @@ def pytest_runtest_protocol(item, nextitem):
             pass
     global _test_window
     mine = _test_window = _window()
+    mine["test"] = fold_nodeid(item.nodeid)  # what it runs late goes to late[...]
     try:
         _unaccounted_children()  # started outside every window
     except Exception as exc:
@@ -1749,6 +1848,8 @@ def _finish():
         mon.free_tool_id(TOOL)
     try:
         if writer is not None:
+            for test_id, window in sorted(late.items()):
+                writer.add(test_id, window)
             writer.close()
     except Exception as exc:
         _error("close", exc)
