@@ -65,6 +65,7 @@ from diffcone.evidence import (
     UNINDEXED_MODULE,
     Evidence,
     EvidenceError,
+    check_run,
     environment_differences,
     find_store,
     list_stores,
@@ -77,6 +78,7 @@ from diffcone.execution import (
     corpus_to_text,
     corpus_validation,
     join_command,
+    recording_command,
     run_selected,
     run_with_evidence,
     runs_unknown,
@@ -978,12 +980,29 @@ def _main(argv: list[str] | None) -> int:
             evidence=evidence,
         )
 
+    def recorded_run() -> str | None:
+        """The command line a recording must have been made with to describe
+        the run this plan is for (evidence.other_run): the pytest command
+        and arguments run and validate run; a plan's, when it names its
+        command (without --command a plan says nothing of how the tests
+        will run)."""
+        if args.command == "run" and args.runner != "pytest":
+            return None
+        if args.command == "plan" and args.runner_command is None:
+            return None
+        return recording_command(args.runner_command, getattr(args, "runner_args", None))
+
     def load_evidence():
         if not getattr(args, "evidence", None):
             return None
         head = args.head if args.head not in ("WORKTREE", "INDEX") else "HEAD"
         reference = resolve_commit(Path(args.repo), head)
-        return load_store(find_store(Path(args.repo), args.evidence, evidence_roots(), reference))
+        wanted = recorded_run()
+        found = load_store(
+            find_store(Path(args.repo), args.evidence, evidence_roots(), reference, wanted)
+        )
+        check_run(found, wanted)
+        return found
 
     try:
         if args.command == "plan":
@@ -1220,12 +1239,16 @@ def _main(argv: list[str] | None) -> int:
             if not args.targets and not args.discover:
                 parser.error("corpus requires --targets and/or --discover")
             manifest()  # read before any pair: a bad manifest is no pair's error
+            # Each pair's selection runs the command without arguments.
+            wanted = recording_command(args.runner_command, None)
             fixed = load_store(Path(args.evidence)) if args.evidence not in (None, "auto") else None
+            if fixed is not None:
+                check_run(fixed, wanted)
 
             def make_plan(base: str, head: str):
                 evidence = fixed
                 if args.evidence == "auto":
-                    found = find_store(Path(args.repo), "auto", evidence_roots(), head)
+                    found = find_store(Path(args.repo), "auto", evidence_roots(), head, wanted)
                     evidence = load_store(found)
                 return plan(
                     Path(args.repo),

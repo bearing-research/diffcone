@@ -466,6 +466,57 @@ def test_evidence_at_a_commit_the_checkout_lacks_says_what_to_fetch(repo):
 
 
 @needs_monitoring
+def test_a_recording_made_with_other_pytest_arguments_is_not_used(repo, capsys):
+    """strata: a change to a job's pytest arguments made every pull
+    request's plan compare discovery under the new ones with a recording
+    collected under the old (``collected_not_target``, exit 3, which run
+    refuses). A recording describes a run of its own command line: a plan
+    or run with other arguments uses none (exit 2: the run action then
+    plans statically), and report and stop options may differ."""
+    ev, head = _edited_add(repo)
+    command = f"{sys.executable} -m pytest"
+    store = str(next((repo.path / ".diffcone" / "evidence").glob("*.sqlite")))
+    plan = ["plan", "--repo", str(repo.path), "--base", ev.commit, "--head", head]
+    plan += ["--discover", "pytest", "--no-cache"]
+
+    def planned(*args: str) -> tuple[int, str]:
+        code = main([*plan, *args])
+        out, err = capsys.readouterr()
+        return code, out + err
+
+    def selected_from_evidence(said: str) -> set[str]:
+        report = json.loads(said[: said.rindex("}") + 1])
+        assert report["analysis"]["evidence"]["commit"] == ev.commit
+        return {t["runner_id"] for t in report["selected_targets"]}
+
+    other = ["--command", command, "--evidence"]
+    code, said = planned(*other, "auto", "--", "-k", "add")
+    assert code == 2
+    assert "made with other pytest arguments (e.g. " in said
+    code, said = planned(*other, store, "--", "-k", "add")
+    assert code == 2
+    assert "is not usable: it was made with other pytest arguments" in said
+    assert "now:" in said and "-k add" in said
+    code, said = planned(*other, "auto", "--command", f"{command} -p no:cacheprovider")
+    assert code == 2  # the command's own arguments count as well
+    for same in (
+        [],
+        ["--", "-q", "-x", "--junitxml=out.xml", "--tb", "short", "-rfE", "--maxfail=3"],
+    ):
+        code, said = planned(*other, "auto", *same)
+        assert code == 0, said
+        assert selected_from_evidence(said) == {T + "test_add", T + "test_subprocess"}
+    # A plan that names no command says nothing of the run: as before.
+    code, said = planned("--evidence", "auto", "--", "-k", "add")
+    assert code == 0, said
+    assert selected_from_evidence(said) == {T + "test_add", T + "test_subprocess"}
+    run = ["run", "--repo", str(repo.path), "--base", ev.commit, "--head", head, "--no-cache"]
+    run += ["--discover", "pytest", "--command", command, "--evidence", "auto"]
+    assert main([*run, "--", "-k", "add"]) == 2
+    assert "made with other pytest arguments" in capsys.readouterr().err
+
+
+@needs_monitoring
 def test_validate_with_evidence(repo):
     from diffcone.execution import validate_pytest
 
@@ -652,8 +703,8 @@ def test_run_collect_refusals(repo, capsys):
     ev = repo.collect()
     head = repo.commit({"pkg/ops.py": OPS.replace("return a + b", "return b + a")})
     # Other pytest arguments could deselect cases the old record covered.
-    assert _run_collect(repo, ev.commit, head, "--", "-q") == 2
-    assert "differ from the ones the recording was made with" in capsys.readouterr().err
+    assert _run_collect(repo, ev.commit, head, "--", "-k", "add") == 2
+    assert "made with other pytest arguments" in capsys.readouterr().err
     (repo.path / "pkg" / "ops.py").write_text(OPS + "\n# edited\n", "utf-8")
     assert _run_collect(repo, ev.commit, "WORKTREE") == 2
     assert "a recording describes a commit" in capsys.readouterr().err
@@ -848,7 +899,7 @@ def test_r1_an_empty_evidence_selection_still_checks_the_environment(repo, monke
     apply here: the static plan runs, and test_x fails."""
     base = repo.commit(CALC)
     monkeypatch.setenv("FLAG", "off")
-    repo.collect(env_variables=["FLAG"])
+    repo.collect(command=PYTEST, env_variables=["FLAG"])  # the run's command
     # A different size: a same-size edit within the second of the recording
     # run would reuse the stale .pyc (Python checks mtime and size).
     ops = CALC["calc/ops.py"].replace("return 1", "return 1 + 1")

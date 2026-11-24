@@ -52,6 +52,7 @@ from diffcone.evidence import (
     EvidenceError,
     advance,
     fold,
+    other_run,
     write_store,
 )
 from diffcone.manifest import Target
@@ -2088,6 +2089,12 @@ def _collect_argv(command: str | None, extra: list[str] | None) -> list[str]:
     return pytest_argv(command, "-p", PLUGIN, *(extra or []), NO_MAXFAIL)
 
 
+def recording_command(command: str | None, extra: list[str] | None) -> str:
+    """The command line a recording of a run of ``command`` with ``extra``
+    stores (``Evidence.command``), to compare with one (evidence.other_run)."""
+    return shlex.join(_collect_argv(command, extra))
+
+
 def advance_refusal(
     repo: Path, plan: Plan, evidence: Evidence, command: str | None, extra: list[str] | None
 ) -> str | None:
@@ -2108,8 +2115,10 @@ def advance_refusal(
             f"the plan's source roots {plan.source_roots} differ from the recording's "
             f"{evidence.source_roots}"
         )
-    wanted = shlex.join(_collect_argv(command, extra))
-    if wanted != evidence.command:
+    # run uses no recording made with other arguments (evidence.check_run);
+    # checked here too, as this is what makes the fresh records comparable.
+    wanted = recording_command(command, extra)
+    if other_run(evidence.command, wanted):
         return (
             "the pytest command and arguments differ from the ones the recording was "
             f"made with, so a new record could cover other cases:\n  recording: "

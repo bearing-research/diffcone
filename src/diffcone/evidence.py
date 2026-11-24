@@ -18,6 +18,7 @@ import contextlib
 import glob
 import json
 import os
+import shlex
 import sqlite3
 import struct
 import subprocess
@@ -1173,14 +1174,67 @@ class StoreInfo:
     python: str
     advanced_from: str | None = None
     full_commit: str | None = None
+    command: str = ""
 
 
-def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -> Path:
+# pytest options that change only what pytest reports or when it stops,
+# never what a test that runs executes: a recording made with other values
+# of them recorded the same run (the record action writes its JUnit XML in
+# one place and run in another; a run adds -q or -x). Taking a value, as
+# ``--opt=value`` or ``--opt value`` (``-r`` also as ``-rfE``); a flag on
+# its own word. Any other difference, a short flag combined with another
+# included (``-qx``), is another run.
+_REPORT_VALUED = ("--junitxml", "--junit-xml", "--tb", "--color", "--durations", "--maxfail", "-r")
+_REPORT_FLAGS = frozenset(
+    {"-q", "-qq", "--quiet", "-v", "-vv", "-vvv", "--verbose", "-x", "--exitfirst"}
+)
+
+
+def _run_words(command: str) -> list[str]:
+    """A recorded command line (``Evidence.command``, collect's whole pytest
+    argv) as compared with another: its words, without report options."""
+    words: list[str] = []
+    it = iter(shlex.split(command))
+    for word in it:
+        if word in _REPORT_VALUED:
+            next(it, None)  # and its value
+        elif word in _REPORT_FLAGS:
+            continue
+        elif word.startswith(tuple(o + "=" for o in _REPORT_VALUED if o.startswith("--"))):
+            continue
+        elif word.startswith("-r") and not word.startswith("--"):
+            continue  # -rfE
+        else:
+            words.append(word)
+    return words
+
+
+def other_run(recorded: str, wanted: str | None) -> str | None:
+    """Why a recording made with the command line ``recorded`` does not
+    describe a run of ``wanted`` (the same shape: the pytest command, the
+    recorder, the arguments), or None when it does or ``wanted`` is unknown.
+    Other arguments may collect other tests, skip others or run them another
+    way (``-m``, ``-p``, a project's own options), so what the recording saw
+    a test execute says nothing of the run: only report and stop options
+    (_REPORT_VALUED, _REPORT_FLAGS) may differ."""
+    if wanted is None or _run_words(recorded) == _run_words(wanted):
+        return None
+    return (
+        "it was made with other pytest arguments, which may collect or run other "
+        f"tests:\n  recording: {recorded}\n  now:       {wanted}"
+    )
+
+
+def find_store(
+    repo: Path, spec: str, source_roots: list[str], reference: str, command: str | None = None
+) -> Path:
     """The store ``spec`` names: a path, or ``auto`` for the store (with these
-    source roots) whose commit is the nearest ancestor of ``reference``, the
-    commit being planned towards; the newest one on a tie. Evidence from any
-    ancestor is sound (changes are planned from its commit), and a nearer one
-    has fewer changes to plan."""
+    source roots and, when ``command`` is given, recorded with that pytest
+    command line: other_run) whose commit is the nearest ancestor of
+    ``reference``, the commit being planned towards; the newest one on a
+    tie. Evidence from any ancestor is sound (changes are planned from its
+    commit), and a nearer one has fewer changes to plan. A path is checked
+    against ``command`` by the caller, once loaded (check_run)."""
     if spec != "auto":
         path = Path(spec)
         if not path.exists():
@@ -1188,8 +1242,12 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
         return path
     best: tuple[int, float, Path] | None = None
     missing: list[str] = []
+    other: list[StoreInfo] = []
     for store in list_stores(repo):
         if sorted(store.source_roots) != sorted(source_roots):
+            continue
+        if other_run(store.command, command):
+            other.append(store)
             continue
         if not has_commit(repo, store.commit):
             missing.append(store.commit)
@@ -1217,6 +1275,11 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
                 f"the recording(s) at {', '.join(c[:12] for c in missing)} are for commits this "
                 f"checkout does not have; fetch them (git fetch --depth=1 origin {missing[0]})"
             )
+        if other:
+            hints.append(
+                f"the recording(s) at {', '.join(o.commit[:12] for o in other)} were made with "
+                f"other pytest arguments (e.g. {other[0].command}); record one with these"
+            )
         shallow = subprocess.run(
             ["git", "rev-parse", "--is-shallow-repository"],
             cwd=repo,
@@ -1234,6 +1297,16 @@ def find_store(repo: Path, spec: str, source_roots: list[str], reference: str) -
             + "".join(f"; {h}" for h in hints)
         )
     return best[2]
+
+
+def check_run(evidence: Evidence, command: str | None) -> None:
+    """Refuse a recording that does not describe a run of ``command``
+    (other_run): an analysis of the wrong run is no plan."""
+    why = other_run(evidence.command, command)
+    if why:
+        raise EvidenceError(
+            f"the evidence recording at {evidence.commit[:12]} is not usable: {why}"
+        )
 
 
 def has_commit(repo: Path, commit: str) -> bool:
@@ -1272,6 +1345,7 @@ def list_stores(repo: Path) -> list[StoreInfo]:
                 python_version(meta["environment"]),
                 meta.get("advanced_from"),
                 meta.get("full_commit") or meta["commit"],
+                meta["command"],
             )
         except (KeyError, TypeError, AttributeError):
             continue  # a malformed store is skipped, not fatal to every plan

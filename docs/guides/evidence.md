@@ -68,6 +68,15 @@ the nearest ancestor of the head (or pass a recording's path). The
 recording doesn't need to be at your base: diffcone also accounts for the
 changes made since it was recorded.
 
+A recording describes a run of the pytest command and arguments it was
+made with. `run` and `validate`, and `plan` when you pass it `--command`,
+use only a recording made with the same ones: other arguments can collect,
+skip or run other tests. Only options that change what pytest reports or
+when it stops may differ (`-q`, `-v`, `-x`, `--maxfail`, `--tb`, `-r`,
+`--color`, `--durations`, `--junitxml`). With other arguments,
+`--evidence auto` finds no recording, a recording's path is refused, and
+the command exits `2` saying why; record again with the new arguments.
+
 `plan` doesn't run anything, so it can't check that your test environment
 is the one the recording was made in: the report says
 `environment NOT checked` (`environment_checked: false` in JSON). Its

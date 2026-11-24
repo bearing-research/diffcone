@@ -233,8 +233,8 @@ On a push, `record` with `check: true`:
 The check is skipped, with a note, when there is nothing to compare with:
 
 - no recording yet;
-- a recording diffcone can't use: made with other source roots or by an
-  older version of diffcone, or for a commit that can't be fetched or
+- a recording diffcone can't use: made with other source roots or pytest
+  arguments or by an older version of diffcone, or for a commit that can't be fetched or
   isn't from before the pushed commit;
 - a commit with no parent.
 

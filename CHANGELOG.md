@@ -73,6 +73,21 @@ selection rules.
   (`--allow-mismatched-worktree` to run anyway). Before, only submodules
   under the roots counted.
 
+### Execution evidence
+
+- A recording is used only for a run of the pytest command and arguments
+  it was made with. Before, changing a job's pytest arguments made every
+  pull request compare tests discovered with the new arguments against a
+  recording collected with the old ones: run refused, because the
+  recording had collected tests that were not targets. Now `run`,
+  `validate`, `corpus`, and `plan` given `--command`, skip a recording
+  made with other arguments (`--evidence auto`) or refuse it (a path), and
+  exit `2` saying why. The run and record actions then plan without it,
+  as for a recording made with other source roots. Options that only
+  change what pytest reports or when it stops may differ (`-q`, `-v`,
+  `-x`, `--maxfail`, `--tb`, `-r`, `--color`, `--durations`,
+  `--junitxml`).
+
 ## [0.6.0] - 2026-11-16
 
 ### Running and checking

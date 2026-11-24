@@ -153,7 +153,7 @@ runs:
         if [ "$rc" -eq 2 ]; then
           rm -f "$RESULTS/plan.json"
           # Exit 2 is any plan that failed. Only a recording diffcone cannot
-          # use (other source roots, an older store format) is a reason not
+          # use (other source roots or pytest arguments, an older store format) is a reason not
           # to check, and must not stop the recording itself: told apart by
           # planning the same change without it. A plan that fails without
           # the recording too is a failed check.
