@@ -846,6 +846,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -886,7 +897,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -969,7 +980,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1064,7 +1075,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_2" class="md-nav__link">
+  <a href="#execution-evidence_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1113,7 +1124,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_3" class="md-nav__link">
+  <a href="#execution-evidence_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1163,7 +1174,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_4" class="md-nav__link">
+  <a href="#execution-evidence_5" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1224,7 +1235,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_5" class="md-nav__link">
+  <a href="#execution-evidence_6" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1447,6 +1458,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1487,7 +1509,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
+  <a href="#execution-evidence_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1570,7 +1592,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_1" class="md-nav__link">
+  <a href="#execution-evidence_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1665,7 +1687,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_2" class="md-nav__link">
+  <a href="#execution-evidence_3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1714,7 +1736,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_3" class="md-nav__link">
+  <a href="#execution-evidence_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1764,7 +1786,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_4" class="md-nav__link">
+  <a href="#execution-evidence_5" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1825,7 +1847,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#execution-evidence_5" class="md-nav__link">
+  <a href="#execution-evidence_6" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Execution evidence
@@ -1969,13 +1991,18 @@ selection rules.</p>
 </ul>
 <h3 id="performance">Performance<a class="headerlink" href="#performance" title="Permanent link">&para;</a></h3>
 <ul>
-<li>A cold plan of pandas takes about half the time (a commit that selects
-  every test: about 3 200 s down to about 1 500 s on one core, and 2 GB
-  less at its peak, the same plan to the byte). Most of it is in tracing what a name in a
-  module stands for, deciding which writes reach a class's state, and
-  storing the whole index in the cache, which also takes less memory to
-  write. The cache's index format changed, so the first plan after
-  upgrading builds the index anew.</li>
+<li>A plan of pandas takes about a third of the time (a commit that selects
+  every test, on one core, the same plan to the byte): about 3 200 s down
+  to about 700 s without a cache (peak 7.9 GB instead of 25 GB), and
+  about 150 s with the index cached (peak 5.5 GB instead of 30 GB); a plan
+  of a new commit whose parent's index is cached, as in CI, about 240 s.
+  Code
+  that writes the same set of classes as other code (pandas has 9 370
+  such writers) has those writes kept once for all of them: in the index,
+  in the cache (a pandas commit's cached index is 175 MB instead of
+  4.2 GB) and while planning. The cache's index format changed, so the
+  first plan after upgrading builds the index anew. A JSON report is
+  written as it is encoded, not held whole first (pandas' is 1 GB).</li>
 <li><code>diffcone plan</code> and <code>diffcone discover</code> exit as soon as their output is
   written, rather than spending minutes freeing a large repository's
   analysis.</li>
@@ -2010,6 +2037,21 @@ selection rules.</p>
   roots is at another commit, or has edits, than the plan analysed
   (<code>--allow-mismatched-worktree</code> to run anyway). Before, only submodules
   under the roots counted.</li>
+</ul>
+<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A recording is used only for a run of the pytest command and arguments
+  it was made with. Before, changing a job's pytest arguments made every
+  pull request compare tests discovered with the new arguments against a
+  recording collected with the old ones: run refused, because the
+  recording had collected tests that were not targets. Now <code>run</code>,
+  <code>validate</code>, <code>corpus</code>, and <code>plan</code> given <code>--command</code>, skip a recording
+  made with other arguments (<code>--evidence auto</code>) or refuse it (a path), and
+  exit <code>2</code> saying why. The run and record actions then plan without it,
+  as for a recording made with other source roots. Options that only
+  change what pytest reports or when it stops may differ (<code>-q</code>, <code>-v</code>,
+  <code>-x</code>, <code>--maxfail</code>, <code>--tb</code>, <code>-r</code>, <code>--color</code>, <code>--durations</code>,
+  <code>--junitxml</code>).</li>
 </ul>
 <h2 id="060-2026-11-16"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.6.0">0.6.0</a> - 2026-11-16<a class="headerlink" href="#060-2026-11-16" title="Permanent link">&para;</a></h2>
 <h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
@@ -2109,7 +2151,7 @@ selection rules.</p>
   calls sharing a set of callbacks share one node in the index, which
   keeps the logging part of that down.</li>
 </ul>
-<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A plain function or method just added is no longer seen by code that
   only reads signatures (<code>inspect.signature(handler)</code>): run as a module was
@@ -2226,7 +2268,7 @@ selection rules.</p>
   (850 MB for one of 25 000 tests, now 40 MB). Discovery's output still lists them, and
   the ones that selected a target are in its explanation.</li>
 </ul>
-<h3 id="execution-evidence_1">Execution evidence<a class="headerlink" href="#execution-evidence_1" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>collect</code> warns when none of the tests it recorded is among the tests
   discovered at that commit: pytest's rootdir lies outside the repository
@@ -2804,7 +2846,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   bound, inherited methods included; <code>benchmark_dir: "."</code> finds
   benchmarks.</li>
 </ul>
-<h4 id="execution-evidence_2">Execution evidence<a class="headerlink" href="#execution-evidence_2" title="Permanent link">&para;</a></h4>
+<h4 id="execution-evidence_3">Execution evidence<a class="headerlink" href="#execution-evidence_3" title="Permanent link">&para;</a></h4>
 <ul>
 <li>A module stored into pytest's <code>doctest_namespace</code> (pandas' autouse
   <code>add_doctest_imports</code> does <code>doctest_namespace["pd"] = pd</code>) no longer
@@ -3043,7 +3085,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
 <li><code>asv.conf.jsonc</code> is read like <code>asv.conf.json</code>, and trailing commas in
   either are accepted, as asv allows.</li>
 </ul>
-<h3 id="execution-evidence_3">Execution evidence<a class="headerlink" href="#execution-evidence_3" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_4">Execution evidence<a class="headerlink" href="#execution-evidence_4" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A Python process a test starts with <code>subprocess</code> (directly, through
   <code>asyncio</code>, or through <code>uv run</code>) records itself on Linux and macOS, and
@@ -3136,7 +3178,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   whether the check itself failed, so a re-run reports a failed check as
   one rather than as a miss.</li>
 </ul>
-<h3 id="execution-evidence_4">Execution evidence<a class="headerlink" href="#execution-evidence_4" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_5">Execution evidence<a class="headerlink" href="#execution-evidence_5" title="Permanent link">&para;</a></h3>
 <ul>
 <li>On Windows, <code>uv python list</code> run through the path <code>shutil.which</code> gives
   (<code>...\uv.EXE</code>) is recognised as an inert query, as it is elsewhere; it
@@ -3171,7 +3213,7 @@ New discovery notes: <code>unparsable_config</code> (discovery incomplete),
   that reaches it whenever anything in its import closure changes, unless
   project code stores something on that module.</li>
 </ul>
-<h3 id="execution-evidence_5">Execution evidence<a class="headerlink" href="#execution-evidence_5" title="Permanent link">&para;</a></h3>
+<h3 id="execution-evidence_6">Execution evidence<a class="headerlink" href="#execution-evidence_6" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A test that runs a <code>python -c</code> snippet that can't run project code (an
   interpreter version check importing only built-in modules, with nothing
