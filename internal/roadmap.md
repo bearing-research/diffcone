@@ -1824,6 +1824,11 @@ edited source (`run`: the paths of every change), so tests that read
 `src/strata/config.py` as a file at import escalate it. A purely
 relational change edits no file.
 
+*Superseded by item 26 (2026-11-24).* A census of every chain behind 21
+PR plans, with nine spikes that each cut a link, moved no plan below
+100 %: the paths are too many for link fixes. Item 26 checks escalations
+at the head instead.
+
 ## 23. pyarrow: C++ library changes planned at the extensions that link them
 
 **Status.** Sketch (2026-11-21), not started; needs the user's decision
@@ -1924,6 +1929,135 @@ calls, and a direct call at import still select.
 says how many targets drop (the report keeps one path a target, so the
 next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 `pyarrow.compute`'s bounded `getattr`), and that number justifies it.
+
+## 26. The evidence cascade on strata: escalations checked at the head (strata trial)
+
+**Status.** Measured (2026-11-24); no code. Item 21 removed one link of
+strata's chains at a time for a month and no plan moved. The census below
+says why, and this item replaces the link-by-link approach with a
+different mechanism. Records: `.spike/strata-2026-11-24/chains/`.
+
+**Measured.** A recording of strata at `62dc0cd0` (diffcone main
+`378b2bf`, both recorder fixes of item 21's E34 paragraph and the fixture
+instances), replaying the 21 unit-ubuntu-3.13 PR plans of that day. Of the
+11 PRs based exactly at the recorded commit, 1 selects 363 of 8 291, 2 fall
+back on `unobserved_file_changed` (`.github/workflows/*.yml`, `uv.lock`)
+and 8 on `pytest_hook_changed`. One of the 8 is right: it adds a
+dependency to `strata.server._state`, which the autouse fixture
+`_reset_process_globals` reads in every test. The other 7 are four
+test-only PRs, one added `src` function, and three non-Python edits
+(`.pre-commit-config.yaml`, `worker.Dockerfile`,
+`docker-compose.observability.yml`). One eval test read those three
+files, and its stored results start the chain. Each plan carries 17
+all-targets fallbacks. Every one ends at one of four conftest functions:
+`pytest_collection_modifyitems` (`os.environ`, item marks), `_r_missing`
+(`proc.returncode`, matched by name to test fakes such as `_FakeProcess`)
+and `pytest_sessionstart`/`pytest_sessionfinish` (`d.version` of
+`importlib.metadata` distributions, matched by name to `StrataClient`).
+Between the change and those hooks, the chains alternate between two
+steps. A write escalates the module whose top-level code reads the written
+state. That module's import-time code is then followed through the static
+graph to further writers (`NotebookSession.__init__` into `MountMode`,
+`capture_worker_secrets` into `os.environ`, and so on).
+
+**Spikes (upper bounds, patched on a pod, never committed).** Each spike
+was replanned on the test-only PRs, and several on all eight:
+
+| Spike | What it cut | Plans below 100 % |
+| --- | --- | --- |
+| A | a `def` whose header is quiet on both sides (`@pytest.fixture`) is no code run at import: its body's closure is not followed | 0 (the second origin carries all 17) |
+| D | a module's top-level read of its own written class | 0 |
+| E, E2 | the two literal module getters (`spec_from_file_location` of a fixed path, `monkeypatch.setitem(sys.modules, "fsspec", ...)`); then the whole "a getter ran outside every test" rule | 0 |
+| G | `_import_writes` does not follow callees past the code that ran | 0 (fallbacks rise to 26, via `_stored_results`) |
+| T | the four conftest hooks taken as harmless | 0: no fallback left, yet `escalated` selects every test |
+| F | an added module's import does not re-run what it imports | 0 (with A, D, E2, G, T) |
+| A+E+F | the three cuts at the origin of a test-only PR | 0 (`ws._handler_args`, an `inspect.signature` at import, sees the new module) |
+
+With every cut together, the select-all fallbacks are gone and the plan
+still selects 8 297 of 8 297. Thirteen modules are escalated, and
+`tests.conftest` is one of them: every test runs its autouse fixtures. The
+autouse `_reset_process_globals` touches the globals of a dozen core
+modules (`strata.server`, `strata.auth.api_keys`,
+`strata.cache.metadata`, ...). `get_logger` runs at the import of nearly
+every module. So once any path reaches the import-time state of one of
+those modules, it selects everything. Each cut leaves many other paths.
+The static graph of an application this connected admits a path from
+almost any change. A precision fix to one link is sound, and it is still
+not worth building for strata alone.
+
+**Mechanism (proposed).** An escalation claims that module M's import-time
+state *may* differ at the head. `diffcone run` is in a position to check
+whether it *did*, because it imports every test module at the head
+anyway, before any test runs. The plan becomes a certain part plus
+conditional parts. Each conditional part is keyed by an escalated module
+whose own code did not change: "M's import-time state differs" selects
+the tests that escalation would add. The selection plugin
+(`selection.py`) evaluates the conditions after collection
+(`pytest_collection_modifyitems`, trylast), comparing a digest of each
+condition module's namespace with the one the recorder took at the same
+point at C:
+- a stored per-module digest (store format bump) over module-level
+  bindings: literals and containers of them by value, classes by their
+  `__dict__` digest, functions by code, defaults, closure cells and
+  `__dict__`;
+- anything else (an arbitrary instance, a C object) digests as "unknown",
+  and an unknown counts as differing, so a module holding one stays
+  conditional-true.
+
+The four hooks' effects on the items (marks, skip reasons, order, the
+item set) are compared the same way. That covers
+`pytest_collection_modifyitems`; the session hooks' stash is opaque and
+stays "unknown". `plan` cannot run anything (CLAUDE.md), so it selects
+every conditional part and lists the conditions in the report. Only
+`run` narrows, which keeps `plan`'s output a superset of what `run`
+executes.
+
+**Why it may be unsound, and the guards.**
+- A digest equal at collection says nothing about state a test writes
+  later. Escalations whose reason is a test-time store
+  (`_stored_results`) or code that ran between tests stay unconditional;
+  only import- and collection-time escalations become conditions.
+- Digests miss state hidden behind identity: two different objects of a
+  type the digest does not open count as "unknown", never as equal.
+- Nondeterministic state (timestamps, ids, random seeds) makes a
+  condition true. That over-selects but cannot miss.
+- xdist workers collect independently. Each worker evaluates the
+  conditions itself, and a condition true on any worker is true for that
+  worker's items. The recorder keeps one digest set per process, and a
+  module whose digests differ across processes at C counts as "unknown".
+- Scenarios:
+  - a test-only PR on a project whose conftest imports the whole package
+    selects only the new tests;
+  - an import-time state change (`MODE = os.environ[...]` read at import,
+    the variable set by a new test module's top level) still selects its
+    readers;
+  - an instance-holding module stays selected;
+  - a `modifyitems` hook whose skips change still selects the items it
+    marks.
+
+**Trade-off.** `run` narrows while `plan` does not, and the report must
+say which conditions held. The recorder pays a digest pass after
+collection in every process, and `run` pays the same at the head. Both
+are bounded by module count, since the digest does not walk instances.
+
+**Before building.** Measure the upper bound. On a pod, record strata at
+C with a digest dump after collection (a throwaway plugin), collect the
+seven PRs' heads with the same dump, and count how many of each plan's
+escalated modules have equal digests. If `tests.conftest` and the dozen
+`_reset_process_globals` modules come out equal on the test-only PRs,
+the conditional plan drops them, and the remaining selection is what the
+mechanism buys. If they come out "unknown" (strata's module globals hold
+app objects: `app`, `_state`, stores), the mechanism buys nothing on
+strata and this item closes as measured.
+
+**Done when** the measurement says how many of the seven plans fall below
+100 %. If any does, the conditional plan ships with the scenarios above,
+and strata's nightly report shows PR selections below 100 % with no miss.
+
+*Found on the way, not worth building alone.* Spike A is sound as it
+stands (`quiet_header` already says the body does not run at import) and
+changes no strata plan; it may matter on a smaller project. Strata could
+list `.github/workflows/**` under `[build] reads` (strata's decision).
 
 ## 22. Plans that fit in memory: further (not planned)
 
