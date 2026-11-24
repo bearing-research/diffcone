@@ -78,6 +78,7 @@ from diffcone.model import (
     WRITES,
     Edge,
     EdgeKind,
+    EdgeSet,
     SourceIndex,
     SymbolKind,
     UnresolvedKind,
@@ -235,6 +236,13 @@ class Indexer(DynamicBounds):
             self.out = self._global
             self._too_deep("", "")
             undecided = self._global.value_writes | self._global.receiver_writes
+            undecided |= {
+                (c, w)
+                for w, lists in self._global.any_writes.items()
+                for owners in lists
+                for c in owners
+                if c != w
+            }
             undecided |= {(c, w) for c, w, _ in self._global.instance_writes}
             undecided |= {(c, w) for c, _, w in self._global.attr_value_writes}
             for state, writer in sorted(undecided):  # every one, undecided
@@ -294,8 +302,12 @@ class Indexer(DynamicBounds):
                 renamed = {tuple(own(x) for x in r) for r in records}
                 records.clear()
                 records |= renamed
+        # No hub's edge (model.EdgeSet) is from or into definition-time code
+        # (AnyClassOwners._shareable; compact runs after this).
         marked = [
-            e for e in index.edges if e.source.endswith(DEFINITION) or e.target.endswith(DEFINITION)
+            e
+            for e in index.edges.plain
+            if e.source.endswith(DEFINITION) or e.target.endswith(DEFINITION)
         ]
         if not marked:
             return
@@ -309,7 +321,7 @@ class Indexer(DynamicBounds):
             elif e.source.endswith(DEFINITION):
                 called.add((source, target))
         callers = {f for f, _ in called}
-        made = {(e.source, e.target) for e in index.edges if e.source in callers}
+        made = _edges_from(index.edges, callers)
         index.definition_calls |= {p for p in called - made if p[0] != p[1]}
         index.definition_writes = {
             (state, function)
@@ -334,7 +346,7 @@ class Indexer(DynamicBounds):
         }
         body = {(a, b) for a, b in index.typed_calls if not a.endswith(DEFINITION)}
         callers = {f for f, _ in header}
-        referenced = {(e.source, e.target) for e in index.edges if e.source in callers} & header
+        referenced = _edges_from(index.edges, callers) & header
         index.definition_calls -= body
         index.definition_calls |= {p for p in header - body - referenced if p[0] != p[1]}
         index.typed_calls = {p for p in header | body if p[0] != p[1]}
@@ -369,7 +381,9 @@ class Indexer(DynamicBounds):
             return
         writer_of = {var: writer for _, _, var, writer, _ in found}
         other_writes: set[str] = set()
-        for edge in self.index.edges:
+        # A hub's edges (model.EdgeSet) go from classes, no lazy constant,
+        # and are mutated_by edges, none of the details read below.
+        for edge in self.index.edges.plain:
             writer = writer_of.get(edge.source)
             if writer is not None and edge.kind != EdgeKind.DEFINED_IN:
                 if not (edge.detail == MUTATED_BY and edge.target == writer):
@@ -404,7 +418,7 @@ class Indexer(DynamicBounds):
         finalizers = any(
             s.kind == SymbolKind.METHOD and s.name == "__del__" for s in self.index.symbols.values()
         )
-        for edge in sorted(e for e in self.index.edges if e.detail in (WRITES, SETITEM)):
+        for edge in sorted(e for e in self.index.edges.plain if e.detail in (WRITES, SETITEM)):
             symbol = self.index.symbols.get(edge.target)
             kind = symbol.builtin_container if symbol is not None else ""
             settled = (
@@ -534,9 +548,10 @@ class Indexer(DynamicBounds):
         the whole index on every build, as the class model's other global
         edges are."""
         writers: dict[str, set[str]] = defaultdict(set)
-        for e in self.index.edges:
+        for e in self.index.edges.plain:
             if e.detail == MUTATED_BY:
                 writers[e.target].add(e.source)
+        hubs = self.index.edges.hubs  # a writer's mutated_by edges kept once
         self.index.decorator_symbols = {
             decorator for _, decorator, _ in self._global.decorations if decorator
         }
@@ -549,7 +564,7 @@ class Indexer(DynamicBounds):
                     self.index.decorations.add((decorated, decorator))
             if receiver:
                 self.index.edges.add(Edge(receiver, decorated, EdgeKind.REFERENCES, REGISTERS))
-            for variable in sorted(writers.get(decorator, ())):
+            for variable in sorted(writers.get(decorator, set()) | hubs.get(decorator, set())):
                 self.index.edges.add(Edge(variable, decorated, EdgeKind.REFERENCES, REGISTERS))
         for cls, bases in sorted(self.index.class_bases.items()):
             stack, seen = list(bases), set(bases)
@@ -1162,7 +1177,9 @@ class Indexer(DynamicBounds):
         symbols = self.index.symbols
         calls: dict[str, set[str]] = defaultdict(set)
         written: dict[str, set[str]] = defaultdict(set)
-        for edge in self.index.edges:
+        # A hub's edges (model.EdgeSet) are mutated_by edges, read below.
+        hubs = self.index.edges.hubs
+        for edge in self.index.edges.plain:
             if edge.kind != EdgeKind.REFERENCES:
                 continue
             if edge.detail == MUTATED_BY:
@@ -1203,6 +1220,7 @@ class Indexer(DynamicBounds):
             for callback in callbacks:
                 for code in reached(callback):
                     states |= written.get(code, set())
+                    states |= hubs.get(code, set())
             shared = sorted(states - set(sites))
             if len(sites) < 2 or len(shared) < 2:
                 shared = []
@@ -1335,7 +1353,53 @@ class Indexer(DynamicBounds):
                     for c in sorted(self._reached(mro)):
                         if c != writer:
                             self.index.edges.add(Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY))
+        self._any_class_writes(immutable, holding)
         self._instance_writes(holding)
+
+    def _any_class_writes(self, immutable: set[str], holding: set[str]) -> None:
+        """The value writes kept as shared lists (_Output.any_writes), as the
+        loop above makes each: a ``mutated_by`` edge from each class but the
+        writer (none immutable), as one hub per writer (model.EdgeSet), and
+        for a class a variable may hold, T21's edges from its MRO."""
+        any_writes = self._global.any_writes
+        if not any_writes:
+            return
+        record = self._class_record
+        # Per shared list: its classes that are no immutable variable, and
+        # those a variable may hold or be (T21 reads them).
+        kept: dict[int, frozenset[str]] = {}
+        typed: dict[int, list[str]] = {}
+        interned: dict[frozenset[str], frozenset[str]] = {}
+        hubs: dict[str, frozenset[str]] = {}
+        for writer, lists in any_writes.items():
+            states: frozenset[str] | None = None
+            for owners in lists:
+                found = kept.get(id(owners))
+                if found is None:
+                    found = kept[id(owners)] = frozenset(c for c in owners if c not in immutable)
+                    typed[id(owners)] = [
+                        c for c in owners if c in record.instances or c in record.types
+                    ]
+                states = found if states is None or states is found else states | found
+                for state in typed[id(owners)]:
+                    if state == writer or state in immutable:
+                        continue
+                    classes = record.instances.get(state, set()) | record.types.get(state, set())
+                    for cls in sorted(classes):
+                        mro = self._mro(cls)
+                        if any(c in holding for c in mro):
+                            for c in sorted(self._reached(mro)):
+                                if c != writer:
+                                    self.index.edges.add(
+                                        Edge(c, writer, EdgeKind.REFERENCES, MUTATED_BY)
+                                    )
+            if states is None:
+                continue
+            if writer in states:
+                states = states - {writer}
+            if states:
+                hubs[writer] = interned.setdefault(states, states)
+        self.index.edges.add_hubs(hubs)
 
     def _reached(self, classes: list[str]) -> set[str]:
         """``classes`` and the classes nested in them, at any depth: state
@@ -1381,6 +1445,8 @@ class Indexer(DynamicBounds):
 
         read_instance: set[tuple[str, str, str]] = set()
         read_value: set[tuple[str, str]] = set()
+        # Per shared list of _Output.any_writes: its classes holding an instance.
+        holding_instances: dict[int, list[str]] = {}
         while True:
             pending: set[tuple[str, tuple[str, str, str]]] = set()
             new_instance = out.instance_writes - read_instance
@@ -1396,9 +1462,21 @@ class Indexer(DynamicBounds):
                         else:
                             names = list(table)
                         pending.update((writer, f) for n in names for f in table.get(n, ()))
-            new_value = out.value_writes - read_value
-            read_value |= new_value
+            # Only a write of a variable holding an instance gives anything
+            # (the record is fixed, as above): those are kept and diffed,
+            # not every value write (pandas: 25 million, a set of them a
+            # round).
             instances = record.instances
+            new_value = {p for p in out.value_writes if p[0] in instances and p not in read_value}
+            for writer, lists in out.any_writes.items():
+                for owners in lists:
+                    held = holding_instances.get(id(owners))
+                    if held is None:
+                        held = holding_instances[id(owners)] = [c for c in owners if c in instances]
+                    for c in held:
+                        if c != writer and (c, writer) not in read_value:
+                            new_value.add((c, writer))
+            read_value |= new_value
             for state, writer in new_value:
                 for cls in instances.get(state, ()):
                     for c in family(cls):
@@ -2167,7 +2245,8 @@ class Indexer(DynamicBounds):
         the modules and symbols its imports bind (``SourceIndex.
         module_reach``; the planner adds them to what the referrers of an
         escaped module depend on, as W9 does its members)."""
-        for edge in self.index.edges:
+        # A hub's edges (model.EdgeSet) are into code that is no module.
+        for edge in self.index.edges.plain:
             if edge.kind != EdgeKind.REFERENCES or edge.target not in self.scopes:
                 continue
             if edge.target in self.index.module_reach:
@@ -2284,6 +2363,19 @@ def _may_name(installed: str, read: str) -> bool:
             return read.startswith(ip) or ip.startswith(read + ".")
         return installed.startswith(rp) or rp.startswith(installed + ".")
     return overlap(installed, read)
+
+
+def _edges_from(edges: EdgeSet, sources: set[str]) -> set[tuple[str, str]]:
+    """(source, target) of each edge from one of ``sources``, a hub's
+    (model.EdgeSet: from its states) read per distinct set of them."""
+    found = {(e.source, e.target) for e in edges.plain if e.source in sources}
+    hits: dict[int, frozenset[str]] = {}
+    for writer, states in edges.hubs.items():
+        hit = hits.get(id(states))
+        if hit is None:
+            hit = hits[id(states)] = states & sources
+        found.update((state, writer) for state in hit)
+    return found
 
 
 # The container objects allocated, net, since the last collection above which

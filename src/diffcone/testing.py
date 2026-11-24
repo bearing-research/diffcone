@@ -21,6 +21,7 @@ from diffcone import model as model_module
 from diffcone import planner as planner_module
 from diffcone.cache import IndexCache
 from diffcone.evidence import Evidence
+from diffcone.indexer import writes as writes_module
 from diffcone.manifest import Manifest, Target, parse_manifest
 from diffcone.planner import (
     Plan,
@@ -113,13 +114,16 @@ class FixtureRepo:
 
     def _check_hubs_invisible(self, result, base, head, manifest, source_roots, kwargs) -> None:
         """Writers sharing their states share one list in an index
-        (model.EdgeSet) and in the planning graph (planner._Graph.hubs), an
-        optimisation only: with every writer in a hub, the plan must be the
-        same, explanations included."""
+        (model.EdgeSet) and in the planning graph (planner._Graph.hubs), and
+        the indexer keeps a function's writes of the classes of an unknown
+        object as shared lists (writes.ANY_WRITES_SHARED), optimisations
+        only: with every writer in a hub, the writes made one by one, the
+        plan must be the same, explanations included."""
         expected = json.dumps(to_dict(result), sort_keys=True)
         with (
             mock.patch.object(planner_module, "_HUB_MIN", 1),
             mock.patch.object(model_module, "EDGE_HUB_MIN", 1),
+            mock.patch.object(writes_module, "ANY_WRITES_SHARED", False),
         ):
             again = plan(self.path, base, head, manifest, source_roots=source_roots, **kwargs)
         got = json.dumps(to_dict(again), sort_keys=True)

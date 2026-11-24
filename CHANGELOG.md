@@ -27,8 +27,10 @@ selection rules.
 
 - A plan of pandas takes about a third of the time (a commit that selects
   every test, on one core, the same plan to the byte): about 3 200 s down
-  to about 1 200 s without a cache (peak 12.2 GB instead of 25 GB), and
-  about 150 s with the index cached (peak 5.5 GB instead of 30 GB). Code
+  to about 700 s without a cache (peak 7.9 GB instead of 25 GB), and
+  about 150 s with the index cached (peak 5.5 GB instead of 30 GB); a plan
+  of a new commit whose parent's index is cached, as in CI, about 240 s.
+  Code
   that writes the same set of classes as other code (pandas has 9 370
   such writers) has those writes kept once for all of them: in the index,
   in the cache (a pandas commit's cached index is 175 MB instead of

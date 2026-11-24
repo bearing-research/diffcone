@@ -6,6 +6,7 @@ Symbol identity is the dotted qualified name (``pkg.mod``, ``pkg.mod.func``,
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Collection, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -460,42 +461,75 @@ class EdgeSet(MutableSet[Edge]):
         """Writer -> the states of its shared set (read only)."""
         return self._hubs
 
+    def add_hubs(self, hubs: dict[str, frozenset[str]]) -> None:
+        """Add the ``mutated_by`` edge from each of a writer's states (none
+        a pseudo-node of log callbacks) to it, as hubs: one pass removes the
+        edges stored one by one that they now stand for."""
+        if not hubs:
+            return
+        references = EdgeKind.REFERENCES
+        merged: dict[str, frozenset[str]] = {}
+        for writer, states in hubs.items():
+            current = self._hubs.get(writer)
+            merged[writer] = states if current is None or current is states else current | states
+        self._plain = {
+            e
+            for e in self._plain
+            if (states := merged.get(e.target)) is None
+            or e.source not in states
+            or e.detail != MUTATED_BY
+            or e.kind is not references
+        }
+        self._hubs.update(merged)
+
     def compact(self) -> None:
         """Keep the ``mutated_by`` edges of each set of states that at least
-        EDGE_HUB_MIN writers share, with at least as many states, once.
+        EDGE_HUB_MIN writers share, with at least as many states, once: the
+        whole set a writer has, its hub's and those stored one by one.
         Edges at a pseudo-node of log callbacks stay as they are (readers of
         those read them one by one: model.log_callback_sites)."""
-        for writer in list(self._hubs):
-            self._unhub(writer)  # grouped again with whatever was added
-        by_writer: dict[str, set[str]] = {}
+        # One pass gathering each writer's states, a check for pseudo-nodes
+        # of log callbacks once per distinct set of them (pandas: 25 million
+        # edges, 15 258 writers, 1 029 sets), removal by membership.
+        prefix, references = LOG_CALLBACKS, EdgeKind.REFERENCES
+        by_writer: dict[str, list[str]] = defaultdict(list)
         for edge in self._plain:
-            if (
-                edge.kind is EdgeKind.REFERENCES
-                and edge.detail == MUTATED_BY
-                and not is_log_callbacks(edge.source)
-                and not is_log_callbacks(edge.target)
-            ):
-                by_writer.setdefault(edge.target, set()).add(edge.source)
-        groups: dict[frozenset[str], list[str]] = {}
-        for writer, states in by_writer.items():
-            groups.setdefault(frozenset(states), []).append(writer)
+            if edge.detail == MUTATED_BY and edge.kind is references:
+                by_writer[edge.target].append(edge.source)
+        raw: dict[frozenset[str], list[str]] = defaultdict(list)
+        for writer, sources in by_writer.items():
+            if not writer.startswith(prefix) and writer not in self._hubs:
+                raw[frozenset(sources)].append(writer)
+        for writer, states in self._hubs.items():
+            sources = by_writer.get(writer)
+            raw[states.union(sources) if sources else states].append(writer)
         del by_writer
+        groups: dict[frozenset[str], list[str]] = defaultdict(list)
+        for states, writers in raw.items():
+            if any(s.startswith(prefix) for s in states):
+                states = frozenset(s for s in states if not s.startswith(prefix))
+            groups[states].extend(writers)
+        del raw
         hubbed: dict[str, frozenset[str]] = {}
         for states, writers in groups.items():
             if len(states) >= EDGE_HUB_MIN and len(writers) >= EDGE_HUB_MIN:
                 for writer in writers:
                     hubbed[writer] = states
+        # A hub too small to keep goes back to edges one by one.
+        for writer in [w for w in self._hubs if w not in hubbed]:
+            self._unhub(writer)
+        self._hubs.clear()
         if not hubbed:
             return
+        # An edge a hub stands for: from one of its states (none a pseudo-
+        # node) to its writer, a reference marked mutated_by.
         self._plain = {
             e
             for e in self._plain
-            if not (
-                e.target in hubbed
-                and e.kind is EdgeKind.REFERENCES
-                and e.detail == MUTATED_BY
-                and not is_log_callbacks(e.source)
-            )
+            if (states := hubbed.get(e.target)) is None
+            or e.source not in states
+            or e.detail != MUTATED_BY
+            or e.kind is not references
         }
         self._hubs.update(hubbed)
 

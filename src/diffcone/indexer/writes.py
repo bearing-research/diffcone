@@ -157,7 +157,7 @@ from typing import TYPE_CHECKING
 
 from diffcone.indexer.aliases import STORED, VALUE
 from diffcone.indexer.definitions import _ATTRIBUTE_HOOKS
-from diffcone.indexer.facts import _Output, apply_fact
+from diffcone.indexer.facts import DEFINITION, _Output, apply_fact
 from diffcone.indexer.scopes import ClassScope, External, ModuleNode, Resolved, Scope
 from diffcone.indexer.syntax import BUILTIN_NAMES, _flatten_chain
 from diffcone.indexer.uses import CONTAINER_MUTATORS
@@ -2724,8 +2724,12 @@ class ClassRecord:
         classes a written variable may hold (``typed_writes``)."""
         indexer = self._indexer
         out = indexer.out
-        found = {e.source for e in indexer.index.edges if e.detail == MUTATED_BY}
+        edges = indexer.index.edges
+        found = {e.source for e in edges.plain if e.detail == MUTATED_BY}
+        for states in {id(s): s for s in edges.hubs.values()}.values():
+            found |= states  # a hub's edges are mutated_by edges from its states
         found |= {state for state, _ in out.value_writes}
+        found |= any_written(out)
         found |= {state for state, _ in out.receiver_writes}
         for var, _ in out.typed_writes:
             found |= self.types.get(var, set())
@@ -2744,6 +2748,28 @@ def _writers(caller: str, callees: list[str]) -> list[str]:
     if not callees:
         return []
     return list(dict.fromkeys([caller, *callees]))
+
+
+# Whether AnyClassOwners keeps a function's writes as shared lists
+# (_Output.any_writes) rather than a value write per class: the same plan,
+# testing.FixtureRepo plans every scenario both ways.
+ANY_WRITES_SHARED = True
+
+
+def any_written(out: _Output) -> set[str]:
+    """The classes ``out.any_writes`` writes: each in a list recorded for a
+    writer other than itself (AnyClassOwners.record skips the writer)."""
+    by_list: dict[int, tuple[list[str], set[str]]] = {}
+    for writer, lists in out.any_writes.items():
+        for owners in lists:
+            by_list.setdefault(id(owners), (owners, set()))[1].add(writer)
+    found: set[str] = set()
+    for owners, writers in by_list.values():
+        if len(writers) > 1:
+            found.update(owners)
+        else:
+            found.update(o for o in owners if o not in writers)
+    return found
 
 
 class AnyClassOwners:
@@ -2828,6 +2854,11 @@ class AnyClassOwners:
         if kept is not None and kept[0] is out and kept[1] is owners:
             return
         self._recorded[key] = (out, owners)
+        if not module and ANY_WRITES_SHARED and self._shareable(writer):
+            # Function code: a value write of every owner but itself, kept
+            # as the shared list (_Output.any_writes).
+            out.any_writes.setdefault(writer, []).append(owners)
+            return
         for cid in owners:
             if cid == writer:
                 continue
@@ -2835,6 +2866,12 @@ class AnyClassOwners:
                 out.own_class_writes.add((cid, name))
             else:
                 out.value_writes.add((cid, writer))
+
+    def _shareable(self, writer: str) -> bool:
+        """Whether a writer's writes may be kept as a shared list: not a
+        module or definition-time code (``@def``: Indexer._definition_writes
+        renames those edges one by one)."""
+        return writer not in self._indexer.scopes and not writer.endswith(DEFINITION)
 
     def names(self, what: str, flavors: set[str] | None) -> list[str]:
         """The attributes an ``anyclass:`` pass names: the one it was reached

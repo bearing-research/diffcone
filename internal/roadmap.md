@@ -1917,8 +1917,9 @@ next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 
 ## 22. Plans that fit in memory: further (not planned)
 
-**Update (2026-11-23): a cold pandas plan is about 1 200 s and 12.2 GB, a
-warm one (index cached) about 150 s and 5.5 GB** (3 219 s at `ece1df1`,
+**Update (2026-11-24): a cold pandas plan is about 700 s and 7.9 GB, a
+warm one (index cached) about 150 s and 5.5 GB, one as CI makes it (the
+parent's index cached) about 240 s** (3 219 s at `ece1df1`,
 1 048 s at v0.4.0; evaluation.md, "Bisect and the next fixes" and
 "Planning and the cache"). Round 7's class batch doubled it by taking the
 `mutated_by` edges to 25 million, which is the rule as intended. A cold
@@ -1944,10 +1945,12 @@ to leave the plan byte-identical on a pandas commit:
   3. *Indexes*: done (`model.EdgeSet`, `INDEX_FORMAT` 77; warm 296 s to
      134 s and 13.7 to 8.5 GB, cold 22.9 to 16.6 GB). Then a collection
      after each large build and a streamed report: cold 17.9 to 12.2 GB,
-     warm 8.5 to 5.5 GB. Next for a cold
-     plan would be the indexer never making the pairs: its write phases
-     (`_instance_writes`, the any-class writes) adding one hub per set
-     of states instead of an edge per pair, before `compact`.
+     warm 8.5 to 5.5 GB.
+  4. *The indexer*: done (`_Output.any_writes`: a function's any-class
+     writes kept as shared lists, hubs from `_value_writes` on; a CI-like
+     plan 425 s to 228 s, cold 12.2 to 7.9 GB). Next would be planning
+     itself (about 100 s of a CI-like plan: the caller effects and
+     sorting the adjacency lists).
 
 A pandas evidence plan peaks at 5.5 GB (internal/evaluation.md, audit
 E37). Of what graph building holds, the largest parts left are the

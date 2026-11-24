@@ -2958,8 +2958,26 @@ report byte-identical to the cold reference:
   cold 1 145 s and 17.9 GB to 1 200 s and 12.2 GB (the two collections
   about 55 s), warm 149 s and 8.5 GB to 146 s and 5.5 GB.
 
-A cold plan's peak is now the head build on what the allocator kept of
-the base build's memory; both fit a 16 GB runner.
+* A plan as CI makes it (the parent's index cached, the head's modules'
+  facts in `modules.sqlite`, the head's index and discovery not), timed
+  per phase: 425 s, of which the head's build 225 s, and of that 165 s
+  spent on the 25 million any-class write pairs (`_value_writes` 112 s,
+  `compact` 37 s, `ClassRecord.written` 18 s) and on scans of every edge
+  after them. The indexer now keeps a function's writes onto the class of
+  an unknown object as the shared list of owners (`_Output.any_writes`,
+  `writes.ANY_WRITES_SHARED`), `_value_writes` makes each writer one hub
+  (`EdgeSet.add_hubs`), and the later phases read hubs as such
+  (`_edges_from`, the hub lookups in `_registrations` and
+  `_log_callback_writes`) or say why they need not (`EdgeSet.plain`);
+  `compact` merges hubs with a writer's other edges in one pass. Against
+  `073600b`, reports identical: the CI-like plan 425 s to 228 s (the head's
+  build 225 s to 54 s), a cold plan 1 145 s and 12.2 GB to 711 s and
+  7.9 GB. Every scenario is also planned with the writes made one by one
+  (`ANY_WRITES_SHARED` False).
+
+What is left of a CI-like plan is planning (100 s: `_add_caller_effects`,
+`freeze`, `_import_call_effects`), discovery (37 s) and `_shared_writes`'
+reruns of `_result_writes` (17 s).
 
 ## Not yet exercised
 

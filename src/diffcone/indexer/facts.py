@@ -273,6 +273,13 @@ class _Output:
     # (``mod.X = v``, ``global X; X = v``) and writing a module object are
     # edges of their own.
     value_writes: set[tuple[str, str]] = field(default_factory=set)
+    # Function code -> the lists of classes it writes as one of the classes
+    # that may own an attribute written on an object of unknown type, each
+    # list shared by every writer recorded against it (writes.AnyClassOwners:
+    # a value write of each class but the writer, kept once; pandas: 9 370
+    # writers of the same 2 225 classes). Whole-index only (never cached
+    # per module); Indexer._value_writes makes them EdgeSet hubs.
+    any_writes: dict[str, list[list[str]]] = field(default_factory=dict)
     # (module variable, what a binding of it holds): ``class:<id>`` an
     # instance of an in-scope class (the id may be a variable called as one),
     # ``type:<id>`` the class itself (U2), ``call:<id>`` what an
@@ -443,6 +450,8 @@ class _Output:
         self.whole_returns |= other.whole_returns
         self.direct_result_writes |= other.direct_result_writes
         self.value_writes |= other.value_writes
+        for writer, lists in other.any_writes.items():
+            self.any_writes.setdefault(writer, []).extend(lists)
         self.instance_bindings |= other.instance_bindings
         self.receiver_writes |= other.receiver_writes
         self.instance_writes |= other.instance_writes
