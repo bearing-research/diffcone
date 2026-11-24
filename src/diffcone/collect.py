@@ -349,7 +349,19 @@ hook_codes: set[int] = set()
 # Opened or stat'ed, and listed, by project code outside every test window.
 import_paths: dict[str, set[str]] = {}
 import_dirs: dict[str, set[str]] = {}
-fixture_windows: dict[tuple[str, str, str], dict] = {}
+# A shared fixture's windows, one per instance: (baseid, name, scope, the
+# node it was set up for: a module's, a class's, a package's; "" for the
+# session's, which every process sets up and whose real work may run in one
+# only). A conftest's module fixture has an instance per module, and what one
+# instance's setup ran (or ran beside: a process left running) is credited
+# to the tests that used it, not to every test of every module.
+fixture_windows: dict[tuple[str, str, str, str], dict] = {}
+# id(FixtureDef) -> the instance it last set up here, which the tests running
+# now use; a test using one this process never set up (not expected) is
+# credited with every instance's record (``_ANY_INSTANCE``).
+fixture_instances: dict[int, str] = {}
+_ANY_INSTANCE = "*"
+any_instance: set[tuple[str, str, str]] = set()
 collected: set[str] = set()  # every test collected, parameters folded
 collection_ran = False  # this process collected (an xdist controller does not)
 # Per test (parameters folded): how many of its cases this process collected
@@ -389,8 +401,8 @@ _real = child.RealPaths()
 
 
 # A window's sets; ``flags`` is a bit mask beside them. ``fixtures``: the
-# non-function-scoped fixtures a test used, by key, so a fixture another
-# process (an xdist worker) set up is credited too. ``spawns``: (spawner,
+# non-function-scoped fixture instances a test used, by key, so an instance
+# another process (an xdist worker) set up is credited too. ``spawns``: (spawner,
 # pid, start, argv, inert) of the processes it started, or that were still
 # running when it opened, through ``subprocess.Popen``.
 _SETS = ("codes", "paths", "dirs", "fixtures", "spawns", "causes")
@@ -1688,7 +1700,15 @@ def pytest_collection_finish(session):
 def pytest_fixture_setup(fixturedef, request):
     if not recording or fixturedef.scope == "function":
         return (yield)
-    key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
+    instance = ""
+    if fixturedef.scope != "session":
+        try:
+            instance = request.node.nodeid
+        except Exception as exc:
+            instance = _ANY_INSTANCE
+            _error("fixture_setup", exc)
+    fixture_instances[id(fixturedef)] = instance
+    key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope, instance)
     w = fixture_windows.setdefault(key, _window())
     try:
         _unaccounted_children()
@@ -1713,8 +1733,22 @@ def pytest_fixture_setup(fixturedef, request):
         _drop(w)
 
 
-def fixture_key(key: tuple[str, str, str]) -> str:
+def fixture_key(key: tuple[str, ...]) -> str:
     return "\x1f".join(key)
+
+
+def _fixture_records() -> dict[str, dict]:
+    """The shared fixtures' records by key, an instance's each, and for a
+    fixture some test used without this process having seen which instance
+    (``_ANY_INSTANCE``) the union of all of its instances."""
+    records = {fixture_key(key): _serialised(w) for key, w in sorted(fixture_windows.items())}
+    for base in sorted(any_instance):
+        union = _window()
+        for key, w in fixture_windows.items():
+            if key[:3] == base:
+                _merge(union, w)
+        records[fixture_key((*base, _ANY_INSTANCE))] = _serialised(union)
+    return records
 
 
 def _drop(window: dict) -> None:
@@ -1796,9 +1830,17 @@ def pytest_runtest_protocol(item, nextitem):
                     defs.extend(info.name2fixturedefs.get(name, ()))
             for fixturedef in defs:
                 if fixturedef.scope != "function":
-                    key = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
-                    mine["fixtures"].add(fixture_key(key))
-                    shared = fixture_windows.get(key)
+                    base = (fixturedef.baseid, fixturedef.argname, fixturedef.scope)
+                    instance = fixture_instances.get(id(fixturedef), _ANY_INSTANCE)
+                    if instance == _ANY_INSTANCE:
+                        any_instance.add(base)
+                        shared = _window()
+                        for key, w in fixture_windows.items():
+                            if key[:3] == base:
+                                _merge(shared, w)
+                    else:
+                        shared = fixture_windows.get((*base, instance))
+                    mine["fixtures"].add(fixture_key((*base, instance)))
                     if shared:
                         _merge(mine, shared)
             if writer is not None:
@@ -1884,9 +1926,7 @@ def _finish():
         "outside_modules": sorted(outside),
         # What each shared fixture ran here: a fixture computed once for
         # every worker (a file lock and a cache file) runs its code in one.
-        "fixtures": {
-            fixture_key(key): _serialised(w) for key, w in sorted(fixture_windows.items())
-        },
+        "fixtures": _fixture_records(),
         "environment": env,
         "environment_hash": environment_hash(env),
         "environment_at_start": environment_at_start,

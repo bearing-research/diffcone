@@ -46,6 +46,14 @@ selection rules.
   depended on timing: one of two recordings of strata at one commit put
   its cache fetch path there. Work handed off outside every test, such as
   at import or by a hook, still counts as run outside every test.
+- A fixture of module, class or package scope defined once (in a
+  `conftest.py`) and set up anew for each module or class is now recorded
+  per instance: each module's tests are credited with what their own
+  instance's setup ran. Before, every instance shared one record, so what
+  one module's setup ran counted for the tests of every module, in every
+  worker. With an autouse fixture, a process one test left running as
+  the next module started (a warm worker pool) made every test of the
+  suite always selected. On strata it did in four recordings of four.
 
 ### Performance
 

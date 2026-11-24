@@ -1653,6 +1653,76 @@ def test_e14_a_fixture_computed_in_another_process_is_credited(repo, tmp_path):
 
 
 @needs_monitoring
+def test_a_module_fixture_instance_is_credited_to_the_tests_that_used_it(repo):
+    """Each module's instance of a conftest's module-scoped fixture has its
+    own record, credited to the tests of that module: what one instance's
+    setup ran (``part_b`` for ``test_b``) is not credited to the tests of
+    another module, which used another instance."""
+    build = (
+        "def build(name):\n    return part_a() if name.endswith('test_a') else part_b()\n\n\n"
+        "def part_a():\n    return 1\n\n\ndef part_b():\n    return {}\n"
+    )
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/build.py": build.format(1),
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\nfrom lib.build import build\n\n\n"
+                "@pytest.fixture(scope='module')\n"
+                "def built(request):\n    return build(request.module.__name__)\n"
+            ),
+            "tests/test_a.py": "def test_a(built):\n    assert built == 1\n",
+            "tests/test_b.py": "def test_b(built):\n    assert built\n",
+        }
+    )
+    evidence = repo.collect()
+    assert "lib.build.part_b" not in executed(evidence, "tests/test_a.py::test_a")
+    assert "lib.build.part_b" in executed(evidence, "tests/test_b.py::test_b")
+    head = repo.commit({"lib/build.py": build.format(2)})
+    assert selected(_plan(repo, base, head, evidence)) == {"tests/test_b.py::test_b"}
+
+
+@needs_monitoring
+@posix_children
+def test_a_process_left_running_flags_one_module_fixture_instance(repo):
+    """``test_a`` leaves running a process no record follows. The windows
+    opened beside it are flagged, the next module's instance of an autouse
+    module fixture included; the tests that used another instance (``test_0``,
+    run before) are not."""
+    base = repo.commit(
+        {
+            **IGNORE,
+            "lib/__init__.py": "",
+            "lib/other.py": OTHER,
+            "tests/__init__.py": "",
+            "tests/conftest.py": (
+                "import pytest\n\n\n@pytest.fixture(autouse=True, scope='module')\n"
+                "def per_module():\n    yield\n"
+            ),
+            "tests/test_0.py": "def test_0():\n    pass\n",
+            "tests/test_a.py": (
+                "import subprocess\nimport sys\n\n\ndef test_a():\n"
+                "    code = 'import json, time; time.sleep(3)'\n"
+                "    subprocess.Popen([sys.executable, '-I', '-c', code])\n"
+            ),
+            "tests/test_b.py": "def test_b():\n    pass\n",
+            "tests/test_c.py": "from lib.other import g\n\n\ndef test_c():\n    g()\n",
+        }
+    )
+    evidence = repo.collect()
+    flagged = {t for t, r in evidence.tests.items() if r.flags & FLAG_SUBPROCESS}
+    assert flagged == {
+        "tests/test_a.py::test_a",
+        "tests/test_b.py::test_b",
+        "tests/test_c.py::test_c",
+    }
+    head = repo.commit(OTHER_CHANGED)
+    assert "tests/test_0.py::test_0" not in selected(_plan(repo, base, head, evidence))
+
+
+@needs_monitoring
 @pytest.mark.parametrize(
     "test",
     [
