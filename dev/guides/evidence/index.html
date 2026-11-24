@@ -1236,7 +1236,10 @@ command only.
   evaluate) are not: the test is credited with the function or class they
   belong to and the classes and functions they name.
 - Code that background threads are running while a test runs is credited
-  to that test.
+  to that test. So is what a thread the test started, or work it handed to
+  a thread pool (<code>ThreadPoolExecutor</code>, <code>asyncio</code>'s <code>run_in_executor</code> and
+  <code>to_thread</code>), runs after the test ended. Work handed off outside every
+  test, at import or in a hook, counts as part of that import or hook.
 - Code that ran while pytest collected a test file (building the ids of
   parametrized tests, an <code>ids=</code> function, a <code>pytest_generate_tests</code> hook
   and what it calls) decides that file's tests: a change to it, or to what

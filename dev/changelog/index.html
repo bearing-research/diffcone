@@ -808,6 +808,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#performance" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -840,17 +851,6 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Execution evidence
       </span>
     </span>
   </a>
@@ -1420,6 +1420,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#execution-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Execution evidence
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#performance" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1452,17 +1463,6 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         Planning
-      </span>
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#execution-evidence" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        Execution evidence
       </span>
     </span>
   </a>
@@ -1989,6 +1989,38 @@ selection rules.</p>
   pyarrow test into plans that select none (another binding's native code,
   another component's workflow or packaging); no plan selects more.</li>
 </ul>
+<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A recording is used only for a run of the pytest command and arguments
+  it was made with. Before, changing a job's pytest arguments made every
+  pull request compare tests discovered with the new arguments against a
+  recording collected with the old ones: run refused, because the
+  recording had collected tests that were not targets. Now <code>run</code>,
+  <code>validate</code>, <code>corpus</code>, and <code>plan</code> given <code>--command</code>, skip a recording
+  made with other arguments (<code>--evidence auto</code>) or refuse it (a path), and
+  exit <code>2</code> saying why. The run and record actions then plan without it,
+  as for a recording made with other source roots. Options that only
+  change what pytest reports or when it stops may differ (<code>-q</code>, <code>-v</code>,
+  <code>-x</code>, <code>--maxfail</code>, <code>--tb</code>, <code>-r</code>, <code>--color</code>, <code>--durations</code>,
+  <code>--junitxml</code>).</li>
+<li>Code that a test's thread runs after the test ended is now recorded as
+  that test's, as it is when the thread finishes in time. This covers a
+  thread the test started, work it handed to a <code>ThreadPoolExecutor</code>, and
+  <code>asyncio</code>'s <code>run_in_executor</code> or <code>to_thread</code>. Before, a recording put
+  such code among the code run outside every test, as for a session hook,
+  so a change to it selected every test. On a loaded machine that
+  depended on timing: one of two recordings of strata at one commit put
+  its cache fetch path there. Work handed off outside every test, such as
+  at import or by a hook, still counts as run outside every test.</li>
+<li>A fixture of module, class or package scope defined once (in a
+  <code>conftest.py</code>) and set up anew for each module or class is now recorded
+  per instance: each module's tests are credited with what their own
+  instance's setup ran. Before, every instance shared one record, so what
+  one module's setup ran counted for the tests of every module, in every
+  worker. With an autouse fixture, a process one test left running as
+  the next module started (a warm worker pool) made every test of the
+  suite always selected. On strata it did in four recordings of four.</li>
+</ul>
 <h3 id="performance">Performance<a class="headerlink" href="#performance" title="Permanent link">&para;</a></h3>
 <ul>
 <li>A plan of pandas takes about a third of the time (a commit that selects
@@ -2037,21 +2069,6 @@ selection rules.</p>
   roots is at another commit, or has edits, than the plan analysed
   (<code>--allow-mismatched-worktree</code> to run anyway). Before, only submodules
   under the roots counted.</li>
-</ul>
-<h3 id="execution-evidence">Execution evidence<a class="headerlink" href="#execution-evidence" title="Permanent link">&para;</a></h3>
-<ul>
-<li>A recording is used only for a run of the pytest command and arguments
-  it was made with. Before, changing a job's pytest arguments made every
-  pull request compare tests discovered with the new arguments against a
-  recording collected with the old ones: run refused, because the
-  recording had collected tests that were not targets. Now <code>run</code>,
-  <code>validate</code>, <code>corpus</code>, and <code>plan</code> given <code>--command</code>, skip a recording
-  made with other arguments (<code>--evidence auto</code>) or refuse it (a path), and
-  exit <code>2</code> saying why. The run and record actions then plan without it,
-  as for a recording made with other source roots. Options that only
-  change what pytest reports or when it stops may differ (<code>-q</code>, <code>-v</code>,
-  <code>-x</code>, <code>--maxfail</code>, <code>--tb</code>, <code>-r</code>, <code>--color</code>, <code>--durations</code>,
-  <code>--junitxml</code>).</li>
 </ul>
 <h2 id="060-2026-11-16"><a href="https://github.com/bearing-research/diffcone/releases/tag/v0.6.0">0.6.0</a> - 2026-11-16<a class="headerlink" href="#060-2026-11-16" title="Permanent link">&para;</a></h2>
 <h3 id="running-and-checking">Running and checking<a class="headerlink" href="#running-and-checking" title="Permanent link">&para;</a></h3>
