@@ -519,8 +519,10 @@ with the store under zstd, and a plan from it to a new head took 18.6 s
 `collect --env-var` (4); errors that name the commit to fetch when a
 shallow checkout lacks it (5); and the composite actions with a pandas
 example (7, `actions/`, docs/ci.md), run locally step by step but not yet
-on GitHub. Left: running them on a fork, which gives the runner timings
-(6).
+on GitHub. The one step left, running them on a fork for the runner
+timings (6), was dropped (2026-10-09): the user proposes diffcone to
+pandas directly once it is more mature, so nothing here is planned until
+then; strata's CI (items 10-26) runs the same actions on GitHub.
 The first step toward real use: run diffcone beside an unchanged CI and
 measure it against what CI finds.
 Decided: a separate job runs alongside the existing ones and is monitored,
@@ -611,7 +613,8 @@ selection size and time saved are recorded in evaluation.md.
 
 ## 10. Recorder precision: subprocesses and threads that hide nothing (strata trial)
 
-**Status.** In progress (2026-10-07). A recording of strata's unit suite
+**Status.** Implemented (2026-10-07, cc159b8), released in 0.2.0; the
+follow-ups listed at the end are items 13-15. A recording of strata's unit suite
 (6 225 tests) flags 2 658 tests as always selected. A diagnostic run
 attributed the flags: 671 tests start a real subprocess (the notebook cell
 harness, `uv run`) and some 600 more use a shared fixture that does, which
@@ -1558,6 +1561,10 @@ are re-measured and recorded in evaluation.md; any further pattern found
 is sketched here.
 
 ## 20. Evidence-mode precision on small libraries (evidence corpus)
+
+**Status.** Closed (2026-11-25): E21-E26, E29 and E30 shipped; the
+import trade-off (E27, E28) was measured and kept, and E31 was measured
+and left, which is this item's exit condition.
 
 The evidence corpus (evaluation.md, "Evidence corpus: eight small
 suites") found no miss in 48 pairs, and almost no savings: six of eight
