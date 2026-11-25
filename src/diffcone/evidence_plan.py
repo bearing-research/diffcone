@@ -216,8 +216,11 @@ decision. A pytest target with no record (new, or never run) is selected.
 
 from __future__ import annotations
 
+import contextvars
+import sys
+import threading
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from enum import StrEnum
 from pathlib import Path
 
@@ -572,6 +575,48 @@ def _class_graph(
                 bases[cls].add(base)
                 subclasses[base].add(cls)
     return bases, subclasses
+
+
+# The observers' cascade recurses once for every module it escalates
+# (_escalate_module -> _import_writes -> _written -> _readers -> _reader ->
+# _import_effect -> _escalate_module, some six frames a module). Each link
+# is memoised, so it ends, but on pandas it runs past 160 modules deep,
+# beyond Python's default limit of 1000 frames, and every plan failed.
+# ``_deep`` runs it on a thread whose stack fits RECURSION_LIMIT frames: it
+# explores in the same order, so plans and their reasons stay as they were.
+RECURSION_LIMIT = 200_000
+DEEP_STACK = 512 * 1024 * 1024  # bytes of address space, reserved not used
+
+
+def _deep(func: Callable[[], None]) -> None:
+    """Run ``func`` on a thread with a stack of DEEP_STACK bytes and the
+    recursion limit raised to RECURSION_LIMIT, and restore both after.
+    The limit is the interpreter's, so planning in two threads at once
+    could see the other's; the CLI plans in one."""
+    failure: list[BaseException] = []
+    context = contextvars.copy_context()
+
+    def target() -> None:
+        try:
+            context.run(func)
+        except BaseException as error:  # re-raised on the calling thread
+            failure.append(error)
+
+    limit = sys.getrecursionlimit()
+    size = threading.stack_size()
+    sys.setrecursionlimit(max(limit, RECURSION_LIMIT))
+    try:
+        threading.stack_size(DEEP_STACK)
+        try:
+            thread = threading.Thread(target=target, name="diffcone-evidence", daemon=True)
+            thread.start()
+        finally:
+            threading.stack_size(size)
+        thread.join()
+    finally:
+        sys.setrecursionlimit(limit)
+    if failure:
+        raise failure[0]
 
 
 def _closure(starts: Iterable[str], graph: Mapping[str, Iterable[str]]) -> set[str]:
@@ -3767,7 +3812,7 @@ def plan_with_evidence(
             )
             obs.gitlinks |= gitlinks
             obs.build_reads = build_reads
-        obs.run()
+        _deep(obs.run)
         observed.append(obs)
         fallbacks += obs.fallbacks
         changed_ids |= {c.id for c in obs.changes if c.carries_impact}

@@ -417,6 +417,43 @@ def test_code_run_at_import_escalates_the_importing_module(repo):
     assert plan.evidence["escalated_modules"] == ["pkg.table"]
 
 
+def _chain(length: int) -> dict[str, str]:
+    """``length`` modules, each building at import on the state the one
+    before it built at import (pandas' shape: a module's import-time code
+    reads what another's wrote)."""
+    files = {
+        **BASE,
+        "chain/__init__.py": "".join(f"from chain import m{i}\n" for i in range(length)),
+    }
+    files["chain/m0.py"] = "STATE = []\n\n\ndef fill():\n    STATE.append(1)\n\n\nfill()\n"
+    for i in range(1, length):
+        files[f"chain/m{i}.py"] = (
+            f"from chain import m{i - 1} as prev\n\nSTATE = []\nSEEN = len(prev.STATE)\n\n\n"
+            "def fill():\n    STATE.append(SEEN)\n\n\nfill()\n"
+        )
+    files["tests/test_chain.py"] = (
+        f"import chain\n\n\ndef test_chain():\n    assert chain.m{length - 1}.STATE\n"
+    )
+    return files
+
+
+def test_an_escalation_hundreds_of_modules_deep_is_planned(repo):
+    """Escalating a module follows what its import wrote to the modules
+    that read it at import, and escalates them in turn, recursively: 300
+    modules is some 1 800 frames, past Python's default limit of 1 000
+    (on pandas every plan failed with RecursionError, exit 2)."""
+    base, ev = _collected(repo, _chain(300))
+    head = repo.commit(
+        {"chain/m0.py": "STATE = []\n\n\ndef fill():\n    STATE.append(1)\n\n\nfill()\nfill()\n"}
+    )
+    plan = _plan(repo, base, head, ev)
+    chain = "tests/test_chain.py::test_chain"
+    assert selected(plan) == {chain}  # not pkg's tests and benchmarks
+    assert rules(plan, chain) == {"escalated", "executed_reader"}
+    assert "chain.m299" in plan.evidence["escalated_modules"]
+    assert sys.getrecursionlimit() < 200_000  # put back
+
+
 FIXTURES = {
     **BASE,
     "tests/conftest.py": """\

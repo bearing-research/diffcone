@@ -54,6 +54,13 @@ selection rules.
   worker. With an autouse fixture, a process one test left running as
   the next module started (a warm worker pool) made every test of the
   suite always selected. On strata it did in four recordings of four.
+- An evidence plan no longer fails with an internal error (exit `2`)
+  when a change reaches state that hundreds of modules build on one
+  another at import. diffcone followed such a chain one module at a time
+  and ran out of Python's stack. On pandas, every evidence plan failed
+  from a recording in which matplotlib built its font cache, which it
+  does on a fresh machine such as a CI runner. Plans that worked before
+  are unchanged.
 
 ### Performance
 
