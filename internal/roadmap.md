@@ -1827,7 +1827,7 @@ relational change edits no file.
 *Superseded by item 26 (2026-11-24).* A census of every chain behind 21
 PR plans, with nine spikes that each cut a link, moved no plan below
 100 %: the paths are too many for link fixes. Item 26 checks escalations
-at the head instead.
+at the head instead, and was closed as measured.
 
 ## 23. pyarrow: C++ library changes planned at the extensions that link them
 
@@ -1930,12 +1930,14 @@ says how many targets drop (the report keeps one path a target, so the
 next chain may hold them: `test_memory`'s `getattr(pa, ...)`,
 `pyarrow.compute`'s bounded `getattr`), and that number justifies it.
 
-## 26. The evidence cascade on strata: escalations checked at the head (strata trial)
+## 26. The evidence cascade on strata: measured, and left alone (strata trial)
 
-**Status.** Measured (2026-11-24); no code. Item 21 removed one link of
-strata's chains at a time for a month and no plan moved. The census below
-says why, and this item replaces the link-by-link approach with a
-different mechanism. Records: `.spike/strata-2026-11-24/chains/`.
+**Status.** Closed as measured (2026-11-25); no code. Item 21 removed one
+link of strata's chains at a time for a month and no plan moved. The
+census below says why. The mechanism this item proposed (escalations
+checked at the head) was measured before building and buys nothing on
+strata (*Measured, the mechanism*, at the end). Records:
+`.spike/strata-2026-11-24/chains/`.
 
 **Measured.** A recording of strata at `62dc0cd0` (diffcone main
 `378b2bf`, both recorder fixes of item 21's E34 paragraph and the fixture
@@ -2053,6 +2055,39 @@ strata and this item closes as measured.
 **Done when** the measurement says how many of the seven plans fall below
 100 %. If any does, the conditional plan ships with the scenarios above,
 and strata's nightly report shows PR selections below 100 % with no miss.
+
+*Measured, the mechanism (2026-11-25).* A throwaway plugin digested
+every project module's namespace and every item's marks after
+collection: once at the recorded commit, again there, and at the heads of
+the seven PRs. Each PR's escalated modules come from a plan on unmodified
+main. The first digest opened only literals, containers, project
+functions and project classes:
+- 690 of 729 modules held a value it could not open;
+- 166 differed between the two runs at the same commit, because
+  pydantic's stored schemas embed object ids.
+
+A second digest opened plain instances (`__dict__` and slots), loggers,
+locks, regexes, paths, `typing` objects, `__future__` flags and
+`lru_cache` wrappers, and skipped pydantic's derived attributes and
+`_abc_impl`. On the test-only PR `45237148282` and the
+`.pre-commit-config.yaml` PR it gives:
+- **Noise at the same commit.** 20 modules still differ between the two
+  runs. They include `strata.server` and its routers and
+  `strata.api.dependencies` (FastAPI router and dependency objects). 241
+  of 10 320 items' marks differ too (marks whose arguments are objects).
+- **The escalated modules.** Of 15–16, 2 are equal, 2 differ (only as
+  the noise above), and 12 hold a value no generic digest opens:
+  `ContextVar`, sentinel `object()`s, pyarrow schemas and tables, and
+  classes holding them. `tests.conftest` is one of the 12
+  (`ServerContext`, the pyarrow defaults of `seed_build_targets`).
+
+So a condition could hold only with per-library models of FastAPI,
+pydantic and pyarrow state. Even then, `strata.server`, whose globals the
+autouse `_reset_process_globals` reads in every test, is not
+deterministic between two identical runs. The mechanism would select
+everything on strata, as now, for the cost of a digest pass in every
+recording and run. Not built. A retry would need a project whose
+escalated modules hold plain data, and a measurement there first.
 
 *Found on the way, not worth building alone.* Spike A is sound as it
 stands (`quiet_header` already says the body does not run at import) and
