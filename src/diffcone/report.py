@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict
 from typing import Any, TextIO
 
@@ -25,7 +26,10 @@ from diffcone.planner import (
 # 5: a reason an all-targets fallback gives names it by its index in
 #    fallback_decisions instead of repeating its detail (strata's 29 such
 #    details, repeated for each of 7694 targets, were 377 MB of a 429 MB plan)
-SCHEMA_VERSION = 5
+# 6: a target carrying every all-targets fallback of a rule says so in one
+#    reason (``all_targets``) instead of naming each (a pandas plan's 1 079,
+#    named on each of 25 618 targets, were 27.7 million entries, 3.8 GB)
+SCHEMA_VERSION = 6
 
 SCOPE_DESCRIPTION = {
     "granularity": "whole functions, methods, classes and modules",
@@ -64,6 +68,53 @@ def _fallback_index(reason: Reason, fallbacks: dict[tuple[str, str], int]) -> in
     if reason.path or reason.changed_symbol is not None or reason.changes:
         return None
     return fallbacks.get((reason.rule, reason.detail))
+
+
+def _per_rule(fallbacks: dict[tuple[str, str], int]) -> Counter[str]:
+    """How many all-targets fallbacks (distinct details) each rule has."""
+    return Counter(rule for rule, _ in fallbacks)
+
+
+# A target's reasons as the report writes them: a reason as it is, a
+# fallback by its index, or the rule of which it carries every
+# all-targets fallback, once.
+_Written = tuple[str, Reason, int]
+
+
+def _written_reasons(
+    reasons: list[Reason], fallbacks: dict[tuple[str, str], int], per_rule: Counter[str]
+) -> list[_Written]:
+    """``reasons`` with the all-targets fallbacks a target carries: each
+    rule of which it carries every one is written once, where its first
+    falls (``("all", reason, n)``, n the rule's count); any other by its
+    index (``("fallback", reason, index)``); the rest as they are."""
+    carried: dict[str, set[int]] = {}
+    for r in reasons:
+        index = _fallback_index(r, fallbacks)
+        if index is not None:
+            carried.setdefault(r.rule, set()).add(index)
+    whole = {rule for rule, found in carried.items() if len(found) == per_rule[rule]}
+    out: list[_Written] = []
+    written: set[str] = set()
+    for r in reasons:
+        index = _fallback_index(r, fallbacks)
+        if index is None:
+            out.append(("reason", r, -1))
+        elif r.rule not in whole:
+            out.append(("fallback", r, index))
+        elif r.rule not in written:
+            written.add(r.rule)
+            out.append(("all", r, per_rule[r.rule]))
+    return out
+
+
+def _written_dict(item: _Written) -> dict[str, Any]:
+    kind, reason, n = item
+    if kind == "all":
+        return {"rule": reason.rule, "conservative": reason.conservative, "all_targets": True}
+    if kind == "fallback":
+        return {"rule": reason.rule, "conservative": reason.conservative, "fallback": n}
+    return _reason_dict(reason, {})
 
 
 def _reason_dict(reason: Reason, fallbacks: dict[tuple[str, str], int]) -> dict[str, Any]:
@@ -106,6 +157,7 @@ def to_dict(plan: Plan) -> dict[str, Any]:
     selected = [d for d in plan.decisions if d.selected]
     unselected = [d for d in plan.decisions if not d.selected]
     fallbacks = _global_fallbacks(plan)
+    per_rule = _per_rule(fallbacks)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "degraded" if plan.degraded else "complete",
@@ -178,7 +230,11 @@ def to_dict(plan: Plan) -> dict[str, Any]:
         ],
         "dependency_explanations": [
             {"runner": d.target.runner, "runner_id": d.target.runner_id}
-            | {"reasons": [_reason_dict(r, fallbacks) for r in d.reasons]}
+            | {
+                "reasons": [
+                    _written_dict(item) for item in _written_reasons(d.reasons, fallbacks, per_rule)
+                ]
+            }
             for d in selected
         ],
         "unresolved_relationships": [
@@ -317,14 +373,18 @@ def to_text(plan: Plan) -> str:
     lines.append("")
     selected = plan.selected
     fallbacks = _global_fallbacks(plan)
+    per_rule = _per_rule(fallbacks)
     lines.append(f"selected targets ({len(selected)}):")
     for d in selected:
         flag = " (conservative)" if any(r.conservative for r in d.reasons) else ""
         lines.append(f"  {d.target.runner}: {d.target.runner_id}{flag}")
-        for r in d.reasons:
-            index = _fallback_index(r, fallbacks)
-            if index is not None:
-                lines.append(f"    - {r.rule}: fallback decision {index + 1} (below)")
+        for kind, r, n in _written_reasons(d.reasons, fallbacks, per_rule):
+            if kind == "all":
+                which = "the fallback decision" if n == 1 else f"every fallback decision ({n})"
+                lines.append(f"    - {r.rule}: {which} below with this rule")
+                continue
+            if kind == "fallback":
+                lines.append(f"    - {r.rule}: fallback decision {n + 1} (below)")
                 continue
             path = _format_path(r)
             lines.append(f"    - {r.rule}: {r.detail}")

@@ -2154,6 +2154,35 @@ stands (`quiet_header` already says the body does not run at import) and
 changes no strata plan; it may matter on a smaller project. Strata could
 list `.github/workflows/**` under `[build] reads` (strata's decision).
 
+## 27. A select-all stated once in the report
+
+**Status.** Implemented (2026-11-26; the user chose to state it once),
+as JSON schema 6. Since schema 5 an all-targets fallback's detail is written
+once, in `fallback_decisions`, and each target's reason names it by index.
+A target still names every one: a pandas evidence plan of `e9b71cd02e`
+selects all 25 618 targets through 1 079 such fallbacks (item 19), so its
+JSON report holds 27.7 million references (3.8 GB), and the plan holds as
+many `Reason` objects, one per target per fallback, before writing it.
+
+**Mechanism.** JSON `schema_version` 6: in `dependency_explanations`, a
+target's reasons that are all-targets fallbacks are written as one entry
+per rule, `{"rule": R, "conservative": true, "all_targets": true}`: every
+`all_targets` entry of `fallback_decisions` with rule R. The text report
+says the same in one line per rule (`- R: every fallback decision below
+with this rule (N)`). `fallback_decisions` is unchanged. In memory, both
+planners build the reasons for all-targets fallbacks once per plan and
+share them between targets (`Reason` is frozen).
+
+**Trade-off.** None in what a report says: an all-targets fallback is a
+reason of every target alike, so naming each on each target says nothing
+the list does not. A reader of schema 5 that followed `fallback` indexes
+must read `all_targets` instead (`ci_report` and `check` read neither).
+
+**Done when** a scenario with two all-targets fallbacks of one rule writes
+one entry per target, in JSON and text; the docs' report reference and
+the CHANGELOG say so; and the JSON of a select-all plan grows with
+targets plus fallbacks, not their product.
+
 ## 22. Plans that fit in memory: further (not planned)
 
 **Update (2026-11-24): a cold pandas plan is about 700 s and 7.9 GB, a

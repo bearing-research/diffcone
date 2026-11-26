@@ -8,6 +8,16 @@ selection rules.
 
 ## [Unreleased]
 
+### Report
+
+- The JSON report is `schema_version` 6. A target selected by every
+  fallback of a rule that selects all targets now says so in one reason,
+  `{"rule": ..., "conservative": true, "all_targets": true}`, instead of
+  naming each fallback by its position in `fallback_decisions`. The text
+  report does the same in one line. A pandas plan selecting all 25 618
+  tests through 1 079 such fallbacks named 27.7 million of them, 3.8 GB.
+  A target that only some of them select still names each.
+
 ### Declarations
 
 - `[build] reads` in `diffcone.toml` names the paths outside your source

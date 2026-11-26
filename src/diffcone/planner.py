@@ -2338,6 +2338,10 @@ def plan_from_indexes(
         else:
             global_fallbacks.append(fb)
 
+    # One Reason for each, shared by every target (Reason is frozen): a plan
+    # selecting everything through 1 079 of them over 25 618 targets would
+    # otherwise hold 27.7 million (roadmap item 27).
+    global_reasons = [Reason(fb.rule, fb.detail) for fb in global_fallbacks]
     decisions: list[Decision] = []
     for target in targets:
         reasons: list[Reason] = []
@@ -2355,8 +2359,7 @@ def plan_from_indexes(
             )
         for fb in target_fallbacks.get(target.node_id, ()):
             reasons.append(Reason(fb.rule, fb.detail))
-        for fb in global_fallbacks:
-            reasons.append(Reason(fb.rule, fb.detail))
+        reasons.extend(global_reasons)
         if seeds is not None:
             decisions.append(_decision(target, reasons, mode))
             continue

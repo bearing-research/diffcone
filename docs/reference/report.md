@@ -2,13 +2,13 @@
 
 `diffcone plan` prints a JSON report (`--format text` prints a readable
 summary of the same information). The report's format is versioned by
-`schema_version`, currently `5`.
+`schema_version`, currently `6`.
 
 ## Top-level fields
 
 | Field | Contents |
 |---|---|
-| `schema_version` | The report format version, `5`. |
+| `schema_version` | The report format version, `6`. |
 | `status` | `complete`, or `degraded` when an analysis error made diffcone select every target. |
 | `discovery_incomplete` | `true` when the runner may collect tests diffcone couldn't see; the plan then exits with code `3`. |
 | `analysis` | What was compared: both snapshots, the source roots, whether uncommitted files were analysed, counts, and the recording used, if any. |
@@ -112,9 +112,18 @@ it are in `dependency_explanations`.
 diffcone couldn't bound, so it selected the target to be safe.
 
 A fallback that selects every target is written once, in
-`fallback_decisions`. In each target's `dependency_explanations`, the
-reason it gives names it by its position in that list (counting from 0)
-instead of repeating its detail:
+`fallback_decisions`. In each target's `dependency_explanations`, a
+target that every such fallback of a rule selects says so once, instead
+of repeating them:
+
+```json
+{"rule": "unanalysed_file_changed", "conservative": true, "all_targets": true}
+```
+
+This means every entry of `fallback_decisions` with that rule and the
+scope `all_targets`. A target that only some of them select (in a plan
+from a recording, a benchmark keeps the plan made without it) names each
+by its position in that list, counting from 0:
 
 ```json
 {"rule": "unanalysed_file_changed", "conservative": true, "fallback": 0}

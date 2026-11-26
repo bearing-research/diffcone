@@ -132,8 +132,10 @@ def test_plan_json_output(repo, capsys):
 def test_an_all_targets_fallback_is_written_once(repo, capsys):
     """Every target carries an all-targets fallback as a reason: a plan
     repeated each fallback's detail for each target (377 MB of a 429 MB
-    plan over 7694 targets). Each target's reason names the fallback by
-    its index in ``fallback_decisions``, where its detail is written once."""
+    plan over 7694 targets), then named each on each target (a pandas
+    plan's 1 079 on 25 618 targets: 27.7 million entries, 3.8 GB). Each
+    detail is written once, in ``fallback_decisions``, and a target carrying
+    every all-targets fallback of a rule says so once (``all_targets``)."""
     base = repo.commit({"pkg/ops.py": OPS, "pkg/data.csv": "a\n", "tests/test_ops.py": TEST_OPS})
     head = repo.commit({"pkg/ops.py": OPS.replace("a + b", "b + a"), "pkg/data.csv": "b\n"})
     manifest = repo.write_manifest(TARGETS)
@@ -142,25 +144,58 @@ def test_an_all_targets_fallback_is_written_once(repo, capsys):
     assert main([*args, "json"]) == 0
     out = capsys.readouterr().out
     report = json.loads(out)
-    assert report["schema_version"] == 5
-    (fallback,) = report["fallback_decisions"]
-    assert fallback["rule"] == "unanalysed_file_changed"
-    assert fallback["scope"] == "all_targets"
-    assert out.count(json.dumps(fallback["detail"])) == 1
+    assert report["schema_version"] == 6
+    fallbacks = report["fallback_decisions"]
+    assert [(f["rule"], f["scope"]) for f in fallbacks] == [
+        ("unanalysed_file_changed", "all_targets")
+    ]
+    for f in fallbacks:
+        assert out.count(json.dumps(f["detail"])) == 1
     explanations = {e["runner_id"]: e["reasons"] for e in report["dependency_explanations"]}
-    named = {"rule": "unanalysed_file_changed", "conservative": True, "fallback": 0}
-    assert explanations["bench.time_mul"] == [named]
+    every = {"rule": "unanalysed_file_changed", "conservative": True, "all_targets": True}
+    assert explanations["bench.time_mul"] == [every]
     # A reason with a path is written out as before.
     dependency, fallback_reason = explanations["tests/test_ops.py::test_add"]
     assert dependency["rule"] == "dependency"
     assert dependency["changed_symbol"] == "pkg.ops.add"
-    assert fallback_reason == named
+    assert fallback_reason == every
 
     assert main([*args, "text"]) == 0
     text = capsys.readouterr().out
-    assert text.count(fallback["detail"]) == 1
-    assert text.count("- unanalysed_file_changed: fallback decision 1 (below)") == 2
-    assert f"  1. unanalysed_file_changed (all_targets): {fallback['detail']}" in text
+    for n, f in enumerate(fallbacks, 1):
+        assert text.count(f["detail"]) == 1
+        assert f"  {n}. unanalysed_file_changed (all_targets): {f['detail']}" in text
+    line = "- unanalysed_file_changed: the fallback decision below with this rule"
+    assert text.count(line) == 2
+
+
+def test_a_target_carrying_some_all_targets_fallbacks_names_each():
+    """The one ``all_targets`` reason means every all-targets fallback of
+    its rule; a target carrying only some (an ASV target an evidence plan
+    gives its static decision) names those by index, as before."""
+    from diffcone.planner import Reason, Rule
+    from diffcone.report import _per_rule, _written_dict, _written_reasons
+
+    rule = Rule.UNANALYSED_FILE
+    fallbacks: dict[tuple[str, str], int] = {
+        (rule, "a.csv"): 0,
+        (rule, "b.csv"): 1,
+        (Rule.PYTEST_HOOK, "hook"): 2,
+    }
+    per_rule = _per_rule(fallbacks)
+    some = [
+        Reason(rule, "b.csv"),
+        Reason(Rule.PYTEST_HOOK, "hook"),
+        Reason(Rule.PYTEST_HOOK, "hook"),
+    ]
+    assert [_written_dict(i) for i in _written_reasons(some, fallbacks, per_rule)] == [
+        {"rule": rule, "conservative": True, "fallback": 1},
+        {"rule": Rule.PYTEST_HOOK, "conservative": True, "all_targets": True},
+    ]
+    every = [Reason(rule, "a.csv"), Reason(rule, "b.csv")]
+    assert [_written_dict(i) for i in _written_reasons(every, fallbacks, per_rule)] == [
+        {"rule": rule, "conservative": True, "all_targets": True},
+    ]
 
 
 def test_plan_text_output_and_degraded_exit_code(repo, capsys):

@@ -3900,13 +3900,15 @@ def plan_with_evidence(
         )
         for obs in observed
     ]
+    # Built once and shared by every target (Reason is frozen; roadmap 27).
+    fallback_reasons = [Reason(fb.rule, fb.detail) for fb in _dedupe(fallbacks)]
     decisions = [
         _evidence_decision(
             target,
             evidence,
             observed,
             met,
-            fallbacks,
+            fallback_reasons,
             escalated,
             target_fallbacks,
             changed_ids,
@@ -3946,7 +3948,7 @@ def _evidence_decision(
     evidence: Evidence,
     observed: list[_Observers],
     met: list[tuple[frozenset[int], frozenset[int]]],
-    fallbacks: list[Fallback],
+    fallback_reasons: list[Reason],
     escalated: dict[str, list[Reason]],
     target_fallbacks: dict[str, list[Reason]],
     changed_ids: set[str],
@@ -3957,7 +3959,7 @@ def _evidence_decision(
 ) -> Decision:
     if target.runner != "pytest":
         return static_other[target.node_id]
-    reasons: list[Reason] = [Reason(fb.rule, fb.detail) for fb in _dedupe(fallbacks)]
+    reasons: list[Reason] = list(fallback_reasons)
     record = evidence.tests.get(target.runner_id)
     fixture_sources = any(obs.fixture_sources_changed for obs in observed)
     for r in dict.fromkeys(target_fallbacks.get(target.node_id, ())):
