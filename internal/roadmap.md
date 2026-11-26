@@ -1589,6 +1589,16 @@ writers can be measured at all:* a profiled plan (pod) to find where the
 (the symbol that ran outside the tests) with a count of the chains left
 out, so a report says why without repeating it. The spike itself
 (`_process_writers` empty) did not finish within budget.
+*Profiled (2026-11-26, pod, in-process sampler).* Four fifths of the
+observers' time was `_readers` handing each reader to `_reader`, which
+followed a function reader again for every chain reaching it (two label
+copies of up to 100 KB, then its imports, collection and escalations
+again). Following a function reader once per (change, name read) gives
+the same selection and first reasons: `e9b71cd02e` plans in 41 minutes
+with a cold index (was about 8 hours), 25 618 of 25 618 selected, 1 079
+fallbacks (was 19 683). The report is still 3.8 GB: every all-targets
+fallback is repeated as a reason on every target (27.7 million
+references). Next: decide how a report states a select-all once.
 
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind

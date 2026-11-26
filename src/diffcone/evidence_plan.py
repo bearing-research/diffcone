@@ -1023,6 +1023,9 @@ class _Observers:
         # lookups code run at import may write to (``_written``); and a
         # class attribute written by name, by (class, attribute).
         self._captured: set[str] = set()
+        # Function readers followed (``_reader``), by the change and the name
+        # read: following one again for another chain reaches nothing new.
+        self._readers_followed: set[tuple[str, str | None, str | None]] = set()
         self._written_marks: set[tuple[str, bool]] = set()
         self._attributes_followed: set[tuple[str, str]] = set()
         self._ran_at_import: set[str] = set()  # what ``_import_writes`` followed
@@ -2940,6 +2943,17 @@ class _Observers:
         if symbol is None:
             return
         if symbol.kind in (SymbolKind.FUNCTION, SymbolKind.METHOD):
+            # Once per change and name read: what following it does depends on
+            # nothing else but the label, and the first label is the one kept
+            # (``_observe``, the seeds and the tests' reasons keep the first; a
+            # fallback again would select everything again). On pandas a
+            # reader was reached by thousands of chains, each copying a label
+            # of up to 100 KB and repeating its imports, collection and
+            # escalations: a plan took 8 hours and listed 19 683 fallbacks.
+            key = (reader, change.id if change is not None else None, read)
+            if key in self._readers_followed:
+                return
+            self._readers_followed.add(key)
             self._observe(reader, Rule.EXECUTED_READER, f"{reader} reads {label}", change)
             self._import_effect(reader, change, f"{label}, read by {reader}", read=read)
         elif symbol.kind == SymbolKind.VARIABLE:

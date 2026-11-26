@@ -82,6 +82,12 @@ selection rules.
   4.2 GB) and while planning. The cache's index format changed, so the
   first plan after upgrading builds the index anew. A JSON report is
   written as it is encoded, not held whole first (pandas' is 1 GB).
+- An evidence plan follows each piece of code that reads a change once,
+  however many routes lead to it. On pandas a change reached the same
+  code by thousands of routes, and following each again took a plan of
+  one commit about 8 hours and listed the same decision to select every
+  test 19 683 times. It now takes about 40 minutes, with 1 079 such
+  entries, and selects the same tests.
 - `diffcone plan` and `diffcone discover` exit as soon as their output is
   written, rather than spending minutes freeing a large repository's
   analysis.
