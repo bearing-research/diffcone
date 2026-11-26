@@ -2020,6 +2020,19 @@ selection rules.</p>
   worker. With an autouse fixture, a process one test left running as
   the next module started (a warm worker pool) made every test of the
   suite always selected. On strata it did in four recordings of four.</li>
+<li>An evidence plan no longer fails with an internal error (exit <code>2</code>)
+  when a change reaches state that hundreds of modules build on one
+  another at import. diffcone followed such a chain one module at a time
+  and ran out of Python's stack. On pandas, every evidence plan failed
+  from a recording in which matplotlib built its font cache, which it
+  does on a fresh machine such as a CI runner. Plans that worked before
+  are unchanged.</li>
+<li><code>fc-list</code> is now a query about the machine, like <code>uname</code> or <code>locale
+  -a</code>, so a recording no longer flags it. matplotlib runs it to build its
+  font cache the first time it is imported on a machine, which on a CI
+  runner is every run. A test module importing matplotlib then made every
+  change select every test (pandas). <code>fc-cache</code> still counts as a process
+  the recording can't follow.</li>
 </ul>
 <h3 id="performance">Performance<a class="headerlink" href="#performance" title="Permanent link">&para;</a></h3>
 <ul>
