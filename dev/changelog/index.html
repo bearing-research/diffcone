@@ -797,6 +797,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#declarations" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -908,7 +919,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#report" class="md-nav__link">
+  <a href="#report_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Report
@@ -969,7 +980,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#report_1" class="md-nav__link">
+  <a href="#report_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Report
@@ -1409,6 +1420,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#report" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Report
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#declarations" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1520,7 +1542,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#report" class="md-nav__link">
+  <a href="#report_1" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Report
@@ -1581,7 +1603,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#report_1" class="md-nav__link">
+  <a href="#report_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         Report
@@ -1974,6 +1996,16 @@
 may change the report schema, the cache and evidence store formats, or
 selection rules.</p>
 <h2 id="unreleased">[Unreleased]<a class="headerlink" href="#unreleased" title="Permanent link">&para;</a></h2>
+<h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
+<ul>
+<li>The JSON report is <code>schema_version</code> 6. A target selected by every
+  fallback of a rule that selects all targets now says so in one reason,
+  <code>{"rule": ..., "conservative": true, "all_targets": true}</code>, instead of
+  naming each fallback by its position in <code>fallback_decisions</code>. The text
+  report does the same in one line. A pandas plan selecting all 25 618
+  tests through 1 079 such fallbacks named 27.7 million of them, 3.8 GB.
+  A target that only some of them select still names each.</li>
+</ul>
 <h3 id="declarations">Declarations<a class="headerlink" href="#declarations" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>[build] reads</code> in <code>diffcone.toml</code> names the paths outside your source
@@ -2236,7 +2268,7 @@ selection rules.</p>
   memory against 1.0 GB).</li>
 <li>Recordings made with 0.5.0 still work.</li>
 </ul>
-<h3 id="report">Report<a class="headerlink" href="#report" title="Permanent link">&para;</a></h3>
+<h3 id="report_1">Report<a class="headerlink" href="#report_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>schema_version</code> 5: a fallback that selects every target is written
   once, in <code>fallback_decisions</code>, and each target's explanation names it
@@ -2296,7 +2328,7 @@ selection rules.</p>
   <code>__new__</code>, a dataclass or attrs class) are no longer targets: <code>run</code>
   reported them as selected tests pytest did not collect.</li>
 </ul>
-<h3 id="report_1">Report<a class="headerlink" href="#report_1" title="Permanent link">&para;</a></h3>
+<h3 id="report_2">Report<a class="headerlink" href="#report_2" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>schema_version</code> 4: selected and unselected target records no longer
   list <code>lifecycle_dependencies</code>. Each target repeated every fixture,
