@@ -454,12 +454,14 @@ def test_an_escalation_hundreds_of_modules_deep_is_planned(repo):
     assert sys.getrecursionlimit() < 100_000  # put back
 
 
-@pytest.mark.parametrize("cap", [256, 16, 0], ids=["Windows' cap", "small", "none accepted"])
+@pytest.mark.parametrize("cap", [256, 64, 0], ids=["Windows' cap", "small", "none accepted"])
 def test_the_deep_stack_takes_what_the_platform_accepts(monkeypatch, cap):
-    """Windows' CPython refuses a thread stack over 256 MB (every evidence
-    plan there failed, ValueError); a size the platform refuses is skipped,
-    the recursion limit is raised to fit the one taken, and with none the
-    observers run on the calling thread as they are."""
+    """Windows' CPython takes a thread stack only under 256 MB (every
+    evidence plan there failed, ValueError); a size the platform refuses is
+    skipped, the recursion limit is raised to fit the one taken, and with
+    none the observers run on the calling thread as they are. ``cap`` is in
+    MB, a size of it or more refused; the real ``stack_size`` may refuse
+    more (Windows refuses 256 MB itself)."""
     import threading
 
     from diffcone import evidence_plan
@@ -470,10 +472,11 @@ def test_the_deep_stack_takes_what_the_platform_accepts(monkeypatch, cap):
     def stack_size(size=None):
         if size is None:
             return real()
-        if size > cap * 1024 * 1024:
+        if size >= cap * 1024 * 1024:
             raise ValueError(f"size not valid: {size} bytes")
-        taken.append(size)
-        return real(size)
+        previous = real(size)
+        taken.append(size)  # only once the platform took it
+        return previous
 
     monkeypatch.setattr(evidence_plan.threading, "stack_size", stack_size)
     limit = sys.getrecursionlimit()
@@ -485,7 +488,9 @@ def test_the_deep_stack_takes_what_the_platform_accepts(monkeypatch, cap):
     evidence_plan._deep(lambda: seen.append(sys.getrecursionlimit() if depth(500) == 0 else -1))
     assert sys.getrecursionlimit() == limit
     if cap:
-        assert taken[0] == min(cap, 256) * 1024 * 1024  # the largest accepted, then put back
+        accepted = [d for d in evidence_plan.DEEP_STACKS if d < cap * 1024 * 1024]
+        # The largest accepted (on Windows the next: it refuses 256 MB), then put back.
+        assert taken[0] == accepted[0] or (sys.platform == "win32" and taken[0] in accepted)
         assert seen == [max(limit, taken[0] // evidence_plan.FRAME_BYTES)]
     else:
         assert taken == [] and seen == [limit]

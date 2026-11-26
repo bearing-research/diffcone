@@ -584,7 +584,7 @@ def _class_graph(
 # beyond Python's default limit of 1000 frames, and every plan failed.
 # ``_deep`` runs it on a thread with a larger stack: it explores in the
 # same order, so plans and their reasons stay as they were. The sizes are
-# tried in turn (Windows' CPython refuses more than 256 MB), and the
+# tried in turn (Windows' CPython takes only less than 256 MB), and the
 # recursion limit is raised in proportion to the one taken: about 2 KB of
 # stack a frame, where Python 3.11 and later need far less for a call from
 # Python to Python.
