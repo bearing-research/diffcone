@@ -451,7 +451,44 @@ def test_an_escalation_hundreds_of_modules_deep_is_planned(repo):
     assert selected(plan) == {chain}  # not pkg's tests and benchmarks
     assert rules(plan, chain) == {"escalated", "executed_reader"}
     assert "chain.m299" in plan.evidence["escalated_modules"]
-    assert sys.getrecursionlimit() < 200_000  # put back
+    assert sys.getrecursionlimit() < 100_000  # put back
+
+
+@pytest.mark.parametrize("cap", [256, 16, 0], ids=["Windows' cap", "small", "none accepted"])
+def test_the_deep_stack_takes_what_the_platform_accepts(monkeypatch, cap):
+    """Windows' CPython refuses a thread stack over 256 MB (every evidence
+    plan there failed, ValueError); a size the platform refuses is skipped,
+    the recursion limit is raised to fit the one taken, and with none the
+    observers run on the calling thread as they are."""
+    import threading
+
+    from diffcone import evidence_plan
+
+    real = threading.stack_size
+    taken: list[int] = []
+
+    def stack_size(size=None):
+        if size is None:
+            return real()
+        if size > cap * 1024 * 1024:
+            raise ValueError(f"size not valid: {size} bytes")
+        taken.append(size)
+        return real(size)
+
+    monkeypatch.setattr(evidence_plan.threading, "stack_size", stack_size)
+    limit = sys.getrecursionlimit()
+    seen: list[int] = []
+
+    def depth(n: int) -> int:
+        return n if n == 0 else depth(n - 1)
+
+    evidence_plan._deep(lambda: seen.append(sys.getrecursionlimit() if depth(500) == 0 else -1))
+    assert sys.getrecursionlimit() == limit
+    if cap:
+        assert taken[0] == min(cap, 256) * 1024 * 1024  # the largest accepted, then put back
+        assert seen == [max(limit, taken[0] // evidence_plan.FRAME_BYTES)]
+    else:
+        assert taken == [] and seen == [limit]
 
 
 FIXTURES = {

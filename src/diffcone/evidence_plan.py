@@ -582,17 +582,22 @@ def _class_graph(
 # _import_effect -> _escalate_module, some six frames a module). Each link
 # is memoised, so it ends, but on pandas it runs past 160 modules deep,
 # beyond Python's default limit of 1000 frames, and every plan failed.
-# ``_deep`` runs it on a thread whose stack fits RECURSION_LIMIT frames: it
-# explores in the same order, so plans and their reasons stay as they were.
-RECURSION_LIMIT = 200_000
-DEEP_STACK = 512 * 1024 * 1024  # bytes of address space, reserved not used
+# ``_deep`` runs it on a thread with a larger stack: it explores in the
+# same order, so plans and their reasons stay as they were. The sizes are
+# tried in turn (Windows' CPython refuses more than 256 MB), and the
+# recursion limit is raised in proportion to the one taken: about 2 KB of
+# stack a frame, where Python 3.11 and later need far less for a call from
+# Python to Python.
+DEEP_STACKS = (256 * 1024 * 1024, 64 * 1024 * 1024, 16 * 1024 * 1024)  # address space
+FRAME_BYTES = 2048
 
 
 def _deep(func: Callable[[], None]) -> None:
-    """Run ``func`` on a thread with a stack of DEEP_STACK bytes and the
-    recursion limit raised to RECURSION_LIMIT, and restore both after.
-    The limit is the interpreter's, so planning in two threads at once
-    could see the other's; the CLI plans in one."""
+    """Run ``func`` on a thread with the first stack size of DEEP_STACKS
+    the platform accepts and the recursion limit raised to fit it, and
+    restore both after; on the calling thread, as it is, when none is
+    accepted. The limit is the interpreter's, so planning in two threads at
+    once could see the other's; the CLI plans in one."""
     failure: list[BaseException] = []
     context = contextvars.copy_context()
 
@@ -602,11 +607,19 @@ def _deep(func: Callable[[], None]) -> None:
         except BaseException as error:  # re-raised on the calling thread
             failure.append(error)
 
-    limit = sys.getrecursionlimit()
     size = threading.stack_size()
-    sys.setrecursionlimit(max(limit, RECURSION_LIMIT))
+    for deep in DEEP_STACKS:
+        try:
+            threading.stack_size(deep)
+        except (ValueError, RuntimeError):
+            continue
+        break
+    else:
+        func()
+        return
+    limit = sys.getrecursionlimit()
     try:
-        threading.stack_size(DEEP_STACK)
+        sys.setrecursionlimit(max(limit, deep // FRAME_BYTES))
         try:
             thread = threading.Thread(target=target, name="diffcone-evidence", daemon=True)
             thread.start()
