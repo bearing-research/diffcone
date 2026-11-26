@@ -121,13 +121,17 @@ def system_query(argv: list[str] | None) -> bool:
     maps: projects testing locale handling ask at import (pandas'
     ``get_locales``, while its test modules are collected). ``ps``, which
     lists processes (shellingham's shell detection, run at import by
-    typer's tests). And ``git`` asking about the repository rather than its
-    files (``git_query``: pytest-benchmark tags benchmarks with the commit
-    as it adds its options, in every run)."""
+    typer's tests). ``fc-list``, which lists the fonts the machine's
+    fontconfig names (matplotlib builds its font cache on first use, so on a
+    fresh machine, a CI runner, a test module importing it runs ``fc-list``
+    as it is collected); building fontconfig's cache is ``fc-cache``'s, not
+    a query. And ``git`` asking about the repository rather than its files
+    (``git_query``: pytest-benchmark tags benchmarks with the commit as it
+    adds its options, in every run)."""
     if not argv:
         return False
     name = os.path.basename(argv[0]).lower().removesuffix(".exe")
-    if name in ("uname", "ps"):
+    if name in ("uname", "ps", "fc-list"):
         return True
     if name == "git":
         return git_query(argv[1:])

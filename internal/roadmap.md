@@ -1547,6 +1547,29 @@ process-global write, and on pandas every such code can.
   phase, until it recurs); if it is a library's own fixed template, it is
   exempt as `typing` and `annotationlib` are.
 
+*A fresh machine's font scan (2026-11-25).* A recording of pandas on a
+new pod (`bc2fe1b`, 24 239 tests) flagged a process no record follows
+outside every test, while `pandas.tests.plotting.frame.test_frame` was
+imported: matplotlib builds its font cache on first use, running
+`fc-list --help` and `fc-list --format=%{file}\n`. Every change is then
+planned from the code for what that import built, and on pandas that
+reaches every test (a docstring-only replay: 100 %, 19 650 fallbacks, all
+from that link; at diffcone 0660341 every plan also ran out of stack,
+fixed in 245faac). A CI runner starts with no font cache, so every pandas
+recording made there would carry the flag. *Mechanism:* `fc-list`, with
+any arguments, is a machine query (`child.system_query`, beside `uname`,
+`ldconfig -p` and `locale -a`). *Why sound:* fontconfig's `fc-list` is a C
+program that runs no Python; it lists the fonts the machine's fontconfig
+configuration names and writes nothing (building the cache is
+`fc-cache`'s, which stays a process no record follows). A font in the
+checkout is read only if the machine's configuration points into it,
+which no project's tests set up (the same assumption as `ldconfig -p`
+reading the machine's library cache). *Done when:* the recorder test of
+system queries covers `fc-list` (inert with each matplotlib command line;
+`fc-cache` still a problem), a scenario of a test module running
+`fc-list` at import no longer widens plans, and a pandas recording from
+an empty font cache has no flag outside every test.
+
 **Measuring.** After each fix, re-plan the 8 replays (`.spike` scripts
 from item 18; about 15 minutes per plan) and list the next pattern behind
 whatever still selects everything. Further patterns get their own entry

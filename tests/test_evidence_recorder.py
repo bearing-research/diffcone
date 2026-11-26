@@ -1250,6 +1250,10 @@ def test_rec1_a_pytest_process_started_outside_every_test_is_its_own_record(repo
         (["file", "-b", "/repo/data/table.bin"], True),
         (["ldconfig"], True),
         (["make", "data"], True),
+        # matplotlib building its font cache on a fresh machine.
+        (["fc-list", "--help"], False),
+        (["/usr/bin/fc-list", "--format=%{file}\\n"], False),
+        (["fc-cache", "-f"], True),
         # E25: shellingham's shell detection (typer's tests, at import).
         (["ps", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "args="], False),
         # E21: pytest-benchmark tags benchmarks with the commit as it adds
@@ -1305,6 +1309,42 @@ def test_e12_a_test_module_listing_locales_at_import_does_not_widen_plans(repo):
     handled, other = _plans(repo, files, HANDLED, OTHER_CHANGED)
     assert "tests/test_loc.py::test_loc" not in selected(handled) | selected(other)
     assert selected(other) == {OTHER_ID}
+
+
+@needs_monitoring
+@pytest.mark.skipif(os.name == "nt", reason="runs a shell script as the program")
+@pytest.mark.parametrize(
+    ("program", "args", "widens"),
+    [
+        ("fc-list", ["--help"], False),
+        ("fc-list", ["--format=%{file}\\n"], False),
+        ("fc-cache", ["-f"], True),
+    ],
+)
+def test_a_test_module_listing_fonts_at_import_does_not_widen_plans(
+    repo, tmp_path, program, args, widens
+):
+    """matplotlib builds its font cache on first use: on a fresh machine (a
+    CI runner) a pandas test module importing it ran ``fc-list`` while it
+    was collected, a process no record follows, and every change of pandas
+    selected every test. ``fc-list`` runs no Python and lists the machine's
+    fonts; ``fc-cache`` writes, and still counts. (The program here is a
+    stand-in of that name: the recorder goes by the name.)"""
+    fake = tmp_path / "bin" / program
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    files = {
+        **BASE,
+        "tests/test_fonts.py": (
+            f"import subprocess\n\nFONTS = subprocess.check_output({[str(fake), *args]!r})\n\n\n"
+            "def test_fonts():\n    assert FONTS is not None\n"
+        ),
+    }
+    handled, other = _plans(repo, files, HANDLED, OTHER_CHANGED)
+    fonts = "tests/test_fonts.py::test_fonts"
+    assert (fonts in selected(handled)) is widens
+    assert selected(other) == ({fonts, OTHER_ID} if widens else {OTHER_ID})
 
 
 WORK_ID = "tests/test_work.py::test_work"

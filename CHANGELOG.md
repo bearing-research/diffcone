@@ -61,6 +61,12 @@ selection rules.
   from a recording in which matplotlib built its font cache, which it
   does on a fresh machine such as a CI runner. Plans that worked before
   are unchanged.
+- `fc-list` is now a query about the machine, like `uname` or `locale
+  -a`, so a recording no longer flags it. matplotlib runs it to build its
+  font cache the first time it is imported on a machine, which on a CI
+  runner is every run. A test module importing matplotlib then made every
+  change select every test (pandas). `fc-cache` still counts as a process
+  the recording can't follow.
 
 ### Performance
 

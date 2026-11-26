@@ -149,8 +149,8 @@ report:
     - **Ignored.** A `python -c` snippet that can't run your code (a
       version check), package-manager commands (`uv sync`, `uv pip`,
       `uv python list`), and programs that only ask about the machine or
-      the repository (`uname`, `ps`, `locale -a`, read-only `git` commands
-      such as `git rev-parse`), on every platform.
+      the repository (`uname`, `ps`, `locale -a`, `fc-list`, read-only
+      `git` commands such as `git rev-parse`), on every platform.
 
     A project `sitecustomize.py` still runs in every child.
 
